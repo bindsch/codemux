@@ -1,0 +1,24 @@
+{
+  "name": "codemux",
+  "version": "0.1.0",
+  "description": "Unified CLI for AI coding agents",
+  "module": "src/index.ts",
+  "type": "module",
+  "bin": {
+    "codemux": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "link": "bun link"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/js-yaml": "^4.0.9",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "commander": "^14.0.2",
+    "js-yaml": "^4.1.1"
+  }
+}
