@@ -7,6 +7,7 @@ import { GooseAdapter } from "./goose.js";
 import { GeminiAdapter } from "./gemini.js";
 import { OpencodeAdapter } from "./opencode.js";
 import { QwenAdapter } from "./qwen.js";
+import { ZaiAdapter } from "./zai.js";
 
 const adapters: Record<AgentId, BaseAdapter> = {
   claude: new ClaudeAdapter(),
@@ -16,6 +17,7 @@ const adapters: Record<AgentId, BaseAdapter> = {
   gemini: new GeminiAdapter(),
   opencode: new OpencodeAdapter(),
   qwen: new QwenAdapter(),
+  zai: new ZaiAdapter(),
 };
 
 export function getAdapter(id: AgentId): BaseAdapter {
@@ -42,6 +44,7 @@ export const AGENT_IDS: AgentId[] = [
   "gemini",
   "opencode",
   "qwen",
+  "zai",
 ];
 
 export { BaseAdapter };

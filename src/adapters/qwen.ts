@@ -2,6 +2,7 @@ import { BaseAdapter } from "./base.js";
 import type {
   AgentId,
   AutonomyLevel,
+  ReasoningEffort,
   RunRequest,
   AdapterCapabilities,
 } from "../types.js";
@@ -17,6 +18,8 @@ export class QwenAdapter extends BaseAdapter {
       supportsModel: false,
       supportsAutonomy: false,
       autonomyLevels: [],
+      supportsEffort: false,
+      effortLevels: [],
     };
   }
 
@@ -24,7 +27,7 @@ export class QwenAdapter extends BaseAdapter {
     return ["qwen-coder", request.prompt];
   }
 
-  buildTuiCommand(_model?: string): string[] {
+  buildTuiCommand(_model?: string, _autonomy?: AutonomyLevel, _effort?: ReasoningEffort): string[] {
     return ["qwen-coder"];
   }
 }

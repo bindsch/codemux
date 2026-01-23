@@ -5,15 +5,19 @@ export type AgentId =
   | "goose"
   | "gemini"
   | "opencode"
-  | "qwen";
+  | "qwen"
+  | "zai";
 
 export type AutonomyLevel = "read-only" | "low" | "medium" | "high";
+
+export type ReasoningEffort = "none" | "low" | "medium" | "high";
 
 export interface RunRequest {
   agent: AgentId;
   prompt: string;
   model?: string;
   autonomy?: AutonomyLevel;
+  effort?: ReasoningEffort;
   cwd?: string;
 }
 
@@ -30,6 +34,8 @@ export interface AdapterCapabilities {
   supportsModel: boolean;
   supportsAutonomy: boolean;
   autonomyLevels: AutonomyLevel[];
+  supportsEffort: boolean;
+  effortLevels: ReasoningEffort[];
 }
 
 export interface ModelMapping {

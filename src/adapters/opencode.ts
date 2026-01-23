@@ -2,6 +2,7 @@ import { BaseAdapter } from "./base.js";
 import type {
   AgentId,
   AutonomyLevel,
+  ReasoningEffort,
   RunRequest,
   AdapterCapabilities,
 } from "../types.js";
@@ -15,9 +16,22 @@ export class OpencodeAdapter extends BaseAdapter {
       supportsNonInteractive: true,
       supportsInteractive: true,
       supportsModel: true,
-      supportsAutonomy: false,
-      autonomyLevels: [],
+      supportsAutonomy: true,
+      autonomyLevels: ["read-only", "high"],
+      supportsEffort: false,
+      effortLevels: [],
     };
+  }
+
+  override mapAutonomy(level: AutonomyLevel): string[] {
+    switch (level) {
+      case "read-only":
+        return ["--agent", "explore"];
+      case "high":
+        return ["--agent", "build"];
+      default:
+        return [];
+    }
   }
 
   buildRunCommand(request: RunRequest): string[] {
@@ -27,15 +41,26 @@ export class OpencodeAdapter extends BaseAdapter {
       cmd.push("--model", request.model);
     }
 
-    cmd.push(request.prompt);
+    if (request.autonomy) {
+      cmd.push(...this.mapAutonomy(request.autonomy));
+    }
+
+    cmd.push("-"); // read prompt from stdin
 
     return cmd;
   }
 
-  buildTuiCommand(model?: string): string[] {
+  override getStdinInput(request: RunRequest): string | null {
+    return request.prompt;
+  }
+
+  buildTuiCommand(model?: string, autonomy?: AutonomyLevel, _effort?: ReasoningEffort): string[] {
     const cmd = ["opencode"];
     if (model) {
       cmd.push("--model", model);
+    }
+    if (autonomy) {
+      cmd.push(...this.mapAutonomy(autonomy));
     }
     return cmd;
   }

@@ -2,6 +2,7 @@ import { BaseAdapter } from "./base.js";
 import type {
   AgentId,
   AutonomyLevel,
+  ReasoningEffort,
   RunRequest,
   AdapterCapabilities,
 } from "../types.js";
@@ -17,6 +18,8 @@ export class CodexAdapter extends BaseAdapter {
       supportsModel: true,
       supportsAutonomy: true,
       autonomyLevels: ["read-only", "medium", "high"],
+      supportsEffort: true,
+      effortLevels: ["low", "medium", "high"],
     };
   }
 
@@ -34,8 +37,22 @@ export class CodexAdapter extends BaseAdapter {
     }
   }
 
+  override mapEffort(level: ReasoningEffort): string[] {
+    switch (level) {
+      case "none":
+        console.warn("Warning: codex does not support 'none' effort, using 'low'");
+        return ["-c", 'model_reasoning_effort="low"'];
+      case "low":
+        return ["-c", 'model_reasoning_effort="low"'];
+      case "medium":
+        return ["-c", 'model_reasoning_effort="medium"'];
+      case "high":
+        return ["-c", 'model_reasoning_effort="high"'];
+    }
+  }
+
   buildRunCommand(request: RunRequest): string[] {
-    const cmd = ["codex", "exec"];
+    const cmd = ["codex", "exec", "--skip-git-repo-check"];
 
     if (request.model) {
       cmd.push("-m", request.model);
@@ -45,15 +62,29 @@ export class CodexAdapter extends BaseAdapter {
       cmd.push(...this.mapAutonomy(request.autonomy));
     }
 
-    cmd.push(request.prompt);
+    if (request.effort) {
+      cmd.push(...this.mapEffort(request.effort));
+    }
+
+    cmd.push("-"); // read prompt from stdin
 
     return cmd;
   }
 
-  buildTuiCommand(model?: string): string[] {
+  override getStdinInput(request: RunRequest): string | null {
+    return request.prompt;
+  }
+
+  buildTuiCommand(model?: string, autonomy?: AutonomyLevel, effort?: ReasoningEffort): string[] {
     const cmd = ["codex"];
     if (model) {
       cmd.push("-m", model);
+    }
+    if (autonomy) {
+      cmd.push(...this.mapAutonomy(autonomy));
+    }
+    if (effort) {
+      cmd.push(...this.mapEffort(effort));
     }
     return cmd;
   }

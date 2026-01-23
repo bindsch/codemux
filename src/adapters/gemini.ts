@@ -2,6 +2,7 @@ import { BaseAdapter } from "./base.js";
 import type {
   AgentId,
   AutonomyLevel,
+  ReasoningEffort,
   RunRequest,
   AdapterCapabilities,
 } from "../types.js";
@@ -17,6 +18,8 @@ export class GeminiAdapter extends BaseAdapter {
       supportsModel: true,
       supportsAutonomy: false,
       autonomyLevels: [],
+      supportsEffort: false,
+      effortLevels: [],
     };
   }
 
@@ -32,7 +35,7 @@ export class GeminiAdapter extends BaseAdapter {
     return cmd;
   }
 
-  buildTuiCommand(model?: string): string[] {
+  buildTuiCommand(model?: string, _autonomy?: AutonomyLevel, _effort?: ReasoningEffort): string[] {
     const cmd = ["gemini"];
     if (model) {
       cmd.push("-m", model);
