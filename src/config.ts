@@ -28,6 +28,14 @@ const DEFAULT_CONFIG: CodemuxConfig = {
       droid: "gpt-5.1-codex",
       codex: "gpt-5.1-codex",
     },
+    "gpt53": {
+      droid: "gpt-5.3",
+      codex: "gpt-5.3",
+    },
+    "gpt53-high": {
+      droid: "gpt-5.3-high",
+      codex: "gpt-5.3-high",
+    },
     "gemini-pro": {
       droid: "gemini-3-pro-preview",
       gemini: "gemini-3-pro",

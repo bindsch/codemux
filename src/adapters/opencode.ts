@@ -17,7 +17,7 @@ export class OpencodeAdapter extends BaseAdapter {
       supportsInteractive: true,
       supportsModel: true,
       supportsAutonomy: true,
-      autonomyLevels: ["read-only", "high"],
+      autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: false,
       effortLevels: [],
     };
@@ -27,10 +27,14 @@ export class OpencodeAdapter extends BaseAdapter {
     switch (level) {
       case "read-only":
         return ["--agent", "explore"];
+      case "low":
+        console.warn("Warning: opencode has no dedicated 'low' mode, using 'explore'");
+        return ["--agent", "explore"];
+      case "medium":
+        console.warn("Warning: opencode has no dedicated 'medium' mode, using 'build'");
+        return ["--agent", "build"];
       case "high":
         return ["--agent", "build"];
-      default:
-        return [];
     }
   }
 
@@ -54,7 +58,12 @@ export class OpencodeAdapter extends BaseAdapter {
     return request.prompt;
   }
 
-  buildTuiCommand(model?: string, autonomy?: AutonomyLevel, _effort?: ReasoningEffort): string[] {
+  buildTuiCommand(
+    model?: string,
+    autonomy?: AutonomyLevel,
+    _effort?: ReasoningEffort,
+    _sandboxed?: boolean
+  ): string[] {
     const cmd = ["opencode"];
     if (model) {
       cmd.push("--model", model);

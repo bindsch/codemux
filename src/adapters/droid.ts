@@ -71,10 +71,18 @@ export class DroidAdapter extends BaseAdapter {
     return request.prompt;
   }
 
-  buildTuiCommand(model?: string, _autonomy?: AutonomyLevel, effort?: ReasoningEffort): string[] {
+  buildTuiCommand(
+    model?: string,
+    autonomy?: AutonomyLevel,
+    effort?: ReasoningEffort,
+    _sandboxed?: boolean
+  ): string[] {
     const cmd = ["droid"];
     if (model) {
       cmd.push("-m", model);
+    }
+    if (autonomy) {
+      cmd.push(...this.mapAutonomy(autonomy));
     }
     if (effort) {
       cmd.push(...this.mapEffort(effort));

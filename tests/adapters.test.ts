@@ -5,9 +5,11 @@ import { DroidAdapter } from "../src/adapters/droid.js";
 import { GooseAdapter } from "../src/adapters/goose.js";
 import { GeminiAdapter } from "../src/adapters/gemini.js";
 import { OpencodeAdapter } from "../src/adapters/opencode.js";
+import { PiAdapter } from "../src/adapters/pi.js";
 import { QwenAdapter } from "../src/adapters/qwen.js";
 import { ZaiAdapter } from "../src/adapters/zai.js";
 import { getAdapter, getAllAdapters, AGENT_IDS } from "../src/adapters/index.js";
+import { PLAYWRIGHT_NO_SANDBOX_MCP_CONFIG } from "../src/mcp.js";
 import type { RunRequest } from "../src/types.js";
 
 describe("Adapter Registry", () => {
@@ -18,9 +20,10 @@ describe("Adapter Registry", () => {
     expect(AGENT_IDS).toContain("goose");
     expect(AGENT_IDS).toContain("gemini");
     expect(AGENT_IDS).toContain("opencode");
+    expect(AGENT_IDS).toContain("pi");
     expect(AGENT_IDS).toContain("qwen");
     expect(AGENT_IDS).toContain("zai");
-    expect(AGENT_IDS.length).toBe(8);
+    expect(AGENT_IDS.length).toBe(9);
   });
 
   test("getAdapter returns correct adapter for each agent", () => {
@@ -30,6 +33,7 @@ describe("Adapter Registry", () => {
     expect(getAdapter("goose")).toBeInstanceOf(GooseAdapter);
     expect(getAdapter("gemini")).toBeInstanceOf(GeminiAdapter);
     expect(getAdapter("opencode")).toBeInstanceOf(OpencodeAdapter);
+    expect(getAdapter("pi")).toBeInstanceOf(PiAdapter);
     expect(getAdapter("qwen")).toBeInstanceOf(QwenAdapter);
     expect(getAdapter("zai")).toBeInstanceOf(ZaiAdapter);
   });
@@ -38,9 +42,9 @@ describe("Adapter Registry", () => {
     expect(() => getAdapter("unknown" as any)).toThrow("Unknown agent: unknown");
   });
 
-  test("getAllAdapters returns all 8 adapters", () => {
+  test("getAllAdapters returns all 9 adapters", () => {
     const adapters = getAllAdapters();
-    expect(adapters.length).toBe(8);
+    expect(adapters.length).toBe(9);
   });
 });
 
@@ -86,6 +90,11 @@ describe("ClaudeAdapter", () => {
       .toEqual(["claude", "-p", "--dangerously-skip-permissions"]);
   });
 
+  test("buildRunCommand adds playwright no-sandbox mcp config when sandboxed", () => {
+    const cmd = adapter.buildRunCommand({ agent: "claude", prompt: "t", sandboxed: true });
+    expect(cmd).toEqual(["claude", "-p", "--mcp-config", PLAYWRIGHT_NO_SANDBOX_MCP_CONFIG]);
+  });
+
   test("getStdinInput returns prompt", () => {
     const request: RunRequest = { agent: "claude", prompt: "my prompt" };
     expect(adapter.getStdinInput(request)).toBe("my prompt");
@@ -102,6 +111,18 @@ describe("ClaudeAdapter", () => {
   test("buildTuiCommand with autonomy", () => {
     expect(adapter.buildTuiCommand(undefined, "high")).toEqual(["claude", "--dangerously-skip-permissions"]);
     expect(adapter.buildTuiCommand("opus", "medium")).toEqual(["claude", "--model", "opus", "--permission-mode", "dontAsk"]);
+  });
+
+  test("buildTuiCommand adds playwright no-sandbox mcp config when sandboxed", () => {
+    const cmd = adapter.buildTuiCommand("opus", "high", undefined, true);
+    expect(cmd).toEqual([
+      "claude",
+      "--mcp-config",
+      PLAYWRIGHT_NO_SANDBOX_MCP_CONFIG,
+      "--model",
+      "opus",
+      "--dangerously-skip-permissions",
+    ]);
   });
 
   test("mapAutonomy returns correct flags", () => {
@@ -190,6 +211,11 @@ describe("DroidAdapter", () => {
     expect(adapter.buildTuiCommand("gpt-5.1")).toEqual(["droid", "-m", "gpt-5.1"]);
   });
 
+  test("buildTuiCommand with autonomy", () => {
+    expect(adapter.buildTuiCommand(undefined, "high")).toEqual(["droid", "--auto", "high"]);
+    expect(adapter.buildTuiCommand("gpt-5.1", "low")).toEqual(["droid", "-m", "gpt-5.1", "--auto", "low"]);
+  });
+
   test("buildTuiCommand with effort", () => {
     expect(adapter.buildTuiCommand(undefined, undefined, "high")).toEqual(["droid", "-r", "high"]);
     expect(adapter.buildTuiCommand("gpt-5.1", undefined, "medium")).toEqual(["droid", "-m", "gpt-5.1", "-r", "medium"]);
@@ -224,7 +250,7 @@ describe("CodexAdapter", () => {
     expect(caps.supportsInteractive).toBe(true);
     expect(caps.supportsModel).toBe(true);
     expect(caps.supportsAutonomy).toBe(true);
-    expect(caps.autonomyLevels).toEqual(["read-only", "medium", "high"]);
+    expect(caps.autonomyLevels).toEqual(["read-only", "low", "medium", "high"]);
     expect(caps.supportsEffort).toBe(true);
     expect(caps.effortLevels).toEqual(["low", "medium", "high"]);
   });
@@ -259,6 +285,22 @@ describe("CodexAdapter", () => {
       .toEqual(["codex", "exec", "--skip-git-repo-check", "-c", 'model_reasoning_effort="high"', "-"]);
   });
 
+  test("buildRunCommand with external sandbox bypasses codex sandbox flags", () => {
+    const cmd = adapter.buildRunCommand({
+      agent: "codex",
+      prompt: "t",
+      autonomy: "high",
+      sandboxed: true,
+    });
+    expect(cmd).toEqual([
+      "codex",
+      "exec",
+      "--skip-git-repo-check",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "-",
+    ]);
+  });
+
   test("getStdinInput returns prompt", () => {
     const request: RunRequest = { agent: "codex", prompt: "my prompt" };
     expect(adapter.getStdinInput(request)).toBe("my prompt");
@@ -281,8 +323,21 @@ describe("CodexAdapter", () => {
     expect(adapter.buildTuiCommand("gpt-5.1", undefined, "high")).toEqual(["codex", "-m", "gpt-5.1", "-c", 'model_reasoning_effort="high"']);
   });
 
+  test("buildTuiCommand with external sandbox bypasses codex sandbox flags", () => {
+    const cmd = adapter.buildTuiCommand("gpt-5.1", "high", "low", true);
+    expect(cmd).toEqual([
+      "codex",
+      "-m",
+      "gpt-5.1",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "-c",
+      'model_reasoning_effort="low"',
+    ]);
+  });
+
   test("mapAutonomy returns correct flags", () => {
     expect(adapter.mapAutonomy("read-only")).toEqual(["-s", "read-only"]);
+    expect(adapter.mapAutonomy("low")).toEqual(["-s", "read-only"]);
     expect(adapter.mapAutonomy("medium")).toEqual(["-s", "workspace-write"]);
     expect(adapter.mapAutonomy("high")).toEqual(["-s", "danger-full-access"]);
   });
@@ -307,8 +362,8 @@ describe("GooseAdapter", () => {
     expect(caps.supportsNonInteractive).toBe(true);
     expect(caps.supportsInteractive).toBe(true);
     expect(caps.supportsModel).toBe(false);
-    expect(caps.supportsAutonomy).toBe(false);
-    expect(caps.autonomyLevels).toEqual([]);
+    expect(caps.supportsAutonomy).toBe(true);
+    expect(caps.autonomyLevels).toEqual(["read-only", "low", "medium", "high"]);
     expect(caps.supportsEffort).toBe(false);
     expect(caps.effortLevels).toEqual([]);
   });
@@ -316,11 +371,30 @@ describe("GooseAdapter", () => {
   test("buildRunCommand", () => {
     const request: RunRequest = { agent: "goose", prompt: "test prompt" };
     const cmd = adapter.buildRunCommand(request);
-    expect(cmd).toEqual(["goose", "run", "-t", "test prompt"]);
+    expect(cmd).toEqual(["env", "GOOSE_MODE=smart_approve", "goose", "run", "-t", "test prompt"]);
+  });
+
+  test("buildRunCommand with autonomy", () => {
+    expect(adapter.buildRunCommand({ agent: "goose", prompt: "t", autonomy: "read-only" }))
+      .toEqual(["env", "GOOSE_MODE=chat", "goose", "run", "-t", "t"]);
+    expect(adapter.buildRunCommand({ agent: "goose", prompt: "t", autonomy: "low" }))
+      .toEqual(["env", "GOOSE_MODE=approve", "goose", "run", "-t", "t"]);
+    expect(adapter.buildRunCommand({ agent: "goose", prompt: "t", autonomy: "medium" }))
+      .toEqual(["env", "GOOSE_MODE=smart_approve", "goose", "run", "-t", "t"]);
+    expect(adapter.buildRunCommand({ agent: "goose", prompt: "t", autonomy: "high" }))
+      .toEqual(["env", "GOOSE_MODE=auto", "goose", "run", "-t", "t"]);
   });
 
   test("buildTuiCommand", () => {
-    expect(adapter.buildTuiCommand()).toEqual(["goose"]);
+    expect(adapter.buildTuiCommand()).toEqual(["env", "GOOSE_MODE=smart_approve", "goose"]);
+    expect(adapter.buildTuiCommand(undefined, "high")).toEqual(["env", "GOOSE_MODE=auto", "goose"]);
+  });
+
+  test("mapAutonomy returns goose mode env", () => {
+    expect(adapter.mapAutonomy("read-only")).toEqual(["GOOSE_MODE=chat"]);
+    expect(adapter.mapAutonomy("low")).toEqual(["GOOSE_MODE=approve"]);
+    expect(adapter.mapAutonomy("medium")).toEqual(["GOOSE_MODE=smart_approve"]);
+    expect(adapter.mapAutonomy("high")).toEqual(["GOOSE_MODE=auto"]);
   });
 });
 
@@ -337,8 +411,8 @@ describe("GeminiAdapter", () => {
     expect(caps.supportsNonInteractive).toBe(true);
     expect(caps.supportsInteractive).toBe(true);
     expect(caps.supportsModel).toBe(true);
-    expect(caps.supportsAutonomy).toBe(false);
-    expect(caps.autonomyLevels).toEqual([]);
+    expect(caps.supportsAutonomy).toBe(true);
+    expect(caps.autonomyLevels).toEqual(["read-only", "low", "medium", "high"]);
     expect(caps.supportsEffort).toBe(false);
     expect(caps.effortLevels).toEqual([]);
   });
@@ -349,8 +423,30 @@ describe("GeminiAdapter", () => {
     expect(cmd).toEqual(["gemini", "-p", "-m", "gemini-pro", "test"]);
   });
 
+  test("buildRunCommand with autonomy levels", () => {
+    expect(adapter.buildRunCommand({ agent: "gemini", prompt: "t", autonomy: "read-only" }))
+      .toEqual(["gemini", "-p", "--approval-mode", "plan", "t"]);
+    expect(adapter.buildRunCommand({ agent: "gemini", prompt: "t", autonomy: "low" }))
+      .toEqual(["gemini", "-p", "--approval-mode", "default", "t"]);
+    expect(adapter.buildRunCommand({ agent: "gemini", prompt: "t", autonomy: "medium" }))
+      .toEqual(["gemini", "-p", "--approval-mode", "auto_edit", "t"]);
+    expect(adapter.buildRunCommand({ agent: "gemini", prompt: "t", autonomy: "high" }))
+      .toEqual(["gemini", "-p", "--approval-mode", "yolo", "t"]);
+  });
+
   test("buildTuiCommand with model", () => {
     expect(adapter.buildTuiCommand("gemini-pro")).toEqual(["gemini", "-m", "gemini-pro"]);
+  });
+
+  test("buildTuiCommand with autonomy", () => {
+    expect(adapter.buildTuiCommand(undefined, "medium")).toEqual(["gemini", "--approval-mode", "auto_edit"]);
+  });
+
+  test("mapAutonomy returns approval mode flags", () => {
+    expect(adapter.mapAutonomy("read-only")).toEqual(["--approval-mode", "plan"]);
+    expect(adapter.mapAutonomy("low")).toEqual(["--approval-mode", "default"]);
+    expect(adapter.mapAutonomy("medium")).toEqual(["--approval-mode", "auto_edit"]);
+    expect(adapter.mapAutonomy("high")).toEqual(["--approval-mode", "yolo"]);
   });
 });
 
@@ -368,7 +464,7 @@ describe("OpencodeAdapter", () => {
     expect(caps.supportsInteractive).toBe(true);
     expect(caps.supportsModel).toBe(true);
     expect(caps.supportsAutonomy).toBe(true);
-    expect(caps.autonomyLevels).toEqual(["read-only", "high"]);
+    expect(caps.autonomyLevels).toEqual(["read-only", "low", "medium", "high"]);
     expect(caps.supportsEffort).toBe(false);
     expect(caps.effortLevels).toEqual([]);
   });
@@ -388,6 +484,10 @@ describe("OpencodeAdapter", () => {
   test("buildRunCommand with autonomy", () => {
     expect(adapter.buildRunCommand({ agent: "opencode", prompt: "t", autonomy: "read-only" }))
       .toEqual(["opencode", "run", "--agent", "explore", "-"]);
+    expect(adapter.buildRunCommand({ agent: "opencode", prompt: "t", autonomy: "low" }))
+      .toEqual(["opencode", "run", "--agent", "explore", "-"]);
+    expect(adapter.buildRunCommand({ agent: "opencode", prompt: "t", autonomy: "medium" }))
+      .toEqual(["opencode", "run", "--agent", "build", "-"]);
     expect(adapter.buildRunCommand({ agent: "opencode", prompt: "t", autonomy: "high" }))
       .toEqual(["opencode", "run", "--agent", "build", "-"]);
   });
@@ -399,8 +499,9 @@ describe("OpencodeAdapter", () => {
 
   test("mapAutonomy returns correct flags", () => {
     expect(adapter.mapAutonomy("read-only")).toEqual(["--agent", "explore"]);
+    expect(adapter.mapAutonomy("low")).toEqual(["--agent", "explore"]);
+    expect(adapter.mapAutonomy("medium")).toEqual(["--agent", "build"]);
     expect(adapter.mapAutonomy("high")).toEqual(["--agent", "build"]);
-    expect(adapter.mapAutonomy("medium")).toEqual([]);
   });
 
   test("buildTuiCommand with model", () => {
@@ -412,33 +513,132 @@ describe("OpencodeAdapter", () => {
   });
 });
 
-describe("QwenAdapter", () => {
-  const adapter = new QwenAdapter();
+describe("PiAdapter", () => {
+  const adapter = new PiAdapter();
 
   test("has correct id and binary name", () => {
-    expect(adapter.id).toBe("qwen");
-    expect(adapter.binaryName).toBe("qwen-coder");
+    expect(adapter.id).toBe("pi");
+    expect(adapter.binaryName).toBe("pi");
   });
 
   test("capabilities are correct", () => {
     const caps = adapter.capabilities();
     expect(caps.supportsNonInteractive).toBe(true);
     expect(caps.supportsInteractive).toBe(true);
-    expect(caps.supportsModel).toBe(false);
-    expect(caps.supportsAutonomy).toBe(false);
-    expect(caps.autonomyLevels).toEqual([]);
+    expect(caps.supportsModel).toBe(true);
+    expect(caps.supportsAutonomy).toBe(true);
+    expect(caps.autonomyLevels).toEqual(["read-only", "low", "medium", "high"]);
     expect(caps.supportsEffort).toBe(false);
     expect(caps.effortLevels).toEqual([]);
   });
 
-  test("buildRunCommand", () => {
-    const request: RunRequest = { agent: "qwen", prompt: "test prompt" };
+  test("buildRunCommand with prompt only", () => {
+    const request: RunRequest = { agent: "pi", prompt: "test prompt" };
     const cmd = adapter.buildRunCommand(request);
-    expect(cmd).toEqual(["qwen-coder", "test prompt"]);
+    expect(cmd).toEqual(["pi", "--print"]);
+  });
+
+  test("buildRunCommand with model", () => {
+    const request: RunRequest = { agent: "pi", prompt: "test", model: "pi-pro" };
+    const cmd = adapter.buildRunCommand(request);
+    expect(cmd).toEqual(["pi", "--print", "--model", "pi-pro"]);
+  });
+
+  test("buildRunCommand with autonomy levels", () => {
+    expect(adapter.buildRunCommand({ agent: "pi", prompt: "t", autonomy: "read-only" }))
+      .toEqual(["pi", "--print", "--tools", "read,grep,find,ls"]);
+    expect(adapter.buildRunCommand({ agent: "pi", prompt: "t", autonomy: "low" }))
+      .toEqual(["pi", "--print"]);
+    expect(adapter.buildRunCommand({ agent: "pi", prompt: "t", autonomy: "medium" }))
+      .toEqual(["pi", "--print"]);
+    expect(adapter.buildRunCommand({ agent: "pi", prompt: "t", autonomy: "high" }))
+      .toEqual(["pi", "--print"]);
+  });
+
+  test("getStdinInput returns prompt", () => {
+    const request: RunRequest = { agent: "pi", prompt: "my prompt" };
+    expect(adapter.getStdinInput(request)).toBe("my prompt");
+  });
+
+  test("buildTuiCommand basic", () => {
+    expect(adapter.buildTuiCommand()).toEqual(["pi"]);
+  });
+
+  test("buildTuiCommand with model", () => {
+    expect(adapter.buildTuiCommand("pi-pro")).toEqual(["pi", "--model", "pi-pro"]);
+  });
+
+  test("buildTuiCommand with autonomy", () => {
+    expect(adapter.buildTuiCommand(undefined, "read-only")).toEqual(["pi", "--tools", "read,grep,find,ls"]);
+    expect(adapter.buildTuiCommand("pi-pro", "high")).toEqual(["pi", "--model", "pi-pro"]);
+  });
+
+  test("mapAutonomy returns correct flags", () => {
+    expect(adapter.mapAutonomy("read-only")).toEqual(["--tools", "read,grep,find,ls"]);
+    expect(adapter.mapAutonomy("low")).toEqual([]);
+    expect(adapter.mapAutonomy("medium")).toEqual([]);
+    expect(adapter.mapAutonomy("high")).toEqual([]);
+  });
+});
+
+describe("QwenAdapter", () => {
+  const adapter = new QwenAdapter();
+
+  test("has correct id and binary name", () => {
+    expect(adapter.id).toBe("qwen");
+    expect(adapter.binaryName).toBe("qwen");
+  });
+
+  test("capabilities are correct", () => {
+    const caps = adapter.capabilities();
+    expect(caps.supportsNonInteractive).toBe(true);
+    expect(caps.supportsInteractive).toBe(true);
+    expect(caps.supportsModel).toBe(true);
+    expect(caps.supportsAutonomy).toBe(true);
+    expect(caps.autonomyLevels).toEqual(["read-only", "low", "medium", "high"]);
+    expect(caps.supportsEffort).toBe(false);
+    expect(caps.effortLevels).toEqual([]);
+  });
+
+  test("buildRunCommand with prompt", () => {
+    const cmd = adapter.buildRunCommand({ agent: "qwen", prompt: "test prompt" });
+    expect(cmd).toEqual(["qwen", "--prompt", "test prompt"]);
+  });
+
+  test("buildRunCommand with model and autonomy", () => {
+    const cmd = adapter.buildRunCommand({
+      agent: "qwen",
+      prompt: "test prompt",
+      model: "qwen3-coder-plus",
+      autonomy: "medium",
+    });
+    expect(cmd).toEqual([
+      "qwen",
+      "--model",
+      "qwen3-coder-plus",
+      "--approval-mode",
+      "auto-edit",
+      "--prompt",
+      "test prompt",
+    ]);
   });
 
   test("buildTuiCommand", () => {
-    expect(adapter.buildTuiCommand()).toEqual(["qwen-coder"]);
+    expect(adapter.buildTuiCommand()).toEqual(["qwen"]);
+    expect(adapter.buildTuiCommand("qwen3-coder-plus", "high")).toEqual([
+      "qwen",
+      "--model",
+      "qwen3-coder-plus",
+      "--approval-mode",
+      "yolo",
+    ]);
+  });
+
+  test("mapAutonomy returns approval mode flags", () => {
+    expect(adapter.mapAutonomy("read-only")).toEqual(["--approval-mode", "plan"]);
+    expect(adapter.mapAutonomy("low")).toEqual(["--approval-mode", "default"]);
+    expect(adapter.mapAutonomy("medium")).toEqual(["--approval-mode", "auto-edit"]);
+    expect(adapter.mapAutonomy("high")).toEqual(["--approval-mode", "yolo"]);
   });
 });
 
@@ -484,6 +684,18 @@ describe("ZaiAdapter", () => {
       .toEqual(["claude", "-p", "--model", "opus", "--dangerously-skip-permissions"]);
   });
 
+  test("buildRunCommand adds playwright no-sandbox mcp config when sandboxed", () => {
+    const cmd = adapter.buildRunCommand({ agent: "zai", prompt: "t", sandboxed: true });
+    expect(cmd).toEqual([
+      "claude",
+      "-p",
+      "--mcp-config",
+      PLAYWRIGHT_NO_SANDBOX_MCP_CONFIG,
+      "--model",
+      "opus",
+    ]);
+  });
+
   test("getStdinInput returns prompt", () => {
     const request: RunRequest = { agent: "zai", prompt: "my prompt" };
     expect(adapter.getStdinInput(request)).toBe("my prompt");
@@ -495,6 +707,18 @@ describe("ZaiAdapter", () => {
 
   test("buildTuiCommand with model and autonomy", () => {
     expect(adapter.buildTuiCommand("sonnet", "high")).toEqual(["claude", "--model", "sonnet", "--dangerously-skip-permissions"]);
+  });
+
+  test("buildTuiCommand adds playwright no-sandbox mcp config when sandboxed", () => {
+    const cmd = adapter.buildTuiCommand("sonnet", "high", undefined, true);
+    expect(cmd).toEqual([
+      "claude",
+      "--mcp-config",
+      PLAYWRIGHT_NO_SANDBOX_MCP_CONFIG,
+      "--model",
+      "sonnet",
+      "--dangerously-skip-permissions",
+    ]);
   });
 
   test("mapAutonomy matches claude adapter", () => {

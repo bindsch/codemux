@@ -54,7 +54,12 @@ export abstract class BaseAdapter {
 
   abstract buildRunCommand(request: RunRequest): string[];
 
-  abstract buildTuiCommand(model?: string, autonomy?: AutonomyLevel, effort?: ReasoningEffort): string[];
+  abstract buildTuiCommand(
+    model?: string,
+    autonomy?: AutonomyLevel,
+    effort?: ReasoningEffort,
+    sandboxed?: boolean
+  ): string[];
 
   isAvailable(): boolean {
     const result = Bun.spawnSync(["which", this.binaryName]);
@@ -130,8 +135,14 @@ export abstract class BaseAdapter {
     };
   }
 
-  async runInteractive(model?: string, cwd?: string, autonomy?: AutonomyLevel, effort?: ReasoningEffort): Promise<number> {
-    const command = this.buildTuiCommand(model, autonomy, effort);
+  async runInteractive(
+    model?: string,
+    cwd?: string,
+    autonomy?: AutonomyLevel,
+    effort?: ReasoningEffort,
+    sandboxed = false
+  ): Promise<number> {
+    const command = this.buildTuiCommand(model, autonomy, effort, sandboxed);
     const workdir = cwd || process.cwd();
 
     const proc = Bun.spawn(command, {

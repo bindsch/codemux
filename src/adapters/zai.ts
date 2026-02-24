@@ -1,5 +1,6 @@
 import { readFileSync, existsSync } from "node:fs";
 import { BaseAdapter } from "./base.js";
+import { getPlaywrightSandboxMcpArgs } from "../mcp.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -88,6 +89,7 @@ export class ZaiAdapter extends BaseAdapter {
 
   buildRunCommand(request: RunRequest): string[] {
     const cmd = ["claude", "-p"];
+    cmd.push(...getPlaywrightSandboxMcpArgs(request.sandboxed));
     cmd.push("--model", request.model || "opus");
 
     if (request.autonomy) {
@@ -101,8 +103,14 @@ export class ZaiAdapter extends BaseAdapter {
     return request.prompt;
   }
 
-  buildTuiCommand(model?: string, autonomy?: AutonomyLevel, _effort?: ReasoningEffort): string[] {
+  buildTuiCommand(
+    model?: string,
+    autonomy?: AutonomyLevel,
+    _effort?: ReasoningEffort,
+    sandboxed?: boolean
+  ): string[] {
     const cmd = ["claude"];
+    cmd.push(...getPlaywrightSandboxMcpArgs(sandboxed));
     cmd.push("--model", model || "opus");
     if (autonomy) {
       cmd.push(...this.mapAutonomy(autonomy));
@@ -136,8 +144,14 @@ export class ZaiAdapter extends BaseAdapter {
     };
   }
 
-  override async runInteractive(model?: string, cwd?: string, autonomy?: AutonomyLevel, effort?: ReasoningEffort): Promise<number> {
-    const command = this.buildTuiCommand(model, autonomy, effort);
+  override async runInteractive(
+    model?: string,
+    cwd?: string,
+    autonomy?: AutonomyLevel,
+    effort?: ReasoningEffort,
+    sandboxed = false
+  ): Promise<number> {
+    const command = this.buildTuiCommand(model, autonomy, effort, sandboxed);
     const workdir = cwd || process.cwd();
     const env = { ...process.env, ...this.getEnv() } as Record<string, string>;
 

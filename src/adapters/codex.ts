@@ -17,7 +17,7 @@ export class CodexAdapter extends BaseAdapter {
       supportsInteractive: true,
       supportsModel: true,
       supportsAutonomy: true,
-      autonomyLevels: ["read-only", "medium", "high"],
+      autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["low", "medium", "high"],
     };
@@ -58,7 +58,10 @@ export class CodexAdapter extends BaseAdapter {
       cmd.push("-m", request.model);
     }
 
-    if (request.autonomy) {
+    if (request.sandboxed) {
+      // codemux is already enforcing scode sandbox boundaries.
+      cmd.push("--dangerously-bypass-approvals-and-sandbox");
+    } else if (request.autonomy) {
       cmd.push(...this.mapAutonomy(request.autonomy));
     }
 
@@ -75,12 +78,20 @@ export class CodexAdapter extends BaseAdapter {
     return request.prompt;
   }
 
-  buildTuiCommand(model?: string, autonomy?: AutonomyLevel, effort?: ReasoningEffort): string[] {
+  buildTuiCommand(
+    model?: string,
+    autonomy?: AutonomyLevel,
+    effort?: ReasoningEffort,
+    sandboxed = false
+  ): string[] {
     const cmd = ["codex"];
     if (model) {
       cmd.push("-m", model);
     }
-    if (autonomy) {
+    if (sandboxed) {
+      // codemux is already enforcing scode sandbox boundaries.
+      cmd.push("--dangerously-bypass-approvals-and-sandbox");
+    } else if (autonomy) {
       cmd.push(...this.mapAutonomy(autonomy));
     }
     if (effort) {

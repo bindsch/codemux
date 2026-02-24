@@ -5,12 +5,23 @@ export type AgentId =
   | "goose"
   | "gemini"
   | "opencode"
+  | "pi"
   | "qwen"
   | "zai";
 
-export type AutonomyLevel = "read-only" | "low" | "medium" | "high";
+export const AUTONOMY_LEVELS = ["read-only", "low", "medium", "high"] as const;
+export type AutonomyLevel = (typeof AUTONOMY_LEVELS)[number];
 
-export type ReasoningEffort = "none" | "low" | "medium" | "high";
+export const REASONING_EFFORT_LEVELS = ["none", "low", "medium", "high"] as const;
+export type ReasoningEffort = (typeof REASONING_EFFORT_LEVELS)[number];
+
+export function isAutonomyLevel(value: string): value is AutonomyLevel {
+  return (AUTONOMY_LEVELS as readonly string[]).includes(value);
+}
+
+export function isReasoningEffort(value: string): value is ReasoningEffort {
+  return (REASONING_EFFORT_LEVELS as readonly string[]).includes(value);
+}
 
 export interface RunRequest {
   agent: AgentId;
@@ -19,6 +30,8 @@ export interface RunRequest {
   autonomy?: AutonomyLevel;
   effort?: ReasoningEffort;
   cwd?: string;
+  // True when codemux wraps execution in scode.
+  sandboxed?: boolean;
 }
 
 export interface RunResult {

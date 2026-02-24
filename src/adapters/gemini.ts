@@ -16,11 +16,24 @@ export class GeminiAdapter extends BaseAdapter {
       supportsNonInteractive: true,
       supportsInteractive: true,
       supportsModel: true,
-      supportsAutonomy: false,
-      autonomyLevels: [],
+      supportsAutonomy: true,
+      autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: false,
       effortLevels: [],
     };
+  }
+
+  override mapAutonomy(level: AutonomyLevel): string[] {
+    switch (level) {
+      case "read-only":
+        return ["--approval-mode", "plan"];
+      case "low":
+        return ["--approval-mode", "default"];
+      case "medium":
+        return ["--approval-mode", "auto_edit"];
+      case "high":
+        return ["--approval-mode", "yolo"];
+    }
   }
 
   buildRunCommand(request: RunRequest): string[] {
@@ -30,15 +43,27 @@ export class GeminiAdapter extends BaseAdapter {
       cmd.push("-m", request.model);
     }
 
+    if (request.autonomy) {
+      cmd.push(...this.mapAutonomy(request.autonomy));
+    }
+
     cmd.push(request.prompt);
 
     return cmd;
   }
 
-  buildTuiCommand(model?: string, _autonomy?: AutonomyLevel, _effort?: ReasoningEffort): string[] {
+  buildTuiCommand(
+    model?: string,
+    autonomy?: AutonomyLevel,
+    _effort?: ReasoningEffort,
+    _sandboxed?: boolean
+  ): string[] {
     const cmd = ["gemini"];
     if (model) {
       cmd.push("-m", model);
+    }
+    if (autonomy) {
+      cmd.push(...this.mapAutonomy(autonomy));
     }
     return cmd;
   }

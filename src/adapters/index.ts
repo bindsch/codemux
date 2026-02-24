@@ -6,6 +6,7 @@ import { DroidAdapter } from "./droid.js";
 import { GooseAdapter } from "./goose.js";
 import { GeminiAdapter } from "./gemini.js";
 import { OpencodeAdapter } from "./opencode.js";
+import { PiAdapter } from "./pi.js";
 import { QwenAdapter } from "./qwen.js";
 import { ZaiAdapter } from "./zai.js";
 
@@ -16,6 +17,7 @@ const adapters: Record<AgentId, BaseAdapter> = {
   goose: new GooseAdapter(),
   gemini: new GeminiAdapter(),
   opencode: new OpencodeAdapter(),
+  pi: new PiAdapter(),
   qwen: new QwenAdapter(),
   zai: new ZaiAdapter(),
 };
@@ -43,6 +45,7 @@ export const AGENT_IDS: AgentId[] = [
   "goose",
   "gemini",
   "opencode",
+  "pi",
   "qwen",
   "zai",
 ];

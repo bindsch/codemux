@@ -19,6 +19,8 @@ describe("CLI - Help", () => {
     expect(stdout).toContain("Unified CLI for AI coding agents");
     expect(stdout).toContain("run");
     expect(stdout).toContain("tui");
+    expect(stdout).toContain("autonomy");
+    expect(stdout).toContain("verify");
     expect(stdout).toContain("list");
     expect(stdout).toContain("doctor");
   });
@@ -34,6 +36,12 @@ describe("CLI - Help", () => {
     expect(stdout).toContain("-m, --model");
     expect(stdout).toContain("-p, --prompt");
     expect(stdout).toContain("-f, --file");
+    expect(stdout).toContain("--sandbox-trust");
+    expect(stdout).toContain("--sandbox-no-net");
+    expect(stdout).toContain("--sandbox-scrub-env");
+    expect(stdout).toContain("--sandbox-allow-net");
+    expect(stdout).toContain("--sandbox-keep-env");
+    expect(stdout).toContain("--sandbox-no-defaults");
     expect(stdout).toContain("--auto");
     expect(stdout).toContain("--effort");
     expect(stdout).toContain("--cwd");
@@ -43,9 +51,27 @@ describe("CLI - Help", () => {
     const { stdout } = await runCli(["tui", "--help"]);
     expect(stdout).toContain("-a, --agent");
     expect(stdout).toContain("-m, --model");
+    expect(stdout).toContain("--sandbox-trust");
+    expect(stdout).toContain("--sandbox-no-net");
+    expect(stdout).toContain("--sandbox-scrub-env");
+    expect(stdout).toContain("--sandbox-allow-net");
+    expect(stdout).toContain("--sandbox-keep-env");
+    expect(stdout).toContain("--sandbox-no-defaults");
     expect(stdout).toContain("--auto");
     expect(stdout).toContain("--effort");
     expect(stdout).toContain("--cwd");
+  });
+
+  test("verify --help shows preview options", async () => {
+    const { stdout } = await runCli(["verify", "--help"]);
+    expect(stdout).toContain("-a, --agent");
+    expect(stdout).toContain("--show-scode");
+    expect(stdout).toContain("--sandbox-trust");
+    expect(stdout).toContain("--sandbox-no-net");
+    expect(stdout).toContain("--sandbox-scrub-env");
+    expect(stdout).toContain("--sandbox-allow-net");
+    expect(stdout).toContain("--sandbox-keep-env");
+    expect(stdout).toContain("--sandbox-no-defaults");
   });
 });
 
@@ -59,6 +85,7 @@ describe("CLI - List", () => {
     expect(stdout).toContain("goose");
     expect(stdout).toContain("gemini");
     expect(stdout).toContain("opencode");
+    expect(stdout).toContain("pi");
     expect(stdout).toContain("qwen");
     expect(stdout).toContain("zai");
   });
@@ -67,6 +94,111 @@ describe("CLI - List", () => {
     const { stdout } = await runCli(["list"]);
     expect(stdout).toContain("[model, autonomy]");
     expect(stdout).toContain("[model, autonomy, effort]");
+  });
+});
+
+describe("CLI - Autonomy", () => {
+  test("autonomy shows equivalence matrix", async () => {
+    const { stdout } = await runCli(["autonomy"]);
+    expect(stdout).toContain("Autonomy equivalence matrix");
+    expect(stdout).toContain("| Agent | read-only | low | medium | high | Notes |");
+    expect(stdout).toContain("| codex |");
+    expect(stdout).toContain("| goose |");
+    expect(stdout).toContain("| gemini |");
+    expect(stdout).toContain("| qwen |");
+    expect(stdout).toContain("| pi |");
+  });
+});
+
+describe("CLI - Verify", () => {
+  test("verify shows wiring report table", async () => {
+    const { stdout, exitCode } = await runCli(["verify"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Verification checks: static wiring only");
+    expect(stdout).toContain("| Agent | Installed | Mapping | Build Run | Build TUI | Warnings | Status |");
+    expect(stdout).toContain("| claude |");
+    expect(stdout).toContain("| codex |");
+    expect(stdout).toContain("| droid |");
+    expect(stdout).toContain("| goose |");
+    expect(stdout).toContain("| gemini |");
+    expect(stdout).toContain("| opencode |");
+    expect(stdout).toContain("| pi |");
+    expect(stdout).toContain("| qwen |");
+    expect(stdout).toContain("| zai |");
+    expect(stdout).toContain("Summary: PASS");
+  });
+
+  test("verify can target one agent", async () => {
+    const { stdout, exitCode } = await runCli(["verify", "-a", "codex"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("| codex |");
+    expect(stdout).not.toContain("| claude |");
+  });
+
+  test("verify with unknown agent shows error", async () => {
+    const { stderr, exitCode } = await runCli(["verify", "-a", "unknown"]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Unknown agent");
+  });
+
+  test("verify --show-scode prints effective command matrix", async () => {
+    const { stdout, exitCode } = await runCli(["verify", "-a", "codex", "--show-scode"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Effective scode command preview");
+    expect(stdout).toContain("| Agent | Autonomy | Mode | Command |");
+    expect(stdout).toContain("| codex | read-only | run |");
+    expect(stdout).toContain("`scode --trust");
+  });
+
+  test("verify --show-scode applies sandbox policy overrides", async () => {
+    const { stdout, exitCode } = await runCli([
+      "verify",
+      "-a",
+      "codex",
+      "--show-scode",
+      "--sandbox-trust",
+      "trusted",
+      "--sandbox-no-net",
+      "--sandbox-scrub-env",
+    ]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("scode --trust trusted --ro --no-net --scrub-env --");
+  });
+
+  test("verify --show-scode uses stricter default trust for low autonomy", async () => {
+    const { stdout, exitCode } = await runCli(["verify", "-a", "codex", "--show-scode"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("| codex | low | run | `scode --trust untrusted --rw --");
+  });
+
+  test("verify --show-scode uses stricter medium trust for coarse harnesses", async () => {
+    const { stdout, exitCode } = await runCli(["verify", "-a", "opencode", "--show-scode"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("| opencode | medium | run | `scode --trust untrusted --rw --");
+  });
+
+  test("verify sandbox preview flags without --show-scode warns", async () => {
+    const { stderr, exitCode } = await runCli(["verify", "--sandbox-no-net"]);
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain("sandbox policy flags require --show-scode");
+  });
+
+  test("verify with conflicting sandbox policy flags fails", async () => {
+    const { stderr, exitCode } = await runCli([
+      "verify",
+      "--show-scode",
+      "--sandbox-no-net",
+      "--sandbox-allow-net",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("--sandbox-no-net cannot be combined with --sandbox-allow-net");
+  });
+
+  test("verify with invalid sandbox trust level shows error", async () => {
+    const { stderr, exitCode } = await runCli(["verify", "--show-scode", "--sandbox-trust", "danger"]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Invalid value 'danger' for --sandbox-trust");
+    expect(stderr).toContain("trusted, standard, untrusted");
   });
 });
 
@@ -80,7 +212,8 @@ describe("CLI - Doctor", () => {
     expect(stdout).toContain("goose (goose):");
     expect(stdout).toContain("gemini (gemini):");
     expect(stdout).toContain("opencode (opencode):");
-    expect(stdout).toContain("qwen (qwen-coder):");
+    expect(stdout).toContain("pi (pi):");
+    expect(stdout).toContain("qwen (qwen):");
     expect(stdout).toContain("zai (claude):");
   });
 
@@ -139,6 +272,27 @@ describe("CLI - Run validation", () => {
     expect(stderr).toContain("droid");
     expect(stderr).toContain("codex");
   });
+
+  test("run with invalid autonomy level shows error", async () => {
+    const { stderr, exitCode } = await runCli(["run", "--auto", "banana", "-p", "test"]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Invalid value 'banana' for --auto");
+    expect(stderr).toContain("read-only");
+  });
+
+  test("run with invalid effort level shows error", async () => {
+    const { stderr, exitCode } = await runCli(["run", "--effort", "ultra", "-p", "test"]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Invalid value 'ultra' for --effort");
+    expect(stderr).toContain("none, low, medium, high");
+  });
+
+  test("run with invalid sandbox trust level shows error", async () => {
+    const { stderr, exitCode } = await runCli(["run", "--sandbox-trust", "danger", "-p", "test"]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Invalid value 'danger' for --sandbox-trust");
+    expect(stderr).toContain("trusted, standard, untrusted");
+  });
 });
 
 describe("CLI - Run warnings (no actual execution)", () => {
@@ -167,6 +321,27 @@ describe("CLI - Unknown options", () => {
     const { stderr, exitCode } = await runCli(["tui", "--unknown"]);
     expect(exitCode).not.toBe(0);
     expect(stderr).toContain("unknown option");
+  });
+});
+
+describe("CLI - Option validation", () => {
+  test("check with invalid autonomy level shows error", async () => {
+    const { stderr, exitCode } = await runCli(["check", "--auto", "invalid-level"]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Invalid value 'invalid-level' for --auto");
+  });
+
+  test("tui with invalid effort level shows error", async () => {
+    const { stderr, exitCode } = await runCli(["tui", "--effort", "impossible"]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Invalid value 'impossible' for --effort");
+  });
+
+  test("tui with invalid sandbox trust level shows error", async () => {
+    const { stderr, exitCode } = await runCli(["tui", "--sandbox-trust", "danger"]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Invalid value 'danger' for --sandbox-trust");
+    expect(stderr).toContain("trusted, standard, untrusted");
   });
 });
 

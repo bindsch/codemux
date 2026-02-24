@@ -1,5 +1,4 @@
 import { BaseAdapter } from "./base.js";
-import { getPlaywrightSandboxMcpArgs } from "../mcp.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -8,9 +7,9 @@ import type {
   AdapterCapabilities,
 } from "../types.js";
 
-export class ClaudeAdapter extends BaseAdapter {
-  readonly id: AgentId = "claude";
-  readonly binaryName = "claude";
+export class PiAdapter extends BaseAdapter {
+  readonly id: AgentId = "pi";
+  readonly binaryName = "pi";
 
   capabilities(): AdapterCapabilities {
     return {
@@ -27,20 +26,20 @@ export class ClaudeAdapter extends BaseAdapter {
   override mapAutonomy(level: AutonomyLevel): string[] {
     switch (level) {
       case "read-only":
-        return [];
+        return ["--tools", "read,grep,find,ls"];
       case "low":
-        return ["--permission-mode", "acceptEdits"];
+        return [];
       case "medium":
-        return ["--permission-mode", "dontAsk"];
+        console.warn("Warning: pi has no dedicated 'medium' approval mode, using default tool-enabled mode");
+        return [];
       case "high":
-        return ["--dangerously-skip-permissions"];
+        console.warn("Warning: pi has no dedicated 'high' approval mode, using default tool-enabled mode");
+        return [];
     }
   }
 
   buildRunCommand(request: RunRequest): string[] {
-    const cmd = ["claude", "-p"];
-
-    cmd.push(...getPlaywrightSandboxMcpArgs(request.sandboxed));
+    const cmd = ["pi", "--print"];
 
     if (request.model) {
       cmd.push("--model", request.model);
@@ -61,10 +60,9 @@ export class ClaudeAdapter extends BaseAdapter {
     model?: string,
     autonomy?: AutonomyLevel,
     _effort?: ReasoningEffort,
-    sandboxed?: boolean
+    _sandboxed?: boolean
   ): string[] {
-    const cmd = ["claude"];
-    cmd.push(...getPlaywrightSandboxMcpArgs(sandboxed));
+    const cmd = ["pi"];
     if (model) {
       cmd.push("--model", model);
     }
