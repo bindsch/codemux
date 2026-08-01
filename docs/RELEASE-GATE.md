@@ -4,9 +4,8 @@ Use this checklist before tagging a new `codemux` release.
 
 ## 1) Version consistency
 
-- [ ] `package.json` version matches CLI version output target:
-  - `package.json` (`version`)
-  - `src/index.ts` (`program.version(...)`)
+- [ ] `package.json` version matches CLI version output. The CLI reads this value
+  at runtime; there is no duplicated source constant.
 - [ ] README beta/version banner matches release status:
   - `README.md`
 - [ ] Changelog has a new release section and keeps `[Unreleased]` at top:
@@ -17,20 +16,28 @@ Use this checklist before tagging a new `codemux` release.
 - [ ] Install dependencies:
 
   ```bash
-  bun install
+  bun install --frozen-lockfile
   ```
 
 - [ ] Full gate passes:
 
   ```bash
-  make check
+  make release-gate
+  ```
+
+- [ ] Shell launchers and aliases pass POSIX syntax validation:
+
+  ```bash
+  sh -n bin/codemux scripts/aliases.sh
   ```
 
 - [ ] Optional explicit run (same checks via scripts):
 
   ```bash
   bun run typecheck
-  bun test
+  bun run test:coverage
+  bun audit
+  bun install --frozen-lockfile --dry-run
   ```
 
 ## 3) CLI smoke tests
@@ -38,40 +45,34 @@ Use this checklist before tagging a new `codemux` release.
 - [ ] Core help/version:
 
   ```bash
-  bun run src/index.ts --help >/dev/null
-  bun run src/index.ts --version
+  ./bin/codemux --help >/dev/null
+  ./bin/codemux --version
   ```
 
 - [ ] Command help surface still renders:
 
   ```bash
-  bun run src/index.ts run --help >/dev/null
-  bun run src/index.ts tui --help >/dev/null
-  bun run src/index.ts verify --help >/dev/null
+  ./bin/codemux run --help >/dev/null
+  ./bin/codemux tui --help >/dev/null
+  ./bin/codemux verify --help >/dev/null
   ```
 
 - [ ] Static diagnostics and wiring checks:
 
   ```bash
-  bun run src/index.ts list
-  bun run src/index.ts autonomy
-  bun run src/index.ts verify
-  bun run src/index.ts verify --show-scode
-  bun run src/index.ts verify --show-scode --sandbox-trust trusted --sandbox-no-net
+  ./bin/codemux list
+  ./bin/codemux autonomy
+  ./bin/codemux verify
+  ./bin/codemux verify --show-scode
+  ./bin/codemux verify --show-scode --sandbox-trust trusted --sandbox-no-net
   ```
 
 ## 4) Sandbox policy verification
 
-- [ ] Conflicting sandbox policy flags fail fast:
-
-  ```bash
-  bun run src/index.ts verify --show-scode --sandbox-no-net --sandbox-allow-net && exit 1 || true
-  ```
-
 - [ ] Preview-only flags warn without `--show-scode`:
 
   ```bash
-  bun run src/index.ts verify --sandbox-no-net
+  ./bin/codemux verify --sandbox-no-net
   ```
 
 ## 5) Documentation consistency
@@ -80,24 +81,31 @@ Use this checklist before tagging a new `codemux` release.
 - [ ] Sandbox trust defaults and override semantics match implementation in:
   - `src/sandbox-policy.ts`
   - `src/sandbox.ts`
+- [ ] The hostile-working-tree launcher regression passes (`tests/cli.test.ts`).
+- [ ] Installed harness contract checks (also included by `make release-gate`)
+  pass for every target available locally:
+
+  ```bash
+  bun run test:contracts
+  ```
+- [ ] If `scode` is installed, the release gate verifies it is version 0.2.0
+  or newer. `codemux doctor` reports the same compatibility status.
+- [ ] Every row in `docs/HARNESS-COMPATIBILITY.md` has been checked against the
+  current upstream release/changelog; absent local CLIs are not counted as
+  verified merely because the installed-contract suite skips them.
 - [ ] Release/testing docs remain accurate:
   - `docs/TESTING.md`
   - `docs/RELEASING.md`
 
-## 6) Packaging/install sanity
+## 6) Packaging/launcher sanity
 
-- [ ] Link and execute installed binary:
-
-  ```bash
-  bun link
-  codemux --version
-  codemux verify --show-scode -a codex
-  ```
-
-- [ ] Unlink cleanly after verification:
+- [ ] Confirm the source-only package remains private and is not configured for
+  npm publication.
+- [ ] Execute the package launcher directly without mutating global link state:
 
   ```bash
-  bun unlink
+  ./bin/codemux --version
+  ./bin/codemux verify --show-scode -a codex
   ```
 
 ## 7) Release notes
@@ -106,3 +114,5 @@ Use this checklist before tagging a new `codemux` release.
   - `## [X.Y.Z] - YYYY-MM-DD`
 - [ ] Keep concrete, user-facing entries (avoid placeholders).
 - [ ] Ensure any security/sandbox behavior change is explicitly called out.
+- [ ] Tag the exact reviewed `main` commit only after branch CI passes.
+- [ ] Confirm tag-triggered CI and the GitHub release complete successfully.

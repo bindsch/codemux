@@ -18,6 +18,8 @@ report.*.json
 # env files
 .env
 .env.*
+!.env.example
+!.env.template
 
 # caches
 .cache/

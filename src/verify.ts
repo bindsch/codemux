@@ -7,7 +7,6 @@ import {
 import { buildScodeCommand } from "./sandbox.js";
 import {
   AUTONOMY_LEVELS,
-  REASONING_EFFORT_LEVELS,
   type AgentId,
   type RunRequest,
 } from "./types.js";
@@ -21,6 +20,7 @@ export interface VerificationResult {
   runBuildOk: boolean;
   tuiBuildOk: boolean;
   warningCount: number;
+  warnings: string[];
   status: VerificationStatus;
   issues: string[];
 }
@@ -33,7 +33,11 @@ export interface EffectiveScodeCommand {
 }
 
 function commandIsValid(cmd: string[]): boolean {
-  return Array.isArray(cmd) && cmd.length > 0 && typeof cmd[0] === "string" && cmd[0].length > 0;
+  return (
+    Array.isArray(cmd) &&
+    cmd.length > 0 &&
+    cmd.every((part) => typeof part === "string" && part.length > 0)
+  );
 }
 
 function captureWarnings<T>(fn: () => T): { value: T; warnings: string[] } {
@@ -69,52 +73,60 @@ function verifyMapping(agentId: AgentId, issues: string[]): boolean {
   return ok;
 }
 
-function verifyRunBuilds(agentId: AgentId, issues: string[]): { ok: boolean; warningCount: number } {
+function verifyRunBuilds(agentId: AgentId, issues: string[]): { ok: boolean; warnings: string[] } {
   const adapter = getAdapter(agentId);
   const caps = adapter.capabilities();
 
   try {
     const { warnings } = captureWarnings(() => {
       for (const autonomy of AUTONOMY_LEVELS) {
+        const sandboxed = adapter.requiresSandboxForAutonomy(autonomy);
         const req: RunRequest = {
           agent: agentId,
           prompt: "verify",
           autonomy,
-          sandboxed: false,
+          sandboxed,
         };
+        adapter.validateRunRequest(req);
         const normalCmd = adapter.buildRunCommand(req);
         if (!commandIsValid(normalCmd)) {
           throw new Error(`invalid run command for autonomy='${autonomy}'`);
         }
 
-        const sandboxedCmd = adapter.buildRunCommand({ ...req, sandboxed: true });
+        const sandboxedRequest = { ...req, sandboxed: true };
+        adapter.validateRunRequest(sandboxedRequest);
+        const sandboxedCmd = adapter.buildRunCommand(sandboxedRequest);
         if (!commandIsValid(sandboxedCmd)) {
           throw new Error(`invalid sandboxed run command for autonomy='${autonomy}'`);
         }
       }
 
       if (caps.supportsModel) {
-        const modelCmd = adapter.buildRunCommand({
+        const modelRequest: RunRequest = {
           agent: agentId,
           prompt: "verify",
           model: "verify-model",
           autonomy: "low",
-          sandboxed: false,
-        });
+          sandboxed: adapter.requiresSandboxForAutonomy("low"),
+        };
+        adapter.validateRunRequest(modelRequest);
+        const modelCmd = adapter.buildRunCommand(modelRequest);
         if (!commandIsValid(modelCmd)) {
           throw new Error("invalid run command with model");
         }
       }
 
       if (caps.supportsEffort) {
-        for (const effort of REASONING_EFFORT_LEVELS) {
-          const effortCmd = adapter.buildRunCommand({
+        for (const effort of caps.effortLevels) {
+          const effortRequest: RunRequest = {
             agent: agentId,
             prompt: "verify",
             autonomy: "low",
             effort,
-            sandboxed: false,
-          });
+            sandboxed: adapter.requiresSandboxForAutonomy("low"),
+          };
+          adapter.validateRunRequest(effortRequest);
+          const effortCmd = adapter.buildRunCommand(effortRequest);
           if (!commandIsValid(effortCmd)) {
             throw new Error(`invalid run command with effort='${effort}'`);
           }
@@ -122,22 +134,26 @@ function verifyRunBuilds(agentId: AgentId, issues: string[]): { ok: boolean; war
       }
     });
 
-    return { ok: true, warningCount: warnings.length };
+    return { ok: true, warnings };
   } catch (error) {
     issues.push(`run command generation failed: ${error}`);
-    return { ok: false, warningCount: 0 };
+    return { ok: false, warnings: [] };
   }
 }
 
-function verifyTuiBuilds(agentId: AgentId, issues: string[]): { ok: boolean; warningCount: number } {
+function verifyTuiBuilds(agentId: AgentId, issues: string[]): { ok: boolean; warnings: string[] } {
   const adapter = getAdapter(agentId);
   const caps = adapter.capabilities();
 
   try {
     const { warnings } = captureWarnings(() => {
       for (const autonomy of AUTONOMY_LEVELS) {
-        const effort = caps.supportsEffort ? "low" : undefined;
-        const normalCmd = adapter.buildTuiCommand(undefined, autonomy, effort, false);
+        const effort = adapter.supportsTuiEffort() && caps.effortLevels.includes("low")
+          ? "low"
+          : undefined;
+        const sandboxed = adapter.requiresSandboxForTuiAutonomy(autonomy);
+        adapter.validateTuiRequest(undefined, process.cwd(), autonomy, effort);
+        const normalCmd = adapter.buildTuiCommand(undefined, autonomy, effort, sandboxed);
         if (!commandIsValid(normalCmd)) {
           throw new Error(`invalid tui command for autonomy='${autonomy}'`);
         }
@@ -149,17 +165,27 @@ function verifyTuiBuilds(agentId: AgentId, issues: string[]): { ok: boolean; war
       }
 
       if (caps.supportsModel) {
-        const modelCmd = adapter.buildTuiCommand("verify-model", "low", caps.supportsEffort ? "low" : undefined, false);
+        if (!adapter.supportsTuiModel()) return;
+        const effort = adapter.supportsTuiEffort() && caps.effortLevels.includes("low")
+          ? "low"
+          : undefined;
+        adapter.validateTuiRequest("verify-model", process.cwd(), "low", effort);
+        const modelCmd = adapter.buildTuiCommand(
+          "verify-model",
+          "low",
+          effort,
+          adapter.requiresSandboxForTuiAutonomy("low")
+        );
         if (!commandIsValid(modelCmd)) {
           throw new Error("invalid tui command with model");
         }
       }
     });
 
-    return { ok: true, warningCount: warnings.length };
+    return { ok: true, warnings };
   } catch (error) {
     issues.push(`tui command generation failed: ${error}`);
-    return { ok: false, warningCount: 0 };
+    return { ok: false, warnings: [] };
   }
 }
 
@@ -167,12 +193,13 @@ function classifyStatus(
   installed: boolean,
   mappingOk: boolean,
   runBuildOk: boolean,
-  tuiBuildOk: boolean
+  tuiBuildOk: boolean,
+  warningCount: number
 ): VerificationStatus {
   if (!mappingOk || !runBuildOk || !tuiBuildOk) {
     return "FAIL";
   }
-  return installed ? "PASS" : "WARN";
+  return installed && warningCount === 0 ? "PASS" : "WARN";
 }
 
 export function verifyAgentWiring(agentId: AgentId): VerificationResult {
@@ -183,7 +210,15 @@ export function verifyAgentWiring(agentId: AgentId): VerificationResult {
   const mappingOk = verifyMapping(agentId, issues);
   const runResult = verifyRunBuilds(agentId, issues);
   const tuiResult = verifyTuiBuilds(agentId, issues);
-  const status = classifyStatus(installed, mappingOk, runResult.ok, tuiResult.ok);
+  const warnings = [...new Set([...runResult.warnings, ...tuiResult.warnings])];
+  const warningCount = warnings.length;
+  const status = classifyStatus(
+    installed,
+    mappingOk,
+    runResult.ok,
+    tuiResult.ok,
+    warningCount
+  );
 
   return {
     agentId,
@@ -191,18 +226,19 @@ export function verifyAgentWiring(agentId: AgentId): VerificationResult {
     mappingOk,
     runBuildOk: runResult.ok,
     tuiBuildOk: tuiResult.ok,
-    warningCount: runResult.warningCount + tuiResult.warningCount,
+    warningCount,
+    warnings,
     status,
     issues,
   };
 }
 
-export function verifyAgentsWiring(agentIds: AgentId[]): VerificationResult[] {
+export function verifyAgentsWiring(agentIds: readonly AgentId[]): VerificationResult[] {
   return agentIds.map((agentId) => verifyAgentWiring(agentId));
 }
 
 export function buildEffectiveScodeCommands(
-  agentIds: AgentId[],
+  agentIds: readonly AgentId[],
   overrides: SandboxPolicyOverrides = {}
 ): EffectiveScodeCommand[] {
   const rows: EffectiveScodeCommand[] = [];

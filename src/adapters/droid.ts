@@ -1,4 +1,6 @@
 import { BaseAdapter } from "./base.js";
+import { assertNoDroidProjectExecutionConfig } from "../project-safety.js";
+import { validateWorkingDirectory } from "../validation.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -19,7 +21,7 @@ export class DroidAdapter extends BaseAdapter {
       supportsAutonomy: true,
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
-      effortLevels: ["none", "low", "medium", "high"],
+      effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
     };
   }
 
@@ -37,16 +39,20 @@ export class DroidAdapter extends BaseAdapter {
   }
 
   override mapEffort(level: ReasoningEffort): string[] {
-    switch (level) {
-      case "none":
-        return ["-r", "none"];
-      case "low":
-        return ["-r", "low"];
-      case "medium":
-        return ["-r", "medium"];
-      case "high":
-        return ["-r", "high"];
+    return [
+      "--reasoning-effort",
+      level === "none" ? "off" : level,
+    ];
+  }
+
+  private mapEffortForModel(
+    level: ReasoningEffort,
+    model?: string
+  ): string[] {
+    if (level === "none" && model?.startsWith("gpt-5.6-")) {
+      return ["--reasoning-effort", "none"];
     }
+    return this.mapEffort(level);
   }
 
   buildRunCommand(request: RunRequest): string[] {
@@ -61,7 +67,7 @@ export class DroidAdapter extends BaseAdapter {
     }
 
     if (request.effort) {
-      cmd.push(...this.mapEffort(request.effort));
+      cmd.push(...this.mapEffortForModel(request.effort, request.model));
     }
 
     return cmd;
@@ -71,22 +77,45 @@ export class DroidAdapter extends BaseAdapter {
     return request.prompt;
   }
 
-  buildTuiCommand(
+  override validateRunRequest(request: RunRequest): void {
+    super.validateRunRequest(request);
+    assertNoDroidProjectExecutionConfig(
+      validateWorkingDirectory(request.cwd) ?? process.cwd()
+    );
+  }
+
+  override validateTuiRequest(
     model?: string,
-    autonomy?: AutonomyLevel,
+    cwd?: string,
+    autonomy: AutonomyLevel = "read-only",
     effort?: ReasoningEffort,
+    passthroughEnv: readonly string[] = [],
+    enablePlaywrightMcp = false
+  ): void {
+    super.validateTuiRequest(model, cwd, autonomy, effort, passthroughEnv, enablePlaywrightMcp);
+    assertNoDroidProjectExecutionConfig(
+      validateWorkingDirectory(cwd) ?? process.cwd()
+    );
+  }
+
+  buildTuiCommand(
+    _model?: string,
+    autonomy?: AutonomyLevel,
+    _effort?: ReasoningEffort,
     _sandboxed?: boolean
   ): string[] {
     const cmd = ["droid"];
-    if (model) {
-      cmd.push("-m", model);
-    }
     if (autonomy) {
       cmd.push(...this.mapAutonomy(autonomy));
     }
-    if (effort) {
-      cmd.push(...this.mapEffort(effort));
-    }
     return cmd;
+  }
+
+  override supportsTuiModel(): boolean {
+    return false;
+  }
+
+  override supportsTuiEffort(): boolean {
+    return false;
   }
 }

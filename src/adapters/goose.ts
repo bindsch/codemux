@@ -1,4 +1,6 @@
 import { BaseAdapter } from "./base.js";
+import { assertNoGooseProjectExecutionConfig } from "../project-safety.js";
+import { validateWorkingDirectory } from "../validation.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -15,7 +17,7 @@ export class GooseAdapter extends BaseAdapter {
     return {
       supportsNonInteractive: true,
       supportsInteractive: true,
-      supportsModel: false,
+      supportsModel: true,
       supportsAutonomy: true,
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: false,
@@ -23,8 +25,12 @@ export class GooseAdapter extends BaseAdapter {
     };
   }
 
-  override mapAutonomy(level: AutonomyLevel): string[] {
-    return [`GOOSE_MODE=${this.mapAutonomyToMode(level)}`];
+  override mapAutonomy(_level: AutonomyLevel): string[] {
+    return [];
+  }
+
+  private resolveMode(level?: AutonomyLevel): string {
+    return this.mapAutonomyToMode(level ?? "read-only");
   }
 
   private mapAutonomyToMode(level: AutonomyLevel): string {
@@ -41,17 +47,55 @@ export class GooseAdapter extends BaseAdapter {
   }
 
   buildRunCommand(request: RunRequest): string[] {
-    const mode = `GOOSE_MODE=${request.autonomy ? this.mapAutonomyToMode(request.autonomy) : "smart_approve"}`;
-    return ["env", mode, "goose", "run", "-t", request.prompt];
+    return ["goose", "run", "-t", request.prompt];
+  }
+
+  override validateRunRequest(request: RunRequest): void {
+    super.validateRunRequest(request);
+    assertNoGooseProjectExecutionConfig(
+      validateWorkingDirectory(request.cwd) ?? process.cwd()
+    );
+  }
+
+  override validateTuiRequest(
+    model?: string,
+    cwd?: string,
+    autonomy: AutonomyLevel = "read-only",
+    effort?: ReasoningEffort,
+    passthroughEnv: readonly string[] = [],
+    enablePlaywrightMcp = false
+  ): void {
+    super.validateTuiRequest(model, cwd, autonomy, effort, passthroughEnv, enablePlaywrightMcp);
+    assertNoGooseProjectExecutionConfig(
+      validateWorkingDirectory(cwd) ?? process.cwd()
+    );
+  }
+
+  override getRunEnv(request: RunRequest): Record<string, string> {
+    return {
+      GOOSE_MODE: this.resolveMode(request.autonomy),
+      ...(request.model ? { GOOSE_MODEL: request.model } : {}),
+    };
   }
 
   buildTuiCommand(
     _model?: string,
-    autonomy?: AutonomyLevel,
+    _autonomy?: AutonomyLevel,
     _effort?: ReasoningEffort,
     _sandboxed?: boolean
   ): string[] {
-    const mode = `GOOSE_MODE=${autonomy ? this.mapAutonomyToMode(autonomy) : "smart_approve"}`;
-    return ["env", mode, "goose"];
+    return ["goose"];
+  }
+
+  override getTuiEnv(
+    model?: string,
+    autonomy?: AutonomyLevel,
+    _effort?: ReasoningEffort,
+    _sandboxed?: boolean
+  ): Record<string, string> {
+    return {
+      GOOSE_MODE: this.resolveMode(autonomy),
+      ...(model ? { GOOSE_MODEL: model } : {}),
+    };
   }
 }

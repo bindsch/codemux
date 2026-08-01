@@ -12,7 +12,7 @@ describe("sandbox utilities", () => {
       "scode",
       "--trust",
       "standard",
-      "--rw",
+      "--ro",
       "--",
       "codex",
       "exec",
@@ -26,7 +26,7 @@ describe("sandbox utilities", () => {
       "-C",
       "/tmp/work",
       "--trust",
-      "untrusted",
+      "standard",
       "--ro",
       "--",
       "codex",
@@ -74,6 +74,17 @@ describe("sandbox utilities", () => {
     ]);
   });
 
+  test("untrusted trust cannot be weakened by non-read-only autonomy", () => {
+    const cmd = buildScodeCommand(
+      ["codex", "exec"],
+      "/tmp/work",
+      "high",
+      { trust: "untrusted" }
+    );
+    expect(cmd).toContain("--ro");
+    expect(cmd).not.toContain("--rw");
+  });
+
   test("mapAutonomyToScodeFsMode maps normalized levels", () => {
     expect(mapAutonomyToScodeFsMode("read-only")).toBe("ro");
     expect(mapAutonomyToScodeFsMode("low")).toBe("rw");
@@ -81,49 +92,33 @@ describe("sandbox utilities", () => {
     expect(mapAutonomyToScodeFsMode("high")).toBe("rw");
   });
 
-  test("mapAutonomyToScodeTrust maps read-only to untrusted and others to standard", () => {
-    expect(mapAutonomyToScodeTrust("read-only")).toBe("untrusted");
+  test("mapAutonomyToScodeTrust keeps hosted agents network-capable", () => {
+    expect(mapAutonomyToScodeTrust("read-only")).toBe("standard");
     expect(mapAutonomyToScodeTrust("low")).toBe("standard");
     expect(mapAutonomyToScodeTrust("medium")).toBe("standard");
     expect(mapAutonomyToScodeTrust("high")).toBe("standard");
   });
 
-  test("buildSandboxEnv sets ORACLE_CHROME_NO_SANDBOX=1 when unset", () => {
-    const previous = process.env.ORACLE_CHROME_NO_SANDBOX;
-    const previousPlaywright = process.env.PLAYWRIGHT_MCP_NO_SANDBOX;
-    delete process.env.ORACLE_CHROME_NO_SANDBOX;
-    delete process.env.PLAYWRIGHT_MCP_NO_SANDBOX;
-
-    const env = buildSandboxEnv({ TEST_FLAG: "ok" });
-
-    if (previous === undefined) {
-      delete process.env.ORACLE_CHROME_NO_SANDBOX;
-    } else {
-      process.env.ORACLE_CHROME_NO_SANDBOX = previous;
-    }
-    if (previousPlaywright === undefined) {
-      delete process.env.PLAYWRIGHT_MCP_NO_SANDBOX;
-    } else {
-      process.env.PLAYWRIGHT_MCP_NO_SANDBOX = previousPlaywright;
-    }
-
-    expect(env.TEST_FLAG).toBe("ok");
-    expect(env.ORACLE_CHROME_NO_SANDBOX).toBe("1");
-    expect(env.PLAYWRIGHT_MCP_NO_SANDBOX).toBe("1");
-  });
-
-  test("buildSandboxEnv preserves pre-set ORACLE_CHROME_NO_SANDBOX", () => {
+  test("buildSandboxEnv does not inject browser sandbox overrides", () => {
     const env = buildSandboxEnv({
-      ORACLE_CHROME_NO_SANDBOX: "0",
-      PLAYWRIGHT_MCP_NO_SANDBOX: "0",
+      TEST_FLAG: "ok",
+      SCODE_CONFIG: "/repo/weakened.yaml",
+      scode_trust: "trusted",
     });
-    expect(env.ORACLE_CHROME_NO_SANDBOX).toBe("0");
-    expect(env.PLAYWRIGHT_MCP_NO_SANDBOX).toBe("0");
+    expect(env.TEST_FLAG).toBe("ok");
+    expect(env.SCODE_CONFIG).toBeUndefined();
+    expect(env.scode_trust).toBeUndefined();
+    expect(env.ORACLE_CHROME_NO_SANDBOX).toBeUndefined();
+    expect(env.PLAYWRIGHT_MCP_NO_SANDBOX).toBeUndefined();
   });
 
-  test("buildSandboxEnv keeps existing env while applying oracle default", () => {
-    const env = buildSandboxEnv({ EXISTING: "yes" });
-    expect(env.EXISTING).toBe("yes");
-    expect(env.ORACLE_CHROME_NO_SANDBOX).toBeDefined();
+  test("buildSandboxEnv never inherits the parent implicitly", () => {
+    const marker = "CODEMUX_TEST_PARENT_SECRET";
+    process.env[marker] = "must-not-leak";
+    try {
+      expect(buildSandboxEnv()[marker]).toBeUndefined();
+    } finally {
+      delete process.env[marker];
+    }
   });
 });

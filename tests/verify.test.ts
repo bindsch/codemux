@@ -33,10 +33,18 @@ describe("Verifier", () => {
   test("buildEffectiveScodeCommands returns run+tui rows for each autonomy level", () => {
     const rows = buildEffectiveScodeCommands(["codex"]);
     expect(rows.length).toBe(8);
-    expect(rows[0]?.agentId).toBe("codex");
-    expect(rows.some((row) => row.mode === "run")).toBe(true);
-    expect(rows.some((row) => row.mode === "tui")).toBe(true);
-    expect(rows.some((row) => row.autonomy === "read-only")).toBe(true);
+    expect(new Set(rows.map(
+      (row) => `${row.agentId}:${row.autonomy}:${row.mode}`
+    ))).toEqual(new Set([
+      "codex:read-only:run",
+      "codex:read-only:tui",
+      "codex:low:run",
+      "codex:low:tui",
+      "codex:medium:run",
+      "codex:medium:tui",
+      "codex:high:run",
+      "codex:high:tui",
+    ]));
     expect(rows.every((row) => row.command[0] === "scode")).toBe(true);
   });
 
@@ -55,7 +63,15 @@ describe("Verifier", () => {
     }
   });
 
-  test("buildEffectiveScodeCommands reflects per-harness strict trust defaults", () => {
+  test("untrusted previews remain read-only at every autonomy level", () => {
+    const rows = buildEffectiveScodeCommands(["codex"], { trust: "untrusted" });
+    for (const row of rows) {
+      expect(row.command).toContain("--ro");
+      expect(row.command).not.toContain("--rw");
+    }
+  });
+
+  test("buildEffectiveScodeCommands keeps API access while enforcing filesystem modes", () => {
     const rows = buildEffectiveScodeCommands(["codex", "opencode"]);
     const codexLowRun = rows.find(
       (row) => row.agentId === "codex" && row.autonomy === "low" && row.mode === "run"
@@ -66,10 +82,10 @@ describe("Verifier", () => {
 
     expect(codexLowRun).toBeDefined();
     expect(codexLowRun?.command).toContain("--trust");
-    expect(codexLowRun?.command).toContain("untrusted");
+    expect(codexLowRun?.command).toContain("standard");
 
     expect(opencodeMediumRun).toBeDefined();
     expect(opencodeMediumRun?.command).toContain("--trust");
-    expect(opencodeMediumRun?.command).toContain("untrusted");
+    expect(opencodeMediumRun?.command).toContain("standard");
   });
 });

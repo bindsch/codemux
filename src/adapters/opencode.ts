@@ -1,4 +1,6 @@
 import { BaseAdapter } from "./base.js";
+import { assertNoOpenCodeProjectExecutionConfig } from "../project-safety.js";
+import { validateWorkingDirectory } from "../validation.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -18,28 +20,38 @@ export class OpencodeAdapter extends BaseAdapter {
       supportsModel: true,
       supportsAutonomy: true,
       autonomyLevels: ["read-only", "low", "medium", "high"],
-      supportsEffort: false,
-      effortLevels: [],
+      supportsEffort: true,
+      effortLevels: ["low", "medium", "high"],
     };
   }
 
   override mapAutonomy(level: AutonomyLevel): string[] {
     switch (level) {
       case "read-only":
-        return ["--agent", "explore"];
+        return ["--agent", "plan"];
       case "low":
-        console.warn("Warning: opencode has no dedicated 'low' mode, using 'explore'");
-        return ["--agent", "explore"];
+        return ["--agent", "build"];
       case "medium":
-        console.warn("Warning: opencode has no dedicated 'medium' mode, using 'build'");
         return ["--agent", "build"];
       case "high":
-        return ["--agent", "build"];
+        return ["--agent", "build", "--auto"];
     }
   }
 
+  override requiresSandboxForAutonomy(level: AutonomyLevel): boolean {
+    return level === "read-only";
+  }
+
+  override mapEffort(level: ReasoningEffort): string[] {
+    return ["--variant", level];
+  }
+
+  override supportsTuiEffort(): boolean {
+    return false;
+  }
+
   buildRunCommand(request: RunRequest): string[] {
-    const cmd = ["opencode", "run"];
+    const cmd = ["opencode", "--pure", "run"];
 
     if (request.model) {
       cmd.push("--model", request.model);
@@ -48,8 +60,9 @@ export class OpencodeAdapter extends BaseAdapter {
     if (request.autonomy) {
       cmd.push(...this.mapAutonomy(request.autonomy));
     }
-
-    cmd.push("-"); // read prompt from stdin
+    if (request.effort) {
+      cmd.push(...this.mapEffort(request.effort));
+    }
 
     return cmd;
   }
@@ -58,13 +71,41 @@ export class OpencodeAdapter extends BaseAdapter {
     return request.prompt;
   }
 
+  override validateRunRequest(request: RunRequest): void {
+    super.validateRunRequest(request);
+    assertNoOpenCodeProjectExecutionConfig(
+      validateWorkingDirectory(request.cwd) ?? process.cwd()
+    );
+  }
+
+  override validateTuiRequest(
+    model?: string,
+    cwd?: string,
+    autonomy: AutonomyLevel = "read-only",
+    effort?: ReasoningEffort,
+    passthroughEnv: readonly string[] = [],
+    enablePlaywrightMcp = false
+  ): void {
+    super.validateTuiRequest(
+      model,
+      cwd,
+      autonomy,
+      effort,
+      passthroughEnv,
+      enablePlaywrightMcp
+    );
+    assertNoOpenCodeProjectExecutionConfig(
+      validateWorkingDirectory(cwd) ?? process.cwd()
+    );
+  }
+
   buildTuiCommand(
     model?: string,
     autonomy?: AutonomyLevel,
     _effort?: ReasoningEffort,
     _sandboxed?: boolean
   ): string[] {
-    const cmd = ["opencode"];
+    const cmd = ["opencode", "--pure"];
     if (model) {
       cmd.push("--model", model);
     }

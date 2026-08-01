@@ -1,4 +1,7 @@
 import { BaseAdapter } from "./base.js";
+import { assertNoGeminiProjectExecutionConfig } from "../project-safety.js";
+import { validateWorkingDirectory } from "../validation.js";
+import { fileURLToPath } from "node:url";
 import type {
   AgentId,
   AutonomyLevel,
@@ -7,9 +10,17 @@ import type {
   AdapterCapabilities,
 } from "../types.js";
 
+export const GEMINI_SYSTEM_SETTINGS_PATH = fileURLToPath(
+  new URL("../../resources/gemini-system-settings.json", import.meta.url)
+);
+
 export class GeminiAdapter extends BaseAdapter {
   readonly id: AgentId = "gemini";
   readonly binaryName = "gemini";
+
+  override getEnv(): Record<string, string> {
+    return { GEMINI_CLI_SYSTEM_SETTINGS_PATH: GEMINI_SYSTEM_SETTINGS_PATH };
+  }
 
   capabilities(): AdapterCapabilities {
     return {
@@ -36,8 +47,18 @@ export class GeminiAdapter extends BaseAdapter {
     }
   }
 
+  override requiresSandboxForAutonomy(level: AutonomyLevel): boolean {
+    // Headless Plan Mode can approve its own transition into implementation.
+    // An outer read-only filesystem boundary is therefore required.
+    return level === "read-only";
+  }
+
+  override requiresSandboxForTuiAutonomy(_level: AutonomyLevel): boolean {
+    return false;
+  }
+
   buildRunCommand(request: RunRequest): string[] {
-    const cmd = ["gemini", "-p"];
+    const cmd = ["gemini", "--sandbox=false"];
 
     if (request.model) {
       cmd.push("-m", request.model);
@@ -47,9 +68,30 @@ export class GeminiAdapter extends BaseAdapter {
       cmd.push(...this.mapAutonomy(request.autonomy));
     }
 
-    cmd.push(request.prompt);
+    cmd.push("-p", request.prompt);
 
     return cmd;
+  }
+
+  override validateRunRequest(request: RunRequest): void {
+    super.validateRunRequest(request);
+    assertNoGeminiProjectExecutionConfig(
+      validateWorkingDirectory(request.cwd) ?? process.cwd()
+    );
+  }
+
+  override validateTuiRequest(
+    model?: string,
+    cwd?: string,
+    autonomy: AutonomyLevel = "read-only",
+    effort?: ReasoningEffort,
+    passthroughEnv: readonly string[] = [],
+    enablePlaywrightMcp = false
+  ): void {
+    super.validateTuiRequest(model, cwd, autonomy, effort, passthroughEnv, enablePlaywrightMcp);
+    assertNoGeminiProjectExecutionConfig(
+      validateWorkingDirectory(cwd) ?? process.cwd()
+    );
   }
 
   buildTuiCommand(
@@ -58,7 +100,7 @@ export class GeminiAdapter extends BaseAdapter {
     _effort?: ReasoningEffort,
     _sandboxed?: boolean
   ): string[] {
-    const cmd = ["gemini"];
+    const cmd = ["gemini", "--sandbox=false"];
     if (model) {
       cmd.push("-m", model);
     }

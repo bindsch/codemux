@@ -1,0 +1,2 @@
+# Deliberately empty. The installed launcher selects this package-owned file so
+# an untrusted working directory cannot inject Bun preloads.

@@ -1,4 +1,6 @@
 import { BaseAdapter } from "./base.js";
+import { assertNoCodexProjectExecutionConfig } from "../project-safety.js";
+import { validateWorkingDirectory } from "../validation.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -19,40 +21,29 @@ export class CodexAdapter extends BaseAdapter {
       supportsAutonomy: true,
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
-      effortLevels: ["low", "medium", "high"],
+      effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
     };
   }
 
   override mapAutonomy(level: AutonomyLevel): string[] {
     switch (level) {
       case "read-only":
-        return ["-s", "read-only"];
+        return ["-s", "read-only", "-a", "never"];
       case "low":
-        console.warn("Warning: codex does not support 'low' autonomy, using 'read-only'");
-        return ["-s", "read-only"];
+        return ["-s", "workspace-write", "-a", "untrusted"];
       case "medium":
-        return ["-s", "workspace-write"];
+        return ["-s", "workspace-write", "-a", "never"];
       case "high":
-        return ["-s", "danger-full-access"];
+        return ["-s", "danger-full-access", "-a", "never"];
     }
   }
 
   override mapEffort(level: ReasoningEffort): string[] {
-    switch (level) {
-      case "none":
-        console.warn("Warning: codex does not support 'none' effort, using 'low'");
-        return ["-c", 'model_reasoning_effort="low"'];
-      case "low":
-        return ["-c", 'model_reasoning_effort="low"'];
-      case "medium":
-        return ["-c", 'model_reasoning_effort="medium"'];
-      case "high":
-        return ["-c", 'model_reasoning_effort="high"'];
-    }
+    return ["-c", `model_reasoning_effort="${level}"`];
   }
 
   buildRunCommand(request: RunRequest): string[] {
-    const cmd = ["codex", "exec", "--skip-git-repo-check"];
+    const cmd = ["codex"];
 
     if (request.model) {
       cmd.push("-m", request.model);
@@ -69,9 +60,30 @@ export class CodexAdapter extends BaseAdapter {
       cmd.push(...this.mapEffort(request.effort));
     }
 
-    cmd.push("-"); // read prompt from stdin
+    cmd.push("exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "-");
 
     return cmd;
+  }
+
+  override validateRunRequest(request: RunRequest): void {
+    super.validateRunRequest(request);
+    assertNoCodexProjectExecutionConfig(
+      validateWorkingDirectory(request.cwd) ?? process.cwd()
+    );
+  }
+
+  override validateTuiRequest(
+    model?: string,
+    cwd?: string,
+    autonomy: AutonomyLevel = "read-only",
+    effort?: ReasoningEffort,
+    passthroughEnv: readonly string[] = [],
+    enablePlaywrightMcp = false
+  ): void {
+    super.validateTuiRequest(model, cwd, autonomy, effort, passthroughEnv, enablePlaywrightMcp);
+    assertNoCodexProjectExecutionConfig(
+      validateWorkingDirectory(cwd) ?? process.cwd()
+    );
   }
 
   override getStdinInput(request: RunRequest): string | null {

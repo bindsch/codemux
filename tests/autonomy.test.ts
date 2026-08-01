@@ -1,9 +1,20 @@
 import { describe, test, expect } from "bun:test";
 import { AGENT_IDS, getAdapter } from "../src/adapters/index.js";
 import { AUTONOMY_EQUIVALENCE } from "../src/autonomy.js";
-import { AUTONOMY_LEVELS } from "../src/types.js";
+import {
+  AUTONOMY_LEVELS,
+  isAutonomyLevel,
+  isReasoningEffort,
+} from "../src/types.js";
 
 describe("Autonomy equivalence matrix", () => {
+  test("runtime type guards reject unsupported values", () => {
+    expect(isAutonomyLevel("read-only")).toBe(true);
+    expect(isAutonomyLevel("root")).toBe(false);
+    expect(isReasoningEffort("high")).toBe(true);
+    expect(isReasoningEffort("extreme")).toBe(false);
+  });
+
   test("covers every registered agent", () => {
     const matrixAgents = Object.keys(AUTONOMY_EQUIVALENCE).sort();
     const registeredAgents = [...AGENT_IDS].sort();

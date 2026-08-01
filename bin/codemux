@@ -1,0 +1,30 @@
+#!/bin/sh
+set -eu
+
+# Bun otherwise trusts bunfig.toml and .env from the caller's working tree.
+# Resolve this launcher through package-manager symlinks, then use only the
+# package-owned runtime configuration.
+script_path=$0
+case "$script_path" in
+  */*) ;;
+  *) script_path=$(command -v -- "$script_path") ;;
+esac
+
+while [ -L "$script_path" ]; do
+  script_dir=${script_path%/*}
+  [ "$script_dir" = "$script_path" ] && script_dir=.
+  script_dir=$(CDPATH='' cd -P -- "$script_dir" && pwd)
+  link_target=$(/usr/bin/readlink "$script_path")
+  case "$link_target" in
+    /*) script_path=$link_target ;;
+    *) script_path=$script_dir/$link_target ;;
+  esac
+done
+
+script_dir=${script_path%/*}
+[ "$script_dir" = "$script_path" ] && script_dir=.
+package_root=$(CDPATH='' cd -P -- "$script_dir/.." && pwd)
+
+unset BUN_OPTIONS NODE_OPTIONS
+exec bun --no-env-file --no-install --config="$package_root/bunfig.runtime.toml" \
+  "$package_root/src/index.ts" "$@"

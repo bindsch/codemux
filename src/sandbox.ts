@@ -6,32 +6,46 @@ export type ScodeTrustLevel = (typeof SCODE_TRUST_LEVELS)[number];
 
 export interface SandboxOptions {
   trust?: ScodeTrustLevel;
+  fsMode?: ScodeFsMode;
   noNet?: boolean;
   scrubEnv?: boolean;
 }
 
 export function mapAutonomyToScodeFsMode(autonomy?: AutonomyLevel): ScodeFsMode {
-  return autonomy === "read-only" ? "ro" : "rw";
+  return autonomy === undefined || autonomy === "read-only" ? "ro" : "rw";
 }
 
-export function mapAutonomyToScodeTrust(autonomy?: AutonomyLevel): ScodeTrustLevel {
-  return autonomy === "read-only" ? "untrusted" : "standard";
+export function mapAutonomyToScodeTrust(_autonomy?: AutonomyLevel): ScodeTrustLevel {
+  return "standard";
 }
 
 export function buildScodeCommand(
   command: string[],
   cwd?: string,
   autonomy?: AutonomyLevel,
-  options?: SandboxOptions
+  options?: SandboxOptions,
+  executable = "scode"
 ): string[] {
-  const scodeCmd = ["scode"];
+  if (
+    command.length === 0 ||
+    typeof command[0] !== "string" ||
+    command[0].length === 0 ||
+    command.some((argument) => typeof argument !== "string" || argument.includes("\0"))
+  ) {
+    throw new Error("sandbox command must contain non-NUL string arguments");
+  }
+  const scodeCmd = [executable];
 
   if (cwd) {
     scodeCmd.push("-C", cwd);
   }
 
-  scodeCmd.push("--trust", options?.trust ?? mapAutonomyToScodeTrust(autonomy));
-  scodeCmd.push(mapAutonomyToScodeFsMode(autonomy) === "ro" ? "--ro" : "--rw");
+  const trust = options?.trust ?? mapAutonomyToScodeTrust(autonomy);
+  scodeCmd.push("--trust", trust);
+  const fsMode = trust === "untrusted"
+    ? "ro"
+    : options?.fsMode ?? mapAutonomyToScodeFsMode(autonomy);
+  scodeCmd.push(fsMode === "ro" ? "--ro" : "--rw");
   if (options?.noNet) {
     scodeCmd.push("--no-net");
   }
@@ -44,22 +58,14 @@ export function buildScodeCommand(
   return scodeCmd;
 }
 
-export function buildSandboxEnv(extraEnv?: Record<string, string>): Record<string, string> {
-  const env = {
-    ...process.env,
-    ...(extraEnv ?? {}),
-  } as Record<string, string>;
-
-  // Oracle browser mode needs Chrome sandbox disabled when running under sandbox-exec.
-  if (env.ORACLE_CHROME_NO_SANDBOX === undefined) {
-    env.ORACLE_CHROME_NO_SANDBOX = "1";
+export function buildSandboxEnv(
+  extraEnv: Record<string, string> = {}
+): Record<string, string> {
+  const sanitized = { ...extraEnv };
+  for (const name of Object.keys(sanitized)) {
+    if (name.toUpperCase().startsWith("SCODE_")) {
+      delete sanitized[name];
+    }
   }
-
-  // Playwright MCP supports env-driven no-sandbox mode.
-  // This applies across harnesses when they launch @playwright/mcp.
-  if (env.PLAYWRIGHT_MCP_NO_SANDBOX === undefined) {
-    env.PLAYWRIGHT_MCP_NO_SANDBOX = "1";
-  }
-
-  return env;
+  return sanitized;
 }

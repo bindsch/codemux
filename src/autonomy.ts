@@ -6,23 +6,59 @@ export interface AutonomyMapping {
 }
 
 export const AUTONOMY_EQUIVALENCE: Record<AgentId, AutonomyMapping> = {
+  aider: {
+    byLevel: {
+      "read-only": "--dry-run",
+      low: "decline headless confirmations",
+      medium: "--yes-always",
+      high: "--yes-always",
+    },
+    notes: "TUI low remains interactive; medium/high share auto-confirm mode",
+  },
   claude: {
     byLevel: {
-      "read-only": "default mode",
-      low: "--permission-mode acceptEdits",
-      medium: "--permission-mode dontAsk",
+      "read-only": "--permission-mode plan",
+      low: "--permission-mode manual",
+      medium: "--permission-mode acceptEdits",
       high: "--dangerously-skip-permissions",
     },
     notes: "native 4-level mapping",
   },
+  cline: {
+    byLevel: {
+      "read-only": "--plan",
+      low: "--auto-approve false",
+      medium: "--auto-approve true",
+      high: "--auto-approve true",
+    },
+    notes: "medium/high share Cline's auto-approve mode",
+  },
   codex: {
     byLevel: {
-      "read-only": "-s read-only",
-      low: "-s read-only",
-      medium: "-s workspace-write",
-      high: "-s danger-full-access",
+      "read-only": "-s read-only -a never",
+      low: "-s workspace-write -a untrusted",
+      medium: "-s workspace-write -a never",
+      high: "-s danger-full-access -a never",
     },
-    notes: "low maps to read-only; under --sandbox, scode enforces boundaries",
+    notes: "read-only also uses -a never; under --sandbox, scode enforces boundaries",
+  },
+  copilot: {
+    byLevel: {
+      "read-only": "--plan",
+      low: "--allow-tool read",
+      medium: "--allow-all-tools",
+      high: "--allow-all",
+    },
+    notes: "high also allows all paths and URLs",
+  },
+  cursor: {
+    byLevel: {
+      "read-only": "--mode plan + required scode --ro",
+      low: "default approvals",
+      medium: "--auto-review",
+      high: "--force",
+    },
+    notes: "agent is preferred; cursor-agent remains a compatibility fallback",
   },
   droid: {
     byLevel: {
@@ -53,36 +89,36 @@ export const AUTONOMY_EQUIVALENCE: Record<AgentId, AutonomyMapping> = {
   },
   opencode: {
     byLevel: {
-      "read-only": "--agent explore",
-      low: "--agent explore",
+      "read-only": "--agent plan",
+      low: "--agent build",
       medium: "--agent build",
-      high: "--agent build",
+      high: "--agent build --auto",
     },
-    notes: "explore/build profiles only",
+    notes: "read-only requires scode because plan may write plan artifacts",
   },
   pi: {
     byLevel: {
-      "read-only": "--tools read,grep,find,ls",
-      low: "default tools",
+      "read-only": "--no-extensions --tools read,grep,find,ls",
+      low: "--no-extensions --tools read,grep,find,ls,edit,write",
       medium: "default tools",
       high: "default tools",
     },
-    notes: "no dedicated approval-gate levels in pi CLI",
+    notes: "read-only/low disable extensions and restrict tools; medium/high use defaults",
   },
   qwen: {
     byLevel: {
       "read-only": "--approval-mode plan",
       low: "--approval-mode default",
-      medium: "--approval-mode auto-edit",
+      medium: "--approval-mode auto",
       high: "--approval-mode yolo",
     },
-    notes: "qwen-coder fallback keeps legacy behavior",
+    notes: "qwen-coder fallback requires the outer sandbox",
   },
   zai: {
     byLevel: {
-      "read-only": "default mode",
-      low: "--permission-mode acceptEdits",
-      medium: "--permission-mode dontAsk",
+      "read-only": "--permission-mode plan",
+      low: "--permission-mode manual",
+      medium: "--permission-mode acceptEdits",
       high: "--dangerously-skip-permissions",
     },
     notes: "claude-compatible mapping via z.ai endpoint",

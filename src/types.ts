@@ -1,18 +1,33 @@
-export type AgentId =
-  | "claude"
-  | "codex"
-  | "droid"
-  | "goose"
-  | "gemini"
-  | "opencode"
-  | "pi"
-  | "qwen"
-  | "zai";
+export const AGENT_IDS = Object.freeze([
+  "aider",
+  "claude",
+  "cline",
+  "codex",
+  "copilot",
+  "cursor",
+  "droid",
+  "goose",
+  "gemini",
+  "opencode",
+  "pi",
+  "qwen",
+  "zai",
+] as const);
+export type AgentId = (typeof AGENT_IDS)[number];
 
-export const AUTONOMY_LEVELS = ["read-only", "low", "medium", "high"] as const;
+export const AUTONOMY_LEVELS = Object.freeze(["read-only", "low", "medium", "high"] as const);
 export type AutonomyLevel = (typeof AUTONOMY_LEVELS)[number];
 
-export const REASONING_EFFORT_LEVELS = ["none", "low", "medium", "high"] as const;
+export const REASONING_EFFORT_LEVELS = Object.freeze([
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+] as const);
 export type ReasoningEffort = (typeof REASONING_EFFORT_LEVELS)[number];
 
 export function isAutonomyLevel(value: string): value is AutonomyLevel {
@@ -32,6 +47,11 @@ export interface RunRequest {
   cwd?: string;
   // True when codemux wraps execution in scode.
   sandboxed?: boolean;
+  timeoutMs?: number;
+  // Explicitly authorized names of otherwise-sensitive parent variables.
+  passthroughEnv?: readonly string[];
+  // Trusted opt-in; never inferred from a repository environment file.
+  enablePlaywrightMcp?: boolean;
 }
 
 export interface RunResult {
@@ -51,9 +71,7 @@ export interface AdapterCapabilities {
   effortLevels: ReasoningEffort[];
 }
 
-export interface ModelMapping {
-  [agentId: string]: string;
-}
+export type ModelMapping = Partial<Record<AgentId, string>>;
 
 export interface CodemuxConfig {
   defaultAgent: AgentId;

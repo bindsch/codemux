@@ -1,3 +1,10 @@
+# Historical design notes
+
+This file records the original research and proposed architecture. It is not the
+implemented command specification. See `README.md` and `codemux --help` for the
+current behavior; unimplemented plugin, event-stream, and `codeagent` examples
+below are roadmap context only.
+
 ## Step-by-step approach to your problem
 
 1. **Confirm whether a “unified wrapper CLI” already exists** (so you can reuse or fork instead of starting from zero).
@@ -68,23 +75,30 @@ Define your normalized contract:
 
 **NormalizedRequest**
 
-* `agent_id` (codex | claude | droid | opencode | …)
-* `model` (string, possibly an alias)
-* `prompt` (string)
-* `prompt_file` / `stdin` support
-* `cwd` (working directory)
-* `autonomy` (read-only | write | dangerous) or similar
-* `output` (text | json-events | json-final)
-* `session` (optional)
-* `attachments` (optional; files/images)
+Current implementation (`src/types.ts`) uses:
+
+* `agent` (aider | claude | cline | codex | copilot | cursor | droid | goose | gemini | opencode | pi | qwen | zai)
+* `prompt` (string; `-p` or file input is normalized to this value before adapter dispatch)
+* `model` (optional string, resolved through aliases when provided)
+* `autonomy` (optional normalized level: read-only | low | medium | high)
+* `effort` (optional normalized level: none | low | medium | high)
+* `cwd` (optional working directory)
+* `sandboxed` (optional boolean indicating scode wrapping)
+* `timeoutMs` (optional non-interactive execution deadline)
+* `passthroughEnv` (optional names explicitly granted to the child environment)
+* `enablePlaywrightMcp` (optional local, sandbox-only MCP opt-in)
 
 **NormalizedResult**
 
-* `final_text`
-* `events[]` (optional, normalized)
-* `raw_stdout`, `raw_stderr` (optional)
-* `exit_code`
-* `agent_metadata` (agent version, model resolved, etc.)
+Current implementation (`src/types.ts`) uses:
+
+* `stdout`
+* `stderr`
+* `exitCode`
+* `success`
+
+Planned/future-facing fields such as `output` modes, `session`, `attachments`,
+`events[]`, and richer `agent_metadata` are not yet part of the shipped runtime contract.
 
 This core should not know anything about “`codex exec`” or “`claude -p`”.
 
@@ -293,7 +307,7 @@ If an alias is missing for an agent, you fail fast with a clear error.
 ## A good “minimal but future-proof” build plan
 
 1. Implement `run` only (non-interactive), with `--format text|json-events|json-final`.
-2. Add 4 built-in adapters: claude, codex, droid, opencode.
+2. Start with 4 built-in adapters (claude, codex, droid, opencode), then expand to additional harnesses as compatibility stabilizes.
 3. Normalize output:
 
    * If agent produces JSON events, convert to your unified event schema.
@@ -344,4 +358,3 @@ URLs referenced (sources)
 - https://opencode.ai/docs/cli/
 - https://github.com/simonw/llm
 ```
-

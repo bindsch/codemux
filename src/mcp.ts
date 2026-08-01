@@ -1,18 +1,41 @@
-export const PLAYWRIGHT_NO_SANDBOX_MCP_CONFIG = JSON.stringify({
-  playwright: {
-    command: "npx",
-    args: ["@playwright/mcp@latest", "--no-sandbox"],
-  },
-});
+import { resolveTrustedExecutable } from "./executable-security.js";
 
-export function getPlaywrightSandboxMcpArgs(sandboxed?: boolean): string[] {
-  if (!sandboxed) {
+export interface PlaywrightMcpOptions {
+  enabled?: boolean;
+  binaryPath?: string | null;
+  forbiddenRoot?: string;
+}
+
+export function getPlaywrightSandboxMcpArgs(
+  sandboxed?: boolean,
+  options: PlaywrightMcpOptions = {}
+): string[] {
+  const enabled = options.enabled ?? false;
+  if (!sandboxed || !enabled) {
     return [];
   }
 
-  if (process.env.CODEMUX_DISABLE_PLAYWRIGHT_NO_SANDBOX === "1") {
-    return [];
+  const binaryPath = options.binaryPath !== undefined
+    ? options.binaryPath
+    : Bun.which("playwright-mcp", { PATH: process.env.PATH });
+  if (!binaryPath) {
+    throw new Error(
+      "--enable-playwright-mcp requires a locally installed playwright-mcp binary"
+    );
   }
+  const resolvedBinary = resolveTrustedExecutable(
+    binaryPath,
+    "playwright-mcp",
+    options.forbiddenRoot
+  );
 
-  return ["--mcp-config", PLAYWRIGHT_NO_SANDBOX_MCP_CONFIG];
+  const config = JSON.stringify({
+    mcpServers: {
+      playwright: {
+        command: resolvedBinary,
+        args: [],
+      },
+    },
+  });
+  return ["--mcp-config", config];
 }

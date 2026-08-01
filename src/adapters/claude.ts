@@ -12,6 +12,10 @@ export class ClaudeAdapter extends BaseAdapter {
   readonly id: AgentId = "claude";
   readonly binaryName = "claude";
 
+  override getEnv(): Record<string, string> {
+    return { CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1" };
+  }
+
   capabilities(): AdapterCapabilities {
     return {
       supportsNonInteractive: true,
@@ -19,28 +23,42 @@ export class ClaudeAdapter extends BaseAdapter {
       supportsModel: true,
       supportsAutonomy: true,
       autonomyLevels: ["read-only", "low", "medium", "high"],
-      supportsEffort: false,
-      effortLevels: [],
+      supportsEffort: true,
+      effortLevels: ["low", "medium", "high", "xhigh", "max"],
     };
   }
 
   override mapAutonomy(level: AutonomyLevel): string[] {
     switch (level) {
       case "read-only":
-        return [];
+        return ["--permission-mode", "plan"];
       case "low":
-        return ["--permission-mode", "acceptEdits"];
+        return ["--permission-mode", "manual"];
       case "medium":
-        return ["--permission-mode", "dontAsk"];
+        return ["--permission-mode", "acceptEdits"];
       case "high":
         return ["--dangerously-skip-permissions"];
     }
   }
 
-  buildRunCommand(request: RunRequest): string[] {
-    const cmd = ["claude", "-p"];
+  override mapEffort(level: ReasoningEffort): string[] {
+    return level === "none" ? [] : ["--effort", level];
+  }
 
-    cmd.push(...getPlaywrightSandboxMcpArgs(request.sandboxed));
+  buildRunCommand(request: RunRequest): string[] {
+    const cmd = [
+      "claude",
+      "-p",
+      "--setting-sources",
+      "user",
+      "--strict-mcp-config",
+      "--no-session-persistence",
+    ];
+
+    cmd.push(...getPlaywrightSandboxMcpArgs(request.sandboxed, {
+      enabled: request.enablePlaywrightMcp,
+      forbiddenRoot: request.cwd ?? process.cwd(),
+    }));
 
     if (request.model) {
       cmd.push("--model", request.model);
@@ -48,6 +66,9 @@ export class ClaudeAdapter extends BaseAdapter {
 
     if (request.autonomy) {
       cmd.push(...this.mapAutonomy(request.autonomy));
+    }
+    if (request.effort) {
+      cmd.push(...this.mapEffort(request.effort));
     }
 
     return cmd;
@@ -60,16 +81,26 @@ export class ClaudeAdapter extends BaseAdapter {
   buildTuiCommand(
     model?: string,
     autonomy?: AutonomyLevel,
-    _effort?: ReasoningEffort,
-    sandboxed?: boolean
+    effort?: ReasoningEffort,
+    sandboxed?: boolean,
+    enablePlaywrightMcp?: boolean,
+    cwd?: string
   ): string[] {
-    const cmd = ["claude"];
-    cmd.push(...getPlaywrightSandboxMcpArgs(sandboxed));
+    const cmd = enablePlaywrightMcp
+      ? ["claude", "--setting-sources", "user", "--strict-mcp-config"]
+      : ["claude", "--safe-mode"];
+    cmd.push(...getPlaywrightSandboxMcpArgs(sandboxed, {
+      enabled: enablePlaywrightMcp,
+      forbiddenRoot: cwd ?? process.cwd(),
+    }));
     if (model) {
       cmd.push("--model", model);
     }
     if (autonomy) {
       cmd.push(...this.mapAutonomy(autonomy));
+    }
+    if (effort) {
+      cmd.push(...this.mapEffort(effort));
     }
     return cmd;
   }

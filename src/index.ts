@@ -1,237 +1,58 @@
-#!/usr/bin/env bun
 import { program } from "commander";
 import { readFileSync } from "fs";
-import { AUTONOMY_EQUIVALENCE } from "./autonomy.js";
-import { buildEffectiveScodeCommands, verifyAgentsWiring } from "./verify.js";
+import { resolveSandboxOptionsForAgent } from "./sandbox-policy.js";
+import { getAdapter, AGENT_IDS } from "./adapters/index.js";
+import { getDefaultConfig, loadConfig, resolveModel } from "./config.js";
+import { registerInfoCommands } from "./info-commands.js";
 import {
-  hasSandboxPolicyConflicts,
-  resolveSandboxOptionsForAgent,
-  type SandboxPolicyOverrides,
-} from "./sandbox-policy.js";
-import { getAdapter, getAllAdapters, AGENT_IDS } from "./adapters/index.js";
-import { guardedWait } from "./adapters/base.js";
-import { loadConfig, resolveModel } from "./config.js";
+  handleUnexpectedError,
+  isScodeAvailable,
+  parseAutonomyOption,
+  parseEffortOption,
+  parsePassthroughEnvOption,
+  parseSandboxPolicyOverrides,
+  parseTimeoutOption,
+  resolveAutonomyForAdapter,
+  resolveEffortForAdapter,
+  runSandboxed,
+  runSandboxedWithStdin,
+} from "./cli-runtime.js";
+import { readUtf8FileBounded } from "./file-io.js";
+import { validateWorkingDirectory } from "./validation.js";
 import {
-  SCODE_TRUST_LEVELS,
-  buildSandboxEnv,
-  buildScodeCommand,
-  type SandboxOptions,
-  type ScodeTrustLevel,
-} from "./sandbox.js";
-import {
-  AUTONOMY_LEVELS,
-  REASONING_EFFORT_LEVELS,
-  isAutonomyLevel,
-  isReasoningEffort,
   type AgentId,
-  type AdapterCapabilities,
-  type AutonomyLevel,
-  type ReasoningEffort,
   type RunRequest,
 } from "./types.js";
 
-const config = loadConfig();
+const MAX_PROMPT_FILE_BYTES = 16 * 1024 * 1024;
 
-function isScodeAvailable(): boolean {
-  const result = Bun.spawnSync(["which", "scode"]);
-  return result.exitCode === 0;
+let configError: Error | undefined;
+const config = (() => {
+  try {
+    return loadConfig();
+  } catch (error) {
+    configError = error instanceof Error ? error : new Error(String(error));
+    return getDefaultConfig();
+  }
+})();
+
+function requireValidConfig(): void {
+  if (configError) throw configError;
 }
 
-function failInvalidOption(
-  optionName: string,
-  value: string,
-  allowed: readonly string[]
-): never {
-  console.error(`Error: Invalid value '${value}' for ${optionName}`);
-  console.error(`Allowed values: ${allowed.join(", ")}`);
-  process.exit(1);
-}
-
-function parseAutonomyOption(value: string | undefined): AutonomyLevel | undefined {
-  if (value === undefined) {
-    return undefined;
+const packageVersion = (() => {
+  const packagePath = new URL("../package.json", import.meta.url);
+  const parsed = JSON.parse(readFileSync(packagePath, "utf8")) as { version?: unknown };
+  if (typeof parsed.version !== "string") {
+    throw new Error("package.json is missing a string version");
   }
-  if (!isAutonomyLevel(value)) {
-    failInvalidOption("--auto", value, AUTONOMY_LEVELS);
-  }
-  return value;
-}
-
-function parseEffortOption(value: string | undefined): ReasoningEffort | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (!isReasoningEffort(value)) {
-    failInvalidOption("--effort", value, REASONING_EFFORT_LEVELS);
-  }
-  return value;
-}
-
-function parseSandboxTrustOption(value: string | undefined): ScodeTrustLevel | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (!(SCODE_TRUST_LEVELS as readonly string[]).includes(value)) {
-    failInvalidOption("--sandbox-trust", value, SCODE_TRUST_LEVELS);
-  }
-  return value as ScodeTrustLevel;
-}
-
-function parseSandboxPolicyOverrides(options: {
-  sandbox: boolean;
-  sandboxTrust?: string;
-  sandboxNoNet?: boolean;
-  sandboxScrubEnv?: boolean;
-  sandboxAllowNet?: boolean;
-  sandboxKeepEnv?: boolean;
-  sandboxNoDefaults?: boolean;
-}, allowWithoutSandbox = false): SandboxPolicyOverrides | undefined {
-  const trust = parseSandboxTrustOption(options.sandboxTrust);
-  const overrides: SandboxPolicyOverrides = {
-    trust,
-    noNet: Boolean(options.sandboxNoNet),
-    scrubEnv: Boolean(options.sandboxScrubEnv),
-    allowNet: Boolean(options.sandboxAllowNet),
-    keepEnv: Boolean(options.sandboxKeepEnv),
-    disableAgentDefaults: Boolean(options.sandboxNoDefaults),
-  };
-
-  const conflicts = hasSandboxPolicyConflicts(overrides);
-  if (conflicts.length > 0) {
-    for (const conflict of conflicts) {
-      console.error(`Error: ${conflict}`);
-    }
-    process.exit(1);
-  }
-
-  if (!options.sandbox && !allowWithoutSandbox) {
-    if (
-      trust ||
-      overrides.noNet ||
-      overrides.scrubEnv ||
-      overrides.allowNet ||
-      overrides.keepEnv ||
-      overrides.disableAgentDefaults
-    ) {
-      console.warn(
-        "Warning: sandbox policy flags require --sandbox, ignoring"
-      );
-    }
-    return undefined;
-  }
-
-  return overrides;
-}
-
-function resolveAutonomyForAdapter(
-  agentId: AgentId,
-  caps: AdapterCapabilities,
-  requested: AutonomyLevel
-): AutonomyLevel | undefined {
-  if (!caps.supportsAutonomy) {
-    if (requested !== "read-only") {
-      console.warn(
-        `Warning: ${agentId} does not support autonomy levels, ignoring --auto`
-      );
-    }
-    return undefined;
-  }
-
-  if (!caps.autonomyLevels.includes(requested)) {
-    const fallback = caps.autonomyLevels[0];
-    console.warn(
-      `Warning: ${agentId} does not support autonomy level '${requested}', using '${fallback}'`
-    );
-    return fallback;
-  }
-
-  return requested;
-}
-
-function resolveEffortForAdapter(
-  agentId: AgentId,
-  caps: AdapterCapabilities,
-  requested?: ReasoningEffort
-): ReasoningEffort | undefined {
-  if (!requested) {
-    return undefined;
-  }
-
-  if (!caps.supportsEffort) {
-    console.warn(
-      `Warning: ${agentId} does not support --effort flag, ignoring`
-    );
-    return undefined;
-  }
-
-  if (!caps.effortLevels.includes(requested)) {
-    const fallback = caps.effortLevels[0];
-    console.warn(
-      `Warning: ${agentId} does not support effort level '${requested}', using '${fallback}'`
-    );
-    return fallback;
-  }
-
-  return requested;
-}
-
-async function runSandboxed(
-  command: string[],
-  cwd?: string,
-  extraEnv?: Record<string, string>,
-  interactive = false,
-  autonomy?: AutonomyLevel,
-  sandboxOptions?: SandboxOptions
-): Promise<number> {
-  const scodeCmd = buildScodeCommand(command, cwd, autonomy, sandboxOptions);
-  const env = buildSandboxEnv(extraEnv);
-
-  const proc = Bun.spawn(scodeCmd, {
-    cwd: cwd || process.cwd(),
-    stdout: "inherit",
-    stderr: "inherit",
-    stdin: "inherit",
-    env,
-  });
-
-  return interactive ? await guardedWait(proc) : await proc.exited;
-}
-
-async function runSandboxedWithStdin(
-  command: string[],
-  stdinData: string,
-  cwd?: string,
-  extraEnv?: Record<string, string>,
-  autonomy?: AutonomyLevel,
-  sandboxOptions?: SandboxOptions
-): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const scodeCmd = buildScodeCommand(command, cwd, autonomy, sandboxOptions);
-  const env = buildSandboxEnv(extraEnv);
-
-  const proc = Bun.spawn(scodeCmd, {
-    cwd: cwd || process.cwd(),
-    stdout: "pipe",
-    stderr: "pipe",
-    stdin: "pipe",
-    env,
-  });
-
-  proc.stdin.write(stdinData);
-  proc.stdin.end();
-
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-
-  return { stdout, stderr, exitCode };
-}
+  return parsed.version;
+})();
 
 program
   .name("codemux")
   .description("Unified CLI for AI coding agents")
-  .version("0.1.0");
+  .version(packageVersion);
 
 program
   .command("run")
@@ -240,6 +61,9 @@ program
   .option("-m, --model <model>", "Model to use (supports aliases)")
   .option("-p, --prompt <prompt>", "Prompt text")
   .option("-f, --file <path>", "Read prompt from file")
+  .option("--timeout <seconds>", "Maximum run time in seconds", "1800")
+  .option("--pass-env <names>", "Pass comma-separated sensitive environment names")
+  .option("--enable-playwright-mcp", "Enable local Playwright MCP inside the sandbox")
   .option("-s, --sandbox", "Run in sandbox (requires scode)")
   .option(
     "--sandbox-trust <level>",
@@ -247,9 +71,6 @@ program
   )
   .option("--sandbox-no-net", "Pass --no-net to scode when sandboxed")
   .option("--sandbox-scrub-env", "Pass --scrub-env to scode when sandboxed")
-  .option("--sandbox-allow-net", "Force network on when sandboxed")
-  .option("--sandbox-keep-env", "Disable --scrub-env when sandboxed")
-  .option("--sandbox-no-defaults", "Disable per-harness sandbox policy defaults")
   .option(
     "--auto <level>",
     "Autonomy level: read-only, low, medium, high",
@@ -257,121 +78,151 @@ program
   )
   .option(
     "--effort <level>",
-    "Reasoning effort: none, low, medium, high"
+    "Reasoning effort: none, minimal, low, medium, high, xhigh, max, ultra"
   )
   .option("--cwd <path>", "Working directory")
   .action(async (options) => {
-    const agentId = options.agent as AgentId;
+    try {
+      requireValidConfig();
+      const agentId = options.agent as AgentId;
 
-    if (!AGENT_IDS.includes(agentId)) {
-      console.error(`Error: Unknown agent '${agentId}'`);
-      console.error(`Available agents: ${AGENT_IDS.join(", ")}`);
-      process.exit(1);
-    }
-
-    const requestedAutonomy = parseAutonomyOption(options.auto) ?? "read-only";
-    const requestedEffort = parseEffortOption(options.effort);
-    const sandboxPolicyOverrides = parseSandboxPolicyOverrides({
-      sandbox: Boolean(options.sandbox),
-      sandboxTrust: options.sandboxTrust,
-      sandboxNoNet: Boolean(options.sandboxNoNet),
-      sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
-      sandboxAllowNet: Boolean(options.sandboxAllowNet),
-      sandboxKeepEnv: Boolean(options.sandboxKeepEnv),
-      sandboxNoDefaults: Boolean(options.sandboxNoDefaults),
-    });
-
-    const adapter = getAdapter(agentId);
-
-    if (!adapter.isAvailable()) {
-      console.error(`Error: ${agentId} is not installed`);
-      console.error(`Please install '${adapter.binaryName}' and try again`);
-      process.exit(1);
-    }
-
-    if (options.sandbox && !isScodeAvailable()) {
-      console.error("Error: scode is not installed (required for --sandbox)");
-      console.error("Install from: ~/Programming/Ops/scode");
-      process.exit(1);
-    }
-
-    let prompt = options.prompt;
-    if (options.file) {
-      try {
-        prompt = readFileSync(options.file, "utf-8").trim();
-      } catch (err) {
-        console.error(`Error: Could not read file '${options.file}'`);
+      if (!AGENT_IDS.includes(agentId)) {
+        console.error(`Error: Unknown agent '${agentId}'`);
+        console.error(`Available agents: ${AGENT_IDS.join(", ")}`);
         process.exit(1);
       }
-    }
 
-    if (!prompt) {
-      console.error("Error: No prompt provided. Use -p or -f");
-      process.exit(1);
-    }
+      const requestedAutonomy = parseAutonomyOption(options.auto) ?? "read-only";
+      const requestedEffort = parseEffortOption(options.effort);
+      const passthroughEnv = parsePassthroughEnvOption(options.passEnv);
+      const enablePlaywrightMcp = Boolean(options.enablePlaywrightMcp);
+      if (enablePlaywrightMcp && !options.sandbox) {
+        throw new Error("--enable-playwright-mcp requires --sandbox");
+      }
+      if (enablePlaywrightMcp && agentId !== "claude" && agentId !== "zai") {
+        throw new Error("--enable-playwright-mcp is supported only by claude and zai");
+      }
+      const sandboxPolicyOverrides = parseSandboxPolicyOverrides({
+        sandbox: Boolean(options.sandbox),
+        sandboxTrust: options.sandboxTrust,
+        sandboxNoNet: Boolean(options.sandboxNoNet),
+        sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
+      });
 
-    const model = options.model
-      ? resolveModel(options.model, agentId, config)
-      : undefined;
+      const adapter = getAdapter(agentId);
 
-    const caps = adapter.capabilities();
-    const autonomy = resolveAutonomyForAdapter(agentId, caps, requestedAutonomy);
-    const effort = resolveEffortForAdapter(agentId, caps, requestedEffort);
-    const sandboxAutonomy = requestedAutonomy;
-    const sandboxOptions = options.sandbox
-      ? resolveSandboxOptionsForAgent(agentId, sandboxAutonomy, sandboxPolicyOverrides)
-      : undefined;
+      let prompt = options.prompt;
+      if (options.file) {
+        if (options.prompt !== undefined) {
+          console.error("Error: --prompt and --file cannot be used together");
+          process.exit(1);
+        }
+        try {
+          prompt = readUtf8FileBounded(options.file, {
+            maxBytes: MAX_PROMPT_FILE_BYTES,
+            label: "prompt file",
+          });
+        } catch (error) {
+          const message = error instanceof Error ? `: ${error.message}` : "";
+          console.error(`Error: Could not read file '${options.file}'${message}`);
+          process.exit(1);
+        }
+      }
 
-    const request: RunRequest = {
-      agent: agentId,
-      prompt,
-      model,
-      autonomy,
-      effort,
-      cwd: options.cwd,
-      sandboxed: Boolean(options.sandbox),
-    };
+      if (typeof prompt !== "string" || prompt.trim().length === 0) {
+        console.error("Error: No prompt provided. Use -p or -f");
+        process.exit(1);
+      }
 
-    adapter.beforeLaunch();
-    const adapterEnv = adapter.getEnv();
-    const envArg = Object.keys(adapterEnv).length > 0 ? adapterEnv : undefined;
+      const timeoutMs = parseTimeoutOption(options.timeout);
 
-    console.error(`Running with ${agentId}${model ? ` (model: ${model})` : ""}${options.sandbox ? " (sandboxed)" : ""}...`);
+      const caps = adapter.capabilities();
+      const model = options.model
+        ? resolveModel(options.model, agentId, config)
+        : undefined;
+      if (model && !caps.supportsModel) {
+        console.error(`Error: ${agentId} does not support model selection`);
+        process.exit(1);
+      }
 
-    let result;
-    if (options.sandbox) {
-      const command = adapter.buildRunCommand(request);
-      const stdinData = adapter.getStdinInput(request);
-      if (stdinData) {
+      const autonomy = resolveAutonomyForAdapter(agentId, caps, requestedAutonomy);
+      if (
+        autonomy &&
+        adapter.requiresSandboxForAutonomy(autonomy) &&
+        !options.sandbox
+      ) {
+        console.error(
+          `Error: ${agentId} cannot enforce '${autonomy}' autonomy without --sandbox`
+        );
+        process.exit(1);
+      }
+      const effort = resolveEffortForAdapter(agentId, caps, requestedEffort);
+      const sandboxAutonomy = requestedAutonomy;
+      const sandboxOptions = options.sandbox
+        ? resolveSandboxOptionsForAgent(agentId, sandboxAutonomy, sandboxPolicyOverrides)
+        : undefined;
+
+      if (!adapter.isAvailable()) {
+        console.error(`Error: ${agentId} is not installed`);
+        console.error(`Please install '${adapter.binaryName}' and try again`);
+        process.exit(1);
+      }
+
+      if (options.sandbox && !isScodeAvailable()) {
+        console.error("Error: scode is not installed (required for --sandbox)");
+        console.error("Install scode and ensure its executable is on PATH");
+        process.exit(1);
+      }
+
+      const request: RunRequest = {
+        agent: agentId,
+        prompt,
+        model,
+        autonomy,
+        effort,
+        cwd: options.cwd,
+        sandboxed: Boolean(options.sandbox),
+        timeoutMs,
+        passthroughEnv,
+        enablePlaywrightMcp,
+      };
+
+      console.error(`Running with ${agentId}${model ? ` (model: ${model})` : ""}${options.sandbox ? " (sandboxed)" : ""}...`);
+
+      let result;
+      if (options.sandbox) {
+        adapter.validateRunRequest(request);
+        adapter.beforeLaunch();
+        const envArg = adapter.buildExecutionEnv(
+          adapter.getRunEnv(request),
+          passthroughEnv
+        );
+        const command = adapter.buildRunCommand(request);
+        const stdinData = adapter.getStdinInput(request);
         result = await runSandboxedWithStdin(
           command,
           stdinData,
           options.cwd,
           envArg,
           sandboxAutonomy,
-          sandboxOptions
+          sandboxOptions,
+          timeoutMs,
+          adapter.getEnvOmissions()
         );
       } else {
-        const exitCode = await runSandboxed(
-          command,
-          options.cwd,
-          envArg,
-          false,
-          sandboxAutonomy,
-          sandboxOptions
-        );
-        result = { stdout: "", stderr: "", exitCode };
+        result = await adapter.run(request);
       }
-    } else {
-      result = await adapter.run(request);
-    }
 
-    process.stdout.write(result.stdout);
-    if (result.stderr) {
-      process.stderr.write(result.stderr);
-    }
+      process.stdout.write(result.stdout);
+      if (result.stderr) {
+        process.stderr.write(result.stderr);
+      }
 
-    process.exit(result.exitCode);
+      process.exitCode = result.exitCode;
+      return;
+    } catch (error) {
+      handleUnexpectedError(error);
+    }
   });
 
 program
@@ -380,64 +231,141 @@ program
   .option("-a, --agent <agent>", "Agent to use", config.defaultAgent)
   .option("-m, --model <model>", "Model to use (supports aliases)")
   .option("--auto <level>", "Autonomy level: read-only, low, medium, high", "read-only")
-  .option("--effort <level>", "Reasoning effort: none, low, medium, high")
+  .option("--effort <level>", "Reasoning effort: none, minimal, low, medium, high, xhigh, max, ultra")
+  .option("-s, --sandbox", "Run probe in sandbox (requires scode)")
+  .option(
+    "--sandbox-trust <level>",
+    "scode trust override: trusted, standard, untrusted"
+  )
+  .option("--sandbox-no-net", "Pass --no-net to scode when sandboxed")
+  .option("--sandbox-scrub-env", "Pass --scrub-env to scode when sandboxed")
+  .option("--pass-env <names>", "Pass comma-separated sensitive environment names")
+  .option("--timeout <seconds>", "Maximum probe time in seconds", "60")
   .option("--cwd <path>", "Working directory")
   .action(async (options) => {
-    const agentId = options.agent as AgentId;
+    try {
+      requireValidConfig();
+      const agentId = options.agent as AgentId;
 
-    if (!AGENT_IDS.includes(agentId)) {
-      console.error(`Error: Unknown agent '${agentId}'`);
-      console.error(`Available agents: ${AGENT_IDS.join(", ")}`);
-      process.exit(1);
-    }
-
-    const requestedAutonomy = parseAutonomyOption(options.auto) ?? "read-only";
-    const requestedEffort = parseEffortOption(options.effort);
-
-    const adapter = getAdapter(agentId);
-
-    if (!adapter.isAvailable()) {
-      console.error(`Error: ${agentId} is not installed`);
-      console.error(`Please install '${adapter.binaryName}' and try again`);
-      process.exit(1);
-    }
-
-    const model = options.model
-      ? resolveModel(options.model, agentId, config)
-      : undefined;
-
-    const caps = adapter.capabilities();
-    if (model && !caps.supportsModel) {
-      console.error(`Error: ${agentId} does not support model selection`);
-      process.exit(1);
-    }
-
-    const autonomy = resolveAutonomyForAdapter(agentId, caps, requestedAutonomy);
-    const effort = resolveEffortForAdapter(agentId, caps, requestedEffort);
-
-    const request: RunRequest = {
-      agent: agentId,
-      prompt: "Reply with: OK",
-      model,
-      autonomy,
-      effort,
-      cwd: options.cwd,
-      sandboxed: false,
-    };
-
-    console.error(`Checking ${agentId}${model ? ` (model: ${model})` : ""}...`);
-
-    const result = await adapter.run(request);
-
-    if (result.exitCode !== 0) {
-      if (result.stderr) {
-        process.stderr.write(result.stderr);
+      if (!AGENT_IDS.includes(agentId)) {
+        console.error(`Error: Unknown agent '${agentId}'`);
+        console.error(`Available agents: ${AGENT_IDS.join(", ")}`);
+        process.exit(1);
       }
-      process.exit(result.exitCode);
-    }
 
-    process.stdout.write("OK\n");
-    process.exit(0);
+      const requestedAutonomy = parseAutonomyOption(options.auto) ?? "read-only";
+      const requestedEffort = parseEffortOption(options.effort);
+      const passthroughEnv = parsePassthroughEnvOption(options.passEnv);
+      const timeoutMs = parseTimeoutOption(options.timeout);
+      const sandboxPolicyOverrides = parseSandboxPolicyOverrides({
+        sandbox: Boolean(options.sandbox),
+        sandboxTrust: options.sandboxTrust,
+        sandboxNoNet: Boolean(options.sandboxNoNet),
+        sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
+      });
+
+      const adapter = getAdapter(agentId);
+
+      if (!adapter.isAvailable()) {
+        console.error(`Error: ${agentId} is not installed`);
+        console.error(`Please install '${adapter.binaryName}' and try again`);
+        process.exit(1);
+      }
+
+      const model = options.model
+        ? resolveModel(options.model, agentId, config)
+        : undefined;
+
+      const caps = adapter.capabilities();
+      if (model && !caps.supportsModel) {
+        console.error(`Error: ${agentId} does not support model selection`);
+        process.exit(1);
+      }
+
+      const autonomy = resolveAutonomyForAdapter(agentId, caps, requestedAutonomy);
+      if (
+        autonomy &&
+        adapter.requiresSandboxForAutonomy(autonomy) &&
+        !options.sandbox
+      ) {
+        console.error(
+          `Error: ${agentId} cannot enforce '${autonomy}' autonomy without --sandbox`
+        );
+        process.exit(1);
+      }
+      const effort = resolveEffortForAdapter(agentId, caps, requestedEffort);
+
+      const request: RunRequest = {
+        agent: agentId,
+        prompt: "Reply with: OK",
+        model,
+        autonomy,
+        effort,
+        cwd: options.cwd,
+        sandboxed: Boolean(options.sandbox),
+        passthroughEnv,
+        timeoutMs,
+      };
+
+      if (options.sandbox && !isScodeAvailable()) {
+        console.error("Error: scode is not installed (required for --sandbox)");
+        process.exit(1);
+      }
+
+      console.error(`Checking ${agentId}${model ? ` (model: ${model})` : ""}${options.sandbox ? " (sandboxed)" : ""}...`);
+
+      let result;
+      if (options.sandbox) {
+        adapter.validateRunRequest(request);
+        adapter.beforeLaunch();
+        const envArg = adapter.buildExecutionEnv(
+          adapter.getRunEnv(request),
+          passthroughEnv
+        );
+        result = await runSandboxedWithStdin(
+          adapter.buildRunCommand(request),
+          adapter.getStdinInput(request),
+          options.cwd,
+          envArg,
+          requestedAutonomy,
+          resolveSandboxOptionsForAgent(
+            agentId,
+            requestedAutonomy,
+            sandboxPolicyOverrides
+          ),
+          timeoutMs,
+          adapter.getEnvOmissions()
+        );
+      } else {
+        result = await adapter.run(request);
+      }
+
+      if (result.exitCode !== 0) {
+        if (result.stdout) {
+          process.stderr.write(result.stdout);
+        }
+        if (result.stderr) {
+          process.stderr.write(result.stderr);
+        }
+        process.exitCode = result.exitCode;
+        return;
+      }
+
+      if (!/(?:^|\r?\n)\s*OK[.!]?\s*(?:\r?\n|$)/.test(result.stdout)) {
+        console.error("Error: agent probe returned an unexpected response");
+        if (result.stdout) {
+          process.stderr.write(result.stdout);
+        }
+        process.exitCode = 1;
+        return;
+      }
+
+      process.stdout.write("OK\n");
+      process.exitCode = 0;
+      return;
+    } catch (error) {
+      handleUnexpectedError(error);
+    }
   });
 
 program
@@ -452,249 +380,135 @@ program
   )
   .option("--sandbox-no-net", "Pass --no-net to scode when sandboxed")
   .option("--sandbox-scrub-env", "Pass --scrub-env to scode when sandboxed")
-  .option("--sandbox-allow-net", "Force network on when sandboxed")
-  .option("--sandbox-keep-env", "Disable --scrub-env when sandboxed")
-  .option("--sandbox-no-defaults", "Disable per-harness sandbox policy defaults")
   .option("--auto <level>", "Autonomy level: read-only, low, medium, high")
-  .option("--effort <level>", "Reasoning effort: none, low, medium, high")
+  .option("--effort <level>", "Reasoning effort: none, minimal, low, medium, high, xhigh, max, ultra")
+  .option("--pass-env <names>", "Pass comma-separated sensitive environment names")
+  .option("--enable-playwright-mcp", "Enable local Playwright MCP inside the sandbox")
   .option("--cwd <path>", "Working directory")
   .action(async (options) => {
-    const agentId = options.agent as AgentId;
-
-    if (!AGENT_IDS.includes(agentId)) {
-      console.error(`Error: Unknown agent '${agentId}'`);
-      console.error(`Available agents: ${AGENT_IDS.join(", ")}`);
-      process.exit(1);
-    }
-
-    const parsedAutonomy = parseAutonomyOption(options.auto);
-    const requestedEffort = parseEffortOption(options.effort);
-    const sandboxPolicyOverrides = parseSandboxPolicyOverrides({
-      sandbox: Boolean(options.sandbox),
-      sandboxTrust: options.sandboxTrust,
-      sandboxNoNet: Boolean(options.sandboxNoNet),
-      sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
-      sandboxAllowNet: Boolean(options.sandboxAllowNet),
-      sandboxKeepEnv: Boolean(options.sandboxKeepEnv),
-      sandboxNoDefaults: Boolean(options.sandboxNoDefaults),
-    });
-
-    const adapter = getAdapter(agentId);
-
-    if (!adapter.isAvailable()) {
-      console.error(`Error: ${agentId} is not installed`);
-      console.error(`Please install '${adapter.binaryName}' and try again`);
-      process.exit(1);
-    }
-
-    if (options.sandbox && !isScodeAvailable()) {
-      console.error("Error: scode is not installed (required for --sandbox)");
-      console.error("Install from: ~/Programming/Ops/scode");
-      process.exit(1);
-    }
-
-    const model = options.model
-      ? resolveModel(options.model, agentId, config)
-      : undefined;
-
-    // Default: high with sandbox, medium without
-    const requestedAutonomy = parsedAutonomy ?? (options.sandbox ? "high" : "medium");
-    const sandboxAutonomy = requestedAutonomy;
-    const caps = adapter.capabilities();
-    const autonomy = resolveAutonomyForAdapter(agentId, caps, requestedAutonomy);
-    const effort = resolveEffortForAdapter(agentId, caps, requestedEffort);
-    const sandboxOptions = options.sandbox
-      ? resolveSandboxOptionsForAgent(agentId, sandboxAutonomy, sandboxPolicyOverrides)
-      : undefined;
-
-    adapter.beforeLaunch();
-    const adapterEnv = adapter.getEnv();
-
-    if (options.sandbox) {
-      const command = adapter.buildTuiCommand(model, autonomy, effort, true);
-      const exitCode = await runSandboxed(
-        command,
-        options.cwd,
-        Object.keys(adapterEnv).length > 0 ? adapterEnv : undefined,
-        true,
-        sandboxAutonomy,
-        sandboxOptions
-      );
-      process.exitCode = exitCode;
-    } else {
-      const exitCode = await adapter.runInteractive(model, options.cwd, autonomy, effort, false);
-      process.exitCode = exitCode;
-    }
-  });
-
-program
-  .command("autonomy")
-  .description("Show autonomy equivalence mappings for all agents")
-  .action(() => {
-    console.log("Autonomy equivalence matrix:\n");
-    console.log("| Agent | read-only | low | medium | high | Notes |");
-    console.log("|-------|-----------|-----|--------|------|-------|");
-
-    for (const agentId of AGENT_IDS) {
-      const mapping = AUTONOMY_EQUIVALENCE[agentId];
-      console.log(
-        `| ${agentId} | ${mapping.byLevel["read-only"]} | ${mapping.byLevel.low} | ${mapping.byLevel.medium} | ${mapping.byLevel.high} | ${mapping.notes ?? ""} |`
-      );
-    }
-  });
-
-program
-  .command("verify")
-  .description("Verify harness wiring and autonomy mapping consistency")
-  .option("-a, --agent <agent>", "Verify a single agent")
-  .option("--show-scode", "Show effective scode command preview per harness/autonomy")
-  .option(
-    "--sandbox-trust <level>",
-    "scode trust override for --show-scode: trusted, standard, untrusted"
-  )
-  .option("--sandbox-no-net", "Add --no-net in --show-scode preview")
-  .option("--sandbox-scrub-env", "Add --scrub-env in --show-scode preview")
-  .option("--sandbox-allow-net", "Force network on in --show-scode preview")
-  .option("--sandbox-keep-env", "Disable scrub-env in --show-scode preview")
-  .option("--sandbox-no-defaults", "Disable per-harness defaults in --show-scode preview")
-  .action((options) => {
-    let selectedAgents: AgentId[] = AGENT_IDS;
-    if (options.agent) {
+    try {
+      requireValidConfig();
       const agentId = options.agent as AgentId;
+
       if (!AGENT_IDS.includes(agentId)) {
         console.error(`Error: Unknown agent '${agentId}'`);
         console.error(`Available agents: ${AGENT_IDS.join(", ")}`);
         process.exit(1);
       }
-      selectedAgents = [agentId];
-    }
 
-    const sandboxPolicyOverrides = parseSandboxPolicyOverrides(
-      {
-        sandbox: false,
+      const parsedAutonomy = parseAutonomyOption(options.auto);
+      const requestedEffort = parseEffortOption(options.effort);
+      const passthroughEnv = parsePassthroughEnvOption(options.passEnv);
+      const enablePlaywrightMcp = Boolean(options.enablePlaywrightMcp);
+      if (enablePlaywrightMcp && !options.sandbox) {
+        throw new Error("--enable-playwright-mcp requires --sandbox");
+      }
+      if (enablePlaywrightMcp && agentId !== "claude" && agentId !== "zai") {
+        throw new Error("--enable-playwright-mcp is supported only by claude and zai");
+      }
+      const sandboxPolicyOverrides = parseSandboxPolicyOverrides({
+        sandbox: Boolean(options.sandbox),
         sandboxTrust: options.sandboxTrust,
         sandboxNoNet: Boolean(options.sandboxNoNet),
         sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
-        sandboxAllowNet: Boolean(options.sandboxAllowNet),
-        sandboxKeepEnv: Boolean(options.sandboxKeepEnv),
-        sandboxNoDefaults: Boolean(options.sandboxNoDefaults),
-      },
-      true
-    );
+      });
 
-    const rows = verifyAgentsWiring(selectedAgents);
+      const adapter = getAdapter(agentId);
 
-    console.log("Verification checks: static wiring only (no model/network calls).\n");
-    console.log("| Agent | Installed | Mapping | Build Run | Build TUI | Warnings | Status |");
-    console.log("|-------|-----------|---------|-----------|-----------|----------|--------|");
-    for (const row of rows) {
-      console.log(
-        `| ${row.agentId} | ${row.installed ? "yes" : "no"} | ${row.mappingOk ? "yes" : "no"} | ${row.runBuildOk ? "yes" : "no"} | ${row.tuiBuildOk ? "yes" : "no"} | ${row.warningCount} | ${row.status} |`
-      );
-    }
-
-    const pass = rows.filter((r) => r.status === "PASS").length;
-    const warn = rows.filter((r) => r.status === "WARN").length;
-    const failRows = rows.filter((r) => r.status === "FAIL");
-    const fail = failRows.length;
-
-    console.log(`\nSummary: PASS ${pass}, WARN ${warn}, FAIL ${fail}`);
-
-    const hasSandboxPreviewFlags = Boolean(
-      options.sandboxTrust ||
-        options.sandboxNoNet ||
-        options.sandboxScrubEnv ||
-        options.sandboxAllowNet ||
-        options.sandboxKeepEnv ||
-        options.sandboxNoDefaults
-    );
-
-    if (options.showScode) {
-      const scodeRows = buildEffectiveScodeCommands(selectedAgents, sandboxPolicyOverrides);
-      console.log("\nEffective scode command preview (run+tui x autonomy):\n");
-      console.log("| Agent | Autonomy | Mode | Command |");
-      console.log("|-------|----------|------|---------|");
-      for (const row of scodeRows) {
-        const rendered = row.command
-          .map((part) => (part.includes(" ") ? JSON.stringify(part) : part))
-          .join(" ");
-        console.log(`| ${row.agentId} | ${row.autonomy} | ${row.mode} | \`${rendered}\` |`);
+      if (!adapter.isAvailable()) {
+        console.error(`Error: ${agentId} is not installed`);
+        console.error(`Please install '${adapter.binaryName}' and try again`);
+        process.exit(1);
       }
-    } else if (hasSandboxPreviewFlags) {
-      console.warn("Warning: verify sandbox policy flags require --show-scode, ignoring");
-    }
 
-    if (fail > 0) {
-      console.log("\nFailure details:");
-      for (const row of failRows) {
-        for (const issue of row.issues) {
-          console.log(`- ${row.agentId}: ${issue}`);
-        }
+      if (options.sandbox && !isScodeAvailable()) {
+        console.error("Error: scode is not installed (required for --sandbox)");
+        console.error("Install scode and ensure its executable is on PATH");
+        process.exit(1);
       }
-      process.exitCode = 1;
-    }
-  });
 
-program
-  .command("list")
-  .description("List available AI coding agents")
-  .action(() => {
-    console.log("Available agents:");
-    for (const adapter of getAllAdapters()) {
-      const available = adapter.isAvailable();
-      const status = available ? "✅" : "❌";
       const caps = adapter.capabilities();
-      const features: string[] = [];
-
-      if (caps.supportsModel) features.push("model");
-      if (caps.supportsAutonomy) features.push("autonomy");
-      if (caps.supportsEffort) features.push("effort");
-
-      const featureStr = features.length > 0 ? ` [${features.join(", ")}]` : "";
-      console.log(`  ${status} ${adapter.id}${featureStr}`);
-    }
-  });
-
-program
-  .command("doctor")
-  .description("Check installed AI coding agents and configuration")
-  .action(() => {
-    console.log("Checking AI coding agents...\n");
-
-    let installed = 0;
-    let missing = 0;
-
-    for (const adapter of getAllAdapters()) {
-      const available = adapter.isAvailable();
-      const status = available ? "✅ installed" : "❌ not found";
-
-      console.log(`${adapter.id} (${adapter.binaryName}): ${status}`);
-
-      if (available) {
-        installed++;
-        const caps = adapter.capabilities();
-        console.log(`  Non-interactive: ${caps.supportsNonInteractive ? "yes" : "no"}`);
-        console.log(`  Interactive: ${caps.supportsInteractive ? "yes" : "no"}`);
-        console.log(`  Model selection: ${caps.supportsModel ? "yes" : "no"}`);
-        if (caps.supportsAutonomy) {
-          console.log(`  Autonomy levels: ${caps.autonomyLevels.join(", ")}`);
-        }
-        if (caps.supportsEffort) {
-          console.log(`  Effort levels: ${caps.effortLevels.join(", ")}`);
-        }
-      } else {
-        missing++;
+      const model = options.model
+        ? resolveModel(options.model, agentId, config)
+        : undefined;
+      if (model && !adapter.supportsTuiModel()) {
+        console.error(`Error: ${agentId} does not support model selection in TUI mode`);
+        process.exit(1);
       }
-      console.log();
-    }
 
-    console.log(`Summary: ${installed} installed, ${missing} missing`);
-    console.log(`\nDefault agent: ${config.defaultAgent}`);
-    console.log(`\nModel aliases available:`);
-    for (const [alias, mapping] of Object.entries(config.models)) {
-      const agents = Object.keys(mapping).join(", ");
-      console.log(`  ${alias}: ${agents}`);
+      const requestedAutonomy = parsedAutonomy ?? "read-only";
+      const sandboxAutonomy = requestedAutonomy;
+      const autonomy = resolveAutonomyForAdapter(agentId, caps, requestedAutonomy);
+      if (
+        autonomy &&
+        adapter.requiresSandboxForTuiAutonomy(autonomy) &&
+        !options.sandbox
+      ) {
+        console.error(
+          `Error: ${agentId} cannot enforce '${autonomy}' autonomy without --sandbox`
+        );
+        process.exit(1);
+      }
+      const effort = adapter.supportsTuiEffort()
+        ? resolveEffortForAdapter(agentId, caps, requestedEffort)
+        : undefined;
+      if (requestedEffort && !adapter.supportsTuiEffort()) {
+        console.warn(`Warning: ${agentId} does not support --effort in TUI mode, ignoring`);
+      }
+      const sandboxOptions = options.sandbox
+        ? resolveSandboxOptionsForAgent(agentId, sandboxAutonomy, sandboxPolicyOverrides)
+        : undefined;
+
+      if (options.sandbox) {
+        const workdir = validateWorkingDirectory(options.cwd) ?? process.cwd();
+        adapter.validateTuiRequest(
+          model,
+          workdir,
+          autonomy,
+          effort,
+          passthroughEnv,
+          enablePlaywrightMcp
+        );
+        adapter.beforeLaunch();
+        const adapterEnv = adapter.buildExecutionEnv(
+          adapter.getTuiEnv(model, autonomy, effort, true),
+          passthroughEnv
+        );
+        const command = adapter.buildTuiCommand(
+          model,
+          autonomy,
+          effort,
+          true,
+          enablePlaywrightMcp,
+          workdir
+        );
+        const exitCode = await runSandboxed(
+          command,
+          workdir,
+          adapterEnv,
+          true,
+          sandboxAutonomy,
+          sandboxOptions,
+          adapter.getEnvOmissions()
+        );
+        process.exitCode = exitCode;
+      } else {
+        const exitCode = await adapter.runInteractive(
+          model,
+          options.cwd,
+          autonomy,
+          effort,
+          false,
+          passthroughEnv,
+          enablePlaywrightMcp
+        );
+        process.exitCode = exitCode;
+      }
+    } catch (error) {
+      handleUnexpectedError(error);
     }
   });
 
-program.parse();
+registerInfoCommands(program, config, configError);
+
+await program.parseAsync();
