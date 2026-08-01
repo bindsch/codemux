@@ -1,6 +1,6 @@
 # codemux
 
-> **Beta software (v0.1.0).** `codemux` is under active development. Expect behavior changes as adapters and sandbox policy continue to harden.
+> **Beta software (v0.2.0).** `codemux` is under active development. Expect behavior changes as adapters and sandbox policy continue to harden.
 
 `codemux` is a unified CLI for AI coding agents. It gives one command surface
 for multiple harnesses, normalizes autonomy/effort semantics, and can route

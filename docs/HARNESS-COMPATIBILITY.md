@@ -30,8 +30,8 @@ manual CLI inspection.
 
 Sandbox execution requires scode 0.2.0 or newer. Codemux checks this before
 launch so older wrappers cannot silently miss a newly supported harness. The
-installed audit version was 0.1.0, so this machine's sandbox launches are
-intentionally blocked until scode is upgraded.
+audit machine has since been upgraded to scode 0.3.0, and the sandbox contract
+check passes.
 
 Gemini CLI 0.53.1 remains usable with API-key or enterprise authentication.
 Google's individual subscription and free-tier CLI login moved to Antigravity;
