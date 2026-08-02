@@ -7,7 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-08-02
+### Changed
+
+- The Bun version check treats `packageManager` as a minimum rather than an
+  exact match. CI still provisions the pinned version, but a newer local Bun no
+  longer fails `make runtime`.
+
+### Added
+
+- Homebrew installation via `brew install bindsch/tap/codemux`, which pulls in
+  `scode` as a dependency.
 
 ### Added
 

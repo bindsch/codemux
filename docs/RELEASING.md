@@ -6,7 +6,7 @@ This document defines the source-only GitHub release flow for `codemux`.
 ## Prerequisites
 
 - Clean working tree for release changes.
-- Bun 1.3.14 installed.
+- Bun 1.3.14 or newer installed (`make runtime` enforces this floor).
 - Access to merge, tag, and create releases in the target GitHub repository.
 
 ## Release steps

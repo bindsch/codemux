@@ -12,7 +12,7 @@ Thanks for helping improve `codemux`.
 
 ## Development setup
 
-Install Bun 1.3.14, then run:
+Install Bun 1.3.14 or newer, then run:
 
 ```bash
 bun install --frozen-lockfile

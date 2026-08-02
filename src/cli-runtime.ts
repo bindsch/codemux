@@ -76,13 +76,13 @@ function resolveScodeExecutable(workdir?: string): string | null {
   return resolveTrustedExecutable(binary, "scode", workdir);
 }
 
-function parseVersion(value: string): readonly [number, number, number] | null {
+export function parseVersion(value: string): readonly [number, number, number] | null {
   const match = value.match(/\b(\d+)\.(\d+)\.(\d+)\b/);
   if (!match) return null;
   return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
 
-function isVersionAtLeast(
+export function isVersionAtLeast(
   actual: readonly [number, number, number],
   minimum: readonly [number, number, number]
 ): boolean {

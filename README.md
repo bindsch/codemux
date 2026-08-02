@@ -38,7 +38,7 @@ codemux verify --show-scode
 
 ### Prerequisites
 
-- [Bun](https://bun.sh) 1.3.14 (runtime + package manager; release-gate version)
+- [Bun](https://bun.sh) 1.3.14 or newer (runtime + package manager; CI pins 1.3.14 exactly)
 - Installed agent CLIs you plan to use (`aider`, `claude`, `cline`, `copilot`, Cursor's `agent`, etc.)
 - [scode](https://github.com/bindsch/scode) 0.2.0 or newer if you use `--sandbox`
 
