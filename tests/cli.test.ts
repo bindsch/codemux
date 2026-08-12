@@ -26,6 +26,7 @@ describe("CLI - Help", () => {
     expect(stdout).toContain("verify");
     expect(stdout).toContain("list");
     expect(stdout).toContain("doctor");
+    expect(stdout).toContain("usage");
   });
 
   test("--version shows version", async () => {
@@ -271,6 +272,14 @@ describe("CLI - Doctor", () => {
     expect(stdout).toContain("missing");
   });
 
+  test("doctor reports the optional usage integration without requiring it", async () => {
+    const { stdout, exitCode } = await runCli(["doctor"], {
+      PATH: minimalPath(),
+    });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("usagemux (optional usage): ❌ not found (optional)");
+  });
+
   test("doctor shows default agent", async () => {
     const { stdout } = await runCli(["doctor"]);
     expect(stdout).toContain("Default agent: claude");
@@ -295,6 +304,106 @@ describe("CLI - Doctor", () => {
       expect(stdout).toContain("Interactive: yes");
       expect(stdout).toContain("Model selection: yes");
       expect(stdout).toContain("Autonomy levels:");
+    } finally {
+      fake.cleanup();
+    }
+  });
+});
+
+describe("CLI - Usage", () => {
+  const snapshot = JSON.stringify({
+    schemaVersion: "1",
+    generatedAt: "2026-08-03T12:00:00.000Z",
+    results: [
+      {
+        client: "codex",
+        provider: "codex",
+        status: "ok",
+        source: "codex-cli",
+        plan: "plus",
+        account: null,
+        windows: [
+          {
+            kind: "weekly",
+            usedPercent: 39,
+            remainingPercent: 61,
+            windowMinutes: 10080,
+            resetsAt: "2026-08-07T09:00:00.000Z",
+          },
+        ],
+        credits: null,
+        subscriptionRenewsAt: null,
+        subscriptionExpiresAt: null,
+        message: null,
+      },
+    ],
+  });
+
+  test("prints validated usagemux JSON for one agent", async () => {
+    const fake = createFakeBinaryEnv({
+      usagemux: `printf '%s' '${snapshot}'`,
+    });
+    try {
+      const result = await runCli(["usage", "-a", "codex", "--json"], fake.env);
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual(JSON.parse(snapshot));
+    } finally {
+      fake.cleanup();
+    }
+  });
+
+  test("renders a concise human usage summary", async () => {
+    const fake = createFakeBinaryEnv({
+      usagemux: `printf '%s' '${snapshot}'`,
+    });
+    try {
+      const result = await runCli(["usage", "-a", "codex"], fake.env);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("codex (codex): plus");
+      expect(result.stdout).toContain("weekly: 61% left");
+    } finally {
+      fake.cleanup();
+    }
+  });
+
+  test("fails only the usage command when usagemux is absent", async () => {
+    const usage = await runCli(["usage"], { PATH: minimalPath() });
+    expect(usage.exitCode).toBe(69);
+    expect(usage.stderr).toContain("usagemux is not installed");
+    expect(usage.stderr).toContain("optional usage integration");
+
+    const list = await runCli(["list"], { PATH: minimalPath() });
+    expect(list.exitCode).toBe(0);
+  });
+
+  test("rejects unknown agents before invoking usagemux", async () => {
+    const result = await runCli(["usage", "-a", "unknown"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Unknown agent 'unknown'");
+  });
+
+  test("rejects combining one agent with all agents", async () => {
+    const result = await runCli(["usage", "-a", "codex", "--all"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--agent and --all cannot be used together");
+  });
+
+  test("rejects usage timeouts above the usagemux protocol maximum", async () => {
+    const result = await runCli(["usage", "--timeout", "301"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain(
+      "--timeout must be a number from 0 (exclusive) to 300 seconds"
+    );
+  });
+
+  test("fails closed on malformed protocol output", async () => {
+    const fake = createFakeBinaryEnv({
+      usagemux: "printf '%s' '{\"schemaVersion\":\"2\",\"results\":[]}'",
+    });
+    try {
+      const result = await runCli(["usage", "-a", "codex"], fake.env);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("unsupported usagemux protocol version '2'");
     } finally {
       fake.cleanup();
     }

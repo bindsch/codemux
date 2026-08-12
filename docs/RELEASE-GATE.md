@@ -54,6 +54,7 @@ Use this checklist before tagging a new `codemux` release.
   ```bash
   ./bin/codemux run --help >/dev/null
   ./bin/codemux tui --help >/dev/null
+  ./bin/codemux usage --help >/dev/null
   ./bin/codemux verify --help >/dev/null
   ```
 
@@ -77,7 +78,7 @@ Use this checklist before tagging a new `codemux` release.
 
 ## 5) Documentation consistency
 
-- [ ] README options/commands match `--help` output (`run`, `tui`, `verify`).
+- [ ] README options/commands match `--help` output (`run`, `tui`, `usage`, `verify`).
 - [ ] Sandbox trust defaults and override semantics match implementation in:
   - `src/sandbox-policy.ts`
   - `src/sandbox.ts`

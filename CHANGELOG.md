@@ -7,6 +7,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-04
+
+### Added
+
+- Optional `codemux usage` integration with the standalone `usagemux` CLI,
+  including strict versioned JSON validation, quota and subscription-renewal
+  metadata, human and JSON output, and non-failing discovery in `doctor`.
+
+### Fixed
+
+- Updated `js-yaml` to 4.3.1, clearing GHSA-5p4m-2wfm-xmqj (quadratic CPU
+  consumption resolving `!!omap`).
+
 ## [0.2.1] - 2026-08-02
 
 ### Changed

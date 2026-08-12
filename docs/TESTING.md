@@ -25,7 +25,7 @@ bun run test:coverage
 
 ```bash
 # CLI-focused tests
-bun test tests/cli.test.ts tests/cli-run.test.ts
+bun test tests/cli.test.ts tests/cli-run.test.ts tests/usage.test.ts
 
 # Sandbox and policy tests
 bun test tests/sandbox.test.ts tests/sandbox-policy.test.ts
@@ -67,6 +67,7 @@ These are lightweight runtime checks that do not require network/model calls.
 ./bin/codemux autonomy
 ./bin/codemux verify
 ./bin/codemux verify --show-scode
+./bin/codemux usage --help
 ```
 
 ## Sandbox behavior checks
@@ -82,6 +83,8 @@ bun run scripts/check-scode-version.ts
 ## Notes
 
 - `verify` is static wiring validation and does not execute model/network calls.
+- `usage --help` is static. A real `usage` query starts the optional `usagemux`
+  integration and can access provider APIs and local credential stores.
 - `check` makes a real provider/model request. It requires configured
   credentials and may consume quota or incur charges.
 - `run` and `tui` may require installed external harness binaries for end-to-end behavior.

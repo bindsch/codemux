@@ -7,6 +7,14 @@ import {
 } from "./cli-runtime.js";
 import { buildEffectiveScodeCommands, verifyAgentsWiring } from "./verify.js";
 import { AGENT_IDS, type AgentId, type CodemuxConfig } from "./types.js";
+import {
+  fetchUsageSnapshot,
+  formatUsageSnapshot,
+  getUsagemuxStatus,
+  parseUsageTimeoutOption,
+  UsageIntegrationUnavailableError,
+  USAGEMUX_UNAVAILABLE_EXIT_CODE,
+} from "./usage.js";
 
 function shellQuote(value: string): string {
   return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value)
@@ -22,6 +30,47 @@ export function registerInfoCommands(
     process.exitCode = code;
   }
 ): void {
+  program
+    .command("usage")
+    .description("Show subscription usage through optional usagemux integration")
+    .option("-a, --agent <agent>", "Query a single agent")
+    .option("--all", "Query all agents")
+    .option("--json", "Emit the validated usagemux JSON response")
+    .option("--timeout <seconds>", "Maximum usage query time in seconds", "30")
+    .action(async (options) => {
+      if (options.agent && options.all) {
+        console.error("Error: --agent and --all cannot be used together");
+        setExitCode(1);
+        return;
+      }
+      const agent = options.agent as string | undefined;
+      if (agent !== undefined && !AGENT_IDS.includes(agent as AgentId)) {
+        console.error(`Error: Unknown agent '${agent}'`);
+        console.error(`Available agents: ${AGENT_IDS.join(", ")}`);
+        setExitCode(1);
+        return;
+      }
+      try {
+        const clients: readonly AgentId[] = agent ? [agent as AgentId] : AGENT_IDS;
+        const timeoutMs = parseUsageTimeoutOption(options.timeout);
+        const result = await fetchUsageSnapshot(clients, timeoutMs);
+        console.log(
+          options.json
+            ? JSON.stringify(result.snapshot, null, 2)
+            : formatUsageSnapshot(result.snapshot)
+        );
+        if (result.exitCode !== 0) setExitCode(result.exitCode);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`Error: ${message}`);
+        setExitCode(
+          error instanceof UsageIntegrationUnavailableError
+            ? USAGEMUX_UNAVAILABLE_EXIT_CODE
+            : 1
+        );
+      }
+    });
+
   program
     .command("autonomy")
     .description("Show autonomy equivalence mappings for all agents")
@@ -193,6 +242,14 @@ export function registerInfoCommands(
           : "✅ compatible";
       console.log(`scode (sandbox): ${scodeStatus}\n`);
       if (scode.issue) setExitCode(1);
+
+      const usagemux = getUsagemuxStatus();
+      const usageStatus = !usagemux.available
+        ? "❌ not found (optional)"
+        : usagemux.issue
+          ? `⚠️ installed, unavailable: ${usagemux.issue}`
+          : "✅ installed";
+      console.log(`usagemux (optional usage): ${usageStatus}\n`);
 
       console.log(`Summary: ${installed} installed, ${missing} missing`);
       console.log(`\nDefault agent: ${config.defaultAgent}`);

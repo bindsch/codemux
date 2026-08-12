@@ -36,12 +36,14 @@ smoke:
 	./bin/codemux autonomy >/dev/null
 	./bin/codemux verify >/dev/null
 	./bin/codemux verify --show-scode >/dev/null
+	./bin/codemux usage --help >/dev/null
 
 release-gate: runtime check contracts sandbox-contract smoke
 	bun audit
 	bun install --frozen-lockfile --dry-run
 	./bin/codemux run --help >/dev/null
 	./bin/codemux tui --help >/dev/null
+	./bin/codemux usage --help >/dev/null
 	./bin/codemux verify --help >/dev/null
 	./bin/codemux verify --show-scode --sandbox-trust trusted --sandbox-no-net >/dev/null
 	./bin/codemux verify --sandbox-no-net >/dev/null

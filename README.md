@@ -1,6 +1,6 @@
 # codemux
 
-> **Beta software (v0.2.1).** `codemux` is under active development. Expect behavior changes as adapters and sandbox policy continue to harden.
+> **Beta software (v0.3.0).** `codemux` is under active development. Expect behavior changes as adapters and sandbox policy continue to harden.
 
 `codemux` is a unified CLI for AI coding agents. It gives one command surface
 for multiple harnesses, normalizes autonomy/effort semantics, and can route
@@ -33,6 +33,7 @@ codemux verify --show-scode
 - Optional normalized effort levels for harnesses that support them.
 - External sandbox boundary through `scode` for `run` and `tui`.
 - Built-in diagnostics (`doctor`, `check`, `autonomy`, `verify`).
+- Optional normalized subscription usage through the standalone `usagemux` CLI.
 
 ## Installation
 
@@ -72,6 +73,7 @@ codemux [command] [options]
 | `check` | Live provider/model probe (uses credentials and may incur charges) |
 | `list` | Agent capability overview |
 | `doctor` | Installation and capability diagnostics |
+| `usage` | Subscription quota through optional `usagemux` integration |
 | `autonomy` | Autonomy equivalence matrix |
 | `verify` | Static wiring validation + optional scode preview |
 
@@ -256,6 +258,29 @@ read-only boundary. Codemux supplies an authoritative system setting that
 disables generic project `.env` loading, rejects `.gemini` project controls,
 and explicitly disables Gemini's nested sandbox so project Dockerfiles or
 Seatbelt profiles cannot replace the selected boundary.
+
+## Optional Usage Integration
+
+Codemux does not implement provider billing or subscription APIs. Install the
+standalone `usagemux` CLI to enable normalized quota reporting:
+
+```bash
+codemux usage                 # all Codemux clients
+codemux usage -a codex        # one client
+codemux usage -a claude --json
+```
+
+`codemux usage` invokes `usagemux` directly, validates its versioned JSON
+protocol, and renders quota percentages, resets, credits, and subscription
+renewal/expiry timestamps when available. Credentials, provider detection,
+caching, and upstream API compatibility remain owned by `usagemux`. Codemux
+passes no credentials in command arguments.
+
+The integration is optional. When `usagemux` is absent, only `codemux usage`
+returns unavailable (exit 69); run, TUI, diagnostics, and every other command
+continue to work. `codemux doctor` reports the integration without treating a
+missing installation as a failure. Usage queries can access provider APIs and
+local credential stores, but do not send model prompts.
 
 ## Configuration
 
