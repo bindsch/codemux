@@ -8,7 +8,7 @@ export const MAX_RUN_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const FORCE_KILL_DELAY_MS = 2_000;
 const SIGNAL_BURST_WINDOW_MS = 1_000;
 const TIMEOUT_EXIT_CODE = 124;
-const OUTPUT_LIMIT_EXIT_CODE = 125;
+export const OUTPUT_LIMIT_EXIT_CODE = 125;
 
 class OutputLimitError extends Error {
   constructor(

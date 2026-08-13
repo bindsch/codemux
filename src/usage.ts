@@ -1,9 +1,10 @@
 import { resolveTrustedExecutable } from "./executable-security.js";
-import { runCapturedCommand } from "./process-runner.js";
+import { OUTPUT_LIMIT_EXIT_CODE, runCapturedCommand } from "./process-runner.js";
 import type { AgentId } from "./types.js";
 import { parseUsageSnapshot, type UsageSnapshot } from "./usage-protocol.js";
 
 export {
+  escapeForTerminal,
   formatUsageSnapshot,
   parseUsageSnapshot,
   USAGEMUX_PROTOCOL_VERSION,
@@ -110,6 +111,13 @@ export const fetchUsageSnapshot = async (
     [binary, ...buildUsagemuxArguments(clients, timeoutMs)],
     { cwd: workdir, env: environment, timeoutMs: getUsagemuxProcessTimeout(timeoutMs) }
   );
+  // An oversized response is truncated rather than dropped, so report the real
+  // cause instead of letting the parser blame it on malformed JSON.
+  if (result.exitCode === OUTPUT_LIMIT_EXIT_CODE) {
+    throw new Error(
+      "usagemux produced more output than codemux will capture; its response was truncated"
+    );
+  }
   if (result.stdout.trim().length === 0) {
     const detail = result.stderr.trim();
     throw new Error(

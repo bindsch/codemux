@@ -34,7 +34,7 @@ export function registerInfoCommands(
     .command("usage")
     .description("Show subscription usage through optional usagemux integration")
     .option("-a, --agent <agent>", "Query a single agent")
-    .option("--all", "Query all agents")
+    .option("--all", "Query all agents (the default)")
     .option("--json", "Emit the validated usagemux JSON response")
     .option("--timeout <seconds>", "Maximum usage query time in seconds", "30")
     .action(async (options) => {

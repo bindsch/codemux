@@ -2,10 +2,11 @@ import {
   chmodSync,
   mkdtempSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 export interface CliResult {
   stdout: string;
@@ -44,13 +45,23 @@ export async function runCli(
   }
 }
 
+// A PATH that provably contains no optional Codemux integration.
+//
+// This used to expose the real directory holding `bun`, which silently stopped
+// being minimal once `bun` and `usagemux` were both installed under the same
+// Homebrew prefix: tests asserting "usagemux is absent" then passed or failed
+// depending on the machine. Link `bun` into a private directory instead, so
+// nothing else on the host can leak in.
+let isolatedBunDir: string | null = null;
+
 export function minimalPath(): string {
-  const bunPath = Bun.which("bun", { PATH: process.env.PATH });
-  return [
-    bunPath ? dirname(bunPath) : dirname(process.execPath),
-    "/usr/bin",
-    "/bin",
-  ].join(":");
+  if (isolatedBunDir === null) {
+    const bunPath =
+      Bun.which("bun", { PATH: process.env.PATH }) ?? process.execPath;
+    isolatedBunDir = mkdtempSync(join(tmpdir(), "codemux-cli-bin-"));
+    symlinkSync(bunPath, join(isolatedBunDir, "bun"));
+  }
+  return [isolatedBunDir, "/usr/bin", "/bin"].join(":");
 }
 
 export function createFakeBinaryEnv(

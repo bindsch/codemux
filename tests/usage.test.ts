@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   assertUsageSnapshotClients,
   buildUsagemuxArguments,
+  escapeForTerminal,
   formatUsageSnapshot,
   getUsagemuxProcessTimeout,
   parseUsageSnapshot,
@@ -139,5 +140,65 @@ describe("usage protocol", () => {
     expect(output).toContain("credits: 12.5 credits left");
     expect(output).toContain("subscription renews: 2026-09-03T10:00:00.000Z");
     expect(output).toContain("aider: not-applicable — aider is provider-agnostic");
+  });
+});
+
+describe("terminal escaping", () => {
+  const ESC = String.fromCharCode(0x1b);
+
+  const snapshotWith = (overrides: Record<string, unknown>) => ({
+    schemaVersion: "1" as const,
+    generatedAt: "2026-08-13T10:00:00.000Z",
+    results: [
+      {
+        client: "claude" as const,
+        provider: "claude",
+        status: "ok" as const,
+        source: "codexbar",
+        plan: null,
+        account: null,
+        windows: [],
+        credits: null,
+        subscriptionRenewsAt: null,
+        subscriptionExpiresAt: null,
+        message: null,
+        ...overrides,
+      },
+    ],
+  });
+
+  test("escapeForTerminal neutralizes control characters", () => {
+    expect(escapeForTerminal(`${ESC}[2J`)).toBe("\\x1b[2J");
+    expect(escapeForTerminal(String.fromCharCode(0x7f))).toBe("\\x7f");
+    expect(escapeForTerminal("plain text")).toBe("plain text");
+  });
+
+  test("provider-controlled fields cannot emit escape sequences", () => {
+    const rendered = formatUsageSnapshot(
+      snapshotWith({
+        plan: `${ESC}[2JPro`,
+        account: `${ESC}]0;title`,
+        provider: `${ESC}[31mclaude`,
+        credits: { remaining: 5, unit: `${ESC}[0mcredits` },
+        windows: [
+          {
+            kind: `${ESC}[31mprimary`,
+            usedPercent: 10,
+            remainingPercent: 90,
+            windowMinutes: null,
+            resetsAt: null,
+          },
+        ],
+      })
+    );
+    expect(rendered).not.toContain(ESC);
+    expect(rendered).toContain("\\x1b[2JPro");
+  });
+
+  test("error messages are escaped too", () => {
+    const rendered = formatUsageSnapshot(
+      snapshotWith({ status: "error", message: `${ESC}[2Jboom` })
+    );
+    expect(rendered).not.toContain(ESC);
   });
 });

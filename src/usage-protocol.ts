@@ -208,27 +208,43 @@ export const parseUsageSnapshot = (text: string): UsageSnapshot => {
   };
 };
 
+// usagemux relays provider-supplied strings, and these reach a terminal. Escape
+// C0/C1 control characters and DEL so a hostile or compromised upstream response
+// cannot move the cursor, clear the screen, or drive terminal reporting
+// sequences. The --json path needs no equivalent: JSON.stringify escapes them.
+const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F-\u009F]/g;
+
+export const escapeForTerminal = (value: string): string =>
+  value.replace(
+    CONTROL_CHARACTERS,
+    (character) => `\\x${character.charCodeAt(0).toString(16).padStart(2, "0")}`
+  );
+
 export const formatUsageSnapshot = (snapshot: UsageSnapshot): string => {
   const lines: string[] = [];
   for (const result of snapshot.results) {
     if (result.status !== "ok") {
       lines.push(
-        `${result.client}: ${result.status}${result.message ? ` — ${result.message}` : ""}`
+        `${result.client}: ${result.status}${result.message ? ` — ${escapeForTerminal(result.message)}` : ""}`
       );
       continue;
     }
-    const provider = result.provider ? ` (${result.provider})` : "";
-    lines.push(`${result.client}${provider}: ${result.plan ?? "usage available"}`);
-    if (result.account) lines.push(`  account: ${result.account}`);
+    const provider = result.provider ? ` (${escapeForTerminal(result.provider)})` : "";
+    lines.push(
+      `${result.client}${provider}: ${result.plan ? escapeForTerminal(result.plan) : "usage available"}`
+    );
+    if (result.account) lines.push(`  account: ${escapeForTerminal(result.account)}`);
     for (const window of result.windows) {
       const remaining = window.remainingPercent === null
         ? "remaining unknown"
         : `${window.remainingPercent}% left`;
       const reset = window.resetsAt ? `; resets ${window.resetsAt}` : "";
-      lines.push(`  ${window.kind}: ${remaining}${reset}`);
+      lines.push(`  ${escapeForTerminal(window.kind)}: ${remaining}${reset}`);
     }
     if (result.credits) {
-      lines.push(`  credits: ${result.credits.remaining} ${result.credits.unit} left`);
+      lines.push(
+        `  credits: ${result.credits.remaining} ${escapeForTerminal(result.credits.unit)} left`
+      );
     }
     if (result.subscriptionRenewsAt) {
       lines.push(`  subscription renews: ${result.subscriptionRenewsAt}`);

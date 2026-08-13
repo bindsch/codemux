@@ -7,6 +7,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-13
+
+### Fixed
+
+- Provider-supplied strings relayed by usagemux (`plan`, `account`, `provider`,
+  `message`, window `kind`, and credit `unit`) are escaped before reaching a
+  terminal, so a hostile or compromised upstream response cannot emit ANSI/OSC
+  sequences. `--json` was never affected: `JSON.stringify` escapes them.
+- An oversized usagemux response now reports that its output was truncated
+  instead of surfacing as "invalid JSON".
+- `minimalPath()` in the test helpers no longer exposes the real directory
+  holding `bun`. Once `bun` and `usagemux` shared a Homebrew prefix, the
+  "usagemux is absent" tests passed or failed depending on the machine.
+
 ## [0.3.0] - 2026-08-04
 
 ### Added
