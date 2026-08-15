@@ -39,7 +39,7 @@ describe("Adapter Registry", () => {
     expect(AGENT_IDS).toContain("pi");
     expect(AGENT_IDS).toContain("qwen");
     expect(AGENT_IDS).toContain("zai");
-    expect(AGENT_IDS.length).toBe(13);
+    expect(AGENT_IDS.length).toBe(14);
   });
 
   test("getAdapter returns correct adapter for each agent", () => {
@@ -60,7 +60,7 @@ describe("Adapter Registry", () => {
 
   test("getAllAdapters returns all 13 adapters", () => {
     const adapters = getAllAdapters();
-    expect(adapters.length).toBe(13);
+    expect(adapters.length).toBe(14);
   });
 
   test("getAvailableAdapters filters by executable availability", () => {
@@ -595,9 +595,11 @@ describe("GeminiAdapter", () => {
 
   test("requires an outer boundary for headless plan mode", () => {
     expect(adapter.requiresSandboxForAutonomy("read-only")).toBe(true);
-    expect(adapter.requiresSandboxForAutonomy("low")).toBe(false);
-    expect(adapter.requiresSandboxForAutonomy("medium")).toBe(false);
+    expect(adapter.requiresSandboxForAutonomy("low")).toBe(true);
+    expect(adapter.requiresSandboxForAutonomy("medium")).toBe(true);
     expect(adapter.requiresSandboxForAutonomy("high")).toBe(false);
-    expect(adapter.requiresSandboxForTuiAutonomy("read-only")).toBe(false);
+    // The TUI follows the same policy as headless: no level below `high` runs
+    // without the boundary.
+    expect(adapter.requiresSandboxForTuiAutonomy("read-only")).toBe(true);
   });
 });

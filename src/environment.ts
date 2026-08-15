@@ -21,6 +21,9 @@ const ALLOWED_CREDENTIAL_ENV: Record<AgentId, readonly string[]> = {
   droid: ["FACTORY_API_KEY"],
   goose: [],
   gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+  // 0.31.1 authenticates through `kimi login` into ~/.kimi-code/credentials;
+  // KIMI_API_KEY and OPENAI_API_KEY are the direct-credential paths.
+  kimi: ["KIMI_API_KEY", "OPENAI_API_KEY"],
   opencode: [],
   pi: [],
   qwen: ["DASHSCOPE_API_KEY", "OPENAI_API_KEY", "QWEN_API_KEY"],

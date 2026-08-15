@@ -8,6 +8,7 @@ export const AGENT_IDS = Object.freeze([
   "droid",
   "goose",
   "gemini",
+  "kimi",
   "opencode",
   "pi",
   "qwen",

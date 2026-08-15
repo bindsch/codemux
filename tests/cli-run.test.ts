@@ -26,7 +26,7 @@ describe("CLI - Run validation", () => {
 
   test("run with unavailable agent shows error", async () => {
     const { stderr, exitCode } = await runCli(
-      ["run", "-a", "goose", "-p", "test"],
+      ["run", "--no-sandbox", "--auto", "high", "-a", "goose", "-p", "test"],
       { PATH: minimalPath() }
     );
     expect(exitCode).not.toBe(0);
@@ -62,8 +62,9 @@ describe("CLI - Run validation", () => {
   });
 
   test("Gemini read-only mode requires a durable outer sandbox", async () => {
+    // Opting out of the default boundary is what makes read-only unenforceable.
     const { stderr, exitCode } = await runCli(
-      ["run", "-a", "gemini", "--auto", "read-only", "-p", "test"],
+      ["run", "-a", "gemini", "--no-sandbox", "--auto", "read-only", "-p", "test"],
       { PATH: minimalPath() }
     );
     expect(exitCode).not.toBe(0);
@@ -78,7 +79,7 @@ describe("CLI - Run validation", () => {
     });
     try {
       const { stdout, stderr, exitCode } = await runCli(
-        ["run", "-a", "goose", "-m", "provider/model", "-p", "test"],
+        ["run", "--no-sandbox", "--auto", "high", "-a", "goose", "-m", "provider/model", "-p", "test"],
         fake.env
       );
       expect(exitCode).toBe(0);
@@ -95,7 +96,7 @@ describe("CLI - Run validation", () => {
     });
     try {
       const result = await runCli(
-        ["run", "-a", "claude", "--pass-env", "INTERNAL_TOKEN", "-p", "test"],
+        ["run", "--no-sandbox", "--auto", "high", "-a", "claude", "--pass-env", "INTERNAL_TOKEN", "-p", "test"],
         {
           ...fake.env,
           INTERNAL_TOKEN: "allowed",
@@ -115,11 +116,14 @@ describe("CLI - Run validation", () => {
       claude: `printf '%s' "\${INTERNAL_TOKEN-unset}"`,
     });
     try {
-      const result = await runCli(["run", "-a", "claude", "-p", "test"], {
+      const result = await runCli(
+        ["run", "-a", "claude", "--no-sandbox", "--auto", "high", "-p", "test"],
+        {
         ...fake.env,
         INTERNAL_TOKEN: "must-not-pass",
         CODEMUX_PASSTHROUGH_ENV: "INTERNAL_TOKEN",
-      });
+        }
+      );
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toBe("unset");
     } finally {
@@ -145,10 +149,15 @@ describe("CLI - Run validation", () => {
       ], fake.env);
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain("--mcp-config");
+      // The sandbox is on by default now, so the rejection has to be provoked
+      // by opting out explicitly.
       const rejected = await runCli([
         "run",
         "-a",
         "claude",
+        "--no-sandbox",
+        "--auto",
+        "high",
         "--enable-playwright-mcp",
         "-p",
         "test",
@@ -167,7 +176,7 @@ describe("CLI - Run validation", () => {
     const homeDir = mkdtempSync(join(tmpdir(), "codemux-zai-home-"));
     try {
       const { stderr, exitCode } = await runCli(
-        ["run", "-a", "zai", "-p", "test"],
+        ["run", "--no-sandbox", "--auto", "high", "-a", "zai", "-p", "test"],
         {
           ...fake.env,
           HOME: homeDir,
@@ -187,7 +196,7 @@ describe("CLI - Run validation", () => {
     const fake = createFakeBinaryEnv({ claude: "sleep 2" });
     try {
       const { stderr, exitCode } = await runCli(
-        ["run", "-a", "claude", "-p", "test", "--timeout", "0.02"],
+        ["run", "--no-sandbox", "--auto", "high", "-a", "claude", "-p", "test", "--timeout", "0.02"],
         fake.env
       );
       expect(exitCode).toBe(124);
@@ -222,7 +231,7 @@ describe("CLI - Run warnings (no actual execution)", () => {
     const fake = createFakeBinaryEnv({ goose: "exit 0" });
     try {
       const { stderr, exitCode } = await runCli(
-        ["run", "-a", "goose", "--effort", "high", "-p", "test"],
+        ["run", "--no-sandbox", "--auto", "high", "-a", "goose", "--effort", "high", "-p", "test"],
         fake.env
       );
       expect(exitCode).not.toBe(0);
@@ -259,7 +268,7 @@ describe("CLI - File input validation", () => {
 
     try {
       const { stdout, exitCode } = await runCli(
-        ["run", "-a", "claude", "-f", promptFile],
+        ["run", "--no-sandbox", "--auto", "high", "-a", "claude", "-f", promptFile],
         fake.env
       );
       expect(exitCode).toBe(0);
@@ -293,7 +302,7 @@ describe("CLI - Check probe", () => {
   test("accepts an exact OK response", async () => {
     const fake = createFakeBinaryEnv({ claude: "printf 'OK'" });
     try {
-      const { stdout, exitCode } = await runCli(["check", "-a", "claude"], fake.env);
+      const { stdout, exitCode } = await runCli(["check", "-a", "claude", "--no-sandbox", "--auto", "high"], fake.env);
       expect(exitCode).toBe(0);
       expect(stdout).toBe("OK\n");
     } finally {
@@ -307,7 +316,7 @@ describe("CLI - Check probe", () => {
     });
     try {
       const { stdout, exitCode } = await runCli(
-        ["check", "-a", "claude"],
+        ["check", "--no-sandbox", "--auto", "high", "-a", "claude"],
         fake.env
       );
       expect(exitCode).toBe(0);
@@ -338,7 +347,7 @@ describe("CLI - Check probe", () => {
   test("rejects unrelated exit-zero output", async () => {
     const fake = createFakeBinaryEnv({ claude: "printf 'NOT_OK'" });
     try {
-      const { stderr, exitCode } = await runCli(["check", "-a", "claude"], fake.env);
+      const { stderr, exitCode } = await runCli(["check", "-a", "claude", "--no-sandbox", "--auto", "high"], fake.env);
       expect(exitCode).toBe(1);
       expect(stderr).toContain("unexpected response");
       expect(stderr).toContain("NOT_OK");
@@ -353,7 +362,7 @@ describe("CLI - Check probe", () => {
     });
     try {
       const { stderr, exitCode } = await runCli(
-        ["check", "-a", "claude"],
+        ["check", "--no-sandbox", "--auto", "high", "-a", "claude"],
         fake.env
       );
       expect(exitCode).toBe(2);
@@ -369,7 +378,7 @@ describe("CLI - Check probe", () => {
     });
     try {
       const { stderr, exitCode } = await runCli(
-        ["check", "-a", "claude", "--timeout", "0.02"],
+        ["check", "--no-sandbox", "--auto", "high", "-a", "claude", "--timeout", "0.02"],
         fake.env
       );
       expect(exitCode).toBe(124);

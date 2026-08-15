@@ -9,6 +9,7 @@ import { CursorAdapter } from "./cursor.js";
 import { DroidAdapter } from "./droid.js";
 import { GooseAdapter } from "./goose.js";
 import { GeminiAdapter } from "./gemini.js";
+import { KimiAdapter } from "./kimi.js";
 import { OpencodeAdapter } from "./opencode.js";
 import { PiAdapter } from "./pi.js";
 import { QwenAdapter } from "./qwen.js";
@@ -24,6 +25,7 @@ const adapters: Readonly<Record<AgentId, BaseAdapter>> = Object.freeze({
   droid: new DroidAdapter(),
   goose: new GooseAdapter(),
   gemini: new GeminiAdapter(),
+  kimi: new KimiAdapter(),
   opencode: new OpencodeAdapter(),
   pi: new PiAdapter(),
   qwen: new QwenAdapter(),

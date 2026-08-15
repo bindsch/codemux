@@ -14,6 +14,7 @@ import {
   parseTimeoutOption,
   resolveAutonomyForAdapter,
   resolveEffortForAdapter,
+  assertHarnessSupported,
   runSandboxed,
   runSandboxedWithStdin,
 } from "./cli-runtime.js";
@@ -64,7 +65,8 @@ program
   .option("--timeout <seconds>", "Maximum run time in seconds", "1800")
   .option("--pass-env <names>", "Pass comma-separated sensitive environment names")
   .option("--enable-playwright-mcp", "Enable local Playwright MCP inside the sandbox")
-  .option("-s, --sandbox", "Run in sandbox (requires scode)")
+  .option("-s, --sandbox", "Run in sandbox (default; requires scode)", true)
+  .option("--no-sandbox", "Run without the scode boundary (autonomy below high is unavailable)")
   .option(
     "--sandbox-trust <level>",
     "scode trust override: trusted, standard, untrusted"
@@ -189,6 +191,17 @@ program
 
       console.error(`Running with ${agentId}${model ? ` (model: ${model})` : ""}${options.sandbox ? " (sandboxed)" : ""}...`);
 
+      // Refuse or warn before launch: a flag can survive an upstream release
+      // while the enforcement behind it does not.
+      await assertHarnessSupported(
+        agentId,
+        adapter.binaryName,
+        options.cwd,
+        undefined,
+        request.autonomy,
+        Boolean(options.sandbox)
+      );
+
       let result;
       if (options.sandbox) {
         adapter.validateRunRequest(request);
@@ -232,7 +245,8 @@ program
   .option("-m, --model <model>", "Model to use (supports aliases)")
   .option("--auto <level>", "Autonomy level: read-only, low, medium, high", "read-only")
   .option("--effort <level>", "Reasoning effort: none, minimal, low, medium, high, xhigh, max, ultra")
-  .option("-s, --sandbox", "Run probe in sandbox (requires scode)")
+  .option("-s, --sandbox", "Run probe in sandbox (default; requires scode)", true)
+  .option("--no-sandbox", "Probe without the scode boundary (autonomy below high is unavailable)")
   .option(
     "--sandbox-trust <level>",
     "scode trust override: trusted, standard, untrusted"
@@ -373,7 +387,8 @@ program
   .description("Start interactive TUI for an AI coding agent")
   .option("-a, --agent <agent>", "Agent to use", config.defaultAgent)
   .option("-m, --model <model>", "Model to use (supports aliases)")
-  .option("-s, --sandbox", "Run in sandbox (requires scode)")
+  .option("-s, --sandbox", "Run in sandbox (default; requires scode)", true)
+  .option("--no-sandbox", "Run without the scode boundary (autonomy below high is unavailable)")
   .option(
     "--sandbox-trust <level>",
     "scode trust override: trusted, standard, untrusted"
@@ -458,6 +473,15 @@ program
       const sandboxOptions = options.sandbox
         ? resolveSandboxOptionsForAgent(agentId, sandboxAutonomy, sandboxPolicyOverrides)
         : undefined;
+
+      await assertHarnessSupported(
+        agentId,
+        adapter.binaryName,
+        options.cwd,
+        undefined,
+        autonomy,
+        Boolean(options.sandbox)
+      );
 
       if (options.sandbox) {
         const workdir = validateWorkingDirectory(options.cwd) ?? process.cwd();

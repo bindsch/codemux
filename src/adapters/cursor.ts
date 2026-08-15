@@ -136,7 +136,4 @@ export class CursorAdapter extends BaseAdapter {
     return cmd;
   }
 
-  override requiresSandboxForAutonomy(level: AutonomyLevel): boolean {
-    return level !== "high";
-  }
 }

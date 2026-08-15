@@ -47,16 +47,6 @@ export class GeminiAdapter extends BaseAdapter {
     }
   }
 
-  override requiresSandboxForAutonomy(level: AutonomyLevel): boolean {
-    // Headless Plan Mode can approve its own transition into implementation.
-    // An outer read-only filesystem boundary is therefore required.
-    return level === "read-only";
-  }
-
-  override requiresSandboxForTuiAutonomy(_level: AutonomyLevel): boolean {
-    return false;
-  }
-
   buildRunCommand(request: RunRequest): string[] {
     const cmd = ["gemini", "--sandbox=false"];
 

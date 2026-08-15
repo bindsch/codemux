@@ -267,9 +267,12 @@ describe("captured process execution", () => {
 describe("BaseAdapter", () => {
   test("runs with adapter stdin/env hooks and removes sensitive variables", async () => {
     const adapter = new TestAdapter();
+    // `high` is the one level that still runs unsandboxed; this test is about
+    // the stdin/env hooks, not the boundary.
     const result = await adapter.run({
       agent: "claude",
       prompt: "payload",
+      autonomy: "high",
       timeoutMs: 2_000,
     });
     const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
@@ -292,22 +295,27 @@ describe("BaseAdapter", () => {
     expect(adapter.supportsTuiModel()).toBe(true);
     expect(adapter.supportsTuiAutonomy()).toBe(true);
     expect(adapter.supportsTuiEffort()).toBe(true);
-    expect(adapter.requiresSandboxForAutonomy("read-only")).toBe(false);
-    expect(adapter.requiresSandboxForTuiAutonomy("read-only")).toBe(false);
+    expect(adapter.requiresSandboxForAutonomy("read-only")).toBe(true);
+    expect(adapter.requiresSandboxForTuiAutonomy("read-only")).toBe(true);
     expect(adapter.beforeLaunch()).toBeUndefined();
     expect(adapter.configurationIssues()).toEqual([]);
   });
 
   test("runs interactive commands through the guarded wait path", async () => {
     const adapter = new DefaultHookAdapter();
-    expect(await adapter.runInteractive()).toBe(0);
+    expect(await adapter.runInteractive(undefined, undefined, "high")).toBe(0);
   });
 
   test("normalizes omitted autonomy and runs launch validation exactly once", async () => {
     const adapter = new RecordingAdapter();
-    const result = await adapter.run({ agent: "claude", prompt: "payload" });
+    // Omitted autonomy still normalizes to read-only; running it directly is
+    // now refused, so assert the normalization through the rejection.
+    await expect(adapter.run({ agent: "claude", prompt: "payload" })).rejects.toThrow(
+      "cannot enforce 'read-only' autonomy without an external sandbox"
+    );
+    const result = await adapter.run({ agent: "claude", prompt: "payload", autonomy: "high" });
     expect(result.success).toBe(true);
-    expect(adapter.seenAutonomy).toBe("read-only");
+    expect(adapter.seenAutonomy).toBe("high");
     expect(adapter.launchCount).toBe(1);
   });
 

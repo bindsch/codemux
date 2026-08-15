@@ -23,6 +23,7 @@ const CREDENTIALS_BY_AGENT = {
   droid: ["FACTORY_API_KEY"],
   goose: [],
   gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+  kimi: ["KIMI_API_KEY", "OPENAI_API_KEY"],
   opencode: [],
   pi: [],
   qwen: ["DASHSCOPE_API_KEY", "OPENAI_API_KEY", "QWEN_API_KEY"],

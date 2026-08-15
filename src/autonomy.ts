@@ -87,6 +87,15 @@ export const AUTONOMY_EQUIVALENCE: Record<AgentId, AutonomyMapping> = {
     },
     notes: "uses Gemini approval modes",
   },
+  kimi: {
+    byLevel: {
+      "read-only": "--plan",
+      low: "default (prompts before each tool call)",
+      medium: "--yolo",
+      high: "--auto",
+    },
+    notes: "interactive only: --prompt rejects all three, so headless autonomy rests on scode",
+  },
   opencode: {
     byLevel: {
       "read-only": "--agent plan",

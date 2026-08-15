@@ -450,7 +450,7 @@ describe("CLI - Option validation", () => {
     });
     try {
       const { stderr, exitCode } = await runCli(
-        ["tui", "-a", "goose", "-m", "provider/model"],
+        ["tui", "--no-sandbox", "--auto", "high", "-a", "goose", "-m", "provider/model"],
         fake.env
       );
       expect(exitCode).toBe(0);

@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { guardedWait, runCapturedCommand } from "./process-runner.js";
 import { resolveTrustedExecutable } from "./executable-security.js";
+import { assertSupportedHarnessVersion } from "./harness-compatibility.js";
 import type { SandboxPolicyOverrides } from "./sandbox-policy.js";
 import {
   SCODE_TRUST_LEVELS,
@@ -260,6 +261,36 @@ export function resolveEffortForAdapter(
     throw new Error(`${agentId} does not support reasoning effort '${requested}'`);
   }
   return requested;
+}
+
+/**
+ * Refuses to launch a harness whose version Codemux has not audited.
+ *
+ * Runs for sandboxed and direct launches alike: the sandbox bounds what a
+ * harness can reach, but it cannot restore an autonomy level whose meaning
+ * changed upstream. A harness that is not installed is left to the existing
+ * "not found" handling rather than reported as a version problem.
+ */
+export async function assertHarnessSupported(
+  agent: AgentId,
+  binaryName: string,
+  cwd?: string,
+  extraEnv?: Record<string, string>,
+  autonomy?: AutonomyLevel,
+  sandboxed = false
+): Promise<void> {
+  const workdir = validateWorkingDirectory(cwd) ?? process.cwd();
+  const environment = { ...(process.env as Record<string, string>), ...(extraEnv ?? {}) };
+  const binary = Bun.which(binaryName, { PATH: environment.PATH });
+  if (!binary) return;
+  await assertSupportedHarnessVersion(
+    agent,
+    resolveTrustedExecutable(binary, binaryName, workdir),
+    workdir,
+    environment,
+    autonomy,
+    sandboxed
+  );
 }
 
 export async function runSandboxed(

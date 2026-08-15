@@ -68,8 +68,20 @@ export abstract class BaseAdapter {
     return this.capabilities().supportsEffort;
   }
 
-  requiresSandboxForAutonomy(_level: AutonomyLevel): boolean {
-    return false;
+  /**
+   * Every autonomy level below `high` needs scode underneath it.
+   *
+   * Harness-native permission controls are treated as defense in depth, not as
+   * the boundary. Upstream can restructure them without removing the flags we
+   * pass -- OpenCode 1.18.18 turned its deny map into a rules list resolving to
+   * allow-all, and `--agent build` kept working while silently losing its gate.
+   * Anchoring the boundary in scode means an upstream change costs a warning
+   * rather than a silent downgrade, and removes the need to track every
+   * harness's permission semantics. `high` is exempt because the user asked for
+   * auto-approval; there is no boundary left to protect.
+   */
+  requiresSandboxForAutonomy(level: AutonomyLevel): boolean {
+    return level !== "high";
   }
 
   requiresSandboxForTuiAutonomy(level: AutonomyLevel): boolean {

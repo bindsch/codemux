@@ -7,6 +7,37 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Changed
+
+- **The sandbox is the boundary, not the harness.** Every autonomy level below
+  `high` now requires scode, and `--sandbox` is on by default for `run`, `tui`,
+  and `check` (opt out with `--no-sandbox`). Harness-native permission controls
+  are treated as defense in depth. Upstream can restructure them without
+  removing the flags Codemux passes -- OpenCode 1.18.18 turned its deny map into
+  a rules list resolving to allow-all, and `--agent build` kept working while
+  silently losing its gate. Anchoring enforcement in scode means such a change
+  costs a warning instead of a silent downgrade, and removes the need to track
+  every harness's permission semantics. Gemini's interactive TUI carried an
+  undocumented exemption from this rule and no longer does.
+
+### Added
+
+- Kimi Code CLI adapter (`kimi`), audited against 0.31.1. Interactive sessions
+  map autonomy onto `--plan`, `--yolo`, and `--auto`; headless runs carry none
+  of them, because 0.31.1 rejects all three alongside `--prompt`. Project-local
+  `.kimi-code` agent, skill, and mcp directories are rejected before launch.
+- A declared compatibility matrix (`src/harness-compatibility.ts`) checked
+  before launch. Three tiers, because newer is not the same as broken: below
+  `min` refuses, through `maxAudited` runs silently, and anything newer runs
+  with a warning. Refusal above `maxAudited` requires an explicit `breaks`
+  entry describing a determined change, scoped to the autonomy levels it
+  actually removes enforcement from. `CODEMUX_ALLOW_UNTESTED_HARNESS=1`
+  downgrades a refusal to a warning.
+- The harness binary's identity (inode, size, mtime) is compared across the
+  version probe, and a mismatch warns. The reported version was observed
+  changing between invocations on the same machine, so the value read is not
+  guaranteed to be the value that runs.
+
 ## [0.3.1] - 2026-08-13
 
 ### Fixed

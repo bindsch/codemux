@@ -78,8 +78,8 @@ describe("OpencodeAdapter", () => {
 
   test("requires an outer boundary for plan-equivalent levels", () => {
     expect(adapter.requiresSandboxForAutonomy("read-only")).toBe(true);
-    expect(adapter.requiresSandboxForAutonomy("low")).toBe(false);
-    expect(adapter.requiresSandboxForAutonomy("medium")).toBe(false);
+    expect(adapter.requiresSandboxForAutonomy("low")).toBe(true);
+    expect(adapter.requiresSandboxForAutonomy("medium")).toBe(true);
     expect(adapter.requiresSandboxForAutonomy("high")).toBe(false);
   });
 

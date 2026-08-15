@@ -38,10 +38,6 @@ export class OpencodeAdapter extends BaseAdapter {
     }
   }
 
-  override requiresSandboxForAutonomy(level: AutonomyLevel): boolean {
-    return level === "read-only";
-  }
-
   override mapEffort(level: ReasoningEffort): string[] {
     return ["--variant", level];
   }

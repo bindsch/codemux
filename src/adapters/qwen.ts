@@ -61,8 +61,10 @@ export class QwenAdapter extends BaseAdapter {
     }
   }
 
-  override requiresSandboxForAutonomy(_level: AutonomyLevel): boolean {
-    return this.isLegacyBinary;
+  override requiresSandboxForAutonomy(level: AutonomyLevel): boolean {
+    // The legacy binary cannot enforce any level on its own, so it needs the
+    // boundary even at `high`, which the base policy exempts.
+    return this.isLegacyBinary || super.requiresSandboxForAutonomy(level);
   }
 
   buildRunCommand(request: RunRequest): string[] {

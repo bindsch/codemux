@@ -18,6 +18,7 @@ covered by tests. Installed binaries were also exercised where available.
 | Droid | 0.186.0 | 0.186.0 | [CLI reference](https://docs.factory.ai/reference/cli-reference) | stdin, native auto levels and model-aware reasoning-off values, project execution config rejected |
 | Goose | 1.45.0 | not installed | [release](https://github.com/aaif-goose/goose/releases/tag/v1.45.0) | `GOOSE_MODE` chat/approve/smart_approve/auto, project extension config rejected |
 | Gemini CLI | 0.53.1 | not installed | [release](https://github.com/google-gemini/gemini-cli/releases/tag/v0.53.1) | current approval modes; local `.env` and nested sandbox disabled; Plan requires an outer read-only boundary |
+| Kimi Code | 0.31.1 | 0.31.1 | [docs](https://moonshotai.github.io/kimi-code/) | argv prompt; `--plan`/`--yolo`/`--auto` are interactive only and are rejected with `--prompt`, so headless autonomy rests on scode; project `.kimi-code` agents, skills, and mcp directories rejected |
 | OpenCode | 1.18.10 | 1.18.10 | [release](https://github.com/anomalyco/opencode/releases/tag/v1.18.10) | pure mode, plan/build/auto, headless `--variant`, all policy-bearing project config rejected |
 | Pi | 0.83.0 | not installed | [release](https://github.com/earendil-works/pi/releases/tag/v0.83.0) | new `@earendil-works/pi-coding-agent` package, stdin, no project packages, explicit tools |
 | Qwen Code | 0.21.2 | not installed | [release](https://github.com/QwenLM/qwen-code/releases/tag/v0.21.2) | current `qwen`, safe mode, plan/default/auto/yolo; sandbox-only legacy fallback |
@@ -37,13 +38,29 @@ Gemini CLI 0.53.1 remains usable with API-key or enterprise authentication.
 Google's individual subscription and free-tier CLI login moved to Antigravity;
 see the [official announcement](https://github.com/google-gemini/gemini-cli/discussions/28017).
 
+## Version enforcement
+
+`src/harness-compatibility.ts` is the machine-readable half of this ledger and
+is checked before every launch. Keep the two in step: the table above records
+what was reviewed, the matrix records what the CLI enforces.
+
+Refusing a version requires a determined breaking change, not a version bump.
+Upstream ships patches that change nothing, and refusing those would make
+Codemux unusable, so anything newer than `maxAudited` runs with a warning.
+
+Since the boundary is scode rather than the harness, a stale matrix costs an
+inaccurate warning, not enforcement. That is deliberate: it keeps a missed
+upstream release from becoming a security problem.
+
 ## Behavioral invariants
 
 - Prompts use stdin whenever the upstream CLI supports it. Aider, Cline,
   Copilot, Gemini, Goose, and legacy `qwen-coder` retain bounded argv prompts.
-- `read-only` is a durable filesystem boundary. Cursor, Gemini, and OpenCode
-  Plan modes still require `scode --ro` where upstream can transition or write
-  artifacts.
+- Every autonomy level below `high` is a durable filesystem boundary supplied
+  by scode. Harness-native permission controls are defense in depth; Codemux
+  does not depend on them to enforce a level.
+  This holds for interactive sessions as well as headless runs: there is no
+  per-harness TUI exemption.
 - Repository-controlled hooks, plugins, MCP servers, and policy overrides are
   disabled by a native safe flag or rejected before launch.
 - An outer `scode` boundary is authoritative. Native nested sandboxes are

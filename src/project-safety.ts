@@ -41,6 +41,19 @@ const OPENCODE_EXECUTABLE_CONFIG_DIRECTORIES = [
   join(".opencode", "tools"),
 ] as const;
 
+const KIMI_EXECUTABLE_CONFIG_FILES = [
+  join(".kimi-code", "config.toml"),
+  join(".kimi-code", "mcp.json"),
+] as const;
+
+// Kimi auto-discovers skills and agent profiles from the project directory, so
+// a repository can otherwise supply the prompts and tools a session runs with.
+const KIMI_EXECUTABLE_CONFIG_DIRECTORIES = [
+  join(".kimi-code", "agents"),
+  join(".kimi-code", "skills"),
+  join(".kimi-code", "mcp"),
+] as const;
+
 const CURSOR_EXECUTABLE_CONFIG_FILES = [
   join(".cursor", "cli.json"),
   join(".cursor", "hooks.json"),
@@ -162,6 +175,15 @@ export function assertNoOpenCodeProjectExecutionConfig(cwd: string): void {
     "OpenCode",
     OPENCODE_EXECUTABLE_CONFIG_FILES,
     OPENCODE_EXECUTABLE_CONFIG_DIRECTORIES
+  );
+}
+
+export function assertNoKimiProjectExecutionConfig(cwd: string): void {
+  assertNoProjectExecutionConfig(
+    cwd,
+    "Kimi Code",
+    KIMI_EXECUTABLE_CONFIG_FILES,
+    KIMI_EXECUTABLE_CONFIG_DIRECTORIES
   );
 }
 
