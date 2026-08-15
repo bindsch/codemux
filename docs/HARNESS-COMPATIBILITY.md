@@ -1,6 +1,6 @@
 # Harness Compatibility Ledger
 
-Last audited: 2026-08-01.
+Last audited: 2026-08-15.
 
 This is the release contract for Codemux's external agent adapters. “Audited”
 means the upstream release/changelog and current CLI reference were reviewed,
@@ -10,24 +10,31 @@ covered by tests. Installed binaries were also exercised where available.
 | Harness | Audited upstream | Installed during audit | Primary source | Important contract |
 |---------|------------------|------------------------|----------------|--------------------|
 | Aider | 0.86.2 | 0.86.2 | [PyPI](https://pypi.org/project/aider-chat/) | packaged empty config/model metadata, null env/history, no Git side effects, negative headless confirmations, common provider credentials allowlisted |
-| Claude Code | 2.1.220 | 2.1.220 | [release](https://github.com/anthropics/claude-code/releases/tag/v2.1.220) | `manual` replaces removed public `default`; effort is low through max |
+| Claude Code | 2.1.223 | 2.1.223 | [release](https://github.com/anthropics/claude-code/releases/tag/v2.1.220) | `manual` replaces removed public `default`; effort is low through max |
 | Cline CLI | 3.0.48 | not installed | [CLI changelog](https://github.com/cline/cline/blob/main/apps/cli/CHANGELOG.md) | `cline -- ...`, explicit plan/auto-approve/thinking, project execution config rejected |
-| Codex CLI | 0.146.0 | 0.145.0 | [release](https://github.com/openai/codex/releases/tag/rust-v0.146.0) | stdin prompt, explicit sandbox and approval policy, project config rejected |
+| Codex CLI | 0.147.0 | 0.147.0 | [release](https://github.com/openai/codex/releases/tag/rust-v0.146.0) | stdin prompt, explicit sandbox and approval policy, project config rejected |
 | GitHub Copilot CLI | 1.0.77 | not installed | [release](https://github.com/github/copilot-cli/releases/tag/v1.0.77) | explicit `--effort none`, remote/project integrations disabled or rejected |
-| Cursor Agent | rolling build 2026.07.23-e383d2b | same | [CLI installation](https://docs.cursor.com/en/cli/installation) | primary `agent`, legacy alias fallback, stdin, trust, Plan/Auto Review/Force, outer sandbox |
+| Cursor Agent | rolling build 2026.08.11-e8db854 | same | [CLI installation](https://docs.cursor.com/en/cli/installation) | primary `agent`, legacy alias fallback, stdin, trust, Plan/Auto Review/Force, outer sandbox |
 | Droid | 0.186.0 | 0.186.0 | [CLI reference](https://docs.factory.ai/reference/cli-reference) | stdin, native auto levels and model-aware reasoning-off values, project execution config rejected |
 | Goose | 1.45.0 | not installed | [release](https://github.com/aaif-goose/goose/releases/tag/v1.45.0) | `GOOSE_MODE` chat/approve/smart_approve/auto, project extension config rejected |
 | Gemini CLI | 0.53.1 | not installed | [release](https://github.com/google-gemini/gemini-cli/releases/tag/v0.53.1) | current approval modes; local `.env` and nested sandbox disabled; Plan requires an outer read-only boundary |
 | Kimi Code | 0.31.1 | 0.31.1 | [docs](https://moonshotai.github.io/kimi-code/) | argv prompt; `--plan`/`--yolo`/`--auto` are interactive only and are rejected with `--prompt`, so headless autonomy rests on scode; project `.kimi-code` agents, skills, and mcp directories rejected |
-| OpenCode | 1.18.10 | 1.18.10 | [release](https://github.com/anomalyco/opencode/releases/tag/v1.18.10) | pure mode, plan/build/auto, headless `--variant`, all policy-bearing project config rejected |
+| OpenCode | 1.18.18 | 1.18.18 | [release](https://github.com/anomalyco/opencode/releases/tag/v1.18.10) | pure mode, plan/build/auto, headless `--variant`, all policy-bearing project config rejected |
 | Pi | 0.83.0 | not installed | [release](https://github.com/earendil-works/pi/releases/tag/v0.83.0) | new `@earendil-works/pi-coding-agent` package, stdin, no project packages, explicit tools |
 | Qwen Code | 0.21.2 | not installed | [release](https://github.com/QwenLM/qwen-code/releases/tag/v0.21.2) | current `qwen`, safe mode, plan/default/auto/yolo; sandbox-only legacy fallback |
 | Z.AI | Claude 2.1.220 transport | Claude 2.1.220 | [Z.AI Claude setup](https://docs.z.ai/devpack/tool/claude) | official Anthropic-compatible endpoint/env and Claude permission contract |
 
-The local Codex installation was behind the audited upstream version. Its
-latest distribution was inspected separately; Codemux does not silently mutate
-user-installed tools. Droid updated itself to the audited release during its
-manual CLI inspection.
+The 2026-08-15 pass re-read every installed binary and re-ran the installed
+contract suite against all seven of them: Aider, Claude Code, Codex, Cursor
+Agent, Droid, Kimi Code, and OpenCode. Cline, Copilot, Gemini, Goose, Pi, and
+Qwen are not installed here and were not re-audited in this pass; their rows
+carry the versions from 2026-08-01. Gemini in particular has moved on upstream,
+so treat that row as stale rather than current.
+
+OpenCode's reported version changed mid-session while it was being updated,
+which is what the binary-identity check in `src/harness-compatibility.ts`
+reports: the version read during the probe is not guaranteed to be the version
+that runs.
 
 Sandbox execution requires scode 0.2.0 or newer. Codemux checks this before
 launch so older wrappers cannot silently miss a newly supported harness. The
