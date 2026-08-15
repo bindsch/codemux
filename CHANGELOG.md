@@ -7,6 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- OpenHands CLI adapter (`openhands`), audited against CLI 1.16.0. `--headless`
+  auto-approves by design, so headless runs carry no native approval gate and
+  depend on the scode boundary. `--llm-approve` is never emitted: it confirms
+  only what an LLM predicts is high-risk, which is a different mechanism from
+  graded human approval rather than a weaker form of it. Model selection goes
+  through `--override-with-envs`, since 1.16.0 has no model flag. Project-local
+  `.openhands` skills, hooks, agents, microagents, plugins, and profiles are
+  rejected before launch.
+
 ## [0.4.0] - 2026-08-15
 
 ### Changed

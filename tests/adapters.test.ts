@@ -39,7 +39,7 @@ describe("Adapter Registry", () => {
     expect(AGENT_IDS).toContain("pi");
     expect(AGENT_IDS).toContain("qwen");
     expect(AGENT_IDS).toContain("zai");
-    expect(AGENT_IDS.length).toBe(14);
+    expect(AGENT_IDS.length).toBe(15);
   });
 
   test("getAdapter returns correct adapter for each agent", () => {
@@ -60,7 +60,7 @@ describe("Adapter Registry", () => {
 
   test("getAllAdapters returns all 13 adapters", () => {
     const adapters = getAllAdapters();
-    expect(adapters.length).toBe(14);
+    expect(adapters.length).toBe(15);
   });
 
   test("getAvailableAdapters filters by executable availability", () => {

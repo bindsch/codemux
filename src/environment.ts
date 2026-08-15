@@ -25,6 +25,8 @@ const ALLOWED_CREDENTIAL_ENV: Record<AgentId, readonly string[]> = {
   // KIMI_API_KEY and OPENAI_API_KEY are the direct-credential paths.
   kimi: ["KIMI_API_KEY", "OPENAI_API_KEY"],
   opencode: [],
+  // 1.16.0 ignores the environment unless --override-with-envs is passed.
+  openhands: ["LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL"],
   pi: [],
   qwen: ["DASHSCOPE_API_KEY", "OPENAI_API_KEY", "QWEN_API_KEY"],
   zai: ["ANTHROPIC_AUTH_TOKEN"],

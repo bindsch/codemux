@@ -129,6 +129,11 @@ describe("installed harness contracts", () => {
       required: ["--prompt", "--model", "--plan", "--yolo", "--auto"],
     },
     {
+      binary: "openhands",
+      args: ["--help"],
+      required: ["--task", "--headless", "--always-approve", "--override-with-envs"],
+    },
+    {
       binary: "opencode",
       args: ["--pure", "run", "--help"],
       required: ["--pure", "--model", "--agent", "--auto", "--variant"],

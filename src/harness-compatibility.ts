@@ -106,6 +106,14 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
     min: "0.31.0",
     maxAudited: "0.31.1",
   },
+  openhands: {
+    scheme: "semver",
+    versionArgs: ["--version"],
+    // The banner reports the SDK version; the CLI version follows "OpenHands CLI".
+    pattern: /OpenHands CLI (\d+\.\d+\.\d+)/,
+    min: "1.16.0",
+    maxAudited: "1.16.0",
+  },
   opencode: {
     scheme: "semver",
     versionArgs: ["--version"],

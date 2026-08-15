@@ -41,6 +41,21 @@ const OPENCODE_EXECUTABLE_CONFIG_DIRECTORIES = [
   join(".opencode", "tools"),
 ] as const;
 
+const OPENHANDS_EXECUTABLE_CONFIG_FILES = [
+  join(".openhands", "hooks.json"),
+] as const;
+
+// A repository can otherwise supply the skills, hooks, agent profiles, and
+// microagent prompts that a session runs with.
+const OPENHANDS_EXECUTABLE_CONFIG_DIRECTORIES = [
+  join(".openhands", "agents"),
+  join(".openhands", "hooks"),
+  join(".openhands", "microagents"),
+  join(".openhands", "plugins"),
+  join(".openhands", "profiles"),
+  join(".openhands", "skills"),
+] as const;
+
 const KIMI_EXECUTABLE_CONFIG_FILES = [
   join(".kimi-code", "config.toml"),
   join(".kimi-code", "mcp.json"),
@@ -175,6 +190,15 @@ export function assertNoOpenCodeProjectExecutionConfig(cwd: string): void {
     "OpenCode",
     OPENCODE_EXECUTABLE_CONFIG_FILES,
     OPENCODE_EXECUTABLE_CONFIG_DIRECTORIES
+  );
+}
+
+export function assertNoOpenHandsProjectExecutionConfig(cwd: string): void {
+  assertNoProjectExecutionConfig(
+    cwd,
+    "OpenHands",
+    OPENHANDS_EXECUTABLE_CONFIG_FILES,
+    OPENHANDS_EXECUTABLE_CONFIG_DIRECTORIES
   );
 }
 

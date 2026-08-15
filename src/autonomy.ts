@@ -96,6 +96,15 @@ export const AUTONOMY_EQUIVALENCE: Record<AgentId, AutonomyMapping> = {
     },
     notes: "interactive only: --prompt rejects all three, so headless autonomy rests on scode",
   },
+  openhands: {
+    byLevel: {
+      "read-only": "default always-ask",
+      low: "default always-ask",
+      medium: "default always-ask",
+      high: "--always-approve",
+    },
+    notes: "--headless auto-approves, so headless autonomy rests on scode; --llm-approve is never emitted",
+  },
   opencode: {
     byLevel: {
       "read-only": "--agent plan",
