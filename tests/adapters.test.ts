@@ -39,7 +39,18 @@ describe("Adapter Registry", () => {
     expect(AGENT_IDS).toContain("pi");
     expect(AGENT_IDS).toContain("qwen");
     expect(AGENT_IDS).toContain("zai");
+    expect(AGENT_IDS).toContain("kimi");
+    expect(AGENT_IDS).toContain("openhands");
     expect(AGENT_IDS.length).toBe(15);
+  });
+
+  test("every agent id resolves to an adapter that reports that id", () => {
+    // The per-class assertions below cover a subset by hand; this one closes
+    // the gap for the whole set, so a new agent cannot be registered without
+    // a working adapter behind it.
+    for (const id of AGENT_IDS) {
+      expect(getAdapter(id).id, id).toBe(id);
+    }
   });
 
   test("getAdapter returns correct adapter for each agent", () => {
@@ -58,7 +69,7 @@ describe("Adapter Registry", () => {
     expect(() => getAdapter("unknown" as any)).toThrow("Unknown agent: unknown");
   });
 
-  test("getAllAdapters returns all 13 adapters", () => {
+  test("getAllAdapters returns all 15 adapters", () => {
     const adapters = getAllAdapters();
     expect(adapters.length).toBe(15);
   });
