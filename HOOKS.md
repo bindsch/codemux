@@ -1,41 +1,56 @@
 # Hooks
 
-Three harnesses audit every commit in parallel. Each runs read-only through
-codemux, so an auditor cannot modify the work it is reviewing, and each is
-`async` so the commit is never blocked waiting on a model.
+The audit itself lives in `code-review`, which owns the reviewers, the prompts,
+and the verdict. Hookrun's job is only to decide when it runs and whether a
+failure stops the commit.
 
-## Hook: audit-codex
-- on: commit
-- agent: codex
-- mode: async
-- timeout: 900
-- do: Review the committed diff for correctness bugs, race conditions, and
-      error paths that are silently swallowed. Report only defects you can
-      point at a specific line for. If the diff is clean, say so in one line.
+`code-review run` follows the work: it reviews what changed, or the whole tree
+when nothing has. It fires at `task-end`, the moment the writing agent finishes
+a turn, because a finding is still cheap to act on then. Auditing at commit time
+reports problems into code that has already been committed.
 
-## Hook: audit-claude
-- on: commit
-- agent: claude
-- mode: async
-- do: Review the committed diff for security regressions: weakened sandbox or
-      autonomy boundaries, repository-controlled input reaching execution, and
-      credentials or secrets crossing a process boundary. Report only what the
-      diff actually changes. If the diff is clean, say so in one line.
+`code-review gate` reads the verdict the review recorded and calls no model, so
+it refuses a commit without adding the review's latency to one.
 
-## Hook: audit-kimi
-- on: commit
-- agent: kimi
-- mode: async
-- do: Review the committed diff for contract drift: documentation, changelog,
-      and tests disagreeing with the code they describe. Report only concrete
-      mismatches. If the diff is clean, say so in one line.
+The gate is discipline, not a boundary. Its verdict lives in `.code-review/`
+inside the repository, which the writing agent can also write, so an agent
+determined to bypass it can. It catches mistakes; it does not contain an
+adversary.
 
-## Hook: audit-zai
-- on: commit
-- agent: zai
-- model: glm-5.3
+Two timing limits follow from `async`. A turn that edits and commits without the
+review finishing has no fresh verdict, and the gate refuses rather than guesses
+— so a commit can be blocked waiting for a review that is still running. That is
+the intended direction of failure, but it means "adds no latency" describes the
+gate itself, not always the commit.
+
+The task-end shim is committed in `.claude/settings.json`, so a fresh clone
+fires reviews once its owner approves the configuration. The commit gate is not:
+Git hooks live in `.git/hooks`, which is never committed. Until it is installed,
+reviews run and commits are not gated.
+
+```sh
+hookrun trust --allow-shell   # approve these commands after reading them
+hookrun install claude git    # task-end shim, plus the pre-commit gate
+```
+
+Trust comes first: `install` refuses to write shims for a configuration nobody
+has approved, so running it first leaves no gate at all. `install git` also
+declines to replace a `pre-commit` hook it did not write, and says so while
+still exiting successfully, so read its output rather than its exit status.
+
+That approval is what stops this file from being a way around the sandbox.
+Hookrun pins a digest of the approved configuration and refuses to run when it
+no longer matches, so an agent editing the `run:` lines below cannot have them
+executed -- the next fire reports the configuration as changed and asks for
+review instead.
+
+## Hook: review
+- on: task-end
 - mode: async
-- do: Review the committed diff for logic errors and unhandled edge cases:
-      boundary conditions, empty and single-element inputs, and error paths
-      that return success. Report only defects you can point at a specific
-      line for. If the diff is clean, say so in one line.
+- timeout: 1800
+- run: code-review run --profile quick
+
+## Hook: review-gate
+- on: commit
+- mode: blocking
+- run: code-review gate
