@@ -23,8 +23,9 @@ review finishing has no fresh verdict, and the gate refuses rather than guesses
 the intended direction of failure, but it means "adds no latency" describes the
 gate itself, not always the commit.
 
-The task-end shim is committed in `.claude/settings.json`, so a fresh clone
-fires reviews once its owner approves the configuration. The commit gate is not:
+The task-end shim lives in `.claude/settings.json`. Commit it and a fresh clone
+fires reviews once its owner approves the configuration; leave it untracked and
+each clone installs its own. The commit gate is not:
 Git hooks live in `.git/hooks`, which is never committed. Until it is installed,
 reviews run and commits are not gated.
 
@@ -48,7 +49,7 @@ review instead.
 - on: task-end
 - mode: async
 - timeout: 1800
-- run: code-review run --profile quick
+- run: code-review run --profile default
 
 ## Hook: review-gate
 - on: commit
