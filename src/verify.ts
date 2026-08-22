@@ -1,3 +1,7 @@
+import { lstatSync, mkdirSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { getAdapter } from "./adapters/index.js";
 import { AUTONOMY_EQUIVALENCE } from "./autonomy.js";
 import {
@@ -10,6 +14,68 @@ import {
   type AgentId,
   type RunRequest,
 } from "./types.js";
+
+// Static wiring checks must not depend on what happens to sit in the
+// checker's own working directory: an adapter that (correctly) refuses
+// repository-local executable configuration would otherwise report its
+// wiring as broken whenever the checker itself runs inside such a repo —
+// including this one, whose own hook shim lives in .claude/settings.json.
+// So command building runs in a neutral scratch cwd instead of process.cwd().
+//
+// Root selection, per platform: on macOS, the per-user confstr temp
+// (getconf DARWIN_USER_TEMP_DIR) — its ancestors are root-owned, so no other
+// local user can plant executable configuration above the scratch dir, and
+// it ignores a repointed TMPDIR. Elsewhere POSIX falls back to /tmp; there a
+// same-machine user could pre-create or plant inside the scratch dir, so we
+// verify we own it (below) and otherwise use a fresh mkdtemp. Windows uses
+// tmpdir() and makes no immunity guarantee (scode is not a Windows boundary
+// in practice). Resolved lazily so a plain `codemux run`/`tui` never spawns
+// getconf — only `verify` builds commands.
+function platformTempRoot(): string {
+  if (process.platform === "darwin") {
+    const proc = Bun.spawnSync(["/usr/bin/getconf", "DARWIN_USER_TEMP_DIR"], {
+      stdout: "pipe",
+      stderr: "ignore",
+      timeout: 2000,
+    });
+    if (proc.exitCode === 0) {
+      const dir = proc.stdout.toString().trim();
+      if (dir.length > 0) return dir;
+    }
+    return "/tmp";
+  }
+  return process.platform === "win32" ? tmpdir() : "/tmp";
+}
+
+// A per-user scratch directory reused across invocations. Nothing is ever
+// written into it (it is only a cwd for command building), so reuse means no
+// accumulation and no cleanup to leak when exit handlers do not fire (Bun's
+// test workers skip them). If the fixed path exists but is not owned by us
+// (a foreign plant on the shared /tmp fallback), a fresh private mkdtemp is
+// used instead, so the cwd is always one we control.
+let neutralCwd: string | null = null;
+function verificationCwd(): string {
+  if (neutralCwd === null) {
+    const root = platformTempRoot();
+    const uid = typeof process.getuid === "function" ? process.getuid() : null;
+    const fixed = join(root, `codemux-verify-${uid ?? "u"}`);
+    let dir = fixed;
+    try {
+      mkdirSync(fixed, { recursive: true, mode: 0o700 });
+      // lstat, not stat: a symlink planted at the fixed path (on the shared
+      // /tmp fallback) must be rejected, not followed to a directory the
+      // attacker happens to own. Require a real, self-owned directory.
+      const st = lstatSync(fixed);
+      if (!st.isDirectory() || (uid !== null && st.uid !== uid)) {
+        dir = mkdtempSync(join(root, "codemux-verify-"));
+      }
+    } catch {
+      dir = mkdtempSync(join(root, "codemux-verify-"));
+    }
+    neutralCwd = dir;
+  }
+  return neutralCwd;
+}
 
 export type VerificationStatus = "PASS" | "WARN" | "FAIL";
 
@@ -86,6 +152,7 @@ function verifyRunBuilds(agentId: AgentId, issues: string[]): { ok: boolean; war
           prompt: "verify",
           autonomy,
           sandboxed,
+          cwd: verificationCwd(),
         };
         adapter.validateRunRequest(req);
         const normalCmd = adapter.buildRunCommand(req);
@@ -107,6 +174,7 @@ function verifyRunBuilds(agentId: AgentId, issues: string[]): { ok: boolean; war
           prompt: "verify",
           model: "verify-model",
           autonomy: "low",
+          cwd: verificationCwd(),
           sandboxed: adapter.requiresSandboxForAutonomy("low"),
         };
         adapter.validateRunRequest(modelRequest);
@@ -119,6 +187,7 @@ function verifyRunBuilds(agentId: AgentId, issues: string[]): { ok: boolean; war
       if (caps.supportsEffort) {
         for (const effort of caps.effortLevels) {
           const effortRequest: RunRequest = {
+            cwd: verificationCwd(),
             agent: agentId,
             prompt: "verify",
             autonomy: "low",
@@ -152,13 +221,27 @@ function verifyTuiBuilds(agentId: AgentId, issues: string[]): { ok: boolean; war
           ? "low"
           : undefined;
         const sandboxed = adapter.requiresSandboxForTuiAutonomy(autonomy);
-        adapter.validateTuiRequest(undefined, process.cwd(), autonomy, effort);
-        const normalCmd = adapter.buildTuiCommand(undefined, autonomy, effort, sandboxed);
+        adapter.validateTuiRequest(undefined, verificationCwd(), autonomy, effort);
+        const normalCmd = adapter.buildTuiCommand(
+          undefined,
+          autonomy,
+          effort,
+          sandboxed,
+          false,
+          verificationCwd()
+        );
         if (!commandIsValid(normalCmd)) {
           throw new Error(`invalid tui command for autonomy='${autonomy}'`);
         }
 
-        const sandboxedCmd = adapter.buildTuiCommand(undefined, autonomy, effort, true);
+        const sandboxedCmd = adapter.buildTuiCommand(
+          undefined,
+          autonomy,
+          effort,
+          true,
+          false,
+          verificationCwd()
+        );
         if (!commandIsValid(sandboxedCmd)) {
           throw new Error(`invalid sandboxed tui command for autonomy='${autonomy}'`);
         }
@@ -169,12 +252,14 @@ function verifyTuiBuilds(agentId: AgentId, issues: string[]): { ok: boolean; war
         const effort = adapter.supportsTuiEffort() && caps.effortLevels.includes("low")
           ? "low"
           : undefined;
-        adapter.validateTuiRequest("verify-model", process.cwd(), "low", effort);
+        adapter.validateTuiRequest("verify-model", verificationCwd(), "low", effort);
         const modelCmd = adapter.buildTuiCommand(
           "verify-model",
           "low",
           effort,
-          adapter.requiresSandboxForTuiAutonomy("low")
+          adapter.requiresSandboxForTuiAutonomy("low"),
+          false,
+          verificationCwd()
         );
         if (!commandIsValid(modelCmd)) {
           throw new Error("invalid tui command with model");
@@ -256,6 +341,7 @@ export function buildEffectiveScodeCommands(
         prompt: "verify",
         autonomy,
         sandboxed: true,
+        cwd: verificationCwd(),
       };
       const runCmd = captureWarnings(() => adapter.buildRunCommand(runRequest)).value;
       rows.push({
@@ -266,7 +352,7 @@ export function buildEffectiveScodeCommands(
       });
 
       const tuiCmd = captureWarnings(() =>
-        adapter.buildTuiCommand(undefined, autonomy, effort, true)
+        adapter.buildTuiCommand(undefined, autonomy, effort, true, false, verificationCwd())
       ).value;
       rows.push({
         agentId,

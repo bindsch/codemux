@@ -206,6 +206,7 @@ program
       if (options.sandbox) {
         adapter.validateRunRequest(request);
         adapter.beforeLaunch();
+        adapter.prepareSandbox({ sandboxTrust: sandboxOptions?.trust, passthroughEnv });
         const envArg = adapter.buildExecutionEnv(
           adapter.getRunEnv(request),
           passthroughEnv
@@ -332,6 +333,14 @@ program
       if (options.sandbox) {
         adapter.validateRunRequest(request);
         adapter.beforeLaunch();
+        adapter.prepareSandbox({
+          sandboxTrust: resolveSandboxOptionsForAgent(
+            agentId,
+            requestedAutonomy,
+            sandboxPolicyOverrides
+          ).trust,
+          passthroughEnv,
+        });
         const envArg = adapter.buildExecutionEnv(
           adapter.getRunEnv(request),
           passthroughEnv
@@ -494,6 +503,7 @@ program
           enablePlaywrightMcp
         );
         adapter.beforeLaunch();
+        adapter.prepareSandbox({ sandboxTrust: sandboxOptions?.trust, passthroughEnv });
         const adapterEnv = adapter.buildExecutionEnv(
           adapter.getTuiEnv(model, autonomy, effort, true),
           passthroughEnv

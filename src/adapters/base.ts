@@ -7,6 +7,7 @@ import type {
   AdapterCapabilities,
 } from "../types.js";
 import { sanitizeEnvironment } from "../environment.js";
+import type { ScodeTrustLevel } from "../sandbox.js";
 import { resolveTrustedExecutable } from "../executable-security.js";
 import {
   guardedWait,
@@ -22,6 +23,15 @@ import {
   validatePrompt,
   validateWorkingDirectory,
 } from "../validation.js";
+
+export interface SandboxPreparation {
+  /** The RESOLVED trust preset of the sandbox the child will run in
+   * (not the raw CLI override): "standard" unless another level was
+   * resolved. */
+  sandboxTrust?: ScodeTrustLevel;
+  /** Env var names explicitly forwarded to the child via --pass-env. */
+  passthroughEnv?: readonly string[];
+}
 
 export abstract class BaseAdapter {
   abstract readonly id: AgentId;
@@ -169,6 +179,17 @@ export abstract class BaseAdapter {
    * Throw to abort launch.
    */
   beforeLaunch(): void {
+    // Default: no-op
+  }
+
+  /**
+   * Called before a SANDBOXED launch only, after beforeLaunch. Use for
+   * preparation that only sandboxed processes need — e.g. materializing a
+   * credential a sandbox cannot fetch itself. Unsandboxed launches must not
+   * pay these side effects. The context carries the resolved sandbox trust
+   * level, so preparation can skip work an untrusted sandbox cannot use.
+   */
+  prepareSandbox(_context: SandboxPreparation = {}): void {
     // Default: no-op
   }
 

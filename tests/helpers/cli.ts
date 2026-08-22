@@ -28,6 +28,10 @@ export async function runCli(
         stderr: "pipe",
         env: {
           ...process.env,
+          // Spawned CLI tests cannot inject the credential seams; disable
+          // the keychain sync so no spawned codemux reads the real Keychain
+          // and copies the live credential into this throwaway HOME.
+          CODEMUX_NO_KEYCHAIN_SYNC: "1",
           HOME: isolatedHome,
           XDG_CONFIG_HOME: join(isolatedHome, ".config"),
           ...envOverrides,
