@@ -7,8 +7,38 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-21
+
+### Fixed
+
+- Static wiring verification (`codemux verify` and its tests) builds commands
+  against a neutral scratch working directory instead of the checker's own
+  cwd. An adapter that correctly refuses repository-local executable
+  configuration (Copilot) no longer reports its wiring as broken when the
+  checker itself runs inside such a repository — including this one, whose
+  hook shim lives in `.claude/settings.json`.
+
 ### Added
 
+- Sandboxed `claude` runs stay authenticated. Claude Code keeps an on-disk
+  mirror of its Keychain credential at `~/.claude/.credentials.json`; the
+  scode sandbox cannot reach the Keychain, so a sandboxed Claude reads only
+  that file, and a rotated Keychain token leaves it stale — every sandboxed
+  run then 401s. A new `prepareSandbox` adapter hook, on sandboxed
+  (non-untrusted) launches, refreshes it. Scoped deliberately narrow: it only
+  refreshes a file that already exists (never fabricates one; a file that is
+  not a Claude credential mirror is reported foreign and left untouched);
+  only the `claudeAiOauth` field is read or written, so co-stored `mcpOAuth`
+  state is preserved; the Keychain replaces the file only when strictly newer
+  (or, when an expiry is unorderable, when the tokens differ); and a final
+  re-check re-reads the whole file before the atomic rename, backing off if it
+  changed or was deleted at all. A symlinked target or parent is refused, and
+  the sync is skipped when `CLAUDE_CONFIG_DIR` / `CLAUDE_SECURESTORAGE_CONFIG_DIR`
+  is passed through (the child then reads a mirror it owns).
+  `CODEMUX_NO_KEYCHAIN_SYNC=1` disables it. Known limitation (accepted):
+  the refresh is lock-free, matching Claude Code's own handling of this
+  file, so a token rotated by a concurrent sandboxed Claude in a microsecond
+  window can be overwritten and lost for one launch (self-heals thereafter).
 - OpenHands CLI adapter (`openhands`), audited against CLI 1.16.0. `--headless`
   auto-approves by design, so headless runs carry no native approval gate and
   depend on the scode boundary. `--llm-approve` is never emitted: it confirms
