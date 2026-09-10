@@ -2,6 +2,10 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { BaseAdapter } from "./base.js";
 import { getPlaywrightSandboxMcpArgs } from "../mcp.js";
+import {
+  claudeAutonomyFlags,
+  claudeNativeAutonomyFlags,
+} from "../claude-autonomy.js";
 import { readUtf8FileBounded } from "../file-io.js";
 import type {
   AgentId,
@@ -148,16 +152,9 @@ export class ZaiAdapter extends BaseAdapter {
   }
 
   override mapAutonomy(level: AutonomyLevel): string[] {
-    switch (level) {
-      case "read-only":
-        return ["--permission-mode", "plan"];
-      case "low":
-        return ["--permission-mode", "manual"];
-      case "medium":
-        return ["--permission-mode", "acceptEdits"];
-      case "high":
-        return ["--dangerously-skip-permissions"];
-    }
+    // The TUI has a human to approve; write grants ride only on headless
+    // runs (see buildRunCommand).
+    return claudeNativeAutonomyFlags(level);
   }
 
   buildRunCommand(request: RunRequest): string[] {
@@ -176,7 +173,7 @@ export class ZaiAdapter extends BaseAdapter {
     cmd.push("--model", request.model || "opus");
 
     if (request.autonomy) {
-      cmd.push(...this.mapAutonomy(request.autonomy));
+      cmd.push(...claudeAutonomyFlags(request.autonomy, request.cwd ?? process.cwd()));
     }
 
     return cmd;
@@ -203,6 +200,8 @@ export class ZaiAdapter extends BaseAdapter {
     }));
     cmd.push("--model", model || "opus");
     if (autonomy) {
+      // The TUI has a human to approve; write grants ride only on
+      // headless runs.
       cmd.push(...this.mapAutonomy(autonomy));
     }
     return cmd;

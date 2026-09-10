@@ -7,6 +7,10 @@ import {
   type SecretReader,
 } from "../credentials.js";
 import { getPlaywrightSandboxMcpArgs } from "../mcp.js";
+import {
+  claudeAutonomyFlags,
+  claudeNativeAutonomyFlags,
+} from "../claude-autonomy.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -75,6 +79,12 @@ export class ClaudeAdapter extends BaseAdapter {
         `claude: could not refresh the credential mirror at ${target}; ` +
           "a sandboxed run may fail to authenticate"
       );
+    } else if (outcome === "unrecognized") {
+      console.error(
+        `claude: the credential mirror at ${target} holds an emptied Claude ` +
+          "credential with keys this codemux does not know; left untouched, so " +
+          "a sandboxed run may fail to authenticate (a newer Claude Code?)"
+      );
     } else if (outcome === "synced" && process.stderr.isTTY) {
       console.error("claude: refreshed the credential mirror from the Keychain");
     }
@@ -93,16 +103,9 @@ export class ClaudeAdapter extends BaseAdapter {
   }
 
   override mapAutonomy(level: AutonomyLevel): string[] {
-    switch (level) {
-      case "read-only":
-        return ["--permission-mode", "plan"];
-      case "low":
-        return ["--permission-mode", "manual"];
-      case "medium":
-        return ["--permission-mode", "acceptEdits"];
-      case "high":
-        return ["--dangerously-skip-permissions"];
-    }
+    // The TUI has a human to approve; write grants ride only on headless
+    // runs (see buildRunCommand).
+    return claudeNativeAutonomyFlags(level);
   }
 
   override mapEffort(level: ReasoningEffort): string[] {
@@ -129,7 +132,7 @@ export class ClaudeAdapter extends BaseAdapter {
     }
 
     if (request.autonomy) {
-      cmd.push(...this.mapAutonomy(request.autonomy));
+      cmd.push(...claudeAutonomyFlags(request.autonomy, request.cwd ?? process.cwd()));
     }
     if (request.effort) {
       cmd.push(...this.mapEffort(request.effort));
@@ -161,6 +164,8 @@ export class ClaudeAdapter extends BaseAdapter {
       cmd.push("--model", model);
     }
     if (autonomy) {
+      // The TUI has a human to approve; write grants ride only on
+      // headless runs.
       cmd.push(...this.mapAutonomy(autonomy));
     }
     if (effort) {

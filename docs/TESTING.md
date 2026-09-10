@@ -33,8 +33,8 @@ bun test tests/sandbox.test.ts tests/sandbox-policy.test.ts
 # Adapter command construction tests
 bun test tests/adapters.test.ts tests/adapters-extended.test.ts tests/new-adapters.test.ts
 
-# Process lifecycle, timeout, output-limit, file-input, and Z.AI credential tests
-bun test tests/base.test.ts tests/zai.test.ts
+# Process lifecycle, timeout, process-tree, output-limit, file-input, and credential tests
+bun test tests/base.test.ts tests/process-table.test.ts tests/credentials.test.ts tests/zai.test.ts
 
 # Order/race stress
 bun test --max-concurrency=1 --randomize --rerun-each=3

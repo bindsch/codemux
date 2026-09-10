@@ -46,6 +46,44 @@ Gemini CLI 0.53.1 remains usable with API-key or enterprise authentication.
 Google's individual subscription and free-tier CLI login moved to Antigravity;
 see the [official announcement](https://github.com/google-gemini/gemini-cli/discussions/28017).
 
+## 2026-09-04 addendum: Claude Code subprocess-env-scrub hardening
+
+Installed Claude Code 2.1.258 (last audited at 2.1.223 on 2026-08-15) couples
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` to a permission hardening: when that
+variable is set, permission-mode resolution force-returns `default` and
+silently discards `--permission-mode` and `--dangerously-skip-permissions`.
+The notification reads: "Permission mode forced to default —
+CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is set (allowed_non_write_users hardening).
+Declare allowedTools explicitly, or set CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0 to
+opt out." Both claude-family adapters set the variable for subprocess env
+scrubbing, so headless medium/high runs lost file-write ability: reads
+worked, and every write was denied for lack of an interactive approval path.
+
+The `claude` and `zai` adapters now emit explicit `--allowedTools` grants
+alongside the unchanged native flags: an `Edit(//<launch dir>/**)` grant at
+medium — anchored to the launch directory, the same paths acceptEdits
+would auto-approve, so an approved `cd` cannot widen it — and bare `Edit`,
+`Write`, `NotebookEdit`, and `Bash` at high, a subset of the bypass high
+always requested. This is the escape hatch the hardening message itself
+offers. Keeping the flags and scoping the medium grant to the workspace
+means audited versions and any future upstream that decouples the variable
+keep their previous headless write behavior exactly. Under the hardening,
+high remains weaker than a true bypass: managed deny rules, safety checks,
+and ungranted tools still gate. Grants ride only on headless runs; the
+TUI keeps the native flags so a human approves, and grants cannot survive
+a mode switch because they are never emitted there. Plan mode is
+discarded as well, so a hardened read-only TUI prompts instead of
+planning; headless read-only denies writes either way, and scode's `--ro`
+boundary remains the enforcement. At medium, a launch directory
+containing a parenthesis, a backslash, a glob metacharacter, a tab or
+line break, or trailing whitespace refuses the launch — the rule grammar
+cannot represent any of them.
+
+`maxAudited` for Claude Code stays at 2.1.223: this addendum rests on
+help-surface and installed-binary inspection plus adapter unit tests, not on
+the full upgrade procedure above. Re-audit against the upstream release
+notes and re-run the installed contract suite before bumping.
+
 ## Version enforcement
 
 `src/harness-compatibility.ts` is the machine-readable half of this ledger and

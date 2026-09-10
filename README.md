@@ -1,6 +1,6 @@
 # codemux
 
-> **Beta software (v0.5.0).** `codemux` is under active development. Expect behavior changes as adapters and sandbox policy continue to harden.
+> **Beta software (v0.5.1).** `codemux` is under active development. Expect behavior changes as adapters and sandbox policy continue to harden.
 
 `codemux` is a unified CLI for AI coding agents. It gives one command surface
 for multiple harnesses, normalizes autonomy/effort semantics, and can route
@@ -85,7 +85,7 @@ codemux [command] [options]
 | `-m, --model <model>` | Model name or alias |
 | `-p, --prompt <prompt>` | Prompt text |
 | `-f, --file <path>` | Read prompt text from file |
-| `--timeout <seconds>` | Kill a hung non-interactive run (default: `1800`, maximum: `86400`) |
+| `--timeout <seconds>` | Kill a hung non-interactive run and its whole process tree (a descendant whose parent chain broke before the first snapshot can still escape; default: `1800`, maximum: `86400`) |
 | `--pass-env <names>` | Explicitly pass comma-separated parent environment names |
 | `--enable-playwright-mcp` | Enable a local Playwright MCP binary inside `--sandbox` |
 | `-s, --sandbox` | Execute via `scode` |
@@ -192,7 +192,7 @@ alias that has no mapping for the selected agent fails with a descriptive error.
 | Harness | `read-only` | `low` | `medium` | `high` |
 |---------|-------------|-------|----------|--------|
 | `aider` | `--dry-run` | decline headless confirmations | `--yes-always` | `--yes-always` |
-| `claude` | `--permission-mode plan` | `--permission-mode manual` | `--permission-mode acceptEdits` | `--dangerously-skip-permissions` |
+| `claude` | `--permission-mode plan` | `--permission-mode manual` | `--permission-mode acceptEdits` + `--allowedTools Edit(//<launch dir>/**)` (headless) | `--dangerously-skip-permissions` + `--allowedTools Edit Write NotebookEdit Bash` (headless) |
 | `cline` | `--plan` | `--auto-approve false` | `--auto-approve true` | `--auto-approve true` |
 | `codex` | `-s read-only -a never` | `-s workspace-write -a untrusted` | `-s workspace-write -a never` | `-s danger-full-access -a never` |
 | `copilot` | `--plan` | `--allow-tool read` | `--allow-all-tools` | `--allow-all` |
@@ -203,7 +203,26 @@ alias that has no mapping for the selected agent fails with a descriptive error.
 | `gemini` | `--approval-mode plan` + required `scode --ro` | `--approval-mode default` | `--approval-mode auto_edit` | `--approval-mode yolo` |
 | `qwen` | `--approval-mode plan` | `--approval-mode default` | `--approval-mode auto` | `--approval-mode yolo` |
 | `pi` | extensions off + read tools | extensions off + read/edit/write tools | default tools | default tools |
-| `zai` | `--permission-mode plan` | `--permission-mode manual` | `--permission-mode acceptEdits` | `--dangerously-skip-permissions` |
+| `zai` | `--permission-mode plan` | `--permission-mode manual` | `--permission-mode acceptEdits` + `--allowedTools Edit(//<launch dir>/**)` (headless) | `--dangerously-skip-permissions` + `--allowedTools Edit Write NotebookEdit Bash` (headless) |
+
+The `claude` and `zai` adapters run with `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`
+for subprocess env hygiene. Claude Code 2.1.25x couples that variable to a
+permission hardening that force-resets the requested mode to `default`, so
+medium carries an explicit `--allowedTools Edit(//<launch dir>/**)` grant
+on headless runs (the double slash is Claude's absolute-path form) —
+anchored to the launch directory, the same paths acceptEdits would
+auto-approve, and immovable by an approved `cd` — and high carries bare
+tool grants on headless runs, a subset of the bypass it always requested.
+The native flags stay, so versions without the hardening keep their
+previous headless behavior exactly. Under the hardening, `high` remains
+weaker than a full bypass: managed deny rules, safety checks, and
+ungranted tools still gate. A TUI keeps the native flags — a human
+approves, and the grants cannot survive a mode switch. Plan mode is
+discarded too, so a hardened read-only TUI prompts instead of planning;
+the sandbox's read-only boundary still enforces the level. At medium, a
+launch directory containing a parenthesis, a backslash, a glob
+metacharacter, a tab or line break, or trailing whitespace refuses the
+launch — the rule grammar cannot represent any of them.
 
 ## Sandbox Integration (scode)
 

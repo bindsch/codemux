@@ -50,6 +50,8 @@ describe("installed harness contracts", () => {
       required: [
         "--print",
         "--permission-mode",
+        "--allowedTools",
+        "Bash(git *)",
         "--dangerously-skip-permissions",
         "--effort",
         "--setting-sources",

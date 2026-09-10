@@ -7,6 +7,76 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-09
+
+### Fixed
+
+- Headless `claude` and `zai` runs could not write files. Both adapters set
+  `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` for subprocess env hygiene, and
+  Claude Code 2.1.25x couples that variable to a permission hardening that
+  force-resets the requested permission mode to `default`, where writes need
+  the interactive approval a headless run cannot provide. Medium autonomy
+  now also emits an `--allowedTools Edit(//<launch dir>/**)` grant (the
+  hardening's documented escape hatch, anchored to the launch directory —
+  the same paths acceptEdits would auto-approve, and immovable by an
+  approved `cd`) beside the unchanged native flags, and high adds bare
+  Edit, Write, NotebookEdit, and Bash grants, a subset of the bypass it
+  always requested. Hardened versions write again, audited versions keep
+  their previous headless behavior, and `high` under the hardening stays
+  weaker than a true bypass. The hardening discards plan mode too, so a
+  hardened read-only TUI prompts instead of planning — scode's read-only
+  boundary still enforces the level. At medium, a launch directory
+  containing a parenthesis, a backslash, a glob metacharacter, a tab or
+  line break, or trailing whitespace refuses the launch — the rule
+  grammar cannot represent any of them. Grants ride only on headless
+  runs; the TUI keeps the native flags so a human approves;
+  docs/HARNESS-COMPATIBILITY.md has the details.
+
+- Timed-out runs now terminate their whole process tree. The runner killed
+  the agent's process group, but Codex starts each tool command in a fresh
+  process group, so a shell loop left behind by a timed-out agent kept
+  running (one such loop opened `gtk3-demo-application` on the desktop
+  minutes after its run had ended). The runner now also walks the process
+  table by parent pid, remembers descendants together with their start
+  times across the SIGTERM grace period so orphans reparented to init or
+  to a subreaper are still reached by the SIGKILL escalation, and signals
+  a remembered pid only while its start time is unchanged, so a pid reused
+  by an unrelated process is not signaled (the one exception is a process
+  table that cannot be read mid-escalation, where remembered pids are
+  signaled unverified). Interactive runs keep SIGTERM
+  child-only, so the
+  agent can shut down its own children, but the SIGKILL escalation now
+  covers the tree as well, including when the agent exits on SIGTERM before
+  the grace period ends: its descendants get the rest of that period, then
+  the SIGKILL, in both modes. Known limitation (accepted): the first snapshot
+  is taken when the first termination signal fires, so a descendant whose
+  chain of parents back to the agent had already broken by then, or that
+  forks a new process and exits between two snapshots, escapes any
+  pid-tree walk; closing that needs kernel help, which is what the scode
+  boundary is for. Such a process holding the captured output open no
+  longer makes the run hang: the runner stops reading one second after
+  its SIGKILL escalation, returns the timeout, and notes it on stderr. The table comes from `/proc` on Linux and from `/bin/ps`
+  by absolute path on macOS, never via PATH, so an agent that can write to
+  a PATH entry from inside the sandbox cannot plant the binary the runner
+  executes outside it. A host that denies process enumeration (codemux
+  nested inside another sandbox) gets a warning on stderr and the 0.5.0
+  immediate group-only kill, instead of a silent degrade.
+- Sandboxed `claude` runs authenticate again with Claude Code 2.1.25x. That
+  version keeps the on-disk credential mirror as a stub with emptied tokens
+  and a zero expiry once the Keychain owns the credential. The 0.5.0 sync
+  classified that stub as a foreign file and silently left it alone, so
+  every sandboxed run failed with "OAuth session expired". The file side of
+  the sync now also recognizes that stub (string `accessToken` and
+  `refreshToken`, a numeric `expiresAt`, a `scopes` array, and no key this
+  codemux does not know) as a stale mirror to refresh; the same stub with an
+  unknown key is left untouched and reported on stderr, so a newer Claude
+  Code format fails loudly rather than silently. It is refreshed
+  alongside any file with a usable token as before; a value of any other
+  shape stays foreign, and the Keychain side still demands a usable token
+  before anything is written. Deliberate trade-off: the live token rests
+  on disk again (mode 0600) where 2.1.25x had moved it Keychain-only;
+  CODEMUX_NO_KEYCHAIN_SYNC=1 opts out entirely.
+
 ## [0.5.0] - 2026-08-21
 
 ### Fixed

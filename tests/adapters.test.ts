@@ -3,6 +3,7 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -132,10 +133,17 @@ describe("ClaudeAdapter", () => {
       .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--permission-mode", "plan"]);
     expect(adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: "low" }))
       .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--permission-mode", "manual"]);
-    expect(adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: "medium" }))
-      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--permission-mode", "acceptEdits"]);
+    // A real directory, so the grant's canonicalization is exercised and
+    // the expectation stays stable regardless of /tmp symlinking.
+    const grantWksp = realpathSync(mkdtempSync(join(tmpdir(), "codemux-grant-")));
+    try {
+      expect(adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: "medium", cwd: grantWksp }))
+        .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--permission-mode", "acceptEdits", "--allowedTools", `Edit(//${grantWksp.replace(/^\/+/, "")}/**)`]);
+    } finally {
+      rmSync(grantWksp, { recursive: true, force: true });
+    }
     expect(adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: "high" }))
-      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--dangerously-skip-permissions"]);
+      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--dangerously-skip-permissions", "--allowedTools", "Edit", "Write", "NotebookEdit", "Bash"]);
   });
 
   test("buildRunCommand does not inject an MCP server by default", () => {
@@ -245,6 +253,13 @@ describe("ClaudeAdapter", () => {
     expect(adapter.mapAutonomy("low")).toEqual(["--permission-mode", "manual"]);
     expect(adapter.mapAutonomy("medium")).toEqual(["--permission-mode", "acceptEdits"]);
     expect(adapter.mapAutonomy("high")).toEqual(["--dangerously-skip-permissions"]);
+  });
+
+  test("read-only and low grant no tools", () => {
+    // Allow rules bypass mode checks, so they must ride only on
+    // write-capable levels.
+    expect(adapter.mapAutonomy("read-only")).not.toContain("--allowedTools");
+    expect(adapter.mapAutonomy("low")).not.toContain("--allowedTools");
   });
 });
 

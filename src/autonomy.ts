@@ -19,10 +19,10 @@ export const AUTONOMY_EQUIVALENCE: Record<AgentId, AutonomyMapping> = {
     byLevel: {
       "read-only": "--permission-mode plan",
       low: "--permission-mode manual",
-      medium: "--permission-mode acceptEdits",
-      high: "--dangerously-skip-permissions",
+      medium: "--permission-mode acceptEdits + --allowedTools Edit(//<launch dir>/**) (headless)",
+      high: "--dangerously-skip-permissions + --allowedTools Edit Write NotebookEdit Bash (headless)",
     },
-    notes: "native 4-level mapping",
+    notes: "native 4-level mapping; grants restore writes under the CLAUDE_CODE_SUBPROCESS_ENV_SCRUB hardening (claude >= 2.1.25x force-resets the requested mode to default)",
   },
   cline: {
     byLevel: {
@@ -136,9 +136,9 @@ export const AUTONOMY_EQUIVALENCE: Record<AgentId, AutonomyMapping> = {
     byLevel: {
       "read-only": "--permission-mode plan",
       low: "--permission-mode manual",
-      medium: "--permission-mode acceptEdits",
-      high: "--dangerously-skip-permissions",
+      medium: "--permission-mode acceptEdits + --allowedTools Edit(//<launch dir>/**) (headless)",
+      high: "--dangerously-skip-permissions + --allowedTools Edit Write NotebookEdit Bash (headless)",
     },
-    notes: "claude-compatible mapping via z.ai endpoint",
+    notes: "claude-compatible mapping via z.ai endpoint; grants counter the scrub-var permission hardening",
   },
 };

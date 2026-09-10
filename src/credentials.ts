@@ -22,11 +22,18 @@
  *   - Only the `claudeAiOauth` field is ever read or written; everything else
  *     Claude keeps in this file (notably co-stored `mcpOAuth` state) is left
  *     exactly as Claude wrote it, both when the file leads and when the
- *     Keychain does. A file that carries no Claude credential is not touched.
+ *     Keychain does. A file that carries no `claudeAiOauth` object is not
+ *     touched; one that carries the full stub Claude Code 2.1.25x leaves
+ *     once the Keychain owns the credential (emptied `accessToken` and
+ *     `refreshToken`, numeric `expiresAt`, `scopes` array, no unknown keys)
+ *     is a stale mirror and is refreshed; that stub with unknown keys is
+ *     reported "unrecognized" so the adapter warns. See `classifyMirror`.
  *   - The Keychain replaces the file when it is a strictly newer credential
- *     (or, when an expiry is absent on one side and so unorderable, when the
- *     tokens differ — the Keychain being authoritative); a file that already
- *     leads is left alone. Writes are atomic (temp + rename) with a final
+ *     (or, when an expiry is absent on one side and so unorderable, whenever
+ *     the two `claudeAiOauth` objects differ at all — the Keychain being
+ *     authoritative); a file that already leads is left alone. An emptied
+ *     stub cannot lead at all: the Keychain replaces it regardless of
+ *     expiry ordering (see `shouldReplace`). Writes are atomic (temp + rename) with a final
  *     re-check against the live file, so the residual concurrent-rotation
  *     window is microseconds and self-heals next launch — nothing corrupts.
  *
@@ -63,6 +70,7 @@ export type SyncOutcome =
   | "synced" // the mirror was refreshed from the Keychain
   | "current" // the mirror already holds the Keychain's Claude credential
   | "foreign" // the file exists but is not a Claude credential mirror we manage
+  | "unrecognized" // Claude's emptied stub, but with keys this codemux does not know: left alone, warned about
   | "absent" // no mirror file to refresh (feature does not apply here)
   | "missing" // no usable Keychain credential to mirror
   | "skipped" // disabled via CODEMUX_NO_KEYCHAIN_SYNC
@@ -128,21 +136,71 @@ export function hasUsableClaudeCredential(blob: string): boolean {
 }
 
 function claudeOauth(blob: string): Record<string, unknown> | null {
+  const oauth = claudeOauthObject(blob);
+  return oauth !== null && hasUsableToken(oauth) ? oauth : null;
+}
+
+function hasUsableToken(oauth: Record<string, unknown>): boolean {
+  const usable = (value: unknown): boolean =>
+    typeof value === "string" && value.length > 0;
+  return usable(oauth.refreshToken) || usable(oauth.accessToken);
+}
+
+/** The raw `claudeAiOauth` value of a blob when it is a plain object. */
+function claudeOauthObject(blob: string): Record<string, unknown> | null {
   try {
     const oauth = JSON.parse(blob)?.claudeAiOauth;
-    const usable = (value: unknown): boolean =>
-      typeof value === "string" && value.length > 0;
-    if (
-      typeof oauth === "object" &&
-      oauth !== null &&
-      (usable(oauth.refreshToken) || usable(oauth.accessToken))
-    ) {
-      return oauth as Record<string, unknown>;
-    }
-    return null;
+    return typeof oauth === "object" && oauth !== null && !Array.isArray(oauth)
+      ? (oauth as Record<string, unknown>)
+      : null;
   } catch {
     return null;
   }
+}
+
+/** Every key Claude Code writes under `claudeAiOauth` in the on-disk stub.
+ * A stub carrying any other key is not overwritten: it is either some other
+ * program's state under Claude's key, or a Claude Code newer than this
+ * codemux knows, and either way the operator is told (see "unrecognized")
+ * rather than having the object replaced or the launch fail silently. */
+const CLAUDE_STUB_KEYS = new Set([
+  "accessToken",
+  "refreshToken",
+  "expiresAt",
+  "scopes",
+  "subscriptionType",
+  "rateLimitTier",
+  "refreshTokenExpiresAt",
+]);
+
+type MirrorClass =
+  | { kind: "mirror"; oauth: Record<string, unknown> }
+  | { kind: "foreign" }
+  | { kind: "unrecognized" };
+
+/** Classify a file's `claudeAiOauth` value. It is a mirror when it carries a
+ * usable token (the 0.5.0 rule), or when it is the stub Claude Code 2.1.25x
+ * leaves on disk once the Keychain owns the credential — string
+ * `accessToken` and `refreshToken` both present (emptied), a numeric
+ * `expiresAt`, a `scopes` array, and no key outside `CLAUDE_STUB_KEYS`.
+ * That stub is a stale mirror to refresh, not a foreign file. The same
+ * fields with an unknown key alongside are "unrecognized": left alone and
+ * warned about. Anything else under the key (an array, an object for some
+ * other provider, an emptied token without the rest of the stub) is foreign
+ * and left alone silently, as in 0.5.0. The Keychain side (`claudeOauth`)
+ * demands the usable token only. */
+function classifyMirror(blob: string): MirrorClass {
+  const oauth = claudeOauthObject(blob);
+  if (oauth === null) return { kind: "foreign" };
+  if (hasUsableToken(oauth)) return { kind: "mirror", oauth };
+  const isStub =
+    typeof oauth.accessToken === "string" &&
+    typeof oauth.refreshToken === "string" &&
+    typeof oauth.expiresAt === "number" &&
+    Array.isArray(oauth.scopes);
+  if (!isStub) return { kind: "foreign" };
+  const known = Object.keys(oauth).every((key) => CLAUDE_STUB_KEYS.has(key));
+  return known ? { kind: "mirror", oauth } : { kind: "unrecognized" };
 }
 
 /** claudeAiOauth.expiresAt from a credential file/blob, or null. */
@@ -207,10 +265,8 @@ export function syncKeychainCredential(
   } catch {
     return "failed";
   }
-  if (read.kind === "missing") return "missing";
   if (read.kind === "error") return "failed";
-  const keychainOauth = claudeOauth(read.value);
-  if (keychainOauth === null) return "missing";
+  const keychainOauth = read.kind === "secret" ? claudeOauth(read.value) : null;
   const keychainExpiry = claudeExpiry(keychainOauth);
 
   // Read the file as late as possible, then decide against THAT snapshot.
@@ -222,9 +278,23 @@ export function syncKeychainCredential(
   }
   // A file that does not parse as a Claude credential mirror is not ours to
   // manage (an API-key setup's file, or corrupt): report "foreign" so the
-  // adapter neither warns nor fabricates a credential into it.
-  if (claudeOauth(current) === null) return "foreign";
-  if (!shouldReplace(current, keychainOauth, keychainExpiry)) return "current";
+  // adapter neither warns nor fabricates a credential into it. A stub with
+  // keys this codemux does not know is reported so the adapter warns.
+  const file = classifyMirror(current);
+  if (file.kind !== "mirror") return file.kind;
+
+  // Without a usable Keychain credential there is nothing to refresh with.
+  // A mirror that still carries a usable token authenticates on its own, so
+  // this stays "missing" as before. An emptied stub, though, launches with
+  // no usable token at all — the exact silent 401 this module exists to
+  // prevent — so it reports "failed" and the adapter warns. The Keychain
+  // can also hold only co-stored mcpOAuth state for a while
+  // (anthropics/claude-code#36779), which lands here too.
+  if (keychainOauth === null) {
+    if (!hasUsableToken(file.oauth)) return "failed";
+    return "missing";
+  }
+  if (!shouldReplace(file.oauth, keychainOauth, keychainExpiry)) return "current";
 
   const merged = mergedCredential(current, keychainOauth);
   const staging = `${target}.${process.pid}.tmp`;
@@ -244,13 +314,26 @@ export function syncKeychainCredential(
     // recreated. The residual window is the microseconds between this read
     // and the rename, and any loss self-heals on the next launch.
     try {
-      if (readFileSync(target, "utf8") !== current) {
+      const live = readFileSync(target, "utf8");
+      if (live !== current) {
         removeQuietly(staging);
-        return "current";
+        // The other writer leads only if what it wrote can authenticate and
+        // is not itself older than the Keychain (an emptied stub, or a
+        // co-stored field updated around one, leaves the child without a
+        // usable token). Otherwise the mirror is still stale: report it, so
+        // the operator hears about it; the next launch retries.
+        const liveFile = classifyMirror(live);
+        const stillStale =
+          liveFile.kind !== "mirror" ||
+          shouldReplace(liveFile.oauth, keychainOauth, keychainExpiry);
+        return stillStale ? "failed" : "current";
       }
     } catch {
       removeQuietly(staging); // file deleted under us — do not recreate it
-      return "current";
+      // Whoever deleted it owns that decision, but a child launched now has
+      // nothing to authenticate with; when the file we read could not have
+      // authenticated either (a stub), the operator must hear about it.
+      return hasUsableToken(file.oauth) ? "current" : "failed";
     }
     renameSync(staging, target);
     return "synced";
@@ -260,24 +343,25 @@ export function syncKeychainCredential(
   }
 }
 
-/** Whether the Keychain's Claude credential should replace the file's. Acts
- * only when the Keychain is a strictly newer credential; a file that already
- * holds an equal-or-newer `claudeAiOauth` is left alone (covers a
- * sandbox-rotated token the Keychain has not caught up to, and avoids
- * touching the file when only unrelated fields differ). When either side
- * lacks a numeric expiry, fall back to acting whenever the Claude tokens
- * differ — the Keychain is authoritative in that degenerate case, and any
+/** Whether the Keychain's Claude credential should replace the file's. A
+ * file whose tokens are emptied (the stub Claude Code leaves once the
+ * Keychain owns the credential) cannot lead, so the Keychain replaces it
+ * regardless of expiry. Otherwise acts only when the Keychain is a strictly
+ * newer credential; a file that already holds an equal-or-newer
+ * `claudeAiOauth` is left alone (covers a sandbox-rotated token the Keychain
+ * has not caught up to, and avoids touching the file when only unrelated
+ * fields differ). When either side lacks a numeric expiry, fall back to
+ * acting whenever the two objects differ at all (equality was ruled out
+ * above) — the Keychain is authoritative in that degenerate case, and any
  * misjudgment self-heals next launch. */
 function shouldReplace(
-  current: string,
+  fileOauth: Record<string, unknown>,
   keychainOauth: Record<string, unknown>,
   keychainExpiry: number | null
 ): boolean {
-  const fileOauth = claudeOauth(current);
-  // A file that carries no Claude credential is not a mirror we manage —
-  // adding one would fabricate a field, which the narrow scope forbids.
-  if (fileOauth === null) return false;
   if (JSON.stringify(fileOauth) === JSON.stringify(keychainOauth)) return false;
+  // A stub whose tokens Claude Code emptied cannot lead: the Keychain does.
+  if (!hasUsableToken(fileOauth)) return true;
   const fileExpiry = claudeExpiry(fileOauth);
   if (fileExpiry !== null && keychainExpiry !== null) {
     return keychainExpiry > fileExpiry;

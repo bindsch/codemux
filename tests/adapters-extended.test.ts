@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -11,6 +12,10 @@ import { OpencodeAdapter } from "../src/adapters/opencode.js";
 import { PiAdapter } from "../src/adapters/pi.js";
 import { QwenAdapter } from "../src/adapters/qwen.js";
 import { ZaiAdapter } from "../src/adapters/zai.js";
+import {
+  claudeAutonomyFlags,
+  claudeNativeAutonomyFlags,
+} from "../src/claude-autonomy.js";
 import type { RunRequest } from "../src/types.js";
 
 describe("OpencodeAdapter", () => {
@@ -329,10 +334,29 @@ describe("ZaiAdapter", () => {
       .toEqual([...safeHeadlessArgs, "--model", "opus", "--permission-mode", "plan"]);
     expect(adapter.buildRunCommand({ agent: "zai", prompt: "t", autonomy: "low" }))
       .toEqual([...safeHeadlessArgs, "--model", "opus", "--permission-mode", "manual"]);
-    expect(adapter.buildRunCommand({ agent: "zai", prompt: "t", autonomy: "medium" }))
-      .toEqual([...safeHeadlessArgs, "--model", "opus", "--permission-mode", "acceptEdits"]);
+    const grantWksp = realpathSync(mkdtempSync(join(tmpdir(), "codemux-grant-")));
+    try {
+      expect(adapter.buildRunCommand({ agent: "zai", prompt: "t", autonomy: "medium", cwd: grantWksp }))
+        .toEqual([...safeHeadlessArgs, "--model", "opus", "--permission-mode", "acceptEdits", "--allowedTools", `Edit(//${grantWksp.replace(/^\/+/, "")}/**)`]);
+    } finally {
+      rmSync(grantWksp, { recursive: true, force: true });
+    }
     expect(adapter.buildRunCommand({ agent: "zai", prompt: "t", autonomy: "high" }))
-      .toEqual([...safeHeadlessArgs, "--model", "opus", "--dangerously-skip-permissions"]);
+      .toEqual([...safeHeadlessArgs, "--model", "opus", "--dangerously-skip-permissions", "--allowedTools", "Edit", "Write", "NotebookEdit", "Bash"]);
+  });
+
+  test("a launch directory with spaces still emits its grant", () => {
+    expect(
+      adapter.buildRunCommand({ agent: "zai", prompt: "t", autonomy: "medium", cwd: "/tmp/my stuff" })
+    ).toEqual([
+      ...safeHeadlessArgs,
+      "--model",
+      "opus",
+      "--permission-mode",
+      "acceptEdits",
+      "--allowedTools",
+      "Edit(//tmp/my stuff/**)",
+    ]);
   });
 
   test("buildRunCommand does not inject an MCP server by default", () => {
@@ -368,11 +392,64 @@ describe("ZaiAdapter", () => {
     ]);
   });
 
-  test("mapAutonomy matches claude adapter", () => {
-    expect(adapter.mapAutonomy("read-only")).toEqual(["--permission-mode", "plan"]);
-    expect(adapter.mapAutonomy("low")).toEqual(["--permission-mode", "manual"]);
+  test("mapAutonomy matches the native claude mapping", () => {
+    for (const level of ["read-only", "low", "medium", "high"] as const) {
+      expect(adapter.mapAutonomy(level)).toEqual(claudeNativeAutonomyFlags(level));
+    }
+    // The TUI path emits no grants; only headless runs carry them.
     expect(adapter.mapAutonomy("medium")).toEqual(["--permission-mode", "acceptEdits"]);
     expect(adapter.mapAutonomy("high")).toEqual(["--dangerously-skip-permissions"]);
+  });
+
+  test("parentheses refuse; commas and spaces stay one literal rule", () => {
+    // A parenthesis closes the rule early and what follows it becomes new
+    // grants (`/tmp/repo),Bash,Edit(` would mint bare `Bash`), and the
+    // grammar has no escape for one: the launch is refused. Commas and
+    // spaces inside one rule value stay literal (verified against the
+    // installed 2.1.258 parser). Glob metacharacters would match siblings
+    // instead of the launch directory, so such paths refuse the launch.
+    expect(() => claudeAutonomyFlags("medium", "/tmp/repo),Bash,Edit(")).toThrow(
+      /parenthesis/
+    );
+    expect(() => claudeAutonomyFlags("medium", "/tmp/a\\d")).toThrow(
+      /backslash/
+    );
+    expect(() => claudeAutonomyFlags("medium", "/tmp/repo\napp")).toThrow(
+      /tab or line break/
+    );
+    expect(claudeAutonomyFlags("medium", "/tmp/x,Bash,y")).toEqual([
+      "--permission-mode",
+      "acceptEdits",
+      "--allowedTools",
+      "Edit(//tmp/x,Bash,y/**)",
+    ]);
+    expect(claudeAutonomyFlags("medium", "/tmp/a b c")).toEqual([
+      "--permission-mode",
+      "acceptEdits",
+      "--allowedTools",
+      "Edit(//tmp/a b c/**)",
+    ]);
+    expect(() => claudeAutonomyFlags("medium", "/tmp/[wip]-app")).toThrow(
+      /glob metacharacter/
+    );
+    expect(() => claudeAutonomyFlags("medium", "/tmp/a?b")).toThrow(
+      /glob metacharacter/
+    );
+    expect(claudeAutonomyFlags("medium", "/tmp/plain")).toEqual([
+      "--permission-mode",
+      "acceptEdits",
+      "--allowedTools",
+      "Edit(//tmp/plain/**)",
+    ]);
+    // Trailing whitespace cannot be represented: the matcher trims it (an
+    // escaped tab even decodes back to a space), which would retarget the
+    // grant to a sibling directory. The launch is refused instead.
+    expect(() => claudeAutonomyFlags("medium", "/tmp/repo ")).toThrow(
+      /tab or line break, or ends with whitespace/
+    );
+    expect(() => claudeAutonomyFlags("medium", "/tmp/re\tpo")).toThrow(
+      /tab or line break, or ends with whitespace/
+    );
   });
 
   test("getEnv sets anthropic proxy vars", () => {
