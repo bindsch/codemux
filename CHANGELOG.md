@@ -7,9 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-## [0.5.1] - 2026-09-09
+## [0.5.1] - 2026-09-15
 
 ### Fixed
+
+- `codemux verify` (and its tests) no longer reports Copilot's wiring as
+  broken when the user's own temp root holds harness configuration, such as
+  the `.claude/settings.local.json` a Claude Code session started in `$TMPDIR`
+  leaves behind. The adapters' project-configuration walker climbs from the
+  working directory to the nearest `.git`, so the neutral scratch directory
+  `verify` builds commands in now carries an empty `.git` marker that ends the
+  walk there; its ancestors are no longer inspected.
 
 - Headless `claude` and `zai` runs could not write files. Both adapters set
   `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` for subprocess env hygiene, and
@@ -76,6 +84,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   before anything is written. Deliberate trade-off: the live token rests
   on disk again (mode 0600) where 2.1.25x had moved it Keychain-only;
   CODEMUX_NO_KEYCHAIN_SYNC=1 opts out entirely.
+
+### Security
+
+- `js-yaml` upgraded to 4.3.2 (GHSA-2883-xcg3-v3hh: unbounded CPU use on
+  empty merge-key sources). Codemux only parses its own config files with it,
+  so the exposure was to a hostile local config, not to agent output.
 
 ## [0.5.0] - 2026-08-21
 

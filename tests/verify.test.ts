@@ -1,12 +1,41 @@
 import { describe, test, expect } from "bun:test";
 import { AGENT_IDS } from "../src/adapters/index.js";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildEffectiveScodeCommands,
+  verificationCwd,
   verifyAgentWiring,
   verifyAgentsWiring,
 } from "../src/verify.js";
+import { assertNoCopilotProjectExecutionConfig } from "../src/project-safety.js";
 
 describe("Verifier", () => {
+  test("verification cwd ends the project-configuration walk at itself", () => {
+    // The scratch dir must be a walk root: a harness configuration file in an
+    // ancestor (the user's temp root, say) must not reach the adapters.
+    const cwd = verificationCwd();
+    expect(existsSync(join(cwd, ".git"))).toBe(true);
+    expect(() => assertNoCopilotProjectExecutionConfig(cwd)).not.toThrow();
+
+    // Same shape, reproduced in a private tree: planted config one level up
+    // is invisible once the child carries the marker, visible without it.
+    const root = mkdtempSync(join(tmpdir(), "codemux-verify-root-"));
+    try {
+      mkdirSync(join(root, ".claude"));
+      writeFileSync(join(root, ".claude", "settings.local.json"), "{}");
+      const bare = join(root, "bare");
+      mkdirSync(bare);
+      expect(() => assertNoCopilotProjectExecutionConfig(bare)).toThrow();
+      const marked = join(root, "marked");
+      mkdirSync(join(marked, ".git"), { recursive: true });
+      expect(() => assertNoCopilotProjectExecutionConfig(marked)).not.toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("verifyAgentsWiring returns one result per agent", () => {
     const rows = verifyAgentsWiring(AGENT_IDS);
     expect(rows.length).toBe(AGENT_IDS.length);

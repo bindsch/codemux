@@ -47,14 +47,22 @@ function platformTempRoot(): string {
   return process.platform === "win32" ? tmpdir() : "/tmp";
 }
 
-// A per-user scratch directory reused across invocations. Nothing is ever
-// written into it (it is only a cwd for command building), so reuse means no
-// accumulation and no cleanup to leak when exit handlers do not fire (Bun's
-// test workers skip them). If the fixed path exists but is not owned by us
-// (a foreign plant on the shared /tmp fallback), a fresh private mkdtemp is
-// used instead, so the cwd is always one we control.
+// A per-user scratch directory reused across invocations. Nothing but an
+// empty `.git` marker is ever written into it (it is only a cwd for command
+// building), so reuse means no accumulation and no cleanup to leak when exit
+// handlers do not fire (Bun's test workers skip them). If the fixed path
+// exists but is not owned by us (a foreign plant on the shared /tmp
+// fallback), a fresh private mkdtemp is used instead, so the cwd is always
+// one we control.
+//
+// The marker matters: the adapters' project-configuration walker climbs from
+// the cwd to the nearest `.git`, so without it every ancestor of the scratch
+// dir is inspected too, and the user's own temp root is not neutral — a
+// Claude Code session started in $TMPDIR leaves a `.claude/settings.local.json`
+// there, which made `verify` report Copilot's wiring as broken. An empty
+// `.git` directory ends the walk at the scratch dir itself.
 let neutralCwd: string | null = null;
-function verificationCwd(): string {
+export function verificationCwd(): string {
   if (neutralCwd === null) {
     const root = platformTempRoot();
     const uid = typeof process.getuid === "function" ? process.getuid() : null;
@@ -72,6 +80,7 @@ function verificationCwd(): string {
     } catch {
       dir = mkdtempSync(join(root, "codemux-verify-"));
     }
+    mkdirSync(join(dir, ".git"), { recursive: true, mode: 0o700 });
     neutralCwd = dir;
   }
   return neutralCwd;
