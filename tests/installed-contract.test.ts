@@ -42,6 +42,8 @@ describe("installed harness contracts", () => {
         "--disable-playwright",
         "--model-settings-file",
         "--model-metadata-file",
+        "--map-tokens",
+        "--read",
       ],
     },
     {

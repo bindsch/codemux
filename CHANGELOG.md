@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Aider's hermetic mechanism is implemented but not yet claimed:
+  `--hermetic` maps onto `--map-tokens 0` (every other channel — config,
+  env file, model metadata, history — is already pinned to packaged or
+  null paths in every codemux run), and instruction directories map onto
+  `--read` in plain runs so a future `check --hermetic` control probe can
+  leak. The capability stays off until the live check runs, which needs a
+  provider API key in the environment.
+
 ## [0.5.2] - 2026-09-17
 
 ### Added

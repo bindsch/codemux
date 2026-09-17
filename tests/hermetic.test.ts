@@ -61,6 +61,54 @@ describe("hermetic runs: claude and zai", () => {
   });
 });
 
+describe("hermetic runs: aider", () => {
+  const adapter = () => getAdapter("aider");
+
+  test("--hermetic disables the repository map; everything else is pinned in every run", () => {
+    const plain = adapter().buildRunCommand({ agent: "aider", prompt: "p" });
+    const hermetic = adapter().buildRunCommand({ agent: "aider", prompt: "p", hermetic: true });
+    expect(hermetic).toEqual([...plain.slice(0, -1), "--map-tokens", "0", plain.at(-1)!]);
+    expect(hermetic).toContain("--map-tokens");
+    expect(hermetic.indexOf("0")).toBe(hermetic.indexOf("--map-tokens") + 1);
+  });
+
+  test("instruction directories become --read files in plain runs only", () => {
+    const cmd = adapter().buildRunCommand({
+      agent: "aider",
+      prompt: "p",
+      instructionDirs: ["/tmp/canary"],
+    });
+    expect(cmd).toContain("--read");
+    expect(cmd[cmd.indexOf("--read") + 1]).toBe("/tmp/canary/AGENTS.md");
+    expect(cmd).toContain("/tmp/canary/CLAUDE.md");
+    // Under --hermetic the channel codemux controls is simply not passed:
+    // aider would load anything it is handed.
+    const hermetic = adapter().buildRunCommand({
+      agent: "aider",
+      prompt: "p",
+      hermetic: true,
+      instructionDirs: ["/tmp/canary"],
+    });
+    expect(hermetic).not.toContain("--read");
+    expect(hermetic).toContain("--map-tokens");
+  });
+
+  test("aider refuses --hermetic and --tools none until the live check runs", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-aider-refuse-"));
+    try {
+      mkdirSync(join(cwd, ".git"));
+      expect(adapter().capabilities().supportsHermetic ?? false).toBe(false);
+      expect(adapter().capabilities().supportsToolSelection ?? false).toBe(false);
+      expect(() => adapter().validateRunRequest({ agent: "aider", prompt: "p", cwd, hermetic: true }))
+        .toThrow("no verified hermetic mode");
+      expect(() => adapter().validateRunRequest({ agent: "aider", prompt: "p", cwd, tools: "none" }))
+        .toThrow("cannot remove its built-in tools");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("hermetic runs: codex", () => {
   const scratch: string[] = [];
   const adapters: CodexAdapter[] = [];

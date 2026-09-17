@@ -1,5 +1,6 @@
 import { BaseAdapter } from "./base.js";
 import { devNull } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MAX_ARGV_PROMPT_BYTES } from "../process-runner.js";
 import { assertNoAiderProjectExecutionConfig } from "../project-safety.js";
@@ -62,6 +63,10 @@ export class AiderAdapter extends BaseAdapter {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+      // The mapping below is implemented but not claimed: `codemux check
+      // --hermetic -a aider` needs a provider API key in the environment, and
+      // none was available to verify it. See docs/HERMETIC.md.
+      supportsHermetic: false,
     };
   }
 
@@ -83,6 +88,28 @@ export class AiderAdapter extends BaseAdapter {
 
   buildRunCommand(request: RunRequest): string[] {
     const cmd = this.baseCommand();
+    if (request.hermetic) {
+      // Aider is hermetic by construction: every codemux run already pins the
+      // config, env file, model metadata and history files to packaged or
+      // null paths, and aider has no skills, hooks, plugins or MCP. The one
+      // channel left is the repository map, which injects working-directory
+      // file contents into every prompt; a zero budget disables it
+      // (--map-tokens "Suggested number of tokens to use for repo map, use 0
+      // to disable", aider 0.86.2 --help).
+      cmd.push("--map-tokens", "0");
+    } else if (request.instructionDirs) {
+      // Aider discovers no instruction files of its own, so an instruction
+      // directory maps onto --read, the only channel that adds a file's
+      // content to the chat. It is deliberately not passed under --hermetic:
+      // nothing harness-side would ignore it, so passing it would leak by
+      // construction. The hermetic check's control probe uses this to show
+      // the planted files would reach the model.
+      for (const dir of request.instructionDirs) {
+        for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+          cmd.push("--read", join(dir, name));
+        }
+      }
+    }
     if (request.model) {
       cmd.push("--model", request.model);
     }
