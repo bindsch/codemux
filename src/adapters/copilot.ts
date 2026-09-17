@@ -6,6 +6,11 @@ import {
   type CopilotHermeticHome,
 } from "../copilot-hermetic.js";
 import { assertNoCopilotProjectExecutionConfig } from "../project-safety.js";
+import {
+  readProviderOverride,
+  requireProviderOverride,
+  type ProviderOverride,
+} from "../provider-override.js";
 import { validateWorkingDirectory } from "../validation.js";
 import type {
   AdapterCapabilities,
@@ -31,14 +36,13 @@ import type {
 // built-in GitHub MCP server is an account-level integration, so a hermetic
 // run disables it at every autonomy level.
 
-// `--tools none`: --available-tools is the model-visible allowlist ("Only
-// these tools will be available to the model", 1.0.85 --help; "These filters
-// decide which tools the model can see", `copilot help permissions`). A bare
-// flag with no values parses as an empty allowlist, and the native filter
-// (runtime.node sessionFilterEnabledToolIndexesJson at 1.0.85, exercised
-// first-hand) maps availableTools: [] to no enabled tool and treats only an
-// absent value as "no filter" -- empty is a first-class none state.
-const COPILOT_NO_TOOLS_FLAG = "--available-tools";
+// `--tools none` has no mapping: `--available-tools` is the documented
+// model-visible allowlist ("Only these tools will be available to the model",
+// 1.0.85 --help), but no argv spelling of an empty allowlist disarms the
+// tools — verified live at 1.0.85 through the provider override, where a
+// bare `--available-tools`, `--available-tools=`, and `--available-tools ""`
+// all left the read and shell tools armed (the probes produced the planted
+// secret and a true byte count under every spelling). See docs/HERMETIC.md.
 
 export class CopilotAdapter extends BaseAdapter {
   readonly id: AgentId = "copilot";
@@ -66,10 +70,11 @@ export class CopilotAdapter extends BaseAdapter {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-      // Both mappings below are implemented but not claimed: Copilot is not
-      // installed on the release machine, so `codemux check --hermetic -a
-      // copilot` and the capability probe are pending an install. See
-      // docs/HERMETIC.md.
+      // Both refusals verified live at 1.0.85 through the provider
+      // override: the control probe cannot leak the planted code word
+      // (--no-custom-instructions rides every run), and no argv spelling
+      // of an empty --available-tools allowlist disarms the tools.
+      // See docs/HERMETIC.md.
       supportsHermetic: false,
       supportsToolSelection: false,
     };
@@ -88,8 +93,61 @@ export class CopilotAdapter extends BaseAdapter {
     }
   }
 
+  /**
+   * The provider override, validated: Copilot's BYOK delivery needs a base
+   * URL and a key (the model may come from `--model` instead of the
+   * variable).
+   */
+  private validatedProvider(): (ProviderOverride & { baseUrl: string; apiKey: string }) | null {
+    const override = readProviderOverride("copilot", this.environment);
+    if (override === null) return null;
+    return requireProviderOverride("copilot", override, [
+      "baseUrl",
+      "apiKey",
+    ]) as ProviderOverride & { baseUrl: string; apiKey: string };
+  }
+
+  /** The model the override routes: the request's, else the override's. */
+  private modelFor(model: string | undefined): string | undefined {
+    const override = this.validatedProvider();
+    const resolved = model ?? override?.model;
+    if (resolved === undefined && override !== null) {
+      throw new Error(
+        "copilot needs a model for the provider override; pass --model or set CODEMUX_COPILOT_PROVIDER_MODEL"
+      );
+    }
+    return resolved;
+  }
+
+  /**
+   * The provider override rides Copilot's documented BYOK environment group
+   * (docs.github.com, "Use bring-your-own-key models with Copilot CLI":
+   * `COPILOT_PROVIDER_BASE_URL` is "required to activate BYOK", the type
+   * "openai" covers "any other OpenAI Chat Completions API-compatible
+   * endpoint", and `COPILOT_MODEL` — also settable through `--model` — names
+   * the model; the wire API defaults to completions). The group activates
+   * before any GitHub authentication in 1.0.85's startup (app.js returns
+   * from provider initialization before the GitHub directory and login flow
+   * run), so the key travels through the environment codemux provides,
+   * never argv and never an operator file, and the override survives
+   * `--hermetic` unchanged.
+   */
+  private providerEnv(model: string | undefined): Record<string, string> {
+    const override = this.validatedProvider();
+    if (override === null) return {};
+    const resolved = this.modelFor(model);
+    return {
+      COPILOT_PROVIDER_BASE_URL: override.baseUrl,
+      COPILOT_PROVIDER_TYPE: "openai",
+      COPILOT_PROVIDER_API_KEY: override.apiKey,
+      ...(resolved ? { COPILOT_MODEL: resolved } : {}),
+    };
+  }
+
   override mapEffort(level: ReasoningEffort): string[] {
-    return ["--effort", level];
+    // Renamed from --effort upstream between 1.0.77 and 1.0.85; the value
+    // set is unchanged (none through max, the levels this adapter advertises).
+    return ["--reasoning-effort", level];
   }
 
   /** The user home a run sees: the seam, else $HOME, else the account home. */
@@ -141,9 +199,6 @@ export class CopilotAdapter extends BaseAdapter {
       "--no-custom-instructions",
       "--no-experimental"
     );
-    if (request.tools === "none") {
-      cmd.push(COPILOT_NO_TOOLS_FLAG);
-    }
     if ((request.autonomy ?? "read-only") !== "high" || request.hermetic) {
       cmd.push("--disable-builtin-mcps");
     }
@@ -179,7 +234,7 @@ export class CopilotAdapter extends BaseAdapter {
     if (request.hermetic && this.hermeticHome === null) {
       throw new Error("copilot hermetic home was not prepared before launch");
     }
-    return {};
+    return this.providerEnv(request.model);
   }
 
   override getStdinInput(_request: RunRequest): string | null {
@@ -191,6 +246,10 @@ export class CopilotAdapter extends BaseAdapter {
     assertNoCopilotProjectExecutionConfig(
       validateWorkingDirectory(request.cwd) ?? process.cwd()
     );
+    // Fail before launch on a half-configured override, and surface the
+    // model requirement early: copilot's configured default would otherwise
+    // silently answer through the operator's provider.
+    this.modelFor(request.model);
   }
 
   override validateTuiRequest(
@@ -212,6 +271,7 @@ export class CopilotAdapter extends BaseAdapter {
     assertNoCopilotProjectExecutionConfig(
       validateWorkingDirectory(cwd) ?? process.cwd()
     );
+    this.modelFor(model);
   }
 
   buildTuiCommand(
@@ -242,5 +302,14 @@ export class CopilotAdapter extends BaseAdapter {
       cmd.push(...this.mapEffort(effort));
     }
     return cmd;
+  }
+
+  override getTuiEnv(
+    model?: string,
+    _autonomy?: AutonomyLevel,
+    _effort?: ReasoningEffort,
+    _sandboxed?: boolean
+  ): Record<string, string> {
+    return this.providerEnv(model);
   }
 }

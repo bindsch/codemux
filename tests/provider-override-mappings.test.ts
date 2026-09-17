@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AiderAdapter } from "../src/adapters/aider.js";
 import { ClineAdapter } from "../src/adapters/cline.js";
+import { CopilotAdapter } from "../src/adapters/copilot.js";
 import { DroidAdapter } from "../src/adapters/droid.js";
 import { GooseAdapter, gooseOpenAiEndpoint } from "../src/adapters/goose.js";
 import { KimiAdapter } from "../src/adapters/kimi.js";
@@ -1110,5 +1111,136 @@ describe("cline provider override", () => {
     adapters.push(relative);
     expect(() => relative.prepareRun(request as RunRequest))
       .toThrow("passed-through CLINE_DIR must be an absolute path");
+  });
+});
+
+const ZAI_COPILOT = {
+  CODEMUX_COPILOT_PROVIDER_BASE_URL: "https://api.z.ai/api/coding/paas/v4",
+  CODEMUX_COPILOT_PROVIDER_API_KEY: "test-key-do-not-print",
+  CODEMUX_COPILOT_PROVIDER_MODEL: "glm-5.3",
+};
+
+describe("copilot provider override", () => {
+  const scratch: string[] = [];
+  afterEach(() => {
+    while (scratch.length > 0) {
+      const dir = scratch.pop()!;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  const cwdOf = (): string => {
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-copilot-override-"));
+    mkdirSync(join(cwd, ".git"));
+    scratch.push(cwd);
+    return cwd;
+  };
+  const run = (env: NodeJS.ProcessEnv, request: Partial<RunRequest> = {}): string[] =>
+    new CopilotAdapter(env).buildRunCommand({
+      agent: "copilot",
+      prompt: "p",
+      cwd: cwdOf(),
+      ...request,
+    } as RunRequest);
+  const baseCmd = [
+    "copilot",
+    "--no-auto-update",
+    "--no-bash-env",
+    "--no-remote",
+    "--no-remote-export",
+    "--no-custom-instructions",
+    "--no-experimental",
+  ];
+
+  test("without an override nothing changes", () => {
+    const adapter = new CopilotAdapter({});
+    expect(adapter.getRunEnv({ agent: "copilot", prompt: "p" } as RunRequest))
+      .toEqual({});
+    expect(run({})).toEqual([...baseCmd, "--disable-builtin-mcps", "--prompt=p", "--silent"]);
+    // An operator model still rides the native flag.
+    expect(run({}, { model: "claude-sonnet-5" }))
+      .toEqual([...baseCmd, "--disable-builtin-mcps", "--model", "claude-sonnet-5", "--prompt=p", "--silent"]);
+  });
+
+  test("the override rides copilot's BYOK environment group", () => {
+    const adapter = new CopilotAdapter(ZAI_COPILOT);
+    expect(adapter.getRunEnv({ agent: "copilot", prompt: "p" } as RunRequest)).toEqual({
+      COPILOT_PROVIDER_BASE_URL: ZAI_COPILOT.CODEMUX_COPILOT_PROVIDER_BASE_URL,
+      COPILOT_PROVIDER_TYPE: "openai",
+      COPILOT_PROVIDER_API_KEY: ZAI_COPILOT.CODEMUX_COPILOT_PROVIDER_API_KEY,
+      COPILOT_MODEL: "glm-5.3",
+    });
+    // The model rides COPILOT_MODEL, so the command stays unchanged and the
+    // key never rides argv.
+    const cmd = run(ZAI_COPILOT);
+    expect(cmd).toEqual([...baseCmd, "--disable-builtin-mcps", "--prompt=p", "--silent"]);
+    expect(cmd.join(" ")).not.toContain(ZAI_COPILOT.CODEMUX_COPILOT_PROVIDER_API_KEY);
+  });
+
+  test("an explicit --model wins and rides both the flag and the env", () => {
+    const adapter = new CopilotAdapter(ZAI_COPILOT);
+    expect(run(ZAI_COPILOT, { model: "glm-5.3-flash" }))
+      .toEqual([...baseCmd, "--disable-builtin-mcps", "--model", "glm-5.3-flash", "--prompt=p", "--silent"]);
+    expect(adapter.getRunEnv({ agent: "copilot", prompt: "p", model: "glm-5.3-flash" } as RunRequest))
+      .toMatchObject({ COPILOT_MODEL: "glm-5.3-flash" });
+  });
+
+  test("--tools none is refused, override or not", () => {
+    // No argv spelling of an empty --available-tools allowlist disarms the
+    // tools (verified live at 1.0.85); see docs/HERMETIC.md.
+    const adapter = new CopilotAdapter(ZAI_COPILOT);
+    expect(() =>
+      adapter.validateRunRequest({
+        agent: "copilot",
+        prompt: "p",
+        cwd: cwdOf(),
+        tools: "none",
+        autonomy: "high",
+      } as RunRequest)).toThrow("copilot cannot remove its built-in tools");
+  });
+
+  test("the override does not bypass the hermetic-unprepared guard", () => {
+    const adapter = new CopilotAdapter(ZAI_COPILOT);
+    expect(() =>
+      adapter.getRunEnv({
+        agent: "copilot",
+        prompt: "p",
+        hermetic: true,
+        cwd: cwdOf(),
+      } as RunRequest)
+    ).toThrow("copilot hermetic home was not prepared before launch");
+  });
+
+  test("a keyless override fails validation with the missing name", () => {
+    const adapter = new CopilotAdapter({
+      CODEMUX_COPILOT_PROVIDER_BASE_URL: ZAI_COPILOT.CODEMUX_COPILOT_PROVIDER_BASE_URL,
+      CODEMUX_COPILOT_PROVIDER_MODEL: "glm-5.3",
+    });
+    expect(() =>
+      adapter.validateRunRequest({ agent: "copilot", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toThrow("provider override is missing CODEMUX_COPILOT_PROVIDER_API_KEY");
+  });
+
+  test("an override without any model fails validation, headless and tui", () => {
+    const adapter = new CopilotAdapter({
+      CODEMUX_COPILOT_PROVIDER_BASE_URL: ZAI_COPILOT.CODEMUX_COPILOT_PROVIDER_BASE_URL,
+      CODEMUX_COPILOT_PROVIDER_API_KEY: ZAI_COPILOT.CODEMUX_COPILOT_PROVIDER_API_KEY,
+    });
+    expect(() =>
+      adapter.validateRunRequest({ agent: "copilot", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toThrow("copilot needs a model for the provider override");
+    expect(() => adapter.validateTuiRequest(undefined, cwdOf()))
+      .toThrow("copilot needs a model for the provider override");
+  });
+
+  test("the tui command and env carry the same override", () => {
+    const adapter = new CopilotAdapter(ZAI_COPILOT);
+    expect(adapter.buildTuiCommand("glm-5.3", "high"))
+      .toEqual([...baseCmd, "--model", "glm-5.3", "--allow-all"]);
+    expect(adapter.getTuiEnv("glm-5.3")).toEqual({
+      COPILOT_PROVIDER_BASE_URL: ZAI_COPILOT.CODEMUX_COPILOT_PROVIDER_BASE_URL,
+      COPILOT_PROVIDER_TYPE: "openai",
+      COPILOT_PROVIDER_API_KEY: ZAI_COPILOT.CODEMUX_COPILOT_PROVIDER_API_KEY,
+      COPILOT_MODEL: "glm-5.3",
+    });
   });
 });

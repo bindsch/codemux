@@ -209,7 +209,7 @@ describe("CopilotAdapter", () => {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-      // Implemented but unclaimed: the live check is pending an install.
+      // Both refusals verified live at 1.0.85; see docs/HERMETIC.md.
       supportsHermetic: false,
       supportsToolSelection: false,
     });
@@ -233,7 +233,7 @@ describe("CopilotAdapter", () => {
       "--model",
       "gpt-5.3-codex",
       "--allow-all",
-      "--effort",
+      "--reasoning-effort",
       "high",
       "--prompt=fix the tests",
       "--silent",
@@ -298,7 +298,7 @@ describe("CopilotAdapter", () => {
         "claude-sonnet-4.6",
         "--allow-tool",
         "read",
-        "--effort",
+        "--reasoning-effort",
         "none",
       ]);
   });

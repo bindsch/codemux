@@ -116,7 +116,7 @@ describe("installed harness contracts", () => {
         "--no-remote-export",
         "--disable-builtin-mcps",
         "--available-tools",
-        "--effort",
+        "--reasoning-effort",
       ],
     },
     {
@@ -182,16 +182,29 @@ describe("installed harness contracts", () => {
       }
 
       if (Bun.which(cursorBinary, { PATH: process.env.PATH }) !== null) {
-        const models = await help(cursorBinary, ["models"]);
-        const configured = getDefaultConfig().models;
-        const cursorModels = new Set(
-          Object.values(configured)
-            .map((mapping) => mapping.cursor)
-            .filter((model): model is string => model !== undefined)
-        );
-        for (const model of cursorModels) {
-          expect(models, `Cursor does not expose configured model ${model}`)
-            .toContain(model);
+        // The models listing needs a Cursor login; a machine without one
+        // cannot exercise this check at all (docs/HERMETIC.md, Cursor row).
+        const listed = await runCapturedCommand([cursorBinary, "models"], {
+          cwd: process.cwd(),
+          env: process.env as Record<string, string>,
+          timeoutMs: CONTRACT_TIMEOUT_MS,
+        });
+        if (listed.exitCode !== 0) {
+          console.log(
+            `[contracts] skipped ${cursorBinary} models: not authenticated (no Cursor login on this machine)`
+          );
+        } else {
+          const models = `${listed.stdout}\n${listed.stderr}`;
+          const configured = getDefaultConfig().models;
+          const cursorModels = new Set(
+            Object.values(configured)
+              .map((mapping) => mapping.cursor)
+              .filter((model): model is string => model !== undefined)
+          );
+          for (const model of cursorModels) {
+            expect(models, `Cursor does not expose configured model ${model}`)
+              .toContain(model);
+          }
         }
       }
     },

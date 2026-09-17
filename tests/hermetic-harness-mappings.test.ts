@@ -428,18 +428,19 @@ describe("hermetic runs: copilot", () => {
     expect(statSync(home).isDirectory()).toBe(true);
   });
 
-  test("--tools none adds a bare --available-tools allowlist, with or without --hermetic", () => {
+  test("--tools none is refused and adds no flag", () => {
+    // No argv spelling of an empty --available-tools allowlist disarms the
+    // tools at 1.0.85 (verified live: bare, '=', and empty-string value all
+    // left read and shell armed), so the capability is refused and the
+    // command carries no allowlist. See docs/HERMETIC.md.
     const adapter = copilotAdapter();
-    const none = adapter.buildRunCommand({ agent: "copilot", prompt: "p", tools: "none", model: "m" });
-    expect(none[none.indexOf("--available-tools") + 1]).toBe("--disable-builtin-mcps");
-    expect(none).toContain("--model");
+    expect(() =>
+      adapter.validateRunRequest({ agent: "copilot", prompt: "p", tools: "none" }))
+      .toThrow("copilot cannot remove its built-in tools");
+    expect(adapter.buildRunCommand({ agent: "copilot", prompt: "p", tools: "none", model: "m" }))
+      .toEqual([...plainHeadless.slice(0, -2), "--model", "m", "--prompt=p", "--silent"]);
     expect(adapter.buildRunCommand({ agent: "copilot", prompt: "p", tools: "default" })).toEqual(plainHeadless);
     expect(adapter.buildRunCommand({ agent: "copilot", prompt: "p" })).toEqual(plainHeadless);
-    const request = { agent: "copilot" as const, prompt: "p", hermetic: true, tools: "none" as const };
-    adapter.prepareRun(request);
-    const both = adapter.buildRunCommand(request);
-    expect(both[0]).toBe("env");
-    expect(both).toContain("--available-tools");
   });
 
   test("the config directory follows a passed-through COPILOT_HOME, never a stray one", () => {

@@ -137,14 +137,16 @@ codemux provides, Pi into a private agent directory behind
 `PI_CODING_AGENT_DIR` holding a one-provider `models.json` with the same
 kind of `${VAR}` key reference, Goose into the pure-environment
 `GOOSE_PROVIDER`/`OPENAI_HOST`/`OPENAI_BASE_PATH`/`OPENAI_API_KEY` group
-of its built-in OpenAI provider, and Qwen into the
+of its built-in OpenAI provider, Qwen into the
 `OPENAI_API_KEY`/`OPENAI_BASE_URL`/`OPENAI_MODEL` group its headless
-setup documents, and Cline into a private per-run `--data-dir` whose
+setup documents, Cline into a private per-run `--data-dir` whose
 `settings/providers.json` carries the key and endpoint (the isolated
 state also forces the in-process backend; a plain run delegates to
-cline's hub daemon, which drops the file's base URL); harnesses without
-a custom-provider mechanism (GitHub Copilot CLI, the Cursor agent CLI)
-document that limit instead.
+cline's hub daemon, which drops the file's base URL), and Copilot into
+its documented BYOK group — `COPILOT_PROVIDER_BASE_URL` /
+`COPILOT_PROVIDER_API_KEY` with `COPILOT_MODEL` naming the model. The
+Cursor agent CLI, which has no custom-provider mechanism, documents
+that limit instead.
 
 ### `check` options
 

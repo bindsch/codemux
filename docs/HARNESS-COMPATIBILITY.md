@@ -214,14 +214,35 @@ through the workspace channel and named the operator from the global
 unchanged: this rests on help-surface inspection, adapter unit tests
 and the live probes, not on the full upgrade procedure.
 
-Not installed here, grounded in the published package or source, which is
-newer than the audited ledger version in every case (the flags the
-mappings rely on were also spot-checked at the audited version where the
-source was reachable):
-
-| Harness | Grounded in | Last audited | Audited-version spot check |
-|---------|-------------|--------------|---------------------------|
-| GitHub Copilot CLI | 1.0.85 (npm) | 1.0.77 | both mechanisms predate 1.0.77 |
+Copilot CLI 1.0.85 (last audited 1.0.77) was installed here (`npm install
+-g @github/copilot`; `npm uninstall -g @github/copilot` removes it) and
+exercised live on 2026-09-17 through a provider override: the documented
+BYOK environment group (`COPILOT_PROVIDER_BASE_URL` /
+`COPILOT_PROVIDER_TYPE` / `COPILOT_PROVIDER_API_KEY` plus `COPILOT_MODEL`,
+docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-byok-models)
+routed GLM-5.3 via Z.AI with no Copilot login — BYOK activates before
+GitHub authentication at 1.0.85 — and the `--tools none` refutation
+probes and the non-hermetic control probe ran against the model
+(docs/HERMETIC.md). One environment note from the exercise: the loader's
+first-run self-extraction writes about 132 MB under
+`~/Library/Caches/copilot/pkg` (the darwin cache directory; the loader
+does not consult `XDG_CACHE_HOME` on darwin), which a sandboxed session
+cannot create — `COPILOT_PKG_CACHE_HOME`, checked ahead of that default
+by the loader's cache resolution, redirects it, and in-session runs pass
+it through with `--pass-env COPILOT_PKG_CACHE_HOME`. The flags behind
+the mappings are unchanged between 1.0.77 and 1.0.85 in the help
+surface, and the BYOK environment group is now part of the exercised
+contract. One flag did change between 1.0.77 and 1.0.85: the effort
+flag was renamed from `--effort` to `--reasoning-effort` (same value
+set, none through max), caught by the installed-contract suite on the
+exercised binary, and the adapter now emits the new name. Both
+capabilities stay refused, live-grounded: no argv
+spelling of an empty `--available-tools` allowlist disarms the tools,
+and the check's control probe cannot leak the planted code word because
+`--no-custom-instructions` rides every codemux copilot run
+(docs/HERMETIC.md). `maxAudited` is unchanged: this rests on
+help-surface inspection, bundle reading and the live probes, not on the
+full upgrade procedure.
 
 ## Version enforcement
 

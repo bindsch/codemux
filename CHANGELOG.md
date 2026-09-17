@@ -170,17 +170,39 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   type the CLI's own validator rejects, pinning API-key auth still landed
   the request on Google, and Z.AI serves no Gemini-protocol endpoint (only
   Anthropic and OpenAI protocols, docs.z.ai/devpack/tool/others).
-- Copilot's hermetic and tool-selection mechanisms are implemented but not
-  yet claimed: `--hermetic` points `COPILOT_HOME` at a private, empty config
-  directory (relocating the user settings, hooks, instructions, skills,
-  agents, plugins, MCP config and memories, and stopping `~/.agents/skills`
-  loading) while `--no-custom-instructions`, the prompt-mode trust gates and
-  the pre-launch rejection of repository executables close the repo channels,
-  and the keychain login, keyed by service name rather than path, keeps
-  working. `--tools none` maps onto a bare `--available-tools`, whose empty
-  allowlist the native tool filter resolves to no enabled tool. Copilot is
-  not installed on the release machine, so both stay unclaimed until the
-  live check and the capability probe run there.
+- Copilot gains a provider override and keeps refusing both capabilities,
+  now verified live on 2026-09-17 at 1.0.85 (installed via npm) through
+  the override (GLM-5.3 via Z.AI): `CODEMUX_COPILOT_PROVIDER_{BASE_URL,
+  API_KEY,MODEL}` rides the documented BYOK environment group —
+  `COPILOT_PROVIDER_BASE_URL` / `COPILOT_PROVIDER_TYPE=openai` /
+  `COPILOT_PROVIDER_API_KEY` plus `COPILOT_MODEL` (docs.github.com, "Use
+  bring-your-own-key models with Copilot CLI") — which activates before any
+  GitHub authentication at 1.0.85, so the runs needed no Copilot login; the
+  key rides the environment codemux provides, never argv. The plain probes
+  ran against the model: the read probe produced the planted secret and the
+  shell probes demonstrably executed (`cat notes.txt | wc -c` answered the
+  file's true byte count). `--tools none` lost its mapping: the previous
+  bare `--available-tools` mapping is removed because no argv spelling of
+  an empty allowlist disarms the tools — a bare flag, `--available-tools=`,
+  and `--available-tools ""` all left the read and shell tools armed in
+  live probes at `--auto high` (the optional-variadic flag parses every
+  empty spelling into an absent filter), so the capability stays refused on
+  live evidence rather than an unverified mapping. `--hermetic`'s mechanism
+  (the private `COPILOT_HOME` plus the flags every run carries) stays
+  implemented and unclaimed: the check's control probe cannot leak the
+  planted code word because `--no-custom-instructions` rides every codemux
+  run — verified live when the control answered `Peter`, the name inside
+  the user-installed skill `~/.agents/skills/domain-dns-ops/SKILL.md` (a
+  real leak of the user-skill channel the private home closes) while the
+  planted code word never appeared; dropping the flag from plain runs to
+  make the control leak would un-harden every run. In-session (sandboxed)
+  exercise needs `COPILOT_PKG_CACHE_HOME` passed with `--pass-env`: the
+  loader's first-run self-extraction cannot mkdir under
+  `~/Library/Caches` from inside a sandboxed session
+  (docs/HARNESS-COMPATIBILITY.md). The effort flag also gained its
+  upstream rename: copilot 1.0.85 spells it `--reasoning-effort` (was
+  `--effort` at the audited 1.0.77, same value set), and the adapter
+  and installed contract now use the new name.
 - `codemux run --hermetic` runs a harness with none of the operator's
   customizations: no user or project instruction files, skills, plugins,
   hooks, MCP servers, memories, or account-level integrations. The model
