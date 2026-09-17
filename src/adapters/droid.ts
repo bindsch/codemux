@@ -9,6 +9,22 @@ import type {
   AdapterCapabilities,
 } from "../types.js";
 
+// `--tools none`: droid's tool controls are `--only-tools`/`--add-tools`/
+// `--remove-tools` with validated IDs ("Use only tool IDs or
+// MCP:<server>[/<tool>] selectors", droid 0.186.0 `exec --help`; the flags
+// are unchanged in the installed 0.221.0). An empty `--only-tools ""` is
+// silently ignored -- every tool stays on -- and `--remove-tools` would
+// have to name every ID, which varies with the model and the operator's
+// MCP servers, so both fail open. `--only-tools ToolSearch` instead
+// allowlists the one tool droid itself pins (a `--remove-tools` naming
+// every other ID still leaves ToolSearch allowed): an unknown ID aborts
+// the launch ("Unknown tool identifier(s)"), so a renamed tool fails
+// closed, and the installed binary's free `--list-tools` inventory shows
+// every Read, Edit, Execute and MCP tool blocked under it. The capability
+// stays unclaimed until the live probe runs: droid's login was empty on
+// 2026-09-17, so `Exec failed` answered before any model request.
+const DROID_NO_TOOLS_ONLY_TOOL = "ToolSearch";
+
 export class DroidAdapter extends BaseAdapter {
   readonly id: AgentId = "droid";
   readonly binaryName = "droid";
@@ -22,6 +38,9 @@ export class DroidAdapter extends BaseAdapter {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+      // Implemented but not claimed: the capability probe needs a logged-in
+      // droid (see docs/HERMETIC.md).
+      supportsToolSelection: false,
     };
   }
 
@@ -68,6 +87,10 @@ export class DroidAdapter extends BaseAdapter {
 
     if (request.effort) {
       cmd.push(...this.mapEffortForModel(request.effort, request.model));
+    }
+
+    if (request.tools === "none") {
+      cmd.push("--only-tools", DROID_NO_TOOLS_ONLY_TOOL);
     }
 
     return cmd;

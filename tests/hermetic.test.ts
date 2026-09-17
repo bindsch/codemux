@@ -510,21 +510,58 @@ describe("hermetic runs: codex", () => {
   });
 });
 
+describe("hermetic runs: droid", () => {
+  test("--tools none allowlists the one tool droid pins; the autonomy mapping is untouched", () => {
+    const adapter = getAdapter("droid");
+    const plain = adapter.buildRunCommand({ agent: "droid", prompt: "p", autonomy: "low" });
+    const none = adapter.buildRunCommand({ agent: "droid", prompt: "p", autonomy: "low", tools: "none" });
+    expect(none).toEqual([...plain, "--only-tools", "ToolSearch"]);
+    expect(adapter.buildRunCommand({ agent: "droid", prompt: "p", tools: "default" }))
+      .toEqual(["droid", "exec"]);
+  });
+
+  test("droid refuses --hermetic and --tools none until the live probe runs", () => {
+    const adapter = getAdapter("droid");
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-droid-refuse-"));
+    try {
+      mkdirSync(join(cwd, ".git"));
+      // Hermetic has no mechanism: AGENTS.md and CLAUDE.md load from the
+      // working directory up to the git root with no switch, and skills
+      // load from both ~/.factory and ~/.agents. Tools none is implemented
+      // but unclaimed: the probe needs a logged-in droid.
+      expect(adapter.capabilities().supportsHermetic ?? false).toBe(false);
+      expect(adapter.capabilities().supportsToolSelection ?? false).toBe(false);
+      expect(() => adapter.validateRunRequest({ agent: "droid", prompt: "p", cwd, hermetic: true }))
+        .toThrow("no verified hermetic mode");
+      expect(() => adapter.validateRunRequest({ agent: "droid", prompt: "p", cwd, tools: "none" }))
+        .toThrow("cannot remove its built-in tools");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("hermetic runs: the other harnesses refuse", () => {
-  const supported = new Set(["claude", "zai", "codex"]);
+  const supportedHermetic = new Set(["claude", "zai", "codex"]);
+  const supportedTools = new Set(["claude", "zai", "codex"]);
   for (const agentId of AGENT_IDS) {
-    if (supported.has(agentId)) continue;
-    test(`${agentId} refuses --hermetic and --tools none but accepts --tools default`, () => {
+    if (supportedHermetic.has(agentId) && supportedTools.has(agentId)) continue;
+    test(`${agentId} refuses what it cannot do but accepts --tools default`, () => {
       const adapter = getAdapter(agentId);
       const cwd = mkdtempSync(join(tmpdir(), "codemux-hermetic-refuse-"));
       mkdirSync(join(cwd, ".git"));
       try {
         const base: RunRequest = { agent: agentId, prompt: "p", cwd, sandboxed: true, autonomy: "high" };
-        expect(adapter.capabilities().supportsHermetic ?? false).toBe(false);
-        expect(() => adapter.validateRunRequest({ ...base, hermetic: true }))
-          .toThrow("no verified hermetic mode");
-        expect(() => adapter.validateRunRequest({ ...base, tools: "none" }))
-          .toThrow("cannot remove its built-in tools");
+        if (!supportedHermetic.has(agentId)) {
+          expect(adapter.capabilities().supportsHermetic ?? false).toBe(false);
+          expect(() => adapter.validateRunRequest({ ...base, hermetic: true }))
+            .toThrow("no verified hermetic mode");
+        }
+        if (!supportedTools.has(agentId)) {
+          expect(adapter.capabilities().supportsToolSelection ?? false).toBe(false);
+          expect(() => adapter.validateRunRequest({ ...base, tools: "none" }))
+            .toThrow("cannot remove its built-in tools");
+        }
         expect(() => adapter.validateRunRequest({ ...base, tools: "default" })).not.toThrow();
       } finally {
         rmSync(cwd, { recursive: true, force: true });

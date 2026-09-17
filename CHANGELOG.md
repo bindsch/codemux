@@ -16,6 +16,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   `--read` in plain runs so a future `check --hermetic` control probe can
   leak. The capability stays off until the live check runs, which needs a
   provider API key in the environment.
+- Droid's `--tools none` mechanism is implemented but not yet claimed: it
+  maps onto `--only-tools ToolSearch`, the one tool droid itself pins, so
+  every read, execute and MCP tool is blocked whatever the model or MCP
+  config, and an unknown tool ID aborts the launch instead of failing open.
+  The installed binary's free `--list-tools` inventory confirms the block;
+  the model-level probe is pending because droid's self-update left no
+  stored login (`Exec failed` before any request). Droid keeps refusing
+  `--hermetic`: instruction files, skills from two user directories, hooks
+  and MCP servers have no switch to disable them.
 - OpenCode's hermetic mechanism is implemented but not yet claimed:
   `--hermetic` redirects `HOME` and the XDG config, cache and state
   directories into a private home under `~/.local/share/opencode/

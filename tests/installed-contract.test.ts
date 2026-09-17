@@ -121,7 +121,7 @@ describe("installed harness contracts", () => {
     {
       binary: "droid",
       args: ["exec", "--help"],
-      required: ["--auto", "--model", "--reasoning-effort"],
+      required: ["--auto", "--model", "--reasoning-effort", "--only-tools"],
     },
     {
       binary: "gemini",
