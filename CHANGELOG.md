@@ -9,6 +9,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
+- Kimi's `--tools none` mechanism is implemented but not yet claimed: it
+  generates an agent file (`tools: []` frontmatter, `${base_prompt}` as the
+  prompt body so the default profile's own instructions stay) and selects it
+  with `--agent-file`. The tool manager's gates are strict membership tests
+  over the file's allowlist, so an empty list exposes no built-in and no MCP
+  tool. The model-level probe is pending usage headroom (weekly limit hit
+  2026-09-17). Kimi keeps refusing `--hermetic`: the AGENTS.md merger has no
+  switch, and it also reads `~/.agents/AGENTS.md` under the real home, which
+  `KIMI_CODE_HOME` cannot close.
 - Aider's hermetic mechanism is implemented but not yet claimed:
   `--hermetic` maps onto `--map-tokens 0` (every other channel — config,
   env file, model metadata, history — is already pinned to packaged or

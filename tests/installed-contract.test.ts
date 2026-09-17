@@ -132,7 +132,7 @@ describe("installed harness contracts", () => {
     {
       binary: "kimi",
       args: ["--help"],
-      required: ["--prompt", "--model", "--plan", "--yolo", "--auto"],
+      required: ["--prompt", "--model", "--plan", "--yolo", "--auto", "--agent-file"],
     },
     {
       binary: "openhands",
