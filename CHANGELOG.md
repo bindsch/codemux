@@ -45,6 +45,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   is the model's own discovery, not a configuration leak.
 - The `env` prefix validator accepts `-u NAME` pairs (plain identifier
   names only); every other option (`-i`, `-S`) is still refused.
+- Kimi Code claims `--tools none`, verified live on 2026-09-17 through a
+  provider override (GLM-5.3 via Z.AI): the override rides the
+  `KIMI_MODEL_*` environment group (a temporary provider synthesized in
+  memory, so nothing touches config.toml), suppressing the `-m` flag
+  because a config alias would outrank the synthesized model. Under
+  `--tools none` the read and shell capability probes produced neither
+  secret while a plain run produced both; the non-hermetic control probe
+  quoted the planted code word and `~/.agents/AGENTS.md`'s owner, which
+  grounds the hermetic refusal (the AGENTS.md merger has no switch).
   `--tools none` stays refused: aider has no tool set to remove.
 
 - Goose's `--tools none` mechanism is implemented but not yet claimed: it

@@ -20,10 +20,10 @@ import { createCopilotHermeticHome } from "../src/copilot-hermetic.js";
 import { createOpencodeHermeticHome } from "../src/opencode-hermetic.js";
 import { writeKimiNoToolsFile } from "../src/kimi-no-tools.js";
 
-// The per-harness --hermetic / --tools none mappings. Aider and OpenCode
-// are claimed (verified live through provider overrides); Copilot, droid
-// and kimi keep their capabilities off until a live probe passes
-// (docs/HERMETIC.md).
+// The per-harness --hermetic / --tools none mappings. Aider, OpenCode and
+// kimi's --tools none are claimed (verified live through provider
+// overrides); Copilot and droid keep their capabilities off until a live
+// probe passes (docs/HERMETIC.md).
 
 describe("hermetic runs: aider", () => {
   const adapter = () => getAdapter("aider");
@@ -294,6 +294,29 @@ describe("hermetic runs: kimi", () => {
       .toEqual(["kimi", "--prompt", "p"]);
   });
 
+  test("kimi claims --tools none (verified live); --hermetic stays refused", () => {
+    const adapter = kimiAdapter();
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-kimi-claim-"));
+    scratch.push(cwd);
+    try {
+      mkdirSync(join(cwd, ".git"));
+      // The capability probes ran live on 2026-09-17 through a provider
+      // override (GLM-5.3 via Z.AI): under --tools none neither the read
+      // probe nor the shell probe could produce its secret, while a plain
+      // run produced both. Hermetic stays refused — the same control probe
+      // leaked the planted code word through ~/.agents/AGENTS.md and the
+      // project AGENTS.md (docs/HERMETIC.md).
+      expect(adapter.capabilities().supportsToolSelection ?? false).toBe(true);
+      expect(() => adapter.validateRunRequest({ agent: "kimi", prompt: "p", cwd, tools: "none" }))
+        .not.toThrow();
+      expect(adapter.capabilities().supportsHermetic ?? false).toBe(false);
+      expect(() => adapter.validateRunRequest({ agent: "kimi", prompt: "p", cwd, hermetic: true }))
+        .toThrow("no verified hermetic mode");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   test("the brand home follows a passed-through KIMI_CODE_HOME, never a stray one", () => {
     const profile = mkdtempSync(join(tmpdir(), "codemux-kimi-profile-"));
     scratch.push(profile);
@@ -357,25 +380,6 @@ describe("hermetic runs: kimi", () => {
       .toThrow("must be a directory owned by the current user");
   });
 
-  test("kimi refuses --hermetic and --tools none until the live probe runs", () => {
-    const adapter = kimiAdapter();
-    const cwd = mkdtempSync(join(tmpdir(), "codemux-kimi-refuse-"));
-    scratch.push(cwd);
-    try {
-      mkdirSync(join(cwd, ".git"));
-      // Hermetic has no mechanism: the AGENTS.md merger has no switch and
-      // also reads ~/.agents under the real home. Tools none is implemented
-      // but unclaimed: the probe needs usage headroom.
-      expect(adapter.capabilities().supportsHermetic ?? false).toBe(false);
-      expect(adapter.capabilities().supportsToolSelection ?? false).toBe(false);
-      expect(() => adapter.validateRunRequest({ agent: "kimi", prompt: "p", cwd, hermetic: true }))
-        .toThrow("no verified hermetic mode");
-      expect(() => adapter.validateRunRequest({ agent: "kimi", prompt: "p", cwd, tools: "none" }))
-        .toThrow("cannot remove its built-in tools");
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
-    }
-  });
 });
 
 describe("hermetic runs: copilot", () => {

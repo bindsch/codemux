@@ -128,10 +128,11 @@ into litellm's `openai/` model prefix with `OPENAI_API_BASE` and
 `OPENAI_API_KEY`
 ([aider.chat/docs/llms/openai-compat.html](https://aider.chat/docs/llms/openai-compat.html)),
 and OpenHands into `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL` behind its
-`--override-with-envs`, and OpenCode into a private `OPENCODE_CONFIG`
-provider file plus a key environment it references; harnesses without a
-custom-provider mechanism (GitHub Copilot CLI, the Cursor agent CLI)
-document that limit instead.
+`--override-with-envs`, OpenCode into a private `OPENCODE_CONFIG`
+provider file plus a key environment it references, and Kimi Code into
+the `KIMI_MODEL_*` group that synthesizes a provider in memory; harnesses
+without a custom-provider mechanism (GitHub Copilot CLI, the Cursor agent
+CLI) document that limit instead.
 
 ### `check` options
 

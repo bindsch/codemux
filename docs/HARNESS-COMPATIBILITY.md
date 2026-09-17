@@ -110,7 +110,6 @@ pending:
 | Harness | Checked at | Last audited | Probe pending |
 |---------|-----------|--------------|---------------|
 | Droid | 0.221.0 | 0.186.0 | stored login (self-update removed it) |
-| Kimi Code | 0.31.1 | 0.31.1 | usage headroom (weekly limit hit 2026-09-17) |
 | Cursor Agent | 2026.08.11 build | same | no Cursor login on this machine; no mechanism exists to check |
 
 Not installed here, grounded in the published package or source, which is

@@ -7,6 +7,11 @@ import {
   writeKimiNoToolsFile,
   type KimiNoToolsFile,
 } from "../kimi-no-tools.js";
+import {
+  readProviderOverride,
+  requireProviderOverride,
+  type ProviderOverride,
+} from "../provider-override.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -29,9 +34,17 @@ import type {
  * manager's gates are strict membership tests, so an empty list exposes no
  * built-in and no MCP tool (see src/kimi-no-tools.ts for the grounding). The
  * file's required prompt body is `${base_prompt}`, the default profile's own
- * prompt, so the run keeps kimi's base instructions. The capability stays
- * unclaimed until the live probe runs: kimi hit its weekly usage limit on
- * 2026-09-17.
+ * prompt, so the run keeps kimi's base instructions. Verified live on
+ * 2026-09-17 through the provider override: under it neither the read nor
+ * the shell capability probe could produce its secret, while a plain run
+ * produced both.
+ *
+ * A provider override rides the `KIMI_MODEL_*` environment group: setting
+ * `KIMI_MODEL_NAME` makes the CLI synthesize a temporary provider in memory
+ * (nothing is written to config.toml), with the key, base URL and protocol
+ * from the sibling variables (kimi-code docs, "Define a model from
+ * environment variables"). The variables are read from the real process
+ * environment, so the override needs no file and works in both run kinds.
  */
 export class KimiAdapter extends BaseAdapter {
   readonly id: AgentId = "kimi";
@@ -60,9 +73,49 @@ export class KimiAdapter extends BaseAdapter {
       // 0.31.1 exposes no reasoning-effort or thinking-budget control.
       supportsEffort: false,
       effortLevels: [],
-      // Implemented but not claimed: the capability probe needs usage
-      // headroom (see docs/HERMETIC.md).
-      supportsToolSelection: false,
+      // Verified live on 2026-09-17 through a provider override (GLM-5.3
+      // via Z.AI): under --tools none the read and shell probes produced
+      // neither secret, while a plain run produced both (docs/HERMETIC.md).
+      supportsToolSelection: true,
+    };
+  }
+
+  /**
+   * The provider override, validated: kimi's only env-driven custom provider
+   * is the `KIMI_MODEL_*` synthesis, which needs a base URL and a key.
+   */
+  private validatedProvider(): (ProviderOverride & { baseUrl: string; apiKey: string }) | null {
+    const override = readProviderOverride("kimi", this.environment);
+    if (override === null) return null;
+    return requireProviderOverride("kimi", override, [
+      "baseUrl",
+      "apiKey",
+    ]) as ProviderOverride & { baseUrl: string; apiKey: string };
+  }
+
+  /** The model id the synthesized provider sends: the request's, else the override's. */
+  private modelFor(model: string | undefined): string | undefined {
+    const override = this.validatedProvider();
+    const resolved = model ?? override?.model;
+    if (resolved === undefined && override !== null) {
+      throw new Error(
+        "kimi needs a model for the provider override; pass --model or set CODEMUX_KIMI_PROVIDER_MODEL"
+      );
+    }
+    return resolved;
+  }
+
+  /** The `KIMI_MODEL_*` environment for an active override, else nothing. */
+  private providerEnv(model: string | undefined): Record<string, string> {
+    const override = this.validatedProvider();
+    if (override === null) return {};
+    return {
+      KIMI_MODEL_NAME: this.modelFor(model)!,
+      KIMI_MODEL_API_KEY: override.apiKey,
+      KIMI_MODEL_BASE_URL: override.baseUrl,
+      // The Z.AI-style endpoints the override targets speak the OpenAI
+      // chat-completions protocol; kimi's own protocol is the default.
+      KIMI_MODEL_PROVIDER_TYPE: "openai",
     };
   }
 
@@ -121,10 +174,21 @@ export class KimiAdapter extends BaseAdapter {
     }
   }
 
+  override getRunEnv(request: RunRequest): Record<string, string> {
+    return this.providerEnv(request.model);
+  }
+
+  override getTuiEnv(model?: string): Record<string, string> {
+    return this.providerEnv(model);
+  }
+
   buildRunCommand(request: RunRequest): string[] {
     const cmd = ["kimi"];
 
-    if (request.model) {
+    // With an override the synthesized provider is the default model, and
+    // `-m` names a config alias that outranks it — one that does not exist
+    // outside config.toml — so the flag stays off and the environment drives.
+    if (request.model && this.validatedProvider() === null) {
       cmd.push("--model", request.model);
     }
     // 0.31.1 rejects --plan, --yolo, and --auto when combined with --prompt
@@ -161,6 +225,10 @@ export class KimiAdapter extends BaseAdapter {
     assertNoKimiProjectExecutionConfig(
       validateWorkingDirectory(request.cwd) ?? process.cwd()
     );
+    // Fail before launch on a half-configured override, and surface the
+    // model requirement early: the operator's own login and default model
+    // would otherwise silently answer.
+    this.modelFor(request.model);
   }
 
   override validateTuiRequest(
@@ -182,11 +250,12 @@ export class KimiAdapter extends BaseAdapter {
     assertNoKimiProjectExecutionConfig(
       validateWorkingDirectory(cwd) ?? process.cwd()
     );
+    this.modelFor(model);
   }
 
   buildTuiCommand(model?: string, autonomy?: AutonomyLevel): string[] {
     const cmd = ["kimi"];
-    if (model) {
+    if (model && this.validatedProvider() === null) {
       cmd.push("--model", model);
     }
     if (autonomy) {

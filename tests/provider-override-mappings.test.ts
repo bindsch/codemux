@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AiderAdapter } from "../src/adapters/aider.js";
+import { KimiAdapter } from "../src/adapters/kimi.js";
 import { OpenHandsAdapter } from "../src/adapters/openhands.js";
 import type { RunRequest } from "../src/types.js";
 
@@ -204,6 +205,115 @@ describe("openhands provider override", () => {
       LLM_BASE_URL: ZAI_OPENHANDS.CODEMUX_OPENHANDS_PROVIDER_BASE_URL,
       LLM_API_KEY: ZAI_OPENHANDS.CODEMUX_OPENHANDS_PROVIDER_API_KEY,
       LLM_MODEL: "openai/glm-5.3",
+    });
+  });
+});
+
+const ZAI_KIMI = {
+  CODEMUX_KIMI_PROVIDER_BASE_URL: "https://api.z.ai/api/coding/paas/v4",
+  CODEMUX_KIMI_PROVIDER_API_KEY: "test-key-do-not-print",
+  CODEMUX_KIMI_PROVIDER_MODEL: "glm-5.3",
+};
+
+describe("kimi provider override", () => {
+  const scratch: string[] = [];
+  const adapters: KimiAdapter[] = [];
+  afterEach(() => {
+    for (const adapter of adapters.splice(0)) adapter.disposeNoToolsFiles();
+    while (scratch.length > 0) {
+      const dir = scratch.pop()!;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  const cwdOf = (): string => {
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-kimi-override-"));
+    mkdirSync(join(cwd, ".git"));
+    scratch.push(cwd);
+    return cwd;
+  };
+  const adapterOf = (env: NodeJS.ProcessEnv = {}): KimiAdapter => {
+    const adapter = new KimiAdapter(env);
+    adapters.push(adapter);
+    return adapter;
+  };
+  const run = (env: NodeJS.ProcessEnv, request: Partial<RunRequest> = {}): string[] =>
+    adapterOf(env).buildRunCommand({
+      agent: "kimi",
+      prompt: "p",
+      cwd: cwdOf(),
+      ...request,
+    } as RunRequest);
+
+  test("without an override nothing changes", () => {
+    const adapter = adapterOf();
+    expect(adapter.getRunEnv({ agent: "kimi", prompt: "p" } as RunRequest)).toEqual({});
+    expect(run({})).toEqual(["kimi", "--prompt", "p"]);
+    // An operator model still rides the native flag.
+    expect(run({}, { model: "kimi-for-coding" })).toEqual(["kimi", "--model", "kimi-for-coding", "--prompt", "p"]);
+  });
+
+  test("the override rides the KIMI_MODEL_* environment group", () => {
+    const adapter = adapterOf(ZAI_KIMI);
+    expect(adapter.getRunEnv({ agent: "kimi", prompt: "p" } as RunRequest)).toEqual({
+      KIMI_MODEL_NAME: "glm-5.3",
+      KIMI_MODEL_API_KEY: ZAI_KIMI.CODEMUX_KIMI_PROVIDER_API_KEY,
+      KIMI_MODEL_BASE_URL: ZAI_KIMI.CODEMUX_KIMI_PROVIDER_BASE_URL,
+      KIMI_MODEL_PROVIDER_TYPE: "openai",
+    });
+    // The synthesized provider is the default model; -m names a config
+    // alias that outranks it, so the flag stays off.
+    const cmd = run(ZAI_KIMI);
+    expect(cmd).toEqual(["kimi", "--prompt", "p"]);
+    expect(cmd.join(" ")).not.toContain(ZAI_KIMI.CODEMUX_KIMI_PROVIDER_API_KEY);
+  });
+
+  test("an explicit --model wins as the synthesized model id", () => {
+    const adapter = adapterOf(ZAI_KIMI);
+    expect(adapter.getRunEnv({ agent: "kimi", prompt: "p", model: "glm-5.3-flash" } as RunRequest))
+      .toMatchObject({ KIMI_MODEL_NAME: "glm-5.3-flash" });
+    expect(run(ZAI_KIMI, { model: "glm-5.3-flash" })).toEqual(["kimi", "--prompt", "p"]);
+  });
+
+  test("the override and the --tools none agent file coexist", () => {
+    const adapter = adapterOf(ZAI_KIMI);
+    const request = { agent: "kimi" as const, prompt: "p", tools: "none" as const, cwd: cwdOf() };
+    adapter.prepareRun(request);
+    const cmd = adapter.buildRunCommand(request);
+    expect(cmd).toContain("--agent-file");
+    expect(adapter.getRunEnv(request)).toMatchObject({
+      KIMI_MODEL_API_KEY: ZAI_KIMI.CODEMUX_KIMI_PROVIDER_API_KEY,
+    });
+  });
+
+  test("a keyless override fails validation with the missing name", () => {
+    const adapter = adapterOf({
+      CODEMUX_KIMI_PROVIDER_BASE_URL: ZAI_KIMI.CODEMUX_KIMI_PROVIDER_BASE_URL,
+      CODEMUX_KIMI_PROVIDER_MODEL: "glm-5.3",
+    });
+    expect(() => adapter.validateRunRequest({ agent: "kimi", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toThrow("provider override is missing CODEMUX_KIMI_PROVIDER_API_KEY");
+  });
+
+  test("an override without any model fails validation", () => {
+    const adapter = adapterOf({
+      CODEMUX_KIMI_PROVIDER_BASE_URL: ZAI_KIMI.CODEMUX_KIMI_PROVIDER_BASE_URL,
+      CODEMUX_KIMI_PROVIDER_API_KEY: ZAI_KIMI.CODEMUX_KIMI_PROVIDER_API_KEY,
+    });
+    expect(() => adapter.validateRunRequest({ agent: "kimi", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toThrow("kimi needs a model for the provider override");
+    expect(() => adapter.validateTuiRequest(undefined, cwdOf()))
+      .toThrow("kimi needs a model for the provider override");
+  });
+
+  test("the tui command and env carry the same override", () => {
+    const adapter = adapterOf(ZAI_KIMI);
+    expect(adapter.buildTuiCommand(undefined, "high")).toEqual(["kimi", "--auto"]);
+    expect(adapter.buildTuiCommand("glm-5.3", "high")).toEqual(["kimi", "--auto"]);
+    expect(adapter.getTuiEnv()).toEqual({
+      KIMI_MODEL_NAME: "glm-5.3",
+      KIMI_MODEL_API_KEY: ZAI_KIMI.CODEMUX_KIMI_PROVIDER_API_KEY,
+      KIMI_MODEL_BASE_URL: ZAI_KIMI.CODEMUX_KIMI_PROVIDER_BASE_URL,
+      KIMI_MODEL_PROVIDER_TYPE: "openai",
     });
   });
 });
