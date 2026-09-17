@@ -381,11 +381,12 @@ describe("env-prefixed commands", () => {
     const { resolveTrustedCommand } = require("../src/executable-security.js") as typeof import("../src/executable-security.js");
     const resolved = resolveTrustedCommand(["env", "HOME=/x", "CODEX_HOME=/x/.codex", "sh", "-c", "true"], "test");
     expect(resolved[0]).toMatch(/\/env$/);
-    expect(resolveTrustedCommand(["/usr/bin/env", "HOME=/x", "sh"], "test")[2]).toMatch(/\/sh$/);
+    expect(resolveTrustedCommand(["/usr/bin/env", "HOME=/x", "sh"], "test")[2]).toMatch(/\/(sh|dash)$/);
     // env keeps the name it was found under (a multi-call binary reads argv[0]).
     expect(resolveTrustedCommand(["/usr/bin/env", "HOME=/x", "sh"], "test")[0]).toBe("/usr/bin/env");
     expect(resolved.slice(1, 3)).toEqual(["HOME=/x", "CODEX_HOME=/x/.codex"]);
-    expect(resolved[3]).toMatch(/\/sh$/);
+    // The program slot is the validated realpath: dash where /bin/sh links to it.
+    expect(resolved[3]).toMatch(/\/(sh|dash)$/);
     expect(resolved.slice(4)).toEqual(["-c", "true"]);
   });
 
