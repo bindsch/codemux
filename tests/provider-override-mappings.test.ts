@@ -8,6 +8,7 @@ import { GooseAdapter, gooseOpenAiEndpoint } from "../src/adapters/goose.js";
 import { KimiAdapter } from "../src/adapters/kimi.js";
 import { OpenHandsAdapter } from "../src/adapters/openhands.js";
 import { PiAdapter } from "../src/adapters/pi.js";
+import { QwenAdapter } from "../src/adapters/qwen.js";
 import type { RunRequest } from "../src/types.js";
 
 // How each adapter translates a provider override
@@ -807,6 +808,113 @@ describe("goose provider override", () => {
       OPENAI_BASE_PATH: "api/coding/paas/v4/chat/completions",
       OPENAI_API_KEY: ZAI_GOOSE.CODEMUX_GOOSE_PROVIDER_API_KEY,
       GOOSE_MODEL: "glm-5.3",
+    });
+  });
+});
+
+const ZAI_QWEN = {
+  CODEMUX_QWEN_PROVIDER_BASE_URL: "https://api.z.ai/api/coding/paas/v4",
+  CODEMUX_QWEN_PROVIDER_API_KEY: "test-key-do-not-print",
+  CODEMUX_QWEN_PROVIDER_MODEL: "glm-5.3",
+};
+
+describe("qwen provider override", () => {
+  const scratch: string[] = [];
+  afterEach(() => {
+    while (scratch.length > 0) {
+      const dir = scratch.pop()!;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  const cwdOf = (): string => {
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-qwen-override-"));
+    mkdirSync(join(cwd, ".git"));
+    scratch.push(cwd);
+    return cwd;
+  };
+  const currentBinary = (name: string): string | null =>
+    name === "qwen" ? "/fake/qwen" : null;
+  const adapterOf = (env: NodeJS.ProcessEnv = {}): QwenAdapter =>
+    new QwenAdapter(currentBinary, env);
+  const run = (env: NodeJS.ProcessEnv, request: Partial<RunRequest> = {}): string[] =>
+    adapterOf(env).buildRunCommand({
+      agent: "qwen",
+      prompt: "p",
+      cwd: cwdOf(),
+      ...request,
+    } as RunRequest);
+
+  test("without an override nothing changes", () => {
+    const adapter = adapterOf();
+    expect(adapter.getRunEnv({ agent: "qwen", prompt: "p" } as RunRequest)).toEqual({});
+    expect(run({})).toEqual(["/fake/qwen", "--safe-mode"]);
+    // An operator model still rides the native flag.
+    expect(run({}, { model: "qwen3-coder" }))
+      .toEqual(["/fake/qwen", "--safe-mode", "--model", "qwen3-coder"]);
+  });
+
+  test("the override rides the OPENAI_* environment group", () => {
+    const adapter = adapterOf(ZAI_QWEN);
+    expect(adapter.getRunEnv({ agent: "qwen", prompt: "p" } as RunRequest)).toEqual({
+      OPENAI_API_KEY: ZAI_QWEN.CODEMUX_QWEN_PROVIDER_API_KEY,
+      OPENAI_BASE_URL: ZAI_QWEN.CODEMUX_QWEN_PROVIDER_BASE_URL,
+      OPENAI_MODEL: "glm-5.3",
+    });
+    // --safe-mode stays on every run; the key never rides argv.
+    const cmd = run(ZAI_QWEN);
+    expect(cmd).toEqual(["/fake/qwen", "--safe-mode"]);
+    expect(cmd.join(" ")).not.toContain(ZAI_QWEN.CODEMUX_QWEN_PROVIDER_API_KEY);
+  });
+
+  test("an explicit --model wins and rides both the flag and the env", () => {
+    const adapter = adapterOf(ZAI_QWEN);
+    expect(run(ZAI_QWEN, { model: "glm-5.3-flash" }))
+      .toEqual(["/fake/qwen", "--safe-mode", "--model", "glm-5.3-flash"]);
+    expect(adapter.getRunEnv({ agent: "qwen", prompt: "p", model: "glm-5.3-flash" } as RunRequest))
+      .toMatchObject({ OPENAI_MODEL: "glm-5.3-flash" });
+  });
+
+  test("a keyless override fails validation with the missing name", () => {
+    const adapter = adapterOf({
+      CODEMUX_QWEN_PROVIDER_BASE_URL: ZAI_QWEN.CODEMUX_QWEN_PROVIDER_BASE_URL,
+      CODEMUX_QWEN_PROVIDER_MODEL: "glm-5.3",
+    });
+    expect(() => adapter.validateRunRequest({ agent: "qwen", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toThrow("provider override is missing CODEMUX_QWEN_PROVIDER_API_KEY");
+  });
+
+  test("an override without any model fails validation", () => {
+    const adapter = adapterOf({
+      CODEMUX_QWEN_PROVIDER_BASE_URL: ZAI_QWEN.CODEMUX_QWEN_PROVIDER_BASE_URL,
+      CODEMUX_QWEN_PROVIDER_API_KEY: ZAI_QWEN.CODEMUX_QWEN_PROVIDER_API_KEY,
+    });
+    expect(() => adapter.validateRunRequest({ agent: "qwen", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toThrow("qwen needs a model for the provider override");
+    expect(() => adapter.validateTuiRequest(undefined, cwdOf()))
+      .toThrow("qwen needs a model for the provider override");
+  });
+
+  test("the legacy qwen-coder binary refuses the override", () => {
+    const legacy = new QwenAdapter(
+      (name) => (name === "qwen-coder" ? "/fake/qwen-coder" : null),
+      ZAI_QWEN
+    );
+    expect(() => legacy.validateRunRequest({
+      agent: "qwen",
+      prompt: "p",
+      cwd: cwdOf(),
+      sandboxed: true,
+    } as RunRequest)).toThrow("supports the current qwen CLI only");
+  });
+
+  test("the tui command and env carry the same override", () => {
+    const adapter = adapterOf(ZAI_QWEN);
+    expect(adapter.buildTuiCommand("glm-5.3", "high"))
+      .toEqual(["/fake/qwen", "--safe-mode", "--model", "glm-5.3", "--approval-mode", "yolo"]);
+    expect(adapter.getTuiEnv("glm-5.3")).toEqual({
+      OPENAI_API_KEY: ZAI_QWEN.CODEMUX_QWEN_PROVIDER_API_KEY,
+      OPENAI_BASE_URL: ZAI_QWEN.CODEMUX_QWEN_PROVIDER_BASE_URL,
+      OPENAI_MODEL: "glm-5.3",
     });
   });
 });

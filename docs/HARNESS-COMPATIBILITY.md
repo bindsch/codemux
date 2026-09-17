@@ -175,6 +175,21 @@ between 1.45.0 and 1.50.1 in the source and help surface, and the
 adapter unit tests and the live probes, not on the full upgrade
 procedure.
 
+Qwen Code 0.24.0 (last audited 0.21.2) was installed here (`npm install
+-g @qwen-code/qwen-code`; `npm uninstall -g @qwen-code/qwen-code` removes
+it) and exercised live on 2026-09-17 through a provider override: the
+`OPENAI_API_KEY`/`OPENAI_BASE_URL`/`OPENAI_MODEL` group qwen documents
+for headless setups routed GLM-5.3 via Z.AI, and the non-hermetic
+control probe plus plain capability probes ran against the model
+(docs/HERMETIC.md). The `--safe-mode` and `--approval-mode` flags behind
+the mappings are unchanged between 0.21.2 and 0.24.0 in the package help
+surface, and the OpenAI-compatible environment group is now part of the
+exercised contract. Both capabilities stay refused, now live-grounded:
+the control probe stayed clean because every codemux qwen run already
+carries `--safe-mode` (docs/HERMETIC.md). `maxAudited` is unchanged:
+this rests on help-surface inspection, adapter unit tests and the live
+probes, not on the full upgrade procedure.
+
 Not installed here, grounded in the published package or source, which is
 newer than the audited ledger version in every case (the flags the
 mappings rely on were also spot-checked at the audited version where the
@@ -183,7 +198,6 @@ source was reachable):
 | Harness | Grounded in | Last audited | Audited-version spot check |
 |---------|-------------|--------------|---------------------------|
 | GitHub Copilot CLI | 1.0.85 (npm) | 1.0.77 | both mechanisms predate 1.0.77 |
-| Qwen Code | 0.24.0 (npm) | 0.21.2 | refused on 0.24.0 semantics; no mapping |
 | Cline CLI | 3.0.62 (source) | 3.0.48 | not spot-checked; no mapping |
 
 ## Version enforcement

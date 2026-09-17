@@ -99,6 +99,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   switch, and `GOOSE_PATH_ROOT` — the wholesale relocation — strands the
   provider and model selection living in the same file while the global
   skill directories under the real home escape it).
+- Qwen keeps refusing both capabilities, now verified live on 2026-09-17
+  at 0.24.0 (installed via npm) through a provider override (GLM-5.3 via
+  Z.AI): the override rides the `OPENAI_API_KEY`/`OPENAI_BASE_URL`/
+  `OPENAI_MODEL` group qwen documents for headless setups, so the key
+  never touches argv or an operator file. The non-hermetic control probe
+  stayed clean — every codemux qwen run already carries `--safe-mode`,
+  which closes every operator channel, so the check's control can never
+  leak and `--hermetic` can never pass by design — while the plain read
+  and shell probes produced the planted secret and its transform, so the
+  harness demonstrably ran against Z.AI with its tools intact;
+  `--tools none` stays refused because no tool-removal flag survives
+  safe mode.
 - Pi claims `--tools none`, verified live on 2026-09-17 through a
   provider override (GLM-5.3 via Z.AI): the override writes a private
   agent directory behind `PI_CODING_AGENT_DIR` — the only knob that
