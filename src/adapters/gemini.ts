@@ -2,6 +2,12 @@ import { BaseAdapter } from "./base.js";
 import { assertNoGeminiProjectExecutionConfig } from "../project-safety.js";
 import { validateWorkingDirectory } from "../validation.js";
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
+import { isAbsolute, join } from "node:path";
+import {
+  writeGeminiNoToolsSettings,
+  type GeminiNoToolsSettings,
+} from "../gemini-no-tools.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -18,6 +24,16 @@ export class GeminiAdapter extends BaseAdapter {
   readonly id: AgentId = "gemini";
   readonly binaryName = "gemini";
 
+  private noToolsSettings: GeminiNoToolsSettings | null = null;
+  private readonly noToolsFiles: GeminiNoToolsSettings[] = [];
+
+  constructor(
+    private readonly environment: NodeJS.ProcessEnv = process.env,
+    private readonly homeDirectory?: string
+  ) {
+    super();
+  }
+
   override getEnv(): Record<string, string> {
     return { GEMINI_CLI_SYSTEM_SETTINGS_PATH: GEMINI_SYSTEM_SETTINGS_PATH };
   }
@@ -31,6 +47,62 @@ export class GeminiAdapter extends BaseAdapter {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: false,
       effortLevels: [],
+      // Implemented but unclaimed: gemini is not installed on the release
+      // machine, so the capability probe is pending an install. Hermetic has
+      // no mechanism at all; see docs/HERMETIC.md.
+      supportsHermetic: false,
+      supportsToolSelection: false,
+    };
+  }
+
+  /** The user home a run sees: the seam, else $HOME, else the account home. */
+  private effectiveHome(): string {
+    if (this.homeDirectory !== undefined && !isAbsolute(this.homeDirectory)) {
+      throw new Error("Gemini home directory must be an absolute path");
+    }
+    const home = this.homeDirectory ?? this.environment.HOME;
+    return home && isAbsolute(home) ? home : homedir();
+  }
+
+  /**
+   * The gemini directory a plain run reads: `~/.gemini`, or under the
+   * operator's passed-through GEMINI_CLI_HOME (which replaces the home
+   * directory gemini derives every path from).
+   */
+  private realGeminiDir(request: RunRequest): string {
+    const passedThrough = request.passthroughEnv?.includes("GEMINI_CLI_HOME") ?? false;
+    const configured = this.environment.GEMINI_CLI_HOME?.trim();
+    if (passedThrough && configured) {
+      if (!isAbsolute(configured)) {
+        throw new Error("passed-through GEMINI_CLI_HOME must be an absolute path");
+      }
+      return join(configured, ".gemini");
+    }
+    return join(this.effectiveHome(), ".gemini");
+  }
+
+  override prepareRun(request: RunRequest): void {
+    if (request.tools !== "none") return;
+    this.noToolsSettings = writeGeminiNoToolsSettings(
+      this.realGeminiDir(request),
+      GEMINI_SYSTEM_SETTINGS_PATH
+    );
+    this.noToolsFiles.push(this.noToolsSettings);
+  }
+
+  /** Drops every generated settings file this adapter created. */
+  disposeNoToolsSettings(): void {
+    for (const file of this.noToolsFiles.splice(0)) file.finalize();
+    this.noToolsSettings = null;
+  }
+
+  override getRunEnv(request: RunRequest): Record<string, string> {
+    if (request.tools !== "none") return {};
+    if (this.noToolsSettings === null) {
+      throw new Error("gemini tools-none settings file was not prepared before launch");
+    }
+    return {
+      GEMINI_CLI_SYSTEM_SETTINGS_PATH: this.noToolsSettings.path,
     };
   }
 

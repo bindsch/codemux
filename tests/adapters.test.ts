@@ -585,6 +585,9 @@ describe("GeminiAdapter", () => {
     expect(caps.autonomyLevels).toEqual(["read-only", "low", "medium", "high"]);
     expect(caps.supportsEffort).toBe(false);
     expect(caps.effortLevels).toEqual([]);
+    // Implemented but unclaimed: the capability probe is pending an install.
+    expect(caps.supportsHermetic ?? false).toBe(false);
+    expect(caps.supportsToolSelection ?? false).toBe(false);
   });
 
   test("buildRunCommand with model", () => {
