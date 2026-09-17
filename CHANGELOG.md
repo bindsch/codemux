@@ -9,6 +9,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
+- Pi's `--tools none` mechanism is implemented but not yet claimed: it maps
+  onto `--no-tools`, whose empty allowlist keeps every built-in, extension
+  and custom tool out of the registry (the model is never offered a
+  schema), and it suppresses the autonomy mapping's `--tools` allowlist,
+  which pi would otherwise resolve over `--no-tools`. Pi is not installed
+  on the release machine, so the capability stays unclaimed until an
+  install and a probe. Pi keeps refusing `--hermetic`: the documented
+  `--no-*` flags and the `--no-approve` every run already carries close
+  every channel except the global `~/.pi/SYSTEM.md`/`APPEND_SYSTEM.md`
+  system-prompt override, which has no switch — the only suppression is
+  an undocumented empty-string fallback codemux does not rely on.
 - Gemini's `--tools none` mechanism is implemented but not yet claimed: it
   writes codemux's packaged system-settings pins plus `tools.core: []` into
   a private file under `~/.gemini/.codemux/` and points

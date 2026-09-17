@@ -148,7 +148,7 @@ describe("installed harness contracts", () => {
     {
       binary: "pi",
       args: ["--help"],
-      required: ["--print", "--model", "--thinking", "--tools", "--no-extensions", "--no-approve", "--no-session"],
+      required: ["--print", "--model", "--thinking", "--tools", "--no-tools", "--no-extensions", "--no-approve", "--no-session"],
     },
     {
       binary: "qwen",

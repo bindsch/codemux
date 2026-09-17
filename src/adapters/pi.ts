@@ -20,6 +20,12 @@ export class PiAdapter extends BaseAdapter {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+      // Implemented but unclaimed: pi is not installed on the release
+      // machine, so the capability probe is pending an install. Hermetic
+      // has no mechanism for the global SYSTEM.md channel; see
+      // docs/HERMETIC.md.
+      supportsHermetic: false,
+      supportsToolSelection: false,
     };
   }
 
@@ -46,6 +52,32 @@ export class PiAdapter extends BaseAdapter {
     return ["--thinking", level === "none" ? "off" : level];
   }
 
+  /**
+   * The autonomy flags a run carries. Under `--tools none` the `--tools`
+   * allowlist must not ride along: pi resolves an explicit allowlist over
+   * `--no-tools` (`options.tools ?? (options.noTools === "all" ? [] : …)`,
+   * core/sdk.js at 0.85.1), so the allowlist would re-enable exactly those
+   * tools.
+   */
+  private autonomyFlagsFor(request: RunRequest): string[] {
+    if (!request.autonomy) return [];
+    const flags = this.mapAutonomy(request.autonomy);
+    if (request.tools !== "none") return flags;
+    const kept: string[] = [];
+    let i = 0;
+    while (i < flags.length) {
+      const flag = flags[i];
+      if (flag === undefined) break;
+      if (flag === "--tools") {
+        i += 2;
+        continue;
+      }
+      kept.push(flag);
+      i++;
+    }
+    return kept;
+  }
+
   buildRunCommand(request: RunRequest): string[] {
     const cmd = ["pi", "--print", "--no-session", "--no-approve"];
 
@@ -53,8 +85,12 @@ export class PiAdapter extends BaseAdapter {
       cmd.push("--model", request.model);
     }
 
-    if (request.autonomy) {
-      cmd.push(...this.mapAutonomy(request.autonomy));
+    cmd.push(...this.autonomyFlagsFor(request));
+    if (request.tools === "none") {
+      // "Disable all tools by default (built-in and extension)" (0.85.1
+      // --help): the empty allowlist keeps every built-in, extension and
+      // custom tool out of the registry, so the model is offered none.
+      cmd.push("--no-tools");
     }
     if (request.effort) {
       cmd.push(...this.mapEffort(request.effort));
