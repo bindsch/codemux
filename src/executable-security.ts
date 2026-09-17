@@ -91,7 +91,25 @@ export function resolveTrustedCommand(
   resolveAt(0, isEnv);
   if (isEnv) {
     let index = 1;
-    while (index < command.length && ENV_ASSIGNMENT.test(command[index]!)) index++;
+    while (index < command.length) {
+      const part = command[index]!;
+      // Unsetting needs no assignment value, but only these two spellings
+      // are honored: every other option (notably -i and -S) can reinterpret
+      // the rest of the prefix.
+      if (part === "-u" || part === "--unset") {
+        const name = command[index + 1];
+        if (!name || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+          throw new Error(`${label} env prefix unsets an invalid variable name`);
+        }
+        index += 2;
+        continue;
+      }
+      if (ENV_ASSIGNMENT.test(part)) {
+        index++;
+        continue;
+      }
+      break;
+    }
     if (index >= command.length || command[index]!.startsWith("-")) {
       throw new Error(`${label} env prefix names no program to run`);
     }

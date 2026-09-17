@@ -1,0 +1,219 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { OpencodeAdapter } from "../src/adapters/opencode.js";
+import {
+  OPENCODE_PROVIDER_ID,
+  OPENCODE_PROVIDER_KEY_ENV,
+  writeOpencodeProviderConfig,
+} from "../src/opencode-provider.js";
+
+// The provider override's opencode translation: a private config file under
+// the real data directory (OPENCODE_CONFIG) plus a key environment variable
+// the file references as {env:…}. The key must never ride argv; assertions
+// check the command and the file both stay free of it.
+
+const ZAI = {
+  CODEMUX_OPENCODE_PROVIDER_BASE_URL: "https://api.z.ai/api/coding/paas/v4",
+  CODEMUX_OPENCODE_PROVIDER_API_KEY: "test-key-do-not-print",
+  CODEMUX_OPENCODE_PROVIDER_MODEL: "glm-5.3",
+};
+
+describe("opencode provider override", () => {
+  const scratch: string[] = [];
+  const adapters: OpencodeAdapter[] = [];
+  afterEach(() => {
+    for (const adapter of adapters.splice(0)) {
+      adapter.disposeHermeticHome();
+      adapter.disposeProviderConfigs();
+    }
+    while (scratch.length > 0) {
+      const dir = scratch.pop()!;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  const homeOf = (): string => {
+    const home = mkdtempSync(join(tmpdir(), "codemux-opencode-home-"));
+    scratch.push(home);
+    return home;
+  };
+  const adapterOf = (env: NodeJS.ProcessEnv = {}): OpencodeAdapter => {
+    const adapter = new OpencodeAdapter(env, homeOf());
+    adapters.push(adapter);
+    return adapter;
+  };
+  const cwdOf = (): string => {
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-opencode-override-"));
+    mkdirSync(join(cwd, ".git"));
+    scratch.push(cwd);
+    return cwd;
+  };
+  const configPathOf = (cmd: string[]): string | undefined =>
+    cmd.find((part) => part.startsWith("OPENCODE_CONFIG="))?.slice("OPENCODE_CONFIG=".length);
+  const modelArg = (cmd: string[]): string => cmd[cmd.indexOf("--model") + 1]!;
+
+  test("without an override nothing changes", () => {
+    const adapter = adapterOf();
+    expect(adapter.buildRunCommand({ agent: "opencode", prompt: "p" }))
+      .toEqual(["opencode", "--pure", "run"]);
+    expect(adapter.getRunEnv({ agent: "opencode", prompt: "p" })).toEqual({});
+  });
+
+  test("the override rides a private OPENCODE_CONFIG file plus a key environment", () => {
+    const adapter = adapterOf(ZAI);
+    adapter.prepareRun({ agent: "opencode", prompt: "p" });
+    const env = adapter.getRunEnv({ agent: "opencode", prompt: "p" });
+    expect(Object.keys(env).sort()).toEqual([OPENCODE_PROVIDER_KEY_ENV, "OPENCODE_CONFIG"]);
+    expect(env[OPENCODE_PROVIDER_KEY_ENV]).toBe(ZAI.CODEMUX_OPENCODE_PROVIDER_API_KEY);
+    const cmd = adapter.buildRunCommand({ agent: "opencode", prompt: "p" });
+    expect(modelArg(cmd)).toBe(`${OPENCODE_PROVIDER_ID}/glm-5.3`);
+    // The key never rides argv, and the file records only the env name.
+    expect(cmd.join(" ")).not.toContain(ZAI.CODEMUX_OPENCODE_PROVIDER_API_KEY);
+    const path = env.OPENCODE_CONFIG!;
+    const config = JSON.parse(readFileSync(path, "utf8"));
+    const provider = config.provider[OPENCODE_PROVIDER_ID];
+    expect(provider.npm).toBe("@ai-sdk/openai-compatible");
+    expect(provider.options.baseURL).toBe(ZAI.CODEMUX_OPENCODE_PROVIDER_BASE_URL);
+    expect(provider.options.apiKey).toBe(`{env:${OPENCODE_PROVIDER_KEY_ENV}}`);
+    expect(Object.keys(provider.models)).toEqual(["glm-5.3"]);
+    expect(config.model).toBe(`${OPENCODE_PROVIDER_ID}/glm-5.3`);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(path).toContain(join("opencode", ".codemux", `provider-${process.pid}-`));
+  });
+
+  test("an explicit --model wins and is namespaced once", () => {
+    const adapter = adapterOf(ZAI);
+    adapter.prepareRun({ agent: "opencode", prompt: "p", model: "glm-5.3-flash" });
+    const env = adapter.getRunEnv({ agent: "opencode", prompt: "p", model: "glm-5.3-flash" });
+    const config = JSON.parse(readFileSync(env.OPENCODE_CONFIG!, "utf8"));
+    expect(Object.keys(config.provider[OPENCODE_PROVIDER_ID].models)).toEqual(["glm-5.3-flash"]);
+    expect(config.model).toBe(`${OPENCODE_PROVIDER_ID}/glm-5.3-flash`);
+    expect(modelArg(adapter.buildRunCommand({ agent: "opencode", prompt: "p", model: "glm-5.3-flash" })))
+      .toBe(`${OPENCODE_PROVIDER_ID}/glm-5.3-flash`);
+    expect(modelArg(adapter.buildRunCommand({
+      agent: "opencode",
+      prompt: "p",
+      model: `${OPENCODE_PROVIDER_ID}/glm-5.3`,
+    }))).toBe(`${OPENCODE_PROVIDER_ID}/glm-5.3`);
+  });
+
+  test("the override survives --hermetic: the env prefix carries the config path", () => {
+    const adapter = adapterOf(ZAI);
+    const request = { agent: "opencode" as const, prompt: "p", hermetic: true as const };
+    adapter.prepareRun(request);
+    const cmd = adapter.buildRunCommand(request);
+    const path = configPathOf(cmd)!;
+    expect(path).not.toBe("");
+    expect(statSync(path).isFile()).toBe(true);
+    expect(modelArg(cmd)).toBe(`${OPENCODE_PROVIDER_ID}/glm-5.3`);
+    // The key rides the real environment, never the env(1) prefix (argv).
+    expect(cmd.join(" ")).not.toContain(ZAI.CODEMUX_OPENCODE_PROVIDER_API_KEY);
+    expect(adapter.getRunEnv(request)).toEqual({
+      [OPENCODE_PROVIDER_KEY_ENV]: ZAI.CODEMUX_OPENCODE_PROVIDER_API_KEY,
+    });
+    // Without an override the variable is removed entirely: blanking it
+    // reopens the global-config `??` leak (see the adapter comment).
+    const plain = adapterOf();
+    plain.prepareRun({ agent: "opencode", prompt: "p", hermetic: true });
+    const plainCmd = plain.buildRunCommand({ agent: "opencode", prompt: "p", hermetic: true });
+    expect(configPathOf(plainCmd)).toBeUndefined();
+    expect(plainCmd.filter((_, index) => plainCmd[index - 1] === "-u").sort())
+      .toEqual(["OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR"]);
+  });
+
+  test("a keyless override fails validation with the missing name", () => {
+    const adapter = adapterOf({
+      CODEMUX_OPENCODE_PROVIDER_BASE_URL: ZAI.CODEMUX_OPENCODE_PROVIDER_BASE_URL,
+      CODEMUX_OPENCODE_PROVIDER_MODEL: "glm-5.3",
+    });
+    expect(() =>
+      adapter.validateRunRequest({ agent: "opencode", prompt: "p", cwd: cwdOf() })
+    ).toThrow("provider override is missing CODEMUX_OPENCODE_PROVIDER_API_KEY");
+  });
+
+  test("an override without any model fails validation", () => {
+    const adapter = adapterOf({
+      CODEMUX_OPENCODE_PROVIDER_BASE_URL: ZAI.CODEMUX_OPENCODE_PROVIDER_BASE_URL,
+      CODEMUX_OPENCODE_PROVIDER_API_KEY: ZAI.CODEMUX_OPENCODE_PROVIDER_API_KEY,
+    });
+    expect(() =>
+      adapter.validateRunRequest({ agent: "opencode", prompt: "p", cwd: cwdOf() })
+    ).toThrow("opencode needs a model for the provider override");
+  });
+
+  test("an unprepared provider config refuses launch", () => {
+    const adapter = adapterOf(ZAI);
+    expect(() => adapter.getRunEnv({ agent: "opencode", prompt: "p" }))
+      .toThrow("opencode provider config was not prepared before launch");
+  });
+
+  test("the tui refuses an active override", () => {
+    const adapter = adapterOf(ZAI);
+    expect(() => adapter.validateTuiRequest(undefined, cwdOf()))
+      .toThrow("supports headless runs only");
+    expect(() => adapterOf().validateTuiRequest(undefined, cwdOf())).not.toThrow();
+  });
+
+  test("every prepared run gets a fresh config, and dispose removes them all", () => {
+    const adapter = adapterOf(ZAI);
+    adapter.prepareRun({ agent: "opencode", prompt: "p" });
+    const first = adapter.getRunEnv({ agent: "opencode", prompt: "p" }).OPENCODE_CONFIG!;
+    expect(statSync(first).isFile()).toBe(true);
+    adapter.prepareRun({ agent: "opencode", prompt: "p" });
+    const second = adapter.getRunEnv({ agent: "opencode", prompt: "p" }).OPENCODE_CONFIG!;
+    expect(second).not.toBe(first);
+    // The earlier file stays until exit: an earlier run may still read it.
+    expect(statSync(first).isFile()).toBe(true);
+    adapter.disposeProviderConfigs();
+    expect(() => statSync(first)).toThrow();
+    expect(() => statSync(second)).toThrow();
+  });
+
+  test("old configs of dead codemux processes are swept", () => {
+    const home = homeOf();
+    const dataDir = join(home, ".local", "share", "opencode");
+    const parent = join(dataDir, ".codemux");
+    mkdirSync(parent, { recursive: true });
+    const old = join(parent, "provider-999999999-old");
+    mkdirSync(old);
+    writeFileSync(join(old, "opencode.json"), "x");
+    const threeDaysAgo = new Date(Date.now() - 3 * 86_400_000);
+    utimesSync(old, threeDaysAgo, threeDaysAgo);
+    const config = writeOpencodeProviderConfig(
+      dataDir,
+      { baseUrl: ZAI.CODEMUX_OPENCODE_PROVIDER_BASE_URL, apiKey: "k" },
+      "glm-5.3"
+    );
+    expect(readdirSync(parent).filter((entry) => entry.startsWith("provider-9999"))).toEqual([]);
+    config.finalize();
+  });
+
+  test("a symlinked .codemux parent is refused", () => {
+    const home = homeOf();
+    const elsewhere = mkdtempSync(join(tmpdir(), "codemux-opencode-elsewhere-"));
+    scratch.push(elsewhere);
+    const dataDir = join(home, ".local", "share", "opencode");
+    const parent = join(dataDir, ".codemux");
+    mkdirSync(parent, { recursive: true });
+    rmSync(parent, { recursive: true, force: true });
+    symlinkSync(elsewhere, parent);
+    expect(() =>
+      writeOpencodeProviderConfig(
+        dataDir,
+        { baseUrl: ZAI.CODEMUX_OPENCODE_PROVIDER_BASE_URL, apiKey: "k" },
+        "glm-5.3"
+      )
+    ).toThrow("must be a directory owned by the current user");
+  });
+});

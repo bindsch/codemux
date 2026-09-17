@@ -88,7 +88,7 @@ codemux [command] [options]
 | `--timeout <seconds>` | Kill a hung non-interactive run and its whole process tree (a descendant whose parent chain broke before the first snapshot can still escape; default: `1800`, maximum: `86400`) |
 | `--pass-env <names>` | Explicitly pass comma-separated parent environment names |
 | `--enable-playwright-mcp` | Enable a local Playwright MCP binary inside `--sandbox` |
-| `--hermetic` | Load none of the operator's customizations (instruction files, skills, plugins, hooks, MCP servers); the login still works. Claude, Z.AI, Codex and Aider; every other harness is refused until its mechanism passes the live check — several have implemented mechanisms pending that verification. See [docs/HERMETIC.md](docs/HERMETIC.md) |
+| `--hermetic` | Load none of the operator's customizations (instruction files, skills, plugins, hooks, MCP servers); the login still works. Claude, Z.AI, Codex, Aider and OpenCode; every other harness is refused until its mechanism passes the live check — several have implemented mechanisms pending that verification. See [docs/HERMETIC.md](docs/HERMETIC.md) |
 | `--tools <selection>` | Built-in tools the harness exposes: `default` or `none`. Independent of `--hermetic`; Codex takes `none` only with `--auto read-only`, and harnesses that cannot remove their tools refuse `none` |
 | `-s, --sandbox` | Execute via `scode` (default: on; `--no-sandbox` opts out, and autonomy below `high` then refuses) |
 | `--sandbox-trust <level>` | `scode` trust override (`trusted`, `standard`, `untrusted`) |
@@ -128,8 +128,10 @@ into litellm's `openai/` model prefix with `OPENAI_API_BASE` and
 `OPENAI_API_KEY`
 ([aider.chat/docs/llms/openai-compat.html](https://aider.chat/docs/llms/openai-compat.html)),
 and OpenHands into `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL` behind its
-`--override-with-envs`; harnesses without a custom-provider mechanism (GitHub
-Copilot CLI, the Cursor agent CLI) document that limit instead.
+`--override-with-envs`, and OpenCode into a private `OPENCODE_CONFIG`
+provider file plus a key environment it references; harnesses without a
+custom-provider mechanism (GitHub Copilot CLI, the Cursor agent CLI)
+document that limit instead.
 
 ### `check` options
 

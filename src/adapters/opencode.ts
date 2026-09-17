@@ -5,8 +5,19 @@ import {
   createOpencodeHermeticHome,
   type OpencodeHermeticHome,
 } from "../opencode-hermetic.js";
+import {
+  OPENCODE_PROVIDER_ID,
+  OPENCODE_PROVIDER_KEY_ENV,
+  writeOpencodeProviderConfig,
+  type OpencodeProviderConfig,
+} from "../opencode-provider.js";
 import { assertNoOpenCodeProjectExecutionConfig } from "../project-safety.js";
 import { validateWorkingDirectory } from "../validation.js";
+import {
+  readProviderOverride,
+  requireProviderOverride,
+  type ProviderOverride,
+} from "../provider-override.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -18,10 +29,26 @@ import type {
 // Hermetic runs point OpenCode's XDG world at a private home (see
 // opencode-hermetic.ts) and close the two channels a home cannot with these
 // env-only switches, read in packages/core/src/flag/flag.ts and
-// packages/opencode/src/effect/runtime-flags.ts at 1.18.18. Empty strings are
-// falsy where OpenCode reads them, so the last three neutralize anything an
-// operator passed through with --pass-env.
-const OPENCODE_HERMETIC_ENV = (home: string, realDataParent: string): string[] => [
+// packages/opencode/src/effect/runtime-flags.ts at 1.18.18. The config
+// variables are REMOVED, not blanked: Global.Path.config reads
+// `Flag.OPENCODE_CONFIG_DIR ?? Path.config` (packages/core/src/global.ts),
+// and an empty string survives `??`, degenerating `path.join(global.config,
+// "AGENTS.md")` into a project-relative file the ungated global-files loop
+// then loads — a leak, not a neutralizer (verified live: the empty
+// assignment carried a planted canary into the system prompt at 1.18.18).
+// A provider override sets OPENCODE_CONFIG to codemux's own config file —
+// the one channel hermetic deliberately keeps, because codemux wrote it.
+const OPENCODE_HERMETIC_ENV = (
+  home: string,
+  realDataParent: string,
+  providerConfigPath: string | null
+): string[] => [
+  "-u",
+  "OPENCODE_CONFIG",
+  "-u",
+  "OPENCODE_CONFIG_DIR",
+  "-u",
+  "OPENCODE_CONFIG_CONTENT",
   // The private home reaches OpenCode through env(1), never through the
   // environment codemux hands to scode: scode derives its deny rules from
   // $HOME, and these assignments override any XDG_* the sanitized child
@@ -43,9 +70,7 @@ const OPENCODE_HERMETIC_ENV = (home: string, realDataParent: string): string[] =
   "OPENCODE_DISABLE_CLAUDE_CODE=1",
   // ~/.claude/skills and ~/.agents/skills (packages/opencode/src/skill/index.ts).
   "OPENCODE_DISABLE_EXTERNAL_SKILLS=1",
-  "OPENCODE_CONFIG=",
-  "OPENCODE_CONFIG_DIR=",
-  "OPENCODE_CONFIG_CONTENT=",
+  ...(providerConfigPath === null ? [] : [`OPENCODE_CONFIG=${providerConfigPath}`]),
 ];
 
 // `--tools none`: a pattern-"*" deny in the permission rules removes every
@@ -63,6 +88,9 @@ export class OpencodeAdapter extends BaseAdapter {
   // Every home this adapter created and has not disposed; earlier runs
   // through the same instance may still be using theirs.
   private readonly hermeticHomes: OpencodeHermeticHome[] = [];
+  private providerConfig: OpencodeProviderConfig | null = null;
+  // Every provider config this adapter created and has not disposed.
+  private readonly providerConfigs: OpencodeProviderConfig[] = [];
 
   // Seams so tests can point the real data directory at a scratch directory.
   constructor(
@@ -81,11 +109,12 @@ export class OpencodeAdapter extends BaseAdapter {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["low", "medium", "high"],
-      // The mapping below is implemented but not claimed: `codemux check
-      // --hermetic -a opencode` could not run this week (usage limits), so
-      // the live check is pending. See docs/HERMETIC.md.
-      supportsHermetic: false,
-      supportsToolSelection: false,
+      // Verified live on 2026-09-17 through a provider override (GLM-5.3
+      // via Z.AI): the two-probe check passed with and without --tools
+      // none, and the read and shell probes fail under --tools none
+      // (docs/HERMETIC.md).
+      supportsHermetic: true,
+      supportsToolSelection: true,
     };
   }
 
@@ -136,6 +165,43 @@ export class OpencodeAdapter extends BaseAdapter {
     return join(this.effectiveHome(), ".local", "share");
   }
 
+  /**
+   * The provider override, validated: OpenCode reaches a custom provider only
+   * through a config layer (there are no provider environment variables), so
+   * the override needs a base URL and a key, delivered through a file codemux
+   * writes and an environment name it provides (opencode-provider.ts).
+   */
+  private validatedProvider(): (ProviderOverride & { baseUrl: string; apiKey: string }) | null {
+    const override = readProviderOverride("opencode", this.environment);
+    if (override === null) return null;
+    return requireProviderOverride("opencode", override, [
+      "baseUrl",
+      "apiKey",
+    ]) as ProviderOverride & { baseUrl: string; apiKey: string };
+  }
+
+  /** The bare model id: the request's, else the override's. */
+  private rawModelFor(model: string | undefined): string | undefined {
+    const override = this.validatedProvider();
+    const resolved = model ?? override?.model;
+    if (resolved === undefined && override !== null) {
+      throw new Error(
+        "opencode needs a model for the provider override; pass --model or set CODEMUX_OPENCODE_PROVIDER_MODEL"
+      );
+    }
+    return resolved;
+  }
+
+  /** The `--model` value: with an override, the config's provider id routes to it. */
+  private modelFor(model: string | undefined): string | undefined {
+    const override = this.validatedProvider();
+    const resolved = this.rawModelFor(model);
+    if (resolved === undefined || override === null) return resolved;
+    return resolved.startsWith(`${OPENCODE_PROVIDER_ID}/`)
+      ? resolved
+      : `${OPENCODE_PROVIDER_ID}/${resolved}`;
+  }
+
   buildRunCommand(request: RunRequest): string[] {
     const cmd: string[] = [];
 
@@ -143,10 +209,17 @@ export class OpencodeAdapter extends BaseAdapter {
     if (request.hermetic) {
       // A static preview (`verify`) has no prepared home; the placeholder
       // path does not exist, and getRunEnv refuses a launch without one, so
-      // a command built without prepareRun fails closed.
+      // a command built without prepareRun fails closed. The same holds for
+      // the provider config's path.
       const unprepared = join(this.realDataParent(), "opencode", ".codemux-hermetic", "unprepared");
       const home = this.hermeticHome?.home ?? unprepared;
-      envPrefix.push(...OPENCODE_HERMETIC_ENV(home, this.realDataParent()));
+      envPrefix.push(
+        ...OPENCODE_HERMETIC_ENV(
+          home,
+          this.realDataParent(),
+          this.providerConfig?.path ?? null
+        )
+      );
     }
     if (request.tools === "none") {
       envPrefix.push(OPENCODE_NO_TOOLS_PERMISSION);
@@ -156,8 +229,9 @@ export class OpencodeAdapter extends BaseAdapter {
     }
     cmd.push("opencode", "--pure", "run");
 
-    if (request.model) {
-      cmd.push("--model", request.model);
+    const model = this.modelFor(request.model);
+    if (model) {
+      cmd.push("--model", model);
     }
 
     if (request.autonomy) {
@@ -175,11 +249,24 @@ export class OpencodeAdapter extends BaseAdapter {
   }
 
   override prepareRun(request: RunRequest): void {
+    // The provider config rides every run with an override, hermetic or not:
+    // one file per run, never shared, removed at exit. Hermetic runs also
+    // get their private home; earlier artifacts stay until process exit,
+    // since a run started earlier through this same (singleton) adapter may
+    // still be using its own.
+    const override = this.validatedProvider();
+    if (override !== null) {
+      const model = this.rawModelFor(request.model);
+      if (model !== undefined) {
+        this.providerConfig = writeOpencodeProviderConfig(
+          join(this.realDataParent(), "opencode"),
+          override,
+          model
+        );
+        this.providerConfigs.push(this.providerConfig);
+      }
+    }
     if (!request.hermetic) return;
-    // One home per run, never shared: a previous run's seeded config or
-    // state must not reach the next one through the same adapter. Earlier
-    // homes stay until process exit, since a run started earlier through
-    // this same (singleton) adapter may still be using its own.
     this.hermeticHome = createOpencodeHermeticHome(
       join(this.realDataParent(), "opencode")
     );
@@ -192,6 +279,12 @@ export class OpencodeAdapter extends BaseAdapter {
     this.hermeticHome = null;
   }
 
+  /** Finalizes every provider config of this adapter now rather than at exit. */
+  disposeProviderConfigs(): void {
+    for (const config of this.providerConfigs.splice(0)) config.finalize();
+    this.providerConfig = null;
+  }
+
   override getRunEnv(request: RunRequest): Record<string, string> {
     // Both launch paths call this right before spawning; a static preview
     // never does. The placeholder home in buildRunCommand fails closed on
@@ -199,7 +292,22 @@ export class OpencodeAdapter extends BaseAdapter {
     if (request.hermetic && this.hermeticHome === null) {
       throw new Error("opencode hermetic home was not prepared before launch");
     }
-    return {};
+    const override = this.validatedProvider();
+    if (override === null) return {};
+    if (this.providerConfig === null) {
+      throw new Error("opencode provider config was not prepared before launch");
+    }
+    // The key rides the environment codemux provides, never argv and never a
+    // file. OPENCODE_CONFIG reaches a hermetic run through the env prefix
+    // (an env(1) assignment would clobber it here); a plain run has no
+    // prefix, so it rides along.
+    if (request.hermetic) {
+      return { [OPENCODE_PROVIDER_KEY_ENV]: override.apiKey };
+    }
+    return {
+      [OPENCODE_PROVIDER_KEY_ENV]: override.apiKey,
+      OPENCODE_CONFIG: this.providerConfig.path,
+    };
   }
 
   override validateRunRequest(request: RunRequest): void {
@@ -207,6 +315,10 @@ export class OpencodeAdapter extends BaseAdapter {
     assertNoOpenCodeProjectExecutionConfig(
       validateWorkingDirectory(request.cwd) ?? process.cwd()
     );
+    // Fail before launch on a half-configured override, and surface the
+    // model requirement early: the operator's own login and default model
+    // would otherwise silently answer.
+    this.modelFor(request.model);
   }
 
   override validateTuiRequest(
@@ -228,6 +340,14 @@ export class OpencodeAdapter extends BaseAdapter {
     assertNoOpenCodeProjectExecutionConfig(
       validateWorkingDirectory(cwd) ?? process.cwd()
     );
+    // The provider config's lifecycle rides prepareRun, which only the
+    // headless launch path calls; an interactive session has no hook to
+    // write and remove the file.
+    if (this.validatedProvider() !== null) {
+      throw new Error(
+        "the opencode provider override supports headless runs only; unset CODEMUX_OPENCODE_PROVIDER_* for an interactive session"
+      );
+    }
   }
 
   buildTuiCommand(

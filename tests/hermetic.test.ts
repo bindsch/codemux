@@ -8,10 +8,11 @@ import { ZaiAdapter } from "../src/adapters/zai.js";
 import { evaluateCanary, plantCanary } from "../src/hermetic-canary.js";
 import { AGENT_IDS, type RunRequest } from "../src/types.js";
 
-// The verified harnesses (claude, zai, codex) and the shared refusal,
-// canary and env-prefix machinery live here. Codex's private-home suite is
-// in hermetic-codex.test.ts; the implemented-but-unclaimed harness mappings
-// (aider, opencode, droid, kimi) in hermetic-harness-mappings.test.ts.
+// The verified harnesses (claude, zai, codex, aider, opencode) and the
+// shared refusal, canary and env-prefix machinery live here. Codex's
+// private-home suite is in hermetic-codex.test.ts; the implemented-but-
+// unclaimed harness mappings (droid, kimi) in
+// hermetic-harness-mappings.test.ts.
 
 const PLAIN_CLAUDE = ["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence"];
 
@@ -54,8 +55,8 @@ describe("hermetic runs: claude and zai", () => {
 });
 
 describe("hermetic runs: the other harnesses refuse", () => {
-  const supportedHermetic = new Set(["claude", "zai", "codex", "aider"]);
-  const supportedTools = new Set(["claude", "zai", "codex"]);
+  const supportedHermetic = new Set(["claude", "zai", "codex", "aider", "opencode"]);
+  const supportedTools = new Set(["claude", "zai", "codex", "opencode"]);
   for (const agentId of AGENT_IDS) {
     if (supportedHermetic.has(agentId) && supportedTools.has(agentId)) continue;
     test(`${agentId} refuses what it cannot do but accepts --tools default`, () => {
@@ -134,6 +135,22 @@ describe("env-prefixed commands", () => {
     expect(() => resolveTrustedCommand(["env", "HOME=/x", "codemux-no-such-binary"], "test"))
       .toThrow("executable 'codemux-no-such-binary' was not found");
     expect(() => resolveTrustedCommand(["env", "HOME=/x"], "test")).toThrow("names no program");
+  });
+
+  test("-u pairs before the assignments only unset a plain variable name", () => {
+    const { resolveTrustedCommand } = require("../src/executable-security.js") as typeof import("../src/executable-security.js");
+    const resolved = resolveTrustedCommand(
+      ["env", "-u", "OPENCODE_CONFIG_DIR", "-u", "OPENCODE_CONFIG_CONTENT", "HOME=/x", "sh", "-c", "true"],
+      "test"
+    );
+    expect(resolved.slice(1, 6)).toEqual(["-u", "OPENCODE_CONFIG_DIR", "-u", "OPENCODE_CONFIG_CONTENT", "HOME=/x"]);
+    expect(resolved[6]).toMatch(/\/(sh|dash)$/);
+    expect(() => resolveTrustedCommand(["env", "-u", "PATH2=x", "sh"], "test"))
+      .toThrow("env prefix unsets an invalid variable name");
+    expect(() => resolveTrustedCommand(["env", "-u"], "test")).toThrow("unsets an invalid variable name");
+    // Every other option stays refused: -i and -S reinterpret the prefix.
+    expect(() => resolveTrustedCommand(["env", "-i", "HOME=/x", "sh"], "test")).toThrow("names no program");
+    expect(() => resolveTrustedCommand(["env", "-S", "HOME=/x", "sh"], "test")).toThrow("names no program");
   });
 
   test("a hermetic codex run refuses a repository-planted codex binary", () => {

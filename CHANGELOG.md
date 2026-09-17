@@ -28,6 +28,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   from a per-run chat-history file under `~/.aider/.codemux/` (aider's
   stdout is a transcript; the history holds the bare reply and the model's
   reasoning), with the code-word scan covering stdout plus the full history.
+- OpenCode claims `--hermetic` and `--tools none`, verified live on
+  2026-09-17 through the provider override (GLM-5.3 via Z.AI): the override
+  rides a private `OPENCODE_CONFIG` file codemux writes per run and removes
+  at exit, with the key delivered as `{env:…}` interpolation and headless
+  runs only. Hermetic runs now REMOVE `OPENCODE_CONFIG`,
+  `OPENCODE_CONFIG_DIR` and `OPENCODE_CONFIG_CONTENT` through `env -u`
+  instead of blanking them: OpenCode's global config path reads
+  `OPENCODE_CONFIG_DIR ?? …`, an empty string survives the `??`, and the
+  resulting empty global path turned the global `AGENTS.md` lookup into a
+  project-relative one — a live leak of the check's planted code word at
+  1.18.18, traced by pointing the override at a tee proxy and reading the
+  request body. The hermetic check's probe prompt now forbids tool use: a
+  tool-armed model (GLM-5.3 under `--auto`) answered the question by
+  reading the planted `CLAUDE.md` itself while its request was clean, which
+  is the model's own discovery, not a configuration leak.
+- The `env` prefix validator accepts `-u NAME` pairs (plain identifier
+  names only); every other option (`-i`, `-S`) is still refused.
   `--tools none` stays refused: aider has no tool set to remove.
 
 - Goose's `--tools none` mechanism is implemented but not yet claimed: it

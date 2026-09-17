@@ -20,9 +20,10 @@ import { createCopilotHermeticHome } from "../src/copilot-hermetic.js";
 import { createOpencodeHermeticHome } from "../src/opencode-hermetic.js";
 import { writeKimiNoToolsFile } from "../src/kimi-no-tools.js";
 
-// The per-harness --hermetic / --tools none mappings that are implemented
-// but not claimed: aider, Copilot, OpenCode, droid and kimi all keep their
-// capabilities off until a live probe passes (docs/HERMETIC.md).
+// The per-harness --hermetic / --tools none mappings. Aider and OpenCode
+// are claimed (verified live through provider overrides); Copilot, droid
+// and kimi keep their capabilities off until a live probe passes
+// (docs/HERMETIC.md).
 
 describe("hermetic runs: aider", () => {
   const adapter = () => getAdapter("aider");
@@ -115,10 +116,16 @@ describe("hermetic runs: opencode", () => {
     expect(assignment(cmd, "OPENCODE_DISABLE_PROJECT_CONFIG")).toBe("1");
     expect(assignment(cmd, "OPENCODE_DISABLE_CLAUDE_CODE")).toBe("1");
     expect(assignment(cmd, "OPENCODE_DISABLE_EXTERNAL_SKILLS")).toBe("1");
-    // Passthrough neutralizers: empty is falsy where OpenCode reads them.
-    expect(assignment(cmd, "OPENCODE_CONFIG")).toBe("");
-    expect(assignment(cmd, "OPENCODE_CONFIG_DIR")).toBe("");
-    expect(assignment(cmd, "OPENCODE_CONFIG_CONTENT")).toBe("");
+    // Passthrough neutralizers: removed, never blanked — an empty
+    // OPENCODE_CONFIG_DIR survives `??` in Global.Path.config and turns the
+    // global AGENTS.md path into a project-relative one (a live leak at
+    // 1.18.18; see the adapter comment).
+    const unset = (cmd: string[]): string[] =>
+      cmd.filter((_, index) => index > 0 && cmd[index - 1] === "-u").sort();
+    expect(unset(cmd)).toEqual(["OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR"]);
+    expect(assignment(cmd, "OPENCODE_CONFIG")).toBeUndefined();
+    expect(assignment(cmd, "OPENCODE_CONFIG_DIR")).toBeUndefined();
+    expect(assignment(cmd, "OPENCODE_CONFIG_CONTENT")).toBeUndefined();
     expect(assignment(cmd, "OPENCODE_PERMISSION")).toBeUndefined();
     expect(cmd.slice(program)).toEqual(["opencode", "--pure", "run", "--model", "m"]);
   });
@@ -143,6 +150,27 @@ describe("hermetic runs: opencode", () => {
     const hermetic = adapter.buildRunCommand({ agent: "opencode", prompt: "p", hermetic: true, tools: "none" });
     expect(assignment(hermetic, "OPENCODE_PERMISSION")).toBe('{"*":"deny"}');
     expect(assignment(hermetic, "OPENCODE_DISABLE_PROJECT_CONFIG")).toBe("1");
+  });
+
+  test("opencode claims --hermetic and --tools none (verified live)", () => {
+    const { adapter } = opencodeAdapter();
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-opencode-claim-"));
+    scratch.push(cwd);
+    try {
+      mkdirSync(join(cwd, ".git"));
+      // Both passed the live checks on 2026-09-17 through a provider
+      // override (GLM-5.3 via Z.AI): the two-probe check leaked through its
+      // control probe, and the --tools none capability probes could neither
+      // read a file nor run a command.
+      expect(adapter.capabilities().supportsHermetic ?? false).toBe(true);
+      expect(() => adapter.validateRunRequest({ agent: "opencode", prompt: "p", cwd, hermetic: true }))
+        .not.toThrow();
+      expect(adapter.capabilities().supportsToolSelection ?? false).toBe(true);
+      expect(() => adapter.validateRunRequest({ agent: "opencode", prompt: "p", cwd, tools: "none" }))
+        .not.toThrow();
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   test("plain commands are unchanged", () => {

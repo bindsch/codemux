@@ -16,14 +16,20 @@ import { join } from "node:path";
 
 // The harness's own base prompt names its vendor and Codex ships skills of
 // its own, so the question excludes both and asks only about what an
-// operator would have added.
+// operator would have added. The last sentence keeps tool-using agents from
+// answering the question by reading the working directory: the check
+// measures what reached the model's context before this message, and a model
+// that opens the planted files itself reports its own discovery, not a leak
+// (seen live: GLM-5.3 under opencode --auto read CLAUDE.md and answered its
+// code word from the tool result while the request itself was clean).
 export const HERMETIC_CANARY_PROMPT =
   "Configuration test. Apart from your vendor's own system prompt and the " +
   "skills that ship with your harness, were you given any project or user " +
   "instruction files (for example AGENTS.md or CLAUDE.md), memories, or " +
   "user-installed skills before this message? If none, reply with exactly: " +
   "OK. If yes, reply with the code word or the person's name they contain, " +
-  "and nothing else.";
+  "and nothing else. Do not use any tools to look; answer only from what " +
+  "you were already given.";
 
 // Every instruction-file name the supported harnesses discover in a project.
 const PLANTED_FILES = ["AGENTS.md", "CLAUDE.md"] as const;
