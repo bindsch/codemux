@@ -202,6 +202,9 @@ describe("CopilotAdapter", () => {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+      // Implemented but unclaimed: the live check is pending an install.
+      supportsHermetic: false,
+      supportsToolSelection: false,
     });
   });
 

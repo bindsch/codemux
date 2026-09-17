@@ -9,6 +9,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
+- Copilot's hermetic and tool-selection mechanisms are implemented but not
+  yet claimed: `--hermetic` points `COPILOT_HOME` at a private, empty config
+  directory (relocating the user settings, hooks, instructions, skills,
+  agents, plugins, MCP config and memories, and stopping `~/.agents/skills`
+  loading) while `--no-custom-instructions`, the prompt-mode trust gates and
+  the pre-launch rejection of repository executables close the repo channels,
+  and the keychain login, keyed by service name rather than path, keeps
+  working. `--tools none` maps onto a bare `--available-tools`, whose empty
+  allowlist the native tool filter resolves to no enabled tool. Copilot is
+  not installed on the release machine, so both stay unclaimed until the
+  live check and the capability probe run there.
 - Kimi's `--tools none` mechanism is implemented but not yet claimed: it
   generates an agent file (`tools: []` frontmatter, `${base_prompt}` as the
   prompt body so the default profile's own instructions stay) and selects it

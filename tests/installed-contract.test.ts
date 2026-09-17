@@ -115,6 +115,7 @@ describe("installed harness contracts", () => {
         "--no-remote",
         "--no-remote-export",
         "--disable-builtin-mcps",
+        "--available-tools",
         "--effort",
       ],
     },

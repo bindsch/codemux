@@ -13,13 +13,15 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getAdapter } from "../src/adapters/index.js";
+import { CopilotAdapter } from "../src/adapters/copilot.js";
 import { KimiAdapter } from "../src/adapters/kimi.js";
 import { OpencodeAdapter } from "../src/adapters/opencode.js";
+import { createCopilotHermeticHome } from "../src/copilot-hermetic.js";
 import { createOpencodeHermeticHome } from "../src/opencode-hermetic.js";
 import { writeKimiNoToolsFile } from "../src/kimi-no-tools.js";
 
 // The per-harness --hermetic / --tools none mappings that are implemented
-// but not claimed: aider, OpenCode, droid and kimi all keep their
+// but not claimed: aider, Copilot, OpenCode, droid and kimi all keep their
 // capabilities off until a live probe passes (docs/HERMETIC.md).
 
 describe("hermetic runs: aider", () => {
@@ -338,6 +340,147 @@ describe("hermetic runs: kimi", () => {
       expect(() => adapter.validateRunRequest({ agent: "kimi", prompt: "p", cwd, hermetic: true }))
         .toThrow("no verified hermetic mode");
       expect(() => adapter.validateRunRequest({ agent: "kimi", prompt: "p", cwd, tools: "none" }))
+        .toThrow("cannot remove its built-in tools");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("hermetic runs: copilot", () => {
+  const scratch: string[] = [];
+  const adapters: CopilotAdapter[] = [];
+  afterEach(() => {
+    for (const adapter of adapters.splice(0)) adapter.disposeHermeticHome();
+    for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+  const copilotAdapter = (env: NodeJS.ProcessEnv = {}): CopilotAdapter => {
+    const home = mkdtempSync(join(tmpdir(), "codemux-copilot-home-"));
+    scratch.push(home);
+    const adapter = new CopilotAdapter(env, home);
+    adapters.push(adapter);
+    return adapter;
+  };
+  const plainHeadless = [
+    "copilot",
+    "--no-auto-update",
+    "--no-bash-env",
+    "--no-remote",
+    "--no-remote-export",
+    "--no-custom-instructions",
+    "--no-experimental",
+    "--disable-builtin-mcps",
+    "--prompt=p",
+    "--silent",
+  ];
+
+  test("--hermetic points COPILOT_HOME at a private home and drops the built-in MCPs even at high autonomy", () => {
+    const adapter = copilotAdapter();
+    const request = { agent: "copilot" as const, prompt: "p", hermetic: true, autonomy: "high" as const };
+    adapter.prepareRun(request);
+    const cmd = adapter.buildRunCommand(request);
+    expect(cmd[0]).toBe("env");
+    expect(cmd[1]!.startsWith("COPILOT_HOME=")).toBe(true);
+    const home = cmd[1]!.slice("COPILOT_HOME=".length);
+    expect(home).toContain(join(".copilot", ".codemux-hermetic", `run-${process.pid}-`));
+    expect(cmd[2]).toBe("copilot");
+    expect(cmd).toContain("--disable-builtin-mcps");
+    expect(cmd).toContain("--no-custom-instructions");
+    expect(cmd.slice(-1)).toEqual(["--silent"]);
+    expect(statSync(home).isDirectory()).toBe(true);
+  });
+
+  test("--tools none adds a bare --available-tools allowlist, with or without --hermetic", () => {
+    const adapter = copilotAdapter();
+    const none = adapter.buildRunCommand({ agent: "copilot", prompt: "p", tools: "none", model: "m" });
+    expect(none[none.indexOf("--available-tools") + 1]).toBe("--disable-builtin-mcps");
+    expect(none).toContain("--model");
+    expect(adapter.buildRunCommand({ agent: "copilot", prompt: "p", tools: "default" })).toEqual(plainHeadless);
+    expect(adapter.buildRunCommand({ agent: "copilot", prompt: "p" })).toEqual(plainHeadless);
+    const request = { agent: "copilot" as const, prompt: "p", hermetic: true, tools: "none" as const };
+    adapter.prepareRun(request);
+    const both = adapter.buildRunCommand(request);
+    expect(both[0]).toBe("env");
+    expect(both).toContain("--available-tools");
+  });
+
+  test("the config directory follows a passed-through COPILOT_HOME, never a stray one", () => {
+    const profile = mkdtempSync(join(tmpdir(), "codemux-copilot-profile-"));
+    scratch.push(profile);
+    const droppedAdapter = copilotAdapter({ COPILOT_HOME: profile });
+    droppedAdapter.prepareRun({ agent: "copilot", prompt: "p", hermetic: true });
+    const dropped = droppedAdapter.buildRunCommand({ agent: "copilot", prompt: "p", hermetic: true })[1]!;
+    expect(dropped).not.toContain(profile);
+    const passedAdapter = copilotAdapter({ COPILOT_HOME: profile });
+    const request = { agent: "copilot" as const, prompt: "p", hermetic: true as const, passthroughEnv: ["COPILOT_HOME"] };
+    passedAdapter.prepareRun(request);
+    expect(passedAdapter.buildRunCommand(request)[1]!).toContain(profile);
+  });
+
+  test("every prepared run gets a fresh home, and dispose removes them all", () => {
+    const adapter = copilotAdapter();
+    const request = { agent: "copilot" as const, prompt: "p", hermetic: true as const };
+    adapter.prepareRun(request);
+    const first = adapter.buildRunCommand(request)[1]!.slice("COPILOT_HOME=".length);
+    adapter.prepareRun(request);
+    const second = adapter.buildRunCommand(request)[1]!.slice("COPILOT_HOME=".length);
+    expect(second).not.toBe(first);
+    // The earlier home stays until exit: an earlier run may still be using it.
+    expect(statSync(first).isDirectory()).toBe(true);
+    adapter.disposeHermeticHome();
+    expect(() => statSync(first)).toThrow();
+    expect(() => statSync(second)).toThrow();
+  });
+
+  test("a static hermetic command without prepareRun points at a home that does not exist", () => {
+    const adapter = copilotAdapter();
+    const cmd = adapter.buildRunCommand({ agent: "copilot", prompt: "p", hermetic: true });
+    expect(cmd[1]).toMatch(/\.codemux-hermetic\/unprepared$/);
+    expect(() => statSync(cmd[1]!.slice("COPILOT_HOME=".length))).toThrow();
+    expect(() => adapter.getRunEnv({ agent: "copilot", prompt: "p", hermetic: true }))
+      .toThrow("was not prepared before launch");
+    expect(adapter.getRunEnv({ agent: "copilot", prompt: "p" })).toEqual({});
+  });
+
+  test("old homes of dead codemux processes are swept", () => {
+    const home = mkdtempSync(join(tmpdir(), "codemux-copilot-sweep-"));
+    scratch.push(home);
+    const parent = join(home, ".copilot", ".codemux-hermetic");
+    const old = join(parent, "run-999999999-old");
+    mkdirSync(old, { recursive: true });
+    const threeDaysAgo = new Date(Date.now() - 3 * 86_400_000);
+    utimesSync(old, threeDaysAgo, threeDaysAgo);
+    const fresh = createCopilotHermeticHome(join(home, ".copilot"));
+    expect(readdirSync(parent).filter((entry) => entry.startsWith("run-9999"))).toEqual([]);
+    fresh.finalize();
+  });
+
+  test("a symlinked hermetic parent directory is refused", () => {
+    const home = mkdtempSync(join(tmpdir(), "codemux-copilot-symlink-"));
+    scratch.push(home);
+    const elsewhere = mkdtempSync(join(tmpdir(), "codemux-copilot-elsewhere-"));
+    scratch.push(elsewhere);
+    const config = join(home, ".copilot");
+    mkdirSync(join(config, ".codemux-hermetic"), { recursive: true });
+    rmSync(join(config, ".codemux-hermetic"), { recursive: true });
+    symlinkSync(elsewhere, join(config, ".codemux-hermetic"));
+    expect(() => createCopilotHermeticHome(config))
+      .toThrow("must be a directory owned by the current user");
+  });
+
+  test("copilot refuses --hermetic and --tools none until an installed live check runs", () => {
+    const adapter = copilotAdapter();
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-copilot-refuse-"));
+    scratch.push(cwd);
+    try {
+      mkdirSync(join(cwd, ".git"));
+      // Both mappings are implemented but unclaimed: Copilot is not
+      // installed here, so the check and the capability probe are pending.
+      expect(adapter.capabilities().supportsHermetic ?? false).toBe(false);
+      expect(adapter.capabilities().supportsToolSelection ?? false).toBe(false);
+      expect(() => adapter.validateRunRequest({ agent: "copilot", prompt: "p", cwd, hermetic: true }))
+        .toThrow("no verified hermetic mode");
+      expect(() => adapter.validateRunRequest({ agent: "copilot", prompt: "p", cwd, tools: "none" }))
         .toThrow("cannot remove its built-in tools");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
