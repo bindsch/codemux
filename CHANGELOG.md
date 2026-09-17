@@ -16,6 +16,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   `--read` in plain runs so a future `check --hermetic` control probe can
   leak. The capability stays off until the live check runs, which needs a
   provider API key in the environment.
+- OpenCode's hermetic mechanism is implemented but not yet claimed:
+  `--hermetic` redirects `HOME` and the XDG config, cache and state
+  directories into a private home under `~/.local/share/opencode/
+  .codemux-hermetic/` while `XDG_DATA_HOME` keeps the real data directory,
+  so the in-place-rewritten `auth.json` login keeps working with no link;
+  `OPENCODE_DISABLE_PROJECT_CONFIG`, `OPENCODE_DISABLE_CLAUDE_CODE` and
+  `OPENCODE_DISABLE_EXTERNAL_SKILLS` close the channels a home cannot, and
+  empty `OPENCODE_CONFIG`/`OPENCODE_CONFIG_DIR`/`OPENCODE_CONFIG_CONTENT`
+  neutralize anything passed through. `--tools none` maps onto
+  `OPENCODE_PERMISSION={"*":"deny"}`. Both capabilities stay off until the
+  live check runs, which is pending usage headroom (weekly limit hit
+  2026-09-17).
 
 ## [0.5.2] - 2026-09-17
 

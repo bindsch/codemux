@@ -16,8 +16,10 @@ import { join } from "node:path";
 import { getAdapter } from "../src/adapters/index.js";
 import { ClaudeAdapter } from "../src/adapters/claude.js";
 import { CodexAdapter } from "../src/adapters/codex.js";
+import { OpencodeAdapter } from "../src/adapters/opencode.js";
 import { ZaiAdapter } from "../src/adapters/zai.js";
 import { createCodexHermeticHome } from "../src/hermetic-home.js";
+import { createOpencodeHermeticHome } from "../src/opencode-hermetic.js";
 import { evaluateCanary, plantCanary } from "../src/hermetic-canary.js";
 import { AGENT_IDS, type RunRequest } from "../src/types.js";
 
@@ -106,6 +108,133 @@ describe("hermetic runs: aider", () => {
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
+  });
+});
+
+describe("hermetic runs: opencode", () => {
+  const scratch: string[] = [];
+  const adapters: OpencodeAdapter[] = [];
+  afterEach(() => {
+    for (const adapter of adapters.splice(0)) adapter.disposeHermeticHome();
+    for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+  const opencodeAdapter = (
+    env: NodeJS.ProcessEnv = {}
+  ): { adapter: OpencodeAdapter; home: string } => {
+    const home = mkdtempSync(join(tmpdir(), "codemux-opencode-home-"));
+    scratch.push(home);
+    const adapter = new OpencodeAdapter(env, home);
+    adapters.push(adapter);
+    return { adapter, home };
+  };
+  // The first element after the env(1) assignments; no assignment is ever
+  // exactly the program name.
+  const programAt = (cmd: string[]): number =>
+    cmd.findIndex((part, index) => index > 0 && part === "opencode");
+  const assignment = (cmd: string[], name: string): string | undefined =>
+    cmd.find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1);
+
+  test("--hermetic redirects the XDG world into a private home and keeps the real data directory", () => {
+    const { adapter, home: userHome } = opencodeAdapter();
+    adapter.prepareRun({ agent: "opencode", prompt: "p", hermetic: true });
+    const cmd = adapter.buildRunCommand({ agent: "opencode", prompt: "p", hermetic: true, model: "m" });
+    expect(cmd[0]).toBe("env");
+    const program = programAt(cmd);
+    expect(program).toBeGreaterThan(1);
+    const home = assignment(cmd, "HOME")!;
+    expect(home.startsWith(join(userHome, ".local", "share", "opencode", ".codemux-hermetic", `run-${process.pid}-`))).toBe(true);
+    // Everything the operator customizes moves; the login's data directory stays.
+    expect(assignment(cmd, "XDG_CONFIG_HOME")).toBe(join(home, ".config"));
+    expect(assignment(cmd, "XDG_CACHE_HOME")).toBe(join(home, ".cache"));
+    expect(assignment(cmd, "XDG_STATE_HOME")).toBe(join(home, ".local", "state"));
+    expect(assignment(cmd, "XDG_DATA_HOME")).toBe(join(userHome, ".local", "share"));
+    expect(assignment(cmd, "OPENCODE_DISABLE_PROJECT_CONFIG")).toBe("1");
+    expect(assignment(cmd, "OPENCODE_DISABLE_CLAUDE_CODE")).toBe("1");
+    expect(assignment(cmd, "OPENCODE_DISABLE_EXTERNAL_SKILLS")).toBe("1");
+    // Passthrough neutralizers: empty is falsy where OpenCode reads them.
+    expect(assignment(cmd, "OPENCODE_CONFIG")).toBe("");
+    expect(assignment(cmd, "OPENCODE_CONFIG_DIR")).toBe("");
+    expect(assignment(cmd, "OPENCODE_CONFIG_CONTENT")).toBe("");
+    expect(assignment(cmd, "OPENCODE_PERMISSION")).toBeUndefined();
+    expect(cmd.slice(program)).toEqual(["opencode", "--pure", "run", "--model", "m"]);
+  });
+
+  test("an operator XDG_DATA_HOME keeps its login; the other XDG vars are overridden", () => {
+    const data = mkdtempSync(join(tmpdir(), "codemux-opencode-data-"));
+    scratch.push(data);
+    const { adapter } = opencodeAdapter({ XDG_CONFIG_HOME: join(data, "operator-config"), XDG_DATA_HOME: join(data, "share") });
+    adapter.prepareRun({ agent: "opencode", prompt: "p", hermetic: true });
+    const cmd = adapter.buildRunCommand({ agent: "opencode", prompt: "p", hermetic: true });
+    const home = assignment(cmd, "HOME")!;
+    expect(home.startsWith(join(data, "share", "opencode", ".codemux-hermetic", `run-${process.pid}-`))).toBe(true);
+    expect(assignment(cmd, "XDG_DATA_HOME")).toBe(join(data, "share"));
+    expect(assignment(cmd, "XDG_CONFIG_HOME")).toBe(join(home, ".config"));
+  });
+
+  test("--tools none denies every tool through the environment, with or without --hermetic", () => {
+    const { adapter } = opencodeAdapter();
+    const plain = adapter.buildRunCommand({ agent: "opencode", prompt: "p", tools: "none" });
+    expect(plain).toEqual(["env", 'OPENCODE_PERMISSION={"*":"deny"}', "opencode", "--pure", "run"]);
+    adapter.prepareRun({ agent: "opencode", prompt: "p", hermetic: true });
+    const hermetic = adapter.buildRunCommand({ agent: "opencode", prompt: "p", hermetic: true, tools: "none" });
+    expect(assignment(hermetic, "OPENCODE_PERMISSION")).toBe('{"*":"deny"}');
+    expect(assignment(hermetic, "OPENCODE_DISABLE_PROJECT_CONFIG")).toBe("1");
+  });
+
+  test("plain commands are unchanged", () => {
+    const { adapter } = opencodeAdapter();
+    expect(adapter.buildRunCommand({ agent: "opencode", prompt: "p" }))
+      .toEqual(["opencode", "--pure", "run"]);
+  });
+
+  test("a static hermetic command without prepareRun points at a home that does not exist", () => {
+    const { adapter } = opencodeAdapter();
+    const cmd = adapter.buildRunCommand({ agent: "opencode", prompt: "p", hermetic: true });
+    expect(assignment(cmd, "HOME")).toMatch(/\.codemux-hermetic\/unprepared$/);
+    expect(() => statSync(assignment(cmd, "HOME")!)).toThrow();
+    expect(() => adapter.getRunEnv({ agent: "opencode", prompt: "p", hermetic: true }))
+      .toThrow("was not prepared before launch");
+    expect(adapter.getRunEnv({ agent: "opencode", prompt: "p" })).toEqual({});
+  });
+
+  test("every hermetic run gets a fresh home, and finalize removes it", () => {
+    const { adapter } = opencodeAdapter();
+    adapter.prepareRun({ agent: "opencode", prompt: "p", hermetic: true });
+    const first = assignment(adapter.buildRunCommand({ agent: "opencode", prompt: "p", hermetic: true }), "HOME")!;
+    expect(statSync(first).isDirectory()).toBe(true);
+    adapter.prepareRun({ agent: "opencode", prompt: "p", hermetic: true });
+    const second = assignment(adapter.buildRunCommand({ agent: "opencode", prompt: "p", hermetic: true }), "HOME")!;
+    expect(second).not.toBe(first);
+    // The earlier home stays until exit: an earlier run may still use it.
+    expect(statSync(first).isDirectory()).toBe(true);
+    adapter.disposeHermeticHome();
+    expect(() => statSync(first)).toThrow();
+    expect(() => statSync(second)).toThrow();
+  });
+
+  test("old homes of dead codemux processes are swept", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "codemux-opencode-sweep-"));
+    scratch.push(dataDir);
+    const parent = join(dataDir, ".codemux-hermetic");
+    const old = join(parent, "run-999999999-old");
+    mkdirSync(old, { recursive: true });
+    const threeDaysAgo = new Date(Date.now() - 3 * 86_400_000);
+    utimesSync(old, threeDaysAgo, threeDaysAgo);
+    const home = createOpencodeHermeticHome(dataDir);
+    expect(readdirSync(parent).filter((entry) => entry.startsWith("run-9999"))).toEqual([]);
+    home.finalize();
+  });
+
+  test("a symlinked hermetic parent directory is refused", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "codemux-opencode-symlink-"));
+    scratch.push(dataDir);
+    const elsewhere = mkdtempSync(join(tmpdir(), "codemux-opencode-elsewhere-"));
+    scratch.push(elsewhere);
+    mkdirSync(join(dataDir, ".codemux-hermetic"), { recursive: true });
+    rmSync(join(dataDir, ".codemux-hermetic"), { recursive: true });
+    symlinkSync(elsewhere, join(dataDir, ".codemux-hermetic"));
+    expect(() => createOpencodeHermeticHome(dataDir))
+      .toThrow("must be a directory owned by the current user");
   });
 });
 

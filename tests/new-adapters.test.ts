@@ -40,6 +40,8 @@ describe("AiderAdapter", () => {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+      // Implemented but unclaimed: the live check needs a provider API key.
+      supportsHermetic: false,
     });
   });
 
