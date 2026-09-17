@@ -1,4 +1,18 @@
+import { homedir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import { BaseAdapter } from "./base.js";
+import {
+  PI_AGENT_DIR_ENV,
+  PI_PROVIDER_KEY_ENV,
+  piProviderModelSelector,
+  writePiProviderAgentDir,
+  type PiProviderAgentDir,
+} from "../pi-provider.js";
+import {
+  readProviderOverride,
+  requireProviderOverride,
+  type ProviderOverride,
+} from "../provider-override.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -11,6 +25,16 @@ export class PiAdapter extends BaseAdapter {
   readonly id: AgentId = "pi";
   readonly binaryName = "pi";
 
+  constructor(
+    private readonly environment: NodeJS.ProcessEnv = process.env,
+    private readonly homeDirectory?: string
+  ) {
+    super();
+  }
+
+  private providerAgentDir: PiProviderAgentDir | null = null;
+  private readonly providerAgentDirs: PiProviderAgentDir[] = [];
+
   capabilities(): AdapterCapabilities {
     return {
       supportsNonInteractive: true,
@@ -20,12 +44,96 @@ export class PiAdapter extends BaseAdapter {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-      // Implemented but unclaimed: pi is not installed on the release
-      // machine, so the capability probe is pending an install. Hermetic
-      // has no mechanism for the global SYSTEM.md channel; see
-      // docs/HERMETIC.md.
+      // Hermetic has no mechanism for the global SYSTEM.md channel, and
+      // the live control probe leaked the planted code word (2026-09-17);
+      // see docs/HERMETIC.md. `--tools none` is claimed: verified live at
+      // 0.85.1 through the provider override — under `--no-tools` neither
+      // capability probe could produce its secret while plain runs
+      // produced both.
       supportsHermetic: false,
-      supportsToolSelection: false,
+      supportsToolSelection: true,
+    };
+  }
+
+  /**
+   * The provider override, validated: the private models.json needs a
+   * base URL and a key (the model may come from `--model` instead of the
+   * variable).
+   */
+  private validatedProvider(): (ProviderOverride & { baseUrl: string; apiKey: string }) | null {
+    const override = readProviderOverride("pi", this.environment);
+    if (override === null) return null;
+    return requireProviderOverride("pi", override, [
+      "baseUrl",
+      "apiKey",
+    ]) as ProviderOverride & { baseUrl: string; apiKey: string };
+  }
+
+  /** The model id the models.json entry routes: the request's, else the override's. */
+  private modelFor(model: string | undefined): string | undefined {
+    const override = this.validatedProvider();
+    const resolved = model ?? override?.model;
+    if (resolved === undefined && override !== null) {
+      throw new Error(
+        "pi needs a model for the provider override; pass --model or set CODEMUX_PI_PROVIDER_MODEL"
+      );
+    }
+    return resolved;
+  }
+
+  /**
+   * The agent directory a plain run reads: `~/.pi/agent`, or the
+   * operator's passed-through PI_CODING_AGENT_DIR (which replaces every
+   * path pi derives from it).
+   */
+  private realAgentDir(request: RunRequest): string {
+    if (this.homeDirectory !== undefined && !isAbsolute(this.homeDirectory)) {
+      throw new Error("Pi home directory must be an absolute path");
+    }
+    const home = this.homeDirectory ?? this.environment.HOME;
+    const base = home && isAbsolute(home) ? home : homedir();
+    const passedThrough =
+      request.passthroughEnv?.includes(PI_AGENT_DIR_ENV) ?? false;
+    const configured = this.environment[PI_AGENT_DIR_ENV]?.trim();
+    if (passedThrough && configured) {
+      if (!isAbsolute(configured)) {
+        throw new Error(`passed-through ${PI_AGENT_DIR_ENV} must be an absolute path`);
+      }
+      return configured;
+    }
+    return join(base, ".pi", "agent");
+  }
+
+  override prepareRun(request: RunRequest): void {
+    const override = this.validatedProvider();
+    if (override === null) return;
+    const model = this.modelFor(request.model);
+    if (model === undefined) return;
+    this.providerAgentDir = writePiProviderAgentDir(
+      this.realAgentDir(request),
+      override,
+      model
+    );
+    this.providerAgentDirs.push(this.providerAgentDir);
+  }
+
+  /** Drops every private agent directory this adapter created. */
+  disposeProviderAgentDir(): void {
+    for (const dir of this.providerAgentDirs.splice(0)) dir.finalize();
+    this.providerAgentDir = null;
+  }
+
+  override getRunEnv(_request: RunRequest): Record<string, string> {
+    const override = this.validatedProvider();
+    if (override === null) return {};
+    if (this.providerAgentDir === null) {
+      throw new Error("pi provider agent directory was not prepared before launch");
+    }
+    // The key and the relocation ride the environment codemux provides;
+    // models.json holds only the key's name.
+    return {
+      [PI_AGENT_DIR_ENV]: this.providerAgentDir.path,
+      [PI_PROVIDER_KEY_ENV]: override.apiKey,
     };
   }
 
@@ -73,7 +181,7 @@ export class PiAdapter extends BaseAdapter {
         continue;
       }
       kept.push(flag);
-      i++;
+      i += 1;
     }
     return kept;
   }
@@ -81,7 +189,13 @@ export class PiAdapter extends BaseAdapter {
   buildRunCommand(request: RunRequest): string[] {
     const cmd = ["pi", "--print", "--no-session", "--no-approve"];
 
-    if (request.model) {
+    // With an override the private agent directory's models.json supplies
+    // the provider, so the model flag is provider-qualified and always
+    // present: pi resolves `--model provider/id` against it.
+    const override = this.validatedProvider();
+    if (override !== null) {
+      cmd.push("--model", piProviderModelSelector(this.modelFor(request.model)!));
+    } else if (request.model) {
       cmd.push("--model", request.model);
     }
 
@@ -101,6 +215,33 @@ export class PiAdapter extends BaseAdapter {
 
   override getStdinInput(request: RunRequest): string | null {
     return request.prompt;
+  }
+
+  override validateRunRequest(request: RunRequest): void {
+    super.validateRunRequest(request);
+    // Fail before launch on a half-configured override, and surface the
+    // model requirement early: pi's own default provider (google) would
+    // otherwise silently answer.
+    this.modelFor(request.model);
+  }
+
+  override validateTuiRequest(
+    model?: string,
+    cwd?: string,
+    autonomy: AutonomyLevel = "read-only",
+    effort?: ReasoningEffort,
+    passthroughEnv: readonly string[] = [],
+    enablePlaywrightMcp = false
+  ): void {
+    super.validateTuiRequest(model, cwd, autonomy, effort, passthroughEnv, enablePlaywrightMcp);
+    // The private agent directory's lifecycle rides prepareRun, which only
+    // the headless launch path calls; an interactive session has no hook
+    // to write and remove it.
+    if (this.validatedProvider() !== null) {
+      throw new Error(
+        "the pi provider override supports headless runs only; unset CODEMUX_PI_PROVIDER_* for an interactive session"
+      );
+    }
   }
 
   buildTuiCommand(

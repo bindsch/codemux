@@ -130,11 +130,14 @@ into litellm's `openai/` model prefix with `OPENAI_API_BASE` and
 and OpenHands into `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL` behind its
 `--override-with-envs`, OpenCode into a private `OPENCODE_CONFIG`
 provider file plus a key environment it references, Kimi Code into
-the `KIMI_MODEL_*` group that synthesizes a provider in memory, and
-Droid into a per-run BYOK `customModels` entry inside a private
-`--settings` file whose key is a `${VAR}` reference into the environment
-codemux provides; harnesses without a custom-provider mechanism (GitHub
-Copilot CLI, the Cursor agent CLI) document that limit instead.
+the `KIMI_MODEL_*` group that synthesizes a provider in memory, Droid
+into a per-run BYOK `customModels` entry inside a private `--settings`
+file whose key is a `${VAR}` reference into the environment
+codemux provides, and Pi into a private agent directory behind
+`PI_CODING_AGENT_DIR` holding a one-provider `models.json` with the same
+kind of `${VAR}` key reference; harnesses without a custom-provider
+mechanism (GitHub Copilot CLI, the Cursor agent CLI) document that limit
+instead.
 
 ### `check` options
 

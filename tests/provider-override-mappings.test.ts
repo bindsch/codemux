@@ -6,6 +6,7 @@ import { AiderAdapter } from "../src/adapters/aider.js";
 import { DroidAdapter } from "../src/adapters/droid.js";
 import { KimiAdapter } from "../src/adapters/kimi.js";
 import { OpenHandsAdapter } from "../src/adapters/openhands.js";
+import { PiAdapter } from "../src/adapters/pi.js";
 import type { RunRequest } from "../src/types.js";
 
 // How each adapter translates a provider override
@@ -476,5 +477,198 @@ describe("droid provider override", () => {
     const adapter = adapterOf(ZAI_DROID);
     expect(() => adapter.validateTuiRequest(undefined, cwdOf()))
       .toThrow("supports headless runs only");
+  });
+});
+
+const ZAI_PI = {
+  CODEMUX_PI_PROVIDER_BASE_URL: "https://api.z.ai/api/coding/paas/v4",
+  CODEMUX_PI_PROVIDER_API_KEY: "test-key-do-not-print",
+  CODEMUX_PI_PROVIDER_MODEL: "glm-5.3",
+};
+
+describe("pi provider override", () => {
+  const scratch: string[] = [];
+  const adapters: PiAdapter[] = [];
+  afterEach(() => {
+    for (const adapter of adapters.splice(0)) adapter.disposeProviderAgentDir();
+    while (scratch.length > 0) {
+      const dir = scratch.pop()!;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  const cwdOf = (): string => {
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-pi-override-"));
+    mkdirSync(join(cwd, ".git"));
+    scratch.push(cwd);
+    return cwd;
+  };
+  const adapterOf = (env: NodeJS.ProcessEnv = {}): PiAdapter => {
+    const home = mkdtempSync(join(tmpdir(), "codemux-pi-home-"));
+    scratch.push(home);
+    const adapter = new PiAdapter(env, home);
+    adapters.push(adapter);
+    return adapter;
+  };
+  const run = (env: NodeJS.ProcessEnv, request: Partial<RunRequest> = {}): string[] =>
+    adapterOf(env).buildRunCommand({
+      agent: "pi",
+      prompt: "p",
+      cwd: cwdOf(),
+      ...request,
+    } as RunRequest);
+  const head = ["pi", "--print", "--no-session", "--no-approve"];
+
+  test("without an override nothing changes", () => {
+    const adapter = adapterOf();
+    expect(adapter.getRunEnv({ agent: "pi", prompt: "p" } as RunRequest)).toEqual({});
+    expect(run({})).toEqual(head);
+    // An operator model still rides the native flag.
+    expect(run({}, { model: "anthropic/claude-opus-5" }))
+      .toEqual([...head, "--model", "anthropic/claude-opus-5"]);
+  });
+
+  test("the override rides a private agent directory and the key environment", () => {
+    const adapter = adapterOf(ZAI_PI);
+    const request = { agent: "pi" as const, prompt: "p", cwd: cwdOf() };
+    adapter.prepareRun(request as RunRequest);
+    const env = adapter.getRunEnv(request as RunRequest);
+    expect(env.PI_CODING_AGENT_DIR).toContain(
+      join(".pi", "agent", ".codemux", `provider-${process.pid}-`)
+    );
+    const models = JSON.parse(
+      readFileSync(join(env.PI_CODING_AGENT_DIR!, "models.json"), "utf8")
+    );
+    // The file records the key's NAME, never the key; the provider carries
+    // the override's base URL and the OpenAI chat-completions protocol.
+    expect(models.providers.codemux).toEqual({
+      name: "codemux provider override",
+      baseUrl: ZAI_PI.CODEMUX_PI_PROVIDER_BASE_URL,
+      apiKey: "${CODEMUX_PI_PROVIDER_API_KEY}",
+      api: "openai-completions",
+      models: [
+        { id: "glm-5.3", name: "glm-5.3", api: "openai-completions" },
+      ],
+    });
+    expect(JSON.stringify(models)).not.toContain(ZAI_PI.CODEMUX_PI_PROVIDER_API_KEY);
+    expect(env.CODEMUX_PI_PROVIDER_API_KEY).toBe(ZAI_PI.CODEMUX_PI_PROVIDER_API_KEY);
+    expect(statSync(join(env.PI_CODING_AGENT_DIR!, "models.json")).mode & 0o777).toBe(0o600);
+  });
+
+  test("the command selects the provider-qualified model", () => {
+    const adapter = adapterOf(ZAI_PI);
+    const request = { agent: "pi" as const, prompt: "p", cwd: cwdOf() };
+    adapter.prepareRun(request as RunRequest);
+    expect(adapter.buildRunCommand(request as RunRequest))
+      .toEqual([...head, "--model", "codemux/glm-5.3"]);
+    const cmd = adapter.buildRunCommand(request as RunRequest).join(" ");
+    expect(cmd).not.toContain(ZAI_PI.CODEMUX_PI_PROVIDER_API_KEY);
+  });
+
+  test("an explicit --model wins as the routed model id", () => {
+    const adapter = adapterOf(ZAI_PI);
+    const request = { agent: "pi" as const, prompt: "p", cwd: cwdOf(), model: "glm-5.3-flash" };
+    adapter.prepareRun(request as RunRequest);
+    expect(adapter.buildRunCommand(request as RunRequest))
+      .toEqual([...head, "--model", "codemux/glm-5.3-flash"]);
+    const env = adapter.getRunEnv(request as RunRequest);
+    expect(JSON.parse(readFileSync(join(env.PI_CODING_AGENT_DIR!, "models.json"), "utf8"))
+      .providers.codemux.models[0].id).toBe("glm-5.3-flash");
+  });
+
+  test("the override and --tools none coexist", () => {
+    const adapter = adapterOf(ZAI_PI);
+    const request = {
+      agent: "pi" as const,
+      prompt: "p",
+      cwd: cwdOf(),
+      tools: "none" as const,
+      autonomy: "read-only" as const,
+    };
+    adapter.prepareRun(request as RunRequest);
+    expect(adapter.buildRunCommand(request as RunRequest))
+      .toEqual([...head, "--model", "codemux/glm-5.3", "--no-extensions", "--no-tools"]);
+  });
+
+  test("an unprepared override fails closed before any launch", () => {
+    const adapter = adapterOf(ZAI_PI);
+    expect(adapter.buildRunCommand({ agent: "pi", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toEqual([...head, "--model", "codemux/glm-5.3"]);
+    expect(() => adapter.getRunEnv({ agent: "pi", prompt: "p" } as RunRequest))
+      .toThrow("pi provider agent directory was not prepared before launch");
+  });
+
+  test("dispose removes every prepared directory", () => {
+    const adapter = adapterOf(ZAI_PI);
+    const request = { agent: "pi" as const, prompt: "p", cwd: cwdOf() };
+    adapter.prepareRun(request);
+    const first = adapter.getRunEnv(request as RunRequest).PI_CODING_AGENT_DIR!;
+    adapter.prepareRun(request);
+    const second = adapter.getRunEnv(request as RunRequest).PI_CODING_AGENT_DIR!;
+    expect(second).not.toBe(first);
+    // The earlier directory stays until exit: an earlier run may still
+    // read it.
+    expect(statSync(first).isDirectory()).toBe(true);
+    adapter.disposeProviderAgentDir();
+    expect(() => statSync(first)).toThrow();
+    expect(() => statSync(second)).toThrow();
+  });
+
+  test("a keyless override fails validation with the missing name", () => {
+    const adapter = adapterOf({
+      CODEMUX_PI_PROVIDER_BASE_URL: ZAI_PI.CODEMUX_PI_PROVIDER_BASE_URL,
+      CODEMUX_PI_PROVIDER_MODEL: "glm-5.3",
+    });
+    expect(() => adapter.validateRunRequest({ agent: "pi", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toThrow("provider override is missing CODEMUX_PI_PROVIDER_API_KEY");
+  });
+
+  test("an override without any model fails validation", () => {
+    const adapter = adapterOf({
+      CODEMUX_PI_PROVIDER_BASE_URL: ZAI_PI.CODEMUX_PI_PROVIDER_BASE_URL,
+      CODEMUX_PI_PROVIDER_API_KEY: ZAI_PI.CODEMUX_PI_PROVIDER_API_KEY,
+    });
+    expect(() => adapter.validateRunRequest({ agent: "pi", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toThrow("pi needs a model for the provider override");
+  });
+
+  test("the tui refuses the override; without one it is unchanged", () => {
+    const plain = adapterOf();
+    expect(() => plain.validateTuiRequest(undefined, cwdOf())).not.toThrow();
+    expect(plain.buildTuiCommand(undefined, "high")).toEqual(["pi", "--no-approve"]);
+    const adapter = adapterOf(ZAI_PI);
+    expect(() => adapter.validateTuiRequest(undefined, cwdOf()))
+      .toThrow("supports headless runs only");
+  });
+
+  test("a passed-through PI_CODING_AGENT_DIR relocates the private directory", () => {
+    const env: NodeJS.ProcessEnv = { ...ZAI_PI };
+    const passed = mkdtempSync(join(tmpdir(), "codemux-pi-passed-"));
+    scratch.push(passed);
+    const home = mkdtempSync(join(tmpdir(), "codemux-pi-home-"));
+    scratch.push(home);
+    const request = {
+      agent: "pi" as const,
+      prompt: "p",
+      cwd: cwdOf(),
+      passthroughEnv: ["PI_CODING_AGENT_DIR"],
+    };
+    const dropped = new PiAdapter(env, home);
+    adapters.push(dropped);
+    dropped.prepareRun(request as RunRequest);
+    expect(dropped.getRunEnv(request as RunRequest).PI_CODING_AGENT_DIR!)
+      .toContain(join(home, ".pi", "agent", ".codemux"));
+
+    env.PI_CODING_AGENT_DIR = join(passed, "agent");
+    const honoring = new PiAdapter(env, home);
+    adapters.push(honoring);
+    honoring.prepareRun(request as RunRequest);
+    expect(honoring.getRunEnv(request as RunRequest).PI_CODING_AGENT_DIR!)
+      .toContain(join(passed, "agent", ".codemux", `provider-${process.pid}-`));
+
+    env.PI_CODING_AGENT_DIR = "relative/path";
+    const relative = new PiAdapter(env, home);
+    adapters.push(relative);
+    expect(() => relative.prepareRun(request as RunRequest))
+      .toThrow("passed-through PI_CODING_AGENT_DIR must be an absolute path");
   });
 });

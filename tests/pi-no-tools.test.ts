@@ -4,24 +4,26 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PiAdapter } from "../src/adapters/pi.js";
 
-// Pi's `--tools none` mapping is implemented but not claimed: the
-// capability probe needs an installed pi, and the release machine has none
-// (docs/HERMETIC.md). `--hermetic` has no mechanism: the global
-// ~/.pi/SYSTEM.md system-prompt override has no switch.
+// Pi's `--tools none` mapping is claimed: verified live at 0.85.1 on
+// 2026-09-17 through the provider override (GLM-5.3 via Z.AI) — under
+// `--no-tools` neither capability probe could produce its secret while
+// plain runs produced both, and the non-hermetic control probe leaked the
+// planted code word, which grounds the hermetic refusal (the global
+// `~/.pi/SYSTEM.md` system-prompt channel has no switch; docs/HERMETIC.md).
 
 describe("tools none: pi", () => {
   const adapter = new PiAdapter();
   const noTools = { agent: "pi" as const, prompt: "p", tools: "none" as const };
   const head = ["pi", "--print", "--no-session", "--no-approve"];
 
-  test("pi refuses --hermetic and --tools none until a probe runs", () => {
+  test("pi refuses --hermetic; --tools none is claimed (verified live)", () => {
     const cwd = mkdtempSync(join(tmpdir(), "codemux-pi-refuse-"));
     try {
       mkdirSync(join(cwd, ".git"));
       expect(adapter.capabilities().supportsHermetic ?? false).toBe(false);
-      expect(adapter.capabilities().supportsToolSelection ?? false).toBe(false);
+      expect(adapter.capabilities().supportsToolSelection ?? false).toBe(true);
       expect(() => adapter.validateRunRequest({ ...noTools, cwd }))
-        .toThrow("cannot remove its built-in tools");
+        .not.toThrow();
       expect(() => adapter.validateRunRequest({
         agent: "pi",
         prompt: "p",

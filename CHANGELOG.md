@@ -87,17 +87,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   and `GOOSE_PATH_ROOT` — the wholesale relocation — strands the provider
   and model selection living in the same file while the global skill
   directories under the real home escape it.
-- Pi's `--tools none` mechanism is implemented but not yet claimed: it maps
-  onto `--no-tools`, whose empty allowlist keeps every built-in, extension
-  and custom tool out of the registry (the model is never offered a
-  schema), and it suppresses the autonomy mapping's `--tools` allowlist,
-  which pi would otherwise resolve over `--no-tools`. Pi is not installed
-  on the release machine, so the capability stays unclaimed until an
-  install and a probe. Pi keeps refusing `--hermetic`: the documented
-  `--no-*` flags and the `--no-approve` every run already carries close
-  every channel except the global `~/.pi/SYSTEM.md`/`APPEND_SYSTEM.md`
-  system-prompt override, which has no switch — the only suppression is
-  an undocumented empty-string fallback codemux does not rely on.
+- Pi claims `--tools none`, verified live on 2026-09-17 through a
+  provider override (GLM-5.3 via Z.AI): the override writes a private
+  agent directory behind `PI_CODING_AGENT_DIR` — the only knob that
+  relocates the `models.json` pi reads custom providers from — holding a
+  one-provider entry whose `apiKey` is the
+  `${CODEMUX_PI_PROVIDER_API_KEY}` reference; pi expands `$VAR`/`${VAR}`
+  config templates from the environment at auth time, so the value never
+  touches disk, argv, or an operator file, and the run needs no stored
+  login. Under `--tools none` (`--no-tools`, with the autonomy mapping's
+  `--tools` allowlist suppressed because pi resolves it over `--no-tools`)
+  the read probe answered that it had no tools to read the file and the
+  shell probe produced no output at all, while plain runs produced the
+  planted secret and its transform; the non-hermetic control probe
+  leaked the planted code word, which grounds the hermetic refusal (the
+  working-directory context-file channel is not trust-gated, and the
+  global `~/.pi/SYSTEM.md`/`APPEND_SYSTEM.md` system-prompt override has
+  no switch).
 - Gemini's `--tools none` mechanism is implemented but cannot be claimed on
   a user-owned prefix: gemini 0.60.0 was installed and exercised live on
   2026-09-17, and its system-settings layer requires the settings file and

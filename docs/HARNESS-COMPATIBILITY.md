@@ -141,6 +141,21 @@ Google. `maxAudited` is unchanged: this rests on help-surface inspection,
 package-source reading and the live runs, not on the full upgrade
 procedure.
 
+Pi 0.85.1 (last audited 0.83.0) was installed here (`npm install -g
+@earendil-works/pi-coding-agent`; `npm uninstall -g
+@earendil-works/pi-coding-agent` removes it) and exercised live on
+2026-09-17 through a provider override: a private agent directory behind
+`PI_CODING_AGENT_DIR` carrying a one-provider `models.json` routed
+GLM-5.3 via Z.AI with no stored login, and the `--tools none`
+capability probes and the non-hermetic control probe ran against the
+model (docs/HERMETIC.md). The tool flags behind the mappings
+(`--no-tools`, `--tools`, `--no-approve`) are unchanged between 0.83.0
+and 0.85.1 in the package help surface, and the `models.json` provider
+schema with `$VAR` apiKey templates is now part of the exercised
+contract. `maxAudited` is unchanged: this rests on help-surface
+inspection, adapter unit tests and the live probes, not on the full
+upgrade procedure.
+
 Not installed here, grounded in the published package or source, which is
 newer than the audited ledger version in every case (the flags the
 mappings rely on were also spot-checked at the audited version where the
@@ -150,7 +165,6 @@ source was reachable):
 |---------|-------------|--------------|---------------------------|
 | GitHub Copilot CLI | 1.0.85 (npm) | 1.0.77 | both mechanisms predate 1.0.77 |
 | Qwen Code | 0.24.0 (npm) | 0.21.2 | refused on 0.24.0 semantics; no mapping |
-| Pi | 0.85.1 (npm) | 0.83.0 | not spot-checked; capability stays off |
 | Goose | v1.50.1 (source) | 1.45.0 | `--no-profile`, `CONTEXT_FILE_NAMES`, `GOOSE_PATH_ROOT` unchanged |
 | Cline CLI | 3.0.62 (source) | 3.0.48 | not spot-checked; no mapping |
 
