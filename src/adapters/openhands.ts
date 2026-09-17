@@ -1,6 +1,11 @@
 import { BaseAdapter } from "./base.js";
 import { assertNoOpenHandsProjectExecutionConfig } from "../project-safety.js";
 import { validateWorkingDirectory } from "../validation.js";
+import {
+  readProviderOverride,
+  requireProviderOverride,
+  type ProviderOverride,
+} from "../provider-override.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -26,11 +31,16 @@ import type {
  *
  * There is no `--model` flag. Model selection exists only through
  * `--override-with-envs`, which makes the CLI read LLM_MODEL, LLM_API_KEY, and
- * LLM_BASE_URL from the environment it would otherwise ignore.
+ * LLM_BASE_URL from the environment it would otherwise ignore — the same
+ * channel a provider override rides.
  */
 export class OpenHandsAdapter extends BaseAdapter {
   readonly id: AgentId = "openhands";
   readonly binaryName = "openhands";
+
+  constructor(private readonly environment: NodeJS.ProcessEnv = process.env) {
+    super();
+  }
 
   capabilities(): AdapterCapabilities {
     return {
@@ -53,13 +63,64 @@ export class OpenHandsAdapter extends BaseAdapter {
     return level === "high" ? ["--always-approve"] : [];
   }
 
+  /**
+   * The provider override, validated: `--override-with-envs` reads
+   * LLM_BASE_URL, LLM_API_KEY and LLM_MODEL (`LLMEnvOverrides.from_env`,
+   * `agent_store.py` at 1.16.0), and the model string reaches litellm
+   * unchanged, so a custom OpenAI-compatible endpoint needs litellm's
+   * `openai/` prefix — the same convention aider documents for the same
+   * reason. The override needs a base URL and a key.
+   */
+  private validatedProvider(): (ProviderOverride & { baseUrl: string; apiKey: string }) | null {
+    const override = readProviderOverride("openhands", this.environment);
+    if (override === null) return null;
+    return requireProviderOverride("openhands", override, [
+      "baseUrl",
+      "apiKey",
+    ]) as ProviderOverride & { baseUrl: string; apiKey: string };
+  }
+
+  /** The LLM_MODEL value: with an override, the openai/ prefix routes to it. */
+  private modelFor(model: string | undefined): string | undefined {
+    const override = this.validatedProvider();
+    const resolved = model ?? override?.model;
+    if (resolved === undefined) {
+      if (override !== null) {
+        throw new Error(
+          "openhands needs a model for the provider override; pass --model or set CODEMUX_OPENHANDS_PROVIDER_MODEL"
+        );
+      }
+      return undefined;
+    }
+    if (override === null) return resolved;
+    return resolved.startsWith("openai/") ? resolved : `openai/${resolved}`;
+  }
+
   /** The environment is ignored unless --override-with-envs is passed. */
   override getRunEnv(request: RunRequest): Record<string, string> {
-    return request.model ? { LLM_MODEL: request.model } : {};
+    const override = this.validatedProvider();
+    const model = this.modelFor(request.model);
+    if (override === null) {
+      return model ? { LLM_MODEL: model } : {};
+    }
+    return {
+      LLM_BASE_URL: override.baseUrl,
+      LLM_API_KEY: override.apiKey,
+      ...(model ? { LLM_MODEL: model } : {}),
+    };
   }
 
   override getTuiEnv(model?: string): Record<string, string> {
-    return model ? { LLM_MODEL: model } : {};
+    const override = this.validatedProvider();
+    const resolved = this.modelFor(model);
+    if (override === null) {
+      return resolved ? { LLM_MODEL: resolved } : {};
+    }
+    return {
+      LLM_BASE_URL: override.baseUrl,
+      LLM_API_KEY: override.apiKey,
+      ...(resolved ? { LLM_MODEL: resolved } : {}),
+    };
   }
 
   buildRunCommand(request: RunRequest): string[] {
@@ -68,7 +129,9 @@ export class OpenHandsAdapter extends BaseAdapter {
     // and misleading at every other level.
     const cmd = ["openhands", "--headless"];
 
-    if (request.model) {
+    // A resolved model — the request's or the override's — exists only through
+    // the environment, so the flag rides along whenever there is one.
+    if (this.modelFor(request.model)) {
       cmd.push("--override-with-envs");
     }
 
@@ -87,6 +150,10 @@ export class OpenHandsAdapter extends BaseAdapter {
     assertNoOpenHandsProjectExecutionConfig(
       validateWorkingDirectory(request.cwd) ?? process.cwd()
     );
+    // Fail before launch on a half-configured override, and surface the
+    // model requirement early: the CLI's stored default model would hit the
+    // custom endpoint and fail opaquely.
+    this.modelFor(request.model);
   }
 
   override validateTuiRequest(
@@ -108,11 +175,12 @@ export class OpenHandsAdapter extends BaseAdapter {
     assertNoOpenHandsProjectExecutionConfig(
       validateWorkingDirectory(cwd) ?? process.cwd()
     );
+    this.modelFor(model);
   }
 
   buildTuiCommand(model?: string, autonomy?: AutonomyLevel): string[] {
     const cmd = ["openhands"];
-    if (model) {
+    if (this.modelFor(model)) {
       cmd.push("--override-with-envs");
     }
     if (autonomy) {

@@ -16,7 +16,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   private per-run file, never through an operator configuration file, so an
   override survives `--hermetic`. Aider is the first consumer: the override
   rides `OPENAI_API_BASE`/`OPENAI_API_KEY` with litellm's `openai/` model
-  prefix. Documented in the README ("Provider overrides").
+  prefix. OpenHands follows the same mechanism through
+  `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL` behind `--override-with-envs`
+  (exercised live 2026-09-17 against GLM-5.3 via Z.AI: the plain control
+  probe leaked the planted code word, confirming both the override and the
+  hermetic refusal's grounding). Documented in the README ("Provider
+  overrides").
 - Aider claims `--hermetic`, verified live on 2026-09-17 through the
   provider override (GLM-5.3 via Z.AI): the two-probe check passed with the
   planted code word reaching the control probe. The check's answer now comes

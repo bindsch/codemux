@@ -173,9 +173,8 @@ export class AiderAdapter extends BaseAdapter {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-      // Claimed provisionally pending this session's live check through a
-      // provider override (GLM-5.3 via Z.AI): `codemux check --hermetic -a
-      // aider` with CODEMUX_AIDER_PROVIDER_* exported. Revert on failure; see
+      // Verified live on 2026-09-17 through a provider override (GLM-5.3
+      // via Z.AI): the two-probe check passed with a leaking control; see
       // docs/HERMETIC.md.
       supportsHermetic: true,
     };

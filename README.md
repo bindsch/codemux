@@ -126,9 +126,10 @@ creates and removes — never through an operator configuration file, which is
 what lets the override survive `--hermetic`. Aider translates the override
 into litellm's `openai/` model prefix with `OPENAI_API_BASE` and
 `OPENAI_API_KEY`
-([aider.chat/docs/llms/openai-compat.html](https://aider.chat/docs/llms/openai-compat.html));
-harnesses without a custom-provider mechanism (GitHub Copilot CLI, the Cursor
-agent CLI) document that limit instead.
+([aider.chat/docs/llms/openai-compat.html](https://aider.chat/docs/llms/openai-compat.html)),
+and OpenHands into `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL` behind its
+`--override-with-envs`; harnesses without a custom-provider mechanism (GitHub
+Copilot CLI, the Cursor agent CLI) document that limit instead.
 
 ### `check` options
 
