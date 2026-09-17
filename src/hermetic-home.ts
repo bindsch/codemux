@@ -50,6 +50,38 @@ export interface HermeticHome {
 const PARENT_DIR_NAME = ".codemux-hermetic";
 const RUN_PREFIX = "run-";
 
+// Homes not yet finalized. One set of signal handlers exists while this is
+// non-empty: between creating a home and spawning the run (the scode
+// version probe sits there) nothing else handles a signal. While the run's
+// command is in flight, the process runner owns the signal instead: it
+// terminates the tree, then exits, and the exit event finalizes the homes.
+const liveHomes = new Set<() => void>();
+const SIGNALS = [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const;
+const signalHandlers = new Map<NodeJS.Signals, () => void>();
+
+function onSignal(code: number): void {
+  if (hasActiveCapturedCommand()) return;
+  for (const finalize of [...liveHomes]) finalize();
+  process.exit(code);
+}
+
+function trackHome(finalize: () => void): void {
+  liveHomes.add(finalize);
+  if (signalHandlers.size > 0) return;
+  for (const [signal, code] of SIGNALS) {
+    const handler = (): void => onSignal(code);
+    signalHandlers.set(signal, handler);
+    process.on(signal, handler);
+  }
+}
+
+function untrackHome(finalize: () => void): void {
+  liveHomes.delete(finalize);
+  if (liveHomes.size > 0) return;
+  for (const [signal, handler] of signalHandlers) process.off(signal, handler);
+  signalHandlers.clear();
+}
+
 function inodeOf(path: string): number | null {
   try {
     return statSync(path).ino;
@@ -194,24 +226,11 @@ export function createCodexHermeticHome(
       // rm never follows the link: it unlinks our name, or the symlink itself.
       rmSync(home, { recursive: true, force: true });
       process.off("exit", finalize);
-      for (const [signal, handler] of signalHandlers) process.off(signal, handler);
+      untrackHome(finalize);
     }
   };
   process.once("exit", finalize);
-  // While the run's command is in flight, the process runner owns the
-  // signal: it terminates the tree, then exits, and the exit event fires
-  // here. Between creating the home and that spawn (the scode version
-  // probe sits there), nothing else handles a signal, so this does.
-  const signalHandlers: Array<["SIGINT" | "SIGTERM" | "SIGHUP", () => void]> = [];
-  for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const) {
-    const handler = (): void => {
-      if (hasActiveCapturedCommand()) return;
-      finalize();
-      process.exit(code);
-    };
-    signalHandlers.push([signal, handler]);
-    process.on(signal, handler);
-  }
+  trackHome(finalize);
 
   return { home, codexHome, finalize };
 }

@@ -63,9 +63,22 @@ describe("hermetic runs: claude and zai", () => {
 
 describe("hermetic runs: codex", () => {
   const scratch: string[] = [];
+  const adapters: CodexAdapter[] = [];
+  const signalListeners = () =>
+    process.listenerCount("SIGINT") + process.listenerCount("SIGTERM") + process.listenerCount("SIGHUP");
+  const baseline = signalListeners();
   afterEach(() => {
+    for (const adapter of adapters.splice(0)) adapter.disposeHermeticHome();
     for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true });
+    // No home may leave a signal handler behind: a later synthetic signal
+    // in another test would otherwise end the whole test process.
+    expect(signalListeners()).toBe(baseline);
   });
+  const codexAdapter = (env: NodeJS.ProcessEnv, home?: string): CodexAdapter => {
+    const adapter = new CodexAdapter(env, home);
+    adapters.push(adapter);
+    return adapter;
+  };
 
   function fakeHome(): string {
     const home = mkdtempSync(join(tmpdir(), "codemux-codex-home-"));
@@ -76,7 +89,7 @@ describe("hermetic runs: codex", () => {
   }
 
   test("hermetic flags disable project docs, account and disk customizations", () => {
-    const adapter = new CodexAdapter({}, fakeHome());
+    const adapter = codexAdapter({}, fakeHome());
     adapter.prepareRun({ agent: "codex", prompt: "p", hermetic: true });
     const cmd = adapter.buildRunCommand({ agent: "codex", prompt: "p", hermetic: true, sandboxed: true });
     // The private home reaches Codex through env(1), never through the
@@ -97,7 +110,7 @@ describe("hermetic runs: codex", () => {
   });
 
   test("--tools none disables every tool that reaches the machine or network", () => {
-    const cmd = new CodexAdapter({}, fakeHome()).buildRunCommand({ agent: "codex", prompt: "p", tools: "none" });
+    const cmd = codexAdapter({}, fakeHome()).buildRunCommand({ agent: "codex", prompt: "p", tools: "none" });
     expect(cmd[0]).toBe("codex");
     for (const feature of ["shell_tool", "unified_exec", "view_image", "multi_agent", "browser_use", "computer_use"]) {
       expect(cmd[cmd.indexOf(feature) - 1]).toBe("--disable");
@@ -110,7 +123,7 @@ describe("hermetic runs: codex", () => {
   });
 
   test("--tools none is accepted only at read-only autonomy (apply_patch cannot be removed)", () => {
-    const adapter = new CodexAdapter({}, fakeHome());
+    const adapter = codexAdapter({}, fakeHome());
     const cwd = mkdtempSync(join(tmpdir(), "codemux-codex-ro-"));
     scratch.push(cwd);
     mkdirSync(join(cwd, ".git"));
@@ -123,13 +136,13 @@ describe("hermetic runs: codex", () => {
   });
 
   test("a static hermetic command without prepareRun points at a home that does not exist", () => {
-    const cmd = new CodexAdapter({}, fakeHome()).buildRunCommand({ agent: "codex", prompt: "p", hermetic: true });
+    const cmd = codexAdapter({}, fakeHome()).buildRunCommand({ agent: "codex", prompt: "p", hermetic: true });
     expect(cmd[1]).toMatch(/^HOME=.*\.codemux-hermetic\/unprepared$/);
     expect(() => statSync(cmd[1]!.slice("HOME=".length))).toThrow();
   });
 
   test("plain commands are unchanged", () => {
-    expect(new CodexAdapter({}, fakeHome()).buildRunCommand({ agent: "codex", prompt: "p" }))
+    expect(codexAdapter({}, fakeHome()).buildRunCommand({ agent: "codex", prompt: "p" }))
       .toEqual(["codex", "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "-"]);
   });
 
@@ -139,7 +152,7 @@ describe("hermetic runs: codex", () => {
 
   test("prepareRun creates a private HOME and CODEX_HOME inside the real one, holding only the linked login", () => {
     const home = fakeHome();
-    const adapter = new CodexAdapter({}, home);
+    const adapter = codexAdapter({}, home);
     adapter.prepareRun({ agent: "codex", prompt: "p" });
     expect(adapter.buildRunCommand({ agent: "codex", prompt: "p" })[0]).toBe("codex");
     adapter.prepareRun({ agent: "codex", prompt: "p", hermetic: true });
@@ -159,7 +172,7 @@ describe("hermetic runs: codex", () => {
   test("the real login is the one a plain run sees: ~/.codex, or CODEX_HOME only when passed through", () => {
     const home = fakeHome();
     const profile = fakeHome();
-    const adapter = new CodexAdapter({ CODEX_HOME: join(profile, ".codex") }, home);
+    const adapter = codexAdapter({ CODEX_HOME: join(profile, ".codex") }, home);
     // Not passed through: the sanitized child environment drops it.
     adapter.prepareRun({ agent: "codex", prompt: "p", hermetic: true });
     const priv = privateHome(adapter.buildRunCommand({ agent: "codex", prompt: "p", hermetic: true }));
@@ -176,7 +189,7 @@ describe("hermetic runs: codex", () => {
   test("refuses a missing file login and explains the Keychain case", () => {
     const home = mkdtempSync(join(tmpdir(), "codemux-codex-nologin-"));
     scratch.push(home);
-    expect(() => new CodexAdapter({}, home).prepareRun({ agent: "codex", prompt: "p", hermetic: true }))
+    expect(() => codexAdapter({}, home).prepareRun({ agent: "codex", prompt: "p", hermetic: true }))
       .toThrow(/need a file login.*Keychain.*CODEX_API_KEY/s);
   });
 
@@ -185,7 +198,7 @@ describe("hermetic runs: codex", () => {
     scratch.push(withoutLogin);
     mkdirSync(join(withoutLogin, ".codex"));
     for (const home of [withoutLogin, fakeHome()]) {
-      const adapter = new CodexAdapter({ CODEX_API_KEY: "sk-test" }, home);
+      const adapter = codexAdapter({ CODEX_API_KEY: "sk-test" }, home);
       adapter.prepareRun({ agent: "codex", prompt: "p", hermetic: true });
       const priv = privateHome(adapter.buildRunCommand({ agent: "codex", prompt: "p", hermetic: true }));
       expect(readdirSync(priv.codexHome)).toEqual([]);
@@ -197,7 +210,7 @@ describe("hermetic runs: codex", () => {
     // Codex 0.154 ignores OPENAI_API_KEY, so a plain run uses the file
     // login; the hermetic run must use the very same credential.
     const home = fakeHome();
-    const adapter = new CodexAdapter({ OPENAI_API_KEY: "sk-old" }, home);
+    const adapter = codexAdapter({ OPENAI_API_KEY: "sk-old" }, home);
     adapter.prepareRun({ agent: "codex", prompt: "p", hermetic: true });
     const priv = privateHome(adapter.buildRunCommand({ agent: "codex", prompt: "p", hermetic: true }));
     expect(readdirSync(priv.codexHome)).toEqual(["auth.json"]);
@@ -205,7 +218,7 @@ describe("hermetic runs: codex", () => {
   });
 
   test("every hermetic run gets a fresh home; an earlier run's home stays until exit", () => {
-    const adapter = new CodexAdapter({}, fakeHome());
+    const adapter = codexAdapter({}, fakeHome());
     adapter.prepareRun({ agent: "codex", prompt: "p", hermetic: true });
     const first = privateHome(adapter.buildRunCommand({ agent: "codex", prompt: "p", hermetic: true }));
     writeFileSync(join(first.home, "leftover"), "x");
@@ -227,7 +240,7 @@ describe("hermetic runs: codex", () => {
   });
 
   test("launching without prepareRun is refused on the codemux side", () => {
-    const adapter = new CodexAdapter({}, fakeHome());
+    const adapter = codexAdapter({}, fakeHome());
     expect(() => adapter.getRunEnv({ agent: "codex", prompt: "p", hermetic: true }))
       .toThrow("was not prepared before launch");
     expect(adapter.getRunEnv({ agent: "codex", prompt: "p" })).toEqual({});
@@ -288,7 +301,7 @@ describe("hermetic runs: codex", () => {
     mkdirSync(below, { recursive: true });
     // The adapter's effective home (seam, else $HOME) is the user home for
     // the skills walk.
-    const adapter = new CodexAdapter({ HOME: home });
+    const adapter = codexAdapter({ HOME: home });
     expect(() => adapter.validateRunRequest({ agent: "codex", prompt: "p", cwd: home }))
       .not.toThrow();
     expect(() => adapter.validateRunRequest({ agent: "codex", prompt: "p", cwd: home, hermetic: true }))
@@ -297,7 +310,7 @@ describe("hermetic runs: codex", () => {
     // HOME as the working directory makes them repository skills.
     expect(() => adapter.validateRunRequest({ agent: "codex", prompt: "p", cwd: below, hermetic: true }))
       .not.toThrow();
-    expect(() => new CodexAdapter({}, home).validateRunRequest({ agent: "codex", prompt: "p", cwd: home, hermetic: true }))
+    expect(() => codexAdapter({}, home).validateRunRequest({ agent: "codex", prompt: "p", cwd: home, hermetic: true }))
       .toThrow("refuses repository skills in a hermetic run");
     // A HOME that is itself a Git root is Codex's project root for any
     // directory below it without another root in between.
@@ -312,7 +325,7 @@ describe("hermetic runs: codex", () => {
     scratch.push(repo);
     mkdirSync(join(repo, ".git"));
     mkdirSync(join(repo, ".agents", "skills", "x"), { recursive: true });
-    const adapter = new CodexAdapter({}, home);
+    const adapter = codexAdapter({}, home);
     expect(() => adapter.validateRunRequest({ agent: "codex", prompt: "p", cwd: repo }))
       .not.toThrow();
     expect(() => adapter.validateRunRequest({ agent: "codex", prompt: "p", cwd: repo, hermetic: true }))
@@ -406,6 +419,28 @@ describe("env-prefixed commands", () => {
         .toThrow("must not be inside the execution working directory");
     } finally {
       rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("hermetic home signal handling", () => {
+  test("handlers exist only while a home is live, and finalize on a signal outside a run", () => {
+    const home = mkdtempSync(join(tmpdir(), "codemux-codex-signals-"));
+    mkdirSync(join(home, ".codex"));
+    writeFileSync(join(home, ".codex", "auth.json"), "{}", { mode: 0o600 });
+    const before = process.listenerCount("SIGHUP");
+    const first = createCodexHermeticHome(join(home, ".codex"));
+    const second = createCodexHermeticHome(join(home, ".codex"));
+    try {
+      expect(process.listenerCount("SIGHUP")).toBe(before + 1);
+      first.finalize();
+      expect(process.listenerCount("SIGHUP")).toBe(before + 1);
+      second.finalize();
+      expect(process.listenerCount("SIGHUP")).toBe(before);
+      expect(() => statSync(first.home)).toThrow();
+      expect(() => statSync(second.home)).toThrow();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });

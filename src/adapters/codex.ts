@@ -73,6 +73,9 @@ export class CodexAdapter extends BaseAdapter {
   readonly binaryName = "codex";
 
   private hermeticHome: HermeticHome | null = null;
+  // Every home this adapter created and has not disposed; earlier runs
+  // through the same instance may still be using theirs.
+  private readonly hermeticHomes: HermeticHome[] = [];
 
   // Seams so tests can point the real CODEX_HOME at a scratch directory.
   constructor(
@@ -209,6 +212,13 @@ export class CodexAdapter extends BaseAdapter {
     // Earlier homes stay until process exit, since a run started earlier
     // through this same (singleton) adapter may still be using its own.
     this.hermeticHome = createCodexHermeticHome(this.realCodexHome(request), this.apiKeyAuth());
+    this.hermeticHomes.push(this.hermeticHome);
+  }
+
+  /** Finalizes every hermetic home of this adapter now rather than at exit. */
+  disposeHermeticHome(): void {
+    for (const home of this.hermeticHomes.splice(0)) home.finalize();
+    this.hermeticHome = null;
   }
 
   override getRunEnv(request: RunRequest): Record<string, string> {
