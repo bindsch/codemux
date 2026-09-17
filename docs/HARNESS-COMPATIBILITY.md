@@ -96,6 +96,39 @@ an unknown flag rather than run non-hermetically. `maxAudited` is unchanged:
 this addendum rests on help-surface inspection, adapter unit tests and the
 live canary, not on the full upgrade procedure.
 
+## 2026-09-17 addendum: hermetic across the remaining harnesses
+
+The mechanisms (or refusals) for every harness beyond Claude Code, Z.AI and
+Codex are grounded as follows, all detailed in `docs/HERMETIC.md`. None of
+this moves `maxAudited`: the implemented mappings keep their capabilities
+off until a live check runs.
+
+Installed here and exercised through free surfaces (help output, package
+source, `--list-tools` inventories), with the model-level probes still
+pending:
+
+| Harness | Checked at | Last audited | Probe pending |
+|---------|-----------|--------------|---------------|
+| Droid | 0.221.0 | 0.186.0 | stored login (self-update removed it) |
+| Kimi Code | 0.31.1 | 0.31.1 | usage headroom (weekly limit hit 2026-09-17) |
+| OpenCode | 1.18.18 | 1.18.18 | usage headroom (weekly limit hit 2026-09-17) |
+| Aider | 0.86.2 | 0.86.2 | provider API key in the environment |
+| Cursor Agent | 2026.08.11 build | same | no Cursor login on this machine; no mechanism exists to check |
+
+Not installed here, grounded in the published package or source, which is
+newer than the audited ledger version in every case (the flags the
+mappings rely on were also spot-checked at the audited version where the
+source was reachable):
+
+| Harness | Grounded in | Last audited | Audited-version spot check |
+|---------|-------------|--------------|---------------------------|
+| GitHub Copilot CLI | 1.0.85 (npm) | 1.0.77 | both mechanisms predate 1.0.77 |
+| Qwen Code | 0.24.0 (npm) | 0.21.2 | refused on 0.24.0 semantics; no mapping |
+| Gemini CLI | 0.60.0 (npm) | 0.53.1 | not spot-checked; capability stays off |
+| Pi | 0.85.1 (npm) | 0.83.0 | not spot-checked; capability stays off |
+| Goose | v1.50.1 (source) | 1.45.0 | `--no-profile`, `CONTEXT_FILE_NAMES`, `GOOSE_PATH_ROOT` unchanged |
+| Cline CLI | 3.0.62 (source) | 3.0.48 | not spot-checked; no mapping |
+
 ## Version enforcement
 
 `src/harness-compatibility.ts` is the machine-readable half of this ledger and

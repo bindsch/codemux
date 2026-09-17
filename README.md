@@ -88,8 +88,8 @@ codemux [command] [options]
 | `--timeout <seconds>` | Kill a hung non-interactive run and its whole process tree (a descendant whose parent chain broke before the first snapshot can still escape; default: `1800`, maximum: `86400`) |
 | `--pass-env <names>` | Explicitly pass comma-separated parent environment names |
 | `--enable-playwright-mcp` | Enable a local Playwright MCP binary inside `--sandbox` |
-| `--hermetic` | Load none of the operator's customizations (instruction files, skills, plugins, hooks, MCP servers); the login still works. Claude, Z.AI and Codex; others are refused. See [docs/HERMETIC.md](docs/HERMETIC.md) |
-| `--tools <selection>` | Built-in tools the harness exposes: `default` or `none`. Independent of `--hermetic`; Codex takes `none` only with `--auto read-only` |
+| `--hermetic` | Load none of the operator's customizations (instruction files, skills, plugins, hooks, MCP servers); the login still works. Claude, Z.AI and Codex; every other harness is refused until its mechanism passes the live check — several have implemented mechanisms pending that verification. See [docs/HERMETIC.md](docs/HERMETIC.md) |
+| `--tools <selection>` | Built-in tools the harness exposes: `default` or `none`. Independent of `--hermetic`; Codex takes `none` only with `--auto read-only`, and harnesses that cannot remove their tools refuse `none` |
 | `-s, --sandbox` | Execute via `scode` (default: on; `--no-sandbox` opts out, and autonomy below `high` then refuses) |
 | `--sandbox-trust <level>` | `scode` trust override (`trusted`, `standard`, `untrusted`) |
 | `--sandbox-no-net` | Add `--no-net` to `scode` |
