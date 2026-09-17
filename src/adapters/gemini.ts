@@ -47,9 +47,11 @@ export class GeminiAdapter extends BaseAdapter {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: false,
       effortLevels: [],
-      // Implemented but unclaimed: gemini is not installed on the release
-      // machine, so the capability probe is pending an install. Hermetic has
-      // no mechanism at all; see docs/HERMETIC.md.
+      // Implemented but unclaimed: exercised live at 0.60.0 on 2026-09-17.
+      // The --tools none settings file cannot load on a user-owned prefix
+      // (the system-settings layer requires the file and every ancestor to
+      // be root-owned), and hermetic has no mechanism at all; see
+      // docs/HERMETIC.md.
       supportsHermetic: false,
       supportsToolSelection: false,
     };

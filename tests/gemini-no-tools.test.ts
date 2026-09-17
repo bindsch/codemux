@@ -18,9 +18,11 @@ import {
 } from "../src/adapters/gemini.js";
 import { writeGeminiNoToolsSettings } from "../src/gemini-no-tools.js";
 
-// Gemini's `--tools none` mapping is implemented but not claimed: the
-// capability probe needs an installed gemini, and the release machine has
-// none (docs/HERMETIC.md). `--hermetic` has no mechanism at all.
+// Gemini's `--tools none` mapping is implemented but not claimed: exercised
+// live at 0.60.0 on 2026-09-17, the system-settings layer skips the private
+// per-run file on a user-owned prefix (the file and every ancestor must be
+// root-owned), so the mapping cannot load there (docs/HERMETIC.md).
+// `--hermetic` has no mechanism at all.
 
 describe("tools none: gemini", () => {
   const scratch: string[] = [];
@@ -40,7 +42,7 @@ describe("tools none: gemini", () => {
   };
   const noTools = { agent: "gemini" as const, prompt: "p", tools: "none" as const };
 
-  test("gemini refuses --hermetic and --tools none until a probe runs", () => {
+  test("gemini refuses --hermetic and --tools none; the live 0.60.0 exercise cannot load the mapping here", () => {
     const adapter = new GeminiAdapter();
     const cwd = mkdtempSync(join(tmpdir(), "codemux-gemini-refuse-"));
     try {

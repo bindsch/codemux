@@ -98,20 +98,27 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   every channel except the global `~/.pi/SYSTEM.md`/`APPEND_SYSTEM.md`
   system-prompt override, which has no switch — the only suppression is
   an undocumented empty-string fallback codemux does not rely on.
-- Gemini's `--tools none` mechanism is implemented but not yet claimed: it
-  writes codemux's packaged system-settings pins plus `tools.core: []` into
-  a private file under `~/.gemini/.codemux/` and points
-  `GEMINI_CLI_SYSTEM_SETTINGS_PATH` — the variable every gemini run already
-  carries — at it. The empty allowlist keeps every built-in tool from
-  registering (the model is never offered the schemas) and the policy
-  engine denies every remaining execution path underneath, and the system
-  layer's top merge precedence stops operator settings from re-widening
-  the list. Gemini is not installed on the release machine, so the
-  capability stays unclaimed until an install and a probe. Gemini keeps
-  refusing `--hermetic`: no switch closes the workspace channels
-  (context files, trusted-folder settings, auto-accepted workspace
-  policies), and gemini loads only `GEMINI.md`, never the `AGENTS.md` or
-  `CLAUDE.md` the check plants, so a leaking control probe is impossible.
+- Gemini's `--tools none` mechanism is implemented but cannot be claimed on
+  a user-owned prefix: gemini 0.60.0 was installed and exercised live on
+  2026-09-17, and its system-settings layer requires the settings file and
+  every ancestor directory up to `/` to be owned by root (uid 0) — a rule
+  present identically at the audited 0.53.1 — or the file is skipped with a
+  warning and the run starts with its tools restored. The private per-run
+  file under `~/.gemini/.codemux/` that `--tools none` writes is therefore
+  always skipped on such a machine (observed live through the identical
+  warning on the packaged file). The same warning shows the packaged
+  system-settings pins every plain gemini run points at
+  (`resources/gemini-system-settings.json`: generic project `.env` loading
+  disabled, `.gemini` project controls rejected, nested sandbox disabled)
+  have never loaded on a user-owned prefix either — a documented contract
+  gap, not a regression. Gemini keeps refusing `--hermetic`: no switch
+  closes the workspace channels, gemini loads only `GEMINI.md` — never the
+  `AGENTS.md` or `CLAUDE.md` the check plants, so a leaking control probe is
+  impossible — and the live pass found no custom-provider path to verify
+  against either: `GOOGLE_GEMINI_BASE_URL` resolves to the "gateway" auth
+  type the CLI's own validator rejects, pinning API-key auth still landed
+  the request on Google, and Z.AI serves no Gemini-protocol endpoint (only
+  Anthropic and OpenAI protocols, docs.z.ai/devpack/tool/others).
 - Copilot's hermetic and tool-selection mechanisms are implemented but not
   yet claimed: `--hermetic` points `COPILOT_HOME` at a private, empty config
   directory (relocating the user settings, hooks, instructions, skills,

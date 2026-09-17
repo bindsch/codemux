@@ -320,7 +320,11 @@ direct `read-only` runs are rejected unless `--sandbox` supplies a durable
 read-only boundary. Codemux supplies an authoritative system setting that
 disables generic project `.env` loading, rejects `.gemini` project controls,
 and explicitly disables Gemini's nested sandbox so project Dockerfiles or
-Seatbelt profiles cannot replace the selected boundary.
+Seatbelt profiles cannot replace the selected boundary. On a user-owned
+prefix (Homebrew, a source checkout) gemini silently skips that file — its
+security walk requires the settings file and every ancestor directory to be
+root-owned, unchanged since the audited 0.53.1 — so the pins apply only on
+root-owned installs ([ledger](docs/HARNESS-COMPATIBILITY.md)).
 
 ## Optional Usage Integration
 

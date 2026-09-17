@@ -122,6 +122,25 @@ contract. `maxAudited` is unchanged: this rests on help-surface
 inspection, adapter unit tests and the live probes, not on the full
 upgrade procedure.
 
+Gemini CLI 0.60.0 (last audited 0.53.1) was installed here (`npm install
+-g @google/gemini-cli`; `npm uninstall -g @google/gemini-cli` removes it)
+and exercised live on 2026-09-17 through codemux `check` and probe runs
+with a private `GEMINI_CLI_HOME`. The approval-mode flags behind the
+autonomy mapping are unchanged between 0.53.1 and 0.60.0. The exercise
+surfaced two findings, detailed in docs/HERMETIC.md: the packaged
+system-settings pin file (`resources/gemini-system-settings.json`) is
+silently skipped on a user-owned prefix — the system-settings security
+walk requires the file and every ancestor directory to be root-owned
+(uid 0), a rule present identically at the audited 0.53.1, so the pins
+(generic project `.env` loading disabled, `.gemini` project controls
+rejected, nested sandbox disabled) have never applied under Homebrew or a
+source checkout — and no custom-provider override exists at 0.60.0:
+`GOOGLE_GEMINI_BASE_URL` maps to a "gateway" auth type the CLI's own
+validator rejects, and with API-key auth pinned the request still reached
+Google. `maxAudited` is unchanged: this rests on help-surface inspection,
+package-source reading and the live runs, not on the full upgrade
+procedure.
+
 Not installed here, grounded in the published package or source, which is
 newer than the audited ledger version in every case (the flags the
 mappings rely on were also spot-checked at the audited version where the
@@ -131,7 +150,6 @@ source was reachable):
 |---------|-------------|--------------|---------------------------|
 | GitHub Copilot CLI | 1.0.85 (npm) | 1.0.77 | both mechanisms predate 1.0.77 |
 | Qwen Code | 0.24.0 (npm) | 0.21.2 | refused on 0.24.0 semantics; no mapping |
-| Gemini CLI | 0.60.0 (npm) | 0.53.1 | not spot-checked; capability stays off |
 | Pi | 0.85.1 (npm) | 0.83.0 | not spot-checked; capability stays off |
 | Goose | v1.50.1 (source) | 1.45.0 | `--no-profile`, `CONTEXT_FILE_NAMES`, `GOOSE_PATH_ROOT` unchanged |
 | Cline CLI | 3.0.62 (source) | 3.0.48 | not spot-checked; no mapping |
