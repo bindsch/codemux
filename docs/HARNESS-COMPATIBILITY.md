@@ -156,6 +156,25 @@ contract. `maxAudited` is unchanged: this rests on help-surface
 inspection, adapter unit tests and the live probes, not on the full
 upgrade procedure.
 
+Goose 1.50.1 (last audited 1.45.0) was installed here (the official
+`download_cli.sh` from the README with `CONFIGURE=false`, which installs
+to `~/.local/bin/goose`; delete that file to remove it — Homebrew cannot
+install it inside this machine's sandboxed sessions) and exercised live
+on 2026-09-17 through a provider override: the environment group
+`GOOSE_PROVIDER`/`OPENAI_HOST`/`OPENAI_BASE_PATH`/`OPENAI_API_KEY`/`GOOSE_MODEL`
+routed GLM-5.3 via Z.AI with no goose login — every value rides goose's
+env-first lookup (`get_param`, `crates/goose/src/config/base.rs` at
+1.50.1), so no operator file is touched. The `--tools none` capability
+probes and the non-hermetic control probe ran against the model
+(docs/HERMETIC.md). The flags behind the mappings (`--no-profile`,
+`GOOSE_MODE`) and the OpenAI custom-endpoint surface are unchanged
+between 1.45.0 and 1.50.1 in the source and help surface, and the
+`OPENAI_HOST`/`OPENAI_BASE_PATH` endpoint split with goose's
+`derive_base_path` semantics is now part of the exercised contract.
+`maxAudited` is unchanged: this rests on help-surface inspection,
+adapter unit tests and the live probes, not on the full upgrade
+procedure.
+
 Not installed here, grounded in the published package or source, which is
 newer than the audited ledger version in every case (the flags the
 mappings rely on were also spot-checked at the audited version where the
@@ -165,7 +184,6 @@ source was reachable):
 |---------|-------------|--------------|---------------------------|
 | GitHub Copilot CLI | 1.0.85 (npm) | 1.0.77 | both mechanisms predate 1.0.77 |
 | Qwen Code | 0.24.0 (npm) | 0.21.2 | refused on 0.24.0 semantics; no mapping |
-| Goose | v1.50.1 (source) | 1.45.0 | `--no-profile`, `CONTEXT_FILE_NAMES`, `GOOSE_PATH_ROOT` unchanged |
 | Cline CLI | 3.0.62 (source) | 3.0.48 | not spot-checked; no mapping |
 
 ## Version enforcement

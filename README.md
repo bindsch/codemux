@@ -133,9 +133,11 @@ provider file plus a key environment it references, Kimi Code into
 the `KIMI_MODEL_*` group that synthesizes a provider in memory, Droid
 into a per-run BYOK `customModels` entry inside a private `--settings`
 file whose key is a `${VAR}` reference into the environment
-codemux provides, and Pi into a private agent directory behind
+codemux provides, Pi into a private agent directory behind
 `PI_CODING_AGENT_DIR` holding a one-provider `models.json` with the same
-kind of `${VAR}` key reference; harnesses without a custom-provider
+kind of `${VAR}` key reference, and Goose into the pure-environment
+`GOOSE_PROVIDER`/`OPENAI_HOST`/`OPENAI_BASE_PATH`/`OPENAI_API_KEY` group
+of its built-in OpenAI provider; harnesses without a custom-provider
 mechanism (GitHub Copilot CLI, the Cursor agent CLI) document that limit
 instead.
 

@@ -74,19 +74,31 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   quoted the planted code word and `~/.agents/AGENTS.md`'s owner, which
   grounds the hermetic refusal (the AGENTS.md merger has no switch).
 
-- Goose's `--tools none` mechanism is implemented but not yet claimed: it
-  maps onto `--no-profile`, under which the session instantiates no
-  extension at all — and every tool, the developer, skills and memory
-  platform extensions included, reaches the model only through an
-  extension. Goose is not installed on the release machine, so the
-  capability stays unclaimed until an install and a probe. Goose keeps
-  refusing `--hermetic`: `--no-profile` and the documented
-  `CONTEXT_FILE_NAMES` variable would close the extension and context-file
-  channels, but `GOOSE_SYSTEM_PROMPT_FILE_PATH` replaces the whole system
-  prompt from the operator's config file on every session with no switch,
-  and `GOOSE_PATH_ROOT` — the wholesale relocation — strands the provider
-  and model selection living in the same file while the global skill
-  directories under the real home escape it.
+- Goose claims `--tools none`, verified live on 2026-09-17 at 1.50.1
+  (installed via the official `download_cli.sh`) through a provider
+  override (GLM-5.3 via Z.AI): the override rides pure environment —
+  `CODEMUX_GOOSE_PROVIDER_{BASE_URL,API_KEY,MODEL}` become the
+  `GOOSE_PROVIDER`/`OPENAI_HOST`/`OPENAI_BASE_PATH`/`OPENAI_API_KEY`/`GOOSE_MODEL`
+  group, every one of which goose reads before any config file or keyring,
+  so the key never touches argv or an operator file. The base URL splits
+  into the host/path pair with goose's own `derive_base_path` semantics, so
+  `https://api.z.ai/api/coding/paas/v4` becomes
+  `OPENAI_HOST=https://api.z.ai` with
+  `OPENAI_BASE_PATH=api/coding/paas/v4/chat/completions`, and a
+  chat-completions path forces the chat-completions protocol; a base URL
+  with a query string is rejected because the pair cannot carry one. Under
+  `--tools none` (`--no-profile`, under which the session instantiates no
+  extension at all — every tool, the developer, skills and memory platform
+  extensions included, reaches the model only through an extension) the
+  read probe produced no output at all and the shell probe produced a
+  fabricated quip rather than the real transform of the planted token,
+  while plain runs produced both the secret and its transform; the
+  non-hermetic control probe leaked the planted code word, which grounds
+  the hermetic refusal (`GOOSE_SYSTEM_PROMPT_FILE_PATH` replaces the whole
+  system prompt from the operator's config file on every session with no
+  switch, and `GOOSE_PATH_ROOT` — the wholesale relocation — strands the
+  provider and model selection living in the same file while the global
+  skill directories under the real home escape it).
 - Pi claims `--tools none`, verified live on 2026-09-17 through a
   provider override (GLM-5.3 via Z.AI): the override writes a private
   agent directory behind `PI_CODING_AGENT_DIR` — the only knob that

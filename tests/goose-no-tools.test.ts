@@ -4,25 +4,26 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GooseAdapter } from "../src/adapters/goose.js";
 
-// Goose's `--tools none` mapping is implemented but not claimed: the
-// capability probe needs an installed goose, and the release machine has
-// none (docs/HERMETIC.md). `--hermetic` has no mechanism: the
-// config-file system-prompt override `GOOSE_SYSTEM_PROMPT_FILE_PATH` has
-// no switch.
+// Goose's `--tools none` is claimed: verified live at 1.50.1 on 2026-09-17
+// through the provider override — under `--no-profile` neither capability
+// probe could produce its secret while plain runs produced both
+// (docs/HERMETIC.md). `--hermetic` stays refused: the live control probe
+// leaked the planted code word, and the config-file system-prompt override
+// `GOOSE_SYSTEM_PROMPT_FILE_PATH` has no switch.
 
 describe("tools none: goose", () => {
   const adapter = new GooseAdapter();
   const noTools = { agent: "goose" as const, prompt: "p", tools: "none" as const };
   const head = ["goose", "run"];
 
-  test("goose refuses --hermetic and --tools none until a probe runs", () => {
+  test("goose refuses --hermetic; --tools none is claimed (verified live)", () => {
     const cwd = mkdtempSync(join(tmpdir(), "codemux-goose-refuse-"));
     try {
       mkdirSync(join(cwd, ".git"));
       expect(adapter.capabilities().supportsHermetic ?? false).toBe(false);
-      expect(adapter.capabilities().supportsToolSelection ?? false).toBe(false);
+      expect(adapter.capabilities().supportsToolSelection ?? false).toBe(true);
       expect(() => adapter.validateRunRequest({ ...noTools, cwd }))
-        .toThrow("cannot remove its built-in tools");
+        .not.toThrow();
       expect(() => adapter.validateRunRequest({
         agent: "goose",
         prompt: "p",
