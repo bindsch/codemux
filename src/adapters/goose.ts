@@ -22,6 +22,12 @@ export class GooseAdapter extends BaseAdapter {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: false,
       effortLevels: [],
+      // Implemented but unclaimed: goose is not installed on the release
+      // machine, so the capability probe is pending an install. Hermetic
+      // has no switch for the config-file system-prompt override; see
+      // docs/HERMETIC.md.
+      supportsHermetic: false,
+      supportsToolSelection: false,
     };
   }
 
@@ -47,7 +53,17 @@ export class GooseAdapter extends BaseAdapter {
   }
 
   buildRunCommand(request: RunRequest): string[] {
-    return ["goose", "run", "-t", request.prompt];
+    const cmd = ["goose", "run"];
+    if (request.tools === "none") {
+      // "Don't load your default extensions, only use CLI-specified
+      // extensions" (1.50.1 `run --help`): with no CLI extensions the
+      // session instantiates none, and every tool — built-in platform
+      // extensions like developer included — reaches the model only
+      // through an extension.
+      cmd.push("--no-profile");
+    }
+    cmd.push("-t", request.prompt);
+    return cmd;
   }
 
   override validateRunRequest(request: RunRequest): void {

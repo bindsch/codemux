@@ -129,7 +129,7 @@ describe("installed harness contracts", () => {
       args: ["--help"],
       required: ["--prompt", "--model", "--approval-mode", "--sandbox"],
     },
-    { binary: "goose", args: ["run", "--help"], required: ["--text"] },
+    { binary: "goose", args: ["run", "--help"], required: ["--text", "--no-profile"] },
     {
       binary: "kimi",
       args: ["--help"],

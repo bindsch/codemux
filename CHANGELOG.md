@@ -9,6 +9,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
+- Goose's `--tools none` mechanism is implemented but not yet claimed: it
+  maps onto `--no-profile`, under which the session instantiates no
+  extension at all — and every tool, the developer, skills and memory
+  platform extensions included, reaches the model only through an
+  extension. Goose is not installed on the release machine, so the
+  capability stays unclaimed until an install and a probe. Goose keeps
+  refusing `--hermetic`: `--no-profile` and the documented
+  `CONTEXT_FILE_NAMES` variable would close the extension and context-file
+  channels, but `GOOSE_SYSTEM_PROMPT_FILE_PATH` replaces the whole system
+  prompt from the operator's config file on every session with no switch,
+  and `GOOSE_PATH_ROOT` — the wholesale relocation — strands the provider
+  and model selection living in the same file while the global skill
+  directories under the real home escape it.
 - Pi's `--tools none` mechanism is implemented but not yet claimed: it maps
   onto `--no-tools`, whose empty allowlist keeps every built-in, extension
   and custom tool out of the registry (the model is never offered a
