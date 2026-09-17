@@ -88,7 +88,7 @@ codemux [command] [options]
 | `--timeout <seconds>` | Kill a hung non-interactive run and its whole process tree (a descendant whose parent chain broke before the first snapshot can still escape; default: `1800`, maximum: `86400`) |
 | `--pass-env <names>` | Explicitly pass comma-separated parent environment names |
 | `--enable-playwright-mcp` | Enable a local Playwright MCP binary inside `--sandbox` |
-| `--hermetic` | Load none of the operator's customizations (instruction files, skills, plugins, hooks, MCP servers); the login still works. Claude, Z.AI and Codex; every other harness is refused until its mechanism passes the live check — several have implemented mechanisms pending that verification. See [docs/HERMETIC.md](docs/HERMETIC.md) |
+| `--hermetic` | Load none of the operator's customizations (instruction files, skills, plugins, hooks, MCP servers); the login still works. Claude, Z.AI, Codex and Aider; every other harness is refused until its mechanism passes the live check — several have implemented mechanisms pending that verification. See [docs/HERMETIC.md](docs/HERMETIC.md) |
 | `--tools <selection>` | Built-in tools the harness exposes: `default` or `none`. Independent of `--hermetic`; Codex takes `none` only with `--auto read-only`, and harnesses that cannot remove their tools refuse `none` |
 | `-s, --sandbox` | Execute via `scode` (default: on; `--no-sandbox` opts out, and autonomy below `high` then refuses) |
 | `--sandbox-trust <level>` | `scode` trust override (`trusted`, `standard`, `untrusted`) |
@@ -104,6 +104,31 @@ harnesses only accept their final task as an argument; Codemux cannot remove
 that upstream limitation for Aider, Cline, Copilot, Gemini, Goose, Kimi,
 OpenHands, or legacy `qwen-coder`. Codemux rejects argv prompts above 32 KiB;
 use an stdin-capable harness for larger prompts.
+
+### Provider overrides
+
+Point one harness at a different model provider — an OpenAI-compatible
+gateway or a subscription endpoint such as Z.AI's — by exporting three
+environment variables before invoking codemux:
+
+```bash
+export CODEMUX_AIDER_PROVIDER_BASE_URL=https://api.z.ai/api/coding/paas/v4
+export CODEMUX_AIDER_PROVIDER_API_KEY=…        # keep it out of argv and committed files
+export CODEMUX_AIDER_PROVIDER_MODEL=glm-5.3
+codemux run -a aider -p "Reply with: OK"
+```
+
+`<AGENT>` is the codemux agent id uppercased. Blank values count as unset,
+and a half-configured override fails loudly instead of silently reaching the
+harness's native provider. The key is delivered to the harness through the
+environment codemux itself provides or through a private per-run file codemux
+creates and removes — never through an operator configuration file, which is
+what lets the override survive `--hermetic`. Aider translates the override
+into litellm's `openai/` model prefix with `OPENAI_API_BASE` and
+`OPENAI_API_KEY`
+([aider.chat/docs/llms/openai-compat.html](https://aider.chat/docs/llms/openai-compat.html));
+harnesses without a custom-provider mechanism (GitHub Copilot CLI, the Cursor
+agent CLI) document that limit instead.
 
 ### `check` options
 

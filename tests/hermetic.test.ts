@@ -54,7 +54,7 @@ describe("hermetic runs: claude and zai", () => {
 });
 
 describe("hermetic runs: the other harnesses refuse", () => {
-  const supportedHermetic = new Set(["claude", "zai", "codex"]);
+  const supportedHermetic = new Set(["claude", "zai", "codex", "aider"]);
   const supportedTools = new Set(["claude", "zai", "codex"]);
   for (const agentId of AGENT_IDS) {
     if (supportedHermetic.has(agentId) && supportedTools.has(agentId)) continue;

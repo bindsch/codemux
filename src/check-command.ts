@@ -191,7 +191,11 @@ export function registerCheckCommand(
             process.exitCode = hermeticResult.exitCode;
             return;
           }
-          const verdict = evaluateCanary(hermeticResult.stdout, canary.marker);
+          const verdict = evaluateCanary(
+            adapter.replyScanSurface(hermeticResult.stdout),
+            canary.marker,
+            adapter.extractReply(hermeticResult.stdout)
+          );
 
           console.error(`Control probe without --hermetic...`);
           const controlResult = await launchRunRequest(adapter, probe, canaryLaunch);

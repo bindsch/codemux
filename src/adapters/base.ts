@@ -187,6 +187,29 @@ export abstract class BaseAdapter {
   }
 
   /**
+   * The model's answer inside a run's stdout, for the hermetic check's
+   * exact-OK test. Harnesses whose stdout is a transcript around the reply
+   * (aider prints a banner, chat summaries and cost lines) override this to
+   * return the reply itself. The default is the whole output, and the
+   * marker scan always runs on the full stdout regardless: extraction may
+   * narrow what counts as "the answer", never what counts as a leak.
+   */
+  extractReply(_output: string): string {
+    return _output;
+  }
+
+  /**
+   * Everything a run recorded that the hermetic check's marker scan should
+   * cover. The default is stdout alone; a harness that records more than it
+   * prints (aider's chat history keeps reasoning the endpoint returned and
+   * stdout omits) overrides this to append it, so a code word hidden in a
+   * part the harness kept off-screen still fails the check.
+   */
+  replyScanSurface(_output: string): string {
+    return _output;
+  }
+
+  /**
    * Called before a SANDBOXED launch only, after beforeLaunch. Use for
    * preparation that only sandboxed processes need — e.g. materializing a
    * credential a sandbox cannot fetch itself. Unsandboxed launches must not

@@ -9,6 +9,22 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
+- Provider overrides: point one harness at a different model provider
+  through `CODEMUX_<AGENT>_PROVIDER_{BASE_URL,API_KEY,MODEL}` (blank values
+  count as unset; a half-configured override refuses the launch). The key is
+  delivered through the environment codemux itself provides or through a
+  private per-run file, never through an operator configuration file, so an
+  override survives `--hermetic`. Aider is the first consumer: the override
+  rides `OPENAI_API_BASE`/`OPENAI_API_KEY` with litellm's `openai/` model
+  prefix. Documented in the README ("Provider overrides").
+- Aider claims `--hermetic`, verified live on 2026-09-17 through the
+  provider override (GLM-5.3 via Z.AI): the two-probe check passed with the
+  planted code word reaching the control probe. The check's answer now comes
+  from a per-run chat-history file under `~/.aider/.codemux/` (aider's
+  stdout is a transcript; the history holds the bare reply and the model's
+  reasoning), with the code-word scan covering stdout plus the full history.
+  `--tools none` stays refused: aider has no tool set to remove.
+
 - Goose's `--tools none` mechanism is implemented but not yet claimed: it
   maps onto `--no-profile`, under which the session instantiates no
   extension at all — and every tool, the developer, skills and memory

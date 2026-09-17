@@ -56,14 +56,17 @@ describe("hermetic runs: aider", () => {
     expect(hermetic).toContain("--map-tokens");
   });
 
-  test("aider refuses --hermetic and --tools none until the live check runs", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "codemux-aider-refuse-"));
+  test("aider claims --hermetic (verified live) and refuses --tools none", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-aider-claim-"));
     try {
       mkdirSync(join(cwd, ".git"));
-      expect(adapter().capabilities().supportsHermetic ?? false).toBe(false);
-      expect(adapter().capabilities().supportsToolSelection ?? false).toBe(false);
+      // The live two-probe check passed on 2026-09-17 through a provider
+      // override (GLM-5.3 via Z.AI); --tools none still has nothing to map
+      // onto: aider has no tool set to remove.
+      expect(adapter().capabilities().supportsHermetic ?? false).toBe(true);
       expect(() => adapter().validateRunRequest({ agent: "aider", prompt: "p", cwd, hermetic: true }))
-        .toThrow("no verified hermetic mode");
+        .not.toThrow();
+      expect(adapter().capabilities().supportsToolSelection ?? false).toBe(false);
       expect(() => adapter().validateRunRequest({ agent: "aider", prompt: "p", cwd, tools: "none" }))
         .toThrow("cannot remove its built-in tools");
     } finally {

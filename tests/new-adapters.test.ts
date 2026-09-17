@@ -40,8 +40,10 @@ describe("AiderAdapter", () => {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-      // Implemented but unclaimed: the live check needs a provider API key.
-      supportsHermetic: false,
+      // Verified live on 2026-09-17 through a provider override
+      // (GLM-5.3 via Z.AI): `codemux check --hermetic -a aider` passed with
+      // a leaking control probe.
+      supportsHermetic: true,
     });
   });
 
@@ -73,6 +75,7 @@ describe("AiderAdapter", () => {
       "--no-suggest-shell-commands",
       "--no-check-update",
       "--no-show-release-notes",
+      "--no-show-model-warnings",
       "--disable-playwright",
       "--model",
       "openai/gpt-5.4",
@@ -113,6 +116,7 @@ describe("AiderAdapter", () => {
         "--no-suggest-shell-commands",
         "--no-check-update",
         "--no-show-release-notes",
+        "--no-show-model-warnings",
         "--disable-playwright",
         "--model",
         "anthropic/claude-sonnet-4",
