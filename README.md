@@ -139,9 +139,12 @@ kind of `${VAR}` key reference, Goose into the pure-environment
 `GOOSE_PROVIDER`/`OPENAI_HOST`/`OPENAI_BASE_PATH`/`OPENAI_API_KEY` group
 of its built-in OpenAI provider, and Qwen into the
 `OPENAI_API_KEY`/`OPENAI_BASE_URL`/`OPENAI_MODEL` group its headless
-setup documents; harnesses without a custom-provider
-mechanism (GitHub Copilot CLI, the Cursor agent CLI) document that limit
-instead.
+setup documents, and Cline into a private per-run `--data-dir` whose
+`settings/providers.json` carries the key and endpoint (the isolated
+state also forces the in-process backend; a plain run delegates to
+cline's hub daemon, which drops the file's base URL); harnesses without
+a custom-provider mechanism (GitHub Copilot CLI, the Cursor agent CLI)
+document that limit instead.
 
 ### `check` options
 

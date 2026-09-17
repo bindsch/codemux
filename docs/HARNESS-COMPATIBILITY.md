@@ -190,6 +190,30 @@ carries `--safe-mode` (docs/HERMETIC.md). `maxAudited` is unchanged:
 this rests on help-surface inspection, adapter unit tests and the live
 probes, not on the full upgrade procedure.
 
+Cline CLI 3.0.62 (last audited 3.0.48) was installed here (`npm install
+-g cline`; `npm uninstall -g cline` removes it) and exercised live on
+2026-09-17 through a provider override: a private data directory behind
+`--data-dir` carrying a one-provider `settings/providers.json` routed
+GLM-5.3 via Z.AI with no cline login, and the non-hermetic control probe
+plus plain capability probes ran against the model (docs/HERMETIC.md).
+The `--data-dir` flag matters beyond relocation: a plain one-shot run
+delegates its session to cline's long-lived hub daemon, whose provider
+resolution drops the settings file's base URL (the session config
+carries the key but not the endpoint — observed live when every run
+after the first sent the override's key to api.openai.com), while
+`--data-dir` sets `CLINE_SANDBOX=1` and forces the in-process backend
+that reads the file (`forceLocalBackend: isYoloMode ||
+config.sandbox === true`, apps/cli/src/runtime/run-agent.ts at 3.0.62).
+The `--plan`/`--auto-approve`/`--thinking` flags behind the mappings are
+unchanged between 3.0.48 and 3.0.62 in the help surface, and the
+`providers.json` settings shape plus the `--data-dir` isolated-state
+surface are now part of the exercised contract. Both capabilities stay
+refused, live-grounded: the control probe leaked the planted code word
+through the workspace channel and named the operator from the global
+`~/.agents/AGENTS.md` channel (docs/HERMETIC.md). `maxAudited` is
+unchanged: this rests on help-surface inspection, adapter unit tests
+and the live probes, not on the full upgrade procedure.
+
 Not installed here, grounded in the published package or source, which is
 newer than the audited ledger version in every case (the flags the
 mappings rely on were also spot-checked at the audited version where the
@@ -198,7 +222,6 @@ source was reachable):
 | Harness | Grounded in | Last audited | Audited-version spot check |
 |---------|-------------|--------------|---------------------------|
 | GitHub Copilot CLI | 1.0.85 (npm) | 1.0.77 | both mechanisms predate 1.0.77 |
-| Cline CLI | 3.0.62 (source) | 3.0.48 | not spot-checked; no mapping |
 
 ## Version enforcement
 

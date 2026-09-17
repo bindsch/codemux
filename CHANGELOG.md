@@ -111,6 +111,27 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   harness demonstrably ran against Z.AI with its tools intact;
   `--tools none` stays refused because no tool-removal flag survives
   safe mode.
+- Cline keeps refusing both capabilities, now verified live on
+  2026-09-17 at 3.0.62 (installed via npm) through a provider override
+  (GLM-5.3 via Z.AI): `CODEMUX_CLINE_PROVIDER_{BASE_URL,API_KEY,MODEL}`
+  writes a private per-run data directory passed as `--data-dir`, whose
+  `settings/providers.json` carries one `openai-compatible` entry — the
+  key rides that 0600 file (cline's runtime reads provider keys from
+  providers.json only; `apiKeyEnv` is a configure-UI hint and `-k/--key`
+  would put it in argv), never argv or an operator file. `--data-dir`
+  is also what makes the override work at all: a plain one-shot run
+  delegates its session to cline's long-lived hub daemon
+  (`forceLocalBackend: isYoloMode || config.sandbox === true` in
+  apps/cli/src/runtime/run-agent.ts), and the session config sent to the
+  daemon carries the key but not the settings file's base URL — observed
+  live when every run after the first sent the override's key to
+  api.openai.com — while `--data-dir` sets `CLINE_SANDBOX=1` and forces
+  the in-process backend that reads the file. The non-hermetic control
+  probe leaked the planted code word through the workspace AGENTS.md
+  channel and the model's reasoning also named the operator from the
+  global `~/.agents/AGENTS.md` channel, so both refusals stand on live
+  leaks; the plain read and shell probes produced the planted secret
+  and its transform, so the harness demonstrably ran against Z.AI.
 - Pi claims `--tools none`, verified live on 2026-09-17 through a
   provider override (GLM-5.3 via Z.AI): the override writes a private
   agent directory behind `PI_CODING_AGENT_DIR` — the only knob that

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AiderAdapter } from "../src/adapters/aider.js";
+import { ClineAdapter } from "../src/adapters/cline.js";
 import { DroidAdapter } from "../src/adapters/droid.js";
 import { GooseAdapter, gooseOpenAiEndpoint } from "../src/adapters/goose.js";
 import { KimiAdapter } from "../src/adapters/kimi.js";
@@ -916,5 +917,198 @@ describe("qwen provider override", () => {
       OPENAI_BASE_URL: ZAI_QWEN.CODEMUX_QWEN_PROVIDER_BASE_URL,
       OPENAI_MODEL: "glm-5.3",
     });
+  });
+});
+
+const ZAI_CLINE = {
+  CODEMUX_CLINE_PROVIDER_BASE_URL: "https://api.z.ai/api/coding/paas/v4",
+  CODEMUX_CLINE_PROVIDER_API_KEY: "test-key-do-not-print",
+  CODEMUX_CLINE_PROVIDER_MODEL: "glm-5.3",
+};
+
+describe("cline provider override", () => {
+  const scratch: string[] = [];
+  const adapters: ClineAdapter[] = [];
+  afterEach(() => {
+    for (const adapter of adapters.splice(0)) adapter.disposeProviderDataDir();
+    while (scratch.length > 0) {
+      const dir = scratch.pop()!;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  const cwdOf = (): string => {
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-cline-override-"));
+    mkdirSync(join(cwd, ".git"));
+    scratch.push(cwd);
+    return cwd;
+  };
+  const adapterOf = (env: NodeJS.ProcessEnv = {}): ClineAdapter => {
+    const home = mkdtempSync(join(tmpdir(), "codemux-cline-home-"));
+    scratch.push(home);
+    const adapter = new ClineAdapter(env, home);
+    adapters.push(adapter);
+    return adapter;
+  };
+  const run = (env: NodeJS.ProcessEnv, request: Partial<RunRequest> = {}): string[] =>
+    adapterOf(env).buildRunCommand({
+      agent: "cline",
+      prompt: "p",
+      cwd: cwdOf(),
+      ...request,
+    } as RunRequest);
+
+  test("without an override nothing changes", () => {
+    const adapter = adapterOf();
+    expect(adapter.getRunEnv({ agent: "cline", prompt: "p" } as RunRequest)).toEqual({});
+    expect(run({})).toEqual(["cline", "--", "p"]);
+    // An operator model still rides the native flag.
+    expect(run({}, { model: "anthropic/claude-sonnet-5" }))
+      .toEqual(["cline", "--model", "anthropic/claude-sonnet-5", "--", "p"]);
+  });
+
+  test("the override rides a private data directory and adds no environment", () => {
+    const adapter = adapterOf(ZAI_CLINE);
+    const request = { agent: "cline" as const, prompt: "p", cwd: cwdOf() };
+    adapter.prepareRun(request as RunRequest);
+    const cmd = adapter.buildRunCommand(request as RunRequest);
+    const dataDir = cmd[cmd.indexOf("--data-dir") + 1]!;
+    expect(dataDir).toContain(
+      join(".cline", ".codemux", `provider-${process.pid}-`)
+    );
+    // The settings file sits where cline's isolated-state mode resolves
+    // it (<data>/settings/providers.json), so no env var is involved.
+    expect(adapter.getRunEnv(request as RunRequest)).toEqual({});
+    const settings = JSON.parse(
+      readFileSync(join(dataDir, "settings", "providers.json"), "utf8")
+    );
+    // The openai-compatible entry carries the override's endpoint and
+    // key: cline's runtime reads the key from this file only, so the
+    // private 0600 file is where the contract lets it live.
+    expect(settings).toEqual({
+      version: 1,
+      lastUsedProvider: "openai-compatible",
+      providers: {
+        "openai-compatible": {
+          settings: {
+            provider: "openai-compatible",
+            apiKey: ZAI_CLINE.CODEMUX_CLINE_PROVIDER_API_KEY,
+            model: "glm-5.3",
+            baseUrl: ZAI_CLINE.CODEMUX_CLINE_PROVIDER_BASE_URL,
+          },
+          updatedAt: settings.providers["openai-compatible"].updatedAt,
+          tokenSource: "manual",
+        },
+      },
+    });
+    expect(statSync(join(dataDir, "settings", "providers.json")).mode & 0o777).toBe(0o600);
+  });
+
+  test("the command names the data directory, provider and model, never the key", () => {
+    const adapter = adapterOf(ZAI_CLINE);
+    const request = { agent: "cline" as const, prompt: "p", cwd: cwdOf() };
+    adapter.prepareRun(request as RunRequest);
+    const cmd = adapter.buildRunCommand(request as RunRequest);
+    expect(cmd[0]).toBe("cline");
+    expect(cmd[1]).toBe("--data-dir");
+    expect(cmd.slice(cmd.indexOf("--data-dir") + 2))
+      .toEqual(["--provider", "openai-compatible", "--model", "glm-5.3", "--", "p"]);
+    expect(cmd.join(" ")).not.toContain(ZAI_CLINE.CODEMUX_CLINE_PROVIDER_API_KEY);
+  });
+
+  test("an explicit --model wins as the routed model id", () => {
+    const adapter = adapterOf(ZAI_CLINE);
+    const request = { agent: "cline" as const, prompt: "p", cwd: cwdOf(), model: "glm-5.3-flash" };
+    adapter.prepareRun(request as RunRequest);
+    const cmd = adapter.buildRunCommand(request as RunRequest);
+    const dataDir = cmd[cmd.indexOf("--data-dir") + 1]!;
+    expect(cmd[cmd.indexOf("--model") + 1]).toBe("glm-5.3-flash");
+    expect(JSON.parse(readFileSync(join(dataDir, "settings", "providers.json"), "utf8"))
+      .providers["openai-compatible"].settings.model).toBe("glm-5.3-flash");
+  });
+
+  test("an unprepared override fails closed before any launch", () => {
+    const adapter = adapterOf(ZAI_CLINE);
+    expect(() => adapter.buildRunCommand({ agent: "cline", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toThrow("cline provider data directory was not prepared before launch");
+  });
+
+  test("dispose removes every prepared directory", () => {
+    const adapter = adapterOf(ZAI_CLINE);
+    const request = { agent: "cline" as const, prompt: "p", cwd: cwdOf() };
+    adapter.prepareRun(request);
+    const first = adapter.buildRunCommand(request as RunRequest);
+    const firstDir = first[first.indexOf("--data-dir") + 1]!;
+    adapter.prepareRun(request);
+    const second = adapter.buildRunCommand(request as RunRequest);
+    const secondDir = second[second.indexOf("--data-dir") + 1]!;
+    expect(secondDir).not.toBe(firstDir);
+    // The earlier directory stays until exit: an earlier run may still
+    // read it.
+    expect(statSync(firstDir).isDirectory()).toBe(true);
+    adapter.disposeProviderDataDir();
+    expect(() => statSync(firstDir)).toThrow();
+    expect(() => statSync(secondDir)).toThrow();
+  });
+
+  test("a keyless override fails validation with the missing name", () => {
+    const adapter = adapterOf({
+      CODEMUX_CLINE_PROVIDER_BASE_URL: ZAI_CLINE.CODEMUX_CLINE_PROVIDER_BASE_URL,
+      CODEMUX_CLINE_PROVIDER_MODEL: "glm-5.3",
+    });
+    expect(() => adapter.validateRunRequest({ agent: "cline", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toThrow("provider override is missing CODEMUX_CLINE_PROVIDER_API_KEY");
+  });
+
+  test("an override without any model fails validation", () => {
+    const adapter = adapterOf({
+      CODEMUX_CLINE_PROVIDER_BASE_URL: ZAI_CLINE.CODEMUX_CLINE_PROVIDER_BASE_URL,
+      CODEMUX_CLINE_PROVIDER_API_KEY: ZAI_CLINE.CODEMUX_CLINE_PROVIDER_API_KEY,
+    });
+    expect(() => adapter.validateRunRequest({ agent: "cline", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toThrow("cline needs a model for the provider override");
+  });
+
+  test("the tui refuses the override; without one it is unchanged", () => {
+    const plain = adapterOf();
+    expect(() => plain.validateTuiRequest(undefined, cwdOf())).not.toThrow();
+    expect(plain.buildTuiCommand("glm-5.3", "high"))
+      .toEqual(["cline", "--tui", "--model", "glm-5.3", "--auto-approve", "true"]);
+    const adapter = adapterOf(ZAI_CLINE);
+    expect(() => adapter.validateTuiRequest(undefined, cwdOf()))
+      .toThrow("supports headless runs only");
+  });
+
+  test("a passed-through CLINE_DIR relocates the private directory", () => {
+    const env: NodeJS.ProcessEnv = { ...ZAI_CLINE };
+    const passed = mkdtempSync(join(tmpdir(), "codemux-cline-passed-"));
+    scratch.push(passed);
+    const home = mkdtempSync(join(tmpdir(), "codemux-cline-home-"));
+    scratch.push(home);
+    const request = {
+      agent: "cline" as const,
+      prompt: "p",
+      cwd: cwdOf(),
+      passthroughEnv: ["CLINE_DIR"],
+    };
+    const dropped = new ClineAdapter(env, home);
+    adapters.push(dropped);
+    dropped.prepareRun(request as RunRequest);
+    const droppedCmd = dropped.buildRunCommand(request as RunRequest);
+    expect(droppedCmd[droppedCmd.indexOf("--data-dir") + 1]!)
+      .toContain(join(home, ".cline", ".codemux"));
+
+    env.CLINE_DIR = join(passed, "cline");
+    const honoring = new ClineAdapter(env, home);
+    adapters.push(honoring);
+    honoring.prepareRun(request as RunRequest);
+    const honoringCmd = honoring.buildRunCommand(request as RunRequest);
+    expect(honoringCmd[honoringCmd.indexOf("--data-dir") + 1]!)
+      .toContain(join(passed, "cline", ".codemux", `provider-${process.pid}-`));
+
+    env.CLINE_DIR = "relative/path";
+    const relative = new ClineAdapter(env, home);
+    adapters.push(relative);
+    expect(() => relative.prepareRun(request as RunRequest))
+      .toThrow("passed-through CLINE_DIR must be an absolute path");
   });
 });

@@ -156,6 +156,9 @@ describe("ClineAdapter", () => {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["none", "low", "medium", "high", "xhigh"],
+      // Both refusals verified live at 3.0.62; see docs/HERMETIC.md.
+      supportsHermetic: false,
+      supportsToolSelection: false,
     });
   });
 
