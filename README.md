@@ -1,6 +1,6 @@
 # codemux
 
-> **Beta software (v0.5.1).** `codemux` is under active development. Expect behavior changes as adapters and sandbox policy continue to harden.
+> **Beta software (v0.5.2).** `codemux` is under active development. Expect behavior changes as adapters and sandbox policy continue to harden.
 
 `codemux` is a unified CLI for AI coding agents. It gives one command surface
 for multiple harnesses, normalizes autonomy/effort semantics, and can route
@@ -19,8 +19,8 @@ codemux run -p "summarize this repository"
 # 3) run with explicit agent/model/autonomy
 codemux run -a codex -m gpt5-codex --auto medium -p "refactor auth module"
 
-# 4) sandbox execution through scode
-codemux run -a claude -s -p "audit dependencies"
+# 4) opt out of the default scode sandbox (high autonomy only)
+codemux run -a claude --no-sandbox --auto high -p "audit dependencies"
 
 # 5) inspect wiring and effective sandbox commands
 codemux verify --show-scode
@@ -88,7 +88,9 @@ codemux [command] [options]
 | `--timeout <seconds>` | Kill a hung non-interactive run and its whole process tree (a descendant whose parent chain broke before the first snapshot can still escape; default: `1800`, maximum: `86400`) |
 | `--pass-env <names>` | Explicitly pass comma-separated parent environment names |
 | `--enable-playwright-mcp` | Enable a local Playwright MCP binary inside `--sandbox` |
-| `-s, --sandbox` | Execute via `scode` |
+| `--hermetic` | Load none of the operator's customizations (instruction files, skills, plugins, hooks, MCP servers); the login still works. Claude, Z.AI and Codex; others are refused. See [docs/HERMETIC.md](docs/HERMETIC.md) |
+| `--tools <selection>` | Built-in tools the harness exposes: `default` or `none`. Independent of `--hermetic`; Codex takes `none` only with `--auto read-only` |
+| `-s, --sandbox` | Execute via `scode` (default: on; `--no-sandbox` opts out, and autonomy below `high` then refuses) |
 | `--sandbox-trust <level>` | `scode` trust override (`trusted`, `standard`, `untrusted`) |
 | `--sandbox-no-net` | Add `--no-net` to `scode` |
 | `--sandbox-scrub-env` | Add `--scrub-env` to `scode` |
@@ -99,17 +101,21 @@ codemux [command] [options]
 Use `--file` instead of `--prompt` for sensitive input so the Codemux command
 line itself does not expose the prompt through process inspection. Some upstream
 harnesses only accept their final task as an argument; Codemux cannot remove
-that upstream limitation for Aider, Cline, Copilot, Gemini, Goose, or
-legacy `qwen-coder`. Codemux rejects argv prompts above 32 KiB; use an
-stdin-capable harness for larger prompts.
+that upstream limitation for Aider, Cline, Copilot, Gemini, Goose, Kimi,
+OpenHands, or legacy `qwen-coder`. Codemux rejects argv prompts above 32 KiB;
+use an stdin-capable harness for larger prompts.
 
 ### `check` options
 
 `codemux check` makes a real request to the selected provider and requires that
 harness to be installed and authenticated. It can consume quota or incur
 charges. Its `--timeout` defaults to 60 seconds. Harnesses whose safe mode needs
-an outer boundary (including Cursor and Gemini read-only) can be probed with
-`check --sandbox`. Use `--help` for the full option list.
+an outer boundary (including Cursor and Gemini read-only) are probed under
+the default sandbox. `check --hermetic` proves a harness ignores its
+customizations: it plants instruction files with a code word in a scratch
+directory and probes twice, once hermetically (the model must answer `OK`)
+and once as a control (the planted code word must reach the model). Two
+requests. Use `--help` for the full option list.
 
 ### `tui` options
 
@@ -133,6 +139,9 @@ codemux run -a droid -m sonnet --auto high --effort high -p "fix flaky tests"
 
 # read prompt from file
 codemux run -a codex -f prompt.md
+
+# reproducible: no operator customizations, no built-in tools
+codemux run -a codex --hermetic --tools none -f prompt.md
 
 # interactive
 codemux tui -a claude
@@ -159,7 +168,9 @@ codemux verify --show-scode --sandbox-trust trusted
 | `droid` | `droid` | yes | yes | yes |
 | `gemini` | `gemini` | yes | yes | no |
 | `goose` | `goose` | yes | yes | no |
+| `kimi` | `kimi` | yes | yes | no |
 | `opencode` | `opencode` | yes | yes | headless |
+| `openhands` | `openhands` | yes (`--override-with-envs`) | yes | no |
 | `pi` | `pi` | yes | yes | yes |
 | `qwen` | `qwen` (`qwen-coder` fallback is sandbox-only) | current CLI only | yes | no |
 | `zai` | `claude` (z.ai proxy) | yes | yes | no |
@@ -201,6 +212,8 @@ alias that has no mapping for the selected agent fails with a descriptive error.
 | `opencode` | `--agent plan` + required `scode --ro` | `--agent build` | `--agent build` | `--agent build --auto` |
 | `goose` | `GOOSE_MODE=chat` | `GOOSE_MODE=approve` | `GOOSE_MODE=smart_approve` | `GOOSE_MODE=auto` |
 | `gemini` | `--approval-mode plan` + required `scode --ro` | `--approval-mode default` | `--approval-mode auto_edit` | `--approval-mode yolo` |
+| `kimi` | `--plan` (TUI); headless rests on `scode --ro` | default prompts (TUI); headless rests on scode | `--yolo` (TUI); headless rests on scode | `--auto` (TUI) |
+| `openhands` | `--headless` auto-approves; rests on `scode --ro` | rests on scode | rests on scode | `--headless` |
 | `qwen` | `--approval-mode plan` | `--approval-mode default` | `--approval-mode auto` | `--approval-mode yolo` |
 | `pi` | extensions off + read tools | extensions off + read/edit/write tools | default tools | default tools |
 | `zai` | `--permission-mode plan` | `--permission-mode manual` | `--permission-mode acceptEdits` + `--allowedTools Edit(//<launch dir>/**)` (headless) | `--dangerously-skip-permissions` + `--allowedTools Edit Write NotebookEdit Bash` (headless) |

@@ -99,6 +99,8 @@ export class ClaudeAdapter extends BaseAdapter {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["low", "medium", "high", "xhigh", "max"],
+      supportsHermetic: true,
+      supportsToolSelection: true,
     };
   }
 
@@ -113,14 +115,40 @@ export class ClaudeAdapter extends BaseAdapter {
   }
 
   buildRunCommand(request: RunRequest): string[] {
-    const cmd = [
-      "claude",
-      "-p",
+    const cmd = ["claude", "-p"];
+    if (request.hermetic) {
+      // --safe-mode starts with every customization disabled: CLAUDE.md
+      // (user and project), skills, plugins, hooks, MCP servers, custom
+      // commands and agents. Auth, model selection, built-in tools and
+      // permissions work normally. --bare would go further but never reads
+      // the OAuth login, so a subscription run would silently bill an API
+      // key instead.
+      cmd.push("--safe-mode");
+    }
+    // Kept under --safe-mode too: it costs nothing and settles whether a
+    // repository's own settings file could still reach the run. Project
+    // instruction files load only with the project source, so a request
+    // that names instruction directories (the hermetic check's control)
+    // enables it; under --safe-mode that is exactly the channel being
+    // proven closed.
+    // The project source is enabled only when the working directory is one
+    // of the named instruction directories, so a repository's own settings
+    // file can never ride in on an unrelated instruction directory.
+    const instructionDirs = request.instructionDirs ?? [];
+    const cwdIsInstructionDir = instructionDirs.includes(request.cwd ?? process.cwd());
+    cmd.push(
       "--setting-sources",
-      "user",
+      cwdIsInstructionDir ? "user,project" : "user",
       "--strict-mcp-config",
-      "--no-session-persistence",
-    ];
+      "--no-session-persistence"
+    );
+    if (request.tools === "none") {
+      // An empty --tools list removes every built-in tool definition.
+      cmd.push("--tools", "");
+    }
+    for (const dir of instructionDirs) {
+      cmd.push("--add-dir", dir);
+    }
 
     cmd.push(...getPlaywrightSandboxMcpArgs(request.sandboxed, {
       enabled: request.enablePlaywrightMcp,

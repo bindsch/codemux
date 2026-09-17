@@ -188,6 +188,8 @@ export function registerInfoCommands(
         if (caps.supportsModel) features.push("model");
         if (caps.supportsAutonomy) features.push("autonomy");
         if (caps.supportsEffort) features.push("effort");
+        if (caps.supportsHermetic) features.push("hermetic");
+        if (caps.supportsToolSelection) features.push("tools");
         const featureText = features.length > 0 ? ` [${features.join(", ")}]` : "";
         console.log(`  ${status} ${adapter.id}${featureText}`);
       }
@@ -227,6 +229,8 @@ export function registerInfoCommands(
           if (caps.supportsEffort) {
             console.log(`  Effort levels: ${caps.effortLevels.join(", ")}`);
           }
+          console.log(`  Hermetic runs: ${caps.supportsHermetic ? "yes" : "no"}`);
+          console.log(`  Tool selection: ${caps.supportsToolSelection ? "yes" : "no"}`);
           for (const issue of configurationIssues) console.log(`  Configuration: ${issue}`);
         } else {
           missing++;

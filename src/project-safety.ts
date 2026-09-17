@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -95,6 +95,15 @@ const CLINE_EXECUTABLE_CONFIG_DIRECTORIES = [
 const CODEX_EXECUTABLE_CONFIG_FILES = [join(".codex", "config.toml")] as const;
 const CODEX_EXECUTABLE_CONFIG_DIRECTORIES = [join(".codex", "rules")] as const;
 
+// Codex discovers skills from `.agents/skills` in every directory between the
+// project root and the working directory, and from the project config folder.
+// A hermetic run redirects HOME and CODEX_HOME, which covers the user-level
+// roots; these repository roots are refused instead of silently included.
+const CODEX_PROJECT_SKILL_DIRECTORIES = [
+  join(".agents", "skills"),
+  join(".codex", "skills"),
+] as const;
+
 const DROID_EXECUTABLE_CONFIG_FILES = [
   join(".factory", "hooks.json"),
   join(".factory", "mcp.json"),
@@ -121,6 +130,14 @@ const GOOSE_EXECUTABLE_CONFIG_FILES = [
   join(".goose", "config.yml"),
 ] as const;
 
+function realpathOr(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
 function containsEntries(path: string): boolean {
   try {
     return readdirSync(path).length > 0;
@@ -133,33 +150,45 @@ function assertNoProjectExecutionConfig(
   cwd: string,
   tool: string,
   files: readonly string[],
-  directories: readonly string[]
+  directories: readonly string[],
+  reason = "refuses repository executable configuration",
+  inspectHome = false,
+  userHomeDirectory = homedir()
 ): void {
-  let directory = cwd;
-  const userHome = homedir();
+  // Both ends of the walk are compared as real paths: the working directory
+  // arrives canonicalized, and a HOME under a symlinked temp root (macOS
+  // /var -> /private/var) must still be recognized as the home.
+  let directory = realpathOr(cwd);
+  const userHome = realpathOr(userHomeDirectory);
+  cwd = directory;
   while (true) {
     // Harness user configuration is trusted input, not repository input. A
     // non-Git working directory below $HOME must never make the walker treat
-    // ~/.<harness> as project configuration.
-    if (directory === userHome) return;
+    // ~/.<harness> as project configuration. Repository skills are the
+    // exception: when $HOME is the working directory, or is itself a Git
+    // root reached from below without another one in between, Codex treats
+    // $HOME as the project root and finds ~/.agents/skills there, so that
+    // walk inspects $HOME in those two cases and stops there otherwise.
+    if (
+      directory === userHome &&
+      !(inspectHome && (directory === cwd || existsSync(join(directory, ".git"))))
+    ) {
+      return;
+    }
     for (const relativePath of files) {
       const path = join(directory, relativePath);
       if (existsSync(path)) {
-        throw new Error(
-          `${tool} refuses repository executable configuration: ${path}`
-        );
+        throw new Error(`${tool} ${reason}: ${path}`);
       }
     }
     for (const relativePath of directories) {
       const path = join(directory, relativePath);
       if (existsSync(path) && containsEntries(path)) {
-        throw new Error(
-          `${tool} refuses repository executable configuration: ${path}`
-        );
+        throw new Error(`${tool} ${reason}: ${path}`);
       }
     }
 
-    if (existsSync(join(directory, ".git"))) return;
+    if (directory === userHome || existsSync(join(directory, ".git"))) return;
     const parent = dirname(directory);
     if (parent === directory) return;
     directory = parent;
@@ -235,6 +264,23 @@ export function assertNoCodexProjectExecutionConfig(cwd: string): void {
     "Codex",
     CODEX_EXECUTABLE_CONFIG_FILES,
     CODEX_EXECUTABLE_CONFIG_DIRECTORIES
+  );
+}
+
+/** A hermetic Codex run must not pick up skills the repository ships.
+ * `userHomeDirectory` is a test seam; Bun's homedir() ignores $HOME. */
+export function assertNoCodexProjectSkills(
+  cwd: string,
+  userHomeDirectory = homedir()
+): void {
+  assertNoProjectExecutionConfig(
+    cwd,
+    "Codex",
+    [],
+    CODEX_PROJECT_SKILL_DIRECTORIES,
+    "refuses repository skills in a hermetic run",
+    true,
+    userHomeDirectory
   );
 }
 

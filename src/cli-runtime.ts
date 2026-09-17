@@ -1,7 +1,10 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { guardedWait, runCapturedCommand } from "./process-runner.js";
-import { resolveTrustedExecutable } from "./executable-security.js";
+import {
+  resolveTrustedCommand,
+  resolveTrustedExecutable,
+} from "./executable-security.js";
 import { assertSupportedHarnessVersion } from "./harness-compatibility.js";
 import type { SandboxPolicyOverrides } from "./sandbox-policy.js";
 import {
@@ -14,13 +17,16 @@ import {
 import {
   AUTONOMY_LEVELS,
   REASONING_EFFORT_LEVELS,
+  TOOL_SELECTIONS,
   isAutonomyLevel,
   isReasoningEffort,
+  isToolSelection,
   type AdapterCapabilities,
   type AgentId,
   type AutonomyLevel,
   type ReasoningEffort,
   type RunResult,
+  type ToolSelection,
 } from "./types.js";
 import {
   MAX_PASSTHROUGH_ENV_NAMES,
@@ -166,6 +172,14 @@ export function parseEffortOption(value: string | undefined): ReasoningEffort | 
   return value;
 }
 
+export function parseToolsOption(value: string | undefined): ToolSelection | undefined {
+  if (value === undefined) return undefined;
+  if (!isToolSelection(value)) {
+    failInvalidOption("--tools", value, TOOL_SELECTIONS);
+  }
+  return value;
+}
+
 export function parseTimeoutOption(value: string): number {
   const seconds = Number(value);
   if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 86_400) {
@@ -307,16 +321,12 @@ export async function runSandboxed(
   const scode = resolveScodeExecutable(workdir);
   if (!scode) throw new Error("scode is not installed");
   await assertCompatibleScode(scode, workdir, extraEnv);
-  const requestedBinary = command[0];
-  if (!requestedBinary) throw new Error("sandbox command cannot be empty");
-  const binary = Bun.which(requestedBinary, {
-    PATH: extraEnv?.PATH ?? process.env.PATH,
-  });
-  if (!binary) throw new Error(`sandbox command '${requestedBinary}' was not found`);
-  const resolvedCommand = [
-    resolveTrustedExecutable(binary, requestedBinary, workdir),
-    ...command.slice(1),
-  ];
+  const resolvedCommand = resolveTrustedCommand(
+    command,
+    "sandbox command",
+    workdir,
+    extraEnv?.PATH ?? process.env.PATH
+  );
   const scodeCmd = buildScodeCommand(
     resolvedCommand,
     workdir,
@@ -352,16 +362,12 @@ export async function runSandboxedWithStdin(
   const scode = resolveScodeExecutable(workdir);
   if (!scode) throw new Error("scode is not installed");
   await assertCompatibleScode(scode, workdir, extraEnv);
-  const requestedBinary = command[0];
-  if (!requestedBinary) throw new Error("sandbox command cannot be empty");
-  const binary = Bun.which(requestedBinary, {
-    PATH: extraEnv?.PATH ?? process.env.PATH,
-  });
-  if (!binary) throw new Error(`sandbox command '${requestedBinary}' was not found`);
-  const resolvedCommand = [
-    resolveTrustedExecutable(binary, requestedBinary, workdir),
-    ...command.slice(1),
-  ];
+  const resolvedCommand = resolveTrustedCommand(
+    command,
+    "sandbox command",
+    workdir,
+    extraEnv?.PATH ?? process.env.PATH
+  );
   const scodeCmd = buildScodeCommand(
     resolvedCommand,
     workdir,

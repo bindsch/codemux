@@ -86,7 +86,9 @@ bun run scripts/check-scode-version.ts
 - `usage --help` is static. A real `usage` query starts the optional `usagemux`
   integration and can access provider APIs and local credential stores.
 - `check` makes a real provider/model request. It requires configured
-  credentials and may consume quota or incur charges.
+  credentials and may consume quota or incur charges. `check --hermetic`
+  makes two (see `docs/HERMETIC.md`); run it for every harness that claims
+  `--hermetic` before a release.
 - `run` and `tui` may require installed external harness binaries for end-to-end behavior.
 - Installed harness contract checks are opt-in so local tools, network state, or
   auto-updaters cannot make the release gate nondeterministic.

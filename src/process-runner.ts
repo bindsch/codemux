@@ -22,6 +22,8 @@ const FORCE_KILL_DELAY_MS = 2_000;
 const PIPE_GIVE_UP_MS = 1_000;
 const SIGNAL_BURST_WINDOW_MS = 1_000;
 const TIMEOUT_EXIT_CODE = 124;
+// 128 + SIGTERM: the child tree was terminated after a signal to codemux.
+const SIGNAL_EXIT_CODE = 143;
 export const OUTPUT_LIMIT_EXIT_CODE = 125;
 
 class OutputLimitError extends Error {
@@ -34,7 +36,7 @@ class OutputLimitError extends Error {
 }
 
 /** Read a stream to its end, or until `giveUp` resolves, in which case the
- * read is cancelled and what arrived so far is returned. */
+ * read is canceled and what arrived so far is returned. */
 async function readBounded(
   stream: ReadableStream<Uint8Array>,
   streamName: "stdout" | "stderr",
@@ -49,7 +51,7 @@ async function readBounded(
   // The give-up reaction is registered ONCE, here — never raced against
   // each read. A chatty command emits thousands of small chunks, and a
   // pending promise per chunk pins all of them in memory until the capture
-  // ends. Cancelling the reader resolves the pending read as done, which
+  // ends. Canceling the reader resolves the pending read as done, which
   // is what ends the loop on a timeout.
   giveUp.then(() => {
     gaveUp = true;
@@ -192,6 +194,14 @@ export interface CapturedCommandOptions {
   timeoutMs?: number;
 }
 
+// Captured commands in flight. While one runs, its own signal handlers own
+// the shutdown (terminate the tree, then exit); outside that window, other
+// exit-time cleanup (a hermetic home) has to handle a signal itself.
+let activeCapturedCommands = 0;
+export function hasActiveCapturedCommand(): boolean {
+  return activeCapturedCommands > 0;
+}
+
 export async function runCapturedCommand(
   command: string[],
   options: CapturedCommandOptions
@@ -224,10 +234,35 @@ export async function runCapturedCommand(
   proc.stdin.end();
 
   const target = createTerminationTarget(proc, useProcessGroup);
+  // Counted only once everything that can throw synchronously is done, so
+  // the decrement in the finally block below always balances it.
+  activeCapturedCommands++;
   let timedOut = false;
   let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
   let forceKillDeadline = 0;
   let giveUpTimer: ReturnType<typeof setTimeout> | null = null;
+  // The child runs in its own process group, so a Ctrl-C or SIGTERM aimed
+  // at codemux would end this process and leave the agent running with
+  // its request in flight. Forward the signal to the whole tree instead
+  // and let the run complete normally, so exit handlers (a hermetic home's
+  // cleanup) still see the child gone.
+  let signaled = false;
+  const onSignal = (): void => {
+    if (signaled) return;
+    signaled = true;
+    // One SIGTERM now (forceKillAfterGrace sends it), SIGKILL after the
+    // grace period, and the same bounded pipe abandonment as a timeout, so
+    // a descendant that keeps the pipes open cannot stall the stop.
+    forceKillTimer ??= forceKillAfterGrace(target, "tree");
+    forceKillDeadline = performance.now() + FORCE_KILL_DELAY_MS;
+    giveUpTimer ??= setTimeout(() => {
+      pipesAbandoned = true;
+      giveUpReads();
+    }, FORCE_KILL_DELAY_MS + PIPE_GIVE_UP_MS);
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  process.on("SIGHUP", onSignal);
   let pipesAbandoned = false;
   let giveUpReads: () => void = () => {};
   const giveUp = new Promise<void>((resolve) => {
@@ -295,9 +330,11 @@ export async function runCapturedCommand(
       stdout: stdoutResult.value ?? "",
       stderr: timedOut
         ? `${stderrResult.value ?? ""}Error: agent timed out after ${timeoutMs}ms\n${abandonedNote}`
-        : stderrResult.value ?? "",
-      exitCode: timedOut ? TIMEOUT_EXIT_CODE : exitCode,
-      success: !timedOut && exitCode === 0,
+        : signaled
+          ? `${stderrResult.value ?? ""}Error: agent interrupted by a signal\n`
+          : stderrResult.value ?? "",
+      exitCode: timedOut ? TIMEOUT_EXIT_CODE : signaled ? SIGNAL_EXIT_CODE : exitCode,
+      success: !timedOut && !signaled && exitCode === 0,
     };
   } finally {
     clearTimeout(timeoutTimer);
@@ -309,9 +346,23 @@ export async function runCapturedCommand(
     // they were promised, then kill the tree unconditionally: the group
     // SIGKILL reaches a member the pid walk never saw (or could not see), as
     // it did in 0.5.0, so none can escape the timeout.
-    if (timedOut) {
+    if (timedOut || signaled) {
       await waitForDescendantsGrace(target, forceKillDeadline);
       signalProcess(target, "SIGKILL", "tree");
+    }
+    // Only now: a second signal during the descendants' grace period must
+    // not end codemux before the SIGKILL reaches them.
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+    process.off("SIGHUP", onSignal);
+    activeCapturedCommands--;
+    if (signaled) {
+      // The signal meant "stop codemux", not "skip this step": a version
+      // probe interrupted here must not fall through to the launch. The
+      // tree is dead, so the exit handlers (a hermetic home's cleanup)
+      // run against a finished run.
+      console.error("codemux: interrupted; the agent's process tree was terminated");
+      process.exit(SIGNAL_EXIT_CODE);
     }
   }
 }

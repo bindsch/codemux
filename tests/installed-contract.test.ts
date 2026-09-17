@@ -58,6 +58,7 @@ describe("installed harness contracts", () => {
         "--strict-mcp-config",
         "--no-session-persistence",
         "--safe-mode",
+        "--tools",
         "manual",
         "acceptEdits",
         "plan",
@@ -71,7 +72,7 @@ describe("installed harness contracts", () => {
     {
       binary: "codex",
       args: ["--help"],
-      required: ["--ask-for-approval"],
+      required: ["--ask-for-approval", "--disable <FEATURE>", "--config <key=value>"],
     },
     {
       binary: "codex",
@@ -80,6 +81,7 @@ describe("installed harness contracts", () => {
         "--skip-git-repo-check",
         "--ephemeral",
         "--ignore-rules",
+        "--ignore-user-config",
         "--dangerously-bypass-approvals-and-sandbox",
         "--sandbox",
         "--model",

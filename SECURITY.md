@@ -7,8 +7,9 @@ sandbox changes as security-sensitive.
 ## Trust boundaries
 
 - Normalized autonomy is a best-effort translation of upstream CLI controls,
-  not a security boundary. Use `--sandbox` whenever the task or repository is
-  untrusted.
+  not a security boundary. The `scode` sandbox is on by default; use
+  `--sandbox-trust untrusted` for hostile tasks or repositories, and
+  `--no-sandbox` only for `high` autonomy you have decided to grant.
 - `scode` is an external dependency and owns the sandbox boundary. Audit and
   update it independently; Codemux validates its executable and refuses
   repository-local policy files but cannot repair defects in the installed
