@@ -89,6 +89,10 @@ Use this checklist before tagging a new `codemux` release.
   ```bash
   bun run test:contracts
   ```
+- [ ] Every harness whose adapter claims `supportsHermetic` passes
+  `./bin/codemux check --hermetic -a <agent>` with a leaking control probe
+  (two real requests each; see `docs/HERMETIC.md`), and the per-harness
+  table there records the versions checked.
 - [ ] If `scode` is installed, the release gate verifies it is version 0.2.0
   or newer. `codemux doctor` reports the same compatibility status.
 - [ ] Every row in `docs/HARNESS-COMPATIBILITY.md` has been checked against the

@@ -107,11 +107,18 @@ export interface EffectiveScodeCommand {
   command: string[];
 }
 
+// The one legitimate empty argument is the value of `--tools` (an empty
+// list removes Claude's tools); any other empty argument is a wiring bug.
 function commandIsValid(cmd: string[]): boolean {
   return (
     Array.isArray(cmd) &&
     cmd.length > 0 &&
-    cmd.every((part) => typeof part === "string" && part.length > 0)
+    typeof cmd[0] === "string" &&
+    cmd[0].length > 0 &&
+    cmd.every(
+      (part, index) =>
+        typeof part === "string" && (part.length > 0 || cmd[index - 1] === "--tools")
+    )
   );
 }
 
@@ -190,6 +197,24 @@ function verifyRunBuilds(agentId: AgentId, issues: string[]): { ok: boolean; war
         const modelCmd = adapter.buildRunCommand(modelRequest);
         if (!commandIsValid(modelCmd)) {
           throw new Error("invalid run command with model");
+        }
+      }
+
+      if (caps.supportsHermetic) {
+        // Static only: the private home and the live canary belong to
+        // `check --hermetic`, so nothing here calls getRunEnv.
+        const hermeticRequest: RunRequest = {
+          agent: agentId,
+          prompt: "verify",
+          autonomy: "read-only",
+          cwd: verificationCwd(),
+          sandboxed: true,
+          hermetic: true,
+          tools: caps.supportsToolSelection ? "none" : "default",
+        };
+        adapter.validateRunRequest(hermeticRequest);
+        if (!commandIsValid(adapter.buildRunCommand(hermeticRequest))) {
+          throw new Error("invalid hermetic run command");
         }
       }
 

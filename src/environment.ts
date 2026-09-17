@@ -15,7 +15,8 @@ const ALLOWED_CREDENTIAL_ENV: Record<AgentId, readonly string[]> = {
   ],
   claude: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
   cline: [],
-  codex: ["OPENAI_API_KEY"],
+  // 0.154 reads CODEX_API_KEY; OPENAI_API_KEY stays for older releases.
+  codex: ["CODEX_API_KEY", "OPENAI_API_KEY"],
   copilot: ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"],
   cursor: ["CURSOR_API_ENDPOINT", "CURSOR_API_KEY"],
   droid: ["FACTORY_API_KEY"],

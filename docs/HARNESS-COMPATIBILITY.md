@@ -84,6 +84,18 @@ help-surface and installed-binary inspection plus adapter unit tests, not on
 the full upgrade procedure above. Re-audit against the upstream release
 notes and re-run the installed contract suite before bumping.
 
+## 2026-09-17 addendum: hermetic runs
+
+Installed Claude Code 2.1.270 and Codex 0.154.0 (last audited at 2.1.223 and
+0.147.0) were exercised for `--hermetic` and `--tools none`; the mechanisms
+and the live verification are described in `docs/HERMETIC.md`. Codex's
+`--ignore-user-config` (exec) and `--disable <FEATURE>` (global) are now
+part of the installed contract; both exist at 0.154.0 and are not known to
+exist at 0.146.0, so a hermetic Codex run on an older release may fail on
+an unknown flag rather than run non-hermetically. `maxAudited` is unchanged:
+this addendum rests on help-surface inspection, adapter unit tests and the
+live canary, not on the full upgrade procedure.
+
 ## Version enforcement
 
 `src/harness-compatibility.ts` is the machine-readable half of this ledger and
@@ -101,7 +113,8 @@ upstream release from becoming a security problem.
 ## Behavioral invariants
 
 - Prompts use stdin whenever the upstream CLI supports it. Aider, Cline,
-  Copilot, Gemini, Goose, and legacy `qwen-coder` retain bounded argv prompts.
+  Copilot, Gemini, Goose, Kimi, OpenHands, and legacy `qwen-coder` retain
+  bounded argv prompts.
 - Every autonomy level below `high` is a durable filesystem boundary supplied
   by scode. Harness-native permission controls are defense in depth; Codemux
   does not depend on them to enforce a level.

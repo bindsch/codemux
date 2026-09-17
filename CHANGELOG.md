@@ -7,6 +7,68 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-09-17
+
+### Added
+
+- `codemux run --hermetic` runs a harness with none of the operator's
+  customizations: no user or project instruction files, skills, plugins,
+  hooks, MCP servers, memories, or account-level integrations. The model
+  sees the prompt and the harness's own base instructions, and the login
+  still works. Claude Code and Z.AI use `--safe-mode`. Codex gets a private
+  `HOME` and `CODEX_HOME` per run under `~/.codex/.codemux-hermetic/`,
+  holding only a hard link to the real `auth.json` (Codex rewrites that
+  file in place, so token rotations reach the real login; nothing is ever
+  written back over it), handed to Codex through `env` so scode keeps the
+  real home for its deny rules, plus
+  `--ignore-user-config`, a zero AGENTS.md budget, and disabled apps,
+  plugins, hooks, memories, goals and shell snapshot; repositories shipping
+  `.agents/skills` or `.codex/skills` are refused. Every other harness
+  refuses the flag until it has a verified mechanism. See
+  `docs/HERMETIC.md` for the per-harness status and what each one lacks.
+- `codemux run --tools <default|none>` selects the built-in tools a
+  headless run exposes, independently of `--hermetic`. `none` maps to
+  `--tools ""` for Claude Code and Z.AI and to disabled shell, exec,
+  image, browser, computer-use, multi-agent and web-search features for
+  Codex; Codex cannot drop `apply_patch`, so it takes `none` only with
+  `--auto read-only`. Harnesses that cannot remove their tools refuse
+  `none`, and `none` cannot be combined with `--enable-playwright-mcp`.
+- `codemux check --hermetic` proves the mechanism with two real requests:
+  a hermetic probe in a scratch directory carrying planted `AGENTS.md` and
+  `CLAUDE.md` files with a random code word must answer `OK` without the
+  code word, and a control probe without `--hermetic` must show the
+  planted code word reaching the model; a control that answers anything
+  else, stays clean, or fails also fails the check.
+  `codemux verify` builds the hermetic command statically, and
+  `codemux list` and `doctor` show which harnesses support `hermetic` and
+  `tools`.
+
+### Fixed
+
+- `CODEX_API_KEY`, the variable Codex 0.154 actually reads for API-key
+  authentication, is now forwarded to Codex runs alongside the older
+  `OPENAI_API_KEY`. A hermetic Codex run authenticates with an API key
+  only when that variable is set, so it never switches an operator with a
+  stray `OPENAI_API_KEY` away from the account login a plain run uses.
+- README and the compatibility ledger now list Kimi and OpenHands, name
+  them among the argv-prompt harnesses, and describe the sandbox as on by
+  default with `--no-sandbox` as the opt-out; SECURITY.md gives the same
+  advice.
+
+### Changed
+
+- `check` moved into its own module and shares one launch path with `run`.
+- A SIGINT, SIGTERM or SIGHUP to a headless `codemux run` is forwarded to
+  the agent's whole process tree, which then gets the usual grace period
+  before SIGKILL, and codemux stops with exit 143 instead of leaving the
+  agent running after it is gone (or, when the signal lands during the
+  harness version probe, launching the run anyway).
+- Executable validation now covers a command's `env NAME=value` prefix and
+  the program it launches, not only the first token.
+- `verify` accepts an empty argument only as the value of `--tools`
+  (`--tools ""` removes Claude's tools); any other empty argument still
+  fails the wiring check.
+
 ## [0.5.1] - 2026-09-15
 
 ### Fixed

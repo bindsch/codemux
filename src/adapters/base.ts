@@ -1,14 +1,16 @@
-import type {
-  AgentId,
-  AutonomyLevel,
-  ReasoningEffort,
-  RunRequest,
-  RunResult,
-  AdapterCapabilities,
+import {
+  TOOL_SELECTIONS,
+  isToolSelection,
+  type AgentId,
+  type AutonomyLevel,
+  type ReasoningEffort,
+  type RunRequest,
+  type RunResult,
+  type AdapterCapabilities,
 } from "../types.js";
 import { sanitizeEnvironment } from "../environment.js";
 import type { ScodeTrustLevel } from "../sandbox.js";
-import { resolveTrustedExecutable } from "../executable-security.js";
+import { resolveTrustedCommand } from "../executable-security.js";
 import {
   guardedWait,
   MAX_ARGV_PROMPT_BYTES,
@@ -144,15 +146,7 @@ export abstract class BaseAdapter {
     ) {
       throw new Error(`${this.id} produced an invalid command`);
     }
-    const requestedBinary = command[0]!;
-    const binaryPath = Bun.which(requestedBinary, { PATH: process.env.PATH });
-    if (!binaryPath) {
-      throw new Error(`${this.id} executable '${requestedBinary}' was not found`);
-    }
-    return [
-      resolveTrustedExecutable(binaryPath, this.id, cwd),
-      ...command.slice(1),
-    ];
+    return resolveTrustedCommand(command, this.id, cwd);
   }
 
   /**
@@ -179,6 +173,16 @@ export abstract class BaseAdapter {
    * Throw to abort launch.
    */
   beforeLaunch(): void {
+    // Default: no-op
+  }
+
+  /**
+   * Called before every headless launch, after validation and beforeLaunch,
+   * for work a run needs on disk before its command and environment can be
+   * built (Codex's private hermetic home). Static command previews
+   * (`verify`) never call it.
+   */
+  prepareRun(_request: RunRequest): void {
     // Default: no-op
   }
 
@@ -244,6 +248,32 @@ export abstract class BaseAdapter {
       typeof request.enablePlaywrightMcp !== "boolean"
     ) {
       throw new Error("enablePlaywrightMcp must be a boolean");
+    }
+    if (request.hermetic !== undefined && typeof request.hermetic !== "boolean") {
+      throw new Error("hermetic must be a boolean");
+    }
+    if (request.hermetic && !caps.supportsHermetic) {
+      // Only a mechanism verified by `codemux check --hermetic` may claim this;
+      // an unverified harness would quietly run with the operator's context.
+      throw new Error(
+        `${this.id} has no verified hermetic mode; see docs/HERMETIC.md`
+      );
+    }
+    if (request.tools !== undefined) {
+      if (typeof request.tools !== "string" || !isToolSelection(request.tools)) {
+        throw new Error(`tools must be one of: ${TOOL_SELECTIONS.join(", ")}`);
+      }
+      if (request.tools === "none" && !caps.supportsToolSelection) {
+        throw new Error(
+          `${this.id} cannot remove its built-in tools; see docs/HERMETIC.md`
+        );
+      }
+    }
+    if (request.instructionDirs !== undefined) {
+      if (!Array.isArray(request.instructionDirs)) {
+        throw new Error("instructionDirs must be an array of directories");
+      }
+      for (const dir of request.instructionDirs) validateWorkingDirectory(dir);
     }
     if (request.timeoutMs !== undefined) validateTimeout(request.timeoutMs);
     if (this.getStdinInput(request) === null) {
@@ -313,6 +343,7 @@ export abstract class BaseAdapter {
     const effectiveRequest = { ...request, autonomy: effectiveAutonomy };
     this.validateRunRequest(effectiveRequest);
     this.beforeLaunch();
+    this.prepareRun(effectiveRequest);
     const cwd = validateWorkingDirectory(effectiveRequest.cwd) ?? process.cwd();
     const command = this.resolveExecutionCommand(
       this.buildRunCommand(effectiveRequest),
