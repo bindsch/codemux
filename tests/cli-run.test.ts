@@ -300,7 +300,7 @@ describe("CLI - File input validation", () => {
 
 describe("CLI - Hermetic runs", () => {
   test("run --hermetic is refused for a harness without a verified mechanism", async () => {
-    const fake = createFakeBinaryEnv({ droid: "exit 0" });
+    const fake = createFakeBinaryEnv({ droid: "exit 0", copilot: "exit 0" });
     try {
       const { stderr, exitCode } = await runCli(
         ["run", "-a", "droid", "--no-sandbox", "--auto", "high", "--hermetic", "-p", "test"],
@@ -309,7 +309,7 @@ describe("CLI - Hermetic runs", () => {
       expect(exitCode).not.toBe(0);
       expect(stderr).toContain("no verified hermetic mode");
       const tools = await runCli(
-        ["run", "-a", "droid", "--no-sandbox", "--auto", "high", "--tools", "none", "-p", "test"],
+        ["run", "-a", "copilot", "--no-sandbox", "--auto", "high", "--tools", "none", "-p", "test"],
         fake.env
       );
       expect(tools.exitCode).not.toBe(0);

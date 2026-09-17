@@ -129,10 +129,12 @@ into litellm's `openai/` model prefix with `OPENAI_API_BASE` and
 ([aider.chat/docs/llms/openai-compat.html](https://aider.chat/docs/llms/openai-compat.html)),
 and OpenHands into `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL` behind its
 `--override-with-envs`, OpenCode into a private `OPENCODE_CONFIG`
-provider file plus a key environment it references, and Kimi Code into
-the `KIMI_MODEL_*` group that synthesizes a provider in memory; harnesses
-without a custom-provider mechanism (GitHub Copilot CLI, the Cursor agent
-CLI) document that limit instead.
+provider file plus a key environment it references, Kimi Code into
+the `KIMI_MODEL_*` group that synthesizes a provider in memory, and
+Droid into a per-run BYOK `customModels` entry inside a private
+`--settings` file whose key is a `${VAR}` reference into the environment
+codemux provides; harnesses without a custom-provider mechanism (GitHub
+Copilot CLI, the Cursor agent CLI) document that limit instead.
 
 ### `check` options
 

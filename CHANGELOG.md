@@ -45,6 +45,25 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   is the model's own discovery, not a configuration leak.
 - The `env` prefix validator accepts `-u NAME` pairs (plain identifier
   names only); every other option (`-i`, `-S`) is still refused.
+- Droid claims `--tools none`, verified live on 2026-09-17 through a
+  provider override (GLM-5.3 via Z.AI): the override writes one BYOK
+  `customModels` entry into a private per-run settings file passed as the
+  root-level `--settings <path>` (merged for that process only), with the
+  key referenced as `${CODEMUX_DROID_PROVIDER_API_KEY}` and delivered
+  through the environment codemux provides — never argv, never an operator
+  file, and no Factory login needed, which is what unblocked the probe
+  (droid's self-update had left no stored login). Droid selects a custom
+  model by the entry's `id` (here `custom:codemux:<model>-0`, the shape of
+  the operator's own working entries), not its `model` name; a `-m` naming
+  only the API model id falls through to Factory inference and fails
+  authentication. Under `--tools none` (`--only-tools ToolSearch`) the
+  session transcripts contain no tool call at all and neither capability
+  probe could produce its secret (the shell probe returned fabricated
+  output, distinguishable because the probe asks for a transform of
+  planted content), while a plain run's model read the file and produced
+  it; the non-hermetic control probe leaked the planted code word, which
+  grounds the hermetic refusal (instruction files load from the working
+  directory up to the git root with no switch).
 - Kimi Code claims `--tools none`, verified live on 2026-09-17 through a
   provider override (GLM-5.3 via Z.AI): the override rides the
   `KIMI_MODEL_*` environment group (a temporary provider synthesized in
@@ -54,7 +73,6 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   secret while a plain run produced both; the non-hermetic control probe
   quoted the planted code word and `~/.agents/AGENTS.md`'s owner, which
   grounds the hermetic refusal (the AGENTS.md merger has no switch).
-  `--tools none` stays refused: aider has no tool set to remove.
 
 - Goose's `--tools none` mechanism is implemented but not yet claimed: it
   maps onto `--no-profile`, under which the session instantiates no
@@ -105,48 +123,6 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   allowlist the native tool filter resolves to no enabled tool. Copilot is
   not installed on the release machine, so both stay unclaimed until the
   live check and the capability probe run there.
-- Kimi's `--tools none` mechanism is implemented but not yet claimed: it
-  generates an agent file (`tools: []` frontmatter, `${base_prompt}` as the
-  prompt body so the default profile's own instructions stay) and selects it
-  with `--agent-file`. The tool manager's gates are strict membership tests
-  over the file's allowlist, so an empty list exposes no built-in and no MCP
-  tool. The model-level probe is pending usage headroom (weekly limit hit
-  2026-09-17). Kimi keeps refusing `--hermetic`: the AGENTS.md merger has no
-  switch, and it also reads `~/.agents/AGENTS.md` under the real home, which
-  `KIMI_CODE_HOME` cannot close.
-- Aider's hermetic mechanism is implemented but not yet claimed:
-  `--hermetic` maps onto `--map-tokens 0` (every other channel — config,
-  env file, model metadata, history — is already pinned to packaged or
-  null paths in every codemux run), and instruction directories map onto
-  `--read` in plain runs so a future `check --hermetic` control probe can
-  leak. The capability stays off until the live check runs, which needs a
-  provider API key in the environment.
-- Droid's `--tools none` mechanism is implemented but not yet claimed: it
-  maps onto `--only-tools ToolSearch`, the one tool droid itself pins, so
-  every read, execute and MCP tool is blocked whatever the model or MCP
-  config, and an unknown tool ID aborts the launch instead of failing open.
-  The installed binary's free `--list-tools` inventory confirms the block;
-  the model-level probe is pending because droid's self-update left no
-  stored login (`Exec failed` before any request). Droid keeps refusing
-  `--hermetic`: instruction files, skills from two user directories, hooks
-  and MCP servers have no switch to disable them.
-- OpenCode's hermetic mechanism is implemented but not yet claimed:
-  `--hermetic` redirects `HOME` and the XDG config, cache and state
-  directories into a private home under `~/.local/share/opencode/
-  .codemux-hermetic/` while `XDG_DATA_HOME` keeps the real data directory,
-  so the in-place-rewritten `auth.json` login keeps working with no link;
-  `OPENCODE_DISABLE_PROJECT_CONFIG`, `OPENCODE_DISABLE_CLAUDE_CODE` and
-  `OPENCODE_DISABLE_EXTERNAL_SKILLS` close the channels a home cannot, and
-  empty `OPENCODE_CONFIG`/`OPENCODE_CONFIG_DIR`/`OPENCODE_CONFIG_CONTENT`
-  neutralize anything passed through. `--tools none` maps onto
-  `OPENCODE_PERMISSION={"*":"deny"}`. Both capabilities stay off until the
-  live check runs, which is pending usage headroom (weekly limit hit
-  2026-09-17).
-
-## [0.5.2] - 2026-09-17
-
-### Added
-
 - `codemux run --hermetic` runs a harness with none of the operator's
   customizations: no user or project instruction files, skills, plugins,
   hooks, MCP servers, memories, or account-level integrations. The model

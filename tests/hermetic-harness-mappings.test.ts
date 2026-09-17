@@ -20,9 +20,9 @@ import { createCopilotHermeticHome } from "../src/copilot-hermetic.js";
 import { createOpencodeHermeticHome } from "../src/opencode-hermetic.js";
 import { writeKimiNoToolsFile } from "../src/kimi-no-tools.js";
 
-// The per-harness --hermetic / --tools none mappings. Aider, OpenCode and
-// kimi's --tools none are claimed (verified live through provider
-// overrides); Copilot and droid keep their capabilities off until a live
+// The per-harness --hermetic / --tools none mappings. Aider, OpenCode,
+// kimi's and droid's --tools none are claimed (verified live through
+// provider overrides); Copilot keeps its capabilities off until a live
 // probe passes (docs/HERMETIC.md).
 
 describe("hermetic runs: aider", () => {
@@ -240,21 +240,24 @@ describe("hermetic runs: droid", () => {
       .toEqual(["droid", "exec"]);
   });
 
-  test("droid refuses --hermetic and --tools none until the live probe runs", () => {
+  test("droid claims --tools none (verified live); --hermetic stays refused", () => {
     const adapter = getAdapter("droid");
-    const cwd = mkdtempSync(join(tmpdir(), "codemux-droid-refuse-"));
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-droid-claim-"));
     try {
       mkdirSync(join(cwd, ".git"));
-      // Hermetic has no mechanism: AGENTS.md and CLAUDE.md load from the
-      // working directory up to the git root with no switch, and skills
-      // load from both ~/.factory and ~/.agents. Tools none is implemented
-      // but unclaimed: the probe needs a logged-in droid.
+      // The capability probes ran live on 2026-09-17 through a provider
+      // override (GLM-5.3 via Z.AI riding a per-run BYOK settings file, so
+      // no Factory login was needed): under --tools none neither the read
+      // probe nor the shell probe could produce its secret, while a plain
+      // run produced both. Hermetic stays refused — instruction files load
+      // from the working directory up to the git root with no switch, and
+      // skills load from both ~/.factory and ~/.agents (docs/HERMETIC.md).
+      expect(adapter.capabilities().supportsToolSelection ?? false).toBe(true);
+      expect(() => adapter.validateRunRequest({ agent: "droid", prompt: "p", cwd, tools: "none" }))
+        .not.toThrow();
       expect(adapter.capabilities().supportsHermetic ?? false).toBe(false);
-      expect(adapter.capabilities().supportsToolSelection ?? false).toBe(false);
       expect(() => adapter.validateRunRequest({ agent: "droid", prompt: "p", cwd, hermetic: true }))
         .toThrow("no verified hermetic mode");
-      expect(() => adapter.validateRunRequest({ agent: "droid", prompt: "p", cwd, tools: "none" }))
-        .toThrow("cannot remove its built-in tools");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AiderAdapter } from "../src/adapters/aider.js";
+import { DroidAdapter } from "../src/adapters/droid.js";
 import { KimiAdapter } from "../src/adapters/kimi.js";
 import { OpenHandsAdapter } from "../src/adapters/openhands.js";
 import type { RunRequest } from "../src/types.js";
@@ -315,5 +316,165 @@ describe("kimi provider override", () => {
       KIMI_MODEL_BASE_URL: ZAI_KIMI.CODEMUX_KIMI_PROVIDER_BASE_URL,
       KIMI_MODEL_PROVIDER_TYPE: "openai",
     });
+  });
+});
+
+const ZAI_DROID = {
+  CODEMUX_DROID_PROVIDER_BASE_URL: "https://api.z.ai/api/coding/paas/v4",
+  CODEMUX_DROID_PROVIDER_API_KEY: "test-key-do-not-print",
+  CODEMUX_DROID_PROVIDER_MODEL: "glm-5.3",
+};
+
+describe("droid provider override", () => {
+  const scratch: string[] = [];
+  const adapters: DroidAdapter[] = [];
+  afterEach(() => {
+    for (const adapter of adapters.splice(0)) adapter.disposeProviderSettings();
+    while (scratch.length > 0) {
+      const dir = scratch.pop()!;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  const cwdOf = (): string => {
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-droid-override-"));
+    mkdirSync(join(cwd, ".git"));
+    scratch.push(cwd);
+    return cwd;
+  };
+  const adapterOf = (env: NodeJS.ProcessEnv = {}): DroidAdapter => {
+    const home = mkdtempSync(join(tmpdir(), "codemux-droid-home-"));
+    scratch.push(home);
+    const adapter = new DroidAdapter(env, home);
+    adapters.push(adapter);
+    return adapter;
+  };
+  const run = (env: NodeJS.ProcessEnv, request: Partial<RunRequest> = {}): string[] =>
+    adapterOf(env).buildRunCommand({
+      agent: "droid",
+      prompt: "p",
+      cwd: cwdOf(),
+      ...request,
+    } as RunRequest);
+
+  test("without an override nothing changes", () => {
+    const adapter = adapterOf();
+    expect(adapter.getRunEnv({ agent: "droid", prompt: "p" } as RunRequest)).toEqual({});
+    expect(run({})).toEqual(["droid", "exec"]);
+    // An operator model still rides the native flag.
+    expect(run({}, { model: "claude-sonnet-5" })).toEqual(["droid", "exec", "-m", "claude-sonnet-5"]);
+  });
+
+  test("the override rides a per-run --settings file and the key environment", () => {
+    const adapter = adapterOf(ZAI_DROID);
+    const request = { agent: "droid" as const, prompt: "p", cwd: cwdOf() };
+    adapter.prepareRun(request);
+    const path = adapter.buildRunCommand(request as RunRequest)[2]!;
+    expect(path).toContain(join(".factory", ".codemux", `provider-${process.pid}-`));
+    expect(path.endsWith("settings.json")).toBe(true);
+    const settings = JSON.parse(readFileSync(path, "utf8"));
+    // The file records the key's NAME, never the key; the entry carries the
+    // override's base URL and the generic chat-completions provider.
+    // The entry selects by id; model is only the API model name.
+    expect(settings.model).toBe("custom:codemux:glm-5.3-0");
+    expect(settings.customModels).toEqual([
+      {
+        model: "glm-5.3",
+        id: "custom:codemux:glm-5.3-0",
+        index: 0,
+        displayName: "codemux provider override",
+        baseUrl: ZAI_DROID.CODEMUX_DROID_PROVIDER_BASE_URL,
+        apiKey: "${CODEMUX_DROID_PROVIDER_API_KEY}",
+        provider: "generic-chat-completion-api",
+        noImageSupport: true,
+      },
+    ]);
+    expect(JSON.stringify(settings)).not.toContain(ZAI_DROID.CODEMUX_DROID_PROVIDER_API_KEY);
+    expect(adapter.getRunEnv(request as RunRequest)).toEqual({
+      CODEMUX_DROID_PROVIDER_API_KEY: ZAI_DROID.CODEMUX_DROID_PROVIDER_API_KEY,
+    });
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  test("the command selects the override's model through -m", () => {
+    const adapter = adapterOf(ZAI_DROID);
+    const request = { agent: "droid" as const, prompt: "p", cwd: cwdOf() };
+    adapter.prepareRun(request);
+    const cmd = adapter.buildRunCommand(request as RunRequest);
+    expect(cmd.slice(0, 3)).toEqual(["droid", "--settings", cmd[2]!]);
+    expect(cmd.slice(3)).toEqual(["exec", "-m", "custom:codemux:glm-5.3-0"]);
+    expect(cmd.join(" ")).not.toContain(ZAI_DROID.CODEMUX_DROID_PROVIDER_API_KEY);
+  });
+
+  test("an explicit --model wins as the routed model id", () => {
+    const adapter = adapterOf(ZAI_DROID);
+    const request = { agent: "droid" as const, prompt: "p", cwd: cwdOf(), model: "glm-5.3-flash" };
+    adapter.prepareRun(request as RunRequest);
+    const path = adapter.buildRunCommand(request as RunRequest)[2]!;
+    expect(JSON.parse(readFileSync(path, "utf8")).customModels[0].model).toBe("glm-5.3-flash");
+    expect(adapter.buildRunCommand(request as RunRequest).slice(3))
+      .toEqual(["exec", "-m", "custom:codemux:glm-5.3-flash-0"]);
+  });
+
+  test("the override and --tools none coexist", () => {
+    const adapter = adapterOf(ZAI_DROID);
+    const request = { agent: "droid" as const, prompt: "p", cwd: cwdOf(), tools: "none" as const, autonomy: "high" as const };
+    adapter.prepareRun(request as RunRequest);
+    expect(adapter.buildRunCommand(request as RunRequest).slice(3))
+      .toEqual(["exec", "-m", "custom:codemux:glm-5.3-0", "--auto", "high", "--only-tools", "ToolSearch"]);
+    expect(adapter.getRunEnv(request as RunRequest)).toEqual({
+      CODEMUX_DROID_PROVIDER_API_KEY: ZAI_DROID.CODEMUX_DROID_PROVIDER_API_KEY,
+    });
+  });
+
+  test("a static command without prepareRun fails closed", () => {
+    const adapter = adapterOf(ZAI_DROID);
+    const cmd = run(ZAI_DROID);
+    expect(cmd[1]).toBe("--settings");
+    expect(cmd[2]).toMatch(/\.codemux\/unprepared\/settings\.json$/);
+    expect(() => statSync(cmd[2]!)).toThrow();
+    expect(() => adapter.getRunEnv({ agent: "droid", prompt: "p" } as RunRequest))
+      .toThrow("droid provider settings were not prepared before launch");
+  });
+
+  test("dispose removes every prepared settings file", () => {
+    const adapter = adapterOf(ZAI_DROID);
+    const request = { agent: "droid" as const, prompt: "p", cwd: cwdOf() };
+    adapter.prepareRun(request);
+    const first = adapter.buildRunCommand(request as RunRequest)[2]!;
+    adapter.prepareRun(request);
+    const second = adapter.buildRunCommand(request as RunRequest)[2]!;
+    expect(second).not.toBe(first);
+    // The earlier file stays until exit: an earlier run may still read it.
+    expect(statSync(first).isFile()).toBe(true);
+    adapter.disposeProviderSettings();
+    expect(() => statSync(first)).toThrow();
+    expect(() => statSync(second)).toThrow();
+  });
+
+  test("a keyless override fails validation with the missing name", () => {
+    const adapter = adapterOf({
+      CODEMUX_DROID_PROVIDER_BASE_URL: ZAI_DROID.CODEMUX_DROID_PROVIDER_BASE_URL,
+      CODEMUX_DROID_PROVIDER_MODEL: "glm-5.3",
+    });
+    expect(() => adapter.validateRunRequest({ agent: "droid", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toThrow("provider override is missing CODEMUX_DROID_PROVIDER_API_KEY");
+  });
+
+  test("an override without any model fails validation", () => {
+    const adapter = adapterOf({
+      CODEMUX_DROID_PROVIDER_BASE_URL: ZAI_DROID.CODEMUX_DROID_PROVIDER_BASE_URL,
+      CODEMUX_DROID_PROVIDER_API_KEY: ZAI_DROID.CODEMUX_DROID_PROVIDER_API_KEY,
+    });
+    expect(() => adapter.validateRunRequest({ agent: "droid", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toThrow("droid needs a model for the provider override");
+  });
+
+  test("the tui refuses the override; without one it is unchanged", () => {
+    const plain = adapterOf();
+    expect(() => plain.validateTuiRequest(undefined, cwdOf())).not.toThrow();
+    expect(plain.buildTuiCommand(undefined, "high")).toEqual(["droid", "--auto", "high"]);
+    const adapter = adapterOf(ZAI_DROID);
+    expect(() => adapter.validateTuiRequest(undefined, cwdOf()))
+      .toThrow("supports headless runs only");
   });
 });

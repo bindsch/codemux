@@ -109,8 +109,18 @@ pending:
 
 | Harness | Checked at | Last audited | Probe pending |
 |---------|-----------|--------------|---------------|
-| Droid | 0.221.0 | 0.186.0 | stored login (self-update removed it) |
 | Cursor Agent | 2026.08.11 build | same | no Cursor login on this machine; no mechanism exists to check |
+
+Droid 0.221.0 (last audited 0.186.0) was exercised live on 2026-09-17
+through the provider override: a per-run BYOK `--settings` file routed
+GLM-5.3 via Z.AI with no Factory login (the override's own key
+authenticates), and the `--tools none` capability probes and the
+non-hermetic control probe ran against the model (docs/HERMETIC.md). The
+tool flags are unchanged between 0.186.0 and 0.221.0; the BYOK settings
+surface (`customModels`, `--settings`) is now part of the exercised
+contract. `maxAudited` is unchanged: this rests on help-surface
+inspection, adapter unit tests and the live probes, not on the full
+upgrade procedure.
 
 Not installed here, grounded in the published package or source, which is
 newer than the audited ledger version in every case (the flags the
