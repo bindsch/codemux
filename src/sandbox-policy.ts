@@ -9,6 +9,9 @@ export interface SandboxPolicyOverrides {
   trust?: ScodeTrustLevel;
   noNet?: boolean;
   scrubEnv?: boolean;
+  /** Request scode's per-run scratch accounting (see SandboxOptions). */
+  accountFile?: string;
+  accountId?: string;
 }
 
 // These are security invariants, not defaults: callers cannot disable them.
@@ -31,5 +34,7 @@ export function resolveSandboxOptionsForAgent(
   if (fsMode) options.fsMode = fsMode;
   if (overrides.noNet) options.noNet = true;
   if (overrides.scrubEnv) options.scrubEnv = true;
+  if (overrides.accountFile) options.accountFile = overrides.accountFile;
+  if (overrides.accountId) options.accountId = overrides.accountId;
   return options;
 }

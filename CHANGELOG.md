@@ -7,6 +7,30 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- `--sandbox-account <file>` / `--sandbox-account-id <id>` on `run` and
+  `tui` forward scode's per-run scratch accounting: when set, scode appends
+  one JSON line per sandboxed run describing the private scratch directory
+  it created and tore down (`scratch_kib`, duration, exit code), tagged with
+  the correlation id. The variables are applied through the sandbox
+  environment, which is the one place codemux sets `SCODE_*` names itself;
+  scode still unsets both before the harness runs, so the agent never sees
+  them. codemux requires an absolute `--sandbox-account` path and refuses
+  the flags with a clear error when the installed scode predates scratch
+  accounting (probed from `--help`, since scode versions do not track the
+  feature; a probe that does not exit cleanly refuses rather than guessing).
+  The id is validated against the set scode records (`[A-Za-z0-9._:-]`, 1-128
+  chars — anything else would be silently nulled and break correlation), and
+  an id without a sink is refused as the misconfiguration it is. When the
+  sink resolves inside the sandbox working directory — with symlinks
+  resolved on both sides, so alias paths (/var/folders vs /private/var/folders)
+  do not dodge the check — codemux warns that the records are
+  confidentiality, not integrity, and proceeds: some callers, crew among
+  them, place the sink there on purpose. This is the forwarding
+  half of fleet workspace-storage measurement (scode records; the
+  orchestrator correlates).
+
 ## [0.5.2] - 2026-09-17
 
 ### Added

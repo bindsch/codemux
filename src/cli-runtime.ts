@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { guardedWait, runCapturedCommand } from "./process-runner.js";
 import {
   resolveTrustedCommand,
@@ -131,6 +131,85 @@ async function assertCompatibleScode(
   }
 }
 
+// scode reports a version number for features it does not have (accounting
+// is opt-in and ships independently), so capability is probed from --help:
+// a scode with scratch accounting documents SCODE_ACCOUNT_FILE there. Run
+// only when accounting is requested, so unsandboxed-feature runs pay nothing.
+async function assertScodeSupportsAccounting(
+  scode: string,
+  workdir: string,
+  extraEnv?: Record<string, string>
+): Promise<void> {
+  const result = await runCapturedCommand([scode, "--help"], {
+    cwd: workdir,
+    env: buildSandboxEnv(extraEnv),
+    timeoutMs: SCODE_VERSION_TIMEOUT_MS,
+  });
+  if (!result.success) {
+    // A probe that cannot run proves nothing either way; launching would
+    // mean guessing about the one capability this run asked for.
+    throw new Error(
+      `could not probe the installed scode (--help did not exit cleanly); refusing to guess whether it supports scratch accounting`
+    );
+  }
+  const output = `${result.stdout}\n${result.stderr}`;
+  if (!output.includes("SCODE_ACCOUNT_FILE")) {
+    throw new Error(
+      "the installed scode has no scratch accounting; --sandbox-account and --sandbox-account-id need a scode whose --help documents SCODE_ACCOUNT_FILE"
+    );
+  }
+}
+
+// The sink is only ever confidentiality. A sink the sandbox can write is a
+// sink the sandbox can forge, and crew's documented placement lives inside
+// the project, so this warns instead of refusing -- the caller may have
+// meant exactly that.
+function warnIfSinkInsideWorkdir(accountFile: string, workdir: string): void {
+  // Only a complete ".." segment escapes; a name that merely begins with two
+  // dots ("..acct.jsonl") is a real file inside the workdir, not traversal.
+  const isInside = (dir: string, candidate: string): boolean => {
+    const rel = relative(dir, candidate);
+    return rel.length > 0 && !isAbsolute(rel) && !rel.split(sep).includes("..");
+  };
+  // A purely lexical comparison misses alias paths -- on macOS /var/folders is
+  // a symlink to /private/var/folders, so a sink spelled inside the workdir
+  // looks outside. The sink usually does not exist yet (scode creates it at
+  // exit), and its parent directories may be missing too, so walk up to the
+  // nearest existing ancestor, resolve it, and keep the unresolved tail;
+  // fall back to the lexical form when nothing can be resolved.
+  const resolveBestEffort = (path: string): string => {
+    const tail: string[] = [];
+    let current = path;
+    for (;;) {
+      try {
+        return join(realpathSync(current), ...tail);
+      } catch {
+        const parent = dirname(current);
+        if (parent === current) {
+          return path;
+        }
+        tail.unshift(basename(current));
+        current = parent;
+      }
+    }
+  };
+  // Either spelling counts: the lexical check catches a sink that sits in
+  // the workdir but is itself a symlink pointing outside (the sandboxed
+  // command can replace such a link with a regular file), and the resolved
+  // check catches the alias case the lexical check cannot see.
+  if (isInside(workdir, accountFile) ||
+      isInside(resolveBestEffort(workdir), resolveBestEffort(accountFile))) {
+    // This warns rather than refuses on purpose: scode re-validates the sink
+    // when it writes, after the sandbox has exited and the command can no
+    // longer swap it, so the residual risk is forged records -- which is
+    // exactly what the warning discloses. The operator opted in explicitly;
+    // codemux surfaces the trade-off instead of second-guessing it.
+    console.warn(
+      `Warning: the accounting sink ${accountFile} is inside the sandbox working directory ${workdir}; the sandboxed command can write it, so treat its records as confidentiality, not integrity -- prefer a sink outside that area`
+    );
+  }
+}
+
 function assertNoProjectScodePolicy(workdir: string): void {
   const projectPolicy = join(workdir, ".scode.yaml");
   if (existsSync(projectPolicy)) {
@@ -215,6 +294,8 @@ export interface SandboxCliOptions {
   sandboxTrust?: string;
   sandboxNoNet?: boolean;
   sandboxScrubEnv?: boolean;
+  sandboxAccount?: string;
+  sandboxAccountId?: string;
 }
 
 export function parseSandboxPolicyOverrides(
@@ -226,13 +307,42 @@ export function parseSandboxPolicyOverrides(
     trust,
     noNet: Boolean(options.sandboxNoNet),
     scrubEnv: Boolean(options.sandboxScrubEnv),
+    accountFile: options.sandboxAccount,
+    accountId: options.sandboxAccountId,
   };
+
+  if (overrides.accountFile !== undefined && !isAbsolute(overrides.accountFile)) {
+    throw new Error(
+      `--sandbox-account requires an absolute path, got '${overrides.accountFile}' (scode resolves a relative sink path against its own working directory, not the caller's intent)`
+    );
+  }
+
+  // scode records an id containing any character outside
+  // `[A-Za-z0-9._:-]` as null -- it does not strip the offenders -- so an
+  // id like `crew/job-42` would correlate nothing, silently. Refuse here,
+  // where the caller can still fix it, instead of at read time when the
+  // records no longer join.
+  if (
+    overrides.accountId !== undefined &&
+    !/^[A-Za-z0-9._:-]{1,128}$/.test(overrides.accountId)
+  ) {
+    throw new Error(
+      `--sandbox-account-id accepts 1-128 characters of letters, digits, and '. _ : -', got '${overrides.accountId}' (scode records any other id as null, which would silently break correlation)`
+    );
+  }
+  if (overrides.accountId !== undefined && !overrides.accountFile) {
+    throw new Error(
+      "--sandbox-account-id without --sandbox-account: the id only ever reaches a sink through an account file, so this request would be silently dropped"
+    );
+  }
 
   if (!options.sandbox && !allowWithoutSandbox) {
     if (
       trust ||
       overrides.noNet ||
-      overrides.scrubEnv
+      overrides.scrubEnv ||
+      overrides.accountFile ||
+      overrides.accountId
     ) {
       console.warn("Warning: sandbox policy flags require --sandbox, ignoring");
     }
@@ -321,6 +431,12 @@ export async function runSandboxed(
   const scode = resolveScodeExecutable(workdir);
   if (!scode) throw new Error("scode is not installed");
   await assertCompatibleScode(scode, workdir, extraEnv);
+  if (sandboxOptions?.accountFile || sandboxOptions?.accountId) {
+    await assertScodeSupportsAccounting(scode, workdir, extraEnv);
+    if (sandboxOptions.accountFile) {
+      warnIfSinkInsideWorkdir(sandboxOptions.accountFile, workdir);
+    }
+  }
   const resolvedCommand = resolveTrustedCommand(
     command,
     "sandbox command",
@@ -334,7 +450,7 @@ export async function runSandboxed(
     sandboxOptions,
     scode
   );
-  const env = buildSandboxEnv(extraEnv);
+  const env = buildSandboxEnv(extraEnv, sandboxOptions);
   for (const name of envOmissions) delete env[name];
 
   const proc = Bun.spawn(scodeCmd, {
@@ -362,6 +478,12 @@ export async function runSandboxedWithStdin(
   const scode = resolveScodeExecutable(workdir);
   if (!scode) throw new Error("scode is not installed");
   await assertCompatibleScode(scode, workdir, extraEnv);
+  if (sandboxOptions?.accountFile || sandboxOptions?.accountId) {
+    await assertScodeSupportsAccounting(scode, workdir, extraEnv);
+    if (sandboxOptions.accountFile) {
+      warnIfSinkInsideWorkdir(sandboxOptions.accountFile, workdir);
+    }
+  }
   const resolvedCommand = resolveTrustedCommand(
     command,
     "sandbox command",
@@ -375,7 +497,7 @@ export async function runSandboxedWithStdin(
     sandboxOptions,
     scode
   );
-  const env = buildSandboxEnv(extraEnv);
+  const env = buildSandboxEnv(extraEnv, sandboxOptions);
   for (const name of envOmissions) delete env[name];
   return runCapturedCommand(scodeCmd, {
     cwd: workdir,

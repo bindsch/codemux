@@ -112,6 +112,25 @@ describe("sandbox utilities", () => {
     expect(env.PLAYWRIGHT_MCP_NO_SANDBOX).toBeUndefined();
   });
 
+  test("buildSandboxEnv forwards requested accounting variables after stripping", () => {
+    const env = buildSandboxEnv(
+      {
+        SCODE_ACCOUNT_FILE: "/attacker/chosen/path",
+        SCODE_ACCOUNT_ID: "forged",
+      },
+      { accountFile: "/tmp/trace/account.jsonl", accountId: "crew-job-42" }
+    );
+    expect(env.SCODE_ACCOUNT_FILE).toBe("/tmp/trace/account.jsonl");
+    expect(env.SCODE_ACCOUNT_ID).toBe("crew-job-42");
+  });
+
+  test("buildSandboxEnv omits accounting variables when not requested", () => {
+    const env = buildSandboxEnv({ SCODE_ACCOUNT_FILE: "/attacker/chosen/path" });
+    expect(env.SCODE_ACCOUNT_FILE).toBeUndefined();
+    expect(env.SCODE_ACCOUNT_ID).toBeUndefined();
+    expect(buildSandboxEnv({}, { trust: "standard" }).SCODE_ACCOUNT_FILE).toBeUndefined();
+  });
+
   test("buildSandboxEnv never inherits the parent implicitly", () => {
     const marker = "CODEMUX_TEST_PARENT_SECRET";
     process.env[marker] = "must-not-leak";

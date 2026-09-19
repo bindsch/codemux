@@ -30,6 +30,18 @@ describe("sandbox policy", () => {
     });
   });
 
+  test("forwards scratch accounting requests into sandbox options", () => {
+    expect(resolveSandboxOptionsForAgent("codex", "medium", {
+      accountFile: "/tmp/trace/account.jsonl",
+      accountId: "crew-job-42",
+    })).toEqual({
+      trust: "standard",
+      accountFile: "/tmp/trace/account.jsonl",
+      accountId: "crew-job-42",
+    });
+    expect(resolveSandboxOptionsForAgent("codex", "medium").accountFile).toBeUndefined();
+  });
+
   test("untrusted trust still retains mandatory read-only invariants", () => {
     expect(resolveSandboxOptionsForAgent("codex", "read-only", {
       trust: "untrusted",

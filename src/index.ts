@@ -81,6 +81,14 @@ program
   .option("--sandbox-no-net", "Pass --no-net to scode when sandboxed")
   .option("--sandbox-scrub-env", "Pass --scrub-env to scode when sandboxed")
   .option(
+    "--sandbox-account <file>",
+    "Request scode scratch accounting, appending one JSON line per run to FILE"
+  )
+  .option(
+    "--sandbox-account-id <id>",
+    "Opaque correlation token recorded in the scode accounting line"
+  )
+  .option(
     "--auto <level>",
     "Autonomy level: read-only, low, medium, high",
     "read-only"
@@ -121,6 +129,8 @@ program
         sandboxTrust: options.sandboxTrust,
         sandboxNoNet: Boolean(options.sandboxNoNet),
         sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
+        sandboxAccount: options.sandboxAccount,
+        sandboxAccountId: options.sandboxAccountId,
       });
 
       const adapter = getAdapter(agentId);
@@ -249,6 +259,14 @@ program
   )
   .option("--sandbox-no-net", "Pass --no-net to scode when sandboxed")
   .option("--sandbox-scrub-env", "Pass --scrub-env to scode when sandboxed")
+  .option(
+    "--sandbox-account <file>",
+    "Request scode scratch accounting, appending one JSON line per run to FILE"
+  )
+  .option(
+    "--sandbox-account-id <id>",
+    "Opaque correlation token recorded in the scode accounting line"
+  )
   .option("--auto <level>", "Autonomy level: read-only, low, medium, high")
   .option("--effort <level>", "Reasoning effort: none, minimal, low, medium, high, xhigh, max, ultra")
   .option("--pass-env <names>", "Pass comma-separated sensitive environment names")
@@ -280,6 +298,8 @@ program
         sandboxTrust: options.sandboxTrust,
         sandboxNoNet: Boolean(options.sandboxNoNet),
         sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
+        sandboxAccount: options.sandboxAccount,
+        sandboxAccountId: options.sandboxAccountId,
       });
 
       const adapter = getAdapter(agentId);

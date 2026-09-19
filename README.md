@@ -94,6 +94,8 @@ codemux [command] [options]
 | `--sandbox-trust <level>` | `scode` trust override (`trusted`, `standard`, `untrusted`) |
 | `--sandbox-no-net` | Add `--no-net` to `scode` |
 | `--sandbox-scrub-env` | Add `--scrub-env` to `scode` |
+| `--sandbox-account <file>` | Request scode's per-run scratch accounting; scode appends one JSON line per run (scratch KiB, duration, exit code) to `file` — absolute path required; keep it outside the sandbox's writable area (a sink inside the working directory warns: records there are forgeable) |
+| `--sandbox-account-id <id>` | Opaque correlation token recorded in that accounting line; accepts letters, digits, and `. _ : -` (1-128 chars), and requires `--sandbox-account` |
 | `--auto <level>` | Autonomy (`read-only`, `low`, `medium`, `high`) |
 | `--effort <level>` | Effort (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`; availability is harness-specific) |
 | `--cwd <path>` | Working directory |
@@ -129,7 +131,7 @@ but not model or effort flags.
 |------|-------------|
 | `-a, --agent <agent>` | Verify one agent only |
 | `--show-scode` | Print effective `scode` commands (`run`/`tui` x autonomy) |
-| `--sandbox-*` | Same sandbox policy overrides as above, applied to preview output |
+| `--sandbox-trust` / `--sandbox-no-net` / `--sandbox-scrub-env` | Same overrides as `run`/`tui`, applied to preview output |
 
 ### Examples
 

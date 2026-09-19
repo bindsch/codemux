@@ -9,6 +9,10 @@ export interface SandboxOptions {
   fsMode?: ScodeFsMode;
   noNet?: boolean;
   scrubEnv?: boolean;
+  /** Request scode's per-run scratch accounting (SCODE_ACCOUNT_FILE). */
+  accountFile?: string;
+  /** Opaque correlation token recorded in the accounting line (SCODE_ACCOUNT_ID). */
+  accountId?: string;
 }
 
 export function mapAutonomyToScodeFsMode(autonomy?: AutonomyLevel): ScodeFsMode {
@@ -59,13 +63,26 @@ export function buildScodeCommand(
 }
 
 export function buildSandboxEnv(
-  extraEnv: Record<string, string> = {}
+  extraEnv: Record<string, string> = {},
+  sandboxOptions?: SandboxOptions
 ): Record<string, string> {
   const sanitized = { ...extraEnv };
   for (const name of Object.keys(sanitized)) {
     if (name.toUpperCase().startsWith("SCODE_")) {
       delete sanitized[name];
     }
+  }
+  // The only SCODE_* names codemux sets itself: scratch-accounting opt-ins
+  // requested through --sandbox-account / --sandbox-account-id. scode
+  // consumes both into private state and never passes them to the sandboxed
+  // child, so setting them here does not leak into the harness environment.
+  // That is confidentiality, not integrity (see scode): keep the sink
+  // outside the sandbox's writable area.
+  if (sandboxOptions?.accountFile) {
+    sanitized.SCODE_ACCOUNT_FILE = sandboxOptions.accountFile;
+  }
+  if (sandboxOptions?.accountId) {
+    sanitized.SCODE_ACCOUNT_ID = sandboxOptions.accountId;
   }
   return sanitized;
 }
