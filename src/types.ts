@@ -70,6 +70,11 @@ export interface RunRequest {
   // Independent of `tools`: a hermetic run keeps the harness's built-in tools
   // unless `tools` removes them. See docs/HERMETIC.md.
   hermetic?: boolean;
+  // Ask the harness for a machine-readable result envelope on stdout instead of plain text,
+  // so a caller can read what the run actually consumed. Headless runs only: there is no
+  // envelope to parse in an interactive session. The envelope's shape is the harness's, not
+  // codemux's -- codemux asks for it and passes it through unchanged.
+  resultJson?: boolean;
   // Which built-in tools the harness exposes; undefined means "default".
   // "none" removes the harness's own tool set; a harness that cannot drop
   // one of them (Codex's apply_patch) says so in its adapter.
@@ -101,6 +106,9 @@ export interface AdapterCapabilities {
   supportsHermetic?: boolean;
   // The harness can remove its built-in tools on request (`--tools none`).
   supportsToolSelection?: boolean;
+  // The harness can return a structured result envelope carrying token usage
+  // (`--result-json`). Absent means unsupported and the flag is refused.
+  supportsResultJson?: boolean;
 }
 
 export type ModelMapping = Partial<Record<AgentId, string>>;

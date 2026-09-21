@@ -101,6 +101,7 @@ export class ClaudeAdapter extends BaseAdapter {
       effortLevels: ["low", "medium", "high", "xhigh", "max"],
       supportsHermetic: true,
       supportsToolSelection: true,
+      supportsResultJson: true,
     };
   }
 
@@ -142,6 +143,13 @@ export class ClaudeAdapter extends BaseAdapter {
       "--strict-mcp-config",
       "--no-session-persistence"
     );
+    if (request.resultJson) {
+      // Claude Code's single-result envelope: the reply under `result`, plus `usage`,
+      // `modelUsage` and `total_cost_usd`. Without it the reply arrives as bare text and what
+      // the run consumed is unrecoverable -- there is no session file to read afterward,
+      // because --no-session-persistence above is what makes these runs leave no trace.
+      cmd.push("--output-format", "json");
+    }
     if (request.tools === "none") {
       // An empty --tools list removes every built-in tool definition.
       cmd.push("--tools", "");

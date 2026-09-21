@@ -113,6 +113,51 @@ describe("ClaudeAdapter", () => {
     ]);
   });
 
+  test("--result-json asks Claude Code for its single-result envelope", () => {
+    // Without it the reply is bare text and what the run consumed is unrecoverable: these runs
+    // pass --no-session-persistence, so no session file exists to read afterward.
+    const request: RunRequest = { agent: "claude", prompt: "test", resultJson: true };
+    const cmd = adapter.buildRunCommand(request);
+    expect(cmd).toEqual([
+      "claude",
+      "-p",
+      "--setting-sources",
+      "user",
+      "--strict-mcp-config",
+      "--no-session-persistence",
+      "--output-format",
+      "json",
+    ]);
+  });
+
+  test("the envelope is off unless asked for", () => {
+    const cmd = adapter.buildRunCommand({ agent: "claude", prompt: "test" });
+    expect(cmd).not.toContain("--output-format");
+  });
+
+  test("claude declares it can return a result envelope", () => {
+    expect(adapter.capabilities().supportsResultJson).toBe(true);
+  });
+
+  test("--result-json is refused by a harness that cannot do it", () => {
+    // Refusing beats running and returning plain text: a caller that asked for usage and got
+    // none would record the run as costing nothing.
+    const other = getAdapter("aider");
+    expect(() =>
+      other.validateRunRequest({ agent: "aider", prompt: "test", resultJson: true })
+    ).toThrow(/--result-json is unsupported/);
+  });
+
+  test("resultJson must be a boolean", () => {
+    expect(() =>
+      adapter.validateRunRequest({
+        agent: "claude",
+        prompt: "test",
+        resultJson: "yes" as unknown as boolean,
+      })
+    ).toThrow(/resultJson must be a boolean/);
+  });
+
   test("buildRunCommand with model", () => {
     const request: RunRequest = { agent: "claude", prompt: "test", model: "opus" };
     const cmd = adapter.buildRunCommand(request);

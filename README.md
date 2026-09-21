@@ -90,6 +90,7 @@ codemux [command] [options]
 | `--enable-playwright-mcp` | Enable a local Playwright MCP binary inside `--sandbox` |
 | `--hermetic` | Load none of the operator's customizations (instruction files, skills, plugins, hooks, MCP servers); the login still works. Claude, Z.AI and Codex; others are refused. See [docs/HERMETIC.md](docs/HERMETIC.md) |
 | `--tools <selection>` | Built-in tools the harness exposes: `default` or `none`. Independent of `--hermetic`; Codex takes `none` only with `--auto read-only` |
+| `--result-json` | Return the harness's own structured result envelope on stdout instead of plain text, so a caller can read what the run consumed (tokens, cost). Claude only; other harnesses refuse it rather than silently returning text. The envelope's shape is the harness's, not codemux's |
 | `-s, --sandbox` | Execute via `scode` (default: on; `--no-sandbox` opts out, and autonomy below `high` then refuses) |
 | `--sandbox-trust <level>` | `scode` trust override (`trusted`, `standard`, `untrusted`) |
 | `--sandbox-no-net` | Add `--no-net` to `scode` |

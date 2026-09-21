@@ -72,6 +72,10 @@ program
     "Load none of the operator's customizations (instruction files, skills, plugins, hooks, MCP servers); harnesses with a verified mechanism only, see docs/HERMETIC.md"
   )
   .option("--tools <selection>", "Built-in tools the harness exposes: default, none")
+  .option(
+    "--result-json",
+    "Return the harness's structured result envelope on stdout, carrying token usage"
+  )
   .option("-s, --sandbox", "Run in sandbox (default; requires scode)", true)
   .option("--no-sandbox", "Run without the scode boundary (autonomy below high is unavailable)")
   .option(
@@ -208,6 +212,7 @@ program
         enablePlaywrightMcp,
         hermetic,
         tools,
+        resultJson: Boolean(options.resultJson),
       };
       // Refuse an unsupported hermetic or tools request before any launch work.
       adapter.validateRunRequest(request);

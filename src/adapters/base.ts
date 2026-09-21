@@ -252,6 +252,16 @@ export abstract class BaseAdapter {
     if (request.hermetic !== undefined && typeof request.hermetic !== "boolean") {
       throw new Error("hermetic must be a boolean");
     }
+    if (request.resultJson !== undefined && typeof request.resultJson !== "boolean") {
+      throw new Error("resultJson must be a boolean");
+    }
+    if (request.resultJson && !caps.supportsResultJson) {
+      // Refuse rather than run and return plain text: a caller that asked for usage and got
+      // none would record a run as costing nothing.
+      throw new Error(
+        `${this.id} cannot return a structured result envelope; --result-json is unsupported`
+      );
+    }
     if (request.hermetic && !caps.supportsHermetic) {
       // Only a mechanism verified by `codemux check --hermetic` may claim this;
       // an unverified harness would quietly run with the operator's context.

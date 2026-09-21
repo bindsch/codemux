@@ -59,6 +59,10 @@ describe("installed harness contracts", () => {
         "--no-session-persistence",
         "--safe-mode",
         "--tools",
+        // Carries the result envelope --result-json exists for. Without it in this list an
+        // upstream release that dropped or renamed the flag would pass the contract suite while
+        // every --result-json run broke, which is the failure this file exists to catch.
+        "--output-format",
         "manual",
         "acceptEdits",
         "plan",

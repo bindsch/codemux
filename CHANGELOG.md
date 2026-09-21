@@ -9,6 +9,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
+- `--result-json` on `run` asks the harness for its own structured result
+  envelope on stdout rather than plain text, so a caller can account for what
+  a run consumed. A headless run previously reported nothing about its token
+  use, and nothing could be recovered afterward either, because these runs pass
+  `--no-session-persistence` and leave no session file. Claude Code supplies
+  the envelope through `--output-format json`: the reply plus `usage`,
+  `modelUsage` and `total_cost_usd`. codemux asks for it and passes it through
+  unchanged; the shape belongs to the harness. Harnesses without the capability
+  refuse the flag instead of returning plain text, so a caller that asked for
+  usage and got none cannot record the run as having cost nothing.
+
 - `--sandbox-account <file>` / `--sandbox-account-id <id>` on `run` and
   `tui` forward scode's per-run scratch accounting: when set, scode appends
   one JSON line per sandboxed run describing the private scratch directory
