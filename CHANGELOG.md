@@ -7,6 +7,402 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Provider overrides: point one harness at a different model provider
+  through `CODEMUX_<AGENT>_PROVIDER_{BASE_URL,API_KEY,MODEL}` (blank values
+  count as unset; a half-configured override refuses the launch; a base
+  URL or model name containing `{` or `}` is refused — OpenCode substitutes
+  `{env:…}`/`{file:…}` and Droid and Pi expand `${VAR}` templates in the
+  config files an override writes). The key is
+  delivered through the environment codemux itself provides or through a
+  private per-run file, never through an operator configuration file, so an
+  override survives `--hermetic`. Consumers: Aider (litellm's `openai/`
+  model prefix with `OPENAI_API_BASE`/`OPENAI_API_KEY`), OpenCode (a
+  private `OPENCODE_CONFIG` provider file plus a key environment it
+  references), Kimi Code (the `KIMI_MODEL_*` group that synthesizes a
+  provider in memory), Droid (a per-run BYOK `customModels` entry inside a
+  private `--settings` file), Pi (a private agent directory behind
+  `PI_CODING_AGENT_DIR`), and Goose (the pure-environment
+  `GOOSE_PROVIDER`/`OPENAI_HOST`/`OPENAI_BASE_PATH`/`OPENAI_API_KEY`/`GOOSE_MODEL`
+  group). Documented in the README ("Provider overrides").
+- Aider's `--hermetic` claim is withdrawn and the flag refused again. The
+  2026-09-17 two-probe check passed, but its canary plants `AGENTS.md` and
+  `CLAUDE.md` — a channel the control probe already exercises through
+  `--read` — and never rode aider's own config layers, which no flag
+  closes: `.aider.conf.yml`, `.env` and `.aider.model.settings.yml` load
+  from the working directory, the git root and the home alongside every
+  pinned file, inside the aider process where the `AIDER_*` sanitizer block
+  cannot see them (`main.py` at 0.86.2). Confirmed live on 2026-10-04: a
+  plain run whose working directory held only a `.aider.conf.yml` naming a
+  canary note answered with the note's code word, every pinned flag in
+  place (docs/HERMETIC.md). The answer machinery stays for the day aider
+  grows a switch: a per-run chat-history file under `~/.aider/.codemux/`
+  (aider's stdout is a transcript; the history holds the bare reply and
+  the model's reasoning), with the code-word scan covering stdout plus the
+  full history. Only a hermetic run creates the file; plain runs keep
+  `--chat-history-file /dev/null`, so no run today writes its conversation
+  to disk (h6 review).
+- OpenCode claims `--hermetic` and `--tools none`, verified live on
+  2026-09-17 through the provider override (GLM-5.3 via Z.AI): the override
+  rides a private `OPENCODE_CONFIG` file codemux writes per run and removes
+  at exit, with the key delivered as `{env:…}` interpolation and headless
+  runs only. Hermetic runs now REMOVE `OPENCODE_CONFIG`,
+  `OPENCODE_CONFIG_DIR` and `OPENCODE_CONFIG_CONTENT` through `env -u`
+  instead of blanking them: OpenCode's global config path reads
+  `OPENCODE_CONFIG_DIR ?? …`, an empty string survives the `??`, and the
+  resulting empty global path turned the global `AGENTS.md` lookup into a
+  project-relative one — a live leak of the check's planted code word at
+  1.18.18, traced by pointing the override at a tee proxy and reading the
+  request body. The hermetic check's probe prompt now forbids tool use: a
+  tool-armed model (GLM-5.3 under `--auto`) answered the question by
+  reading the planted `CLAUDE.md` itself while its request was clean, which
+  is the model's own discovery, not a configuration leak.
+- The `env` prefix validator accepts `-u NAME` pairs (plain identifier
+  names only); every other option (`-i`, `-S`) is still refused.
+- Droid claims `--tools none`, verified live on 2026-09-17 through a
+  provider override (GLM-5.3 via Z.AI): the override writes one BYOK
+  `customModels` entry into a private per-run settings file passed as the
+  root-level `--settings <path>` (merged for that process only), with the
+  key referenced as `${CODEMUX_DROID_PROVIDER_API_KEY}` and delivered
+  through the environment codemux provides — never argv, never an operator
+  file, and no Factory login needed, which is what unblocked the probe
+  (droid's self-update had left no stored login). Droid selects a custom
+  model by the entry's `id` (here `custom:codemux:<model>-0`, the shape of
+  the operator's own working entries), not its `model` name; a `-m` naming
+  only the API model id falls through to Factory inference and fails
+  authentication. Under `--tools none` (`--only-tools ToolSearch`) the
+  session transcripts contain no tool call at all and neither capability
+  probe could produce its secret (the shell probe returned fabricated
+  output, distinguishable because the probe asks for a transform of
+  planted content), while a plain run's model read the file and produced
+  it; the non-hermetic control probe leaked the planted code word, which
+  grounds the hermetic refusal (instruction files load from the working
+  directory up to the git root with no switch).
+- Kimi Code claims `--tools none`, verified live on 2026-09-17 through a
+  provider override (GLM-5.3 via Z.AI): the override rides the
+  `KIMI_MODEL_*` environment group (a temporary provider synthesized in
+  memory, so nothing touches config.toml), suppressing the `-m` flag
+  because a config alias would outrank the synthesized model. Under
+  `--tools none` the read and shell capability probes produced neither
+  secret while a plain run produced both; the non-hermetic control probe
+  quoted the planted code word and `~/.agents/AGENTS.md`'s owner, which
+  grounds the hermetic refusal (the AGENTS.md merger has no switch).
+
+- Goose claims `--tools none`, verified live on 2026-09-17 at 1.50.1
+  (installed via the official `download_cli.sh`) through a provider
+  override (GLM-5.3 via Z.AI): the override rides pure environment —
+  `CODEMUX_GOOSE_PROVIDER_{BASE_URL,API_KEY,MODEL}` become the
+  `GOOSE_PROVIDER`/`OPENAI_HOST`/`OPENAI_BASE_PATH`/`OPENAI_API_KEY`/`GOOSE_MODEL`
+  group, every one of which goose reads before any config file or keyring,
+  so the key never touches argv or an operator file. The base URL splits
+  into the host/path pair with goose's own `derive_base_path` semantics, so
+  `https://api.z.ai/api/coding/paas/v4` becomes
+  `OPENAI_HOST=https://api.z.ai` with
+  `OPENAI_BASE_PATH=api/coding/paas/v4/chat/completions`, and a
+  chat-completions path forces the chat-completions protocol; a base URL
+  with a query string is rejected because the pair cannot carry one. Under
+  `--tools none` (`--no-profile`, under which the session instantiates no
+  extension at all — every tool, the developer, skills and memory platform
+  extensions included, reaches the model only through an extension) the
+  read probe produced no output at all and the shell probe produced a
+  fabricated quip rather than the real transform of the planted token,
+  while plain runs produced both the secret and its transform; the
+  non-hermetic control probe leaked the planted code word, which grounds
+  the hermetic refusal (`GOOSE_SYSTEM_PROMPT_FILE_PATH` replaces the whole
+  system prompt from the operator's config file on every session with no
+  switch, and `GOOSE_PATH_ROOT` — the wholesale relocation — strands the
+  provider and model selection living in the same file while the global
+  skill directories under the real home escape it).
+- Qwen keeps refusing both capabilities, now verified live on 2026-09-17
+  at 0.24.0 (installed via npm) through a provider override that no longer
+  ships (GLM-5.3 via
+  Z.AI): the probe rode the `OPENAI_API_KEY`/`OPENAI_BASE_URL`/
+  `OPENAI_MODEL` group qwen documents for headless setups, so the key
+  never touched argv or an operator file. The non-hermetic control probe
+  stayed clean — every codemux qwen run already carries `--safe-mode`,
+  which closes every operator channel, so the check's control can never
+  leak and `--hermetic` can never pass by design — while the plain read
+  and shell probes produced the planted secret and its transform, so the
+  harness demonstrably ran against Z.AI with its tools intact;
+  `--tools none` stays refused because no tool-removal flag survives
+  safe mode.
+- Cline keeps refusing both capabilities, now verified live on
+  2026-09-17 at 3.0.62 (installed via npm) through a provider override
+  that no longer ships
+  (GLM-5.3 via Z.AI): the probe's `CODEMUX_CLINE_PROVIDER_{BASE_URL,API_KEY,MODEL}`
+  wrote a private per-run data directory passed as `--data-dir`, whose
+  `settings/providers.json` carries one `openai-compatible` entry — the
+  key rides that 0600 file (cline's runtime reads provider keys from
+  providers.json only; `apiKeyEnv` is a configure-UI hint and `-k/--key`
+  would put it in argv), never argv or an operator file. `--data-dir`
+  is also what makes the override work at all: a plain one-shot run
+  delegates its session to cline's long-lived hub daemon
+  (`forceLocalBackend: isYoloMode || config.sandbox === true` in
+  apps/cli/src/runtime/run-agent.ts), and the session config sent to the
+  daemon carries the key but not the settings file's base URL — observed
+  live when every run after the first sent the override's key to
+  api.openai.com — while `--data-dir` sets `CLINE_SANDBOX=1` and forces
+  the in-process backend that reads the file. The non-hermetic control
+  probe leaked the planted code word through the workspace AGENTS.md
+  channel and the model's reasoning also named the operator from the
+  global `~/.agents/AGENTS.md` channel, so both refusals stand on live
+  leaks; the plain read and shell probes produced the planted secret
+  and its transform, so the harness demonstrably ran against Z.AI.
+- Pi claims `--tools none`, verified live on 2026-09-17 through a
+  provider override (GLM-5.3 via Z.AI): the override writes a private
+  agent directory behind `PI_CODING_AGENT_DIR` — the only knob that
+  relocates the `models.json` pi reads custom providers from — holding a
+  one-provider entry whose `apiKey` is the
+  `${CODEMUX_PI_PROVIDER_API_KEY}` reference; pi expands `$VAR`/`${VAR}`
+  config templates from the environment at auth time, so the value never
+  touches disk, argv, or an operator file, and the run needs no stored
+  login. Under `--tools none` (`--no-tools`, with the autonomy mapping's
+  `--tools` allowlist suppressed because pi resolves it over `--no-tools`)
+  the read probe answered that it had no tools to read the file and the
+  shell probe produced no output at all, while plain runs produced the
+  planted secret and its transform; the non-hermetic control probe
+  leaked the planted code word, which grounds the hermetic refusal (the
+  working-directory context-file channel is not trust-gated, and the
+  global `~/.pi/SYSTEM.md`/`APPEND_SYSTEM.md` system-prompt override has
+  no switch).
+- Gemini's `--tools none` mapping cannot be claimed on
+  a user-owned prefix, so both capabilities stay refused and the mapping is
+  removed in 0.7.0 as dead surface: gemini 0.60.0 was installed and
+  exercised live on
+  2026-09-17, and its system-settings layer requires the settings file and
+  every ancestor directory up to `/` to be owned by root (uid 0) — a rule
+  present identically at the audited 0.53.1 — or the file is skipped with a
+  warning and the run starts with its tools restored. The private per-run
+  file under `~/.gemini/.codemux/` that the mapping wrote was therefore
+  always skipped on such a machine (observed live through the identical
+  warning on the packaged file). The same warning shows the packaged
+  system-settings file every plain gemini run points at
+  (`resources/gemini-system-settings.json`, whose one pin disables generic
+  project `.env` loading) has never loaded on a user-owned prefix either —
+  a documented contract gap, not a regression; the other two protections
+  (`.gemini` project controls rejected, nested sandbox disabled) are
+  launch-boundary mechanisms and apply everywhere. Gemini keeps refusing `--hermetic`: no switch
+  closes the workspace channels, gemini loads only `GEMINI.md` — never the
+  `AGENTS.md` or `CLAUDE.md` the check plants, so a leaking control probe is
+  impossible — and the live pass found no custom-provider path to verify
+  against either: `GOOGLE_GEMINI_BASE_URL` resolves to the "gateway" auth
+  type the CLI's own validator rejects, pinning API-key auth still landed
+  the request on Google, and Z.AI serves no Gemini-protocol endpoint (only
+  Anthropic and OpenAI protocols, docs.z.ai/devpack/tool/others).
+- Copilot keeps refusing both capabilities,
+  now verified live on 2026-09-17 at 1.0.85 (installed via npm) through
+  an override that no longer ships (GLM-5.3 via Z.AI): the probe's
+  `CODEMUX_COPILOT_PROVIDER_{BASE_URL,
+  API_KEY,MODEL}` rode the documented BYOK environment group —
+  `COPILOT_PROVIDER_BASE_URL` / `COPILOT_PROVIDER_TYPE=openai` /
+  `COPILOT_PROVIDER_API_KEY` plus `COPILOT_MODEL` (docs.github.com, "Use
+  bring-your-own-key models with Copilot CLI") — which activates before any
+  GitHub authentication at 1.0.85, so the runs needed no Copilot login; the
+  key rides the environment codemux provides, never argv. The plain probes
+  ran against the model: the read probe produced the planted secret and the
+  shell probes demonstrably executed (`cat notes.txt | wc -c` answered the
+  file's true byte count). `--tools none` lost its mapping: the previous
+  bare `--available-tools` mapping is removed because no argv spelling of
+  an empty allowlist disarms the tools — a bare flag, `--available-tools=`,
+  and `--available-tools ""` all left the read and shell tools armed in
+  live probes at `--auto high` (the optional-variadic flag parses every
+  empty spelling into an absent filter), so the capability stays refused on
+  live evidence rather than an unverified mapping. `--hermetic`'s mechanism
+  (the private `COPILOT_HOME`) is removed in 0.7.0 as dead surface,
+  unclaimable for the same reason: the check's control probe cannot leak the
+  planted code word because `--no-custom-instructions` rides every codemux
+  run — verified live when the control answered `Peter`, the name inside
+  the user-installed skill `~/.agents/skills/domain-dns-ops/SKILL.md` (a
+  real leak of the user-skill channel the private home closes) while the
+  planted code word never appeared; dropping the flag from plain runs to
+  make the control leak would un-harden every run. In-session (sandboxed)
+  exercise needs `COPILOT_PKG_CACHE_HOME` passed with `--pass-env`: the
+  loader's first-run self-extraction cannot mkdir under
+  `~/Library/Caches` from inside a sandboxed session
+  (docs/HARNESS-COMPATIBILITY.md).
+
+### Fixed
+
+- OpenCode provider overrides whose model carries the provider prefix
+  (`--model codemux/glm-5.3`, or the same value in
+  `CODEMUX_OPENCODE_PROVIDER_MODEL`) generated a config the run's own
+  selector could not resolve: the models entry was keyed by the prefixed
+  name while OpenCode splits a selector on its first `/`. The prefix is
+  now normalized away before the entry is written.
+- Droid's effort mapping resolves the session's model — the request's,
+  else the override's — before choosing the no-reasoning value, so an
+  override model in the gpt-5.6 family gets that family's `none` instead
+  of the generic `off` droid rejects for it.
+- The `env` prefix trust check no longer honors `-u NAME`/`--unset NAME`
+  after a `NAME=value` assignment. Past an assignment, options must not
+  be honored: env would treat the option as the program to run (BSD env,
+  and POSIX env generally), so the check now refuses the prefix instead
+  of validating the wrong binary.
+- Aider's answer extraction anchors on the run's user header instead of
+  the last `#### ` header, so a reply containing its own header (for
+  example `Laurent` followed by `#### Note` and `OK`) no longer extracts
+  as exactly `OK`.
+- The adapter factories forward the environment view `getAdapter` is
+  handed. They used to construct every adapter against `process.env`
+  regardless, so an exported `CODEMUX_*_PROVIDER_*` override leaked into
+  `verify`'s deliberately empty view: a configured cline then threw from
+  `buildRunCommand` and `verify` reported broken static wiring for a
+  working setup (found by the h2 review).
+- The OpenCode provider override refuses a model containing `{` or `}`:
+  OpenCode substitutes `{env:…}` and `{file:…}` in config text before
+  parsing, so such a model id would splice an environment variable's
+  value or an arbitrary file's content into the config codemux writes
+  (found by the h3 review).
+- Aider's post-run history read follows no symlink and stops at a bound
+  (32 MiB — the largest legal prompt plus the reply and reasoning around
+  it). The sandboxed harness can write `~/.aider/.codemux/`, so the old
+  bare `readFileSync` would have followed a harness-planted link to a
+  file outside the sandbox — read by codemux, which runs outside it —
+  and read a harness-grown file without bound. Both refusals fail closed
+  on stdout (h3 review).
+- The OpenCode login-state inspection reads its SQLite store through
+  `bun:sqlite` instead of `node:sqlite` (h4 review): the pinned runtime
+  floor (Bun 1.3.14) has no `node:sqlite`, and the module loads with the
+  adapter registry, so the import broke every CLI command on the floor —
+  `./bin/codemux --help` printed "error: No such built-in module:
+  node:sqlite" and still exited 0. Same fail-closed semantics, same
+  refusal design, no new dependency; the docs agree there is no switch to
+  close the channel (opencode.ai/docs/config at 1.18: remote config is
+  "fetched automatically when you authenticate with a provider that
+  supports it", first in the precedence order, and the documented
+  config and env surface gates neither fetch).
+- A provider-override base URL containing `{` or `}` is refused (h4
+  review): OpenCode substitutes `{env:…}`/`{file:…}` and Droid and Pi
+  expand `${VAR}` templates in the config files an override writes, so a
+  brace could splice an environment variable's value or a file's content
+  into a config codemux writes. One rule covers both template shapes.
+- Pi's provider override declares `reasoning: true` on the generated
+  model entry (h4 review): pi 0.85.1 defaults a custom model's reasoning
+  to false, which clamps the `--thinking` flag `--effort` maps to "off",
+  so the bare entry silently disabled reasoning (observed at the
+  composer as `{"reasoning":false,"requested":"high","effective":"off"}`).
+- One bad stale artifact no longer blocks every later run (h4 review):
+  the sweeps for aider's chat-history files, kimi's no-tools agent
+  files, opencode's provider-config directories, droid's
+  provider-settings directories and pi's agent directories let a single
+  unremovable entry — a directory named like the file pattern, `EISDIR`
+  on a non-recursive rm — throw out of the sweep and fail every
+  subsequent launch. Each removal now warns on stderr and moves on.
+- Aider's post-run history read opens the file without blocking (h5
+  review): a harness that replaced its writable history file with a FIFO
+  and exited parked `openSync(O_RDONLY)` before the type check could
+  reject it, and the read runs after the subprocess timeout is cleared,
+  so `--timeout` could not stop the hang — an isolated reproduction
+  blocked until SIGKILL. The open now carries `O_NONBLOCK` (the pattern
+  the bounded file reads in `src/file-io.ts` already use), the
+  descriptor check rejects the FIFO, and the read fails closed on stdout
+  as every other refusal does.
+- The OpenCode login-state inspection reads `auth.json` through the
+  bounded, nonblocking, no-final-symlink reader instead of a bare
+  `readFileSync` (h6 review): the read runs during validation, before
+  the subprocess timeout starts, so a harness that replaced the store
+  with a FIFO hung codemux until SIGKILL — the same class as the h5
+  finding, in the one raw read the h3/h5 conversions had left. Any
+  store that exists but cannot be read — symlinked (OpenCode follows
+  symlinks codemux refuses, so skipping the inspection would miss a
+  real carrier), oversized, unparsable, or a FIFO — now fails closed
+  naming the file, and `opencode.db` is lstat'd to a regular file
+  before SQLite opens it, its own open having the same two shapes.
+- A provider-override model containing `{` or `}` is refused on Droid
+  and Pi (h6 review): the h4 brace refusal covered the base URL, but
+  the model lands in the same template-expanded files — droid's
+  settings entry and pi's models.json — so a crafted model name could
+  splice an environment variable's value into the config codemux
+  writes. Refused at validation and again before anything is created.
+- Aider writes the per-run chat-history file only on hermetic runs (h6
+  review): the file rode every headless run, so plain runs — whose
+  history nothing reads, the hermetic check being refused — persisted
+  the whole conversation under `~/.aider/.codemux/` where the run used
+  to write `/dev/null`. Plain runs go back to `/dev/null` and create
+  nothing.
+- The OpenCode hermetic-home sweep warns and moves on when one stale
+  home cannot be removed (h6 review): the h4 sweep hardening covered
+  five sweeps and missed this sixth, so an unremovable stale home threw
+  out of it and failed every later hermetic launch.
+- Aider's installed-contract pins carry only flags a reachable run
+  sends (h6 review): `--map-tokens` rides only the `--hermetic`
+  branch, which aider refuses, and `--read` rides instruction
+  directories, which only the hermetic check sets on its refused
+  probe — both were pinned though no reachable request emits them,
+  which would fail the gate on an upstream removal codemux is
+  indifferent to (the rule the copilot `--available-tools` comment
+  states). An always-on test now builds every reachable aider command
+  shape and fails on any pin none of them sends.
+- The `check --hermetic` control probe repeats the hermetic probe's
+  `--tools` selection unchanged, so `--hermetic` is the only difference
+  between the two requests (h7 review). It used to fall back to the
+  default tools for a harness that scopes `--tools none` to hermetic
+  runs, which varied two things at once: the control's leak could have
+  come through a tool, and the hermetic probe's clean `OK` could have
+  meant tool removal rather than isolation. OpenCode — the one harness
+  so scoped — now refuses the combination before any request is spent,
+  because its control would be a plain `--tools none` run the adapter
+  itself refuses; its isolation claim is checked with `--hermetic`
+  alone and its `--tools none` claim keeps the read and shell probes of
+  the live pass. The h6 review's documented residual (the armed
+  default-tools control) is gone with the substitution.
+
+### Changed
+
+- OpenCode's `--tools none` requires `--hermetic`. The
+  `OPENCODE_PERMISSION={"*":"deny"}` deny merges into the top-level
+  permission only; the operator's opencode config can append per-agent
+  permission rules after it, and the last matching rule wins — proven
+  live at 1.18.18 through codemux's own plain-run path, where
+  `"agent": {"build": {"permission": {"bash": "allow"}}}` in the
+  operator's config put the bash tool into the model's request under the
+  deny (h2 review; docs/HERMETIC.md). No environment variable spells
+  per-agent or mode permissions, so a plain run cannot guarantee the
+  deny and refuses the capability instead. The check's control probe
+  runs with the default tools for such a harness — it varies `--hermetic`
+  alone, and a plain `--tools none` run is now refused.
+- OpenCode's `--hermetic` (and with it `--tools none`) refuses a login
+  that carries remote configuration. OpenCode's config load fetches a
+  well-known login's `.well-known/opencode` document and an active
+  organization's `/api/config` from `opencode.db`, merging both as
+  global config — custom prompts, plugins and agent permissions
+  included, which append after the `--tools none` deny exactly like the
+  operator's per-agent rules — unconditionally and behind no flag
+  (`config.ts` at 1.18.18; the private hermetic home changes nothing,
+  the login's data directory stays real; found by the h3 review, then
+  proven live through the exact hermetic launch path against a local
+  mock: with a well-known entry as the auth store's only content the
+  run fetched the login's `.well-known/opencode` and the model's
+  request carried the bash tool under the deny, while the identical
+  launch with an empty auth store fetched nothing and sent no tools). A
+  hermetic run now inspects the login state before launch and refuses
+  while either carrier exists — a well-known entry in the auth store or
+  an account with an active organization — naming the remedy; an account
+  store that exists but cannot be read fails closed the same way. The
+  hermetic env prefix also removes `OPENCODE_AUTH_CONTENT`, which
+  `Auth.all` reads before the auth.json file and which could carry the
+  same well-known login through an explicit `--pass-env`
+  (docs/HERMETIC.md).
+
+### Removed
+
+- Dead surface behind the both-refused harnesses (the h4 review's cut):
+  the provider overrides and hermetic/no-tools machinery for Copilot,
+  Gemini CLI, Cline, OpenHands and Qwen — every harness whose
+  `--hermetic` and `--tools none` are both refused. The refusals and
+  their live grounding stay in docs/HERMETIC.md; the modules
+  (`src/copilot-hermetic.ts`, `src/cline-provider.ts`,
+  `src/gemini-no-tools.ts`), their flags, tests and README enumeration
+  are gone. The machinery existed to ground the refusals' live checks
+  and could never be claimed as a capability, so it shipped per-run
+  files, config writing and env prefixes with no capability behind
+  them. Plain-run commands for the five are unchanged (OpenHands keeps
+  `--override-with-envs` model selection; copilot keeps
+  `--disable-builtin-mcps` below high autonomy), and the
+  installed-contract entries are unchanged from 0.6.1. Provider
+  overrides remain for aider, opencode, kimi, droid, pi and goose.
+
 ## [0.6.1] - 2026-10-04
 
 ### Added

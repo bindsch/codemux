@@ -25,7 +25,7 @@ covered by tests. Installed binaries were also exercised where available.
 | Goose | 1.45.0 | not installed | [release](https://github.com/aaif-goose/goose/releases/tag/v1.45.0) | `GOOSE_MODE` chat/approve/smart_approve/auto, project extension config rejected |
 | Gemini CLI | 0.53.1 | not installed | [release](https://github.com/google-gemini/gemini-cli/releases/tag/v0.53.1) | current approval modes; local `.env` and nested sandbox disabled; Plan requires an outer read-only boundary |
 | Kimi Code | 0.31.1 | 0.31.1 | [docs](https://moonshotai.github.io/kimi-code/) | argv prompt; `--plan`/`--yolo`/`--auto` are interactive only and are rejected with `--prompt`, so headless autonomy rests on scode; project `.kimi-code` agents, skills, and mcp directories rejected |
-| OpenHands | CLI 1.16.0 | CLI 1.16.0 | [SDK](https://github.com/OpenHands/software-agent-sdk) | argv task; `--headless` auto-approves so headless autonomy rests on scode; `--llm-approve` never emitted; model only via `--override-with-envs`; project `.openhands` skills, hooks, agents, microagents, plugins, and profiles rejected |
+| OpenHands | CLI 1.16.0 | CLI 1.16.0 | [SDK](https://github.com/OpenHands/software-agent-sdk) | argv task; `--headless` auto-approves so headless autonomy rests on scode; `--llm-approve` never emitted; model only via `--override-with-envs` (`LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL` exercised live 2026-09-17 through a Z.AI override); project `.openhands` skills, hooks, agents, microagents, plugins, and profiles rejected |
 | OpenCode | 1.18.18 | 1.18.18 | [release](https://github.com/anomalyco/opencode/releases/tag/v1.18.10) | pure mode, plan/build/auto, headless `--variant`, all policy-bearing project config rejected |
 | Pi | 0.83.0 | not installed | [release](https://github.com/earendil-works/pi/releases/tag/v0.83.0) | new `@earendil-works/pi-coding-agent` package, stdin, no project packages, explicit tools |
 | Qwen Code | 0.21.2 | not installed | [release](https://github.com/QwenLM/qwen-code/releases/tag/v0.21.2) | current `qwen`, safe mode, plan/default/auto/yolo; sandbox-only legacy fallback |
@@ -128,6 +128,158 @@ exist at 0.146.0, so a hermetic Codex run on an older release may fail on
 an unknown flag rather than run non-hermetically. `maxAudited` is unchanged:
 this addendum rests on help-surface inspection, adapter unit tests and the
 live canary, not on the full upgrade procedure.
+
+## 2026-09-17 addendum: hermetic across the remaining harnesses
+
+The mechanisms (or refusals) for every harness beyond Claude Code, Z.AI and
+Codex are grounded as follows, all detailed in `docs/HERMETIC.md`. None of
+this moves `maxAudited`: the implemented mappings keep their capabilities
+off until a live check runs.
+
+The model-level probes for every harness described below ran live on
+2026-09-17 through codemux, each through its provider override where one
+exists. The one gap is Cursor Agent, which has neither a login on this
+machine nor a mechanism to check:
+
+| Harness | Checked at | Last audited | Probe pending |
+|---------|-----------|--------------|---------------|
+| Cursor Agent | 2026.08.11 build | same | no Cursor login on this machine; no mechanism exists to check |
+
+Droid 0.221.0 (last audited 0.186.0) was exercised live on 2026-09-17
+through the provider override: a per-run BYOK `--settings` file routed
+GLM-5.3 via Z.AI with no Factory login (the override's own key
+authenticates), and the `--tools none` capability probes and the
+non-hermetic control probe ran against the model (docs/HERMETIC.md). The
+tool flags are unchanged between 0.186.0 and 0.221.0; the BYOK settings
+surface (`customModels`, `--settings`) is now part of the exercised
+contract. `maxAudited` is unchanged: this rests on help-surface
+inspection, adapter unit tests and the live probes, not on the full
+upgrade procedure.
+
+Gemini CLI 0.60.0 (last audited 0.53.1) was installed here (`npm install
+-g @google/gemini-cli`; `npm uninstall -g @google/gemini-cli` removes it)
+and exercised live on 2026-09-17 through codemux `check` and probe runs
+with a private `GEMINI_CLI_HOME`. The approval-mode flags behind the
+autonomy mapping are unchanged between 0.53.1 and 0.60.0. The exercise
+surfaced two findings, detailed in docs/HERMETIC.md. First, the packaged
+system-settings file (`resources/gemini-system-settings.json`, whose one
+pin is `advanced.ignoreLocalEnv` — generic project `.env` loading
+disabled) is silently skipped on a user-owned prefix — the
+system-settings security walk requires the file and every ancestor
+directory to be root-owned (uid 0), a rule present identically at the
+audited 0.53.1 — so that one pin has never applied under Homebrew or a
+source checkout; the other two protections (`.gemini` project controls
+rejected, nested sandbox disabled) are launch-boundary mechanisms — the
+project-config assertion and `--sandbox=false` in argv — and apply on
+every prefix. Second, no custom-provider override exists at 0.60.0:
+`GOOGLE_GEMINI_BASE_URL` maps to a "gateway" auth type the CLI's own
+validator rejects, and with API-key auth pinned the request still reached
+Google. `maxAudited` is unchanged: this rests on help-surface inspection,
+package-source reading and the live runs, not on the full upgrade
+procedure.
+
+Pi 0.85.1 (last audited 0.83.0) was installed here (`npm install -g
+@earendil-works/pi-coding-agent`; `npm uninstall -g
+@earendil-works/pi-coding-agent` removes it) and exercised live on
+2026-09-17 through a provider override: a private agent directory behind
+`PI_CODING_AGENT_DIR` carrying a one-provider `models.json` routed
+GLM-5.3 via Z.AI with no stored login, and the `--tools none`
+capability probes and the non-hermetic control probe ran against the
+model (docs/HERMETIC.md). The tool flags behind the mappings
+(`--no-tools`, `--tools`, `--no-approve`) are unchanged between 0.83.0
+and 0.85.1 in the package help surface, and the `models.json` provider
+schema with `$VAR` apiKey templates is now part of the exercised
+contract. `maxAudited` is unchanged: this rests on help-surface
+inspection, adapter unit tests and the live probes, not on the full
+upgrade procedure.
+
+Goose 1.50.1 (last audited 1.45.0) was installed here (the official
+`download_cli.sh` from the README with `CONFIGURE=false`, which installs
+to `~/.local/bin/goose`; delete that file to remove it — Homebrew cannot
+install it inside this machine's sandboxed sessions) and exercised live
+on 2026-09-17 through a provider override: the environment group
+`GOOSE_PROVIDER`/`OPENAI_HOST`/`OPENAI_BASE_PATH`/`OPENAI_API_KEY`/`GOOSE_MODEL`
+routed GLM-5.3 via Z.AI with no goose login — every value rides goose's
+env-first lookup (`get_param`, `crates/goose/src/config/base.rs` at
+1.50.1), so no operator file is touched. The `--tools none` capability
+probes and the non-hermetic control probe ran against the model
+(docs/HERMETIC.md). The flags behind the mappings (`--no-profile`,
+`GOOSE_MODE`) and the OpenAI custom-endpoint surface are unchanged
+between 1.45.0 and 1.50.1 in the source and help surface, and the
+`OPENAI_HOST`/`OPENAI_BASE_PATH` endpoint split with goose's
+`derive_base_path` semantics is now part of the exercised contract.
+`maxAudited` is unchanged: this rests on help-surface inspection,
+adapter unit tests and the live probes, not on the full upgrade
+procedure.
+
+Qwen Code 0.24.0 (last audited 0.21.2) was installed here (`npm install
+-g @qwen-code/qwen-code`; `npm uninstall -g @qwen-code/qwen-code` removes
+it) and exercised live on 2026-09-17 through a provider override: the
+`OPENAI_API_KEY`/`OPENAI_BASE_URL`/`OPENAI_MODEL` group qwen documents
+for headless setups routed GLM-5.3 via Z.AI, and the non-hermetic
+control probe plus plain capability probes ran against the model
+(docs/HERMETIC.md). The `--safe-mode` and `--approval-mode` flags behind
+the mappings are unchanged between 0.21.2 and 0.24.0 in the package help
+surface, and the OpenAI-compatible environment group is now part of the
+exercised contract. Both capabilities stay refused, now live-grounded:
+the control probe stayed clean because every codemux qwen run already
+carries `--safe-mode` (docs/HERMETIC.md). `maxAudited` is unchanged:
+this rests on help-surface inspection, adapter unit tests and the live
+probes, not on the full upgrade procedure.
+
+Cline CLI 3.0.62 (last audited 3.0.48) was installed here (`npm install
+-g cline`; `npm uninstall -g cline` removes it) and exercised live on
+2026-09-17 through a provider override: a private data directory behind
+`--data-dir` carrying a one-provider `settings/providers.json` routed
+GLM-5.3 via Z.AI with no cline login, and the non-hermetic control probe
+plus plain capability probes ran against the model (docs/HERMETIC.md).
+The `--data-dir` flag matters beyond relocation: a plain one-shot run
+delegates its session to cline's long-lived hub daemon, whose provider
+resolution drops the settings file's base URL (the session config
+carries the key but not the endpoint — observed live when every run
+after the first sent the override's key to api.openai.com), while
+`--data-dir` sets `CLINE_SANDBOX=1` and forces the in-process backend
+that reads the file (`forceLocalBackend: isYoloMode ||
+config.sandbox === true`, apps/cli/src/runtime/run-agent.ts at 3.0.62).
+The `--plan`/`--auto-approve`/`--thinking` flags behind the mappings are
+unchanged between 3.0.48 and 3.0.62 in the help surface, and the
+`providers.json` settings shape plus the `--data-dir` isolated-state
+surface are now part of the exercised contract. Both capabilities stay
+refused, live-grounded: the control probe leaked the planted code word
+through the workspace channel and named the operator from the global
+`~/.agents/AGENTS.md` channel (docs/HERMETIC.md). `maxAudited` is
+unchanged: this rests on help-surface inspection, adapter unit tests
+and the live probes, not on the full upgrade procedure.
+
+Copilot CLI 1.0.85 (last audited 1.0.77) was installed here (`npm install
+-g @github/copilot`; `npm uninstall -g @github/copilot` removes it) and
+exercised live on 2026-09-17 through a provider override: the documented
+BYOK environment group (`COPILOT_PROVIDER_BASE_URL` /
+`COPILOT_PROVIDER_TYPE` / `COPILOT_PROVIDER_API_KEY` plus `COPILOT_MODEL`,
+docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-byok-models)
+routed GLM-5.3 via Z.AI with no Copilot login — BYOK activates before
+GitHub authentication at 1.0.85 — and the `--tools none` refutation
+probes and the non-hermetic control probe ran against the model
+(docs/HERMETIC.md). One environment note from the exercise: the loader's
+first-run self-extraction writes about 132 MB under
+`~/Library/Caches/copilot/pkg` (the darwin cache directory; the loader
+does not consult `XDG_CACHE_HOME` on darwin), which a sandboxed session
+cannot create — `COPILOT_PKG_CACHE_HOME`, checked ahead of that default
+by the loader's cache resolution, redirects it, and in-session runs pass
+it through with `--pass-env COPILOT_PKG_CACHE_HOME`. The flags behind
+the mappings are unchanged between 1.0.77 and 1.0.85 in the help
+surface, and the BYOK environment group is now part of the exercised
+contract. One flag did change between 1.0.77 and 1.0.85: the effort
+flag was renamed from `--effort` to `--reasoning-effort` (same value
+set, none through max), caught by the installed-contract suite on the
+exercised binary, and the adapter now emits the new name. Both
+capabilities stay refused, live-grounded: no argv
+spelling of an empty `--available-tools` allowlist disarms the tools,
+and the check's control probe cannot leak the planted code word because
+`--no-custom-instructions` rides every codemux copilot run
+(docs/HERMETIC.md). `maxAudited` is unchanged: this rests on
+help-surface inspection, bundle reading and the live probes, not on the
+full upgrade procedure.
 
 ## 2026-10-03 addendum: result envelopes
 
@@ -286,6 +438,39 @@ as `code`; a basename-keyed selector probed the desktop semver, missed
 the calendar pattern, and warned past the floor even for a below-floor
 agent build (`cursor agent --version` through the desktop, plain
 `--version` for the standalone entries).
+
+## 2026-10-04 addendum: 0.7.0 dead-surface cut
+
+The harnesses whose `--hermetic` and `--tools none` are both refused —
+Copilot, Gemini CLI, Cline, OpenHands, Qwen (Cursor never had
+machinery) — keep only their refusals. The override and hermetic
+machinery the branch had built behind those refusals is removed from
+the tree: no provider-override env group is read for the five, no
+per-run data directories, BYOK settings files or system-settings files
+are written for them, and their plain-run commands are unchanged
+(OpenHands still selects a model through `--override-with-envs` +
+`LLM_MODEL`; copilot still carries `--no-custom-instructions` always
+and `--disable-builtin-mcps` below high autonomy).
+
+The entries this ledger keeps for those harnesses remain valid as the
+refusals' evidence: the 2026-09-17 live checks rode the now-removed
+overrides, and the source findings they recorded — cline's hub daemon
+dropping a settings file's base URL, copilot's BYOK group activating
+before GitHub authentication, gemini's root-ownership walk over the
+system-settings layer, qwen's safe mode zeroing `--core-tools` — are
+upstream behavior, not codemux machinery. `maxAudited` is unchanged and
+the installed-contract entries are unchanged from 0.6.1.
+
+Two harness-behavior notes from the same round: OpenCode's login-state
+inspection reads `opencode.db` through `bun:sqlite` (the pinned runtime
+floor, Bun 1.3.14, has no `node:sqlite`) with the same fail-closed
+refusal, and the 1.18 docs corroborate the design — remote config is
+"fetched automatically when you authenticate with a provider that
+supports it", first in the precedence order, with no documented switch
+gating either fetch (opencode.ai/docs/config). Pi's provider-override
+model entry declares `reasoning: true`: pi 0.85.1 defaults a custom
+model's reasoning to false, which clamps the `--thinking` flag
+`--effort` maps to off.
 
 ## Version enforcement
 

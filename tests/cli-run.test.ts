@@ -300,7 +300,7 @@ describe("CLI - File input validation", () => {
 
 describe("CLI - Hermetic runs", () => {
   test("run --hermetic is refused for a harness without a verified mechanism", async () => {
-    const fake = createFakeBinaryEnv({ droid: "exit 0" });
+    const fake = createFakeBinaryEnv({ droid: "exit 0", copilot: "exit 0" });
     try {
       const { stderr, exitCode } = await runCli(
         ["run", "-a", "droid", "--no-sandbox", "--auto", "high", "--hermetic", "-p", "test"],
@@ -309,7 +309,7 @@ describe("CLI - Hermetic runs", () => {
       expect(exitCode).not.toBe(0);
       expect(stderr).toContain("no verified hermetic mode");
       const tools = await runCli(
-        ["run", "-a", "droid", "--no-sandbox", "--auto", "high", "--tools", "none", "-p", "test"],
+        ["run", "-a", "copilot", "--no-sandbox", "--auto", "high", "--tools", "none", "-p", "test"],
         fake.env
       );
       expect(tools.exitCode).not.toBe(0);
@@ -455,6 +455,74 @@ describe("CLI - Hermetic runs", () => {
       );
       expect(exitCode).toBe(0);
       expect(stdout).toBe("HERMETIC claude: OK\n");
+    } finally {
+      fake.cleanup();
+    }
+  });
+
+  // A stand-in opencode: under the hermetic run's permission deny it answers
+  // OK; on a plain run (no deny in the environment) it leaks the code word
+  // planted in the working directory.
+  const canaryAwareOpencode =
+    'if [ "$1" = --version ]; then printf "opencode 1.18.18\\n"; exit 0; fi\n' +
+    "cat >/dev/null\n" +
+    'case "$OPENCODE_PERMISSION" in *"deny"*) printf "OK\\n"; exit 0;; esac\n' +
+    "grep -ho 'CODEMUX-CANARY-[A-Z0-9]*' AGENTS.md CLAUDE.md";
+
+  test("check --hermetic --tools none runs the control with the same --tools none", async () => {
+    // The control varies --hermetic alone (h7 review): with --tools none
+    // given, both probes carry it, so a leaking control proves the planted
+    // files reached the model without any tool — the attribution that makes
+    // the hermetic probe's clean OK mean isolation, not tool removal. The
+    // stand-in claude logs its arguments so the control's own command is
+    // asserted, not just the verdict lines.
+    const tempDir = mkdtempSync(join(tmpdir(), "codemux-control-argv-"));
+    const argvLog = join(tempDir, "argv.log");
+    const fake = createFakeBinaryEnv({
+      claude:
+        `cat >/dev/null; printf '%s\\n' "$@" >> ${argvLog}; printf '===\\n' >> ${argvLog}; ` +
+        'for a in "$@"; do [ "$a" = --safe-mode ] && { printf "OK\\n"; exit 0; }; done; ' +
+        "grep -o 'CODEMUX-CANARY-[A-Z0-9]*' CLAUDE.md",
+    });
+    try {
+      const { stdout, stderr, exitCode } = await runCli(
+        ["check", "-a", "claude", "--no-sandbox", "--auto", "high", "--hermetic", "--tools", "none"],
+        fake.env
+      );
+      expect(exitCode).toBe(0);
+      expect(stdout).toBe("HERMETIC claude: OK\n");
+      expect(stderr).toContain("control: planted code word reached the model");
+      const invocations = readFileSync(argvLog, "utf8")
+        .split("===\n")
+        .filter((block) => block.trim().length > 0);
+      expect(invocations).toHaveLength(2);
+      const control = invocations.find((block) => !block.includes("--safe-mode\n"));
+      expect(control).toBeDefined();
+      const args = control!.split("\n");
+      const toolsIndex = args.indexOf("--tools");
+      expect(toolsIndex).toBeGreaterThanOrEqual(0);
+      expect(args[toolsIndex + 1]).toBe("");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+      fake.cleanup();
+    }
+  });
+
+  test("check --hermetic --tools none refuses opencode before probing", async () => {
+    // opencode scopes --tools none to hermetic runs, so the control cannot
+    // carry the same selection without --hermetic; the check refuses the
+    // combination up front instead of running an armed control (h7 review).
+    const fake = createFakeBinaryEnv({ opencode: canaryAwareOpencode });
+    try {
+      const { stdout, stderr, exitCode } = await runCli(
+        ["check", "-a", "opencode", "--no-sandbox", "--auto", "high", "--hermetic", "--tools", "none"],
+        fake.env
+      );
+      expect(exitCode).toBe(1);
+      expect(stdout).toBe("");
+      expect(stderr).toContain("check --hermetic --tools none cannot run for opencode");
+      expect(stderr).toContain("plain --tools none run, which opencode refuses");
+      expect(stderr).not.toContain("Checking opencode hermetically");
     } finally {
       fake.cleanup();
     }

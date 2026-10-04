@@ -16,14 +16,20 @@ import { join } from "node:path";
 
 // The harness's own base prompt names its vendor and Codex ships skills of
 // its own, so the question excludes both and asks only about what an
-// operator would have added.
+// operator would have added. The last sentence keeps tool-using agents from
+// answering the question by reading the working directory: the check
+// measures what reached the model's context before this message, and a model
+// that opens the planted files itself reports its own discovery, not a leak
+// (seen live: GLM-5.3 under opencode --auto read CLAUDE.md and answered its
+// code word from the tool result while the request itself was clean).
 export const HERMETIC_CANARY_PROMPT =
   "Configuration test. Apart from your vendor's own system prompt and the " +
   "skills that ship with your harness, were you given any project or user " +
   "instruction files (for example AGENTS.md or CLAUDE.md), memories, or " +
   "user-installed skills before this message? If none, reply with exactly: " +
   "OK. If yes, reply with the code word or the person's name they contain, " +
-  "and nothing else.";
+  "and nothing else. Do not use any tools to look; answer only from what " +
+  "you were already given.";
 
 // Every instruction-file name the supported harnesses discover in a project.
 const PLANTED_FILES = ["AGENTS.md", "CLAUDE.md"] as const;
@@ -63,13 +69,23 @@ export type CanaryVerdict =
 // an OK line beside an owner's name is a leak, not a pass.
 const EXACT_OK = /^(?:`{1,3}\s*)?OK[.!]?(?:\s*`{1,3})?$/;
 
-export function evaluateCanary(output: string, marker: string): CanaryVerdict {
+export function evaluateCanary(
+  output: string,
+  marker: string,
+  answer = output
+): CanaryVerdict {
+  // The marker is scanned on the full output the harness printed: a code
+  // word anywhere — banner, transcript, reply — is a leak.
   if (output.includes(marker)) {
     return { kind: "leak", what: "marker", answer: marker };
   }
-  if (EXACT_OK.test(output.trim())) return { kind: "clean" };
+  // The exact-OK test applies to the model's answer. Harnesses whose stdout
+  // is a transcript (aider prints its banner and summaries around the
+  // reply) carry the extracted answer in the result's `reply` field; the
+  // default is the whole output.
+  if (EXACT_OK.test(answer.trim())) return { kind: "clean" };
   // Anything else. A name means a leak; a refusal or an essay means the
   // probe proved nothing. Both fail: a run that cannot answer OK cannot be
   // certified.
-  return { kind: "leak", what: "other", answer: output.trim().slice(0, 200) };
+  return { kind: "leak", what: "other", answer: answer.trim().slice(0, 200) };
 }

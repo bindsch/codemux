@@ -11,8 +11,8 @@ import {
 import { sanitizeEnvironment } from "../environment.js";
 import { launchRunRequest } from "../launch.js";
 import type { ScodeTrustLevel } from "../sandbox.js";
-import type { HermeticHome } from "../hermetic-home.js";
 import { resolveTrustedCommand } from "../executable-security.js";
+import type { RunContext } from "../run-context.js";
 import {
   guardedWait,
   MAX_ARGV_PROMPT_BYTES,
@@ -37,32 +37,13 @@ export interface SandboxPreparation {
 }
 
 /**
- * One launch's per-run state: the scratch a run needs on disk between
- * prepareRun and processRunResult. The context is plain data the LAUNCHER
- * owns and threads through the lifecycle (buildRunCommand, getRunEnv,
- * processRunResult, cleanupRun), never a field on the adapter -- adapters
- * are singletons, so an adapter field would let one launch read or destroy
- * a concurrent launch's state. A rejected or failed launch cleans up only
- * the context it created, and two launches through the same request object
- * each carry their own.
- *
- * The optional members are the per-run values codex needs today; a harness
- * that gains its own joins them here rather than growing adapter state.
+ * One launch's per-run state, defined in run-context.ts: the scratch a run
+ * needs on disk between prepareRun and processRunResult, owned by the
+ * launcher and never recorded on the adapter. Re-exported here because
+ * every adapter seam (buildRunCommand, getRunEnv, processRunResult,
+ * cleanupRun) speaks it.
  */
-export interface RunContext {
-  /** Codex: this run's `--output-last-message` file, when it launched with --json. */
-  lastMessagePath?: string;
-  /**
-   * Codex: the per-run scratch directory holding that file on a non-hermetic
-   * run, created under `.codemux-scratch/` in the real CODEX_HOME in
-   * prepareRun and removed in cleanupRun (a hermetic run keeps the file
-   * inside its private home instead, which finalize removes; a run under an
-   * untrusted sandbox has neither -- no fallback file at all).
-   */
-  lastMessageDir?: string;
-  /** Codex: this run's private hermetic home, when the run is hermetic. */
-  hermeticHome?: HermeticHome;
-}
+export type { RunContext } from "../run-context.js";
 
 export abstract class BaseAdapter {
   abstract readonly id: AgentId;
@@ -231,7 +212,12 @@ export abstract class BaseAdapter {
    * stream) override this to hand the caller what they were promised; the
    * default returns the result unchanged. `context` is the same run context
    * the launch path built the command from, so the post-processor reads
-   * (and consumes) this run's own scratch.
+   * (and consumes) this run's own scratch. A harness that records the
+   * conversation somewhere stdout does not carry (aider's chat history)
+   * reads it HERE, while the context is alive, and sets the result's
+   * `reply` and `scanSurface` fields -- the only channel post-launch
+   * callers (the hermetic check above all) have to that record, because
+   * the launcher disposes the context before the result returns.
    */
   processRunResult(result: RunResult, _request: RunRequest, _context?: RunContext): RunResult {
     return result;

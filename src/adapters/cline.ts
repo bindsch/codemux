@@ -22,6 +22,13 @@ export class ClineAdapter extends BaseAdapter {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["none", "low", "medium", "high", "xhigh"],
+      // Both refusals verified live at 3.0.62 on 2026-09-17, through a
+      // provider override this tree no longer ships: the non-hermetic
+      // control probe leaked the planted code word through the workspace
+      // AGENTS.md channel, and no flag or environment variable can close
+      // it (docs/HERMETIC.md).
+      supportsHermetic: false,
+      supportsToolSelection: false,
     };
   }
 
@@ -43,9 +50,11 @@ export class ClineAdapter extends BaseAdapter {
 
   buildRunCommand(request: RunRequest): string[] {
     const cmd = ["cline"];
+
     if (request.model) {
       cmd.push("--model", request.model);
     }
+
     if (request.autonomy) {
       cmd.push(...this.mapAutonomy(request.autonomy));
     }

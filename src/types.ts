@@ -94,6 +94,18 @@ export interface RunResult {
   stderr: string;
   exitCode: number;
   success: boolean;
+  // The model's answer when the harness's stdout is a transcript around it
+  // (aider's banner, summaries and cost lines), extracted by
+  // processRunResult from the run's own record while the run context is
+  // alive. Absent when stdout is the answer; `codemux run` prints stdout
+  // either way, so the field is for callers (the hermetic check's exact-OK
+  // test) that need the answer itself.
+  reply?: string;
+  // Stdout plus everything else the run recorded (aider's chat history
+  // keeps reasoning the endpoint returned and stdout omits), so a leak
+  // scan covers the whole record, not just what was printed. Absent when
+  // stdout is the whole record.
+  scanSurface?: string;
 }
 
 // Token usage inside the codemux block of a --result-json envelope. Every
@@ -135,6 +147,12 @@ export interface AdapterCapabilities {
   supportsHermetic?: boolean;
   // The harness can remove its built-in tools on request (`--tools none`).
   supportsToolSelection?: boolean;
+  // `--tools none` is offered on hermetic runs only; a plain run cannot
+  // guarantee the mechanism (OpenCode: the operator's config can override
+  // the deny per agent). `check --hermetic --tools none` refuses the whole
+  // combination for such a harness: its control must repeat the tools
+  // selection without `--hermetic`, and that plain run is refused.
+  toolsNoneRequiresHermetic?: boolean;
   // The harness can return a structured result envelope carrying token usage
   // (`--result-json`). Absent means unsupported and the flag is refused.
   supportsResultJson?: boolean;

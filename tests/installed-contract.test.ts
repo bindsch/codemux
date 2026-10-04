@@ -28,15 +28,12 @@ async function help(binary: string, args: string[]): Promise<string> {
   return `${result.stdout}\n${result.stderr}`;
 }
 
-describe("installed harness contracts", () => {
-  // The adapter's default entry resolution (the standalone `agent`, else
-  // the legacy `cursor-agent`), never the desktop subcommand -- see
-  // standaloneCursorBinary above. Resolved only when this suite runs so
-  // the registry is not touched in test runs where its tests are skipped.
-  const cursorBinary = RUN_INSTALLED_CONTRACTS
-    ? standaloneCursorBinary()
-    : "agent";
-  const contracts = [
+// Module scope, not describe scope: the pin-sync test below reads the same
+// table the installed probes check, so the two can never drift apart.
+// Resolved only when the installed suite runs (see standaloneCursorBinary
+// above); the pin-sync test never reads the cursor entry's binary.
+const cursorBinary = RUN_INSTALLED_CONTRACTS ? standaloneCursorBinary() : "agent";
+const contracts = [
     {
       binary: "agy",
       args: ["--help"],
@@ -60,6 +57,13 @@ describe("installed harness contracts", () => {
     {
       binary: "aider",
       args: ["--help"],
+      // --map-tokens and --read are deliberately absent, the same rule as
+      // copilot's --available-tools below: codemux never emits them on a
+      // reachable run. --map-tokens rides only the --hermetic branch, and
+      // aider refuses --hermetic (2026-10-04 review); --read rides
+      // instructionDirs, which only the hermetic check sets on its probe.
+      // A pin on either would fail the gate on an upstream removal codemux
+      // is indifferent to.
       required: [
         "--message",
         "--dry-run",
@@ -152,6 +156,11 @@ describe("installed harness contracts", () => {
       binary: "copilot",
       args: ["--help"],
       required: [
+        // --available-tools is deliberately absent: codemux never emits it
+        // (no argv spelling of an empty allowlist disarms the tools, so the
+        // mapping is refused), and a contract pin belongs only on flags
+        // codemux sends. Pinning it would fail the gate on an upstream
+        // removal codemux is indifferent to.
         "--prompt",
         "--no-auto-update",
         "--no-bash-env",
@@ -166,18 +175,18 @@ describe("installed harness contracts", () => {
     {
       binary: "droid",
       args: ["exec", "--help"],
-      required: ["--auto", "--model", "--reasoning-effort"],
+      required: ["--auto", "--model", "--reasoning-effort", "--only-tools"],
     },
     {
       binary: "gemini",
       args: ["--help"],
       required: ["--prompt", "--model", "--approval-mode", "--sandbox"],
     },
-    { binary: "goose", args: ["run", "--help"], required: ["--text"] },
+    { binary: "goose", args: ["run", "--help"], required: ["--text", "--no-profile"] },
     {
       binary: "kimi",
       args: ["--help"],
-      required: ["--prompt", "--model", "--plan", "--yolo", "--auto"],
+      required: ["--prompt", "--model", "--plan", "--yolo", "--auto", "--agent-file"],
     },
     {
       binary: "openhands",
@@ -192,7 +201,7 @@ describe("installed harness contracts", () => {
     {
       binary: "pi",
       args: ["--help"],
-      required: ["--print", "--model", "--thinking", "--tools", "--no-extensions", "--no-approve", "--no-session"],
+      required: ["--print", "--model", "--thinking", "--tools", "--no-tools", "--no-extensions", "--no-approve", "--no-session"],
     },
     {
       binary: "qwen",
@@ -201,6 +210,7 @@ describe("installed harness contracts", () => {
     },
   ] as const;
 
+describe("installed harness contracts", () => {
   test.skipIf(!RUN_INSTALLED_CONTRACTS)(
     "installed binaries expose every adapter-required flag",
     async () => {
@@ -332,4 +342,58 @@ describe("version probes run the arguments the contracts actually send", () => {
     },
     SUITE_TIMEOUT_MS
   );
+});
+
+describe("contract pins match what the adapters send", () => {
+  test("every aider pin appears in a command a reachable run builds", async () => {
+    // Regression (h6 review): --map-tokens and --read were pinned although
+    // no reachable request emits them (--map-tokens rides only the
+    // --hermetic branch and aider refuses --hermetic; --read rides
+    // instructionDirs, which only check --hermetic sets, on its refused
+    // probe) — the pinning rule the copilot --available-tools comment
+    // states, violated by the same merge that added it. This test runs on
+    // every machine: building commands needs no installed binary, so a pin
+    // on a flag no reachable run sends fails here before the gate.
+    const { AiderAdapter } = await import("../src/adapters/aider.js");
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const home = mkdtempSync(join(tmpdir(), "codemux-aider-pins-"));
+    try {
+      const adapter = new AiderAdapter({}, home);
+      // Every reachable request shape: plain headless runs (the CLI's
+      // options at both autonomy extremes, with model and effort on) and
+      // the interactive command.
+      const commands = [
+        adapter.buildRunCommand({
+          agent: "aider",
+          prompt: "p",
+          model: "openai/gpt-5.4",
+          autonomy: "read-only",
+          effort: "high",
+        }),
+        adapter.buildRunCommand({
+          agent: "aider",
+          prompt: "p",
+          autonomy: "high",
+        }),
+        adapter.buildTuiCommand("m", "read-only", "none"),
+      ];
+      // `--message=<prompt>` is one token, so a pin matches an exact token
+      // or a `pin=` prefix — never a substring (--model would otherwise
+      // match --model-settings-file).
+      const sent = (pin: string): boolean =>
+        commands.some((cmd) =>
+          cmd.some((token) => token === pin || token.startsWith(`${pin}=`))
+        );
+      const pins = contracts
+        .filter((contract) => contract.binary === "aider")
+        .flatMap((contract) => [...contract.required]);
+      for (const pin of pins) {
+        expect(sent(pin), `aider pin ${pin} is sent by no reachable run`).toBe(true);
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });

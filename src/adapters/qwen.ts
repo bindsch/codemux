@@ -26,6 +26,13 @@ export class QwenAdapter extends BaseAdapter {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: false,
       effortLevels: [],
+      // Every codemux qwen run already passes --safe-mode, which closes
+      // every operator channel by construction, so --hermetic has nothing
+      // left to close and its control can never leak; no tool-removal
+      // flag survives safe mode. Both refusals are detailed in
+      // docs/HERMETIC.md.
+      supportsHermetic: false,
+      supportsToolSelection: false,
     };
   }
 

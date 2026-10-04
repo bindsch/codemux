@@ -88,8 +88,8 @@ codemux [command] [options]
 | `--timeout <seconds>` | Kill a hung non-interactive run and its whole process tree (a descendant whose parent chain broke before the first snapshot can still escape; also bounds the `-f -` stdin prompt read — a producer that stalls with the pipe open fails the run at the timeout; default: `1800`, maximum: `86400`) |
 | `--pass-env <names>` | Explicitly pass comma-separated parent environment names |
 | `--enable-playwright-mcp` | Enable a local Playwright MCP binary inside `--sandbox` |
-| `--hermetic` | Load none of the operator's customizations (instruction files, skills, plugins, hooks, MCP servers); the login still works. Claude, Z.AI and Codex; others are refused. See [docs/HERMETIC.md](docs/HERMETIC.md) |
-| `--tools <selection>` | Built-in tools the harness exposes: `default` or `none`. Independent of `--hermetic`; Codex takes `none` only with `--auto read-only` |
+| `--hermetic` | Load none of the operator's customizations (instruction files, skills, plugins, hooks, MCP servers); the login still works. Claude, Z.AI, Codex and OpenCode (OpenCode also refuses while its login carries remote configuration — a well-known login or an active organization, whose fetched config could override the run's guarantees); every other harness is refused until its mechanism passes the live check. Aider alone keeps an implemented mapping behind its refusal; the mechanisms that sat unverifiable behind the other refusals were removed in 0.7.0. See [docs/HERMETIC.md](docs/HERMETIC.md) |
+| `--tools <selection>` | Built-in tools the harness exposes: `default` or `none`. Independent of `--hermetic`; Codex takes `none` only with `--auto read-only`, OpenCode only with `--hermetic` (on a plain run the operator's opencode config can override the deny per agent; `check --hermetic --tools none` refuses for it, since its control probe would be that plain run), and harnesses that cannot remove their tools refuse `none` |
 | `--result-json` | Return a structured result envelope on stdout instead of plain text, so a caller can read what the run consumed (tokens, cost). Claude, Z.AI, Codex and Antigravity; other harnesses refuse the flag rather than silently returning text. Claude-family and Antigravity envelopes are the harness's own with one added `codemux` block; Codex reports the final assistant message as `result` plus the same block. See [Result envelopes](#result-envelopes) |
 | `-s, --sandbox` | Execute via `scode` (default: on; `--no-sandbox` opts out, and autonomy below `high` then refuses) |
 | `--sandbox-trust <level>` | `scode` trust override (`trusted`, `standard`, `untrusted`) |
@@ -115,6 +115,48 @@ Goose, Kimi, OpenHands, or legacy `qwen-coder`. Codemux rejects argv
 prompts above 32 KiB — the rule applies to the prompt's content wherever it
 came from, so use an stdin-capable harness for larger prompts.
 
+### Provider overrides
+
+Point one harness at a different model provider — an OpenAI-compatible
+gateway or a subscription endpoint such as Z.AI's — by exporting three
+environment variables before invoking codemux:
+
+```bash
+export CODEMUX_AIDER_PROVIDER_BASE_URL=https://api.z.ai/api/coding/paas/v4
+export CODEMUX_AIDER_PROVIDER_API_KEY=…        # keep it out of argv and committed files
+export CODEMUX_AIDER_PROVIDER_MODEL=glm-5.3
+codemux run -a aider -p "Reply with: OK"
+```
+
+`<AGENT>` is the codemux agent id uppercased. Blank values count as unset,
+and a half-configured override fails loudly instead of silently reaching the
+harness's native provider. The base URL and the model name must not contain
+braces: OpenCode substitutes `{env:…}`/`{file:…}` and Droid and Pi expand
+`${VAR}` templates in the config files an override writes, and the model
+lands in the same files, so a brace could splice another
+value into them. The key is delivered to the harness through the
+environment codemux itself provides or through a private per-run file codemux
+creates and removes — never through an operator configuration file, which is
+what lets the override survive `--hermetic`. Aider translates the override
+into litellm's `openai/` model prefix with `OPENAI_API_BASE` and
+`OPENAI_API_KEY`
+([aider.chat/docs/llms/openai-compat.html](https://aider.chat/docs/llms/openai-compat.html)),
+OpenCode into a private `OPENCODE_CONFIG`
+provider file plus a key environment it references, Kimi Code into
+the `KIMI_MODEL_*` group that synthesizes a provider in memory, Droid
+into a per-run BYOK `customModels` entry inside a private `--settings`
+file whose key is a `${VAR}` reference into the environment
+codemux provides, Pi into a private agent directory behind
+`PI_CODING_AGENT_DIR` holding a one-provider `models.json` with the same
+kind of `${VAR}` key reference, and Goose into the pure-environment
+`GOOSE_PROVIDER`/`OPENAI_HOST`/`OPENAI_BASE_PATH`/`OPENAI_API_KEY`/`GOOSE_MODEL`
+group of its built-in OpenAI provider. The other harnesses have no
+override: the ones whose `--hermetic` and `--tools none` are both refused
+(Copilot, Gemini CLI, Cline, OpenHands, Qwen) carried override machinery
+only to ground those refusals' live checks, and it was removed in 0.7.0 as
+dead surface. The Cursor agent CLI, which has no custom-provider mechanism,
+documents that limit instead.
+
 ### `check` options
 
 `codemux check` makes a real request to the selected provider and requires that
@@ -124,8 +166,9 @@ an outer boundary (including Cursor and Gemini read-only) are probed under
 the default sandbox. `check --hermetic` proves a harness ignores its
 customizations: it plants instruction files with a code word in a scratch
 directory and probes twice, once hermetically (the model must answer `OK`)
-and once as a control (the planted code word must reach the model). Two
-requests. Use `--help` for the full option list.
+and once as a control carrying everything but `--hermetic` — the same
+tools selection included (the planted code word must reach the model).
+Two requests. Use `--help` for the full option list.
 
 ### `tui` options
 
@@ -315,10 +358,16 @@ meaningful.
 
 Gemini headless Plan Mode can transition into implementation automatically, so
 direct `read-only` runs are rejected unless `--sandbox` supplies a durable
-read-only boundary. Codemux supplies an authoritative system setting that
-disables generic project `.env` loading, rejects `.gemini` project controls,
-and explicitly disables Gemini's nested sandbox so project Dockerfiles or
-Seatbelt profiles cannot replace the selected boundary.
+read-only boundary. Three protections ride every gemini run: the packaged
+system setting that disables generic project `.env` loading, a launch-time
+rejection of `.gemini` project controls, and `--sandbox=false` in argv so
+Gemini's nested sandbox cannot hand project Dockerfiles or Seatbelt profiles
+the selected boundary. Only the first rides the settings file — and on a
+user-owned prefix (Homebrew, a source checkout) gemini silently skips that
+file, because its security walk requires the file and every ancestor
+directory to be root-owned (unchanged since the audited 0.53.1), so that one
+pin applies only on root-owned installs. The other two are launch-boundary
+mechanisms and apply everywhere ([ledger](docs/HARNESS-COMPATIBILITY.md)).
 
 ## Result envelopes
 

@@ -1,6 +1,18 @@
-import { BaseAdapter } from "./base.js";
+import { homedir } from "node:os";
+import { isAbsolute, join } from "node:path";
+import { BaseAdapter, type RunContext } from "./base.js";
 import { assertNoDroidProjectExecutionConfig } from "../project-safety.js";
 import { validateWorkingDirectory } from "../validation.js";
+import {
+  writeDroidProviderSettings,
+  droidProviderModelId,
+  DROID_PROVIDER_KEY_ENV,
+} from "../droid-provider.js";
+import {
+  readProviderOverride,
+  requireProviderOverride,
+  type ProviderOverride,
+} from "../provider-override.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -9,9 +21,43 @@ import type {
   AdapterCapabilities,
 } from "../types.js";
 
+// `--tools none`: droid's tool controls are `--only-tools`/`--add-tools`/
+// `--remove-tools` with validated IDs ("Use only tool IDs or
+// MCP:<server>[/<tool>] selectors", droid 0.186.0 `exec --help`; the flags
+// are unchanged in the installed 0.221.0). An empty `--only-tools ""` is
+// silently ignored -- every tool stays on -- and `--remove-tools` would
+// have to name every ID, which varies with the model and the operator's
+// MCP servers, so both fail open. `--only-tools ToolSearch` instead
+// allowlists the one tool droid itself pins (a `--remove-tools` naming
+// every other ID still leaves ToolSearch allowed): an unknown ID aborts
+// the launch ("Unknown tool identifier(s)"), so a renamed tool fails
+// closed, and the installed binary's free `--list-tools` inventory shows
+// every Read, Edit, Execute and MCP tool blocked under it.
+const DROID_NO_TOOLS_ONLY_TOOL = "ToolSearch";
+
+/**
+ * Factory's Droid CLI (`droid`), audited against 0.186.0.
+ *
+ * A provider override rides droid's BYOK settings: one `customModels` entry
+ * in a per-run settings file passed as the root-level `--settings <path>`
+ * ("merged for this process only"), with the key referenced as
+ * `${CODEMUX_DROID_PROVIDER_API_KEY}` and delivered through the environment
+ * codemux provides (see src/droid-provider.ts for the grounding). The
+ * override needs no Factory login: the entry's own key authenticates every
+ * request, which is what made the capability probe possible on a machine
+ * whose stored login droid's self-update had removed.
+ */
 export class DroidAdapter extends BaseAdapter {
   readonly id: AgentId = "droid";
   readonly binaryName = "droid";
+
+  // Seams so tests can point the real brand home at a scratch directory.
+  constructor(
+    private readonly environment: NodeJS.ProcessEnv = process.env,
+    private readonly homeDirectory?: string
+  ) {
+    super();
+  }
 
   capabilities(): AdapterCapabilities {
     return {
@@ -22,6 +68,11 @@ export class DroidAdapter extends BaseAdapter {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+      // Verified live on 2026-09-17 through a provider override (GLM-5.3
+      // via Z.AI): under --tools none neither the read nor the shell probe
+      // could produce its secret, while a plain run produced both
+      // (docs/HERMETIC.md).
+      supportsToolSelection: true,
     };
   }
 
@@ -55,11 +106,101 @@ export class DroidAdapter extends BaseAdapter {
     return this.mapEffort(level);
   }
 
-  buildRunCommand(request: RunRequest): string[] {
-    const cmd = ["droid", "exec"];
+  /**
+   * The provider override, validated: droid's BYOK entry needs a base URL
+   * and a key (the model may come from `--model` instead of the variable).
+   */
+  private validatedProvider(): (ProviderOverride & { baseUrl: string; apiKey: string }) | null {
+    const override = readProviderOverride("droid", this.environment);
+    if (override === null) return null;
+    return requireProviderOverride("droid", override, [
+      "baseUrl",
+      "apiKey",
+    ]) as ProviderOverride & { baseUrl: string; apiKey: string };
+  }
 
-    if (request.model) {
-      cmd.push("-m", request.model);
+  /** The model id the BYOK entry routes: the request's, else the override's. */
+  private modelFor(model: string | undefined): string | undefined {
+    const override = this.validatedProvider();
+    const resolved = model ?? override?.model;
+    if (resolved === undefined && override !== null) {
+      throw new Error(
+        "droid needs a model for the provider override; pass --model or set CODEMUX_DROID_PROVIDER_MODEL"
+      );
+    }
+    return resolved;
+  }
+
+  /**
+   * The brand home whose `.codemux/` holds the per-run settings file: the
+   * one a plain run reads settings.json, skills and hooks from. Droid has
+   * no relocation variable for it (only FACTORY_API_KEY and
+   * FACTORY_DROID_AUTO_UPDATE_ENABLED exist), so it is always under the
+   * effective home.
+   */
+  private realBrandHome(): string {
+    if (this.homeDirectory !== undefined && !isAbsolute(this.homeDirectory)) {
+      throw new Error("Droid home directory must be an absolute path");
+    }
+    const home = this.homeDirectory ?? this.environment.HOME;
+    return join(home && isAbsolute(home) ? home : homedir(), ".factory");
+  }
+
+  override prepareRun(request: RunRequest): RunContext {
+    // One settings file per run with an override, never shared and never
+    // recorded on the adapter: the launcher owns the returned context and
+    // finalizes the file in cleanupRun when this launch ends.
+    const override = this.validatedProvider();
+    if (override === null) return {};
+    const model = this.modelFor(request.model);
+    if (model === undefined) return {};
+    return {
+      droidProviderSettings: writeDroidProviderSettings(
+        this.realBrandHome(),
+        override,
+        model
+      ),
+    };
+  }
+
+  override cleanupRun(context?: RunContext): void {
+    context?.droidProviderSettings?.finalize();
+  }
+
+  override getRunEnv(
+    _request: RunRequest,
+    context?: RunContext
+  ): Record<string, string> {
+    const override = this.validatedProvider();
+    if (override === null) return {};
+    if (context?.droidProviderSettings === undefined) {
+      throw new Error("droid provider settings were not prepared before launch");
+    }
+    // The key rides the environment codemux provides; the settings file
+    // holds only its name.
+    return { [DROID_PROVIDER_KEY_ENV]: override.apiKey };
+  }
+
+  buildRunCommand(request: RunRequest, context?: RunContext): string[] {
+    const cmd: string[] = ["droid"];
+
+    // With an override the per-run settings file supplies the BYOK entry
+    // and the session's default model. `--settings` is a root-level flag,
+    // so it precedes the subcommand. A static preview (`verify`) has no
+    // prepared file; the placeholder path does not exist, and droid fails
+    // to read it, so a command built without prepareRun fails closed.
+    if (this.validatedProvider() !== null) {
+      const model = this.modelFor(request.model)!;
+      const unprepared = join(this.realBrandHome(), ".codemux", "unprepared", "settings.json");
+      cmd.push("--settings", context?.droidProviderSettings?.path ?? unprepared);
+      cmd.push("exec");
+      // The entry's id, not its API model name: droid resolves `-m` by id.
+      cmd.push("-m", droidProviderModelId(model));
+    } else {
+      cmd.push("exec");
+      if (request.model) {
+        cmd.push("-m", request.model);
+      }
     }
 
     if (request.autonomy) {
@@ -67,7 +208,16 @@ export class DroidAdapter extends BaseAdapter {
     }
 
     if (request.effort) {
-      cmd.push(...this.mapEffortForModel(request.effort, request.model));
+      // The value must match the model the SESSION runs, which with an
+      // override is the resolved one (request.model ?? the override's), not
+      // the raw request: a gpt-5.6 override model with --effort none needs
+      // that family's `none`, while `request.model` alone would look unset
+      // and emit the generic `off`.
+      cmd.push(...this.mapEffortForModel(request.effort, this.modelFor(request.model)));
+    }
+
+    if (request.tools === "none") {
+      cmd.push("--only-tools", DROID_NO_TOOLS_ONLY_TOOL);
     }
 
     return cmd;
@@ -82,6 +232,15 @@ export class DroidAdapter extends BaseAdapter {
     assertNoDroidProjectExecutionConfig(
       validateWorkingDirectory(request.cwd) ?? process.cwd()
     );
+    // Fail before launch on a half-configured override, surface the model
+    // requirement early (the operator's own login and default model would
+    // otherwise silently answer), and refuse a model the settings file
+    // cannot carry verbatim: droid expands ${VAR} templates inside it
+    // (droid-provider.ts).
+    const resolved = this.modelFor(request.model);
+    if (resolved !== undefined && this.validatedProvider() !== null) {
+      droidProviderModelId(resolved);
+    }
   }
 
   override validateTuiRequest(
@@ -96,6 +255,14 @@ export class DroidAdapter extends BaseAdapter {
     assertNoDroidProjectExecutionConfig(
       validateWorkingDirectory(cwd) ?? process.cwd()
     );
+    // The per-run settings file's lifecycle rides prepareRun, which only
+    // the headless launch path calls; an interactive session has no hook to
+    // write and remove the file.
+    if (this.validatedProvider() !== null) {
+      throw new Error(
+        "the droid provider override supports headless runs only; unset CODEMUX_DROID_PROVIDER_* for an interactive session"
+      );
+    }
   }
 
   buildTuiCommand(

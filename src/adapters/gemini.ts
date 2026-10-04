@@ -31,6 +31,15 @@ export class GeminiAdapter extends BaseAdapter {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: false,
       effortLevels: [],
+      // Exercised live at 0.60.0 on 2026-09-17: nothing closes the
+      // workspace context-file channels, so --hermetic is refused, and the
+      // tools.core allowlist a --tools none mapping would ride sits in the
+      // system-settings layer, which never loads on a user-owned prefix
+      // (the file and every ancestor must be root-owned), so the
+      // capability is refused rather than claimed on a layer that cannot
+      // load; see docs/HERMETIC.md.
+      supportsHermetic: false,
+      supportsToolSelection: false,
     };
   }
 

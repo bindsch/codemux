@@ -190,6 +190,10 @@ describe("AiderAdapter", () => {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+      // Refused: the 2026-09-17 check passed, but no flag closes aider's
+      // own config layers, and a live 2026-10-04 probe leaked through
+      // `.aider.conf.yml` (docs/HERMETIC.md names the channels).
+      supportsHermetic: false,
     });
   });
 
@@ -221,6 +225,7 @@ describe("AiderAdapter", () => {
       "--no-suggest-shell-commands",
       "--no-check-update",
       "--no-show-release-notes",
+      "--no-show-model-warnings",
       "--disable-playwright",
       "--model",
       "openai/gpt-5.4",
@@ -261,6 +266,7 @@ describe("AiderAdapter", () => {
         "--no-suggest-shell-commands",
         "--no-check-update",
         "--no-show-release-notes",
+        "--no-show-model-warnings",
         "--disable-playwright",
         "--model",
         "anthropic/claude-sonnet-4",
@@ -300,6 +306,9 @@ describe("ClineAdapter", () => {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["none", "low", "medium", "high", "xhigh"],
+      // Both refusals verified live at 3.0.62; see docs/HERMETIC.md.
+      supportsHermetic: false,
+      supportsToolSelection: false,
     });
   });
 
@@ -350,6 +359,9 @@ describe("CopilotAdapter", () => {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+      // Both refusals verified live at 1.0.85; see docs/HERMETIC.md.
+      supportsHermetic: false,
+      supportsToolSelection: false,
     });
   });
 

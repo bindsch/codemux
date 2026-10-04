@@ -19,29 +19,28 @@ import { ZaiAdapter } from "./zai.js";
 
 // The environment view an adapter is constructed against. The launch path
 // passes nothing and gets process.env — the operator's shell, exported
-// opt-ins included (cursor's CODEMUX_CURSOR_ENTRY is the one today).
-// Static diagnostics pass their own explicit view (verify an empty one),
-// so an exported variable cannot change a static wiring result. Only
-// cursor's constructor consumes the view; adapters whose environment is
-// plumbing (codex's and zai's HOME/CODEX_HOME seams) keep process.env.
+// opt-ins and provider overrides included. Static diagnostics pass their
+// own explicit view (verify an empty one), so an exported variable cannot
+// change a static wiring result: every constructor that consumes a view is
+// handed the factory's argument here.
 type AdapterEnv = Record<string, string | undefined>;
 type AdapterFactory = (env: AdapterEnv) => BaseAdapter;
 
 const adapterFactories: Readonly<Record<AgentId, AdapterFactory>> = Object.freeze({
   agy: () => new AgyAdapter(),
-  aider: () => new AiderAdapter(),
+  aider: (env) => new AiderAdapter(env),
   claude: () => new ClaudeAdapter(),
   cline: () => new ClineAdapter(),
   codex: () => new CodexAdapter(),
   copilot: () => new CopilotAdapter(),
   cursor: (env) => new CursorAdapter(undefined, env),
-  droid: () => new DroidAdapter(),
-  goose: () => new GooseAdapter(),
+  droid: (env) => new DroidAdapter(env),
+  goose: (env) => new GooseAdapter(env),
   gemini: () => new GeminiAdapter(),
-  kimi: () => new KimiAdapter(),
+  kimi: (env) => new KimiAdapter(env),
   openhands: () => new OpenHandsAdapter(),
-  opencode: () => new OpencodeAdapter(),
-  pi: () => new PiAdapter(),
+  opencode: (env) => new OpencodeAdapter(env),
+  pi: (env) => new PiAdapter(env),
   qwen: () => new QwenAdapter(),
   zai: () => new ZaiAdapter(),
 });

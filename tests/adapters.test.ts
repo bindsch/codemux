@@ -76,6 +76,34 @@ describe("Adapter Registry", () => {
     expect(getAdapter("zai")).toBeInstanceOf(ZaiAdapter);
   });
 
+  test("an explicit environment view hides exported provider overrides", () => {
+    // Regression (h2 review): the factories used to construct every adapter
+    // against process.env regardless of the view getAdapter was handed, so an
+    // exported CODEMUX_*_PROVIDER_* override leaked into `verify`'s empty
+    // view — a configured adapter then failed verify's static wiring for a
+    // working setup (observed through cline's per-run data directory; that
+    // override left with the 0.7.0 dead-surface cut, so the regression
+    // rides droid's per-run settings file now). The factory must forward
+    // the view it is given.
+    process.env.CODEMUX_DROID_PROVIDER_BASE_URL = "https://override.example/v1";
+    process.env.CODEMUX_DROID_PROVIDER_API_KEY = "override-key";
+    process.env.CODEMUX_DROID_PROVIDER_MODEL = "override-model";
+    try {
+      const adapter = getAdapter("droid", {});
+      expect(adapter.getRunEnv({ agent: "droid", prompt: "p" })).toEqual({});
+      expect(adapter.buildRunCommand({ agent: "droid", prompt: "p" }))
+        .toEqual(["droid", "exec"]);
+      // The launch path (no view) still sees the override and keeps failing
+      // closed without prepared per-run settings.
+      expect(() => getAdapter("droid").getRunEnv({ agent: "droid", prompt: "p" }))
+        .toThrow("were not prepared before launch");
+    } finally {
+      delete process.env.CODEMUX_DROID_PROVIDER_BASE_URL;
+      delete process.env.CODEMUX_DROID_PROVIDER_API_KEY;
+      delete process.env.CODEMUX_DROID_PROVIDER_MODEL;
+    }
+  });
+
   test("getAdapter throws for unknown agent", () => {
     expect(() => getAdapter("unknown" as any)).toThrow("Unknown agent: unknown");
   });
@@ -1755,6 +1783,12 @@ describe("GeminiAdapter", () => {
     expect(caps.autonomyLevels).toEqual(["read-only", "low", "medium", "high"]);
     expect(caps.supportsEffort).toBe(false);
     expect(caps.effortLevels).toEqual([]);
+    // Refused on live evidence (0.60.0, exercised live 2026-09-17):
+    // nothing closes the workspace context channels for --hermetic, and
+    // the tools.core allowlist rides a system-settings layer that never
+    // loads from a user-owned prefix (docs/HERMETIC.md).
+    expect(caps.supportsHermetic ?? false).toBe(false);
+    expect(caps.supportsToolSelection ?? false).toBe(false);
   });
 
   test("buildRunCommand with model", () => {

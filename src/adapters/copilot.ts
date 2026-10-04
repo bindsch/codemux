@@ -9,6 +9,25 @@ import type {
   RunRequest,
 } from "../types.js";
 
+// `--hermetic` has no claimable mechanism: no switch closes every operator
+// channel, and the check's control probe can never leak the planted code
+// word, because `--no-custom-instructions` ("Disable loading of custom
+// instructions from AGENTS.md and related files", 1.0.85 `--help`) rides
+// every codemux run — dropping the flag from plain runs to let the control
+// leak would un-harden them, so the two-probe check has no way to verify
+// any candidate mechanism (docs/HERMETIC.md records the control's answer
+// "Peter" on the 2026-09-17 live pass, a leak of the user-skill channel).
+// A private-home mechanism the branch implemented behind the refusal was
+// removed in 0.7.0 as dead surface; the refusal stands.
+
+// `--tools none` has no mapping: `--available-tools` is the documented
+// model-visible allowlist ("Only these tools will be available to the model",
+// 1.0.85 --help), but no argv spelling of an empty allowlist disarms the
+// tools — verified live at 1.0.85 through the provider override, where a
+// bare `--available-tools`, `--available-tools=`, and `--available-tools ""`
+// all left the read and shell tools armed (the probes produced the planted
+// secret and a true byte count under every spelling). See docs/HERMETIC.md.
+
 export class CopilotAdapter extends BaseAdapter {
   readonly id: AgentId = "copilot";
   readonly binaryName = "copilot";
@@ -22,6 +41,18 @@ export class CopilotAdapter extends BaseAdapter {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+      // Both refusals verified live at 1.0.85 through the provider
+      // override. Hermetic: the check's control probe can never leak the
+      // planted code word, because --no-custom-instructions rides every
+      // codemux run — and dropping the flag from plain runs to let the
+      // control leak would un-harden them, so the two-probe check has no
+      // way to verify the private-home mechanism (docs/HERMETIC.md records
+      // the control's answer "Peter", a live leak of the user-skill
+      // channel, which the check cannot credit because it plants its code
+      // word elsewhere). Tools: no argv spelling of an empty
+      // --available-tools allowlist disarms the tools.
+      supportsHermetic: false,
+      supportsToolSelection: false,
     };
   }
 
@@ -57,7 +88,7 @@ export class CopilotAdapter extends BaseAdapter {
   }
 
   buildRunCommand(request: RunRequest): string[] {
-    const cmd = [
+    const cmd: string[] = [
       "copilot",
       "--no-auto-update",
       "--no-bash-env",

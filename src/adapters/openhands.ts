@@ -68,6 +68,8 @@ export class OpenHandsAdapter extends BaseAdapter {
     // and misleading at every other level.
     const cmd = ["openhands", "--headless"];
 
+    // A requested model exists only through the environment, so the flag
+    // rides along whenever there is one.
     if (request.model) {
       cmd.push("--override-with-envs");
     }

@@ -32,8 +32,10 @@ function reportFailure(result: RunResult): void {
  * `codemux check`: one live probe. Plain: the model must answer OK. With
  * --hermetic: a hermetic probe in a scratch directory carrying planted
  * instruction files must answer OK without repeating their code word, and a
- * control probe without --hermetic shows whether the planted files or the
- * operator's own context would have reached the model. Two real requests.
+ * control probe without --hermetic — carrying everything else the hermetic
+ * probe carries, the tools selection included — shows whether the planted
+ * files or the operator's own context would have reached the model. Two real
+ * requests.
  */
 export function registerCheckCommand(
   program: Command,
@@ -106,6 +108,24 @@ export function registerCheckCommand(
         if (model && !caps.supportsModel) {
           console.error(`Error: ${agentId} does not support model selection`);
           process.exit(1);
+        }
+
+        // The control repeats the probe's --tools selection without
+        // --hermetic and nothing else, so a harness that scopes --tools none
+        // to hermetic runs cannot be checked at --tools none: its plain
+        // control is refused by the adapter itself, and substituting default
+        // tools would vary two things at once — the control's leak would no
+        // longer prove a tools-free channel carried the canary, so the
+        // hermetic probe's clean OK could mean tool removal, not isolation.
+        // Fail before spending a request; the harness's two claims keep
+        // their own instruments (check --hermetic without --tools for the
+        // isolation, the capability probes for --tools none).
+        if (hermetic && tools === "none" && caps.toolsNoneRequiresHermetic) {
+          throw new Error(
+            `check --hermetic --tools none cannot run for ${agentId}: the control probe would be a ` +
+              `plain --tools none run, which ${agentId} refuses. Run the check without --tools for the ` +
+              "isolation claim; the --tools none claim keeps its own capability probes (docs/HERMETIC.md)"
+          );
         }
 
         const autonomy = resolveAutonomyForAdapter(agentId, caps, requestedAutonomy);
@@ -190,12 +210,29 @@ export function registerCheckCommand(
             process.exitCode = hermeticResult.exitCode;
             return;
           }
-          const verdict = evaluateCanary(hermeticResult.stdout, canary.marker);
+          // The marker scan covers the run's whole record (stdout plus what
+          // the harness kept off-screen, when it recorded anything), and the
+          // exact-OK test runs on the model's answer, which a harness whose
+          // stdout is a transcript carries in `reply`. Both fields are set
+          // by processRunResult while the run's context was alive; the
+          // launcher has disposed it by now, so the result is the only
+          // channel to that record.
+          const verdict = evaluateCanary(
+            hermeticResult.scanSurface ?? hermeticResult.stdout,
+            canary.marker,
+            hermeticResult.reply ?? hermeticResult.stdout
+          );
 
-          console.error(`Control probe without --hermetic...`);
+          // The control varies --hermetic alone: it repeats the probe's
+          // tools selection unchanged, so its leak proves the planted files
+          // reached the model through a channel that needed no tools — the
+          // attribution that makes the hermetic probe's clean OK mean
+          // isolation, not tool removal. A harness whose --tools none is
+          // hermetic-only was refused before any probe ran.
+          console.error("Control probe without --hermetic...");
           const controlResult = await launchRunRequest(adapter, probe, canaryLaunch);
           const control = controlResult.exitCode === 0
-            ? evaluateCanary(controlResult.stdout, canary.marker)
+            ? evaluateCanary(controlResult.scanSurface ?? controlResult.stdout, canary.marker)
             : null;
           // Only the planted code word proves the control saw the planted
           // files; a name, a refusal or empty output proves nothing.

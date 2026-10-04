@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -21,6 +22,12 @@ import { ZaiAdapter } from "../src/adapters/zai.js";
 import { createCodexHermeticHome } from "../src/hermetic-home.js";
 import { evaluateCanary, plantCanary } from "../src/hermetic-canary.js";
 import { AGENT_IDS, type RunRequest } from "../src/types.js";
+
+// The verified harnesses (claude, zai, codex, opencode) and the shared
+// refusal, canary and env-prefix machinery live here. The harnesses that
+// claim --tools none only — droid, kimi, pi and goose, each verified live
+// through a provider override — are in hermetic-harness-mappings.test.ts;
+// the per-harness provider-override suites in their own files.
 
 const PLAIN_CLAUDE = ["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence"];
 
@@ -369,21 +376,52 @@ describe("hermetic runs: codex", () => {
   });
 });
 
+// Restored from the pre-merge tree (h1 review finding): the merge dropped
+// this describe while src/hermetic-home.ts stayed byte-identical, losing
+// its signal-registration coverage.
+describe("hermetic home signal handling", () => {
+  test("handlers exist only while a home is live, and finalize on a signal outside a run", () => {
+    const home = mkdtempSync(join(tmpdir(), "codemux-codex-signals-"));
+    mkdirSync(join(home, ".codex"));
+    writeFileSync(join(home, ".codex", "auth.json"), "{}", { mode: 0o600 });
+    const before = process.listenerCount("SIGHUP");
+    const first = createCodexHermeticHome(join(home, ".codex"));
+    const second = createCodexHermeticHome(join(home, ".codex"));
+    try {
+      expect(process.listenerCount("SIGHUP")).toBe(before + 1);
+      first.finalize();
+      expect(process.listenerCount("SIGHUP")).toBe(before + 1);
+      second.finalize();
+      expect(process.listenerCount("SIGHUP")).toBe(before);
+      expect(() => statSync(first.home)).toThrow();
+      expect(() => statSync(second.home)).toThrow();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("hermetic runs: the other harnesses refuse", () => {
-  const supported = new Set(["claude", "zai", "codex"]);
+  const supportedHermetic = new Set(["claude", "zai", "codex", "opencode"]);
+  const supportedTools = new Set(["claude", "zai", "codex", "opencode", "kimi", "droid", "pi", "goose"]);
   for (const agentId of AGENT_IDS) {
-    if (supported.has(agentId)) continue;
-    test(`${agentId} refuses --hermetic and --tools none but accepts --tools default`, () => {
+    if (supportedHermetic.has(agentId) && supportedTools.has(agentId)) continue;
+    test(`${agentId} refuses what it cannot do but accepts --tools default`, () => {
       const adapter = getAdapter(agentId);
       const cwd = mkdtempSync(join(tmpdir(), "codemux-hermetic-refuse-"));
       mkdirSync(join(cwd, ".git"));
       try {
         const base: RunRequest = { agent: agentId, prompt: "p", cwd, sandboxed: true, autonomy: "high" };
-        expect(adapter.capabilities().supportsHermetic ?? false).toBe(false);
-        expect(() => adapter.validateRunRequest({ ...base, hermetic: true }))
-          .toThrow("no verified hermetic mode");
-        expect(() => adapter.validateRunRequest({ ...base, tools: "none" }))
-          .toThrow("cannot remove its built-in tools");
+        if (!supportedHermetic.has(agentId)) {
+          expect(adapter.capabilities().supportsHermetic ?? false).toBe(false);
+          expect(() => adapter.validateRunRequest({ ...base, hermetic: true }))
+            .toThrow("no verified hermetic mode");
+        }
+        if (!supportedTools.has(agentId)) {
+          expect(adapter.capabilities().supportsToolSelection ?? false).toBe(false);
+          expect(() => adapter.validateRunRequest({ ...base, tools: "none" }))
+            .toThrow("cannot remove its built-in tools");
+        }
         expect(() => adapter.validateRunRequest({ ...base, tools: "default" })).not.toThrow();
       } finally {
         rmSync(cwd, { recursive: true, force: true });
@@ -426,16 +464,21 @@ describe("hermetic canary", () => {
 });
 
 describe("env-prefixed commands", () => {
+  // The program slot holds the validated realpath of the shell Bun.which
+  // finds — whatever /bin/sh resolves to on this machine (dash, bash, …),
+  // so the expectation is computed, not spelled out.
+  const shRealpath = () => realpathSync(Bun.which("sh")!);
+
   test("both env and the program it launches are resolved and validated", () => {
     const { resolveTrustedCommand } = require("../src/executable-security.js") as typeof import("../src/executable-security.js");
     const resolved = resolveTrustedCommand(["env", "HOME=/x", "CODEX_HOME=/x/.codex", "sh", "-c", "true"], "test");
     expect(resolved[0]).toMatch(/\/env$/);
-    expect(resolveTrustedCommand(["/usr/bin/env", "HOME=/x", "sh"], "test")[2]).toMatch(/\/(sh|dash)$/);
+    expect(resolveTrustedCommand(["/usr/bin/env", "HOME=/x", "sh"], "test")[2]).toBe(shRealpath());
     // env keeps the name it was found under (a multi-call binary reads argv[0]).
     expect(resolveTrustedCommand(["/usr/bin/env", "HOME=/x", "sh"], "test")[0]).toBe("/usr/bin/env");
     expect(resolved.slice(1, 3)).toEqual(["HOME=/x", "CODEX_HOME=/x/.codex"]);
-    // The program slot is the validated realpath: dash where /bin/sh links to it.
-    expect(resolved[3]).toMatch(/\/(sh|dash)$/);
+    // The program slot is the validated realpath, not the bare name it was found under.
+    expect(resolved[3]).toBe(shRealpath());
     expect(resolved.slice(4)).toEqual(["-c", "true"]);
   });
 
@@ -444,6 +487,35 @@ describe("env-prefixed commands", () => {
     expect(() => resolveTrustedCommand(["env", "HOME=/x", "codemux-no-such-binary"], "test"))
       .toThrow("executable 'codemux-no-such-binary' was not found");
     expect(() => resolveTrustedCommand(["env", "HOME=/x"], "test")).toThrow("names no program");
+  });
+
+  test("-u pairs before the assignments only unset a plain variable name", () => {
+    const { resolveTrustedCommand } = require("../src/executable-security.js") as typeof import("../src/executable-security.js");
+    const resolved = resolveTrustedCommand(
+      ["env", "-u", "OPENCODE_CONFIG_DIR", "-u", "OPENCODE_CONFIG_CONTENT", "HOME=/x", "sh", "-c", "true"],
+      "test"
+    );
+    expect(resolved.slice(1, 6)).toEqual(["-u", "OPENCODE_CONFIG_DIR", "-u", "OPENCODE_CONFIG_CONTENT", "HOME=/x"]);
+    expect(resolved[6]).toBe(shRealpath());
+    expect(() => resolveTrustedCommand(["env", "-u", "PATH2=x", "sh"], "test"))
+      .toThrow("env prefix unsets an invalid variable name");
+    expect(() => resolveTrustedCommand(["env", "-u"], "test")).toThrow("unsets an invalid variable name");
+    // Every other option stays refused: -i and -S reinterpret the prefix.
+    expect(() => resolveTrustedCommand(["env", "-i", "HOME=/x", "sh"], "test")).toThrow("names no program");
+    expect(() => resolveTrustedCommand(["env", "-S", "HOME=/x", "sh"], "test")).toThrow("names no program");
+  });
+
+  test("an option after an assignment names no program, it is not honored", () => {
+    const { resolveTrustedCommand } = require("../src/executable-security.js") as typeof import("../src/executable-security.js");
+    // Regression: the scan used to keep honoring -u NAME past an
+    // assignment, so ["env", "A=1", "-u", "X", "opencode"] validated
+    // opencode — but options must precede assignments, and env (BSD env,
+    // and POSIX env generally) would instead try to execute "-u" from
+    // PATH. The validated binary must be the one that runs.
+    expect(() => resolveTrustedCommand(["env", "A=1", "-u", "X", "sh"], "test"))
+      .toThrow("names no program");
+    expect(() => resolveTrustedCommand(["env", "A=1", "--unset", "X", "sh"], "test"))
+      .toThrow("names no program");
   });
 
   test("a hermetic codex run refuses a repository-planted codex binary", () => {
@@ -455,28 +527,6 @@ describe("env-prefixed commands", () => {
         .toThrow("must not be inside the execution working directory");
     } finally {
       rmSync(repo, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("hermetic home signal handling", () => {
-  test("handlers exist only while a home is live, and finalize on a signal outside a run", () => {
-    const home = mkdtempSync(join(tmpdir(), "codemux-codex-signals-"));
-    mkdirSync(join(home, ".codex"));
-    writeFileSync(join(home, ".codex", "auth.json"), "{}", { mode: 0o600 });
-    const before = process.listenerCount("SIGHUP");
-    const first = createCodexHermeticHome(join(home, ".codex"));
-    const second = createCodexHermeticHome(join(home, ".codex"));
-    try {
-      expect(process.listenerCount("SIGHUP")).toBe(before + 1);
-      first.finalize();
-      expect(process.listenerCount("SIGHUP")).toBe(before + 1);
-      second.finalize();
-      expect(process.listenerCount("SIGHUP")).toBe(before);
-      expect(() => statSync(first.home)).toThrow();
-      expect(() => statSync(second.home)).toThrow();
-    } finally {
-      rmSync(home, { recursive: true, force: true });
     }
   });
 });
