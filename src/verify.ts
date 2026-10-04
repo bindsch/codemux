@@ -86,6 +86,18 @@ export function verificationCwd(): string {
   return neutralCwd;
 }
 
+// The environment half of static neutrality: verificationCwd pins the
+// working directory, this pins the environment. An exported
+// CODEMUX_CURSOR_ENTRY=cursor selects cursor's desktop entry on the launch
+// path — and, lacking the argv authorization of --pass-env, launch
+// validation refuses it. Verify builds those same commands, so inheriting
+// the operator's shell made a plain `codemux verify` report cursor's
+// wiring as broken while a real launch with the passthrough worked. Every
+// adapter verify consults is instead constructed against this explicitly
+// empty view: the default entry chain, no per-launch opt-ins, the same
+// result whatever the operator exported.
+const STATIC_WIRING_ENV: Record<string, string | undefined> = {};
+
 export type VerificationStatus = "PASS" | "WARN" | "FAIL";
 
 export interface VerificationResult {
@@ -156,7 +168,7 @@ function verifyMapping(agentId: AgentId, issues: string[]): boolean {
 }
 
 function verifyRunBuilds(agentId: AgentId, issues: string[]): { ok: boolean; warnings: string[] } {
-  const adapter = getAdapter(agentId);
+  const adapter = getAdapter(agentId, STATIC_WIRING_ENV);
   const caps = adapter.capabilities();
 
   try {
@@ -245,7 +257,7 @@ function verifyRunBuilds(agentId: AgentId, issues: string[]): { ok: boolean; war
 }
 
 function verifyTuiBuilds(agentId: AgentId, issues: string[]): { ok: boolean; warnings: string[] } {
-  const adapter = getAdapter(agentId);
+  const adapter = getAdapter(agentId, STATIC_WIRING_ENV);
   const caps = adapter.capabilities();
 
   try {
@@ -323,7 +335,7 @@ function classifyStatus(
 
 export function verifyAgentWiring(agentId: AgentId): VerificationResult {
   const issues: string[] = [];
-  const adapter = getAdapter(agentId);
+  const adapter = getAdapter(agentId, STATIC_WIRING_ENV);
   const installed = adapter.isAvailable();
 
   const mappingOk = verifyMapping(agentId, issues);
@@ -363,7 +375,7 @@ export function buildEffectiveScodeCommands(
   const rows: EffectiveScodeCommand[] = [];
 
   for (const agentId of agentIds) {
-    const adapter = getAdapter(agentId);
+    const adapter = getAdapter(agentId, STATIC_WIRING_ENV);
     const caps = adapter.capabilities();
 
     for (const autonomy of AUTONOMY_LEVELS) {

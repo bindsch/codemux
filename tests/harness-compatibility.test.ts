@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { probeEnvironment } from "../src/environment.js";
@@ -12,6 +20,7 @@ import {
   extractHarnessVersion,
   HARNESS_CONTRACTS,
   type HarnessContract,
+  probeHarnessVersion,
 } from "../src/harness-compatibility.js";
 
 const opencode = HARNESS_CONTRACTS.opencode!;
@@ -167,7 +176,7 @@ describe("the gate itself", () => {
     try {
       const warnings = await captureWarnings(() =>
         assertSupportedHarnessVersion({
-          agent: "opencode", binary: fake.path, workdir: "/tmp",
+          agent: "opencode", binary: fake.path, binaryName: "opencode", workdir: "/tmp",
           probeEnvironment: probeEnvironment({}), override: false, autonomy: "low",
         })
       );
@@ -301,7 +310,7 @@ describe("the gate itself", () => {
     try {
       const warnings = await captureWarnings(() =>
         assertSupportedHarnessVersion({
-          agent: "opencode", binary: fake.path, workdir: "/tmp",
+          agent: "opencode", binary: fake.path, binaryName: "opencode", workdir: "/tmp",
           probeEnvironment: probeEnvironment({}), override: false, autonomy: "high",
         })
       );
@@ -316,7 +325,7 @@ describe("the gate itself", () => {
     try {
       await expect(
         assertSupportedHarnessVersion({
-          agent: "opencode", binary: fake.path, workdir: "/tmp",
+          agent: "opencode", binary: fake.path, binaryName: "opencode", workdir: "/tmp",
           probeEnvironment: probeEnvironment({}), override: false, autonomy: "low",
         })
       ).rejects.toThrow("cannot enforce low and medium autonomy");
@@ -332,6 +341,7 @@ describe("the gate itself", () => {
         assertSupportedHarnessVersion({
           agent: "opencode",
           binary: fake.path,
+          binaryName: "opencode",
           workdir: "/tmp",
           probeEnvironment: probeEnvironment({}),
           override: true,
@@ -349,7 +359,7 @@ describe("the gate itself", () => {
     try {
       const warnings = await captureWarnings(() =>
         assertSupportedHarnessVersion({
-          agent: "opencode", binary: fake.path, workdir: "/tmp",
+          agent: "opencode", binary: fake.path, binaryName: "opencode", workdir: "/tmp",
           probeEnvironment: probeEnvironment({}), override: false, autonomy: "high",
         })
       );
@@ -372,7 +382,7 @@ describe("the gate itself", () => {
     const fake = fakeHarness("");
     const call = (override: boolean) =>
       assertSupportedHarnessVersion({
-        agent: "copilot", binary: fake.path, workdir: "/tmp",
+        agent: "copilot", binary: fake.path, binaryName: "copilot", workdir: "/tmp",
         probeEnvironment: probeEnvironment({}), override, autonomy: "low",
       });
     try {
@@ -390,7 +400,7 @@ describe("the gate itself", () => {
     try {
       const warnings = await captureWarnings(() =>
         assertSupportedHarnessVersion({
-          agent: "goose", binary: fake.path, workdir: "/tmp",
+          agent: "goose", binary: fake.path, binaryName: "goose", workdir: "/tmp",
           probeEnvironment: probeEnvironment({}), override: false, autonomy: "low",
         })
       );
@@ -399,12 +409,145 @@ describe("the gate itself", () => {
       fake.cleanup();
     }
   });
+
+  test("cursor's version probe keys on the entry name, not the executable's basename", async () => {
+    // The finding: the gate hands the probe the canonical executable path,
+    // and the standard Homebrew `cursor` symlink resolves into the
+    // Cursor.app bundle as `code`. Selecting version arguments by that
+    // path's basename sent bare `--version`, which reports the desktop
+    // app's semver -- no calendar match -- so the gate read null and
+    // warned past the floor instead of gating the agent build at all. The
+    // fake answers `agent --version` with a calendar build and bare
+    // `--version` with the desktop semver, exactly the split the real
+    // pair has.
+    const dir = mkdtempSync(join(tmpdir(), "codemux-cursor-entry-"));
+    const path = join(dir, "code");
+    writeFileSync(
+      path,
+      [
+        "#!/bin/sh",
+        'if [ "$1" = "agent" ] && [ "$2" = "--version" ]; then',
+        "  printf '%s\\n' '2026.08.11-e8db854'",
+        "  exit 0",
+        "fi",
+        'if [ "$1" = "--version" ]; then',
+        "  printf '%s\\n' '3.23.12'",
+        "  exit 0",
+        "fi",
+        "exit 1",
+        "",
+      ].join("\n")
+    );
+    chmodSync(path, 0o755);
+    try {
+      // The desktop entry: entry name `cursor`, executable basename `code`.
+      const desktop = await probeHarnessVersion(
+        path,
+        HARNESS_CONTRACTS.cursor!,
+        "/tmp",
+        probeEnvironment({}),
+        "cursor"
+      );
+      expect(desktop).toBe("2026.08.11");
+      // The standalone entries probe bare `--version`, which on this fake
+      // reports the desktop semver the calendar pattern rejects.
+      const standalone = await probeHarnessVersion(
+        path,
+        HARNESS_CONTRACTS.cursor!,
+        "/tmp",
+        probeEnvironment({}),
+        "agent"
+      );
+      expect(standalone).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the desktop entry's gate refuses an untrusted cursor before probing it", async () => {
+    // The round-3 redesign: `cursor agent` runs only under the
+    // CODEMUX_CURSOR_ENTRY opt-in, and then only through the launch path's
+    // own ordering -- the `cursor` binary passes the trusted-executable
+    // check resolved against the run's working directory BEFORE the gate
+    // probes `cursor agent --version`. A repository-local cursor (a direnv
+    // PATH_add, say) is therefore refused without ever executing, which is
+    // what makes probing the installer-capable wrapper acceptable at all.
+    // The fake marks every execution; the refusal must leave no marker.
+    const repoDir = mkdtempSync(join(tmpdir(), "codemux-cursor-gate-"));
+    const binary = join(repoDir, "bin", "cursor");
+    const marker = join(repoDir, "ran");
+    try {
+      mkdirSync(join(repoDir, "bin"), { recursive: true });
+      // User-owned and not group- or world-writable: only the run's --cwd
+      // (this repository) makes it untrusted.
+      writeFileSync(binary, `#!/bin/sh\necho ran >> '${marker}'\nexit 0\n`);
+      chmodSync(binary, 0o755);
+      await expect(
+        assertHarnessSupported(
+          "cursor",
+          "cursor",
+          repoDir,
+          { PATH: join(repoDir, "bin") },
+          "low",
+          true,
+          ["CODEMUX_CURSOR_ENTRY"]
+        )
+      ).rejects.toThrow("must not be inside the execution working directory");
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  test("the desktop entry's gate probes cursor agent --version only after the trust check", async () => {
+    // The same gate with a cursor that passes the trust check (outside the
+    // run's working directory, user-owned): the probe runs, and it sends
+    // `agent --version` -- the subcommand form -- through the wrapper. The
+    // fake records its argv and answers a calendar build inside the audited
+    // band, so the gate resolves silently.
+    const base = mkdtempSync(join(tmpdir(), "codemux-cursor-gate-ok-"));
+    const binDir = join(base, "bin");
+    const workdir = join(base, "work");
+    const cursor = join(binDir, "cursor");
+    const marker = join(base, "argv");
+    try {
+      mkdirSync(binDir);
+      mkdirSync(workdir);
+      writeFileSync(
+        cursor,
+        [
+          "#!/bin/sh",
+          `echo "$@" >> '${marker}'`,
+          'if [ "$1" = "agent" ] && [ "$2" = "--version" ]; then',
+          "  printf '%s\\n' '2026.08.11-e8db854'",
+          "fi",
+          "exit 0",
+          "",
+        ].join("\n")
+      );
+      chmodSync(cursor, 0o755);
+      await assertHarnessSupported(
+        "cursor",
+        "cursor",
+        workdir,
+        { PATH: binDir },
+        "low",
+        true,
+        ["CODEMUX_CURSOR_ENTRY"]
+      );
+      expect(existsSync(marker)).toBe(true);
+      expect(readFileSync(marker, "utf8")).toBe("agent --version\n");
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("the ledger and the version gate agree", () => {
   // Ledger name to agent id. An installed row whose name is missing here FAILS the test rather
   // than being skipped -- see below for why that direction matters.
   const AGENT_BY_LEDGER_NAME: Record<string, keyof typeof HARNESS_CONTRACTS> = {
+    "Antigravity CLI": "agy",
     Aider: "aider",
     "Claude Code": "claude",
     "Cline CLI": "cline",

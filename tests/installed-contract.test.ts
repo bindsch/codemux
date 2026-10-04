@@ -7,6 +7,17 @@ const RUN_INSTALLED_CONTRACTS =
 const CONTRACT_TIMEOUT_MS = 60_000;
 const SUITE_TIMEOUT_MS = 15 * 60_000;
 
+// Cursor's desktop `cursor agent` entry is opt-in only
+// (CODEMUX_CURSOR_ENTRY=cursor through --pass-env) precisely because the
+// desktop wrapper may install or update the agent on first use. A contract
+// run is codemux acting on its own initiative, so this suite resolves the
+// standalone entries only -- `agent`, else the legacy `cursor-agent` --
+// never the desktop wrapper, even when the opt-in variable happens to be
+// set in the environment running the gate.
+function standaloneCursorBinary(): string {
+  return Bun.which("agent", { PATH: process.env.PATH }) ? "agent" : "cursor-agent";
+}
+
 async function help(binary: string, args: string[]): Promise<string> {
   const result = await runCapturedCommand([binary, ...args], {
     cwd: process.cwd(),
@@ -18,10 +29,34 @@ async function help(binary: string, args: string[]): Promise<string> {
 }
 
 describe("installed harness contracts", () => {
-  const cursorBinary = Bun.which("agent", { PATH: process.env.PATH })
-    ? "agent"
-    : "cursor-agent";
+  // The adapter's default entry resolution (the standalone `agent`, else
+  // the legacy `cursor-agent`), never the desktop subcommand -- see
+  // standaloneCursorBinary above. Resolved only when this suite runs so
+  // the registry is not touched in test runs where its tests are skipped.
+  const cursorBinary = RUN_INSTALLED_CONTRACTS
+    ? standaloneCursorBinary()
+    : "agent";
   const contracts = [
+    {
+      binary: "agy",
+      args: ["--help"],
+      required: [
+        "--print",
+        "--prompt",
+        "--model",
+        "--effort",
+        "--mode",
+        // Carries the envelope --result-json maps to (--output-format=json;
+        // the `=` form 1.2.14 requires). Same reason as claude's
+        // --output-format: without it in this list an
+        // upstream release that dropped the flag would pass while every
+        // --result-json agy run broke.
+        "--output-format",
+        "--dangerously-skip-permissions",
+        // Removes the skills the print-mode run would otherwise expand.
+        "--disable-slash-commands",
+      ],
+    },
     {
       binary: "aider",
       args: ["--help"],
@@ -194,13 +229,16 @@ describe("installed harness contracts", () => {
       // "Authentication required" otherwise). A machine without one cannot
       // check the alias table, so it is skipped with a note rather than
       // reported as a contract break; the help-surface contract above still
-      // ran.
+      // ran. The probe goes through the standalone entry resolved above.
       const cursorLoggedIn = async (): Promise<boolean> => {
-        const probe = await runCapturedCommand([cursorBinary, "models"], {
-          cwd: process.cwd(),
-          env: process.env as Record<string, string>,
-          timeoutMs: CONTRACT_TIMEOUT_MS,
-        });
+        const probe = await runCapturedCommand(
+          [cursorBinary, "models"],
+          {
+            cwd: process.cwd(),
+            env: process.env as Record<string, string>,
+            timeoutMs: CONTRACT_TIMEOUT_MS,
+          }
+        );
         if (probe.exitCode === 0) return true;
         if (/Authentication required/.test(`${probe.stdout}\n${probe.stderr}`)) {
           console.log("[contracts] cursor model aliases skipped: no cursor login on this machine");
@@ -247,7 +285,15 @@ describe("version probes run the arguments the contracts actually send", () => {
         if (contract === undefined) continue;
         // The executable is not always the agent id: cursor runs `agent`, zai runs `claude`.
         // Probing the id would silently skip those two and pass on a smaller set than it claims.
-        const binary = getAdapter(agent as never).binaryName;
+        // Cursor never resolves to the desktop entry here, opt-in environment
+        // or not: this suite must not execute the installer-capable wrapper
+        // (see standaloneCursorBinary above), so it names the standalone
+        // entry the adapter uses by default instead.
+        const adapterBinary = getAdapter(agent as never).binaryName;
+        const binary =
+          agent === "cursor" && adapterBinary === "cursor"
+            ? standaloneCursorBinary()
+            : adapterBinary;
         if (Bun.which(binary, { PATH: process.env.PATH }) === null) continue;
         // Through `probeHarnessVersion` with `probeEnvironment`, which is what production runs.
         // `help()` spawns with the full inherited environment, and so did the first version of
@@ -260,9 +306,18 @@ describe("version probes run the arguments the contracts actually send", () => {
           binary,
           contract,
           process.cwd(),
-          probeEnvironment(process.env as Record<string, string>)
+          probeEnvironment(process.env as Record<string, string>),
+          // `binary` here is the adapter's entry name, which is what the
+          // per-entry selector keys on; production additionally resolves
+          // it to a canonical path first (the unit suite covers that
+          // split -- a symlink can change the basename).
+          binary
         );
-        expect(version, `${agent}: \`${binary} ${contract.versionArgs.join(" ")}\` produced no version`)
+        // The args the probe actually sent: the cursor contract overrides
+        // them per entry name (`cursor agent --version`, since `cursor
+        // --version` reports the desktop app's own semver instead).
+        const versionArgs = contract.versionArgsFor?.(binary) ?? contract.versionArgs;
+        expect(version, `${agent}: \`${binary} ${versionArgs.join(" ")}\` produced no version`)
           .not.toBeNull();
         checked.push(agent);
       }

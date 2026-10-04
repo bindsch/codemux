@@ -130,6 +130,38 @@ const GOOSE_EXECUTABLE_CONFIG_FILES = [
   join(".goose", "config.yml"),
 ] as const;
 
+// Antigravity discovers project-level skills, rules, plugins, and subagents
+// from `.agents/` between the working directory and the project root. The
+// refusal list follows the binary's own strings, which name the four
+// manifests (`.agents/{skills,rules,plugins,agents}.json`), the matching
+// `.agents/{skills,rules,plugins,agents,workflows}/` directories, and
+// `.agents/hooks.json` -- so a repository can otherwise supply the prompts,
+// hooks, and tools a session runs with. `.gemini/.env` is refused for the
+// same reason as the Gemini CLI's: agy shares the Gemini config lineage
+// (its strings read an env auth store), and an env file the repository
+// ships would inject credentials into the harness. The same strings read a
+// whole `.gemini/config/` tree (plugins, skills, hooks.json,
+// mcp_config.json, workflows), so that directory is refused too. The
+// workspace directories agy itself writes -- `.gemini/antigravity/` for
+// artifacts and the transcript, `.agents/teamwork/` for orchestration
+// state -- are deliberately not refused.
+const AGY_EXECUTABLE_CONFIG_FILES = [
+  join(".agents", "skills.json"),
+  join(".agents", "rules.json"),
+  join(".agents", "plugins.json"),
+  join(".agents", "agents.json"),
+  join(".agents", "hooks.json"),
+  join(".gemini", ".env"),
+] as const;
+const AGY_EXECUTABLE_CONFIG_DIRECTORIES = [
+  join(".agents", "skills"),
+  join(".agents", "rules"),
+  join(".agents", "plugins"),
+  join(".agents", "agents"),
+  join(".agents", "workflows"),
+  join(".gemini", "config"),
+] as const;
+
 function realpathOr(path: string): string {
   try {
     return realpathSync(path);
@@ -308,5 +340,14 @@ export function assertNoGooseProjectExecutionConfig(cwd: string): void {
     "Goose",
     GOOSE_EXECUTABLE_CONFIG_FILES,
     []
+  );
+}
+
+export function assertNoAgyProjectExecutionConfig(cwd: string): void {
+  assertNoProjectExecutionConfig(
+    cwd,
+    "Antigravity",
+    AGY_EXECUTABLE_CONFIG_FILES,
+    AGY_EXECUTABLE_CONFIG_DIRECTORIES
   );
 }

@@ -157,6 +157,9 @@ describe("CLI - Autonomy", () => {
 
 describe("CLI - Verify", () => {
   test("verify shows wiring report table", async () => {
+    // Full verify builds the real command for every installed adapter;
+    // entry resolution is spawn-free (see the CursorEntry comment in
+    // src/adapters/cursor.ts), so this stays in the default timeout.
     const { stdout, exitCode } = await runCli(["verify"]);
     expect(exitCode).toBe(0);
     expect(stdout).toContain("Verification checks: static wiring only");

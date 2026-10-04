@@ -1,9 +1,11 @@
 # Harness Compatibility Ledger
 
-Last full-pass audit: 2026-08-15. Most recent single-harness audit: 2026-09-21
-(Copilot, flag surface only). Most recent verification pass against installed
-binaries (not an audit; the audited versions below are unchanged): 2026-10-03 —
-see the addendum of that date.
+Last full-pass audit: 2026-08-15. Most recent single-harness audit: 2026-10-04
+(Antigravity, flag surface only; no login on the audit machine). Most recent
+harness additions: 2026-10-04 (Antigravity 1.2.14; the opt-in `cursor agent`
+entry point) — see the addendum of that date. Most recent verification pass
+against installed binaries (not an audit; the audited versions below are
+unchanged): 2026-10-03.
 
 This is the release contract for Codemux's external agent adapters. “Audited”
 means the upstream release/changelog and current CLI reference were reviewed,
@@ -12,12 +14,13 @@ covered by tests. Installed binaries were also exercised where available.
 
 | Harness | Audited upstream | Installed during audit | Primary source | Important contract |
 |---------|------------------|------------------------|----------------|--------------------|
+| Antigravity CLI | 1.2.14 | 1.2.14 at audit, self-updated to 1.2.16 mid-audit (see the 2026-10-04 addendum; no login on the audit machine) | [headless docs](https://antigravity.google/docs/cli/headless) | argv prompt bound inside `--print=`, enum flags emitted `--flag=value` (required at 1.2.14), five effort levels, `--mode` plan/accept-edits plus `--dangerously-skip-permissions`, JSON envelope for `--result-json`, `--disable-slash-commands`, project `.agents`/`.gemini` config rejected, no verified hermetic mode (docs/HERMETIC.md) |
 | Aider | 0.86.2 | 0.86.2 | [PyPI](https://pypi.org/project/aider-chat/) | packaged empty config/model metadata, null env/history, no Git side effects, negative headless confirmations, common provider credentials allowlisted |
 | Claude Code | 2.1.223 | 2.1.223 | [release](https://github.com/anthropics/claude-code/releases/tag/v2.1.220) | `manual` replaces removed public `default`; effort is low through max |
 | Cline CLI | 3.0.48 | not installed | [CLI changelog](https://github.com/cline/cline/blob/main/apps/cli/CHANGELOG.md) | `cline -- ...`, explicit plan/auto-approve/thinking, project execution config rejected |
 | Codex CLI | 0.147.0 | 0.147.0 | [release](https://github.com/openai/codex/releases/tag/rust-v0.146.0) | stdin prompt, explicit sandbox and approval policy, project config rejected |
 | GitHub Copilot CLI | 1.0.85 | 1.0.85 | [releases](https://github.com/github/copilot-cli/releases) — v1.0.4 introduced `--reasoning-effort`, v1.0.10 added the `--effort` alias, and 1.0.85 no longer lists it | explicit `--reasoning-effort none` (canonical since v1.0.4; the `--effort` alias codemux used was added in v1.0.10 and has been dropped. Values unchanged, so no translation, unlike Droid's `none` to `off`), remote/project integrations disabled or rejected. Version-gated since 2026-09-21 |
-| Cursor Agent | rolling build 2026.08.11-e8db854 | same | [CLI installation](https://docs.cursor.com/en/cli/installation) | primary `agent`, legacy alias fallback, stdin, trust, Plan/Auto Review/Force, outer sandbox |
+| Cursor Agent | rolling build 2026.08.11-e8db854 | same | [CLI installation](https://docs.cursor.com/en/cli/installation) | primary standalone `agent`, then the legacy `cursor-agent` alias; `cursor agent` (the desktop CLI's subcommand) runs only behind the explicit `CODEMUX_CURSOR_ENTRY=cursor` opt-in passed through `--pass-env` — the desktop wrapper may install or update `~/.local/bin/cursor-agent` on first use, so nothing executes it on Codemux's own initiative, and under the opt-in the trust check and the `cursor agent --version` probe both sit in the launch path, the probe after the check; stdin, trust, Plan/Auto Review/Force, outer sandbox; the version probe keys on the resolved entry's name (not the executable's basename; the Homebrew `cursor` symlink resolves into the app bundle as `code`) because `cursor --version` reports the desktop app's semver, not the agent build |
 | Droid | 0.186.0 | 0.186.0 | [CLI reference](https://docs.factory.ai/reference/cli-reference) | stdin, native auto levels and model-aware reasoning-off values, project execution config rejected |
 | Goose | 1.45.0 | not installed | [release](https://github.com/aaif-goose/goose/releases/tag/v1.45.0) | `GOOSE_MODE` chat/approve/smart_approve/auto, project extension config rejected |
 | Gemini CLI | 0.53.1 | not installed | [release](https://github.com/google-gemini/gemini-cli/releases/tag/v0.53.1) | current approval modes; local `.env` and nested sandbox disabled; Plan requires an outer read-only boundary |
@@ -183,6 +186,106 @@ handoff copies only `SharedCliOptions` (`-s`, `-m`), dropping a root `-a`;
 and `-a` there accepts only `on-request` and `never`, so it cannot express
 `untrusted` at all. The root `-c` is forwarded into `exec` (fresh and
 `resume`) and reaches the TUI too, which is why `mapEffort` already used it.
+
+## 2026-10-04 addendum: Antigravity, and re-ordering Cursor's entry points
+
+**Antigravity (`agy`) was added at 1.2.14.** The audit machine has the
+binary installed but no Antigravity login, so the audit is a flag-surface
+audit — `agy --help`, `--version`, direct flag-form probes against the
+binary, its embedded JSON tags, and the official headless documentation —
+and not a live exercise. No hermetic claim was made for the same reason
+plus the mechanism gap named in `docs/HERMETIC.md`.
+
+The binary self-updated to 1.2.16 mid-audit, the same mid-session drift
+the OpenCode note above records. The version gate warned on the next
+launch exactly as designed ("newer than the 1.2.14 this Codemux
+audited"), the installed contract's agy entry still passes at 1.2.16 —
+every required flag is present — and the `=`-form the adapter emits is
+valid on both releases, so nothing breaks. One probe no longer
+reproduces at 1.2.16: `--effort high --print=…` (space form) exited 2 at
+1.2.14 before any network contact and now parses, reaching the
+authentication flow. The addendum below keeps describing 1.2.14, the
+audited release.
+
+Three points where the documentation and the 1.2.14 binary disagree; the
+binary won each time:
+
+- The docs' effort table lists low, medium, or high. The binary accepts
+  five values — `low|medium|high|xhigh|max` — rejecting others with that
+  list in the error, and the adapter maps all five.
+- The docs' examples write the enum flags with a space (`--effort high`,
+  `--output-format json`). The binary requires the single-token
+  `--flag=value` form for `--effort`, `--mode`, `--input-format`, and
+  `--output-format`; the space form exits 2. The adapter therefore binds
+  the prompt inside `--print=<prompt>`, which also keeps a leading-dash
+  prompt off the flag parser. An unrecognized `--mode` value warns and
+  continues (fail-open), so the adapter never relies on `--mode` parsing
+  as a safety boundary — the scode sandbox stays the enforcement for
+  every level below high, as everywhere else.
+- The docs' streaming examples emit `{"event":"result","result":{...}}`,
+  a wrapper with no top-level `status`. That wrapper is not the
+  print-mode envelope; the envelope parser rejects it (negative fixture
+  in `tests/result-envelope.test.ts`).
+
+The `--result-json` envelope is pinned against the documented schema and
+the binary's own JSON tags, and is marked as such in the tests: agy was
+not logged in, so no live envelope could be recorded. Usage arithmetic
+follows every documented example: `total_tokens` is
+`input_tokens + output_tokens` with `input_tokens` including the
+cache-read count and `thinking_tokens` outside the total entirely, so the
+normalized block reports uncached input as `input - cache_read`, keeps
+the read count as `cached_input_tokens`, and takes the total as reported
+— the three normalized fields sum to the total agy itself reports. The
+version floor is 1.2.14 with `maxAudited` 1.2.14: there is no earlier
+audited release, so anything older is refused rather than assumed.
+
+**Cursor's entry points, and the desktop opt-in.** The desktop `cursor`
+CLI ships the agent as a subcommand (Cursor 3.23.12 here; `cursor agent
+--help` is byte-identical to `agent --help` apart from the usage line),
+but the adapter's default is exactly 0.6.0's: resolve the standalone
+`agent` first, then the legacy `cursor-agent` alias; neither found means
+"not installed", and the desktop `cursor` is not consulted at all. The
+desktop wrapper's `agent` subcommand is not a pure forward: the
+Cursor.app 3.23.12 launcher downloads and runs
+`https://cursor.com/install` when `~/.local/bin/cursor-agent` is
+absent and runs `cursor-agent update` when the installed build is older
+than it wants, before exec-ing that same `~/.local/bin/cursor-agent`.
+An earlier draft of this addendum ranked the desktop first by probing
+`cursor agent --help`; the round-2 review flagged that probe twice —
+`list`, `doctor`, and `verify` could download and execute an installer,
+and a repository-local `cursor` on PATH executed outside the sandbox
+during discovery, before the launch's trust check (which knows the run's
+`--cwd`) could refuse it. Round 2 demoted the desktop entry to last
+resort; the round-3 review found the residue: even last-resort status
+let the version gate and the installed-contract suite execute the
+wrapper on a desktop-only machine, still outside any sandbox and still
+without the operator asking. The desktop entry is therefore opt-in only:
+`CODEMUX_CURSOR_ENTRY=cursor` set and the name passed through
+(`--pass-env CODEMUX_CURSOR_ENTRY`), with this ledger and the README
+carrying the warning that the wrapper may install or update the agent on
+first use. The passthrough is the authorization — argv the operator
+typed, which neither a repository nor a shell profile can inject — and a
+launch that selects the desktop entry without it is refused before the
+version gate could execute anything. Under the opt-in, the trust check
+applies to the `cursor` binary resolved against the requested working
+directory, and the gate probes `cursor agent --version` only after that
+check, only inside the launch path; `isAvailable`, `list`, `doctor`,
+`verify`, and the installed-contract suite never execute the desktop
+entry either way. Verify additionally constructs its adapters against an
+explicitly empty environment view (the registry's `getAdapter` takes the
+view; see STATIC_WIRING_ENV in src/verify.ts), so an exported
+`CODEMUX_CURSOR_ENTRY` does not even select the desktop entry there — a
+static wiring result never depends on the operator's shell.
+
+`cursor --version` reports the desktop app's semver (3.23.12) rather
+than the agent build (2026.08.11-e8db854), so the cursor contract picks
+its version-probe arguments per resolved entry — by entry name, never by
+the executable's basename, because the gate probes the canonical path
+and the standard Homebrew `cursor` symlink resolves into the app bundle
+as `code`; a basename-keyed selector probed the desktop semver, missed
+the calendar pattern, and warned past the floor even for a below-floor
+agent build (`cursor agent --version` through the desktop, plain
+`--version` for the standalone entries).
 
 ## Version enforcement
 

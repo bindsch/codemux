@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { AGENT_IDS } from "../src/adapters/index.js";
+import { CURSOR_ENTRY_ENV, CursorAdapter } from "../src/adapters/cursor.js";
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,6 +38,9 @@ describe("Verifier", () => {
   });
 
   test("verifyAgentsWiring returns one result per agent", () => {
+    // Building every adapter's real command is spawn-free (see the
+    // CursorEntry comment in src/adapters/cursor.ts), so this stays in
+    // the default timeout.
     const rows = verifyAgentsWiring(AGENT_IDS);
     expect(rows.length).toBe(AGENT_IDS.length);
   });
@@ -57,6 +61,46 @@ describe("Verifier", () => {
     expect(row.mappingOk).toBe(true);
     expect(row.runBuildOk).toBe(true);
     expect(row.tuiBuildOk).toBe(true);
+  });
+
+  test("an exported CODEMUX_CURSOR_ENTRY never fails the static wiring check", () => {
+    // Round-5 regression: `codemux verify` in a shell with the desktop
+    // opt-in exported built cursor's commands through the launch-path
+    // adapter -- the variable selected the desktop entry, the empty
+    // passthrough could not authorize it, and the wiring check recorded
+    // the refusal as "run command generation failed" and reported FAIL.
+    // Verify is static, so its result must not depend on the operator's
+    // shell: it builds against an explicitly empty environment view
+    // (STATIC_WIRING_ENV in src/verify.ts), never the exported one.
+    const saved = process.env[CURSOR_ENTRY_ENV];
+    process.env[CURSOR_ENTRY_ENV] = "cursor";
+    try {
+      // The launch view really does refuse in this exact environment
+      // (wherever `cursor` resolves, the default finder's own rule): this
+      // pins the premise, so the test bites instead of passing vacuously
+      // on machines without the desktop binary.
+      if (Bun.which("cursor", { PATH: process.env.PATH }) !== null) {
+        const launchView = new CursorAdapter(undefined, process.env);
+        expect(() =>
+          launchView.validateRunRequest({
+            agent: "cursor",
+            prompt: "verify",
+            cwd: verificationCwd(),
+          })
+        ).toThrow(/CODEMUX_CURSOR_ENTRY/);
+      }
+      const row = verifyAgentWiring("cursor");
+      expect(row.runBuildOk).toBe(true);
+      expect(row.tuiBuildOk).toBe(true);
+      expect(row.status).not.toBe("FAIL");
+      expect(row.issues).toEqual([]);
+    } finally {
+      if (saved === undefined) {
+        delete process.env[CURSOR_ENTRY_ENV];
+      } else {
+        process.env[CURSOR_ENTRY_ENV] = saved;
+      }
+    }
   });
 
   test("buildEffectiveScodeCommands returns run+tui rows for each autonomy level", () => {

@@ -1,6 +1,6 @@
 # codemux
 
-> **Beta software (v0.6.0).** `codemux` is under active development. Expect behavior changes as adapters and sandbox policy continue to harden.
+> **Beta software (v0.6.1).** `codemux` is under active development. Expect behavior changes as adapters and sandbox policy continue to harden.
 
 `codemux` is a unified CLI for AI coding agents. It gives one command surface
 for multiple harnesses, normalizes autonomy/effort semantics, and can route
@@ -40,7 +40,7 @@ codemux verify --show-scode
 ### Prerequisites
 
 - [Bun](https://bun.sh) 1.3.14 or newer (runtime + package manager; CI pins 1.3.14 exactly)
-- Installed agent CLIs you plan to use (`aider`, `claude`, `cline`, `copilot`, Cursor's `agent`, etc.)
+- Installed agent CLIs you plan to use (`aider`, `agy`, `claude`, `cline`, `copilot`, Cursor's `agent`, etc.)
 - [scode](https://github.com/bindsch/scode) 0.2.0 or newer if you use `--sandbox`
 
 The installed launcher and process-tree controls currently support macOS and
@@ -90,7 +90,7 @@ codemux [command] [options]
 | `--enable-playwright-mcp` | Enable a local Playwright MCP binary inside `--sandbox` |
 | `--hermetic` | Load none of the operator's customizations (instruction files, skills, plugins, hooks, MCP servers); the login still works. Claude, Z.AI and Codex; others are refused. See [docs/HERMETIC.md](docs/HERMETIC.md) |
 | `--tools <selection>` | Built-in tools the harness exposes: `default` or `none`. Independent of `--hermetic`; Codex takes `none` only with `--auto read-only` |
-| `--result-json` | Return a structured result envelope on stdout instead of plain text, so a caller can read what the run consumed (tokens, cost). Claude, Z.AI and Codex; other harnesses refuse the flag rather than silently returning text. Claude-family envelopes are the harness's own with one added `codemux` block; Codex reports the final assistant message as `result` plus the same block. See [Result envelopes](#result-envelopes) |
+| `--result-json` | Return a structured result envelope on stdout instead of plain text, so a caller can read what the run consumed (tokens, cost). Claude, Z.AI, Codex and Antigravity; other harnesses refuse the flag rather than silently returning text. Claude-family and Antigravity envelopes are the harness's own with one added `codemux` block; Codex reports the final assistant message as `result` plus the same block. See [Result envelopes](#result-envelopes) |
 | `-s, --sandbox` | Execute via `scode` (default: on; `--no-sandbox` opts out, and autonomy below `high` then refuses) |
 | `--sandbox-trust <level>` | `scode` trust override (`trusted`, `standard`, `untrusted`) |
 | `--sandbox-no-net` | Add `--no-net` to `scode` |
@@ -169,12 +169,13 @@ codemux verify --show-scode --sandbox-trust trusted
 
 | Agent | Binary | Model | Autonomy | Effort |
 |-------|--------|-------|----------|--------|
+| `agy` | `agy` | yes | yes | yes |
 | `aider` | `aider` | yes | yes | yes |
 | `claude` | `claude` | yes | yes | yes |
 | `cline` | `cline` | yes | yes | yes |
 | `codex` | `codex` | yes | yes | yes |
 | `copilot` | `copilot` | yes | yes | yes |
-| `cursor` | `agent` (`cursor-agent` fallback) | yes | yes | no |
+| `cursor` | `agent` (preferred; `cursor-agent` fallback; desktop `cursor agent` only via the `CODEMUX_CURSOR_ENTRY=cursor` opt-in) | yes | yes | no |
 | `droid` | `droid` | yes | yes | yes |
 | `gemini` | `gemini` | yes | yes | no |
 | `goose` | `goose` | yes | yes | no |
@@ -212,6 +213,7 @@ alias that has no mapping for the selected agent fails with a descriptive error.
 
 | Harness | `read-only` | `low` | `medium` | `high` |
 |---------|-------------|-------|----------|--------|
+| `agy` | `--mode=plan` + required `scode --ro` | default prompting (headless soft-denies) + required sandbox | `--mode=accept-edits` + required sandbox | `--dangerously-skip-permissions` |
 | `aider` | `--dry-run` | decline headless confirmations | `--yes-always` | `--yes-always` |
 | `claude` | `--permission-mode plan` | `--permission-mode manual` | `--permission-mode acceptEdits` + `--allowedTools Edit(//<launch dir>/**)` (headless) | `--dangerously-skip-permissions` + `--allowedTools Edit Write NotebookEdit Bash` (headless) |
 | `cline` | `--plan` | `--auto-approve false` | `--auto-approve true` | `--auto-approve true` |
@@ -271,8 +273,24 @@ If a task needs another variable, grant its exact name with
 For example, Claude Bedrock users can explicitly grant the required AWS
 credential names. Treat every grant as authority available to model-invoked tools.
 
-Cursor's programmatic mode exposes write and shell tools. Codemux prefers the
-current `agent` binary, sends the prompt through stdin, uses native Plan and
+Cursor's programmatic mode exposes write and shell tools. Codemux runs the
+standalone `agent` entry, then the legacy `cursor-agent` alias, and reports
+cursor as not installed when neither resolves. The desktop CLI's
+`cursor agent` subcommand wraps the same agent, but the wrapper may
+install or update it on first use — the Cursor.app launcher downloads and
+runs the Cursor installer when `~/.local/bin/cursor-agent` is absent and
+updates it when old, before forwarding to that same binary — so Codemux
+executes that entry only when you opt in: set
+`CODEMUX_CURSOR_ENTRY=cursor` and pass the name through
+(`--pass-env CODEMUX_CURSOR_ENTRY`). The opt-in is the argv you typed,
+not something a repository or shell profile can inject. With it, the
+trust check applies to the `cursor` binary resolved against the requested
+working directory, and the version gate probes `cursor agent --version`
+only after that check, only on the launch path — never in `list`,
+`doctor`, or `verify`, which stay spawn-free. `verify` also builds its
+commands against an empty environment view, so an exported
+`CODEMUX_CURSOR_ENTRY` never changes its result. Codemux sends the prompt
+through stdin, uses native Plan and
 Auto Review modes, trusts the already-validated workspace, and disables
 Cursor's nested sandbox when `scode` is active. Direct `read-only`, `low`, and
 `medium` runs still require `--sandbox` for a durable boundary.
@@ -306,7 +324,9 @@ Seatbelt profiles cannot replace the selected boundary.
 
 `codemux run --result-json` prints a result envelope on stdout instead of the
 plain reply. Claude and Z.AI keep the harness's own envelope (Claude Code's
-`--output-format json`), with one codemux-owned field appended; Codex, whose
+`--output-format json`), with one codemux-owned field appended; Antigravity's
+`--output-format=json` envelope (the `=`-form its pre-parsed value flags
+require) passes through the same way; Codex, whose
 `codex exec --json` prints JSONL events rather than one object, gets an
 envelope codemux builds: `result` holds the final assistant message as plain
 text. Every envelope carries the same block:

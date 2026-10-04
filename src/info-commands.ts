@@ -215,7 +215,7 @@ export function registerInfoCommands(
           : configurationIssues.length > 0
             ? "⚠️ installed, configuration incomplete"
             : "✅ installed";
-        console.log(`${adapter.id} (${adapter.binaryName}): ${status}`);
+        console.log(`${adapter.id} (${adapter.displayName}): ${status}`);
 
         if (available) {
           installed++;

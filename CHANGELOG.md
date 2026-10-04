@@ -7,6 +7,77 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-04
+
+### Added
+
+- `agy` (Google Antigravity CLI) as a harness, pinned against 1.2.14. The
+  prompt rides in argv as `--print=<prompt>`, and every value flag
+  (`--model`, `--effort`, `--mode`, `--output-format`) is emitted in the
+  single-token `--flag=value` form — the space form of the pre-parsed
+  flags exits 2 at the pinned release, and `--model`'s space form was
+  never exercised there. Effort
+  maps all five levels the binary accepts (low/medium/high/xhigh/max; the
+  docs' table names only three). Autonomy maps `read-only` to
+  `--mode=plan`, `medium` to `--mode=accept-edits`, `high` to
+  `--dangerously-skip-permissions`, and `low` to default prompting — an
+  unrecognized `--mode` value only warns and continues upstream, so scode
+  stays the enforcement below `high`, as everywhere. `--result-json` maps
+  to `--output-format=json` and passes the envelope through with the
+  codemux block appended, the usage normalized to the same meaning every
+  harness reports (agy's `input_tokens` includes the cache-read count and
+  `thinking_tokens` sits outside the total; `total_tokens` is computed
+  from the normalized components, null when one is missing, never echoed
+  from the envelope). Runs reject project-controlled
+  Antigravity config — the `.agents/{skills,rules,plugins,agents}.json`
+  manifests, `.agents/hooks.json`, the `.agents/{skills,rules,plugins,
+  agents,workflows}/` directories, and `.gemini/{.env,config/}` — between
+  the working directory and its Git root, matching the config roots the
+  binary's own strings name. Launches forward only the credentials the
+  binary reads (`GEMINI_API_KEY`, `GOOGLE_API_KEY`); in particular
+  `GOOGLE_APPLICATION_CREDENTIALS` is stripped, because setting it to a
+  missing or valid-shaped service-account file leaves the headless auth
+  path at the identical OAuth wall — it has no reader. Audited from the
+  binary's flag surface and the official
+  headless docs, not live: this machine has no Antigravity login. The
+  adapter's exact argv was exercised live to the authentication wall, and
+  the envelope's JSON tags were observed live in an ERROR envelope; a
+  success envelope with nonzero usage remains docs-pinned. No
+  hermetic or `--tools none` claim (see docs/HERMETIC.md). Version floor
+  1.2.14, the only audited release.
+
+### Changed
+
+- Cursor launches run the standalone `agent` entry, then the legacy
+  `cursor-agent` alias — exactly 0.6.0's default — and report cursor as
+  not installed when neither resolves. The desktop CLI's `cursor agent`
+  subcommand is now strictly opt-in: set `CODEMUX_CURSOR_ENTRY=cursor`
+  and pass the name through (`--pass-env CODEMUX_CURSOR_ENTRY`). The
+  desktop wrapper is not a pure forward: the Cursor.app launcher
+  downloads and runs `https://cursor.com/install` when
+  `~/.local/bin/cursor-agent` is absent and runs `cursor-agent update`
+  when the installed build is old, before exec-ing that same binary —
+  the entry may install or update the agent on first use, so codemux
+  never executes it on its own initiative (not discovery, not the
+  version gate by default, not the installed-contract suite). The
+  passthrough is the authorization — argv the operator typed, which
+  neither a repository nor a shell profile can inject — and a launch
+  that selects the desktop entry without it is refused before the
+  version gate could execute anything. Under the opt-in, the
+  trusted-executable check applies to the `cursor` binary resolved
+  against the requested working directory and the version probe sends
+  `cursor agent --version` only after that check, only inside the launch
+  path (`cursor --version` reports the desktop app's semver rather than
+  the agent build; the probe arguments key on the resolved entry's name,
+  not the canonical path's basename — the standard Homebrew `cursor`
+  symlink resolves into the Cursor.app bundle as `code`, and a basename
+  test probed the desktop semver, missed the calendar pattern, and
+  warned past the floor). `codemux verify` builds its commands against an
+  explicitly empty environment view, so an exported
+  `CODEMUX_CURSOR_ENTRY` never selects the desktop entry there and cannot
+  fail its wiring check — the static result is the same whatever the
+  operator's shell exports.
+
 ## [0.6.0] - 2026-10-03
 
 ### Fixed

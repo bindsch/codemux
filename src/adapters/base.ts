@@ -68,6 +68,16 @@ export abstract class BaseAdapter {
   abstract readonly id: AgentId;
   abstract readonly binaryName: string;
 
+  /**
+   * The name diagnostics display for this adapter. Spawn-free by contract:
+   * `doctor` prints it for every adapter and must not launch anything, so it
+   * defaults to `binaryName`, which every adapter must keep resolvable
+   * without executing a harness.
+   */
+  get displayName(): string {
+    return this.binaryName;
+  }
+
   abstract capabilities(): AdapterCapabilities;
 
   /**

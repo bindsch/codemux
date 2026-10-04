@@ -1,4 +1,5 @@
 export const AGENT_IDS = Object.freeze([
+  "agy",
   "aider",
   "claude",
   "cline",

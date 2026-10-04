@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
   CODEX_FINAL_MESSAGE_FALLBACK_NOTE,
+  agyResult,
   claudeFamilyResult,
   codexResult,
   codexStreamVerdict,
   emptyUsage,
+  parseAgyResultEnvelope,
   parseClaudeResultEnvelope,
   parseCodexEventStream,
 } from "../src/result-envelope.js";
@@ -321,7 +323,7 @@ describe("claudeFamilyResult", () => {
     // Round10: appending glued the codemux line onto the harness's last
     // unterminated line, so "boom" became "boomcodemux: ..." and a caller
     // parsing stderr line by line lost both. Every append separates them,
-    // on the Claude-family and codex paths alike.
+    // on the Claude-family, Antigravity, and codex paths alike.
     const claudeOut = claudeFamilyResult(
       { stdout: "not json\n", stderr: "boom", exitCode: 0, success: true },
       request,
@@ -335,6 +337,341 @@ describe("claudeFamilyResult", () => {
     );
     expect(codexOut.stderr.startsWith("boom\ncodemux:")).toBe(true);
     expect(codexOut.stderr).not.toContain("boomcodemux");
+    const agyOut = agyResult(
+      { stdout: "not json\n", stderr: "boom", exitCode: 0, success: true },
+      { agent: "agy", prompt: "p", resultJson: true }
+    );
+    expect(agyOut.stderr.startsWith("boom\ncodemux:")).toBe(true);
+    expect(agyOut.stderr).not.toContain("boomcodemux");
+  });
+});
+
+// Envelope shapes pinned against the official headless documentation
+// (https://antigravity.google/docs/cli/headless) and agy 1.2.14's own JSON
+// tags. agy is not logged in on this machine, so these are the docs'
+// example envelopes verbatim -- a documented-schema pin, not a live capture
+// (scratch/agy-headless-docs.txt).
+const AGY_SUCCESS_ENVELOPE = JSON.stringify({
+  conversation_id: "055a398f-db14-4c5f-abbb-1bf03f8120a7",
+  status: "SUCCESS",
+  response:
+    "A git rebase rewrites the commit history by transplanting a sequence of " +
+    "commits onto a new base commit, imposing a strictly linear progression " +
+    "of changes that eliminates arbitrary merge artifacts.\n",
+  duration_seconds: 7.16,
+  num_turns: 1,
+  usage: {
+    input_tokens: 10415,
+    output_tokens: 657,
+    thinking_tokens: 616,
+    cache_read_tokens: 8113,
+    total_tokens: 11072,
+  },
+});
+
+// The docs' structured-output example: extra envelope fields are ordinary
+// passthrough, and its usage counts give a second check of the arithmetic.
+const AGY_STRUCTURED_ENVELOPE = JSON.stringify({
+  conversation_id: "4e502687-290c-4030-b908-5ed6c68fa5dc",
+  status: "SUCCESS",
+  response: '{"major":2,"minor":14,"patch":3}\n',
+  duration_seconds: 4.45,
+  num_turns: 1,
+  structured_output: { major: 2, minor: 14, patch: 3 },
+  json_schema: {
+    type: "object",
+    properties: {
+      major: { type: "integer" },
+      minor: { type: "integer" },
+      patch: { type: "integer" },
+    },
+    required: ["major", "minor", "patch"],
+  },
+  usage: {
+    input_tokens: 10522,
+    output_tokens: 354,
+    thinking_tokens: 329,
+    cache_read_tokens: 8112,
+    total_tokens: 10876,
+  },
+});
+
+// The docs' unknown-model example: agy exits 1 and prints this envelope.
+const AGY_ERROR_ENVELOPE = JSON.stringify({
+  conversation_id: "",
+  status: "ERROR",
+  response: "",
+  error:
+    'invalid model selection (--model "does-not-exist-model" --effort ""): ' +
+    "model does-not-exist-model is not recognized as a known model or custom " +
+    "model in settings\nAvailable models:\n  Gemini 3.6 Flash (High)\n  ...",
+  duration_seconds: 0,
+  num_turns: 0,
+  usage: {
+    input_tokens: 0,
+    output_tokens: 0,
+    thinking_tokens: 0,
+    cache_read_tokens: 0,
+    total_tokens: 0,
+  },
+});
+
+// The docs' streaming examples wrap the same envelope one level down
+// ({event: "result", result: {...}}); print mode does not, so the wrapper is
+// not the envelope this parser owes -- a negative pin.
+const AGY_STREAM_WRAPPER = JSON.stringify({
+  event: "result",
+  result: {
+    conversation_id: "4fae3a70-409d-42a4-86ea-9de206a49ff4",
+    status: "ERROR",
+    response: "",
+    error:
+      "/model is answered by the CLI itself and is unavailable with " +
+      "--input-format stream-json; run it as its own --print /model invocation",
+    duration_seconds: 0,
+    num_turns: 0,
+    usage: {
+      input_tokens: 0,
+      output_tokens: 0,
+      thinking_tokens: 0,
+      cache_read_tokens: 0,
+      total_tokens: 0,
+    },
+  },
+});
+
+describe("parseAgyResultEnvelope", () => {
+  test("maps the documented envelope's usage into the normalized block", () => {
+    const parsed = parseAgyResultEnvelope(`${AGY_SUCCESS_ENVELOPE}\n`)!;
+    // agy's input_tokens INCLUDES the cache reads and total_tokens is
+    // input + output, so the normalized uncached input is their difference
+    // and the three fields sum to the reported total: 2302 + 8113 + 657
+    // = 11072.
+    expect(parsed.usage).toEqual({
+      input_tokens: 2302,
+      output_tokens: 657,
+      cached_input_tokens: 8113,
+      total_tokens: 11072,
+      cost_usd: null,
+    });
+    expect(parsed.status).toBe("SUCCESS");
+    expect(parsed.isError).toBe(false);
+    expect(parsed.errorText).toBeNull();
+    expect(parsed.envelope.conversation_id).toBe("055a398f-db14-4c5f-abbb-1bf03f8120a7");
+  });
+
+  test("the structured-output example parses, extra fields and all", () => {
+    // thinking_tokens sits outside agy's total (2410 + 8112 + 354 = 10876),
+    // so it has no normalized counterpart and changes nothing.
+    const parsed = parseAgyResultEnvelope(AGY_STRUCTURED_ENVELOPE)!;
+    expect(parsed.usage).toEqual({
+      input_tokens: 2410,
+      output_tokens: 354,
+      cached_input_tokens: 8112,
+      total_tokens: 10876,
+      cost_usd: null,
+    });
+    expect(parsed.isError).toBe(false);
+    expect(parsed.envelope.structured_output).toEqual({ major: 2, minor: 14, patch: 3 });
+  });
+
+  test("an error envelope keeps its text and its reported zeros stay zero", () => {
+    const parsed = parseAgyResultEnvelope(AGY_ERROR_ENVELOPE)!;
+    expect(parsed.isError).toBe(true);
+    expect(parsed.status).toBe("ERROR");
+    expect(parsed.errorText).toContain("does-not-exist-model");
+    // The harness reported every count; zeros are knowledge, not gaps.
+    expect(parsed.usage).toEqual({
+      input_tokens: 0,
+      output_tokens: 0,
+      cached_input_tokens: 0,
+      total_tokens: 0,
+      cost_usd: null,
+    });
+  });
+
+  test("keeps nulls instead of guessing when the envelope reports no usage", () => {
+    const parsed = parseAgyResultEnvelope(
+      JSON.stringify({ status: "SUCCESS", response: "OK" })
+    )!;
+    expect(parsed.usage).toEqual(emptyUsage());
+  });
+
+  test("a one-sided report stays null, never computed from a guess", () => {
+    // The uncached input needs both the raw input and the cache-read count;
+    // either one alone reports nothing, like the other totals.
+    const inputOnly = parseAgyResultEnvelope(
+      JSON.stringify({ status: "SUCCESS", response: "OK", usage: { input_tokens: 100 } })
+    )!;
+    expect(inputOnly.usage).toEqual(emptyUsage());
+    const outputOnly = parseAgyResultEnvelope(
+      JSON.stringify({ status: "SUCCESS", response: "OK", usage: { output_tokens: 5 } })
+    )!;
+    expect(outputOnly.usage).toEqual({
+      input_tokens: null,
+      output_tokens: 5,
+      cached_input_tokens: null,
+      total_tokens: null,
+      cost_usd: null,
+    });
+  });
+
+  test("a reported total without its components is null, never echoed", () => {
+    // Round 5: the parser once took total_tokens as reported, so a usage
+    // block naming the total without the component counts published a
+    // total whose own addends were null -- the exact shape rounds 17 and
+    // 23 eliminated for the claude and codex parsers. Every documented agy
+    // example carries the full block, so nothing exercised it; the
+    // contract is the same for every harness: computed from components,
+    // null when one is missing.
+    const parsed = parseAgyResultEnvelope(
+      JSON.stringify({
+        status: "SUCCESS",
+        response: "OK",
+        usage: { output_tokens: 5, total_tokens: 5 },
+      })
+    )!;
+    expect(parsed.usage).toEqual({
+      input_tokens: null,
+      output_tokens: 5,
+      cached_input_tokens: null,
+      total_tokens: null,
+      cost_usd: null,
+    });
+  });
+
+  test("rejects stdout that is not the envelope", () => {
+    expect(parseAgyResultEnvelope("OK\n")).toBeNull();
+    expect(parseAgyResultEnvelope("")).toBeNull();
+    expect(parseAgyResultEnvelope("[1,2]")).toBeNull();
+  });
+
+  test("JSON that is not the envelope is rejected, not parsed", () => {
+    // `{}` and other objects parse cleanly yet carry no status; without the
+    // discriminator each produced a successful envelope -- including another
+    // harness's `{"type":"result"}`.
+    expect(parseAgyResultEnvelope("{}")).toBeNull();
+    expect(parseAgyResultEnvelope('{"ok":true}')).toBeNull();
+    expect(parseAgyResultEnvelope('{"type":"result"}')).toBeNull();
+  });
+
+  test("the streaming wrapper is not the print envelope", () => {
+    // The docs' /model example emits the same envelope under
+    // {event: "result", result: ...}; the top level names no status, so
+    // print mode's parser must not read it as one.
+    expect(parseAgyResultEnvelope(AGY_STREAM_WRAPPER)).toBeNull();
+  });
+
+  test("the discriminator alone is not a result", () => {
+    // `{"status":"SUCCESS"}` names no response and no error, so it reports
+    // no outcome at all. A failing status names one (a failure) and parses,
+    // to fail downstream with its own reason.
+    expect(parseAgyResultEnvelope('{"status":"SUCCESS"}')).toBeNull();
+    expect(parseAgyResultEnvelope('{"status":""}')).toBeNull();
+    expect(parseAgyResultEnvelope('{"status":"CANCELED"}')).not.toBeNull();
+    expect(parseAgyResultEnvelope('{"status":"ERROR"}')).not.toBeNull();
+  });
+});
+
+describe("agyResult", () => {
+  const request: RunRequest = { agent: "agy", prompt: "p", resultJson: true };
+
+  test("keeps every original field and appends the codemux block", () => {
+    const out = agyResult(finished(AGY_SUCCESS_ENVELOPE), request);
+    expect(out.exitCode).toBe(0);
+    expect(out.success).toBe(true);
+    expect(out.stdout.endsWith("\n")).toBe(true);
+    const envelope = JSON.parse(out.stdout);
+    // Backward compatible: the harness's own fields are untouched, usage
+    // included -- normalization lives only in the codemux block.
+    expect(envelope.conversation_id).toBe("055a398f-db14-4c5f-abbb-1bf03f8120a7");
+    expect(envelope.status).toBe("SUCCESS");
+    expect(envelope.response).toContain("git rebase");
+    expect(envelope.usage.input_tokens).toBe(10415);
+    expect(envelope.duration_seconds).toBe(7.16);
+    expect(envelope.num_turns).toBe(1);
+    expect(envelope.codemux).toEqual({
+      agent: "agy",
+      // The envelope names no model, so the block reports the selection.
+      model: null,
+      usage: {
+        input_tokens: 2302,
+        output_tokens: 657,
+        cached_input_tokens: 8113,
+        total_tokens: 11072,
+        cost_usd: null,
+      },
+      // conversation_id is agy's own; no codemux run can resume it.
+      session_id: null,
+    });
+  });
+
+  test("the model falls back to what codemux selected, then null", () => {
+    const selected = agyResult(
+      finished(AGY_SUCCESS_ENVELOPE),
+      { ...request, model: "gemini-3-pro" }
+    );
+    expect(JSON.parse(selected.stdout).codemux.model).toBe("gemini-3-pro");
+    const unnamed = agyResult(finished(AGY_SUCCESS_ENVELOPE), request);
+    expect(JSON.parse(unnamed.stdout).codemux.model).toBeNull();
+  });
+
+  test("a structured-output envelope keeps its extra fields through the re-emit", () => {
+    const out = agyResult(finished(AGY_STRUCTURED_ENVELOPE), request);
+    const envelope = JSON.parse(out.stdout);
+    expect(envelope.structured_output).toEqual({ major: 2, minor: 14, patch: 3 });
+    expect(envelope.json_schema.type).toBe("object");
+    expect(out.success).toBe(true);
+  });
+
+  test("stdout that is not the envelope fails loudly, verbatim on stdout", () => {
+    // Exit 0 with plain-text stdout breaks the --output-format json contract
+    // the launch made; a silent success would leave the caller parsing
+    // nothing.
+    const out = agyResult(finished("plain text\n"), request);
+    expect(out.stdout).toBe("plain text\n");
+    expect(out.exitCode).toBe(1);
+    expect(out.success).toBe(false);
+    expect(out.stderr).toContain("printed no result envelope");
+    expect(out.stderr).toContain("no codemux block");
+  });
+
+  test("an error envelope fails the run even with the harness's exit 0", () => {
+    // The docs' unknown-model run exits 1, but a wrapper can mask the exit
+    // code; the structured status is read, not the exit trusted.
+    const out = agyResult(finished(AGY_ERROR_ENVELOPE), request);
+    const envelope = JSON.parse(out.stdout);
+    // The harness's own record of the failure goes out with the block.
+    expect(envelope.status).toBe("ERROR");
+    expect(envelope.error).toContain("does-not-exist-model");
+    expect(envelope.codemux.usage.input_tokens).toBe(0);
+    expect(out.exitCode).toBe(1);
+    expect(out.success).toBe(false);
+    expect(out.stderr).toContain('status "ERROR"');
+    expect(out.stderr).toContain("does-not-exist-model");
+    expect(out.stderr).toContain("fails even though the harness exited 0");
+  });
+
+  test("a whitespace-only response is no reply", () => {
+    // The same rule the Claude envelope path applies to its result text.
+    const envelope = JSON.stringify({ status: "SUCCESS", response: " \n", usage: {} });
+    const out = agyResult(finished(envelope), request);
+    expect(out.exitCode).toBe(1);
+    expect(out.success).toBe(false);
+    expect(out.stderr).toContain("no result text");
+    // The envelope still goes out with the block attached.
+    expect(JSON.parse(out.stdout).codemux.agent).toBe("agy");
+  });
+
+  test("a failed process exit keeps the envelope and stays failed", () => {
+    const out = agyResult(
+      { stdout: AGY_SUCCESS_ENVELOPE, stderr: "", exitCode: 2, success: false },
+      request
+    );
+    expect(JSON.parse(out.stdout).status).toBe("SUCCESS");
+    expect(JSON.parse(out.stdout).codemux.session_id).toBeNull();
+    expect(out.exitCode).toBe(2);
+    expect(out.success).toBe(false);
   });
 });
 

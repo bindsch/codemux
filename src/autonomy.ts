@@ -6,6 +6,17 @@ export interface AutonomyMapping {
 }
 
 export const AUTONOMY_EQUIVALENCE: Record<AgentId, AutonomyMapping> = {
+  agy: {
+    byLevel: {
+      "read-only": "--mode=plan + required scode",
+      low: "default prompting (headless soft-denies tools it cannot ask about)",
+      medium: "--mode=accept-edits",
+      high: "--dangerously-skip-permissions",
+    },
+    notes:
+      "headless approval requests that cannot be shown are soft-denied while the run still exits 0, " +
+      "so every level below high rests on scode; an unrecognized --mode value only warns and continues",
+  },
   aider: {
     byLevel: {
       "read-only": "--dry-run",
@@ -58,7 +69,8 @@ export const AUTONOMY_EQUIVALENCE: Record<AgentId, AutonomyMapping> = {
       medium: "--auto-review",
       high: "--force",
     },
-    notes: "agent is preferred; cursor-agent remains a compatibility fallback",
+    notes:
+      "agent is preferred; cursor-agent remains a compatibility fallback; the desktop cursor agent entry needs the CODEMUX_CURSOR_ENTRY opt-in",
   },
   droid: {
     byLevel: {

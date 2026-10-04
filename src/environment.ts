@@ -1,6 +1,15 @@
 import type { AgentId } from "./types.js";
 
 const ALLOWED_CREDENTIAL_ENV: Record<AgentId, readonly string[]> = {
+  // Antigravity authenticates through a cached OAuth login or an API key:
+  // the binary's strings read both GEMINI_API_KEY and GOOGLE_API_KEY.
+  // GOOGLE_APPLICATION_CREDENTIALS is deliberately absent: the ADC function
+  // that would read it is linked into the binary, but a live probe (setting
+  // it to a missing and then a valid-shaped service-account file) left the
+  // headless auth path at the identical OAuth browser wall, so the variable
+  // is never consulted and forwarding a service-account key would be a
+  // claim without a reader. Nothing else it reads is a credential.
+  agy: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
   aider: [
     "ANTHROPIC_API_KEY",
     "AZURE_API_BASE",

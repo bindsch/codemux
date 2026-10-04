@@ -475,6 +475,11 @@ export async function assertHarnessSupported(
   await assertSupportedHarnessVersion({
     agent,
     binary: gateBinary,
+    // The entry identity that resolved `gateBinary`, preserved for
+    // per-entry contracts: the cursor selector keys on it rather than on
+    // the canonical path's basename, which a symlink can change (the
+    // Homebrew `cursor` resolves inside the app bundle as `code`).
+    binaryName,
     workdir,
     probeEnvironment: probeEnvironment(
       environment,

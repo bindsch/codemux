@@ -3,6 +3,11 @@ import { sanitizeEnvironment } from "../src/environment.js";
 import { AGENT_IDS, type AgentId } from "../src/types.js";
 
 const CREDENTIALS_BY_AGENT = {
+  // GOOGLE_APPLICATION_CREDENTIALS is deliberately absent: a live probe
+  // (missing and valid-shaped service-account files both) left agy's
+  // headless auth path at the identical OAuth browser wall, so the
+  // variable has no reader to forward a key to.
+  agy: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
   aider: [
     "ANTHROPIC_API_KEY",
     "AZURE_API_BASE",
@@ -65,6 +70,25 @@ describe("environment sanitization", () => {
         ])
       );
     }
+  });
+
+  test("agy's allowlist does not forward GOOGLE_APPLICATION_CREDENTIALS", () => {
+    // The round-2 finding: the variable was allowlisted on the strength of
+    // "the Google auth stack reads it" (the ADC function is linked in the
+    // binary), but a live probe -- setting it to a missing and then a
+    // valid-shaped service-account file -- left agy's headless auth path
+    // at the identical OAuth browser wall, so forwarding a service-account
+    // key was a claim without a reader.
+    expect(sanitizeEnvironment("agy", {
+      PATH: "/bin",
+      GEMINI_API_KEY: "kept",
+      GOOGLE_API_KEY: "kept",
+      GOOGLE_APPLICATION_CREDENTIALS: "/home/user/service-account.json",
+    })).toEqual({
+      PATH: "/bin",
+      GEMINI_API_KEY: "kept",
+      GOOGLE_API_KEY: "kept",
+    });
   });
 
   test("allows an explicit passthrough without exposing its control variable", () => {

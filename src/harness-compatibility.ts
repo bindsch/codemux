@@ -68,6 +68,23 @@ export interface HarnessContract {
    * warning by CODEMUX_ALLOW_UNTESTED_HARNESS like every refusal.
    */
   unknownVersion?: "warn" | "refuse";
+  /**
+   * Per-entry version arguments, when the probe depends on which entry
+   * point resolved. Cursor is the case: the adapter runs `agent` or the
+   * legacy `cursor-agent` by default, and `cursor` (the `agent` subcommand
+   * of the desktop CLI) only under the CODEMUX_CURSOR_ENTRY opt-in; only
+   * the last needs the subcommand -- `cursor --version` reports the
+   * desktop app's own semver (3.23.12), which never matches this
+   * contract's calendar pattern, while `cursor agent --version` reports
+   * the agent build the contract audits. The argument is the entry-point
+   * name that resolved (the adapter's `binaryName`), never the resolved
+   * executable's basename: the gate probes the canonical path, and the
+   * standard Homebrew `cursor` symlink resolves into the Cursor.app
+   * bundle as `code`, so a basename test probes the desktop app's version,
+   * misses the pattern, and warns past the floor -- even for a below-floor
+   * agent build. Absent, `versionArgs` runs for every entry point.
+   */
+  versionArgsFor?: (entryName: string) => readonly string[];
 }
 
 /**
@@ -76,6 +93,22 @@ export interface HarnessContract {
  * Bump it and docs/HARNESS-COMPATIBILITY.md together.
  */
 export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract>>> = {
+  agy: {
+    // Pinned 2026-10-04 against 1.2.14, the installed release, by probing
+    // the binary's flag surface and the official docs
+    // (https://antigravity.google/docs/cli/overview,
+    // https://antigravity.google/docs/cli/headless). The mapping leans on
+    // 1.2.14 flag behavior worth restating: the enum flags (`--effort`,
+    // `--mode`, `--input-format`, `--output-format`) accept only
+    // `--flag=value`, an unrecognized `--mode` value warns and continues
+    // with the default mode rather than failing, and `--disable-slash-commands`
+    // covers only slash-command and skill expansion in print mode.
+    scheme: "semver",
+    versionArgs: ["--version"],
+    pattern: /^(\d+\.\d+\.\d+)/,
+    min: "1.2.14",
+    maxAudited: "1.2.14",
+  },
   aider: {
     scheme: "semver",
     versionArgs: ["--version"],
@@ -165,6 +198,31 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
   cursor: {
     scheme: "calendar",
     versionArgs: ["--version"],
+    // The adapter runs the standalone `agent`, then the legacy
+    // `cursor-agent`, and touches `cursor agent` (the desktop CLI's
+    // subcommand) only under the CODEMUX_CURSOR_ENTRY opt-in -- the desktop
+    // wrapper installs or updates `~/.local/bin/cursor-agent` before
+    // forwarding to it, so codemux never executes it on its own initiative,
+    // not from diagnostics and not from the installed-contract suite (see
+    // the CursorEntry comment in adapters/cursor.ts). Under the opt-in the
+    // gate's probe is operator-authorized and ordered: the `cursor` binary
+    // passes the trusted-executable check resolved against the run's
+    // working directory first, and only then does `cursor agent --version`
+    // run, inside the launch path alone. `agent --version` and
+    // `cursor-agent --version` report the agent build the calendar pattern
+    // matches; `cursor --version` reports the desktop app's semver (3.23.12
+    // on the machine this was verified) and never does, so that entry probes
+    // through the subcommand. The selector keys on the entry NAME, not the
+    // resolved executable's basename: the gate hands it the canonical path,
+    // and the standard Homebrew `cursor` symlink resolves into the
+    // Cursor.app bundle as `code`, which a basename test would probe with
+    // bare `--version` -- reading the desktop semver, missing the calendar
+    // pattern, and warning past the floor even for a below-floor agent
+    // build. Verified 2026-10-04 against cursor 3.23.12 /
+    // agent build 2026.08.11-e8db854, whose `cursor agent --help` is
+    // byte-identical to `agent --help` apart from the usage line.
+    versionArgsFor: (entryName) =>
+      entryName === "cursor" ? ["agent", "--version"] : ["--version"],
     pattern: /^(\d{4}\.\d{2}\.\d{2})/,
     min: "2026.07.23",
     maxAudited: "2026.08.11",
@@ -363,7 +421,8 @@ export const probeHarnessVersion = async (
   binary: string,
   contract: HarnessContract,
   workdir: string,
-  environment: ProbeEnvironment
+  environment: ProbeEnvironment,
+  entryName: string
 ): Promise<string | null> => {
   const read = async (args: readonly string[], pattern: RegExp) => {
     const result = await runCapturedCommand([binary, ...args], {
@@ -379,7 +438,14 @@ export const probeHarnessVersion = async (
   // and runs rather than being probed a second way. A fallback to a flag
   // that launches the harness was tried and withdrawn (see the copilot
   // entry in HARNESS_CONTRACTS); the test suite fails if one returns.
-  return read(contract.versionArgs, contract.pattern);
+  // `versionArgsFor` is not a fallback either: it selects which entry
+  // point's args to run, keyed on the entry name rather than the resolved
+  // path's basename (see the cursor contract), never a second probe of the
+  // same entry.
+  return read(
+    contract.versionArgsFor?.(entryName) ?? contract.versionArgs,
+    contract.pattern
+  );
 };
 
 /** Everything the version gate needs, named rather than positional.
@@ -392,6 +458,14 @@ export interface VersionGateRequest {
   agent: AgentId;
   /** The resolved executable that is about to run. */
   binary: string;
+  /**
+   * The entry-point name that resolved `binary` (the adapter's
+   * `binaryName`). Per-entry contracts select their version arguments by
+   * this identity, because the resolved path's basename can differ from
+   * it: the standard Homebrew `cursor` symlink resolves into the
+   * Cursor.app bundle as `code`.
+   */
+  binaryName: string;
   workdir: string;
   /** Exactly what the probe should run with; only `probeEnvironment` can produce one. */
   probeEnvironment: ProbeEnvironment;
@@ -411,12 +485,18 @@ export interface VersionGateRequest {
 export const assertSupportedHarnessVersion = async (
   request: VersionGateRequest
 ): Promise<void> => {
-  const { agent, binary, workdir, override, autonomy, sandboxed = false } = request;
+  const { agent, binary, binaryName, workdir, override, autonomy, sandboxed = false } = request;
   const contract = HARNESS_CONTRACTS[agent];
   if (!contract) return;
 
   const identityBefore = readBinaryIdentity(binary);
-  const version = await probeHarnessVersion(binary, contract, workdir, request.probeEnvironment);
+  const version = await probeHarnessVersion(
+    binary,
+    contract,
+    workdir,
+    request.probeEnvironment,
+    binaryName
+  );
   if (binaryChanged(identityBefore, readBinaryIdentity(binary))) {
     console.warn(
       `Warning: the ${agent} binary changed while Codemux was reading its version, ` +

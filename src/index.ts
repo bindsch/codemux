@@ -500,6 +500,20 @@ program
         ? resolveSandboxOptionsForAgent(agentId, sandboxAutonomy, sandboxPolicyOverrides)
         : undefined;
 
+      // Validation before the version gate, as on the run path: an adapter
+      // that refuses this request (cursor's desktop entry without the
+      // --pass-env opt-in among them) must do so before the gate can execute
+      // the harness binary it resolves.
+      const workdir = validateWorkingDirectory(options.cwd) ?? process.cwd();
+      adapter.validateTuiRequest(
+        model,
+        workdir,
+        autonomy,
+        effort,
+        passthroughEnv,
+        enablePlaywrightMcp
+      );
+
       await assertHarnessSupported(
         agentId,
         adapter.binaryName,
@@ -511,15 +525,6 @@ program
       );
 
       if (options.sandbox) {
-        const workdir = validateWorkingDirectory(options.cwd) ?? process.cwd();
-        adapter.validateTuiRequest(
-          model,
-          workdir,
-          autonomy,
-          effort,
-          passthroughEnv,
-          enablePlaywrightMcp
-        );
         adapter.beforeLaunch();
         adapter.prepareSandbox({ sandboxTrust: sandboxOptions?.trust, passthroughEnv });
         const adapterEnv = adapter.buildExecutionEnv(

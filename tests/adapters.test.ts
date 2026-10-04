@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { ClaudeAdapter } from "../src/adapters/claude.js";
+import { AgyAdapter } from "../src/adapters/agy.js";
 import { CodexAdapter } from "../src/adapters/codex.js";
 import { DroidAdapter } from "../src/adapters/droid.js";
 import { GooseAdapter } from "../src/adapters/goose.js";
@@ -49,7 +50,8 @@ describe("Adapter Registry", () => {
     expect(AGENT_IDS).toContain("zai");
     expect(AGENT_IDS).toContain("kimi");
     expect(AGENT_IDS).toContain("openhands");
-    expect(AGENT_IDS.length).toBe(15);
+    expect(AGENT_IDS).toContain("agy");
+    expect(AGENT_IDS.length).toBe(16);
   });
 
   test("every agent id resolves to an adapter that reports that id", () => {
@@ -62,6 +64,7 @@ describe("Adapter Registry", () => {
   });
 
   test("getAdapter returns correct adapter for each agent", () => {
+    expect(getAdapter("agy")).toBeInstanceOf(AgyAdapter);
     expect(getAdapter("claude")).toBeInstanceOf(ClaudeAdapter);
     expect(getAdapter("codex")).toBeInstanceOf(CodexAdapter);
     expect(getAdapter("droid")).toBeInstanceOf(DroidAdapter);
@@ -77,9 +80,9 @@ describe("Adapter Registry", () => {
     expect(() => getAdapter("unknown" as any)).toThrow("Unknown agent: unknown");
   });
 
-  test("getAllAdapters returns all 15 adapters", () => {
+  test("getAllAdapters returns all 16 adapters", () => {
     const adapters = getAllAdapters();
-    expect(adapters.length).toBe(15);
+    expect(adapters.length).toBe(16);
   });
 
   test("getAvailableAdapters filters by executable availability", () => {
