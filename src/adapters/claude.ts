@@ -7,15 +7,18 @@ import {
   type SecretReader,
 } from "../credentials.js";
 import { getPlaywrightSandboxMcpArgs } from "../mcp.js";
+import { claudeFamilyResult } from "../result-envelope.js";
 import {
   claudeAutonomyFlags,
   claudeNativeAutonomyFlags,
 } from "../claude-autonomy.js";
+import { assertAbsoluteClaudeConfigDir } from "../claude-family.js";
 import type {
   AgentId,
   AutonomyLevel,
   ReasoningEffort,
   RunRequest,
+  RunResult,
   AdapterCapabilities,
 } from "../types.js";
 
@@ -115,6 +118,26 @@ export class ClaudeAdapter extends BaseAdapter {
     return level === "none" ? [] : ["--effort", level];
   }
 
+  override validateRunRequest(request: RunRequest): void {
+    super.validateRunRequest(request);
+    // The adapter pins no CLAUDE_CONFIG_DIR, so a passed-through one is the
+    // only redirect -- and a relative one would resolve against the child's
+    // working directory, landing the config store somewhere --cwd decides.
+    assertAbsoluteClaudeConfigDir(request.passthroughEnv);
+  }
+
+  override validateTuiRequest(
+    model?: string,
+    cwd?: string,
+    autonomy?: AutonomyLevel,
+    effort?: ReasoningEffort,
+    passthroughEnv: readonly string[] = [],
+    enablePlaywrightMcp = false
+  ): void {
+    super.validateTuiRequest(model, cwd, autonomy, effort, passthroughEnv, enablePlaywrightMcp);
+    assertAbsoluteClaudeConfigDir(passthroughEnv);
+  }
+
   buildRunCommand(request: RunRequest): string[] {
     const cmd = ["claude", "-p"];
     if (request.hermetic) {
@@ -140,14 +163,15 @@ export class ClaudeAdapter extends BaseAdapter {
     cmd.push(
       "--setting-sources",
       cwdIsInstructionDir ? "user,project" : "user",
-      "--strict-mcp-config",
-      "--no-session-persistence"
+      "--strict-mcp-config"
     );
+    // No run of this adapter persists a session, so the harness is told so
+    // explicitly: nothing a later run could resume is left behind.
+    cmd.push("--no-session-persistence");
     if (request.resultJson) {
-      // Claude Code's single-result envelope: the reply under `result`, plus `usage`,
-      // `modelUsage` and `total_cost_usd`. Without it the reply arrives as bare text and what
-      // the run consumed is unrecoverable -- there is no session file to read afterward,
-      // because --no-session-persistence above is what makes these runs leave no trace.
+      // Claude Code's single-result envelope: the reply under `result`, plus
+      // `usage`, `modelUsage`, and `total_cost_usd`, which `--result-json`
+      // re-emits with the codemux block appended.
       cmd.push("--output-format", "json");
     }
     if (request.tools === "none") {
@@ -179,6 +203,18 @@ export class ClaudeAdapter extends BaseAdapter {
 
   override getStdinInput(request: RunRequest): string | null {
     return request.prompt;
+  }
+
+  override processRunResult(result: RunResult, request: RunRequest): RunResult {
+    // The run was launched with --output-format json (resultJson), so stdout
+    // should be one result envelope; it is re-emitted with every original
+    // field untouched plus the codemux block (usage, model). Anything that
+    // is not the envelope fails loudly: the raw stdout stays on stdout,
+    // stderr says what is missing, and the exit is non-zero.
+    if (request.resultJson) {
+      return claudeFamilyResult(result, request, this.id);
+    }
+    return result;
   }
 
   buildTuiCommand(

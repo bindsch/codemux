@@ -70,7 +70,8 @@ both probes.
 | Kimi Code | refused | refused | `--skills-dir` replaces skill discovery, but `~/.kimi-code` (config, MCP servers, agents) still loads and cannot be relocated with the login intact. |
 | OpenCode | refused | refused | `--pure` drops external plugins only; the global config, `AGENTS.md`, and `.opencode` directories still merge. `XDG_CONFIG_HOME` could redirect the global config while `~/.local/share/opencode/auth.json` keeps the login, but project `AGENTS.md` discovery has no switch. Unverified. |
 | OpenHands | refused | refused | `~/.openhands` microagents, skills, hooks and profiles load with no switch. |
-| Cline, Copilot, Gemini CLI, Goose, Pi, Qwen | refused | refused | Not installed on the release machine; not audited. Copilot already passes `--no-custom-instructions` and `--disable-builtin-mcps`, so it is the nearest candidate. |
+| Cline, Gemini CLI, Goose, Pi, Qwen | refused | refused | Not installed on the release machine; not audited. |
+| Copilot | refused | refused | Installed at 1.0.85 and re-audited 2026-09-21 for its flag surface only; hermetic mode was not audited, so the verdict stands. It already passes `--no-custom-instructions` unconditionally and `--disable-builtin-mcps` at read-only through medium autonomy (not at `high`, `src/adapters/copilot.ts:69`), so it remains the nearest candidate. |
 
 A harness moves from "refused" to "verified" when an adapter mechanism
 exists and `codemux check --hermetic` passes with a leaking control probe.
@@ -89,6 +90,21 @@ treats `~/.codex` as harness state on every platform, its Linux sandbox
 mounts a fresh `/tmp` that would hide a home created there, and any write
 policy for `~/.codex` then covers the private login too. Homes left behind
 by codemux processes that no longer exist are swept on the next run.
+
+The `--output-last-message` scratch file follows the same rule: a plain
+run keeps it in a per-run directory under `.codemux-scratch/` inside the
+real CODEX_HOME — harness state, which scode keeps writable on every
+platform and never shadows, unlike the OS temp root its Linux sandbox
+replaces with a fresh `/tmp` the parent never sees — and a hermetic run
+keeps it inside the private home (finalize removes it with the home).
+Directories a dead codemux left behind are swept on the next run, like
+homes. A hermetic run names its `--output-last-message` file whatever the
+trust: `--sandbox-trust untrusted` denies the private home itself, so the
+child cannot write the file and the event stream is the result's only
+source — a turn that ends with only a `Plan` item therefore reports
+`result: null`, the same outcome a non-hermetic `untrusted` run reaches
+by passing no fallback file at all (see README's result envelopes
+section).
 
 The login is `auth.json`, and Codex rotates the tokens inside it. A copy
 would strand the refreshed token in the private home and could leave the
@@ -129,6 +145,23 @@ check, so a repository cannot plant a `codex` on PATH for a hermetic run.
 Codex refuses to launch when `CODEX_HOME` does not exist, so the directory
 is created before the launch, never lazily.
 
+## Session persistence
+
+No codemux run persists a session in this release: Claude and Z.AI launch
+with `--no-session-persistence` and Codex with `--ephemeral`, so nothing a
+hermetic run writes outlives it. Session resume (`--session new` /
+`--session resume:<id>`) was removed from the tree and deferred to the
+live-sessions design; when it returns it must answer the questions the
+removal left open — how a hermetically created session is marked clean
+enough to resume under `--hermetic` again, and what a resume means for a
+Codex run whose private `CODEX_HOME` is destroyed at exit.
+
+Through the scode sandbox, scode keeps harness state (`CLAUDE_CONFIG_DIR`,
+`CODEX_HOME`) writable on every platform — the same property the private
+home above relies on. The `--sandbox-trust untrusted` preset denies those
+directories. The argv wiring through scode is covered by tests with fake
+harnesses.
+
 ## What hermetic does not cover
 
 - The harness's own state directory when built-in tools stay on. A
@@ -142,7 +175,10 @@ is created before the launch, never lazily.
   `--ignore-user-config` drops the user's `shell_environment_policy`, so a
   restrictive policy for tool subprocesses no longer applies; with
   `--no-sandbox --auto high --hermetic`, nothing outside the model
-  constrains the run. scode is the boundary, as always.
+  constrains the run. scode is the boundary, as always. (For Z.AI this is
+  the same `--safe-mode`; an ordinary Z.AI launch loads the operator's own
+  `~/.claude/settings.json` — Z.AI shares Claude's home — but a hermetic
+  Z.AI run never reads the file.)
 - Admin-managed policy layers. Claude Code's managed settings (including
   managed `SessionStart` hooks) still apply under `--safe-mode`, and Codex
   still loads `/etc/codex/config.toml` with `--ignore-user-config`. Both

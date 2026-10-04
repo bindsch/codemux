@@ -39,7 +39,21 @@ export class CopilotAdapter extends BaseAdapter {
   }
 
   override mapEffort(level: ReasoningEffort): string[] {
-    return ["--effort", level];
+    // `--reasoning-effort`, not `--effort`. `--effort` was a shorthand alias upstream added in
+    // v1.0.10 and has since dropped; `--reasoning-effort` has been the canonical flag since
+    // v1.0.4. Codemux kept passing the alias, so every `codemux run -a copilot --effort <level>`
+    // failed on an unknown option. The
+    // installed-contract suite pins the real name and `make release-gate` runs it on every PR. It
+    // caught nothing because it skips a binary absent from the machine, and no machine in the loop
+    // had copilot installed -- CI runners carry no harness CLIs.
+    //
+    // Verified 2026-09-21 against copilot 1.0.85's own `--help`: it lists
+    // `--reasoning-effort <level>` with `[possible values: none, minimal, low, medium, high,
+    // xhigh, max]` and no `--effort`. The values are unchanged, so the level passes through raw --
+    // unlike Droid, which maps `none` to `off` for the same flag name. An end-to-end run was not
+    // possible here: copilot needs a writable cache under ~/Library/Caches that the sandbox
+    // denies, which is a pre-existing environment limit unrelated to this flag.
+    return ["--reasoning-effort", level];
   }
 
   buildRunCommand(request: RunRequest): string[] {

@@ -142,7 +142,6 @@ export function registerCheckCommand(
           sandbox: Boolean(options.sandbox),
           sandboxPolicyOverrides,
           requestedAutonomy,
-          passthroughEnv,
           timeoutMs,
           cwd: options.cwd,
         };

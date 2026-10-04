@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -373,6 +374,51 @@ describe("ZaiAdapter", () => {
     expect(adapter.getStdinInput(request)).toBe("my prompt");
   });
 
+  test("zai declares it can return a result envelope", () => {
+    // Same binary as claude, so the same --output-format json envelope.
+    expect(adapter.capabilities().supportsResultJson).toBe(true);
+  });
+
+  test("--result-json asks for the single-result envelope", () => {
+    const cmd = adapter.buildRunCommand({ agent: "zai", prompt: "t", resultJson: true });
+    expect(cmd).toEqual([
+      ...safeHeadlessArgs,
+      "--output-format",
+      "json",
+      "--model",
+      "opus",
+    ]);
+  });
+
+  test("processRunResult appends the codemux block under the zai agent", () => {
+    const envelope = JSON.stringify({
+      type: "result",
+      result: "OK",
+      usage: { input_tokens: 5, output_tokens: 2 },
+      modelUsage: { "glm-5.3": {} },
+    });
+    const out = adapter.processRunResult(
+      { stdout: envelope, stderr: "", exitCode: 0, success: true },
+      { agent: "zai", prompt: "t", resultJson: true }
+    );
+    const parsed = JSON.parse(out.stdout);
+    expect(parsed.result).toBe("OK");
+    expect(parsed.codemux).toEqual({
+      agent: "zai",
+      model: "glm-5.3",
+      usage: {
+        input_tokens: 5,
+        output_tokens: 2,
+        // No cache counts were reported, so the total (their sum plus
+        // output) is not computable -- null, never guessed from zero.
+        cached_input_tokens: null,
+        total_tokens: null,
+        cost_usd: null,
+      },
+      session_id: null,
+    });
+  });
+
   test("buildTuiCommand defaults to opus", () => {
     expect(adapter.buildTuiCommand()).toEqual(["claude", "--safe-mode", "--model", "opus"]);
   });
@@ -453,9 +499,63 @@ describe("ZaiAdapter", () => {
   });
 
   test("getEnv sets anthropic proxy vars", () => {
-    const env = adapter.getEnv();
+    const homeAdapter = new ZaiAdapter({ ZAI_API_KEY: "test-key-123" }, "/home/zai-user");
+    const env = homeAdapter.getEnv();
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe("test-key-123");
     expect(env.ANTHROPIC_BASE_URL).toBe("https://api.z.ai/api/anthropic");
     expect(env.API_TIMEOUT_MS).toBeDefined();
+  });
+
+  test("getEnv points zai at no private state; the shared store is the child's own", () => {
+    // zai runs the same claude binary against the same CLAUDE_CONFIG_DIR
+    // claude uses: the adapter pins nothing, so an inherited value the
+    // operator passes through reaches the child, and without a pass-through
+    // the sanitized child environment drops it (the documented default is
+    // the child's ~/.claude).
+    const homeAdapter = new ZaiAdapter({ ZAI_API_KEY: "test-key-123" }, "/home/zai-user");
+    expect("CLAUDE_CONFIG_DIR" in homeAdapter.getEnv()).toBe(false);
+    const home = mkdtempSync(join(tmpdir(), "codemux-zai-home-"));
+    const previous = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = "/home/claude-user/.claude";
+    try {
+      // No pass-through: the sanitizing builder drops the inherited value.
+      const dropped = new ZaiAdapter({ ZAI_API_KEY: "test-key-123" }, home)
+        .buildExecutionEnv();
+      expect(dropped.CLAUDE_CONFIG_DIR).toBeUndefined();
+      // With the pass-through the operator's profile is honored exactly as
+      // a claude run's would be.
+      const passed = new ZaiAdapter({ ZAI_API_KEY: "test-key-123" }, home)
+        .buildExecutionEnv({}, ["CLAUDE_CONFIG_DIR"]);
+      expect(passed.CLAUDE_CONFIG_DIR).toBe("/home/claude-user/.claude");
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = previous;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("beforeLaunch creates no private state directory", () => {
+    const home = mkdtempSync(join(tmpdir(), "codemux-zai-launch-"));
+    try {
+      new ZaiAdapter({ ZAI_API_KEY: "test-key-123" }, home).beforeLaunch();
+      expect(existsSync(join(home, ".claude-zai"))).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("an envelope without modelUsage reports the model codemux selected", () => {
+    // zai always runs --model opus when the request names none; the result
+    // processing must see that default, or codemux.model reads null.
+    const envelope = JSON.stringify({
+      type: "result",
+      result: "OK",
+      usage: { input_tokens: 5, output_tokens: 2 },
+    });
+    const out = adapter.processRunResult(
+      { stdout: envelope, stderr: "", exitCode: 0, success: true },
+      { agent: "zai", prompt: "t", resultJson: true }
+    );
+    expect(JSON.parse(out.stdout).codemux.model).toBe("opus");
   });
 });

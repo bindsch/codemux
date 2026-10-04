@@ -9,12 +9,13 @@ import {
   type AdapterCapabilities,
 } from "../types.js";
 import { sanitizeEnvironment } from "../environment.js";
+import { launchRunRequest } from "../launch.js";
 import type { ScodeTrustLevel } from "../sandbox.js";
+import type { HermeticHome } from "../hermetic-home.js";
 import { resolveTrustedCommand } from "../executable-security.js";
 import {
   guardedWait,
   MAX_ARGV_PROMPT_BYTES,
-  runCapturedCommand,
   validateTimeout,
 } from "../process-runner.js";
 import {
@@ -35,13 +36,48 @@ export interface SandboxPreparation {
   passthroughEnv?: readonly string[];
 }
 
+/**
+ * One launch's per-run state: the scratch a run needs on disk between
+ * prepareRun and processRunResult. The context is plain data the LAUNCHER
+ * owns and threads through the lifecycle (buildRunCommand, getRunEnv,
+ * processRunResult, cleanupRun), never a field on the adapter -- adapters
+ * are singletons, so an adapter field would let one launch read or destroy
+ * a concurrent launch's state. A rejected or failed launch cleans up only
+ * the context it created, and two launches through the same request object
+ * each carry their own.
+ *
+ * The optional members are the per-run values codex needs today; a harness
+ * that gains its own joins them here rather than growing adapter state.
+ */
+export interface RunContext {
+  /** Codex: this run's `--output-last-message` file, when it launched with --json. */
+  lastMessagePath?: string;
+  /**
+   * Codex: the per-run scratch directory holding that file on a non-hermetic
+   * run, created under `.codemux-scratch/` in the real CODEX_HOME in
+   * prepareRun and removed in cleanupRun (a hermetic run keeps the file
+   * inside its private home instead, which finalize removes; a run under an
+   * untrusted sandbox has neither -- no fallback file at all).
+   */
+  lastMessageDir?: string;
+  /** Codex: this run's private hermetic home, when the run is hermetic. */
+  hermeticHome?: HermeticHome;
+}
+
 export abstract class BaseAdapter {
   abstract readonly id: AgentId;
   abstract readonly binaryName: string;
 
   abstract capabilities(): AdapterCapabilities;
 
-  abstract buildRunCommand(request: RunRequest): string[];
+  /**
+   * The argv for a headless run. `context` carries this run's per-run state
+   * when the launch path prepared one; it is omitted by static previews
+   * (`verify`), which never launch, and adapters with no per-run state
+   * ignore it. Codex fails closed without one (placeholder scratch paths, a
+   * refused hermetic launch).
+   */
+  abstract buildRunCommand(request: RunRequest, context?: RunContext): string[];
 
   abstract buildTuiCommand(
     model?: string,
@@ -151,8 +187,10 @@ export abstract class BaseAdapter {
 
   /**
    * Returns request-specific environment overrides for non-interactive runs.
+   * `context` is the run's own when the launch path prepared one; adapters
+   * that need prepared state refuse a launch without it.
    */
-  getRunEnv(_request: RunRequest): Record<string, string> {
+  getRunEnv(_request: RunRequest, _context?: RunContext): Record<string, string> {
     return {};
   }
 
@@ -177,12 +215,54 @@ export abstract class BaseAdapter {
   }
 
   /**
-   * Called before every headless launch, after validation and beforeLaunch,
-   * for work a run needs on disk before its command and environment can be
-   * built (Codex's private hermetic home). Static command previews
-   * (`verify`) never call it.
+   * Post-processes a finished run's captured result on every launch path
+   * (sandboxed and direct). Adapters whose harness prints something other
+   * than the reply on stdout (`--result-json` envelopes, codex's event
+   * stream) override this to hand the caller what they were promised; the
+   * default returns the result unchanged. `context` is the same run context
+   * the launch path built the command from, so the post-processor reads
+   * (and consumes) this run's own scratch.
    */
-  prepareRun(_request: RunRequest): void {
+  processRunResult(result: RunResult, _request: RunRequest, _context?: RunContext): RunResult {
+    return result;
+  }
+
+  /**
+   * Called before every headless launch, after validation and beforeLaunch.
+   * Returns the run's context: every piece of per-run state (scratch paths,
+   * the private hermetic home) the run needs between here and
+   * processRunResult, as plain data the caller owns and threads through the
+   * lifecycle. Records NOTHING on the adapter: adapters are singletons, and
+   * an adapter field here would let a concurrent launch read or overwrite
+   * another run's state. Static command previews (`verify`) never call it.
+   *
+   * A sandboxed launch passes the RESOLVED sandbox trust as `sandboxTrust`,
+   * so preparation can skip what an untrusted sandbox denies the child
+   * (codex prepares no `--output-last-message` file under it); a direct
+   * launch passes nothing, and adapters that need no trust keep ignoring it.
+   */
+  prepareRun(_request: RunRequest, _sandboxTrust?: ScodeTrustLevel): RunContext {
+    // Most adapters need no per-run state.
+    return {};
+  }
+
+  /**
+   * Disposes one launch's own context once that launch is over. The launch
+   * path (launch.ts) calls it exactly once for each context it created:
+   * after a finished run -- processRunResult has already consumed what it
+   * could there (codex reads and removes its `--output-last-message` file),
+   * and cleanupRun disposes whatever remains (the per-run temp directory,
+   * the private hermetic home) -- after a rejected launch, where
+   * processRunResult never ran, and at process exit for a run the lifecycle
+   * cannot finish (the process runner's exit 143 on a signal;
+   * run-exit-cleanup registers that call). Whatever the run may already
+   * have written on disk (codex's `--output-last-message` file holds model
+   * output) must not outlive the run. Must not throw: the outcome it
+   * follows -- a rejection above all -- is the failure the caller needs,
+   * and a cleanup error must not replace it. Only ever receives the
+   * context the same launch created, never another run's.
+   */
+  cleanupRun(_context?: RunContext): void {
     // Default: no-op
   }
 
@@ -338,38 +418,20 @@ export abstract class BaseAdapter {
     }
   }
 
+  /**
+   * Runs one request directly, without a sandbox, by delegating to the one
+   * launch path (launch.ts): validation, beforeLaunch, the run context, the
+   * spawn, processRunResult, and cleanup all happen there. A standalone
+   * caller therefore gets the same post-processed result a launchRunRequest
+   * caller gets -- a `resultJson` run returns its envelope, never raw
+   * harness output, and the run's scratch is disposed before the result
+   * returns. The launch path refuses a request that claims a sandbox and
+   * one whose autonomy needs one, exactly as it does for its own callers.
+   */
   async run(request: RunRequest): Promise<RunResult> {
-    if (request.sandboxed) {
-      throw new Error(
-        "BaseAdapter.run cannot attest an external sandbox; use the sandbox runner"
-      );
-    }
-    const effectiveAutonomy = request.autonomy ?? "read-only";
-    if (this.requiresSandboxForAutonomy(effectiveAutonomy)) {
-      throw new Error(
-        `${this.id} cannot enforce '${effectiveAutonomy}' autonomy without an external sandbox`
-      );
-    }
-    const effectiveRequest = { ...request, autonomy: effectiveAutonomy };
-    this.validateRunRequest(effectiveRequest);
-    this.beforeLaunch();
-    this.prepareRun(effectiveRequest);
-    const cwd = validateWorkingDirectory(effectiveRequest.cwd) ?? process.cwd();
-    const command = this.resolveExecutionCommand(
-      this.buildRunCommand(effectiveRequest),
-      cwd
-    );
-    const stdinInput = this.getStdinInput(effectiveRequest);
-    const env = this.buildExecutionEnv(
-      this.getRunEnv(effectiveRequest),
-      effectiveRequest.passthroughEnv
-    );
-
-    return runCapturedCommand(command, {
-      cwd,
-      env,
-      stdinInput,
-      timeoutMs: effectiveRequest.timeoutMs,
+    return launchRunRequest(this, request, {
+      sandbox: false,
+      requestedAutonomy: request.autonomy ?? "read-only",
     });
   }
 

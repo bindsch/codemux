@@ -73,7 +73,9 @@ export interface RunRequest {
   // Ask the harness for a machine-readable result envelope on stdout instead of plain text,
   // so a caller can read what the run actually consumed. Headless runs only: there is no
   // envelope to parse in an interactive session. The envelope's shape is the harness's, not
-  // codemux's -- codemux asks for it and passes it through unchanged.
+  // codemux's -- codemux re-emits it with every harness field unchanged plus its own
+  // `codemux` block (usage, model, session id), and stdout that is not the envelope the
+  // launch asked for fails the run rather than passing through as plain text.
   resultJson?: boolean;
   // Which built-in tools the harness exposes; undefined means "default".
   // "none" removes the harness's own tool set; a harness that cannot drop
@@ -91,6 +93,32 @@ export interface RunResult {
   stderr: string;
   exitCode: number;
   success: boolean;
+}
+
+// Token usage inside the codemux block of a --result-json envelope. Every
+// field is null rather than guessed when the harness did not report it.
+// Semantics, so the fields mean the same thing for every harness:
+// input_tokens counts input NOT served from a prompt cache,
+// cached_input_tokens counts input served from or written to one, and
+// total_tokens is their sum plus output.
+export interface ResultUsageBlock {
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_input_tokens: number | null;
+  total_tokens: number | null;
+  cost_usd: number | null;
+}
+
+// The one codemux-owned field on every --result-json envelope, carrying what
+// codemux normalized across harnesses: which adapter ran, the model that
+// served the run when it is known, and token usage. `session_id` is always
+// null in this release -- reserved for the live-sessions design that will
+// add `--session` back.
+export interface CodemuxResultBlock {
+  agent: string;
+  model: string | null;
+  usage: ResultUsageBlock;
+  session_id: string | null;
 }
 
 export interface AdapterCapabilities {

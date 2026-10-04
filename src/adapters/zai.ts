@@ -7,11 +7,14 @@ import {
   claudeNativeAutonomyFlags,
 } from "../claude-autonomy.js";
 import { readUtf8FileBounded } from "../file-io.js";
+import { claudeFamilyResult } from "../result-envelope.js";
+import { assertAbsoluteClaudeConfigDir } from "../claude-family.js";
 import type {
   AgentId,
   AutonomyLevel,
   ReasoningEffort,
   RunRequest,
+  RunResult,
   AdapterCapabilities,
 } from "../types.js";
 
@@ -19,6 +22,11 @@ const ZAI_BASE_URL = "https://api.z.ai/api/anthropic";
 const MAX_KEY_FILE_BYTES = 16 * 1024;
 const DEFAULT_API_TIMEOUT_MS = 3_000_000;
 const MAX_API_TIMEOUT_MS = 86_400_000;
+// The model zai runs when the request names none (buildRunCommand and
+// buildTuiCommand both fall back to it); result processing must report the
+// same one, or an envelope without modelUsage would claim codemux selected
+// nothing.
+export const ZAI_DEFAULT_MODEL = "opus";
 
 export class ZaiAdapter extends BaseAdapter {
   readonly id: AgentId = "zai";
@@ -42,7 +50,23 @@ export class ZaiAdapter extends BaseAdapter {
       effortLevels: [],
       supportsHermetic: true,
       supportsToolSelection: true,
+      // Same binary as claude, so the same --output-format json envelope.
+      supportsResultJson: true,
     };
+  }
+
+  /** The user home a run sees: the seam, else $HOME, else the account home. */
+  private effectiveHome(): string {
+    if (this.homeDirectory !== undefined && !isAbsolute(this.homeDirectory)) {
+      throw new Error("Z.AI home directory must be an absolute path");
+    }
+    const configuredHome =
+      this.homeDirectory ||
+      this.environment.HOME ||
+      this.environment.USERPROFILE;
+    return configuredHome && isAbsolute(configuredHome)
+      ? configuredHome
+      : homedir();
   }
 
   private getZaiApiKey(): string {
@@ -51,17 +75,7 @@ export class ZaiAdapter extends BaseAdapter {
       return this.validateCredential(environmentKey, "ZAI_API_KEY");
     }
 
-    if (this.homeDirectory !== undefined && !isAbsolute(this.homeDirectory)) {
-      throw new Error("Z.AI home directory must be an absolute path");
-    }
-    const configuredHome =
-      this.homeDirectory ||
-      this.environment.HOME ||
-      this.environment.USERPROFILE;
-    const home = configuredHome && isAbsolute(configuredHome)
-      ? configuredHome
-      : homedir();
-    const zaiFile = join(home, ".zai");
+    const zaiFile = join(this.effectiveHome(), ".zai");
     try {
       const content = readUtf8FileBounded(zaiFile, {
         maxBytes: MAX_KEY_FILE_BYTES,
@@ -159,6 +173,26 @@ export class ZaiAdapter extends BaseAdapter {
     return claudeNativeAutonomyFlags(level);
   }
 
+  override validateRunRequest(request: RunRequest): void {
+    super.validateRunRequest(request);
+    // The adapter pins no CLAUDE_CONFIG_DIR, so a passed-through one is the
+    // only redirect -- and a relative one would resolve against the child's
+    // working directory, landing the config store somewhere --cwd decides.
+    assertAbsoluteClaudeConfigDir(request.passthroughEnv);
+  }
+
+  override validateTuiRequest(
+    model?: string,
+    cwd?: string,
+    autonomy?: AutonomyLevel,
+    _effort?: ReasoningEffort,
+    passthroughEnv: readonly string[] = [],
+    enablePlaywrightMcp = false
+  ): void {
+    super.validateTuiRequest(model, cwd, autonomy, _effort, passthroughEnv, enablePlaywrightMcp);
+    assertAbsoluteClaudeConfigDir(passthroughEnv);
+  }
+
   buildRunCommand(request: RunRequest): string[] {
     const cmd = ["claude", "-p"];
     if (request.hermetic) {
@@ -178,15 +212,28 @@ export class ZaiAdapter extends BaseAdapter {
     // proven closed.
     // The project source is enabled only when the working directory is one
     // of the named instruction directories, so a repository's own settings
-    // file can never ride in on an unrelated instruction directory.
+    // file can never ride in on an unrelated instruction directory. The
+    // user source resolves under the ordinary Claude Code home the child
+    // already uses (CLAUDE_CONFIG_DIR, default ~/.claude) -- Z.AI runs load
+    // the operator's ~/.claude/settings.json directly, exactly as claude
+    // runs do, because both run the same binary against the same store.
     const instructionDirs = request.instructionDirs ?? [];
     const cwdIsInstructionDir = instructionDirs.includes(request.cwd ?? process.cwd());
     cmd.push(
       "--setting-sources",
       cwdIsInstructionDir ? "user,project" : "user",
-      "--strict-mcp-config",
-      "--no-session-persistence"
+      "--strict-mcp-config"
     );
+    // No run of this adapter persists a session (same binary and rule as
+    // claude): nothing a later run could resume is left behind.
+    cmd.push("--no-session-persistence");
+    if (request.resultJson) {
+      // Claude Code's single-result envelope (same binary as claude): the
+      // reply under `result`, plus `usage`, `modelUsage`, and
+      // `total_cost_usd`, which `--result-json` re-emits with the codemux
+      // block appended.
+      cmd.push("--output-format", "json");
+    }
     if (request.tools === "none") {
       // An empty --tools list removes every built-in tool definition.
       cmd.push("--tools", "");
@@ -198,7 +245,7 @@ export class ZaiAdapter extends BaseAdapter {
       enabled: request.enablePlaywrightMcp,
       forbiddenRoot: request.cwd ?? process.cwd(),
     }));
-    cmd.push("--model", request.model || "opus");
+    cmd.push("--model", request.model || ZAI_DEFAULT_MODEL);
 
     if (request.autonomy) {
       cmd.push(...claudeAutonomyFlags(request.autonomy, request.cwd ?? process.cwd()));
@@ -209,6 +256,23 @@ export class ZaiAdapter extends BaseAdapter {
 
   override getStdinInput(request: RunRequest): string | null {
     return request.prompt;
+  }
+
+  override processRunResult(result: RunResult, request: RunRequest): RunResult {
+    // Same envelope as claude (same binary): with --result-json the harness's
+    // envelope is re-emitted with the codemux block appended. Anything that is
+    // not the envelope fails loudly, as in claude's adapter.
+    if (request.resultJson) {
+      // buildRunCommand ran --model opus when the request named none (or an
+      // empty string -- same `||` fallback), so the envelope's model fallback
+      // sees the model codemux actually selected.
+      return claudeFamilyResult(
+        result,
+        { ...request, model: request.model || ZAI_DEFAULT_MODEL },
+        this.id
+      );
+    }
+    return result;
   }
 
   buildTuiCommand(
@@ -226,7 +290,7 @@ export class ZaiAdapter extends BaseAdapter {
       enabled: enablePlaywrightMcp,
       forbiddenRoot: cwd ?? process.cwd(),
     }));
-    cmd.push("--model", model || "opus");
+    cmd.push("--model", model || ZAI_DEFAULT_MODEL);
     if (autonomy) {
       // The TUI has a human to approve; write grants ride only on
       // headless runs.

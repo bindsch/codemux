@@ -33,5 +33,9 @@ report.*.json
 *.swp
 *.swo
 *~
+
+# local scratch (round notes, live-check logs)
+/scratch/
+
 /.hookrun/
 /.hookrun-install.lock

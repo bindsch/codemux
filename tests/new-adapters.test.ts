@@ -221,7 +221,7 @@ describe("CopilotAdapter", () => {
       "--model",
       "gpt-5.3-codex",
       "--allow-all",
-      "--effort",
+      "--reasoning-effort",
       "high",
       "--prompt=fix the tests",
       "--silent",
@@ -286,7 +286,7 @@ describe("CopilotAdapter", () => {
         "claude-sonnet-4.6",
         "--allow-tool",
         "read",
-        "--effort",
+        "--reasoning-effort",
         "none",
       ]);
   });

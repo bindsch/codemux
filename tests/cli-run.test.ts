@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -531,6 +531,118 @@ describe("CLI - Signals", () => {
     } finally {
       fake.cleanup();
       rmSync(pidDir, { recursive: true, force: true });
+    }
+  }, 30_000); // the runner grants the tree its grace period before returning
+
+  // A stand-in codex: writes the --output-last-message file the launch names
+  // (model output in this run's scratch directory under the real CODEX_HOME,
+  // or its private hermetic home), records the path it wrote so the test can
+  // find it, then keeps the run in flight so a signal can arrive after the
+  // write -- exactly the leak window.
+  const lastMessageWritingCodex = (pidFile: string, pathMarker: string): string =>
+    'if [ "$1" = --version ]; then printf "codex-cli 0.159.3\\n"; exit 0; fi\n' +
+    "while [ $# -gt 0 ]; do\n" +
+    '  if [ "$1" = --output-last-message ]; then\n' +
+    `    mkdir -p "$(dirname "$2")"; printf "the interrupted reply\\n" > "$2"; printf '%s' "$2" > ${pathMarker}; shift 2; continue\n` +
+    "  fi\n" +
+    "  shift\n" +
+    "done\n" +
+    `echo $$ > ${pidFile}; sleep 30`;
+
+  test("a SIGTERM to a codex --result-json run removes the --output-last-message file", async () => {
+    // The round21 major: the process runner ends a signaled run with
+    // process.exit(143) from inside the runner, past the launch path's
+    // cleanup calls, so the file codex had already written outlived the
+    // run. The launch's exit-time backstop now disposes the run's context
+    // on that exit too. The file lives in this run's own directory under
+    // the real CODEX_HOME's .codemux-scratch/ (round27) -- harness state,
+    // which the parent reaches on every platform.
+    const home = mkdtempSync(join(tmpdir(), "codemux-signal-lastmsg-"));
+    const pidFile = join(home, "child.pid");
+    const pathMarker = join(home, "last-message-path");
+    const fake = createFakeBinaryEnv({
+      codex: lastMessageWritingCodex(pidFile, pathMarker),
+    });
+    try {
+      const proc = Bun.spawn(
+        [join(import.meta.dir, "..", "bin", "codemux"), "run", "-a", "codex", "--no-sandbox", "--auto", "high", "--result-json", "-p", "test"],
+        {
+          cwd: join(import.meta.dir, ".."),
+          stdout: "pipe",
+          stderr: "pipe",
+          env: { ...process.env, ...fake.env, CODEMUX_NO_KEYCHAIN_SYNC: "1", HOME: home } as Record<string, string>,
+        }
+      );
+      const deadline = Date.now() + 15_000;
+      while (!existsSync(pidFile) && Date.now() < deadline) await Bun.sleep(100);
+      expect(existsSync(pidFile)).toBe(true);
+      const lastMessageFile = readFileSync(pathMarker, "utf8");
+      expect(lastMessageFile.startsWith(join(home, ".codex", ".codemux-scratch"))).toBe(true);
+      expect(existsSync(lastMessageFile)).toBe(true);
+      proc.kill("SIGTERM");
+      const [stderr, exitCode] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+      expect(exitCode).toBe(143);
+      expect(stderr).toContain("interrupted; the agent's process tree was terminated");
+      // The run never reached processRunResult, where the file is normally
+      // read and removed; only the exit backstop can have removed it.
+      expect(existsSync(lastMessageFile)).toBe(false);
+      expect(readdirSync(join(home, ".codex", ".codemux-scratch"))).toEqual([]);
+    } finally {
+      fake.cleanup();
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 30_000); // the runner grants the tree its grace period before returning
+
+  test("a SIGTERM to a sandboxed hermetic codex run leaves neither scratch nor private home", async () => {
+    // The same exit through the sandboxed branch of the launch path, where
+    // the finding located the leak "including for hermetic runs": the
+    // --output-last-message file -- inside the run's private hermetic home
+    // since round25 -- and the home itself must both be gone once the exit
+    // handlers have run.
+    const home = mkdtempSync(join(tmpdir(), "codemux-signal-hermetic-"));
+    const pidFile = join(home, "child.pid");
+    const pathMarker = join(home, "last-message-path");
+    const fake = createFakeBinaryEnv({
+      codex: lastMessageWritingCodex(pidFile, pathMarker),
+      scode: 'while [ "$1" != "--" ]; do shift; done; shift; exec "$@"',
+    });
+    try {
+      const proc = Bun.spawn(
+        [join(import.meta.dir, "..", "bin", "codemux"), "run", "-a", "codex", "--hermetic", "--result-json", "-p", "test"],
+        {
+          cwd: join(import.meta.dir, ".."),
+          stdout: "pipe",
+          stderr: "pipe",
+          env: {
+            ...process.env,
+            ...fake.env,
+            CODEMUX_NO_KEYCHAIN_SYNC: "1",
+            HOME: home,
+            CODEX_API_KEY: "sk-test",
+          } as Record<string, string>,
+        }
+      );
+      const deadline = Date.now() + 15_000;
+      while (!existsSync(pidFile) && Date.now() < deadline) await Bun.sleep(100);
+      expect(existsSync(pidFile)).toBe(true);
+      const lastMessageFile = readFileSync(pathMarker, "utf8");
+      const hermeticParent = join(home, ".codex", ".codemux-hermetic");
+      // Round25: the file lives INSIDE the run's private home, which the
+      // sandbox keeps writable even where it denies the real CODEX_HOME.
+      expect(lastMessageFile.startsWith(hermeticParent)).toBe(true);
+      expect(existsSync(lastMessageFile)).toBe(true);
+      expect(readdirSync(hermeticParent).length).toBeGreaterThan(0);
+      proc.kill("SIGTERM");
+      const [stderr, exitCode] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+      expect(exitCode).toBe(143);
+      expect(stderr).toContain("interrupted; the agent's process tree was terminated");
+      expect(existsSync(lastMessageFile)).toBe(false);
+      // The hermetic home's own exit handler did this part before the
+      // backstop existed; both paths still agree because both are idempotent.
+      expect(readdirSync(hermeticParent)).toEqual([]);
+    } finally {
+      fake.cleanup();
+      rmSync(home, { recursive: true, force: true });
     }
   }, 30_000); // the runner grants the tree its grace period before returning
 });

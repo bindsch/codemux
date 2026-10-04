@@ -7,7 +7,240 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-03
+
+### Fixed
+
+- Overlapping codex runs no longer share per-run state. The private
+  hermetic home lived in plain fields on the singleton adapter, so run
+  B's launch replaced run A's home before A's command was built, and one
+  run's teardown finalized every home the adapter had ever made,
+  including another run's in-flight one. Every piece of per-run state —
+  the hermetic home, the `--output-last-message` fallback path this
+  release adds — now lives on a per-launch `RunContext` the launcher
+  owns and threads from `prepareRun` through `processRunResult`, so every
+  launch, even two through one request object, touches only its own.
+
+- Codex autonomy's approval policy is passed as the config override
+  `-c approval_policy="…"`, so it reaches the run. It had been `-a <policy>`
+  at the top level, before `exec`, where codex's root-to-exec handoff drops
+  it (the handoff copies only the shared options like `-s` and `-m`, and
+  `exec` has no `-a` of its own) — so an exec run's approval policy was
+  silently whatever codex configured. At codex-cli 0.159.x, `-a` accepts
+  only `on-request` and `never`, so `low`'s `untrusted` was an invalid value
+  there. The config override is the one channel that reaches `exec`, `exec
+  resume`, and the TUI alike, which is how effort already passed. Verified
+  against the codex-rs clap grammar at rust-v0.159.3 (see
+  docs/HARNESS-COMPATIBILITY.md).
+
+- `copilot`'s reasoning effort is passed as `--reasoning-effort`, the flag the
+  CLI actually takes. It had been `--effort`, which upstream added in v1.0.10 as
+  a shorthand alias and has since dropped, so every
+  `codemux run -a copilot --effort <level>` failed on an unknown option.
+  `--reasoning-effort` has been the canonical flag since v1.0.4, so no release at
+  or above the version floor is affected by the switch. The
+  accepted values are unchanged, so no translation is needed, unlike Droid's
+  `none` to `off`. The installed-contract suite pins the real name and
+  `make release-gate` runs it on every PR; it caught nothing because it skips a
+  binary absent from the machine, and no machine in the loop had copilot
+  installed. Copilot also gains a `HARNESS_CONTRACTS` entry: without one
+  `assertSupportedHarnessVersion` returns immediately -- a silent pass, not a
+  warning -- and copilot is the harness that renamed a flag between patch
+  releases, so an unpinned version there was the least safe default in the
+  table, with a floor of 1.0.77, the version the ledger recorded before this
+  audit. A lower floor would report roughly seventy never-audited releases as
+  supported, since everything between the floor and the audited version runs
+  silently. A refusal is visible and overridable with
+  `CODEMUX_ALLOW_UNTESTED_HARNESS`; a false "supported" is not. The
+  version is read with `--binary-version`, not `--version`: the latter starts the
+  packaged application and needs a writable extraction cache, so under a
+  restricted filesystem it fails and the gate silently stops enforcing. A test
+  now fails if any harness the ledger records as installed has no version
+  contract, and an unrecognized ledger row fails rather than being skipped.
+
+- A copilot that reports no version is refused rather than warned through.
+  `--binary-version` arrived in 1.0.3, below the 1.0.77 floor, so a silent
+  probe is a below-floor release (1.0.0 through 1.0.2) rather than an unknown
+  build, and the tier the floor exists to refuse was running with only a
+  warning. The refusal is per contract (`unknownVersion`), keeps the warn
+  default for harnesses whose probes a supported release can fail to answer,
+  and is downgraded by `CODEMUX_ALLOW_UNTESTED_HARNESS` like every refusal.
+
+- With `OPENCODE_BIN_PATH` passed through, the compatibility verdict now comes
+  from the redirected executable rather than the unrelated PATH-resolved one.
+  The gate resolves the redirect to a trusted executable — the same validation
+  the PATH binary gets, which is what makes probing it outside the sandbox
+  acceptable — and reads the version from it, so a below-floor redirect no
+  longer hides behind a supported launcher and a supported redirect is no
+  longer blocked by an old one. A redirect codemux cannot so resolve keeps the
+  "cannot confirm" warning and still gates the PATH binary below the floor.
+
+- Codex's per-run `--output-last-message` directory is removed only after its
+  `.codemux-scratch` parent passes the trust check the result reader already
+  applied. A run with write access to `~/.codex` could replace that parent
+  with a symlink, and the recursive cleanup — unlike the read — followed it,
+  deleting a matching run directory outside codemux's scratch tree even on a
+  launch whose result read had already refused the swap. The parent is
+  lstat-checked first; a parent that fails keeps its directory and reports the
+  refusal.
+
+- A rerouted codex run is attributed to the model that served it. Codex 0.159.3
+  reports a reroute in the `--json` event stream as a completed error item
+  (`model rerouted: <from> -> <to> (<reason>)`); the parser now records it and
+  the `--result-json` envelope's `model` field carries the served model — with
+  a stderr note naming it — instead of the requested one, which the harness
+  may have substituted away mid-run.
+
+- The harness version probe runs with an allowlisted environment rather than
+  the caller's. It executes before any sandbox exists, so a variable that
+  redirects code loading reaches it that a launch would have stripped:
+  copilot's `COPILOT_CLI_DIST_DIR` makes even `--version` run a chosen
+  directory's JavaScript, and against copilot 1.0.85 an unscrubbed probe read
+  a fabricated 0.0.1 from a fixture directory. The probe now keeps only what
+  lets the binary be found and produce readable output, so no credential for
+  any agent reaches it either; the kept locale names follow the launch
+  environment's own prefix rule, so the `--version` exec and the run resolve
+  their locales the same way. A passed-through name that redirects the
+  executable still cannot be honored — resolving it would run an unvalidated
+  binary outside the sandbox — so the probe reports the version as
+  unconfirmed while still probing the PATH-resolved default binary and still
+  refusing it below the version floor; `CODEMUX_ALLOW_UNTESTED_HARNESS`
+  covers a deliberate redirect there as anywhere else.
+
+- The launch path validates and builds from one `passthroughEnv` list. The
+  launcher validated `request.passthroughEnv` but built the sandbox
+  environment from a second list on the launch options, so a programmatic
+  caller could put a name on the options that validation never saw and the
+  child still received. The options field is gone; the request's list is the
+  single source.
+
 ### Added
+
+- `-f -` reads the prompt from stdin, the same way a prompt file is read,
+  so a caller can pipe a prompt without staging a file (`printf '…' |
+  codemux run -a codex -f -`). Stdin is not argv: the read is bounded at
+  16 MiB (the prompt-file limit) rather than the 32 KiB argv cap, though
+  the argv rule still applies to the prompt's content for harnesses that
+  pass it as an argument. An empty or whitespace-only stdin prompt is
+  refused, and so is a terminal stdin — a non-interactive command reading
+  a TTY would hang until the run's timeout; pipe the prompt instead. The
+  read itself is bounded by `--timeout` like the run, so a prompt producer
+  that stalls with the pipe open fails the run rather than hanging it;
+  stdin is decoded with the same fatal UTF-8 decoder as a prompt file, so
+  malformed bytes are an error (`-f - prompt must contain valid UTF-8`)
+  rather than replacement characters that silently change the prompt text
+  between the two advertised-equivalent input paths; and every
+  prompt-independent check (agent capabilities, availability, hermetic,
+  tools) runs before anything reads stdin, so an unsupported combination
+  (`-a droid --hermetic -f -`) rejects at once instead of blocking on the
+  read — a malformed command (`-p` with `-f`, a missing prompt, an
+  unreadable prompt file) still fails before the availability checks.
+
+- `--result-json` now works for Codex and Z.AI, and every envelope carries one
+  codemux-owned block. Codex is asked for its JSONL event stream
+  (`codex exec --json`, pinned against `codex-rs/exec/src/exec_events.rs` at
+  rust-v0.159.3, the installed codex-cli 0.159.3): the stream names the
+  thread, the final assistant message, and the thread's cumulative token
+  usage as of the last completed turn, none of
+  which the human-mode stderr summary carries (it prints one blended total
+  that discounts cached input). That usage figure is a snapshot of the
+  running thread counter, and every codemux run launches with `--ephemeral`,
+  so the thread this run started makes the last snapshot exactly this run's
+  usage. codemux reduces the stream to an envelope
+  whose `result` is the final assistant message as plain text. A turn that
+  ends with only a `Plan` item succeeds too: codex 0.159.3 treats the last
+  `Plan` of a turn as its final message, but the JSONL event-stream mapper
+  drops the item, so the launch also passes `--output-last-message <file>`
+  (in a per-run directory under `.codemux-scratch/` inside the real
+  CODEX_HOME — harness state, which every scode platform keeps writable
+  and none shadows; inside the private home for `--hermetic` runs; no
+  file at all under `--sandbox-trust untrusted` on a non-hermetic run,
+  which denies harness state, so the event stream is the result's only
+  source and a Plan-only turn there reports `result: null`; a hermetic
+  run names its file whatever the trust, and `untrusted` denies the
+  private home itself, so the child cannot write it — same outcome,
+  different mechanism) and the message codex itself
+  recorded — the Plan included — is the result when the stream's last
+  turn completed without an `agent_message`, with a stderr note saying
+  where it came from. The fallback supplements rather than bypasses: a turn with no
+  message anywhere still fails, a failed turn cannot be rescued by a file,
+  and a stream that carries its own `agent_message` stands. The file never
+  outlives the run — removed once read, and disposed on every exit path
+  (rejection, signal, and timeout alike) through the per-run context the
+  launcher owns (see Fixed on overlapping runs) — and a cleanup failure
+  says so on stderr without failing a finished run. The reader also
+  refuses a fallback whose per-run directory — or its
+  `.codemux-scratch`/`.codemux-hermetic` parent — is not a real
+  user-owned directory, because O_NOFOLLOW guards only the file's own
+  name and an intermediate symlink would point the read, and the delete
+  that follows it, at a `last-message` outside the run: a run that loses
+  the fallback this way fails closed (`result: null`) with a warning
+  instead. Z.AI shares
+  Claude Code's `--output-format json` envelope. Claude-family envelopes keep
+  every harness field unchanged with the block appended:
+  `"codemux": {"agent", "model", "usage": {"input_tokens", "output_tokens",
+  "cached_input_tokens", "total_tokens", "cost_usd"}, "session_id"}`. Fields
+  the harness does not report are null, never guessed; usage means the same
+  thing per harness (uncached input, cache traffic, output, their sum), so
+  Codex's `input_tokens`, which includes both cached reads and cache writes
+  upstream (each a breakdown of the total, not an addition to it), is
+  normalized — both subtracted from the input, both joined into
+  `cached_input_tokens` — before it lands in the block. `session_id` is
+  always null in this release —
+  no run persists a session (Claude and Z.AI launch with
+  `--no-session-persistence`, Codex with `--ephemeral`) — and the field is
+  reserved for the planned live-sessions release. A failed run is
+  failed on every channel: the exit is non-zero even when the harness's own
+  was not, and the diagnostic from the `error` or
+  `turn.failed` event rides on stderr — the JSONL processor prints those on
+  stdout, where a reduction that ignored them lost the only record of why a
+  run died; codemux's own stderr lines separate themselves from the
+  harness's last (possibly unterminated) line, so diagnostics a caller
+  parses line by line never fuse. In codex-built envelopes `result` is
+  null on failure (a partial message from an earlier completed item never
+  poses as the final one, matching codex, which discards its own final
+  message on a failed turn), and the usage fields are null too: a figure
+  from a run whose end the harness itself called failed is at best
+  incomplete, and an exact-looking total that understates it is worse
+  than none. A
+  Claude-family envelope keeps the harness's own fields verbatim, failure
+  included. A run the envelope
+  says was served by several models (`modelUsage` with several entries)
+  reports `model: null`, not the requested model; a Z.AI envelope without
+  `modelUsage` reports the model codemux selected (`opus`, which every
+  such run passes) rather than null. Stdout that breaks the JSON promise
+  fails loudly (non-zero exit, the raw stdout kept, a stderr line saying
+  what is missing), never a silent success: Claude-family plain text on
+  exit 0; JSON that is not the result envelope — the envelope is
+  `type: "result"` naming an outcome, so a bare `{}` (which parses), a
+  bare discriminator, or a subtype-only "success" is refused like plain
+  text, while an envelope reporting its own failure (`is_error: true`, an
+  `error_*` subtype such as `error_during_execution`) fails the run even
+  when the harness exited 0, so a wrapper that masks the exit code cannot
+  mask the structured failure too; an empty codex stream; or a codex
+  stream codemux cannot parse. An empty or whitespace-only reply is no
+  reply on either path: a Claude envelope whose `result` is `""` or
+  `" \n"` and a codex turn whose only `agent_message` carries empty or
+  whitespace text fail the run, with the harness's own fields kept as it
+  reported them. A computed `total_tokens` needs every component
+  reported, so `{output_tokens: 5}` stays `total_tokens: null` instead of
+  guessing the rest as zero; a codex turn whose `turn.completed` reports
+  no usage leaves null fields rather than inheriting an earlier turn's
+  stale totals; and the all-zero snapshot codex 0.159.3 emits when the
+  thread never received a token-usage update (`Usage::default()`) counts
+  as unreported the same way, not as a measured zero. Codex runs share
+  one success verdict: a `turn.failed` or
+  `error` event, a stream that ends
+  without a final assistant message, a stream whose last turn never ended
+  with `turn.completed`, or codex's own non-zero exit fails the run on every
+  channel — and a stream that
+  breaks the event grammar — no single `thread.started` announcement
+  opening the stream, a terminal event no `turn.started` opened, a second
+  turn after a completed one, or an item event (`item.started`,
+  `item.updated`, or `item.completed`, whatever the item's type) after
+  the last `turn.completed` — fails as unparseable before the verdict,
+  the raw stdout kept; so does a recognized `agent_message` whose `text`
+  is not a string: drift is refused, not skipped over.
 
 - `--result-json` on `run` asks the harness for its own structured result
   envelope on stdout rather than plain text, so a caller can account for what
@@ -15,8 +248,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   use, and nothing could be recovered afterward either, because these runs pass
   `--no-session-persistence` and leave no session file. Claude Code supplies
   the envelope through `--output-format json`: the reply plus `usage`,
-  `modelUsage` and `total_cost_usd`. codemux asks for it and passes it through
-  unchanged; the shape belongs to the harness. Harnesses without the capability
+  `modelUsage` and `total_cost_usd`. codemux asks for it and re-emits it with
+  every harness field unchanged plus the codemux block (above); the rest of
+  the shape belongs to the harness. Harnesses without the capability
   refuse the flag instead of returning plain text, so a caller that asked for
   usage and got none cannot record the run as having cost nothing.
 
@@ -41,6 +275,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   them, place the sink there on purpose. This is the forwarding
   half of fleet workspace-storage measurement (scode records; the
   orchestrator correlates).
+
+### Changed
+
+- A passed-through `CLAUDE_CONFIG_DIR` must be an absolute path (claude
+  and zai, `run` and `tui` alike). Claude Code resolves a relative one
+  against the run's working directory, so the config store the harness
+  home owns would land wherever `--cwd` happens to point; the launch is
+  refused with a clear message instead. The check reads the exact value
+  the child receives, because the harness reads the variable without
+  trimming: a whitespace-padded value — `" /var/claude-profile"`, where
+  the padding hides a relative path, or `"/var/claude "`, where a
+  directory name would keep the padding — is refused too, and only the
+  literal empty string counts as no redirect. Z.AI keeps reading and writing
+  the same Claude Code home it
+  always did — codemux pins no directory of its own — so
+  `--setting-sources user` loads the
+  operator's own `~/.claude/settings.json`, exactly as before 0.6.0.
 
 ## [0.5.2] - 2026-09-17
 

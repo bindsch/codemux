@@ -124,12 +124,17 @@ function processAlive(pid: number): boolean {
 }
 
 // A codemux that died without its exit handler may leave a Codex child
-// running in its home for as long as a run is allowed to last; a home is
-// swept only once it is older than the longest run plus a margin.
-const STALE_HOME_MS = 2 * 86_400_000;
+// running in its home for as long as a run is allowed to last; a run
+// directory is swept only once it is older than the longest run plus a
+// margin.
+const STALE_RUN_DIR_MS = 2 * 86_400_000;
 
-/** Removes homes left behind by codemux processes that no longer exist. */
-function sweepStaleHomes(parent: string): void {
+/**
+ * Removes run directories (`run-<pid>-<random>`) left behind by codemux
+ * processes that no longer exist. `.codemux-hermetic` and `.codemux-scratch`
+ * both hold them.
+ */
+function sweepStaleRunDirs(parent: string): void {
   let entries: string[];
   try {
     entries = readdirSync(parent);
@@ -148,9 +153,44 @@ function sweepStaleHomes(parent: string): void {
     } catch {
       continue;
     }
-    if (age < STALE_HOME_MS) continue;
+    if (age < STALE_RUN_DIR_MS) continue;
     rmSync(path, { recursive: true, force: true });
   }
+}
+
+/**
+ * Refuses a path that is not a real directory owned by the current user.
+ * `prepareRunDirParent` applies this to a parent at creation time; the
+ * `--output-last-message` reader applies it to the per-run directory and
+ * that parent again at read time, because a run with write access to
+ * ~/.codex could have swapped either for a symlink in between, pointing a
+ * read or a delete through it into a directory codemux never chose.
+ */
+export function assertTrustedDirectory(path: string): void {
+  const stat = lstatSync(path);
+  if (
+    !stat.isDirectory() ||
+    (process.platform !== "win32" &&
+      typeof process.getuid === "function" &&
+      stat.uid !== process.getuid())
+  ) {
+    throw new Error(`${path} must be a directory owned by the current user`);
+  }
+}
+
+/**
+ * Creates the parent a run's per-run directories live under inside the real
+ * CODEX_HOME (`.codemux-hermetic` for private homes, `.codemux-scratch` for
+ * `--output-last-message` files): made if missing, checked for the shape and
+ * ownership a run can trust, and swept of directories left by codemux
+ * processes that no longer exist. Returns the parent's path.
+ */
+export function prepareRunDirParent(codexHome: string, name: string): string {
+  const parent = join(codexHome, name);
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  assertTrustedDirectory(parent);
+  sweepStaleRunDirs(parent);
+  return parent;
 }
 
 /**
@@ -168,20 +208,7 @@ export function createCodexHermeticHome(
   const linkLogin = !apiKeyAuth;
   if (linkLogin) assertRealLoginFile(sourceAuth);
 
-  const parent = join(sourceCodexHome, PARENT_DIR_NAME);
-  mkdirSync(parent, { recursive: true, mode: 0o700 });
-  // A run with write access to ~/.codex could have replaced the parent
-  // with a symlink, pointing the sweep's rm and the login link elsewhere.
-  const parentStat = lstatSync(parent);
-  if (
-    !parentStat.isDirectory() ||
-    (process.platform !== "win32" &&
-      typeof process.getuid === "function" &&
-      parentStat.uid !== process.getuid())
-  ) {
-    throw new Error(`${parent} must be a directory owned by the current user`);
-  }
-  sweepStaleHomes(parent);
+  const parent = prepareRunDirParent(sourceCodexHome, PARENT_DIR_NAME);
   // mkdtemp creates the directory mode 0700; the login inside is 0600.
   const home = mkdtempSync(join(parent, `${RUN_PREFIX}${process.pid}-`));
   const codexHome = join(home, ".codex");

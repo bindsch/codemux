@@ -1,6 +1,6 @@
 # codemux
 
-> **Beta software (v0.5.2).** `codemux` is under active development. Expect behavior changes as adapters and sandbox policy continue to harden.
+> **Beta software (v0.6.0).** `codemux` is under active development. Expect behavior changes as adapters and sandbox policy continue to harden.
 
 `codemux` is a unified CLI for AI coding agents. It gives one command surface
 for multiple harnesses, normalizes autonomy/effort semantics, and can route
@@ -84,13 +84,13 @@ codemux [command] [options]
 | `-a, --agent <agent>` | Agent id (default: `claude`) |
 | `-m, --model <model>` | Model name or alias |
 | `-p, --prompt <prompt>` | Prompt text |
-| `-f, --file <path>` | Read prompt text from file |
-| `--timeout <seconds>` | Kill a hung non-interactive run and its whole process tree (a descendant whose parent chain broke before the first snapshot can still escape; default: `1800`, maximum: `86400`) |
+| `-f, --file <path>` | Read prompt text from file, or from stdin with `-` |
+| `--timeout <seconds>` | Kill a hung non-interactive run and its whole process tree (a descendant whose parent chain broke before the first snapshot can still escape; also bounds the `-f -` stdin prompt read — a producer that stalls with the pipe open fails the run at the timeout; default: `1800`, maximum: `86400`) |
 | `--pass-env <names>` | Explicitly pass comma-separated parent environment names |
 | `--enable-playwright-mcp` | Enable a local Playwright MCP binary inside `--sandbox` |
 | `--hermetic` | Load none of the operator's customizations (instruction files, skills, plugins, hooks, MCP servers); the login still works. Claude, Z.AI and Codex; others are refused. See [docs/HERMETIC.md](docs/HERMETIC.md) |
 | `--tools <selection>` | Built-in tools the harness exposes: `default` or `none`. Independent of `--hermetic`; Codex takes `none` only with `--auto read-only` |
-| `--result-json` | Return the harness's own structured result envelope on stdout instead of plain text, so a caller can read what the run consumed (tokens, cost). Claude only; other harnesses refuse it rather than silently returning text. The envelope's shape is the harness's, not codemux's |
+| `--result-json` | Return a structured result envelope on stdout instead of plain text, so a caller can read what the run consumed (tokens, cost). Claude, Z.AI and Codex; other harnesses refuse the flag rather than silently returning text. Claude-family envelopes are the harness's own with one added `codemux` block; Codex reports the final assistant message as `result` plus the same block. See [Result envelopes](#result-envelopes) |
 | `-s, --sandbox` | Execute via `scode` (default: on; `--no-sandbox` opts out, and autonomy below `high` then refuses) |
 | `--sandbox-trust <level>` | `scode` trust override (`trusted`, `standard`, `untrusted`) |
 | `--sandbox-no-net` | Add `--no-net` to `scode` |
@@ -102,11 +102,18 @@ codemux [command] [options]
 | `--cwd <path>` | Working directory |
 
 Use `--file` instead of `--prompt` for sensitive input so the Codemux command
-line itself does not expose the prompt through process inspection. Some upstream
-harnesses only accept their final task as an argument; Codemux cannot remove
-that upstream limitation for Aider, Cline, Copilot, Gemini, Goose, Kimi,
-OpenHands, or legacy `qwen-coder`. Codemux rejects argv prompts above 32 KiB;
-use an stdin-capable harness for larger prompts.
+line itself does not expose the prompt through process inspection; `-f -`
+reads the same prompt from stdin (a terminal stdin is refused — pipe it
+instead). Stdin is not argv, so it is not bound by the argv limit, but a
+stdin prompt above 16 MiB is rejected and an empty one is an error. The
+stdin read is bounded by `--timeout` like the run itself, so a prompt
+producer that stalls with the pipe open fails the run instead of hanging
+the caller. Some
+upstream harnesses only accept their final task as an argument; Codemux
+cannot remove that upstream limitation for Aider, Cline, Copilot, Gemini,
+Goose, Kimi, OpenHands, or legacy `qwen-coder`. Codemux rejects argv
+prompts above 32 KiB — the rule applies to the prompt's content wherever it
+came from, so use an stdin-capable harness for larger prompts.
 
 ### `check` options
 
@@ -208,7 +215,7 @@ alias that has no mapping for the selected agent fails with a descriptive error.
 | `aider` | `--dry-run` | decline headless confirmations | `--yes-always` | `--yes-always` |
 | `claude` | `--permission-mode plan` | `--permission-mode manual` | `--permission-mode acceptEdits` + `--allowedTools Edit(//<launch dir>/**)` (headless) | `--dangerously-skip-permissions` + `--allowedTools Edit Write NotebookEdit Bash` (headless) |
 | `cline` | `--plan` | `--auto-approve false` | `--auto-approve true` | `--auto-approve true` |
-| `codex` | `-s read-only -a never` | `-s workspace-write -a untrusted` | `-s workspace-write -a never` | `-s danger-full-access -a never` |
+| `codex` | `-s read-only` + `-c approval_policy="never"` | `-s workspace-write` + `-c approval_policy="untrusted"` | `-s workspace-write` + `-c approval_policy="never"` | `-s danger-full-access` + `-c approval_policy="never"` |
 | `copilot` | `--plan` | `--allow-tool read` | `--allow-all-tools` | `--allow-all` |
 | `cursor` | `--mode plan` + required `scode --ro` | default approvals + required sandbox | `--auto-review` + required sandbox | `--force` |
 | `droid` | default mode | `--auto low` | `--auto medium` | `--auto high` |
@@ -251,7 +258,8 @@ explicitly:
 - `low`, `medium`, `high`: `standard` + `--rw`
 
 Use `--sandbox-trust untrusted` for strict, read-only, scrubbed, offline
-execution. Environment scrubbing can also remove provider credentials; prefer
+execution. The preset denies the harness-state directories. Environment
+scrubbing can also remove provider credentials; prefer
 harness keychains/config files when using `--sandbox-scrub-env`.
 
 Codemux builds child environments from a small operational allowlist and the
@@ -293,6 +301,109 @@ read-only boundary. Codemux supplies an authoritative system setting that
 disables generic project `.env` loading, rejects `.gemini` project controls,
 and explicitly disables Gemini's nested sandbox so project Dockerfiles or
 Seatbelt profiles cannot replace the selected boundary.
+
+## Result envelopes
+
+`codemux run --result-json` prints a result envelope on stdout instead of the
+plain reply. Claude and Z.AI keep the harness's own envelope (Claude Code's
+`--output-format json`), with one codemux-owned field appended; Codex, whose
+`codex exec --json` prints JSONL events rather than one object, gets an
+envelope codemux builds: `result` holds the final assistant message as plain
+text. Every envelope carries the same block:
+
+```json
+"codemux": {
+  "agent": "codex",
+  "model": "gpt-5.3-codex",
+  "usage": {
+    "input_tokens": 200,
+    "output_tokens": 50,
+    "cached_input_tokens": 800,
+    "total_tokens": 1050,
+    "cost_usd": null
+  },
+  "session_id": null
+}
+```
+
+`model` is the model that served the run when the harness names it, else the
+model codemux selected, else null; a run the envelope says was served by
+several models (`modelUsage` with several entries) reports null, not the
+requested model. Codex names a model only when it reroutes one mid-run — the
+reroute rides the event stream as an error item (`model rerouted: <from> ->
+<to>`), and the envelope's `model` is then the model that served the run, with
+a stderr note saying the run was rerouted, so the requested model is never
+mistaken for the served one. Fields the harness does not report are null,
+never guessed.
+Usage means the same thing for every harness: `input_tokens` counts input not
+served from a prompt cache, `cached_input_tokens` counts input served from or
+written to one, and `total_tokens` is their sum plus output — computed only
+when every component was reported. `session_id` is always null in this
+release: no run persists a session (Claude and Z.AI launch with
+`--no-session-persistence`, Codex with `--ephemeral`), and the field is
+reserved for the planned live-sessions release.
+
+A failed run is a failed run on every channel: the exit code is non-zero even
+when the harness's own was not, and the diagnostic rides
+on stderr on its own line after the harness's own output — separated even
+when the harness's last stderr line was unterminated. An empty result is a
+failed run on every path, plain or structured: a Claude-family envelope whose
+`result` is empty or whitespace only, or a codex turn whose final
+`agent_message` carried text that is empty or whitespace only, fails instead
+of passing a run with no reply. In a codex-built envelope `result`
+is null too (a partial message from an earlier completed item never poses as
+the final one); a Claude-family envelope keeps the harness's own `result`
+field verbatim, since it re-emits the harness's record rather than building
+one. A codex
+stream whose last turn never ended with `turn.completed` fails the same way:
+a completed message item is not a completed turn upstream, so a zero-exit
+wrapper that drops the final event cannot pass a truncated result off as
+done — and an item event after the last `turn.completed` (`item.started`,
+`item.updated`, or a completed item of any type) with
+no turn reopened, a `thread.started` that is not the stream's first event
+(a second announcement included), or a `turn.started` inside a turn still
+open or after a turn already completed (one `codex exec` run is one turn),
+is format
+drift the stream parser refuses outright (the shapes a wrapper
+concatenating two streams produces). A Claude-family
+envelope that reports its own failure (`is_error`, or
+an `error_*` subtype like `error_during_execution`) fails the run even when
+the harness exited 0 — a wrapper that masks the exit code cannot mask the
+structured failure too; the harness's own fields stay in the envelope. Stdout
+that breaks the JSON promise —
+Claude-family plain text, an envelope that names no outcome (a bare
+`{"type":"result"}`, or a success whose `result` text is missing), or a codex
+event stream codemux cannot parse (a recognized `agent_message` whose `text`
+is not a string included — the stream is the documented source for messages,
+so one it cannot carry is drift, not an item to skip) —
+fails the same way, with the raw stdout kept for inspection, never a silent
+success. The empty reply is the one difference in shape: an envelope whose
+`result` text is empty or whitespace only is refused as no reply and fails
+the run like an error envelope does — non-zero exit — and the envelope is
+re-emitted with the codemux block attached rather than kept as raw stdout,
+so a caller inspecting stdout sees codemux-appended content, not the bare
+bytes the harness printed.
+One codex nuance the other direction: a turn that ends with only a
+`Plan` item is a success, because codex itself treats that Plan as the
+turn's final message even though the JSONL stream drops the item — the
+launch also passes `--output-last-message`, and the message codex recorded
+is the `result`, with a stderr note saying the stream carried no
+`agent_message`. `--sandbox-trust untrusted` is the one exception: on a
+non-hermetic run it denies the child write access to the harness state
+directory the fallback file lives in, so codemux passes no file there and
+the event stream is the result's only source — a Plan-only turn under
+`untrusted` therefore reports `result: null` and exits non-zero. A
+hermetic run names its fallback file whatever the trust (the file lives
+in the private home), but the outcome is the same there: `untrusted`
+denies the private home itself, so the child cannot write the file and
+the stream is still the result's only source. A turn that reports no
+usage leaves the fields
+null — the
+all-zero `Usage::default()` snapshot codex 0.159.3 emits when no
+token-usage update arrived counts as unreported, not as a measured zero —
+and a
+failed run reports null usage fields as well: an exact-looking figure that
+understates a failed run is worse than none.
 
 ## Optional Usage Integration
 

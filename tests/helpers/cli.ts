@@ -16,7 +16,8 @@ export interface CliResult {
 
 export async function runCli(
   args: string[],
-  envOverrides?: Record<string, string>
+  envOverrides?: Record<string, string>,
+  options?: { stdin?: string | Uint8Array }
 ): Promise<CliResult> {
   const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-cli-home-"));
   try {
@@ -26,6 +27,9 @@ export async function runCli(
         cwd: join(import.meta.dir, "..", ".."),
         stdout: "pipe",
         stderr: "pipe",
+        // "ignore" keeps a run that reads stdin (-f -) failing fast on EOF
+        // rather than inheriting the test runner's terminal.
+        stdin: options?.stdin === undefined ? "ignore" : "pipe",
         env: {
           ...process.env,
           // Spawned CLI tests cannot inject the credential seams; disable
@@ -38,6 +42,11 @@ export async function runCli(
         } as Record<string, string>,
       }
     );
+    const stdin = proc.stdin;
+    if (options?.stdin !== undefined && stdin !== null && stdin !== undefined) {
+      stdin.write(options.stdin);
+      stdin.end();
+    }
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(proc.stdout).text(),
       new Response(proc.stderr).text(),

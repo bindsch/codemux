@@ -29,6 +29,88 @@ import {
 
 const MAX_PROMPT_FILE_BYTES = 16 * 1024 * 1024;
 
+// The stand-in prompt for the run command's preflight validation: the
+// shortest text that satisfies every prompt rule (non-empty, no NUL byte,
+// under every byte cap), so the validation that runs before `-f -` consumes
+// stdin exercises every other check exactly as it will run. The content
+// rules are re-applied to the real prompt after it is read.
+const PREFLIGHT_PROMPT = "x";
+
+/**
+ * Reads a `-f -` prompt from stdin, bounded by the same limit as a prompt
+ * file, decoded with the same fatal UTF-8 decoder: the two prompt paths
+ * are advertised as equivalents, so malformed bytes are an error either
+ * way, never replacement characters that silently change the prompt. The
+ * read is also bounded by the run's `--timeout`: a blocking read has no
+ * deadline of its own, so a pipe whose producer stalls -- open, never
+ * written, never closed -- would block past every timeout the run itself
+ * honors; the read now fails the run at the timeout instead. Stdin is not
+ * argv, so the argv-prompt rules (NUL byte, 32 KiB cap for harnesses that
+ * pass the prompt as an argument) apply later, unchanged, at adapter
+ * validation. A terminal stdin is refused rather than read: this is a
+ * non-interactive command, and a read with no writer would hang until the
+ * run's timeout.
+ */
+async function readStdinPrompt(
+  maxBytes: number,
+  timeoutMs: number
+): Promise<string> {
+  if (process.stdin.isTTY) {
+    throw new Error("-f - reads the prompt from stdin, but stdin is a terminal; pipe the prompt instead");
+  }
+  const stdin = process.stdin;
+  const chunks: Buffer[] = [];
+  let total = 0;
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error: Error | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      stdin.removeListener("data", onData);
+      stdin.removeListener("end", onEnd);
+      stdin.removeListener("error", onError);
+      // Dropped either way: on failure an unread pipe must not hold the
+      // process open, and on success EOF has already closed it.
+      stdin.destroy();
+      if (error !== null) reject(error);
+      else resolve();
+    };
+    const timer = setTimeout(() => {
+      finish(
+        new Error(
+          "-f - read no complete prompt from stdin before --timeout elapsed; " +
+            "a stalled prompt producer fails the run instead of hanging it"
+        )
+      );
+    }, timeoutMs);
+    const onData = (chunk: Buffer): void => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        finish(
+          new Error(
+            `-f - prompt exceeds the ${maxBytes}-byte limit (stdin is not argv, but the bound still applies)`
+          )
+        );
+        return;
+      }
+      chunks.push(chunk);
+    };
+    const onEnd = (): void => finish(null);
+    const onError = (error: Error): void => finish(error);
+    stdin.on("data", onData);
+    stdin.once("end", onEnd);
+    stdin.once("error", onError);
+  });
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(
+      Buffer.concat(chunks)
+    );
+  } catch {
+    throw new Error("-f - prompt must contain valid UTF-8");
+  }
+}
+
 let configError: Error | undefined;
 const config = (() => {
   try {
@@ -63,8 +145,12 @@ program
   .option("-a, --agent <agent>", "Agent to use", config.defaultAgent)
   .option("-m, --model <model>", "Model to use (supports aliases)")
   .option("-p, --prompt <prompt>", "Prompt text")
-  .option("-f, --file <path>", "Read prompt from file")
-  .option("--timeout <seconds>", "Maximum run time in seconds", "1800")
+  .option("-f, --file <path>", "Read prompt from file, or from stdin with -")
+  .option(
+    "--timeout <seconds>",
+    "Maximum run time in seconds; also bounds the -f - stdin prompt read",
+    "1800"
+  )
   .option("--pass-env <names>", "Pass comma-separated sensitive environment names")
   .option("--enable-playwright-mcp", "Enable local Playwright MCP inside the sandbox")
   .option(
@@ -139,31 +225,66 @@ program
 
       const adapter = getAdapter(agentId);
 
-      let prompt = options.prompt;
+      // Parsed before the prompt is read: a `-f -` read is bounded by the
+      // same timeout the run itself honors, and an invalid value should
+      // fail before anything consumes stdin.
+      const timeoutMs = parseTimeoutOption(options.timeout);
+
+      // The prompt resolves before the availability checks, with one
+      // exception (round10). An ambiguous -p/-f pair, a missing prompt,
+      // and an unreadable or empty prompt file are the caller's malformed
+      // command, and an "agent is not installed" or "scode is not
+      // installed" line would misdirect them. Stdin is the one prompt
+      // source that can BLOCK -- a producer that never closes the pipe --
+      // so `-f -` is the exception: its read waits until adapter
+      // validation has run, and an unsupported combination like `-a droid
+      // --hermetic -f -` is rejected at once instead of waiting out
+      // the timeout on a read that never completes.
+      let earlyPrompt: string;
+      let readPromptFromStdin = false;
       if (options.file) {
         if (options.prompt !== undefined) {
           console.error("Error: --prompt and --file cannot be used together");
           process.exit(1);
         }
-        try {
-          prompt = readUtf8FileBounded(options.file, {
-            maxBytes: MAX_PROMPT_FILE_BYTES,
-            label: "prompt file",
-          });
-        } catch (error) {
-          const message = error instanceof Error ? `: ${error.message}` : "";
-          console.error(`Error: Could not read file '${options.file}'${message}`);
-          process.exit(1);
+        if (options.file === "-") {
+          // The stand-in (PREFLIGHT_PROMPT) until the read below: stdin is
+          // the one prompt source that can block, so its read waits for
+          // adapter validation.
+          readPromptFromStdin = true;
+          earlyPrompt = PREFLIGHT_PROMPT;
+        } else {
+          try {
+            earlyPrompt = readUtf8FileBounded(options.file, {
+              maxBytes: MAX_PROMPT_FILE_BYTES,
+              label: "prompt file",
+            });
+          } catch (error) {
+            const message = error instanceof Error ? `: ${error.message}` : "";
+            console.error(`Error: Could not read file '${options.file}'${message}`);
+            process.exit(1);
+          }
+          if (earlyPrompt.trim().length === 0) {
+            console.error("Error: No prompt provided. Use -p or -f");
+            process.exit(1);
+          }
         }
-      }
-
-      if (typeof prompt !== "string" || prompt.trim().length === 0) {
+      } else if (
+        typeof options.prompt !== "string" ||
+        options.prompt.trim().length === 0
+      ) {
         console.error("Error: No prompt provided. Use -p or -f");
         process.exit(1);
+      } else {
+        earlyPrompt = options.prompt;
       }
 
-      const timeoutMs = parseTimeoutOption(options.timeout);
-
+      // Everything the request carries except a stdin prompt is known
+      // here, so the request checks above run BEFORE stdin is consumed
+      // (round10). One later gate is deliberately outside that rule:
+      // assertHarnessSupported probes the harness binary after the read
+      // (a subprocess, not a request check), and the read is
+      // timeout-bounded while it waits.
       const caps = adapter.capabilities();
       const model = options.model
         ? resolveModel(options.model, agentId, config)
@@ -201,7 +322,10 @@ program
 
       const request: RunRequest = {
         agent: agentId,
-        prompt,
+        // The resolved prompt -- the stand-in only while stdin is the
+        // source (see PREFLIGHT_PROMPT), with every other source already
+        // validated above.
+        prompt: earlyPrompt,
         model,
         autonomy,
         effort,
@@ -214,7 +338,27 @@ program
         tools,
         resultJson: Boolean(options.resultJson),
       };
-      // Refuse an unsupported hermetic or tools request before any launch work.
+      // Preflight: refuse an unsupported hermetic, tools, or result-json
+      // request before anything consumes stdin. When the
+      // prompt is the stand-in, the content rules are re-applied to the
+      // real text after the read -- the same single validator, twice, with
+      // the second pass carrying the text the run will actually submit.
+      adapter.validateRunRequest(request);
+
+      let prompt = earlyPrompt;
+      if (readPromptFromStdin) {
+        prompt = await readStdinPrompt(MAX_PROMPT_FILE_BYTES, timeoutMs);
+        if (prompt.trim().length === 0) {
+          console.error("Error: -f - read an empty prompt from stdin");
+          process.exit(1);
+        }
+      }
+
+      // The real prompt replaces the stand-in ON THIS OBJECT: the object
+      // validated here stays the object that launches, so the launch path
+      // builds the child environment from the same passthroughEnv list it
+      // validated (one source, request.passthroughEnv).
+      request.prompt = prompt;
       adapter.validateRunRequest(request);
 
       console.error(`Running with ${agentId}${model ? ` (model: ${model})` : ""}${options.sandbox ? " (sandboxed)" : ""}...`);
@@ -227,14 +371,17 @@ program
         options.cwd,
         undefined,
         request.autonomy,
-        Boolean(options.sandbox)
+        Boolean(options.sandbox),
+        // The names the launch will keep. One of them may choose which executable runs --
+        // OpenCode's launcher reads OPENCODE_BIN_PATH -- and a gate that measures a different
+        // binary than the one about to run is worse than no gate.
+        passthroughEnv
       );
 
       const result = await launchRunRequest(adapter, request, {
         sandbox: Boolean(options.sandbox),
         sandboxPolicyOverrides,
         requestedAutonomy: sandboxAutonomy,
-        passthroughEnv,
         timeoutMs,
         cwd: options.cwd,
       });
@@ -359,7 +506,8 @@ program
         options.cwd,
         undefined,
         autonomy,
-        Boolean(options.sandbox)
+        Boolean(options.sandbox),
+        passthroughEnv
       );
 
       if (options.sandbox) {

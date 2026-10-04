@@ -5,7 +5,11 @@ import {
   resolveTrustedCommand,
   resolveTrustedExecutable,
 } from "./executable-security.js";
-import { assertSupportedHarnessVersion } from "./harness-compatibility.js";
+import { activeRedirects, probeEnvironment } from "./environment.js";
+import {
+  ALLOW_UNTESTED_ENV,
+  assertSupportedHarnessVersion,
+} from "./harness-compatibility.js";
 import type { SandboxPolicyOverrides } from "./sandbox-policy.js";
 import {
   SCODE_TRUST_LEVELS,
@@ -388,6 +392,32 @@ export function resolveEffortForAdapter(
 }
 
 /**
+ * Resolves an active redirect's value to the trusted executable the launch
+ * will run, or null when it cannot: the value must be an absolute path (a
+ * relative one resolves against whatever working directory resolves it --
+ * the launcher's for the launch, codemux's own cwd for a realpath here --
+ * and those can differ, so codemux cannot name the file it would validate)
+ * and must pass the same trust check the PATH-resolved binary does, because
+ * the probe runs it before scode exists. Null is the caller's fallback,
+ * never a throw: a redirect codemux cannot resolve to a trusted executable
+ * is a warning about the version being unconfirmed, not a refusal of the
+ * run -- the launch may still sandbox it.
+ */
+function resolveRedirectedBinary(
+  name: string,
+  environment: Record<string, string>,
+  workdir: string
+): string | null {
+  const value = environment[name] ?? "";
+  if (!isAbsolute(value)) return null;
+  try {
+    return resolveTrustedExecutable(value, name, workdir);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Refuses to launch a harness whose version Codemux has not audited.
  *
  * Runs for sandboxed and direct launches alike: the sandbox bounds what a
@@ -401,20 +431,63 @@ export async function assertHarnessSupported(
   cwd?: string,
   extraEnv?: Record<string, string>,
   autonomy?: AutonomyLevel,
-  sandboxed = false
+  sandboxed = false,
+  explicitPassthrough: readonly string[] = []
 ): Promise<void> {
   const workdir = validateWorkingDirectory(cwd) ?? process.cwd();
   const environment = { ...(process.env as Record<string, string>), ...(extraEnv ?? {}) };
   const binary = Bun.which(binaryName, { PATH: environment.PATH });
   if (!binary) return;
-  await assertSupportedHarnessVersion(
+  // The one place that decides what the version probe runs with, chosen because it is the only
+  // scope where the launch environment is also visible. Every regression in this path came from
+  // the decision being made somewhere the launch could not be compared against: the probe runs
+  // before any sandbox exists, so it must carry nothing that redirects code loading and nothing
+  // that selects an executable, even one the launch keeps. Carrying the selector in the probe
+  // environment was tried and withdrawn (see EXECUTABLE_SELECTORS in environment.ts): honoring
+  // OpenCode's OPENCODE_BIN_PATH there runs whatever the variable names, unvalidated, outside
+  // the sandbox.
+  //
+  // A redirect is answered here instead of inside the probe environment. When exactly one is
+  // active and its value resolves to a trusted executable, THAT binary is what the launch runs
+  // (OpenCode's launcher execs it), so the verdict is read from it: a gate that measured the
+  // PATH binary approved a below-floor redirect behind a supported launcher and blocked a
+  // supported redirect behind an old one. resolveTrustedExecutable holds the redirect to the
+  // PATH binary's own rule -- real file, not group/world-writable, owned by the user or root --
+  // which is what makes probing it outside the sandbox acceptable. A redirect that cannot be
+  // so resolved -- not absolute, missing, or failing the trust check -- keeps the fallback: say
+  // the version is unconfirmed, and keep gating the PATH binary, because the operator's
+  // redirect does not make a below-minimum launcher acceptable.
+  const redirects = activeRedirects(agent, environment, explicitPassthrough);
+  let gateBinary = resolveTrustedExecutable(binary, binaryName, workdir);
+  if (redirects.length > 0) {
+    const redirected =
+      redirects.length === 1 ? resolveRedirectedBinary(redirects[0]!, environment, workdir) : null;
+    if (redirected !== null) {
+      gateBinary = redirected;
+    } else {
+      console.warn(
+        `Warning: ${redirects.join(", ")} can change which ${agent} executable runs, so Codemux ` +
+          `cannot confirm the version of the binary this run will use. Autonomy may not behave ` +
+          `as documented.`
+      );
+    }
+  }
+  await assertSupportedHarnessVersion({
     agent,
-    resolveTrustedExecutable(binary, binaryName, workdir),
+    binary: gateBinary,
     workdir,
-    environment,
+    probeEnvironment: probeEnvironment(
+      environment,
+      explicitPassthrough,
+      // The adapter's own names: whatever it injects for the launch also selects what runs.
+      Object.keys(extraEnv ?? {})
+    ),
+    // Read from the operator's own environment, not the probe's: the probe drops it, and the
+    // override is a decision the operator made rather than something the harness should see.
+    override: process.env[ALLOW_UNTESTED_ENV] === "1",
     autonomy,
-    sandboxed
-  );
+    sandboxed,
+  });
 }
 
 export async function runSandboxed(

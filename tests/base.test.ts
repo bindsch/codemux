@@ -11,7 +11,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   BaseAdapter,
+  type RunContext,
 } from "../src/adapters/base.js";
+import { launchRunRequest } from "../src/launch.js";
 import {
   MAX_ARGV_PROMPT_BYTES,
   MAX_CAPTURE_BYTES,
@@ -20,6 +22,7 @@ import {
   runCapturedCommand,
 } from "../src/process-runner.js";
 import { processTableReadable, readProcessTable } from "../src/process-table.js";
+import { claudeFamilyResult } from "../src/result-envelope.js";
 
 /** Whether `pid` still runs, by the process table (which omits zombies, so a
  * killed process awaiting a slow reaper does not count as alive). Throws if
@@ -36,6 +39,7 @@ import type {
   AutonomyLevel,
   ReasoningEffort,
   RunRequest,
+  RunResult,
 } from "../src/types.js";
 
 const bun = process.execPath;
@@ -553,6 +557,24 @@ describe("BaseAdapter", () => {
     expect(adapter.launchCount).toBe(1);
   });
 
+  test("omitted autonomy reaches buildRunCommand pinned to read-only, not unset", async () => {
+    // The round7 finding: run() stopped pinning the request's autonomy, so an
+    // adapter that enforces read-only natively (no sandbox needed) saw
+    // request.autonomy undefined and built no autonomy flags at all. The pin
+    // rides on the request object itself: the request is the record of what
+    // the run used, and buildRunCommand reads the autonomy from it (per-run
+    // state lives on the RunContext the launcher threads, not the request).
+    class NativeReadOnlyAdapter extends RecordingAdapter {
+      override requiresSandboxForAutonomy(): boolean {
+        return false;
+      }
+    }
+    const adapter = new NativeReadOnlyAdapter();
+    const result = await adapter.run({ agent: "claude", prompt: "payload" });
+    expect(result.success).toBe(true);
+    expect(adapter.seenAutonomy).toBe("read-only");
+  });
+
   test("rejects forged sandbox assertions on direct APIs", async () => {
     const adapter = new DefaultHookAdapter();
     await expect(adapter.run({
@@ -590,6 +612,134 @@ describe("BaseAdapter", () => {
     ]) {
       expect(() => adapter.validateRunRequest(request as RunRequest)).toThrow();
     }
+  });
+
+  test("run() never writes to the caller's request object", async () => {
+    // Round19: pinning an unset autonomy assigned `request.autonomy =
+    // "read-only"` on the caller's object -- a TypeError on a frozen request,
+    // and one caller's launch editing a request another caller shared. The
+    // pin lands on an effective copy; the caller's object leaves the run
+    // exactly as it arrived.
+    class NativeReadOnlyAdapter extends RecordingAdapter {
+      override requiresSandboxForAutonomy(): boolean {
+        return false;
+      }
+    }
+    const adapter = new NativeReadOnlyAdapter();
+    const request: RunRequest = Object.freeze({
+      agent: "claude",
+      prompt: "payload",
+    });
+    const result = await adapter.run(request);
+    expect(result.success).toBe(true);
+    expect(adapter.seenAutonomy).toBe("read-only");
+    expect(request.autonomy).toBeUndefined();
+  });
+
+  test("run() delegates to the launch path: one context, processed, then cleaned", async () => {
+    // Round25's standalone-run finding: run() used to spawn and return the
+    // raw harness output, skipping processRunResult entirely. It now runs
+    // the one launch path, which prepares exactly one context, post-processes
+    // the raw result on it, and only then disposes it -- the caller cannot
+    // reach the result before processing and cannot outlive the cleanup.
+    const order: string[] = [];
+    class LifecycleAdapter extends DefaultHookAdapter {
+      override prepareRun(): RunContext {
+        order.push("prepare");
+        return {};
+      }
+      override processRunResult(result: RunResult): RunResult {
+        order.push("process");
+        return { ...result, stdout: "processed\n" };
+      }
+      override cleanupRun(): void {
+        order.push("cleanup");
+      }
+    }
+    const adapter = new LifecycleAdapter();
+    const result = await adapter.run({ agent: "claude", prompt: "payload", autonomy: "high" });
+    expect(result.stdout).toBe("processed\n");
+    expect(order).toEqual(["prepare", "process", "cleanup"]);
+  });
+
+  test("a standalone resultJson run returns the envelope, not raw harness output", async () => {
+    // The round25 finding's user-facing half: a direct `resultJson: true`
+    // call through run() carried none of the envelope the flag promises --
+    // no codemux block for the Claude family, codex's raw JSONL -- and
+    // codex's fallback file was already deleted by the time the caller
+    // could look, making a Plan-only result unrecoverable. run() delegates
+    // to the launch path, so the standalone result is the processed one.
+    const envelope = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      result: "OK",
+      usage: { input_tokens: 10, output_tokens: 2 },
+    });
+    const request: RunRequest = {
+      agent: "claude",
+      prompt: "payload",
+      autonomy: "high",
+      resultJson: true,
+    };
+    class EnvelopeAdapter extends DefaultHookAdapter {
+      override capabilities(): AdapterCapabilities {
+        return { ...capabilities(), supportsResultJson: true };
+      }
+      override buildRunCommand(): string[] {
+        return [bun, "-e", `process.stdout.write(${JSON.stringify(envelope)})`];
+      }
+      override processRunResult(result: RunResult): RunResult {
+        return claudeFamilyResult(result, request, "claude");
+      }
+    }
+    const result = await new EnvelopeAdapter().run(request);
+    const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
+    expect(parsed.result).toBe("OK");
+    const block = parsed.codemux as Record<string, unknown>;
+    expect(block.agent).toBe("claude");
+    expect((block.usage as Record<string, unknown>).input_tokens).toBe(10);
+  });
+
+  test("the exit backstop is released once the lifecycle disposed the context", async () => {
+    // The round21 signal major's registration half: a launch registers
+    // cleanupRun as an exit handler so a signaled run's scratch (codex's
+    // --output-last-message file) cannot outlive exit 143, and unregisters
+    // it once the lifecycle has disposed the context itself -- a finished
+    // launch leaves no listener behind to fire at a later exit.
+    class ContextAdapter extends DefaultHookAdapter {
+      cleaned = 0;
+      override cleanupRun(): void {
+        this.cleaned++;
+      }
+    }
+    const request = { agent: "claude", prompt: "payload", autonomy: "high" } as const;
+    const baseline = process.listenerCount("exit");
+    const adapter = new ContextAdapter();
+    await launchRunRequest(adapter, { ...request }, {
+      sandbox: false,
+      requestedAutonomy: "high",
+    });
+    expect(adapter.cleaned).toBe(1);
+    expect(process.listenerCount("exit")).toBe(baseline);
+    // A launch that rejects mid-lifecycle disposes its context and releases
+    // the backstop on the way out, not only a successful one.
+    class RefusingAdapter extends DefaultHookAdapter {
+      override buildRunCommand(): string[] {
+        throw new Error("no command");
+      }
+    }
+    const refusing = new RefusingAdapter();
+    await expect(launchRunRequest(refusing, { ...request }, {
+      sandbox: false,
+      requestedAutonomy: "high",
+    })).rejects.toThrow("no command");
+    expect(process.listenerCount("exit")).toBe(baseline);
+    // A standalone run() carries the same backstop through the launch path
+    // it delegates to.
+    const standalone = new ContextAdapter();
+    await standalone.run({ ...request });
+    expect(standalone.cleaned).toBe(1);
+    expect(process.listenerCount("exit")).toBe(baseline);
   });
 
   test("rejects repository-controlled adapter executables", () => {

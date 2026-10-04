@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { getAdapter } from "../src/adapters/index.js";
 import { ClaudeAdapter } from "../src/adapters/claude.js";
 import { CodexAdapter } from "../src/adapters/codex.js";
+import type { RunContext } from "../src/adapters/base.js";
 import { ZaiAdapter } from "../src/adapters/zai.js";
 import { createCodexHermeticHome } from "../src/hermetic-home.js";
 import { evaluateCanary, plantCanary } from "../src/hermetic-canary.js";
@@ -63,21 +64,25 @@ describe("hermetic runs: claude and zai", () => {
 
 describe("hermetic runs: codex", () => {
   const scratch: string[] = [];
-  const adapters: CodexAdapter[] = [];
+  // Every context this describe prepares, disposed per launch -- the same
+  // ownership rule the launcher follows, never a whole-adapter sweep.
+  const prepared: { adapter: CodexAdapter; context: RunContext }[] = [];
   const signalListeners = () =>
     process.listenerCount("SIGINT") + process.listenerCount("SIGTERM") + process.listenerCount("SIGHUP");
   const baseline = signalListeners();
   afterEach(() => {
-    for (const adapter of adapters.splice(0)) adapter.disposeHermeticHome();
+    for (const { adapter, context } of prepared.splice(0)) adapter.cleanupRun(context);
     for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true });
     // No home may leave a signal handler behind: a later synthetic signal
     // in another test would otherwise end the whole test process.
     expect(signalListeners()).toBe(baseline);
   });
-  const codexAdapter = (env: NodeJS.ProcessEnv, home?: string): CodexAdapter => {
-    const adapter = new CodexAdapter(env, home);
-    adapters.push(adapter);
-    return adapter;
+  const codexAdapter = (env: NodeJS.ProcessEnv, home?: string): CodexAdapter =>
+    new CodexAdapter(env, home);
+  const prepare = (adapter: CodexAdapter, request: RunRequest): RunContext => {
+    const context = adapter.prepareRun(request);
+    prepared.push({ adapter, context });
+    return context;
   };
 
   function fakeHome(): string {
@@ -90,8 +95,9 @@ describe("hermetic runs: codex", () => {
 
   test("hermetic flags disable project docs, account and disk customizations", () => {
     const adapter = codexAdapter({}, fakeHome());
-    adapter.prepareRun({ agent: "codex", prompt: "p", hermetic: true });
-    const cmd = adapter.buildRunCommand({ agent: "codex", prompt: "p", hermetic: true, sandboxed: true });
+    const request: RunRequest = { agent: "codex", prompt: "p", hermetic: true, sandboxed: true };
+    const context = prepare(adapter, request);
+    const cmd = adapter.buildRunCommand(request, context);
     // The private home reaches Codex through env(1), never through the
     // environment scode itself runs with.
     expect(cmd[0]).toBe("env");
@@ -153,10 +159,10 @@ describe("hermetic runs: codex", () => {
   test("prepareRun creates a private HOME and CODEX_HOME inside the real one, holding only the linked login", () => {
     const home = fakeHome();
     const adapter = codexAdapter({}, home);
-    adapter.prepareRun({ agent: "codex", prompt: "p" });
     expect(adapter.buildRunCommand({ agent: "codex", prompt: "p" })[0]).toBe("codex");
-    adapter.prepareRun({ agent: "codex", prompt: "p", hermetic: true });
-    const cmd = adapter.buildRunCommand({ agent: "codex", prompt: "p", hermetic: true });
+    const request: RunRequest = { agent: "codex", prompt: "p", hermetic: true };
+    const context = prepare(adapter, request);
+    const cmd = adapter.buildRunCommand(request, context);
     const priv = privateHome(cmd);
     expect(priv.home.startsWith(join(home, ".codex", ".codemux-hermetic", `run-${process.pid}-`))).toBe(true);
     expect(readdirSync(priv.home)).toEqual([".codex"]);
@@ -164,9 +170,9 @@ describe("hermetic runs: codex", () => {
     expect(priv.codexHome).toBe(join(priv.home, ".codex"));
     const link = join(priv.codexHome, "auth.json");
     expect(statSync(link).ino).toBe(statSync(join(home, ".codex", "auth.json")).ino);
-    expect(adapter.getRunEnv({ agent: "codex", prompt: "p", hermetic: true })).toEqual({});
+    expect(adapter.getRunEnv(request, context)).toEqual({});
     // Repeated builds for the same prepared run agree.
-    expect(adapter.buildRunCommand({ agent: "codex", prompt: "p", hermetic: true }).slice(0, 3)).toEqual(cmd.slice(0, 3));
+    expect(adapter.buildRunCommand(request, context).slice(0, 3)).toEqual(cmd.slice(0, 3));
   });
 
   test("the real login is the one a plain run sees: ~/.codex, or CODEX_HOME only when passed through", () => {
@@ -174,15 +180,16 @@ describe("hermetic runs: codex", () => {
     const profile = fakeHome();
     const adapter = codexAdapter({ CODEX_HOME: join(profile, ".codex") }, home);
     // Not passed through: the sanitized child environment drops it.
-    adapter.prepareRun({ agent: "codex", prompt: "p", hermetic: true });
-    const priv = privateHome(adapter.buildRunCommand({ agent: "codex", prompt: "p", hermetic: true }));
+    const request: RunRequest = { agent: "codex", prompt: "p", hermetic: true };
+    const priv = privateHome(adapter.buildRunCommand(request, prepare(adapter, request)));
     expect(priv.home.startsWith(join(home, ".codex", ".codemux-hermetic"))).toBe(true);
     expect(lstatSync(join(priv.codexHome, "auth.json")).isFile()).toBe(true);
     // Passed through: the plain run uses that profile, so the hermetic run
     // links that profile's login.
-    const request: RunRequest = { agent: "codex", prompt: "p", hermetic: true, passthroughEnv: ["CODEX_HOME"] };
-    adapter.prepareRun(request);
-    const profiled = privateHome(adapter.buildRunCommand(request));
+    const profiledRequest: RunRequest = { agent: "codex", prompt: "p", hermetic: true, passthroughEnv: ["CODEX_HOME"] };
+    const profiled = privateHome(
+      adapter.buildRunCommand(profiledRequest, prepare(adapter, profiledRequest))
+    );
     expect(profiled.home.startsWith(join(profile, ".codex", ".codemux-hermetic"))).toBe(true);
   });
 
@@ -199,10 +206,11 @@ describe("hermetic runs: codex", () => {
     mkdirSync(join(withoutLogin, ".codex"));
     for (const home of [withoutLogin, fakeHome()]) {
       const adapter = codexAdapter({ CODEX_API_KEY: "sk-test" }, home);
-      adapter.prepareRun({ agent: "codex", prompt: "p", hermetic: true });
-      const priv = privateHome(adapter.buildRunCommand({ agent: "codex", prompt: "p", hermetic: true }));
+      const request: RunRequest = { agent: "codex", prompt: "p", hermetic: true };
+      const context = prepare(adapter, request);
+      const priv = privateHome(adapter.buildRunCommand(request, context));
       expect(readdirSync(priv.codexHome)).toEqual([]);
-      expect(adapter.getRunEnv({ agent: "codex", prompt: "p", hermetic: true })).toEqual({});
+      expect(adapter.getRunEnv(request, context)).toEqual({});
     }
   });
 
@@ -211,23 +219,51 @@ describe("hermetic runs: codex", () => {
     // login; the hermetic run must use the very same credential.
     const home = fakeHome();
     const adapter = codexAdapter({ OPENAI_API_KEY: "sk-old" }, home);
-    adapter.prepareRun({ agent: "codex", prompt: "p", hermetic: true });
-    const priv = privateHome(adapter.buildRunCommand({ agent: "codex", prompt: "p", hermetic: true }));
+    const request: RunRequest = { agent: "codex", prompt: "p", hermetic: true };
+    const context = prepare(adapter, request);
+    const priv = privateHome(adapter.buildRunCommand(request, context));
     expect(readdirSync(priv.codexHome)).toEqual(["auth.json"]);
-    expect(adapter.getRunEnv({ agent: "codex", prompt: "p", hermetic: true })).toEqual({});
+    expect(adapter.getRunEnv(request, context)).toEqual({});
   });
 
-  test("every hermetic run gets a fresh home; an earlier run's home stays until exit", () => {
+  test("every hermetic run gets a fresh home; an earlier run's home stays until its context is cleaned up", () => {
     const adapter = codexAdapter({}, fakeHome());
-    adapter.prepareRun({ agent: "codex", prompt: "p", hermetic: true });
-    const first = privateHome(adapter.buildRunCommand({ agent: "codex", prompt: "p", hermetic: true }));
+    const firstRequest: RunRequest = { agent: "codex", prompt: "p", hermetic: true };
+    const first = privateHome(
+      adapter.buildRunCommand(firstRequest, prepare(adapter, firstRequest))
+    );
     writeFileSync(join(first.home, "leftover"), "x");
-    adapter.prepareRun({ agent: "codex", prompt: "p", hermetic: true });
-    const second = privateHome(adapter.buildRunCommand({ agent: "codex", prompt: "p", hermetic: true }));
+    const secondRequest: RunRequest = { agent: "codex", prompt: "p", hermetic: true };
+    const second = privateHome(
+      adapter.buildRunCommand(secondRequest, prepare(adapter, secondRequest))
+    );
     expect(second.home).not.toBe(first.home);
-    // Still there: a run started through the same adapter may be using it.
+    // Still there: the first run's context has not been cleaned up, and a
+    // run started earlier may still be using its home.
     expect(statSync(join(first.home, "leftover")).isFile()).toBe(true);
     expect(readdirSync(second.home)).toEqual([".codex"]);
+  });
+
+  test("two concurrent hermetic runs each launch in their own home", () => {
+    // The round6 finding: the prepared home was a shared adapter field, so
+    // run B's prepareRun overwrote run A's and A's command would have
+    // pointed at B's home. The home is this run's own context now, so an
+    // in-flight run keeps its own.
+    const adapter = codexAdapter({}, fakeHome());
+    const first: RunRequest = { agent: "codex", prompt: "p", hermetic: true };
+    const firstContext = prepare(adapter, first);
+    const firstHome = privateHome(adapter.buildRunCommand(first, firstContext));
+    writeFileSync(join(firstHome.home, "marker"), "first");
+    const second: RunRequest = { agent: "codex", prompt: "q", hermetic: true };
+    const secondHome = privateHome(
+      adapter.buildRunCommand(second, prepare(adapter, second))
+    );
+    expect(secondHome.home).not.toBe(firstHome.home);
+    // A's command still names A's home after B prepared its own, and A's
+    // launch path still finds its prepared home.
+    expect(adapter.buildRunCommand(first, firstContext)[1]).toBe(`HOME=${firstHome.home}`);
+    expect(adapter.getRunEnv(first, firstContext)).toEqual({});
+    expect(statSync(join(firstHome.home, "marker")).isFile()).toBe(true);
   });
 
   test("a symlinked hermetic parent directory is refused", () => {

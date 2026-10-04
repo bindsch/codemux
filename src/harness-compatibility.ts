@@ -1,4 +1,5 @@
 import { statSync } from "node:fs";
+import type { ProbeEnvironment } from "./environment.js";
 import { runCapturedCommand } from "./process-runner.js";
 import type { AgentId, AutonomyLevel } from "./types.js";
 
@@ -56,6 +57,17 @@ export interface HarnessContract {
   min: string;
   maxAudited: string;
   breaks?: readonly HarnessBreak[];
+  /**
+   * What a version the probe cannot read means for this harness. "warn"
+   * (the default): wrapper scripts, shims, and vendored builds legitimately
+   * report no version, so the gate says the contract is unconfirmed and
+   * continues. "refuse": an unreadable version on THIS harness is a
+   * below-`min` release rather than an unknown build -- the contract asserts
+   * every release at or above `min` answers its probe -- and the tier
+   * table's below-`min` rule applies instead: refuse, downgraded to a
+   * warning by CODEMUX_ALLOW_UNTESTED_HARNESS like every refusal.
+   */
+  unknownVersion?: "warn" | "refuse";
 }
 
 /**
@@ -84,6 +96,71 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
     pattern: /codex-cli (\d+\.\d+\.\d+)/,
     min: "0.146.0",
     maxAudited: "0.147.0",
+  },
+  copilot: {
+    // Added 2026-09-21 with the --effort to --reasoning-effort audit. Copilot dropped a flag alias
+    // between patch releases, so an unpinned version is not a safe default here: without an entry
+    // `assertSupportedHarnessVersion` returns immediately and nothing records that the autonomy
+    // contract is unconfirmed. Autonomy is what makes that matter -- a dropped --allow-tool would
+    // fail closed on an unknown option, but silently, with no warning that the audit is stale.
+    scheme: "semver",
+    // `--binary-version`, not `--version`. Copilot's `--version` starts the packaged application
+    // and needs a writable extraction cache first; under a restricted filesystem it fails, the
+    // probe returns null, and (before the refuse-on-null rule below) the gate warned and allowed
+    // the run -- so the contract stopped being enforced exactly where enforcement matters most.
+    // `--binary-version` reports the
+    // version without launching, and needs no cache: verified 2026-09-21 against 1.0.85, which
+    // prints "Copilot binary version: 1.0.85". No --no-auto-update is needed because nothing is
+    // launched.
+    //
+    // No compatibility gap, verified against upstream releases 2026-09-21: `--reasoning-effort`
+    // is the canonical flag and has existed since v1.0.4 ("Add --reasoning-effort CLI flag to set
+    // reasoning effort level"). `--effort` was only ever a shorthand alias, added in v1.0.10
+    // ("Add --effort as a shorthand alias for --reasoning-effort") and since dropped -- 1.0.85's
+    // help lists no `--effort`. So codemux was emitting the alias, not the flag, and every release
+    // at or above `min` accepts what it emits now.
+    versionArgs: ["--binary-version"],
+    pattern: /Copilot binary version: (\d+\.\d+\.\d+)/,
+    // `min` is the floor below which a release enforces a policy this Codemux no longer
+    // translates, per the tier definition above. It is not a floor for every feature. The
+    // 2026-09-21 audit was flag-surface only and found one change: the `--effort` shorthand alias
+    // is gone. That affects no autonomy mapping.
+    //
+    // The floor is 1.0.77, the version the ledger recorded before this audit. Three other values
+    // were tried and each is wrong in a way a reviewer correctly named, which is the signal that
+    // `HarnessContract` cannot express this case rather than that one of them is right:
+    //
+    //   0.0.0   no refusal, but an effort run on an old release then emits `--reasoning-effort`,
+    //           which arrived in 1.0.4. The gate calls the version supported and hands the harness
+    //           an option it cannot parse.
+    //   1.0.4   enforces that flag, and silently blesses 1.0.4 through 1.0.76 -- roughly seventy
+    //           releases nobody audited -- because `[min, maxAudited]` is the run-silently band.
+    //           The module's own OpenCode note is precisely that case: a flag surviving while its
+    //           gate did not.
+    //   1.0.77  refuses those same releases instead of blessing them.
+    //
+    // The tie-breaker is recoverability. A refusal is visible and the operator can override it
+    // with CODEMUX_ALLOW_UNTESTED_HARNESS after checking upstream themselves. A false "supported"
+    // offers nothing to override: it is the gate being confidently wrong, and the run proceeds as
+    // though the autonomy contract were confirmed. The residual cost is refusing releases more
+    // than seventy patches behind anything this repo records, with an escape hatch.
+    //
+    // No fallback. `--binary-version` arrived in 1.0.3, so 1.0.0 through 1.0.2 report nothing;
+    // a null reading is therefore either a release below this floor or a probe that cannot vouch
+    // for itself, and both are refused (unknownVersion below) rather than warned through -- the
+    // tier table's below-min rule with the same override as every refusal, closing the hole this
+    // floor could not close while null meant warn. Falling back to `--version` looked like the
+    // fix and is worse: bare, it lets copilot auto-update and report
+    // a cached newer version while the launch, which passes --no-auto-update, runs the bundled
+    // older one, so the gate approves a version that never runs. With --no-auto-update it may hit
+    // an unknown option on exactly the releases it serves, which cannot be checked from here.
+    min: "1.0.77",
+    maxAudited: "1.0.85",
+    // 1.0.3, the release `--binary-version` arrived in, is below this contract's floor, so a
+    // copilot that cannot answer the probe is a below-floor release: warn-and-continue here
+    // would let 1.0.0 through 1.0.2 run without the documented override, exactly the tier the
+    // floor exists to refuse.
+    unknownVersion: "refuse",
   },
   cursor: {
     scheme: "calendar",
@@ -273,21 +350,56 @@ export const binaryChanged = (
   );
 };
 
-/** Reads the harness version, or null when it cannot be determined. */
+/** Run the harness's version command and return what it reports, or null.
+ *
+ * `environment` is used as given. Deciding what belongs in it is the caller's job and is done in
+ * one place, `cli-runtime.assertHarnessSupported`, where the launch environment is also in scope.
+ * That separation is deliberate: every regression this function has had came from it trying to
+ * decide the environment itself while the launch decided differently -- a dropped
+ * `OPENCODE_BIN_PATH` made the gate read one executable while the launch ran another, and a
+ * case-insensitive allowlist let `https_proxy` reach the probe but not the launch.
+ */
 export const probeHarnessVersion = async (
   binary: string,
   contract: HarnessContract,
   workdir: string,
-  environment: Record<string, string>
+  environment: ProbeEnvironment
 ): Promise<string | null> => {
-  const result = await runCapturedCommand([binary, ...contract.versionArgs], {
-    cwd: workdir,
-    env: environment,
-    timeoutMs: 30_000,
-  });
-  if (result.exitCode !== 0) return null;
-  return extractHarnessVersion(contract, `${result.stdout}\n${result.stderr}`);
+  const read = async (args: readonly string[], pattern: RegExp) => {
+    const result = await runCapturedCommand([binary, ...args], {
+      cwd: workdir,
+      env: environment,
+      timeoutMs: 30_000,
+    });
+    if (result.exitCode !== 0) return null;
+    return pattern.exec(`${result.stdout}\n${result.stderr}`.trim())?.[1] ?? null;
+  };
+
+  // One flag, no fallback: a release whose version this cannot read warns
+  // and runs rather than being probed a second way. A fallback to a flag
+  // that launches the harness was tried and withdrawn (see the copilot
+  // entry in HARNESS_CONTRACTS); the test suite fails if one returns.
+  return read(contract.versionArgs, contract.pattern);
 };
+
+/** Everything the version gate needs, named rather than positional.
+ *
+ * It was six positional parameters ending in a boolean and two arrays, which is an ordering
+ * hazard for no benefit: `sandboxed` and `override` are both booleans and swapping them silently
+ * inverts the gate.
+ */
+export interface VersionGateRequest {
+  agent: AgentId;
+  /** The resolved executable that is about to run. */
+  binary: string;
+  workdir: string;
+  /** Exactly what the probe should run with; only `probeEnvironment` can produce one. */
+  probeEnvironment: ProbeEnvironment;
+  /** Whether the operator set CODEMUX_ALLOW_UNTESTED_HARNESS, read from their own environment. */
+  override: boolean;
+  autonomy?: AutonomyLevel;
+  sandboxed?: boolean;
+}
 
 /**
  * Warns for unaudited versions and refuses known-broken ones.
@@ -297,19 +409,14 @@ export const probeHarnessVersion = async (
  * that an autonomy level may no longer mean what Codemux documents.
  */
 export const assertSupportedHarnessVersion = async (
-  agent: AgentId,
-  binary: string,
-  workdir: string,
-  environment: Record<string, string>,
-  autonomy?: AutonomyLevel,
-  sandboxed = false
+  request: VersionGateRequest
 ): Promise<void> => {
+  const { agent, binary, workdir, override, autonomy, sandboxed = false } = request;
   const contract = HARNESS_CONTRACTS[agent];
   if (!contract) return;
 
-  const override = environment[ALLOW_UNTESTED_ENV] === "1";
   const identityBefore = readBinaryIdentity(binary);
-  const version = await probeHarnessVersion(binary, contract, workdir, environment);
+  const version = await probeHarnessVersion(binary, contract, workdir, request.probeEnvironment);
   if (binaryChanged(identityBefore, readBinaryIdentity(binary))) {
     console.warn(
       `Warning: the ${agent} binary changed while Codemux was reading its version, ` +
@@ -319,6 +426,24 @@ export const assertSupportedHarnessVersion = async (
   }
 
   if (version === null) {
+    if (contract.unknownVersion === "refuse") {
+      // The contract pins null to mean below-floor rather than unknown:
+      // every release it supports can answer the probe it names, so a null
+      // reading is a release below `min` (or a probe that cannot vouch for
+      // itself), and the tier table's below-min rule -- refuse -- applies.
+      // The override covers it, like every refusal.
+      const refusal =
+        `could not determine the ${agent} version, so Codemux cannot confirm its ` +
+        `autonomy contract: this harness is gated so that every release at or above ` +
+        `${contract.min} answers the version probe, which makes an unreadable version ` +
+        `a release below that floor or a probe that cannot vouch for itself -- refused ` +
+        `either way`;
+      if (override) {
+        console.warn(`Warning: ${refusal} (${ALLOW_UNTESTED_ENV}=1).`);
+        return;
+      }
+      throw new HarnessVersionError(`${refusal}. Set ${ALLOW_UNTESTED_ENV}=1 to run anyway.`);
+    }
     // Warn rather than refuse. Codemux refuses only what it has determined to
     // be broken, and an unreadable version is not that: wrapper scripts, shims,
     // and vendored builds legitimately fail to report one, and bricking them
