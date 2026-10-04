@@ -177,6 +177,10 @@ describe("the gate itself", () => {
     }
   });
 
+  // These three pass the repository as the working directory: the redirect
+  // fake lives under the OS temp root, which on Linux is /tmp itself, and a
+  // working directory that is its ancestor makes the trust check refuse the
+  // fake for the wrong reason.
   test("an active redirect warns and still refuses a below-floor binary", async () => {
     // The fallback half of the redirect rule: the value names no binary
     // codemux can validate (/opt/oc/1.0.0 does not exist), so the verdict
@@ -191,7 +195,7 @@ describe("the gate itself", () => {
     };
     const call = () =>
       assertHarnessSupported(
-        "opencode", "opencode", "/tmp", env, "low", false, ["OPENCODE_BIN_PATH"]
+        "opencode", "opencode", process.cwd(), env, "low", false, ["OPENCODE_BIN_PATH"]
       );
     // The documented override may already be on in the caller's
     // environment; this test needs it off for its refusal half, and it must
@@ -237,7 +241,7 @@ describe("the gate itself", () => {
     };
     const call = () =>
       assertHarnessSupported(
-        "opencode", "opencode", "/tmp", env, "low", false, ["OPENCODE_BIN_PATH"]
+        "opencode", "opencode", process.cwd(), env, "low", false, ["OPENCODE_BIN_PATH"]
       );
     const savedOverride = process.env[ALLOW_UNTESTED_ENV];
     delete process.env[ALLOW_UNTESTED_ENV];
@@ -280,7 +284,7 @@ describe("the gate itself", () => {
     try {
       const warnings = await captureWarnings(() =>
         assertHarnessSupported(
-          "opencode", "opencode", "/tmp", env, "low", false, ["OPENCODE_BIN_PATH"]
+          "opencode", "opencode", process.cwd(), env, "low", false, ["OPENCODE_BIN_PATH"]
         )
       );
       expect(warnings).toEqual([]);
