@@ -101,12 +101,22 @@ describe("CLI - stdin prompt", () => {
     const home = mkdtempSync(join(tmpdir(), "codemux-tty-home-"));
     try {
       const repoRoot = join(import.meta.dir, "..");
+      const codemuxCommand = [
+        join(repoRoot, "bin", "codemux"),
+        "run", "-a", "claude", "--no-sandbox", "--auto", "high", "-f", "-",
+      ];
+      // `script` gives the child a pty. BSD script (macOS) takes the command
+      // after the typescript file and exits with its status; util-linux
+      // script (Linux) takes it as one -c shell string and, with -e, exits
+      // with the command's status too. Each part is single-quoted for the
+      // shell, with embedded quotes escaped, so a checkout path with a
+      // quote or spaces still parses.
+      const shellQuote = (part: string): string => `'${part.replaceAll("'", `'\\''`)}'`;
+      const command = process.platform === "linux"
+        ? ["/usr/bin/script", "-q", "-e", "-c", codemuxCommand.map(shellQuote).join(" "), "/dev/null"]
+        : ["/usr/bin/script", "-q", "/dev/null", ...codemuxCommand];
       const proc = Bun.spawn(
-        [
-          "/usr/bin/script", "-q", "/dev/null",
-          join(repoRoot, "bin", "codemux"),
-          "run", "-a", "claude", "--no-sandbox", "--auto", "high", "-f", "-",
-        ],
+        command,
         {
           cwd: repoRoot,
           stdout: "pipe",
