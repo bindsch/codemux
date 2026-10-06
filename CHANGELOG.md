@@ -7,6 +7,54 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-05
+
+### Security
+
+- **The sandboxed Claude credential mirror never carries the refresh token.**
+  Before a sandboxed `claude` launch codemux refreshes
+  `~/.claude/.credentials.json` from the macOS Keychain; it now copies the
+  access token (and the descriptive fields beside it) only, writes
+  `refreshToken` emptied, drops `refreshTokenExpiresAt`, and scrubs a mirror
+  that still holds a refresh token even when its access token is current.
+  A sandboxed child therefore authenticates for the access token's lifetime
+  and fails with a plain 401 when it expires or is revoked; it can no longer
+  refresh. Root cause of the 2026-10-05 lockout: a sandboxed child holding a
+  copy of the operator's refresh token rotated it (or presented a stale one
+  after the interactive Claude Code had rotated it), and the provider revoked
+  the whole grant family, logging the operator out of every Claude session.
+  The "a file fresher than the Keychain is left alone" rule is gone with the
+  rotation it existed for: the Keychain is authoritative whenever the access
+  tokens differ, expiry ordering plays no part. The scrub does not depend on
+  the Keychain being usable: an entry with no usable access token still
+  leaves no refresh token in the file, and a mirror that cannot be scrubbed
+  (or sits behind a symlink) refuses the sandboxed launch outright
+  (`claude: ... refusing the sandboxed launch`). Nothing is destroyed blind:
+  before a refresh token is removed, the file is copied to
+  `~/Library/Application Support/codemux/credential-backups/` (0700, files
+  0600) — under `~/Library`, which the scode sandbox blocks, so no sandboxed
+  child can read it — and a Keychain that exists but cannot be read (locked
+  over SSH, denied, timed out, empty) mirrors nothing and scrubs nothing: a
+  file carrying a refresh token is then refused, one without launches as
+  before. `CODEMUX_NO_KEYCHAIN_SYNC=1` means "do not consult the Keychain", and
+  without the Keychain a mirror cannot be told from Claude Code's only
+  store, so that path neither scrubs nor refuses; the adapter reports a
+  refresh token left in the file. A passed-through `CLAUDE_CONFIG_DIR`
+  profile is treated the same way (reported, never refused or scrubbed),
+  while the default mirror is still synced and scrubbed even then, because
+  the sandbox lets the child read `~/.claude` regardless of the profile. A
+  backup whose rewrite did not happen is removed again, and once a rewrite
+  has succeeded the backups older than its own are pruned (never a newer
+  one a parallel launch may have written), so copies never pile up; a scrub
+  of the file's own credential keeps every other key it carries. A machine with no
+  Keychain entry at all — Linux, or a file-only macOS login — is left alone:
+  there the file is Claude Code's only credential store, not a mirror. An
+  empty or already expired Keychain access token is never mirrored as
+  "synced"; when the file's own token has expired too the adapter warns,
+  instead of launching into an undiagnosed 401 (`src/credentials.ts`, `src/adapters/claude.ts`; regression tests
+  in `tests/credentials.test.ts`).
+
+
 ## [0.7.0] - 2026-10-04
 
 ### Added

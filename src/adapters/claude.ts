@@ -1,7 +1,10 @@
+import { isAbsolute, join } from "node:path";
 import { BaseAdapter, type SandboxPreparation } from "./base.js";
 import {
   CLAUDE_KEYCHAIN_SERVICE,
   claudeCredentialTarget,
+  defaultCredentialBackupDir,
+  fileCarriesRefreshToken,
   readKeychainSecret,
   syncKeychainCredential,
   type SecretReader,
@@ -36,6 +39,7 @@ export class ClaudeAdapter extends BaseAdapter {
   // via CODEMUX_NO_KEYCHAIN_SYNC.)
   protected credentialReader: SecretReader = readKeychainSecret;
   protected credentialTarget: () => string = claudeCredentialTarget;
+  protected credentialBackupDir: () => string = defaultCredentialBackupDir;
 
   // Env vars that repoint Claude's credential mirror off the default path.
   // If any is forwarded to the child, the child reads a DIFFERENT file, so
@@ -59,22 +63,58 @@ export class ClaudeAdapter extends BaseAdapter {
     // cannot read the file, so refreshing it would be pointless work.
     if (context.sandboxTrust === "untrusted") return;
     const passthrough = context.passthroughEnv ?? [];
-    const redirect = ClaudeAdapter.PROFILE_REDIRECTS.find(
+    const redirects = ClaudeAdapter.PROFILE_REDIRECTS.filter(
       (name) => passthrough.includes(name) && name in process.env
     );
-    if (redirect !== undefined) {
+    for (const redirect of redirects) {
+      // That profile owns its own credential story: codemux does not know
+      // which Keychain entry (if any) backs it, so it neither syncs nor
+      // scrubs nor refuses it — a file-only profile login would otherwise be
+      // refused or destroyed. The operator is told what the file carries.
+      // Only an absolute directory names a file worth reporting on
+      // (`CLAUDE_CONFIG_DIR` is validated absolute before launch; the
+      // secure-storage variable is simply not reported on when relative).
+      const dir = process.env[redirect] as string;
+      const profileFile = isAbsolute(dir) ? join(dir, ".credentials.json") : null;
       console.error(
         `claude: ${redirect} points the child at a non-default credential ` +
-          "mirror; skipping the Keychain sync (that profile owns its own file)"
+          "mirror; not syncing it (that profile owns its own file)" +
+          (profileFile !== null && fileCarriesRefreshToken(profileFile)
+            ? `. Note: ${profileFile} holds a refresh token codemux does not manage; ` +
+              "a sandboxed child can read it"
+            : "")
       );
-      return;
     }
+    // The default mirror is checked even when the child is pointed
+    // elsewhere: it sits in ~/.claude, which the sandbox lets the child
+    // read, so a refresh token left in it is the same hazard.
     const target = this.credentialTarget();
     const outcome = syncKeychainCredential(
       CLAUDE_KEYCHAIN_SERVICE,
       target,
-      this.credentialReader
+      this.credentialReader,
+      { backupDir: this.credentialBackupDir() }
     );
+    if (outcome === "skipped" && fileCarriesRefreshToken(target)) {
+      console.error(
+        `claude: CODEMUX_NO_KEYCHAIN_SYNC is set and ${target} holds a refresh token ` +
+          "codemux will not touch without the Keychain; a sandboxed child can read it"
+      );
+    }
+    if (outcome === "unsafe") {
+      // The mirror still carries a refresh token and could not be scrubbed.
+      // A sandboxed child holding it could rotate the operator's login and
+      // get every Claude session revoked (2026-10-05), so this launch does
+      // not happen at all.
+      throw new Error(
+        `claude: the credential mirror at ${target} holds a refresh token that ` +
+          "could not be removed safely; refusing the sandboxed launch (a child " +
+          "holding that token could revoke your Claude login). Unlock the " +
+          "Keychain if it is locked, make the file and its directory writable, " +
+          "replace a symlinked ~/.claude or .credentials.json with a real one, " +
+          "or empty the refreshToken value in that file yourself, then retry."
+      );
+    }
     if (outcome === "failed") {
       // A silently stale mirror produces the exact 401 this exists to
       // prevent; the launch proceeds, but the operator gets the diagnosis.

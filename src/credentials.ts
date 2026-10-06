@@ -9,8 +9,9 @@
  * reads as "revoked" (401) on every sandboxed run.
  *
  * This module does exactly one thing: mirror the Keychain entry back into
- * that file, so Claude's two copies of its own credential agree again. It is
- * a mirror, not a credential manager. The scope is drawn deliberately narrow
+ * that file — minus the refresh token — so a sandboxed Claude can
+ * authenticate without ever being able to rotate the operator's login. It
+ * is a mirror, not a credential manager. The scope is drawn deliberately narrow
  * so corner cases cannot matter:
  *
  *   - It only refreshes a file that ALREADY EXISTS. The bug it fixes is a
@@ -28,36 +29,72 @@
  *     `refreshToken`, numeric `expiresAt`, `scopes` array, no unknown keys)
  *     is a stale mirror and is refreshed; that stub with unknown keys is
  *     reported "unrecognized" so the adapter warns. See `classifyMirror`.
- *   - The Keychain replaces the file when it is a strictly newer credential
- *     (or, when an expiry is absent on one side and so unorderable, whenever
- *     the two `claudeAiOauth` objects differ at all — the Keychain being
- *     authoritative); a file that already leads is left alone. An emptied
- *     stub cannot lead at all: the Keychain replaces it regardless of
- *     expiry ordering (see `shouldReplace`). Writes are atomic (temp + rename) with a final
- *     re-check against the live file, so the residual concurrent-rotation
- *     window is microseconds and self-heals next launch — nothing corrupts.
+ *   - The mirror NEVER carries the refresh token. Only the access token
+ *     (and the descriptive fields beside it) is copied; `refreshToken` is
+ *     written emptied and `refreshTokenExpiresAt` is dropped. A sandboxed
+ *     child therefore authenticates for the access token's lifetime (hours)
+ *     and, when that token expires or is revoked, fails with a plain 401 —
+ *     it cannot refresh. This is the whole point: a child that could refresh
+ *     would rotate the grant the operator's interactive Claude Code holds in
+ *     the Keychain, and a stale copy presented later makes the provider
+ *     revoke the entire grant family. That is exactly what logged the
+ *     operator out of every Claude session (2026-10-05): the Keychain token
+ *     rotated, a sandboxed copy still held the old refresh token, and its
+ *     refresh attempt took the live login down with it. The access token is
+ *     a bearer credential with no rotation, so copies of it are harmless.
+ *   - The Keychain replaces the file whenever the file's access token differs
+ *     from the Keychain's, and always when the file still carries a refresh
+ *     token (a mirror written by an older codemux or by Claude Code itself is
+ *     scrubbed on the next launch). The scrub does not need a USABLE
+ *     Keychain credential: with the entry readable but holding nothing
+ *     usable (mcpOAuth-only, or an expired access token), a refresh token
+ *     in the file is still emptied in place — after a copy of the file is
+ *     written under `~/Library/Application Support/codemux/` (0700/0600),
+ *     which the sandbox cannot see, because a token codemux cannot prove
+ *     superseded is never destroyed. When the backup or the write fails, or
+ *     the mirror sits behind a symlink, the outcome is "unsafe" and the
+ *     adapter refuses the sandboxed launch. A Keychain entry that exists but
+ *     cannot be READ (locked over SSH, denied, timed out, empty) mirrors
+ *     nothing and scrubs nothing: a file that carries a refresh token is
+ *     then refused, one without launches and reports its own 401 if stale.
+ *     `CODEMUX_NO_KEYCHAIN_SYNC=1` means "do not consult the Keychain", and
+ *     without it a mirror cannot be told from Claude Code's only store, so
+ *     that path neither scrubs nor refuses: the file is left as it is and
+ *     the adapter reports a refresh token in it. A passed-through
+ *     `CLAUDE_CONFIG_DIR` profile is treated the same way (its Keychain
+ *     entry, if any, is not codemux's to read); the default mirror is still
+ *     checked, because the sandbox lets the child read `~/.claude` either
+ *     way. The one case left alone is a machine with no
+ *     Keychain entry at all (Linux, or a file-only macOS login): there the
+ *     file is Claude Code's only credential store, not a mirror, and the
+ *     sandboxed child rotates the same single copy the operator uses — no
+ *     divergence, so nothing to scrub. A file whose access token already
+ *     matches the Keychain's is left alone. Writes are atomic (temp + rename) with
+ *     a final re-check against the live file, so a concurrent writer is
+ *     never clobbered.
  *
- * KNOWN LIMITATION (accepted): lock-free by design. In the microsecond
- * window between the final re-check and the rename, a sandboxed Claude that
- * rotates its token to the file can be overwritten, losing that one
- * rotation. Fully closing it needs file locking, which Claude Code itself
- * does not use on this file and which — tried in development — trades this
- * one narrow race for a lock lifecycle with worse failure modes. codemux
- * matches Claude's own atomicity level here deliberately.
+ * Lock-free by design, like Claude Code's own handling of this file: in the
+ * microsecond window between the final re-check and the rename another
+ * writer can be overwritten, and the loss self-heals on the next launch.
+ * Nothing in that window can touch the Keychain or the grant.
  *
  * Set CODEMUX_NO_KEYCHAIN_SYNC=1 to disable it (used by this repo's own CLI
  * tests; also an operator escape hatch).
  */
 
 import {
+  chmodSync,
   lstatSync,
+  mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 export type SecretReadResult =
   | { kind: "secret"; value: string }
@@ -74,7 +111,8 @@ export type SyncOutcome =
   | "absent" // no mirror file to refresh (feature does not apply here)
   | "missing" // no usable Keychain credential to mirror
   | "skipped" // disabled via CODEMUX_NO_KEYCHAIN_SYNC
-  | "failed"; // a credential should be mirrorable but could not be delivered
+  | "failed" // nothing usable could be delivered: the adapter warns, the launch proceeds
+  | "unsafe"; // the mirror still carries a refresh token and could not be scrubbed: refuse the launch
 
 // `security` exits 44 (errSecItemNotFound) for a genuinely absent entry;
 // every other nonzero exit (locked keychain, denied ACL, timeout kill) means
@@ -105,7 +143,9 @@ export function readKeychainSecret(service: string): SecretReadResult {
     return { kind: "error", detail: `security exited ${proc.exitCode}` };
   }
   const raw = proc.stdout.toString().trim();
-  if (raw.length === 0) return { kind: "missing" };
+  // An entry that exists but yields nothing is unreadable, not absent: the
+  // distinction decides whether the file is a mirror or Claude's only store.
+  if (raw.length === 0) return { kind: "error", detail: "security returned an empty value" };
   return { kind: "secret", value: decodeSecurityOutput(raw) };
 }
 
@@ -126,24 +166,42 @@ export function decodeSecurityOutput(raw: string): string {
   return raw;
 }
 
-/** Whether a Keychain blob actually carries a usable Claude credential.
- * Claude Code's Keychain entry can momentarily hold only co-stored MCP OAuth
- * data with no `claudeAiOauth` token (anthropics/claude-code#36779);
- * mirroring that over a working file would break auth, so it does not count
- * as something to mirror. */
+/** Whether a Keychain blob carries a Claude credential a sandboxed child
+ * could use: a `claudeAiOauth` object with a non-empty, unexpired access
+ * token. Claude Code's Keychain entry can momentarily hold only co-stored
+ * MCP OAuth state (anthropics/claude-code#36779) with no `claudeAiOauth` at
+ * all, or an access token that has already expired; mirroring either over
+ * a working file would break auth, so neither counts. */
 export function hasUsableClaudeCredential(blob: string): boolean {
   return claudeOauth(blob) !== null;
 }
 
-function claudeOauth(blob: string): Record<string, unknown> | null {
+/** The Keychain's `claudeAiOauth` when it can be mirrored: a non-empty
+ * access token that has not expired. The refresh token is irrelevant here —
+ * the mirror never carries it — so an entry holding only a refresh token,
+ * or an access token past `expiresAt`, is not a credential a sandboxed child
+ * could use, and mirroring it would replace a working file with a dead one. */
+function claudeOauth(blob: string, now: number = Date.now()): Record<string, unknown> | null {
   const oauth = claudeOauthObject(blob);
-  return oauth !== null && hasUsableToken(oauth) ? oauth : null;
+  return oauth !== null && accessTokenLive(oauth, now) ? oauth : null;
 }
 
+function usableString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+/** A non-empty access token whose `expiresAt`, when present, lies ahead. */
+function accessTokenLive(oauth: Record<string, unknown>, now: number = Date.now()): boolean {
+  if (!usableString(oauth.accessToken)) return false;
+  return typeof oauth.expiresAt !== "number" || oauth.expiresAt > now;
+}
+
+/** Whether a FILE holds a token at all (either kind): the 0.5.0 rule for
+ * telling a mirror from the emptied stub. What a sandboxed child can use is
+ * the access token alone; a refresh token in the file is what the scrub
+ * removes. */
 function hasUsableToken(oauth: Record<string, unknown>): boolean {
-  const usable = (value: unknown): boolean =>
-    typeof value === "string" && value.length > 0;
-  return usable(oauth.refreshToken) || usable(oauth.accessToken);
+  return usableString(oauth.refreshToken) || usableString(oauth.accessToken);
 }
 
 /** The raw `claudeAiOauth` value of a blob when it is a plain object. */
@@ -203,34 +261,111 @@ function classifyMirror(blob: string): MirrorClass {
   return known ? { kind: "mirror", oauth } : { kind: "unrecognized" };
 }
 
-/** claudeAiOauth.expiresAt from a credential file/blob, or null. */
-function claudeExpiry(oauth: Record<string, unknown> | null): number | null {
-  const expiry = oauth?.expiresAt;
-  return typeof expiry === "number" ? expiry : null;
+/** The credential a sandboxed child may hold: the Keychain's `claudeAiOauth`
+ * with the refresh token emptied and its expiry dropped. Everything else
+ * (access token, expiry, scopes, subscription, rate-limit tier) is copied as
+ * is. Emptied rather than omitted because that is the shape Claude Code
+ * itself leaves on disk once the Keychain owns the credential. */
+export function mirrorCredential(
+  oauth: Record<string, unknown>
+): Record<string, unknown> {
+  const mirror: Record<string, unknown> = {};
+  for (const key of MIRROR_KEYS) {
+    if (key in oauth) mirror[key] = oauth[key];
+  }
+  // A Keychain entry without an access token is never mirrored (see
+  // `claudeOauth`), so this branch is a guard: whatever reaches it without
+  // one still yields Claude Code's stub shape, which `classifyMirror`
+  // recognizes next time instead of calling the file foreign.
+  if (typeof mirror.accessToken !== "string" || mirror.accessToken.length === 0) {
+    mirror.accessToken = "";
+    if (typeof mirror.expiresAt !== "number") mirror.expiresAt = 0;
+    if (!Array.isArray(mirror.scopes)) mirror.scopes = [];
+  }
+  mirror.refreshToken = "";
+  return mirror;
+}
+
+/** The file's OWN `claudeAiOauth` with the refresh token removed and nothing
+ * else changed: used when the Keychain has nothing usable to mirror and only
+ * the refresh token must go. Keys a newer Claude Code may have added stay
+ * (the shape rule above is for what codemux copies from the Keychain). */
+export function scrubbedCredential(oauth: Record<string, unknown>): Record<string, unknown> {
+  const { refreshTokenExpiresAt: _dropped, ...rest } = oauth;
+  const scrubbed: Record<string, unknown> = { ...rest, refreshToken: "" };
+  // With no access token left, complete Claude Code's stub shape so the
+  // next launch sees a stale mirror, not a foreign file.
+  if (typeof scrubbed.accessToken !== "string" || scrubbed.accessToken.length === 0) {
+    scrubbed.accessToken = "";
+    if (typeof scrubbed.expiresAt !== "number") scrubbed.expiresAt = 0;
+    if (!Array.isArray(scrubbed.scopes)) scrubbed.scopes = [];
+  }
+  return scrubbed;
+}
+
+/** The keys a mirror may carry: Claude Code's own stub keys minus the two
+ * refresh-token fields. Anything else in the Keychain entry (a newer Claude
+ * Code's addition, or co-stored state) stays in the Keychain, so what is
+ * written is always a shape `classifyMirror` recognizes. */
+const MIRROR_KEYS = ["accessToken", "expiresAt", "scopes", "subscriptionType", "rateLimitTier"] as const;
+
+/** Whether a mirror still holds a refresh token — something the mirror must
+ * never carry (see the module header). */
+function carriesRefreshToken(oauth: Record<string, unknown>): boolean {
+  return typeof oauth.refreshToken === "string" && oauth.refreshToken.length > 0;
+}
+
+/** Whether the credential file at `path` (read through any symlink, regular
+ * files only) carries a refresh token. Unreadable or absent: false. */
+export function fileCarriesRefreshToken(path: string): boolean {
+  try {
+    if (!statSync(path).isFile()) return false;
+    const oauth = claudeOauthObject(readFileSync(path, "utf8"));
+    return oauth !== null && carriesRefreshToken(oauth);
+  } catch {
+    return false;
+  }
 }
 
 /** The file's contents with only its `claudeAiOauth` field replaced by the
- * Keychain's — everything else (notably co-stored `mcpOAuth` state Claude
- * keeps in this same file) is left exactly as Claude wrote it. The caller
- * only reaches this when `shouldReplace` confirmed the file parses and
- * carries a Claude credential, so the parse here always succeeds. */
-function mergedCredential(current: string, keychainOauth: Record<string, unknown>): string {
+ * mirror of `oauth` (the Keychain's entry, or the file's own when scrubbing).
+ * Everything else — notably the co-stored `mcpOAuth` state Claude Code keeps
+ * in this same file — is left exactly as Claude wrote it. The caller only
+ * reaches this with a file `classifyMirror` accepted, so `current` parses. */
+function mergedCredential(current: string, claudeAiOauth: Record<string, unknown>): string {
   const parsed = JSON.parse(current) as Record<string, unknown>;
-  return JSON.stringify({ ...parsed, claudeAiOauth: keychainOauth });
+  return JSON.stringify({ ...parsed, claudeAiOauth });
 }
 
 /**
  * Refresh the `claudeAiOauth` field of an EXISTING credential file from the
- * Keychain. See the module header for the deliberately narrow scope. Only
- * that one field is ever read or written; the rest of Claude's file is left
- * untouched. The caller warns on "failed", because a silently stale mirror
- * is the exact 401 this exists to prevent.
+ * Keychain — access token only — and make sure no refresh token is left in
+ * it. See the module header for the rules. Only that one field is ever read
+ * or written; the rest of Claude's file is left untouched. The caller warns
+ * on "failed" (a silently stale mirror is the exact 401 this exists to
+ * prevent) and refuses the launch on "unsafe" (a refresh token the child
+ * could reach and that could not be removed safely). `options.backupDir` is
+ * where a refresh-token-carrying file is copied before the token goes.
  */
+export interface SyncOptions {
+  /** Where a file that still carries a refresh token is copied before the
+   * token is removed. Defaults to a directory the scode sandbox does not
+   * expose (see `defaultCredentialBackupDir`); tests point it elsewhere. */
+  backupDir?: string;
+}
+
 export function syncKeychainCredential(
   service: string,
   target: string,
-  readSecret: SecretReader = readKeychainSecret
+  readSecret: SecretReader = readKeychainSecret,
+  options: SyncOptions = {}
 ): SyncOutcome {
+  const backupDir = options.backupDir ?? defaultCredentialBackupDir();
+  // The escape hatch means "do not consult the Keychain", and without the
+  // Keychain codemux cannot tell a mirror (scrub it) from Claude Code's only
+  // store (leave it alone), so it neither scrubs nor refuses: the file is
+  // left exactly as it is, and the operator who set the hatch owns what is
+  // in it. The adapter says so when the file carries a refresh token.
   if (process.env.CODEMUX_NO_KEYCHAIN_SYNC === "1") return "skipped";
 
   // Only refresh a mirror that already exists: the bug is a stale file, so
@@ -245,29 +380,47 @@ export function syncKeychainCredential(
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "failed";
   }
-  if (info.isSymbolicLink() || !info.isFile()) return "failed";
-  // Refuse a symlinked parent too (~/.claude linked elsewhere): writing
-  // through it would land the credential wherever the link points, e.g. a
-  // repository. lstat the immediate parent — the fixed target's grandparents
-  // are the home directory, not attacker-controlled.
-  try {
-    if (lstatSync(dirname(target)).isSymbolicLink()) return "failed";
-  } catch {
-    return "failed";
+  // A symlinked mirror, or a symlinked parent (~/.claude linked elsewhere),
+  // is never written through: the write would land wherever the link
+  // points, e.g. a repository. Whether it may be launched through is decided
+  // after the Keychain read below: when a Keychain entry exists, the file is
+  // a mirror, and one that carries a refresh token behind a link would hand
+  // the child that token — "unsafe"; when there is no entry at all the file
+  // is Claude Code's own store (a dotfile-managed ~/.claude on Linux is the
+  // common case) and the launch proceeds as "failed" — nothing synced,
+  // nothing refused.
+  let linked = info.isSymbolicLink() || !info.isFile();
+  if (!linked) {
+    try {
+      linked = lstatSync(dirname(target)).isSymbolicLink();
+    } catch {
+      return "failed";
+    }
   }
 
   // Read the Keychain first (its lookup can take up to 3s), tolerating an
-  // OS-level spawn throw so it becomes "failed" rather than escaping and
-  // aborting the launch.
+  // OS-level spawn throw so it counts as an unreadable entry ("error":
+  // nothing mirrored, nothing scrubbed, a refresh-token-carrying file
+  // refused) rather than escaping and aborting the launch.
   let read: SecretReadResult;
   try {
     read = readSecret(service);
   } catch {
-    return "failed";
+    read = { kind: "error", detail: "the Keychain read threw" };
   }
-  if (read.kind === "error") return "failed";
   const keychainOauth = read.kind === "secret" ? claudeOauth(read.value) : null;
-  const keychainExpiry = claudeExpiry(keychainOauth);
+
+  if (linked) {
+    if (read.kind === "missing") return "failed";
+    try {
+      // Only a regular file behind the link is read (a FIFO would block).
+      if (!statSync(target).isFile()) return "failed";
+      const behind = claudeOauthObject(readFileSync(target, "utf8"));
+      return behind !== null && carriesRefreshToken(behind) ? "unsafe" : "failed";
+    } catch {
+      return "failed";
+    }
+  }
 
   // Read the file as late as possible, then decide against THAT snapshot.
   let current: string;
@@ -283,21 +436,170 @@ export function syncKeychainCredential(
   const file = classifyMirror(current);
   if (file.kind !== "mirror") return file.kind;
 
-  // Without a usable Keychain credential there is nothing to refresh with.
-  // A mirror that still carries a usable token authenticates on its own, so
-  // this stays "missing" as before. An emptied stub, though, launches with
-  // no usable token at all — the exact silent 401 this module exists to
-  // prevent — so it reports "failed" and the adapter warns. The Keychain
-  // can also hold only co-stored mcpOAuth state for a while
-  // (anthropics/claude-code#36779), which lands here too.
+  // No Keychain credential to mirror. Two very different situations:
+  //
+  //   - No Keychain ENTRY at all ("missing": Linux, or a macOS setup that
+  //     never logged in through the Keychain). Then this file is not a
+  //     mirror but Claude Code's one and only credential store, its refresh
+  //     token the operator's only copy, and the sandboxed child is the same
+  //     Claude Code rotating the same file — one copy, no divergence, no
+  //     lockout. The file is left exactly as it is.
+  //   - An entry exists but yields nothing usable: a locked Keychain or a
+  //     denied/timed-out read ("error"), an entry holding only co-stored
+  //     mcpOAuth state (anthropics/claude-code#36779), or an access token
+  //     that is empty or already expired. Then the Keychain owns the
+  //     credential and the file IS a mirror, so a refresh token in it is the
+  //     second copy that caused the lockout: scrubbed here, locally, with
+  //     nothing from the Keychain; when even that write fails the outcome is
+  //     "unsafe" and the launch is refused. A mirror that still carries a
+  //     usable access token then authenticates on its own ("missing",
+  //     silent); one that does not leaves the child with no usable token —
+  //     the exact 401 this module exists to prevent — so "failed", and the
+  //     adapter warns.
   if (keychainOauth === null) {
-    if (!hasUsableToken(file.oauth)) return "failed";
-    return "missing";
+    if (read.kind === "missing") {
+      // Untouched either way; an emptied stub with no Keychain behind it
+      // still leaves the child nothing to authenticate with, so say so.
+      return hasUsableToken(file.oauth) ? "missing" : "failed";
+    }
+    if (read.kind === "error") {
+      // The entry exists but could not be read (locked keychain over SSH,
+      // denied ACL, timeout, empty value). Nothing can be mirrored, and
+      // nothing is destroyed either: the file's refresh token might be the
+      // only working login (an old sandbox rotation could have left the
+      // Keychain's copy dead), so it is not emptied blind. A file that
+      // carries one is not launched through; one without launches and
+      // reports its own 401 if stale.
+      return carriesRefreshToken(file.oauth) ? "unsafe" : "failed";
+    }
+    let own = file.oauth;
+    if (carriesRefreshToken(own)) {
+      const scrubbed = scrubRefreshToken(target, current, own, backupDir);
+      if (scrubbed !== "clean") return scrubbed;
+      // Judge what is on disk now, not the copy read before the scrub (a
+      // concurrent writer may have changed it).
+      try {
+        own = claudeOauthObject(readFileSync(target, "utf8")) ?? own;
+      } catch {
+        return "failed";
+      }
+    }
+    // The mirror stands alone only while its own access token is live; an
+    // expired one (the usual state after an idle period, with the Keychain
+    // token expired too) is the undiagnosed 401 this module exists to name.
+    return accessTokenLive(own) ? "missing" : "failed";
   }
-  if (!shouldReplace(file.oauth, keychainOauth, keychainExpiry)) return "current";
+  if (!shouldReplace(file.oauth, keychainOauth)) return "current";
 
-  const merged = mergedCredential(current, keychainOauth);
+  const written = writeMirror(target, current, mirrorCredential(keychainOauth), backupDir);
+  if (written === "written") return "synced";
+  if (written === "vanished") {
+    // Whoever deleted the file owns that decision, but a child launched now
+    // has nothing to authenticate with; when the file we read could not
+    // have authenticated either (a stub), the operator must hear about it.
+    return hasUsableToken(file.oauth) ? "current" : "failed";
+  }
+  // Another writer changed the file under us. It leads only if what it
+  // wrote can authenticate and carries no refresh token; a refresh token
+  // left there is scrubbed on the spot, and a mirror that cannot be
+  // scrubbed refuses the launch. Otherwise the mirror is still stale:
+  // report it, so the operator hears about it; the next launch retries.
+  let live: string;
+  try {
+    live = readFileSync(target, "utf8");
+  } catch {
+    return "failed";
+  }
+  const liveFile = classifyMirror(live);
+  if (liveFile.kind !== "mirror") return "failed";
+  if (carriesRefreshToken(liveFile.oauth)) {
+    const scrubbed = scrubRefreshToken(target, live, liveFile.oauth, backupDir);
+    if (scrubbed !== "clean") return scrubbed;
+    return liveFile.oauth.accessToken === keychainOauth.accessToken ? "current" : "failed";
+  }
+  return shouldReplace(liveFile.oauth, keychainOauth) ? "failed" : "current";
+}
+
+/** Empty the refresh token of a mirror in place, keeping everything else,
+ * and verify the result: "clean" once the file carries no refresh token
+ * (written by us, or by a concurrent writer who got there first), "failed"
+ * when the file vanished meanwhile (nothing is left for a child to read,
+ * and a vanished mirror is never recreated), "unsafe" when a refresh token
+ * is still there and could not be removed — the caller refuses the launch.
+ * A conflict is retried once against the live content; two conflicts in a
+ * row with the token still present are treated as unsafe rather than
+ * looping against a writer that keeps putting it back. */
+function scrubRefreshToken(
+  target: string,
+  current: string,
+  oauth: Record<string, unknown>,
+  backupDir: string
+): "clean" | "failed" | "unsafe" {
+  let content = current;
+  let fileOauth = oauth;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const written = writeMirror(target, content, scrubbedCredential(fileOauth), backupDir);
+    if (written === "written") return "clean";
+    if (written === "vanished") return "failed";
+    if (written === "error") return "unsafe";
+    // conflict: another writer changed the file; judge what is there now.
+    try {
+      content = readFileSync(target, "utf8");
+    } catch {
+      return "failed";
+    }
+    const live = claudeOauthObject(content);
+    if (live === null || !carriesRefreshToken(live)) return "clean";
+    fileOauth = live;
+  }
+  return "unsafe";
+}
+
+/** Replace the file's `claudeAiOauth` with the mirror of `oauth`, atomically
+ * (staging file + rename, 0600), re-checking immediately before the rename
+ * that the WHOLE file is still exactly `current` — another writer (Claude
+ * Code updating co-stored mcpOAuth, or deleting the file) must not be
+ * clobbered. "conflict" means the file changed; "vanished" that it was
+ * deleted (it is left deleted, never recreated); "error" that the write
+ * itself failed. The residual window between the re-check and the rename is
+ * microseconds, and a lost write self-heals on the next launch; nothing in
+ * that window can reach the Keychain or the grant. */
+function writeMirror(
+  target: string,
+  current: string,
+  claudeAiOauth: Record<string, unknown>,
+  backupDir: string
+): "written" | "conflict" | "vanished" | "error" {
+  // A file that still carries a refresh token is backed up first, in a
+  // directory the sandbox cannot see (never beside the mirror, which the
+  // child reads): that token may be the operator's only working login, and
+  // codemux never destroys a credential it cannot prove superseded. A
+  // failed backup fails the write, which the callers turn into "unsafe".
+  const existing = claudeOauthObject(current);
+  let backup: string | null = null;
+  if (existing !== null && carriesRefreshToken(existing)) {
+    backup = backupCredential(backupDir, current);
+    if (backup === null) return "error";
+  }
+  const merged = mergedCredential(current, claudeAiOauth);
   const staging = `${target}.${process.pid}.tmp`;
+  // The backup exists for the rewrite. When the rewrite does not happen and
+  // the file still holds its token (conflict, error), the copy is redundant
+  // and is removed again, so repeated refusals cannot pile up copies. When
+  // the file VANISHED under us the backup is the last copy and stays.
+  const kept = (outcome: "written" | "conflict" | "vanished" | "error"): void => {
+    if (backup === null) return;
+    if (outcome === "conflict" || outcome === "error") {
+      removeQuietly(backup);
+      return;
+    }
+    console.error(
+      `claude: the credential mirror held a refresh token; a copy was kept at ${backup} ` +
+        (outcome === "written"
+          ? "(0600, outside the sandbox) and the mirror was rewritten without it"
+          : "(0600, outside the sandbox); the mirror itself was deleted meanwhile")
+    );
+  };
   try {
     try {
       writeFileSync(staging, `${merged}\n`, { flag: "wx", mode: 0o600 });
@@ -305,71 +607,99 @@ export function syncKeychainCredential(
       removeQuietly(staging); // a symlink/stray entry — never a directory we own
       writeFileSync(staging, `${merged}\n`, { flag: "wx", mode: 0o600 });
     }
-    // TOCTOU re-check immediately before committing: re-read the WHOLE file
-    // and back off if it changed AT ALL since we read it — another writer
-    // (Claude rotating its token, updating co-stored mcpOAuth, or deleting
-    // the file) got there, and our staged snapshot would clobber their work.
-    // Comparing full content (not just claudeAiOauth.expiresAt) covers every
-    // field and the deletion case; a vanished file is left deleted, not
-    // recreated. The residual window is the microseconds between this read
-    // and the rename, and any loss self-heals on the next launch.
+    let live: string;
     try {
-      const live = readFileSync(target, "utf8");
-      if (live !== current) {
-        removeQuietly(staging);
-        // The other writer leads only if what it wrote can authenticate and
-        // is not itself older than the Keychain (an emptied stub, or a
-        // co-stored field updated around one, leaves the child without a
-        // usable token). Otherwise the mirror is still stale: report it, so
-        // the operator hears about it; the next launch retries.
-        const liveFile = classifyMirror(live);
-        const stillStale =
-          liveFile.kind !== "mirror" ||
-          shouldReplace(liveFile.oauth, keychainOauth, keychainExpiry);
-        return stillStale ? "failed" : "current";
-      }
+      live = readFileSync(target, "utf8");
     } catch {
-      removeQuietly(staging); // file deleted under us — do not recreate it
-      // Whoever deleted it owns that decision, but a child launched now has
-      // nothing to authenticate with; when the file we read could not have
-      // authenticated either (a stub), the operator must hear about it.
-      return hasUsableToken(file.oauth) ? "current" : "failed";
+      removeQuietly(staging);
+      kept("vanished");
+      return "vanished";
+    }
+    if (live !== current) {
+      removeQuietly(staging);
+      kept("conflict");
+      return "conflict";
     }
     renameSync(staging, target);
-    return "synced";
+    if (backup !== null) pruneOlderBackups(backup);
+    kept("written");
+    return "written";
   } catch {
     removeQuietly(staging); // never leave a staged credential behind
-    return "failed";
+    kept("error");
+    return "error";
   }
 }
 
-/** Whether the Keychain's Claude credential should replace the file's. A
- * file whose tokens are emptied (the stub Claude Code leaves once the
- * Keychain owns the credential) cannot lead, so the Keychain replaces it
- * regardless of expiry. Otherwise acts only when the Keychain is a strictly
- * newer credential; a file that already holds an equal-or-newer
- * `claudeAiOauth` is left alone (covers a sandbox-rotated token the Keychain
- * has not caught up to, and avoids touching the file when only unrelated
- * fields differ). When either side lacks a numeric expiry, fall back to
- * acting whenever the two objects differ at all (equality was ruled out
- * above) — the Keychain is authoritative in that degenerate case, and any
- * misjudgment self-heals next launch. */
+/** Whether the Keychain's Claude credential should replace the file's.
+ * Always when the file still carries a refresh token: the mirror must never
+ * hold one (module header), whatever else it says. Otherwise whenever the
+ * file's access token is not the Keychain's — a stale mirror, the stub Claude
+ * Code leaves once the Keychain owns the credential, or a token the operator
+ * re-logged in for. A file already holding the Keychain's access token is
+ * current. Expiry ordering plays no part: the mirror cannot refresh, so it
+ * can never be "newer" than the Keychain, and a revoked token with a later
+ * expiry must not be kept. */
 function shouldReplace(
   fileOauth: Record<string, unknown>,
-  keychainOauth: Record<string, unknown>,
-  keychainExpiry: number | null
+  keychainOauth: Record<string, unknown>
 ): boolean {
-  if (JSON.stringify(fileOauth) === JSON.stringify(keychainOauth)) return false;
-  // A stub whose tokens Claude Code emptied cannot lead: the Keychain does.
-  if (!hasUsableToken(fileOauth)) return true;
-  const fileExpiry = claudeExpiry(fileOauth);
-  if (fileExpiry !== null && keychainExpiry !== null) {
-    return keychainExpiry > fileExpiry;
+  if (carriesRefreshToken(fileOauth)) return true;
+  return fileOauth.accessToken !== keychainOauth.accessToken;
+}
+
+/** Where refresh-token backups go by default: under `~/Library`, which the
+ * scode sandbox blocks wholesale on macOS, so no sandboxed child can read a
+ * backup. Scrubs happen only where a Keychain entry exists, i.e. on macOS;
+ * on any other platform there is no safe default and the backup (and so the
+ * scrub) fails closed. */
+export function defaultCredentialBackupDir(): string {
+  if (process.platform !== "darwin") return "";
+  return join(homedir(), "Library", "Application Support", "codemux", "credential-backups");
+}
+
+let backupSequence = 0;
+
+/** Keep a copy of the file as it was before a refresh token is removed from
+ * it: `<backupDir>/credentials-<timestamp>-<pid>-<n>.json`, directory 0700,
+ * file 0600, created exclusively so nothing is ever overwritten. Older
+ * copies are pruned only once the rewrite this copy was made for has
+ * succeeded (see `pruneOlderBackups`). The operator is told where it is
+ * and may delete it once the login is known good. An empty `backupDir`
+ * means there is no safe place: the backup fails, and with it the scrub. */
+function backupCredential(backupDir: string, current: string): string | null {
+  if (backupDir === "") return null;
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  backupSequence += 1;
+  const backup = join(backupDir, `credentials-${stamp}-${process.pid}-${backupSequence}.json`);
+  try {
+    mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+    chmodSync(backupDir, 0o700); // an existing directory is tightened too
+    writeFileSync(backup, current.endsWith("\n") ? current : `${current}\n`, { flag: "wx", mode: 0o600 });
+    return backup;
+  } catch {
+    return null;
   }
-  // Degenerate: an expiry is absent on one side, so freshness is
-  // unorderable. The Keychain is authoritative, so refresh; any misjudgment
-  // self-heals next launch.
-  return true;
+}
+
+/** After a rewrite succeeded, drop the backups OLDER than the one this
+ * launch wrote (names start with an ISO timestamp, so they sort by age).
+ * Never a newer one: a parallel launch may have written it and may still
+ * need it. Never before the rename: until then the one just written is the
+ * only copy the operator was told about, and a failed rewrite must leave
+ * every earlier copy where it was. */
+function pruneOlderBackups(backup: string): void {
+  const dir = dirname(backup);
+  const own = basename(backup);
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (/^credentials-.*\.json$/.test(name) && name < own) removeQuietly(join(dir, name));
+  }
 }
 
 /** Best-effort removal of OUR staging FILE — never recursive, so a directory
