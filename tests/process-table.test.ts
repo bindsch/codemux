@@ -7,6 +7,7 @@ import {
   listDescendants,
   parsePsOutput,
   processTableReadable,
+  psEnvironment,
   readProcTable,
   readProcessTable,
 } from "../src/process-table.js";
@@ -17,6 +18,25 @@ function tableOf(pairs: Array<[number, number]>) {
 }
 
 describe("process table", () => {
+  test("ps runs under a pinned TZ and locale, whatever the caller's shell set", () => {
+    // Review live14: BSD ps formats lstart in the ambient time zone and
+    // locale, and a passed-through environment made the start token a
+    // property of the invoker's shell — two codemux processes with
+    // different TZ values minted different tokens for the same live
+    // pid, and the registry's identity checks (the live-owner guard,
+    // the writer lock) then judged a live writer dead: a stolen lock, a
+    // session_busy resume waved through. The spawn environment pins the
+    // clock and the spelling instead, so the token is a property of the
+    // process. (/bin/ps cannot run in every test sandbox, so the pinned
+    // environment is asserted on the pure helper the spawn consumes.)
+    const env = psEnvironment({ TZ: "Europe/Paris", LANG: "fr_FR.UTF-8", PATH: "/usr/bin:/bin" });
+    expect(env.TZ).toBe("UTC");
+    expect(env.LC_ALL).toBe("C");
+    // Everything else passes through untouched.
+    expect(env.PATH).toBe("/usr/bin:/bin");
+    expect(env.LANG).toBe("fr_FR.UTF-8");
+  });
+
   test("parses ps output, ignoring blank or malformed lines and zombies", () => {
     const table = parsePsOutput(
       [

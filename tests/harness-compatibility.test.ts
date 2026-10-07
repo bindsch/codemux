@@ -91,6 +91,57 @@ describe("three-tier verdicts", () => {
   });
 });
 
+describe("session floors and the audited band", () => {
+  const codex = HARNESS_CONTRACTS.codex!;
+
+  test("a session at exactly its floor is supported, never unaudited", () => {
+    // Review live10: both harnesses whose floors sit above their run
+    // contracts' maxAudited (claude 2.1.280 over 2.1.223, codex 0.159.3
+    // over 0.147.0) warned "unaudited" on every session launch — the
+    // floor IS the audited build (the release the session wire was
+    // recorded on), so the audited ceiling rises with it.
+    for (const [agent, contract, floor] of [
+      ["claude", claude, "2.1.280"],
+      ["codex", codex, "0.159.3"],
+    ] as const) {
+      const verdict = evaluateHarnessVersion(agent, contract, floor, "high", false, floor);
+      expect(verdict.kind).toBe("supported");
+      expect(verdict.message).toBeNull();
+    }
+  });
+
+  test("above the floor still warns, naming the floor as the audited ceiling", () => {
+    const verdict = evaluateHarnessVersion(
+      "claude",
+      claude,
+      "2.1.290",
+      "high",
+      false,
+      "2.1.280"
+    );
+    expect(verdict.kind).toBe("unaudited");
+    expect(verdict.message).toContain("newer than the 2.1.280");
+    // Below the floor is still a refusal whatever the run contract's
+    // maxAudited says — the floor, not the contract, is the session's
+    // boundary (2.1.240 sits above 2.1.223 but under the 2.1.280 floor).
+    expect(
+      evaluateHarnessVersion("claude", claude, "2.1.240", "high", false, "2.1.280").kind
+    ).toBe("refuse");
+  });
+
+  test("an override below the contract's min lowers nothing", () => {
+    // The floor is a raise, never a lower: a bogus 2.1.100 override must
+    // not admit the 2.1.150 the run contract refuses, nor shrink the
+    // audited band.
+    expect(
+      evaluateHarnessVersion("claude", claude, "2.1.150", "high", false, "2.1.100").kind
+    ).toBe("refuse");
+    expect(
+      evaluateHarnessVersion("claude", claude, "2.1.223", "high", false, "2.1.100").kind
+    ).toBe("supported");
+  });
+});
+
 describe("OpenCode 1.18.18 permission break", () => {
   test("refuses low autonomy unsandboxed", () => {
     const verdict = evaluateHarnessVersion("opencode", opencode, "1.18.18", "low", false);
@@ -395,6 +446,37 @@ describe("the gate itself", () => {
     }
   });
 
+  test("an unreadable version refuses whenever a session floor is in force", async () => {
+    // Review live9: the session path's floor (minimumOverride) used to
+    // take effect only when the probe READ a version -- a wrapper script
+    // whose --version prints nothing parseable slid past the floor with a
+    // warning. For `run` the warning stays (the opencode test above);
+    // a session holds a resumable process open behind a floor the design
+    // calls the pre-hardening boundary, so an unreadable version there is
+    // a refused floor, with the operator's override as the only way past.
+    const fake = fakeHarness("not a version");
+    const call = (override: boolean, minimumOverride?: string) =>
+      assertSupportedHarnessVersion({
+        agent: "claude", binary: fake.path, binaryName: "claude", workdir: "/tmp",
+        probeEnvironment: probeEnvironment({}), override, autonomy: "high",
+        minimumOverride,
+      });
+    try {
+      await expect(call(false, "2.1.280")).rejects.toThrow(
+        "could not determine the claude version"
+      );
+      await expect(call(false, "2.1.280")).rejects.toThrow("2.1.280");
+      // Without a floor (the `run` path), the same unreadable version
+      // only warns: the refusal belongs to the session contract.
+      const runPath = await captureWarnings(() => call(false));
+      expect(runPath.join("\n")).toContain("could not determine");
+      const warnings = await captureWarnings(() => call(true, "2.1.280"));
+      expect(warnings.join("\n")).toContain(ALLOW_UNTESTED_ENV);
+    } finally {
+      fake.cleanup();
+    }
+  });
+
   test("an agent with no contract is left alone", async () => {
     const fake = fakeHarness("whatever");
     try {
@@ -566,7 +648,14 @@ describe("the ledger and the version gate agree", () => {
   };
 
   function installedRows(ledger: string): string[] {
-    return ledger
+    // Only the master table at the top counts as installed-harness rows:
+    // the region before the first "## " heading. Addenda may carry their
+    // own tables (the 2026-10-05 live-sessions capability matrix), and
+    // those rows are not installed claims -- scanning them made the
+    // matrix's "Capability" header fail the map lookup below.
+    const firstHeading = ledger.indexOf("\n## ");
+    const master = firstHeading === -1 ? ledger : ledger.slice(0, firstHeading);
+    return master
       .split("\n")
       .filter((line) => line.startsWith("|") && !line.includes("---"))
       .map((line) => line.split("|").map((cell) => cell.trim()))
@@ -646,6 +735,26 @@ describe("the ledger and the version gate agree", () => {
     expect(rows).toContain("Droid");
     expect(rows).not.toContain("Goose");
     expect(rows).not.toContain("Harness"); // the header, skipped by name
+  });
+
+  test("a table inside an addendum is not an installed row", () => {
+    // The 2026-10-05 live-sessions addendum carries a capability matrix;
+    // the parser read its rows as installed-harness claims and failed the
+    // map lookup on "Capability". Only the region before the first "## "
+    // heading -- the master table -- speaks about installation.
+    const ledger = [
+      "| Harness | Audited upstream | Installed during audit | Primary source | Important contract |",
+      "|---------|------------------|------------------------|----------------|--------------------|",
+      "| Droid | 0.186.0 | 0.186.0 | docs | stdin |",
+      "",
+      "## 2026-10-05 addendum: live sessions",
+      "",
+      "| Capability | Claude | Z.AI | Codex | Antigravity |",
+      "|------------|--------|------|-------|-------------|",
+      "| steer | true | true | true | false |",
+    ].join("\n");
+    const rows = installedRows(ledger);
+    expect(rows).toEqual(["Droid"]);
   });
 });
 

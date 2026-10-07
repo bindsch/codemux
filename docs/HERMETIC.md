@@ -195,20 +195,60 @@ file.
 
 ## Session persistence
 
-No codemux run persists a session in this release: Claude and Z.AI launch
-with `--no-session-persistence` and Codex with `--ephemeral`, so nothing a
-hermetic run writes outlives it. Session resume (`--session new` /
-`--session resume:<id>`) was removed from the tree and deferred to the
-live-sessions design; when it returns it must answer the questions the
-removal left open — how a hermetically created session is marked clean
-enough to resume under `--hermetic` again, and what a resume means for a
-Codex run whose private `CODEX_HOME` is destroyed at exit.
+No `codemux run` persists a session: Claude and Z.AI launch with
+`--no-session-persistence` and Codex with `--ephemeral`, so nothing a
+hermetic run writes outlives it, and run result envelopes report a null
+`session_id`. Persistence belongs to `codemux session` (the live-sessions
+design), which is exactly why `--hermetic` is refused there: a persistent,
+resumable session has no verified hermetic canary, and the questions the
+old run-time resume removal left open are still open — how a
+hermetically created session would be marked clean enough to resume under
+`--hermetic` again (a resumed session replays its transcript, and the
+transcript was written while the session ran with its tools), and what a
+resume means for a Codex session whose private `CODEX_HOME` is destroyed
+at exit. Antigravity adds a third: no verified hermetic mechanism exists
+for it at all (see the ledger).
+
+What a session does instead is record liveness in a local registry
+(`~/Library/Application Support/codemux/live-sessions.json` on macOS,
+`~/.local/state/codemux/live-sessions.json` elsewhere, mode 0600 in a
+0700 directory): the session id, agent, working directory, harness home,
+autonomy, and timestamps. `--resume` accepts only ids the registry
+vouches for — same agent, same harness home, containment never dropped
+(`sandboxed`, the recorded sandbox trust, and the recorded
+`--sandbox-no-net`/`--sandbox-scrub-env` flags), the same working
+directory, no `--pass-env` name or Playwright MCP the creation lacked,
+no autonomy above the recorded one, hermetic state matching, no live owner
+(`session_busy`, judged again under the registry lock when the resume
+claims the record before spawning), and the registry not sitting inside the entry's own
+working directory or harness home — and a registry that cannot be read
+trustworthily (unreadable, corrupt, or world-permissive) fails closed:
+resume is refused (exit 78), never guessed from a partially trusted
+file. An absent registry has no entry to vouch from, so its resume is
+the not-found answer (exit 66).
+The writer applies the same placement rules, so a registry the reader
+would refuse (a symlinked registry directory, for example) is refused at
+session start too.
+Every read goes through the bounded, no-follow reader; the registry is
+codemux-owned state, not operator configuration, so it survives the
+refusals above unchanged.
 
 Through the scode sandbox, scode keeps harness state (`CLAUDE_CONFIG_DIR`,
 `CODEX_HOME`) writable on every platform — the same property the private
-home above relies on. The `--sandbox-trust untrusted` preset denies those
-directories. The argv wiring through scode is covered by tests with fake
-harnesses.
+home above relies on, and the one a persistent session needs for its
+transcripts. The `--sandbox-trust untrusted` preset denies those
+directories, so sessions refuse it outright rather than launching a
+session that cannot persist. The argv wiring through scode is covered by
+tests with fake harnesses.
+
+One boundary flag does not carry over from run to session: a Codex
+session's thread-level `config` object skips AGENTS.md discovery
+(`project_doc_max_bytes: 0`) but has no verified carrier for `exec`'s
+`--ignore-rules`, so a codex session still loads the operator's execpolicy
+rules (`~/.codex/rules`) where a run does not (review live3; the gap is
+recorded in the compatibility ledger and is unreachable through any
+launchable session today — every one runs `approvalPolicy: "never"`
+inside scode).
 
 ## What hermetic does not cover
 

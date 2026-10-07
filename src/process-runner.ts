@@ -116,7 +116,7 @@ async function readBounded(
  * read: tens of milliseconds normally, and never more than
  * PROCESS_TABLE_TIMEOUT_MS on macOS (Linux reads `/proc` in memory).
  */
-function signalProcess(
+export function signalProcess(
   target: TerminationTarget,
   signal: NodeJS.Signals,
   scope: "process" | "tree"

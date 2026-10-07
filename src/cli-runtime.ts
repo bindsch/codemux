@@ -81,7 +81,7 @@ export async function getScodeCompatibilityIssue(
   return (await getScodeCompatibilityStatus(workdir)).issue;
 }
 
-function resolveScodeExecutable(workdir?: string): string | null {
+export function resolveScodeExecutable(workdir?: string): string | null {
   const binary = Bun.which("scode", { PATH: process.env.PATH });
   if (!binary) return null;
   return resolveTrustedExecutable(binary, "scode", workdir);
@@ -105,7 +105,7 @@ export function isVersionAtLeast(
   return true;
 }
 
-async function assertCompatibleScode(
+export async function assertCompatibleScode(
   scode: string,
   workdir: string,
   extraEnv?: Record<string, string>
@@ -214,7 +214,7 @@ function warnIfSinkInsideWorkdir(accountFile: string, workdir: string): void {
   }
 }
 
-function assertNoProjectScodePolicy(workdir: string): void {
+export function assertNoProjectScodePolicy(workdir: string): void {
   const projectPolicy = join(workdir, ".scode.yaml");
   if (existsSync(projectPolicy)) {
     throw new Error(
@@ -230,7 +230,10 @@ function failInvalidOption(
 ): never {
   console.error(`Error: Invalid value '${value}' for ${optionName}`);
   console.error(`Allowed values: ${allowed.join(", ")}`);
-  process.exit(1);
+  // EX_USAGE (sysexits): a bad option value is a usage error, not a
+  // runtime failure — the same 64 the session CLI's usageError exits
+  // with, so scripts see one code for one class (review live10).
+  process.exit(64);
 }
 
 export function handleUnexpectedError(error: unknown): never {
@@ -360,7 +363,10 @@ export function resolveAutonomyForAdapter(
   agentId: AgentId,
   caps: AdapterCapabilities,
   requested: AutonomyLevel
-): AutonomyLevel | undefined {
+): AutonomyLevel {
+  // Never undefined (review live10): an adapter that cannot enforce the
+  // requested level throws — the old `| undefined` arm was unreachable
+  // and forced every caller into a redundant truthiness guard.
   if (!caps.supportsAutonomy) {
     throw new Error(
       `${agentId} cannot enforce requested autonomy '${requested}'; use an external sandbox`
@@ -432,7 +438,10 @@ export async function assertHarnessSupported(
   extraEnv?: Record<string, string>,
   autonomy?: AutonomyLevel,
   sandboxed = false,
-  explicitPassthrough: readonly string[] = []
+  explicitPassthrough: readonly string[] = [],
+  /** Replaces the per-agent below-min refusal point (session floors,
+   * design §4.3); `run` and `tui` never set it. */
+  minimumOverride?: string
 ): Promise<void> {
   const workdir = validateWorkingDirectory(cwd) ?? process.cwd();
   const environment = { ...(process.env as Record<string, string>), ...(extraEnv ?? {}) };
@@ -492,6 +501,7 @@ export async function assertHarnessSupported(
     override: process.env[ALLOW_UNTESTED_ENV] === "1",
     autonomy,
     sandboxed,
+    minimumOverride,
   });
 }
 

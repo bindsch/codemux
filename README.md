@@ -69,6 +69,7 @@ codemux [command] [options]
 | Command | Purpose |
 |---------|---------|
 | `run` | Non-interactive prompt execution |
+| `session` | Live agent session over stdio (JSONL in, JSONL events out) |
 | `tui` | Interactive harness session |
 | `check` | Live provider/model probe (uses credentials and may incur charges) |
 | `list` | Agent capability overview |
@@ -114,6 +115,48 @@ cannot remove that upstream limitation for Aider, Cline, Copilot, Gemini,
 Goose, Kimi, OpenHands, or legacy `qwen-coder`. Codemux rejects argv
 prompts above 32 KiB — the rule applies to the prompt's content wherever it
 came from, so use an stdin-capable harness for larger prompts.
+
+### `session` options
+
+`codemux session` starts (or resumes) a live agent session for `claude`,
+`zai`, `codex`, or `agy`: JSONL input on stdin, JSONL events on stdout,
+and the harness's own stderr passed through on codemux's stderr as `run`
+passes it — the protocol, capability matrix, and per-harness version floors are in
+[Live sessions](#live-sessions). The safety seams are `run`'s: the scode
+sandbox is the default, and `--pass-env` validates the same names.
+Autonomy maps the way `run` maps it, with one exception: a claude or zai
+session at `high` runs `--permission-mode default` with `run`'s grant
+list (`Edit`, `Write`, `NotebookEdit`, `Bash`) and never
+`--dangerously-skip-permissions`. Any other tool asks: the request
+reaches the caller as a `permission_request`, and the ceiling refuses an
+`allow` for it (`autonomy_escalation`). A `high` session is therefore
+narrower than a `high` run.
+
+Provider overrides do not reach sessions in this release: `codemux
+session` exits 64 while any `CODEMUX_<AGENT>_PROVIDER_*` variable is set
+for the session agent, and the message names the variables to unset.
+Overrides reach sessions in the next release.
+
+| Flag | Description |
+|------|-------------|
+| `-a, --agent <agent>` | Agent id (default: `claude`) |
+| `-m, --model <model>` | Model name or alias |
+| `--resume <id>` | Resume a recorded session id (claude/zai UUID, codex thread id, agy conversation id); the session registry must vouch for it |
+| `--auto <level>` | Autonomy (`read-only`, `low`, `medium`, `high`) |
+| `--effort <level>` | Effort (`none` through `ultra`; availability is harness-specific; `none` is refused for codex sessions, whose turn carrier has no audited `none`) |
+| `--cwd <path>` | Working directory |
+| `--timeout <seconds>` | Absolute cap on the whole session (default: none); expiry runs the shutdown path, ends with `session_ended` reason `timeout`, and exits 1 — the same code as a failure, distinguishable only by the reason, so a broker reading the code alone cannot tell them apart |
+| `--turn-timeout <seconds>` | Per-turn cap; expiry interrupts the turn and the session continues; a turn still open one further period after that interrupt ends the session (`reason: timeout`, exit 1) (default: none; refused for agents whose sessions cannot interrupt — `agy`) |
+| `--permission-timeout <seconds>` | How long a permission request waits before codemux answers deny (default: `300`; never grants beyond the autonomy ceiling) |
+| `--shutdown-grace <seconds>` | How long the harness gets to answer the end (the end-interrupt, or for agy the stdin close) before SIGTERM, and again to exit after it before the kill (default: `10`) |
+| `--no-author-prefix` | Do not prefix harness-bound text with `[author]` |
+| `--pass-env <names>` | Explicitly pass comma-separated parent environment names |
+| `--tools <selection>` | Refused for sessions: no verified carrier restores a tool selection for a resumed session on any harness |
+| `--hermetic` | Refused for sessions (see [docs/HERMETIC.md](docs/HERMETIC.md)) |
+| `-s, --sandbox` | Execute via `scode` (default: on; `--no-sandbox` opts out, and autonomy below `high` then refuses) |
+| `--sandbox-trust <level>` | `scode` trust override; `untrusted` is refused for sandboxed sessions — it denies the harness state a persistent session must write. With `--no-sandbox` the flag is ignored with a warning, as in `run` |
+| `--sandbox-no-net` / `--sandbox-scrub-env` | Add `--no-net` / `--scrub-env` to `scode` |
+| `--enable-playwright-mcp` | Enable the local Playwright MCP inside the sandbox (claude/zai only; requires `--sandbox` and `--auto low`: the session ceiling grants no MCP tool at `medium` or `high`, and `read-only` allows no tool use) |
 
 ### Provider overrides
 
@@ -211,7 +254,11 @@ model prefix added, as aider's). The Codex, Droid, Pi, and OpenCode
 overrides support headless runs only — their per-run config files ride
 the launch lifecycle — and `codemux tui` refuses them; the Claude Code,
 OpenHands, Aider, Kimi Code, and Goose overrides carry into the TUI,
-which delivers them through the environment alone. OpenHands has no equivalent of codex's `shell_environment_policy`: both of its terminal implementations (subprocess and tmux) build the shell's environment from the CLI process's own, and the sanitizer in between strips only `SESSION_API_KEY` (`sanitized_env`, openhands.sdk under CLI 1.16.0, verified 2026-10-07), so the provider key in `LLM_API_KEY` is visible to any command the model runs. Codemux prints that warning at launch; use a key you can revoke and scope it to the endpoint.
+which delivers them through the environment alone. `codemux session`
+carries no override in this release: it exits 64 while any
+`CODEMUX_<AGENT>_PROVIDER_*` variable (a cap or codex's `MULTI_AGENT`
+knob included) is set for the session agent; overrides reach sessions in
+the next release. OpenHands has no equivalent of codex's `shell_environment_policy`: both of its terminal implementations (subprocess and tmux) build the shell's environment from the CLI process's own, and the sanitizer in between strips only `SESSION_API_KEY` (`sanitized_env`, openhands.sdk under CLI 1.16.0, verified 2026-10-07), so the provider key in `LLM_API_KEY` is visible to any command the model runs. Codemux prints that warning at launch; use a key you can revoke and scope it to the endpoint.
 
 Two optional variables cap the override's tokens:
 `CODEMUX_<AGENT>_PROVIDER_MAX_OUTPUT_TOKENS` and
@@ -492,10 +539,11 @@ never guessed.
 Usage means the same thing for every harness: `input_tokens` counts input not
 served from a prompt cache, `cached_input_tokens` counts input served from or
 written to one, and `total_tokens` is their sum plus output — computed only
-when every component was reported. `session_id` is always null in this
-release: no run persists a session (Claude and Z.AI launch with
-`--no-session-persistence`, Codex with `--ephemeral`), and the field is
-reserved for the planned live-sessions release.
+when every component was reported. `session_id` is always null in a run
+envelope: no run persists a session (Claude and Z.AI launch with
+`--no-session-persistence`, Codex with `--ephemeral`); the field stays
+null and session identity belongs to [`codemux session`](#live-sessions),
+which owns it through the session registry.
 
 A failed run is a failed run on every channel: the exit code is non-zero even
 when the harness's own was not, and the diagnostic rides
@@ -559,6 +607,202 @@ and a
 failed run reports null usage fields as well: an exact-looking figure that
 understates a failed run is worse than none.
 
+## Live sessions
+
+`codemux session` is one protocol over every session-capable harness:
+JSONL input lines on stdin, JSONL event envelopes on stdout, one harness
+process per session with its whole process tree killed at the end.
+Supported: `claude`, `zai`, `codex`, `agy`; any other agent refuses with
+exit 64 rather than falling back to another harness. Each harness runs
+behind its own session-only version floor (claude and zai 2.1.280, codex
+0.159.3, agy 1.2.14) because the resume and permission contracts are
+only audited down to those builds — a harness whose version the probe
+cannot read is refused like a below-floor build, not waved through.
+
+Input lines (one JSON object per line):
+
+| Type | Meaning |
+|------|---------|
+| `{"type":"user","text":"…","author":"…"}` | Submit a turn. `author` is optional; with the default author prefix the harness sees `[author] text` |
+| `{"type":"steer","text":"…"}` | Steer the open turn (`codex` only; agents whose matrix says `steer: false` reject it with `unsupported`) |
+| `{"type":"interrupt"}` | Interrupt the open turn |
+| `{"type":"permission_decision","request_id":"…","decision":"allow"\|"deny"}` | Answer a permission request; codemux only relays decisions the autonomy ceiling already allows — and only ones the wire can carry (an allow on a request offering no accept decision is answered deny and rejected `unsupported`) |
+| `{"type":"shutdown"}` | End the session cleanly |
+
+Every non-blank input line is acknowledged (a blank line is skipped,
+and a trailing CR is stripped): `input_accepted` or `input_rejected`
+with a reason — `malformed`, `unknown_type`, `invalid_author`,
+`text_too_long`, `text_nul`, `reason_too_long`, `unsupported` (an input
+the agent's capability matrix does not carry), `busy` (a `user` line
+while a turn runs, on agents whose `user_during_turn` is false),
+`no_active_turn`, `unknown_request`, `autonomy_escalation`, or
+`shutting_down`. `text_too_long` also answers a `permission_decision`
+whose `updated_input` makes the answer too large for the harness write
+cap; the request stays pending. A line that is not valid UTF-8 is
+rejected `malformed`. A `permission_decision` whose answer cannot be
+written to the harness is rejected `shutting_down`, because the failed
+write ends the session. Nothing is silently dropped: a line landing inside the
+shutdown drain is rejected `shutting_down` (stdin is still being relayed
+while the session ends), and once `session_ended` is out the stream is
+closed — nothing follows it.
+
+Input codemux holds in memory is bounded. On codex, a `user` line queued
+behind an open turn and a `steer` held until the server names its turn
+are rejected `busy` past 256 held lines or 32 MiB. Lines sent before the
+codex handshake completes are held the same way; past that bound the
+session ends with a fatal error, and every held line is rejected
+`shutting_down` in order. On every agent, a harness that stops reading
+its stdin ends the session with a fatal error once 64 MiB of written
+input is still unread.
+
+Output events are envelopes: `seq`, `ts`, `session_id`, `type`, `raw`,
+and event fields. `raw` carries the harness's original line verbatim
+(null on codemux-originated events — and note codex's `session_started`
+is an exception the other way on a FRESH thread: it mirrors the
+`thread/started` notification it translated, so its `raw` is a string
+there; a RESUMED thread is announced from the `thread/resume` response —
+the server sends no `thread/started` on resume — so its `raw` is null),
+so a
+caller can inspect anything codemux translated. A valid-JSON harness line
+that matches no known shape passes through as a `raw` event with type
+`unknown` and the session continues — never dropped. A line the parser
+flags as a wire-grammar violation (a foreign session id, a second thread
+announcement) is mirrored as `unknown` and then ends the session with a
+fatal `error` event rather than guessing. A lifecycle violation the
+driver catches instead (a result with no open turn, a duplicate
+permission id, a codex response that names no turn or an unknown
+request id) is handled the same way: the line is mirrored as `unknown`,
+then the fatal `error`. A non-JSON or non-UTF-8 line ends the session
+with a fatal `error` too, carrying a bounded excerpt (the first 4 KiB of
+the line's bytes) instead of the line itself.
+`session_started` carries the full capability matrix; `turn_started`,
+`assistant_message`, `assistant_delta`, `usage`, `permission_request`,
+`file_change`, `turn_completed`, `session_ended` follow. What each
+harness honestly supports:
+
+| Capability | claude | zai | codex | agy |
+|------------|--------|-----|-------|-----|
+| `live_input` | true | true | true | true |
+| `user_during_turn` | false (rejected `busy`) | false (same) | `queue` | false (rejected `busy`) |
+| `steer` | false (rejected `unsupported`) | false (same) | true | false |
+| `interrupt` | true | true | true | false |
+| `permissions` | true | true | true (native server requests) | false |
+| `deltas` | true | true | true | false |
+| `file_changes` | derived from tool calls | derived | `native` item | false |
+| `usage_stream` | false (usage only in the turn's `result`) | false (same) | true | false (usage only in the result) |
+| `resume` | true | true | true | true |
+
+A `false` is honest: the unsupported input is rejected by name, never
+accepted and ignored. On claude and zai, `user_during_turn` is false
+because print mode folds a mid-turn message into the running turn when
+that turn makes another model request and runs it as its own turn when
+it does not, so no result can be attributed to it in advance; send the
+next `user` line after `turn_completed`, or interrupt first.
+
+Permission requests are events, not prompts: the caller must answer
+with a `permission_decision` line, an unanswered request is denied after
+`--permission-timeout` (default 300 s), and codemux refuses to relay a
+decision the current autonomy ceiling forbids — the session can never
+run above the autonomy it was started with, even resumed (the registry
+refuses a resume at a higher autonomy). At medium the ceiling relays an
+`allow` only for edits inside the launch directory, and never for
+executable configuration below it: `.git`, the harnesses' project
+settings (`.claude`, `.codex`, `.gemini`, `.cursor`), editor and hook
+directories (`.vscode`, `.idea`, `.husky`), `.envrc`, `.mcp.json`,
+`.claude.json`, `.ripgreprc`, git's `.gitconfig`/`.gitmodules`, and
+shell startup files. Whatever lands there
+runs later, outside the sandbox, without anyone running it on purpose.
+The ceiling judges only the requests the harness sends to the caller.
+A medium claude or zai session carries `run`'s scoped edit grant, so
+Claude Code approves an edit inside the launch directory by itself,
+except under the paths it treats as sensitive itself (`.git`,
+`.claude`, `.vscode`, `.idea` in the audited build). An edit to
+`.envrc` or `.husky/pre-commit` inside the launch directory is never
+asked about, and a sandboxed codex session never asks at all. For those
+paths a medium session is exactly as wide as a medium `run`, no wider. A
+request that outlives the moment it belonged to is denied the
+same way (`permission_resolved: "superseded"`): one that arrives after
+the session has begun ending (no decision could reach it anymore, and
+the harness would otherwise wait on an answer inside the shutdown grace
+window), and one still pending when its own turn completes or fails —
+a later decision for it is rejected `unknown_request`.
+
+Sessions are recorded in a local registry
+(`~/Library/Application Support/codemux/live-sessions.json` on macOS,
+`~/.local/state/codemux/live-sessions.json` elsewhere) with the
+id, agent, working directory, harness home, autonomy, `--pass-env`
+names (never values), and timestamps.
+`--resume` accepts only ids the registry vouches for — same agent, same
+harness home, same working directory, no `--pass-env` name or
+`--enable-playwright-mcp` the creation lacked, not above the recorded
+autonomy, and not below the
+recorded containment (a session created under scode resumes under scode,
+one created with `--sandbox-no-net` or `--sandbox-scrub-env` resumes with
+it, judged as the resume effectively runs; the autonomy bound is ranked
+per agent — on claude, zai, and codex a low-created session may resume
+at high because high's ceiling denies what low's caller could approve,
+while agy's ladder is strict: no resume above the creating level) — and
+a corrupt or
+tampered registry fails closed (resume refused), never silently
+reinterpreted. A resume claims the record under the registry's lock
+before it starts the harness, so of two concurrent resumes of one id
+the second is refused `session_busy` (exit 78) before its harness can
+act on any input. A resume that ends cleanly before its first turn
+releases the claim and still reports `resumable: true`; a resume the
+harness refuses (for example a claude transcript already cleaned up)
+releases it and reports `resumable: false`. A registry that cannot be written ends the session
+before it runs: an untracked live session must not run. A fresh claude
+or zai session is recorded before its harness starts (codemux chooses
+its session id), and a fresh agy session, whose id only its first
+result names, checks that the registry can be written before it starts;
+either failure exits 1 with nothing spawned. A fresh claude or zai
+session that ends before its harness confirmed it leaves no record, so
+a later `--resume` of its id exits 66. Killing codemux
+mid-session still leaves a resumable
+session: the harness persists its own state, and the registry's
+owner-liveness check refuses resume only while the recorded owner is
+still alive — a stale record (owner gone, `ended` never set) resumes.
+
+Clean lifecycle on both ends: stdin closing ends the session cleanly
+(mid-turn included — the turn is interrupted (agy, which has no
+interrupt, gets its stdin closed instead), the harness gets one shutdown
+grace to answer before any signal, then SIGTERM and a second grace
+before the tree is killed, and whatever the harness emits inside those
+windows — the interrupted turn's completion and its usage included —
+reaches the caller before the process tree dies — while a failure
+arriving inside the window still costs success: the session ends 1, not
+0, and a harness that exits nonzero during the shutdown — a failure
+while persisting, whether a turn was open or not and whether or not
+its completion arrived first — ends 1 as well, with two exceptions:
+exit 1 after an interrupted claude or zai turn the drain delivered
+(claude's convention after an interrupt), and 143, a wrapper answering
+the shutdown signal with 128+SIGTERM, which is the signal death's coded
+spelling and is read as one); a read error on stdin is not a clean
+close: it ends the session with a fatal error and exit 1. A turn nothing
+can answer — a harness that ignores the end-interrupt or the stdin close
+and dies on the signal, a 143 wrapper, a harness crash mid-turn, a
+harness exiting nonzero during the drain with its turn still open — has
+its `turn_completed` synthesized (`finish: "interrupted"` with a reason
+naming the session end, `finish: "failed"` with the fatal that ended the
+session or the drain failure as the reason, and the usage the turn
+reported before the end — a codex turn's streamed usage; all-null on
+the claude family and agy, which report usage only in the result the
+end cut off),
+so every turn is answered even where the harness cannot answer it
+itself; a harness crash ends
+the session through the crash path with the exit code reported, one
+fatal error — not two. Exit
+codes: 0 clean end, 1 crash, codemux failure, a registry codemux
+could not reach (a lock held past its budget or an I/O error; a retry
+may pass), or `--timeout` expiry
+(the `session_ended` event's `reason: "timeout"` is what distinguishes
+it), 64 usage, 66 unknown `--resume` id, 78 policy refusal (any resume
+guard, including an untrusted registry), 143 signal.
+
+Contract details per harness — the codex `app-server` method table, the
+claude stream-json control round-trips, the agy NDJSON loop — are in
+[the compatibility ledger](docs/HARNESS-COMPATIBILITY.md).
+
 ## Optional Usage Integration
 
 Codemux does not implement provider billing or subscription APIs. Install the
@@ -619,8 +863,10 @@ after translating it to the Claude-compatible token.
 ## Optional Playwright MCP
 
 Codemux does not download or inject MCP code by default. To opt into Playwright
-for sandboxed Claude/Z.AI sessions, install an audited `playwright-mcp` binary
-locally and pass `--enable-playwright-mcp` together with `--sandbox`. Codemux
+for sandboxed Claude/Z.AI runs, install an audited `playwright-mcp` binary
+locally and pass `--enable-playwright-mcp` together with `--sandbox`. A live
+session (`codemux session`) also requires `--auto low`, where the caller
+answers each MCP tool request; its ceiling grants no MCP tool above that. Codemux
 requires the resolved binary to be a regular executable owned by the current
 user or root, not group/world writable, and outside the execution working
 directory. It supplies a session-only `mcpServers` configuration pinned to that

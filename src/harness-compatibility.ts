@@ -329,14 +329,27 @@ export const evaluateHarnessVersion = (
   contract: HarnessContract,
   version: string,
   autonomy?: AutonomyLevel,
-  sandboxed = false
+  sandboxed = false,
+  minimumOverride?: string
 ): HarnessVerdict => {
-  if (compareVersions(version, contract.min) < 0) {
+  // Sessions carry floors above the run contracts (design §4.3), and a
+  // floor is itself an audited build — 2.1.280 is the
+  // `--permission-prompt-tool stdio` build the session wire was recorded
+  // on, 0.159.3 the app-server method table, 1.2.14 agy's audited
+  // release — so the override raises BOTH the below-min refusal point
+  // and the audited ceiling (review live10: a session at exactly its
+  // floor warned "unaudited" on every launch). It can never lower
+  // either: an override below the contract's own min is ignored.
+  const minimum =
+    minimumOverride !== undefined && compareVersions(minimumOverride, contract.min) > 0
+      ? minimumOverride
+      : contract.min;
+  if (compareVersions(version, minimum) < 0) {
     return {
       kind: "refuse",
       version,
       message:
-        `${agent} ${version} is older than the ${contract.min} this Codemux enforces. ` +
+        `${agent} ${version} is older than the ${minimum} this Codemux enforces. ` +
         `Update ${agent}, or install a Codemux release that supports ${version}.`,
     };
   }
@@ -357,12 +370,18 @@ export const evaluateHarnessVersion = (
     };
   }
 
-  if (compareVersions(version, contract.maxAudited) > 0) {
+  // The audited ceiling rises with the floor for the same reason: the
+  // floor build is the one the session wire was audited against, so a
+  // version between the run contract's maxAudited and the floor is
+  // inside the session's audited band, not above it.
+  const auditedCeiling =
+    compareVersions(minimum, contract.maxAudited) > 0 ? minimum : contract.maxAudited;
+  if (compareVersions(version, auditedCeiling) > 0) {
     return {
       kind: "unaudited",
       version,
       message:
-        `${agent} ${version} is newer than the ${contract.maxAudited} this Codemux audited. ` +
+        `${agent} ${version} is newer than the ${auditedCeiling} this Codemux audited. ` +
         `No breaking change is known for it, so this run continues. If autonomy stops behaving ` +
         `as documented, that is the first thing to suspect.`,
     };
@@ -473,6 +492,10 @@ export interface VersionGateRequest {
   override: boolean;
   autonomy?: AutonomyLevel;
   sandboxed?: boolean;
+  /** Replaces the contract's below-min refusal point. The session path
+   * (design §4.3) enforces floors above the run contracts; `run` never
+   * sets this. */
+  minimumOverride?: string;
 }
 
 /**
@@ -485,7 +508,7 @@ export interface VersionGateRequest {
 export const assertSupportedHarnessVersion = async (
   request: VersionGateRequest
 ): Promise<void> => {
-  const { agent, binary, binaryName, workdir, override, autonomy, sandboxed = false } = request;
+  const { agent, binary, binaryName, workdir, override, autonomy, sandboxed = false, minimumOverride } = request;
   const contract = HARNESS_CONTRACTS[agent];
   if (!contract) return;
 
@@ -524,6 +547,25 @@ export const assertSupportedHarnessVersion = async (
       }
       throw new HarnessVersionError(`${refusal}. Set ${ALLOW_UNTESTED_ENV}=1 to run anyway.`);
     }
+    if (minimumOverride !== undefined) {
+      // Review live9: the session path (the only caller that sets
+      // `minimumOverride`) cannot read an unreadable version the way
+      // `run` tolerates. `run` exits with the harness, so an
+      // unconfirmed contract is a bounded bet; a session holds a
+      // resumable, interactive process open behind a floor the design
+      // (§4.3) treats as the pre-hardening boundary — a wrapper that
+      // hides its version could be anything. Refused, like every
+      // below-floor session, with the operator's override.
+      const refusal =
+        `could not determine the ${agent} version, so Codemux cannot confirm ` +
+        `the session floor ${minimumOverride}: this harness may be a release ` +
+        `below the floor or a wrapper the version probe cannot read`;
+      if (override) {
+        console.warn(`Warning: ${refusal} (${ALLOW_UNTESTED_ENV}=1).`);
+        return;
+      }
+      throw new HarnessVersionError(`${refusal}. Set ${ALLOW_UNTESTED_ENV}=1 to run anyway.`);
+    }
     // Warn rather than refuse. Codemux refuses only what it has determined to
     // be broken, and an unreadable version is not that: wrapper scripts, shims,
     // and vendored builds legitimately fail to report one, and bricking them
@@ -536,7 +578,7 @@ export const assertSupportedHarnessVersion = async (
     return;
   }
 
-  const verdict = evaluateHarnessVersion(agent, contract, version, autonomy, sandboxed);
+  const verdict = evaluateHarnessVersion(agent, contract, version, autonomy, sandboxed, minimumOverride);
   if (verdict.kind === "supported") return;
   if (verdict.kind === "unaudited") {
     console.warn(`Warning: ${verdict.message}`);

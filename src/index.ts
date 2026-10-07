@@ -6,6 +6,7 @@ import { registerCheckCommand } from "./check-command.js";
 import { getDefaultConfig, loadConfig, resolveModel } from "./config.js";
 import { registerInfoCommands } from "./info-commands.js";
 import { launchRunRequest } from "./launch.js";
+import { registerSessionCommand } from "./session/cli.js";
 import {
   handleUnexpectedError,
   isScodeAvailable,
@@ -295,11 +296,7 @@ program
       }
 
       const autonomy = resolveAutonomyForAdapter(agentId, caps, requestedAutonomy);
-      if (
-        autonomy &&
-        adapter.requiresSandboxForAutonomy(autonomy) &&
-        !options.sandbox
-      ) {
+      if (adapter.requiresSandboxForAutonomy(autonomy) && !options.sandbox) {
         console.error(
           `Error: ${agentId} cannot enforce '${autonomy}' autonomy without --sandbox`
         );
@@ -480,11 +477,7 @@ program
       const requestedAutonomy = parsedAutonomy ?? "read-only";
       const sandboxAutonomy = requestedAutonomy;
       const autonomy = resolveAutonomyForAdapter(agentId, caps, requestedAutonomy);
-      if (
-        autonomy &&
-        adapter.requiresSandboxForTuiAutonomy(autonomy) &&
-        !options.sandbox
-      ) {
+      if (adapter.requiresSandboxForTuiAutonomy(autonomy) && !options.sandbox) {
         console.error(
           `Error: ${agentId} cannot enforce '${autonomy}' autonomy without --sandbox`
         );
@@ -568,5 +561,6 @@ program
 
 registerCheckCommand(program, config, requireValidConfig);
 registerInfoCommands(program, config, configError);
+registerSessionCommand(program, config, requireValidConfig);
 
 await program.parseAsync();

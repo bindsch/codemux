@@ -9,6 +9,11 @@ import {
 
 const READ_CHUNK_BYTES = 64 * 1024;
 
+/** The file opened and is a regular file, but its bytes break a content
+ * bound (size, UTF-8). Callers that distinguish a bad file from an
+ * untrusted or unreadable one match on this class. */
+export class FileContentError extends Error {}
+
 export interface BoundedFileOptions {
   maxBytes: number;
   label: string;
@@ -46,7 +51,7 @@ export function readUtf8FileBounded(
       throw new Error(`${options.label} is not a regular file`);
     }
     if (stat.size > options.maxBytes) {
-      throw new Error(`${options.label} exceeds ${options.maxBytes} bytes`);
+      throw new FileContentError(`${options.label} exceeds ${options.maxBytes} bytes`);
     }
     options.validate?.(stat);
 
@@ -60,7 +65,7 @@ export function readUtf8FileBounded(
       chunks.push(chunk.subarray(0, bytesRead));
       totalBytes += bytesRead;
       if (totalBytes > options.maxBytes) {
-        throw new Error(`${options.label} exceeds ${options.maxBytes} bytes`);
+        throw new FileContentError(`${options.label} exceeds ${options.maxBytes} bytes`);
       }
     }
     try {
@@ -69,7 +74,7 @@ export function readUtf8FileBounded(
       );
     } catch (error) {
       if (error instanceof TypeError) {
-        throw new Error(`${options.label} must contain valid UTF-8`);
+        throw new FileContentError(`${options.label} must contain valid UTF-8`);
       }
       throw error;
     }

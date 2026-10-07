@@ -29,8 +29,13 @@ import type { AutonomyLevel } from "./types.js";
  * path: a single slash anchors at the working directory, and a relative
  * path tracks the child's mutable current directory. Canonicalize the
  * launch directory so neither an approved `cd` nor a symlinked `--cwd`
- * can move the grant. */
-function grantRule(launchDir: string): string {
+ * can move the grant.
+ *
+ * The session ceiling (src/session/ceiling.ts) reuses this as the one
+ * canonicalization of the launch-directory scope: it decodes the path
+ * back out of the returned rule, so the predicate and the grant can
+ * never disagree about what "inside the launch directory" means. */
+export function grantRule(launchDir: string): string {
   let absolute = isAbsolute(launchDir) ? launchDir : resolve(launchDir);
   try {
     absolute = realpathSync(absolute);

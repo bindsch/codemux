@@ -71,6 +71,7 @@ export function readProcessTable(): ProcessTable {
       stderr: "ignore",
       stdin: "ignore",
       timeout: PROCESS_TABLE_TIMEOUT_MS,
+      env: psEnvironment(process.env),
     });
   } catch (error) {
     warnProcessTable(error instanceof Error ? error.message : String(error));
@@ -83,6 +84,21 @@ export function readProcessTable(): ProcessTable {
   parsePsOutput(result.stdout?.toString() ?? "", table);
   if (table.size === 0) warnProcessTable("/bin/ps printed nothing usable");
   return table;
+}
+
+/** The environment `/bin/ps` runs under: the caller's environment with
+ * `TZ` and `LC_ALL` pinned (review live14). BSD ps formats the `lstart`
+ * text in the ambient time zone and locale, and the caller's environment
+ * passes through to the child by default — two codemux processes started
+ * from different shells (CEST vs. UTC) would mint different tokens for
+ * the same live pid, and every identity check that compares them (the
+ * registry's live-owner guard, the writer lock) would judge a live
+ * writer dead. Pinning the clock and the spelling makes the token a
+ * property of the process, not of the invoker's shell. */
+export function psEnvironment(
+  env: Record<string, string | undefined>
+): Record<string, string | undefined> {
+  return { ...env, TZ: "UTC", LC_ALL: "C" };
 }
 
 /** Parse `ps -o pid=,ppid=,pgid=,stat=,lstart=` output: "pid ppid pgid stat

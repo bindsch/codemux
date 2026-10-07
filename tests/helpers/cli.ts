@@ -17,7 +17,9 @@ export interface CliResult {
 export async function runCli(
   args: string[],
   envOverrides?: Record<string, string>,
-  options?: { stdin?: string | Uint8Array }
+  // `holdStdin` writes `stdin` but leaves the pipe open until the process
+  // exits, for a session that must end on its own rather than on EOF.
+  options?: { stdin?: string | Uint8Array; holdStdin?: boolean }
 ): Promise<CliResult> {
   const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-cli-home-"));
   try {
@@ -45,7 +47,8 @@ export async function runCli(
     const stdin = proc.stdin;
     if (options?.stdin !== undefined && stdin !== null && stdin !== undefined) {
       stdin.write(options.stdin);
-      stdin.end();
+      if (options.holdStdin === true) stdin.flush();
+      else stdin.end();
     }
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(proc.stdout).text(),

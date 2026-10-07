@@ -28,9 +28,11 @@
  * operator file the hermetic run would close.
  *
  * Resolution lives here, a pure function of the environment, so any spawn
- * codemux makes can call it: `codemux run` through the adapter today, and
- * the planned `codemux session` resume path through the same
- * `readProviderOverride` call — no adapter state to reconstruct.
+ * codemux makes can call it: `codemux run` through the adapter today.
+ * `codemux session` does not carry overrides in this release: it refuses
+ * to start while any `CODEMUX_<AGENT>_PROVIDER_*` name is set for the
+ * session agent (review live25), and wiring the override into the session
+ * spawn through this same call is the next release's work.
  *
  * Blank values count as unset, so an exported empty variable is harmless.
  */

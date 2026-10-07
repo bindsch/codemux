@@ -7,6 +7,716 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-07
+
+### Added
+
+- Live sessions: `codemux session` starts or resumes a persistent agent
+  session over one JSONL protocol — input lines on stdin (`user`,
+  `steer`, `interrupt`, `permission_decision`, `shutdown`, each
+  acknowledged as accepted or rejected with a reason), event envelopes
+  on stdout with the harness's raw line carried verbatim (unrecognized
+  frames pass through as `unknown`; a wire-grammar violation ends the
+  session rather than being guessed past). Supported: Claude Code,
+  Z.AI, Codex, and Antigravity; any other agent refuses with exit 64.
+  Each harness runs behind a session-only version floor (claude/zai
+  2.1.280, codex 0.159.3, agy 1.2.14) and an honest capability matrix —
+  a false flag means the input is rejected by name, never silently
+  ignored (Antigravity's matrix is documented rather than
+  live-verified; its login had expired, so its contract rests on the
+  recorded fixture and is marked as such). Same safety seams as `run`:
+  scode sandbox default, the same autonomy mapping except a narrower
+  claude/zai `high` (`--permission-mode default` with `run`'s grant
+  list, never `--dangerously-skip-permissions`), `--pass-env`
+  validation, and the same repository executable-configuration refusals
+  (a `.codex/config.toml` or `.codex/rules/` in the working directory
+  refuses a codex session, as `run` refuses the run). Permission
+  requests surface as events the caller answers; an unanswered request
+  is denied after `--permission-timeout` (or superseded on interrupt
+  and turn timeout) and no decision is relayed past the autonomy
+  ceiling. Sessions are recorded
+  in a local registry (`~/Library/Application Support/codemux/
+  live-sessions.json` on macOS, `~/.local/state/codemux/` elsewhere)
+  and `--resume` accepts only registry-vouched ids — same agent, same
+  harness home, autonomy no higher than recorded, containment no lower
+  than recorded; a corrupt or
+  untrusted registry fails closed, a registry that cannot be written
+  fails the session the same closed way before it runs, and a registry
+  that would sit inside the working directory or harness home is
+  refused at start. Clean
+  lifecycle on stdin close and
+  on harness crash, with the whole process tree killed after the
+  shutdown grace; an internal codemux failure while processing a harness
+  line is reported as codemux's own error, never recast as unusable
+  harness output. `--hermetic` and `--tools` are refused for sessions,
+  and so is `--sandbox-trust untrusted` on a sandboxed one (with
+  `--no-sandbox` the trust flag is ignored with a warning, as in `run`);
+  claude/zai sessions accept `--enable-playwright-mcp` at `--auto low` on
+  the same sandbox-scoped carrier as `run`. Provider overrides do not
+  reach sessions in this release: `codemux session` exits 64 while any
+  `CODEMUX_<AGENT>_PROVIDER_*` variable is set for the session agent,
+  naming the variables; overrides reach sessions in the next release
+  (docs/HERMETIC.md; the
+  2026-10-05 addendum in docs/HARNESS-COMPATIBILITY.md carries the
+  per-harness wire contracts).
+
+### Fixed
+
+- Live-session review fixes (four auditors, live2 round). The claude
+  family's medium-scoped path grant could be escaped with a `..` after a
+  missing directory (the scope check compared a resolved launch
+  directory against an unresolved tool path); canonicalization now
+  resolves the joined path before comparison. The claude-family parser
+  deduplicated assistant frames by `message.id`, but the recorded wire
+  sends one content block per frame under a shared id — the dedupe
+  dropped real thinking and text blocks; it is removed, sibling frames
+  all parse, and `usage_stream` is now honestly `false` for claude/zai
+  (usage arrives only in the turn's `result`). Outbound-queue overflow
+  fired its failure on every further enqueue; both failure classes now
+  latch. A `user`/`steer` text whose harness frame cannot fit inside the
+  stdin line cap is rejected `text_too_long` before the ack instead of
+  being accepted and then undeliverable; a failed write to harness stdin
+  is a fatal codemux error instead of a silent diagnostic; a final event
+  that cannot be delivered reports exit 1 instead of success. An
+  oversize caller-stdin line is rejected exactly once with its remainder
+  discarded through the terminating newline (a second bogus rejection
+  could land on the next line). An untrusted registry is a policy
+  refusal — exit 78, not 66 — matching the documented exit-code split.
+  Docs corrected to match: the session capability matrices, the
+  `--permission-prompt-tool stdio` carrier, and the blanket session
+  `--tools` refusal.
+
+- Live-session review fixes (four auditors, live3 round). A stalled final
+  flush — a caller whose sink accepts the last event but never returns —
+  resolved `run()` with the session's own exit code instead of reporting
+  the undelivered result; the final flush now has a bounded wait (1 s)
+  after which the outbound queue is abandoned and the exit code is forced
+  to at least 1 (all three drivers). Two concurrent `--resume` starts of
+  the same id could overwrite each other's live ownership; the claim is
+  now made atomically under the registry writer lock and the loser fails
+  closed with `session_busy`. A dangling or looping symlink sitting
+  inside the medium scope denied nothing — its realpath resolve threw and
+  the deepest existing ancestor (the scope root) was compared instead;
+  a symlink whose target cannot be resolved now denies outright, in both
+  the claude-family ceiling and the codex approval ceiling. A codex
+  `fileChange` whose patch moves a file was judged only by the source
+  path; the move destination is now judged with it, and a non-string or
+  empty `move_path` denies. The claude/zai `steer` capability flag is now
+  honestly `false`: the wire has no carrier that shapes the running turn
+  on demand, so a `steer` line is rejected `unsupported` (codex keeps
+  `steer: true` via `turn/steer`). The codex session thread config
+  was described as the app-server equivalent of run's `--ignore-rules`;
+  it is not — it skips AGENTS.md discovery only, execpolicy rules
+  (`~/.codex/rules`) have no verified carrier, and the parity gap is
+  recorded in the compatibility ledger and docs/HERMETIC.md (unreachable
+  through any launchable session today: every one runs
+  `approvalPolicy: "never"` inside scode). Docs corrected to match: the
+  event list (`assistant_delta`, not a nonexistent `deltas` event),
+  `--timeout` expiry's exit-1-with-`reason: "timeout"` mapping, the
+  unconditional `--include-partial-messages` in the documented spawn,
+  the panel doc's removed usage dedupe and its `owner_start` field name.
+
+- Live-session review fixes (four auditors, live4 round). A signal in
+  the window between driver construction and the CLI's async spawn
+  finished the driver with no child to stop, stranding the harness
+  process that then attached; a finished driver now stops the child at
+  attach (all three drivers). A `shutdown` that arrived while the codex
+  handshake was still initializing was buffered like any turn input, so
+  a stalled initialize held the session open behind an unlimited default
+  timeout; a shutdown during startup is acked and ends the session at
+  once. A rejected codex interrupt request left the pending flag set, so
+  the turn's real completion was recast as `interrupted`; a rejected
+  interrupt never happened and the flag is cleared. Sessions created
+  with `--sandbox-no-net` or `--sandbox-scrub-env` recorded neither
+  flag, so a resume without the boundary was allowed — the resumed
+  transcript then ran with reach creation never granted; both flags are
+  recorded and a resume may not clear either, judged as the resume
+  effectively runs (resolved options, not raw argv). Antigravity
+  reported `usage_stream: false` while the driver emitted standalone
+  per-turn `usage` events; the events are removed and usage rides only
+  the per-turn result envelope, the same contract claude/zai ship. The
+  `--tools` help text implied `default` was accepted ("'none' is refused
+  for sessions") while every value refuses; it now states the refusal
+  outright. Usage sums are keep-semantics: a null side yields the other
+  side, so a partially-reporting turn can no longer null the session
+  cumulative's known fields, and no counter is ever guessed as zero.
+  The design doc's codex usage-accounting passage claimed a resumed
+  thread's first update "yields nulls for that turn" — no such rule
+  exists in code; the passage now states the real contract (per-delta
+  `usage` events, first-replaces-then-adds turn folding, keep-semantics
+  session sums, resume counting from the first update the resumed
+  process sees).
+
+- Live-session review fixes (four auditors, live5 round). The shutdown
+  path disposed its signal handlers before cleanup completed, so a
+  second SIGINT/SIGTERM during the grace window killed codemux mid-kill
+  and left the harness tree it was stopping alive; the gate now stays
+  installed until the child has settled and `session_ended` is out, its
+  fire-once latch absorbing repeat signals (all three drivers). The same
+  path silently discarded the harness's final output: lines arriving
+  after the end path began — the end-interrupt's answer, the interrupted
+  turn's completion, its usage — were dropped, so a clean shutdown could
+  report no `turn_completed` and a null-usage `session_ended`; harness
+  lines are now parsed and emitted through the whole grace drain, the
+  FSM's shutdown transitions wait for settlement, a first result still
+  adopts the session identity mid-drain, and the codex end-interrupt is
+  a real correlated JSON-RPC call whose response the normal handlers
+  consume. The medium-scoped path check judged one spelling of the
+  target only; a `..` over a missing directory could route an edit
+  through a symlink out of the launch directory (`gone/../link/x`), and
+  the mirror shape (`link/../x`) hid behind macOS realpath's lexical
+  collapse of `link/..`; both spellings — symlinks expanded in namei
+  order, and the lexically normalized path — must land inside the scope,
+  or the request denies fail-closed (claude-family ceiling and codex
+  approval ceiling alike). A malformed `--permission-timeout` or
+  `--shutdown-grace` exited 1 as an internal error instead of 64 usage.
+  Docs and comments corrected to match the code: the ceiling module's
+  low-autonomy header, the codex driver's empty-session-id and tier-2
+  claims, the usage event's per-harness contract, the documented
+  claude/zai spawn's missing `--replay-user-messages`, HERMETIC.md's
+  resume-guard summary (all guards, not three), the fixture README's
+  sanitizer claim, registry comment residuals, and the fake claude
+  harness's deny answer keyed by the request it actually denied.
+
+- Live-session review fixes (live6 round). Security: the medium-autonomy
+  ceiling could be escaped with path spellings Claude Code rewrites
+  before it writes — its Edit/Write/NotebookEdit tools expand a leading
+  `~` to the home directory and trim surrounding whitespace, while the
+  scope check resolved both as ordinary relative names inside the launch
+  directory, so an allow on `Write {file_path: "~/.bashrc"}` or
+  `" /etc/hosts"` was judged inside while the write landed outside; a
+  target codemux cannot interpret the way the harness will (whitespace-
+  padded, `~`-relative) now denies fail-closed, in both the claude-family
+  ceiling and the codex approval ceiling. A corrupt or unreadable
+  registry's resume refusal now names the registry's path, as the
+  documented failure policy says, so an operator can find the file. The
+  claude-session builder's dead `addDirs` parameter — never fed, the
+  session surface has no `--add-dir` — is removed. Docs and comments
+  corrected to match the code: the tier-2 mirror split (parser-caught
+  violations mirror the raw line then fatal; driver-caught lifecycle
+  violations — a result with no open turn, a duplicate permission id —
+  fatal without the mirror), the permission-answer refusal semantics
+  (`malformed`/`unsupported` leave the request pending;
+  `autonomy_escalation` resolves deny), the codex resume pattern's
+  actual refusal point for a pasted claude UUID (the registry, not the
+  pattern), the agy driver's `unsupported`-not-`unknown_request`
+  comment, the low-level schema rule in the report and panel doc, the
+  session writable set (cwd and harness home; no `--add-dir`), the
+  claude-family scoping of the never-bypass-flag sentence (agy's run
+  mapping keeps it), the README's rejection-reason union, and the panel
+  doc's lock-budget and agy `=`-form flag spellings.
+
+- Live-session review fixes (live7 round). Security: a relative `..`
+  could route a medium edit through a symlink out of the launch
+  directory — the scope check collapsed `..` before symlink expansion,
+  so both spellings saw the lexical form and the link never mattered
+  (`bun/../1.4.2/INSTALL_RECEIPT.json` from a cwd whose `bun` is a
+  symlinked Homebrew opt directory read the Cellar file while being
+  judged inside); relative components now survive until symlink
+  expansion, in both the claude-family ceiling and the codex approval
+  ceiling. A fatal error arriving during the shutdown drain — after
+  `finish` began, before the child settled — was ignored by the end
+  path's re-entry guard, so the driver emitted the fatal and still
+  exited 0 with the initiating reason; cleanup stays idempotent while
+  the verdict stays updatable, and a failure inside the grace window
+  raises the exit code to 1 (all three drivers). A root working
+  directory bypassed the registry containment checks — the prefix
+  built for scope `/` was `//`, which no real path starts with, so
+  `--cwd /` escaped both the start-time writable-set refusal and the
+  resume-time untrusted guard; a root scope now contains every path,
+  the same rule the ceiling's scope check carries. Design and README
+  amended with the relative-join rule, the drain's failure contract,
+  and the root-cwd refusal.
+
+- Live-session review fixes (live8 round). The session cost was
+  double-counted: the claude-family result's `total_cost_usd` is a
+  session-lifetime figure on the wire (every report already includes
+  the earlier turns), and the cumulative summed it per turn — replaying
+  the recorded zai fixture reported $0.4447632 against the harness's
+  own $0.118512; the fold now sums the per-turn token counts while the
+  cost adopts the harness's latest figure (a turn reporting no cost
+  keeps the known one; codex and agy carry no cost and are unchanged).
+  A permission request arriving during the shutdown drain — after the
+  end path denied everything it found pending — was left registered
+  with an expiry timer the end path had already cleared while the
+  caller's decision channel was closed, so the harness waited on an
+  answer that could never come, stalling the persistence the grace
+  window exists for; such a request is now denied at once
+  (`permission_resolved: "superseded"`), on both the claude family and
+  codex. Design, README, and the panel doc amended with both rules.
+
+- Live-session review fixes (live9 round). The registry writer lock's
+  stale recovery could break mutual exclusion: the steal unlinked a
+  fixed pathname without verifying it still identified the dead holder,
+  so two writers racing on one corpse could both acquire — the lock
+  file's name is now never reused (`.<lock>.<pid>.<salt>.held`,
+  created `O_EXCL` and confirmed by rescan), and a steal can only unlink
+  the exact file whose payload was verified dead. A harness exiting
+  nonzero during the shutdown drain with its turn still open resolved
+  the session as success; the end verdict now reads the child — no
+  completion delivered plus a nonzero exit is a failure (exit 1, fatal
+  error ahead of `session_ended`), with two exemptions: a completion
+  that WAS delivered (the claude family exits 1 after an interrupted
+  turn by convention) and a signal death (all three drivers). The
+  resume-autonomy ranking was one ladder for every agent, but
+  "low out-reaches high" holds only where a permission round-trip
+  exists — an agy session created at low could resume at high's
+  `--dangerously-skip-permissions`; the ranking is now per agent, with
+  agy strict (`read-only < low < medium < high`) and unknown agents
+  ranked strict too. A harness whose `--version` the probe cannot read
+  skipped the session floor entirely (warn and continue); it is now
+  refused like a below-floor build, `CODEMUX_ALLOW_UNTESTED_HARNESS=1`
+  overrides. Caller input arriving during the shutdown drain was
+  dropped unacknowledged and the documented `shutting_down` rejection
+  was unreachable dead code; every line is now answered inside the
+  drain window (`input_rejected` `shutting_down`), on all three
+  drivers. Design, README, and the compatibility ledger amended with
+  all five rules.
+
+- Live-session review fixes (live10 round). Security: the ceiling's
+  symlink expansion collapsed a relative link target's `..` by string
+  before the kernel would apply it, so a Write spelling like
+  `L/../.zshrc` over a link chain (`L -> S/../.ssh`, `S -> outside the
+  scope`) could pass both the kernel and lexical spellings while the
+  file landed outside the edit scope — the expansion now substitutes
+  the target without collapsing it and lets the namei-order walk
+  expand the inner links; the codex file-change scope check shares the
+  same `pathInsideScope` and the fix. Codex dropped caller lines that
+  arrived before the session handshake finished — no ack, no event, and
+  the process exited 0 — they are now answered `input_rejected`
+  `shutting_down` like every drain-window line, and mid-turn lines
+  already acked and queued harness-side but foreclosed by the end are
+  reported with a non-fatal `error` naming the drop (acks cannot be
+  retracted; the steer buffer gets the same notice). Per-turn
+  `turn_completed.usage.cost_usd` mirrored the wire's session-to-date
+  `total_cost_usd` next to per-turn token counts, inviting callers to
+  sum overlapping figures; it is now null on the claude family and the
+  real figure rides `session_ended.usage`. The cumulative
+  `total_tokens` was summed independently of its parts, so a turn
+  reporting input and output but no cache figure left the total not
+  matching the components; totals are now computed from the summed
+  parts. Derived `file_change` events fired at the `tool_use` frame,
+  before the permission answer — a denied or failed edit had already
+  been reported as a change; they are now emitted only when the call's
+  own `tool_result` reports success, keyed to the tool_use id, and a
+  Write's action reads the target's pre-write state (overwriting an
+  existing file is an edit, not an add). Session floors sat above the
+  run contracts' audited maximums, so every valid claude/zai/codex
+  session printed a false "unaudited version" warning; a floor is
+  itself an audited build and now raises the audited ceiling with it
+  (the warning starts above the floor), and a floor override can never
+  lower the refusal point or the ceiling. An agy session ended
+  mid-turn left the turn open with no `turn_completed`; the driver now
+  synthesizes one (`finish: interrupted`, reason naming the session
+  end, all-null usage) on end paths whose child exit is not itself the
+  reported failure, so every `turn_started` is answered on every path.
+  Invalid flag values (`--auto bogus`, `--sandbox-trust bogus`) exited
+  1 instead of the documented usage code; they are 64 (EX_USAGE) on
+  session and run alike, and the dead unreachable branch is removed.
+  Docs corrected to match: the README's codex `session_started.raw`
+  exception, the panel's F6/F11/B1 narrowed to what shipped, and the
+  report's live9 audit now names `updateRegistry` (the real sole
+  caller of the registry lock) instead of the nonexistent
+  `withRegistryLock`.
+- Live-session review fixes (live11 round). Codex: a shutdown while
+  `turn/start` was still in flight skipped the graceful interrupt (the
+  end path waited for a turn id it would never get) — the interrupt is
+  now sent whenever the state machine still holds an open turn;
+  approvals pending at turn completion were never cleared (a later
+  decision was acked for a dead request, and the expiry timer could
+  write a stray decline into a later turn) — a turn that completes or
+  fails now supersedes what it leaves pending, claude family included;
+  a turn failing while its interrupt was pending was reported
+  `interrupted` with its error dropped — an explicit failure now keeps
+  `finish: failed` and its own reason; a stale interrupt rejection
+  could clear the NEXT turn's interrupt state (rejections are matched
+  by call id now), so a turn-timeout completion keeps its
+  `turn-timeout` reason; a resumed thread is announced from the
+  `thread/resume` response (the pinned 0.159.3 server sends no
+  `thread/started` on resume — live-proven), where it used to wait for
+  a notification that never comes, and a late `thread/started` that is
+  the session's first and names the adopted thread is tier-1
+  passthrough (a second one, or one naming another thread, stays a
+  tier-2 fatal). All three drivers: the crash
+  path no longer adds a second false "during the shutdown drain"
+  fatal for the same exit, and a turn left open by a crash, a signal
+  death, or a 143-exiting wrapper (the signal's coded spelling — a
+  nonzero exit that is not 143 and delivers nothing still costs
+  success) is answered with a synthesized `turn_completed` (failed on
+  a crash, interrupted otherwise, usage all-null). Registry: the
+  autonomy and trust validations used `in`, so prototype-chain
+  spellings ("constructor", "toString") validated and the trust guard
+  compared NaN — such records are corrupt now, failing the resume
+  closed. Ceiling: medium no longer grants writes inside the launch
+  directory's `.git` (hooks and config are executable git
+  configuration), and containment additionally requires the target's
+  raw spelling inside the launch directory's own raw disk spelling, so
+  a normalization-folded sibling directory cannot ride the NFC
+  comparison into "inside".
+- Live-session review fixes (live12 round). All three drivers: the
+  shutdown path could leave an open turn unanswered exactly when the
+  live9 drain-failure verdict fired — the verdict and the live10/11
+  synthesis were mutually exclusive, so a harness exiting nonzero during
+  the drain (a failure while persisting) emitted the fatal but no
+  `turn_completed` for the turn it belonged to; the synthesis now runs
+  for every still-open unanswered turn, failed with the drain failure as
+  the reason when the verdict fired. Claude/zai: a stale interrupt
+  mislabeled both turns it touched — a clean result raced by the
+  interrupt was reported `interrupted`, and the already-written
+  interrupt then struck the next turn, whose error result was reported
+  `failed`; the interrupted verdict is the driver's now (the parser
+  reports the raw error bit), an error result with an interrupt
+  outstanding is the interrupt striking, and an interrupt that missed
+  rolls to the next turn — once. Codex: a resume never checked that the
+  server returned the requested thread (the id was preset, so a server
+  resuming into a different thread ran unannounced under the wrong id) —
+  the response's `thread.id` must now echo the request or the session
+  fails closed with both ids named.
+
+- Live-session review fixes (live13 round). The medium-level `.git`
+  refusal compared path components case-sensitively, so a `.GIT`-spelled
+  write — which a case-insensitive filesystem (macOS's default, Windows)
+  opens as the real `.git` — passed the scope check and could approve an
+  executable hook; the component compare now folds case outright (a
+  deliberate over-denial of a literal `.GIT` directory on
+  case-sensitive disks). Registry stamp failures were silently
+  swallowed: `updateRegistry`'s outcome contract is total (it never
+  throws), so the try/catch around every touch and end stamp was dead
+  code — a lost end stamp left the record looking owned by a live
+  process with no stderr line, and the next resume could answer
+  `session_busy` with nothing explaining why; both stamp paths now
+  report on stderr (the touch once per session, not per turn). The
+  turn-path activity stamp waited out the writer lock's full budget
+  (about 10 s of synchronous `Atomics.wait`) inside harness-line
+  handling on every turn completion, freezing stdout reads, caller
+  events and signal handlers whenever another codemux process held the
+  lock; the touch now takes a single-attempt lock — one sweep, fail
+  fast — while the load-bearing start and end writes keep the full
+  budget at the session boundaries. Pruning could write a registry its
+  own validator rejects: with more than 1000 entries whose owners were
+  all live there was nothing evictable, and the oversized file read as
+  corrupt (every resume fails closed, the next start resets the
+  registry, dropping every live record); an all-live overflow now evicts
+  the oldest entry anyway — a lookup hint evicted answers `not_found`,
+  the smaller loss — and pruning judges liveness against one
+  process-table snapshot instead of enumerating the host's processes
+  once per live owner inside the held lock.
+- Live-session review fixes (live14 round). A lock file a failed
+  acquisition left behind (created but never written, or half-written)
+  blocked every later registry write forever: its unjudgeable payload
+  read as `unknown`, and nothing fell back to the pid encoded in the
+  never-reused file name — with that pid dead the file can only be that
+  acquisition's leftover, so it is now stolen like any corpse, and the
+  failed acquirer unlinks its own file instead of abandoning it. The
+  lock-owner liveness check ran `ps` under the caller's ambient time
+  zone and locale, so two codemux processes with different `TZ` values
+  minted different start tokens for the same live pid and judged a live
+  writer dead — a stolen lock, a `session_busy` resume waved through;
+  the spawn now pins `TZ=UTC LC_ALL=C`, making the token a property of
+  the process. Steers buffered behind a delayed `turn/start` were joined
+  into one `turn/steer` frame with no size check: two 9 MiB steers both
+  passed the pre-ack check alone and were acked, then the ~18 MiB joined
+  frame was refused as oversize and the session crashed as a codemux
+  failure; the batch now grows only while the built frame fits, so the
+  flush falls back to one request per steer. A codex turn that completed
+  cleanly while an interrupt was still in flight was recast
+  `interrupted` (with `turn-timeout` on the timeout path): the wire's
+  `turn/completed` names `interrupted` itself, so the wire's status is
+  the verdict and only a wire `interrupted` the timeout's own interrupt
+  produced carries the `turn-timeout` reason. An early `shutdown` took
+  the next `input_seq` while an earlier user line sat unsequenced in the
+  startup buffer, so order-matching brokers read the rejection as the
+  shutdown's answer; the parked lines are now rejected first, arrival
+  order preserved. Also fixed in the same write-path audit: a harness
+  dying while a large accepted line still drained through its stdin
+  pipe surfaced as an unhandled `EPIPE` promise rejection from the
+  FileSink instead of the child's exit reporting the death — the drain
+  rejection is absorbed on both the write and the half-close paths.
+
+- Live-session review fixes (live15 round). A codex turn could complete
+  without ever starting: `turn_started` rode the harness's `turn/started`
+  notification, but the FSM opens the turn at submit — a `turn/start`
+  error completed a turn the caller never saw open, and a shutdown before
+  the notification synthesized an interruption for an unannounced turn.
+  The caller-facing `turn_started` is now emitted at submit, claude-family
+  style (`raw: null`), and the harness's notification mirrors as tier-1
+  `unknown` like every other harness echo of something codemux already
+  announced. An allow on a codex approval whose `availableDecisions`
+  offers no plain `accept` (for example `["acceptForSession","decline"]`)
+  built a wire answer that substituted `decline` while the caller was
+  told allow and the ack said accepted — codemux never answers
+  `acceptForSession`, so allow is undeliverable: the request advertises
+  `deny` as its only option, the allow is rejected `unsupported`,
+  `permission_resolved` says deny, the wire carries the decline, and a
+  non-fatal error names what happened. The codex handshake kept going
+  after an end path began — an initialize response landing inside the
+  shutdown drain sent the thread request, adopted the thread, recorded
+  the registry start, and announced `session_started` after the
+  shutdown was already acked — the chain now stops the moment an end
+  path began, on both the success and the error branch (the claude
+  family's init frame and agy's first result still announce mid-drain:
+  harness-initiated identity frames, not codemux continuation chains).
+  A `turn/completed` with an unrecognized status passed through as
+  `unknown` and left the turn open forever, its queued input never
+  running; it now completes the turn `failed` with the status named.
+  JSON-RPC response ids were matched on `Number(id)`, so a string "1"
+  answered the numeric request 1 — ids now match strictly, and a
+  frame failing the match fails closed. A `thread/start` response
+  naming a different thread than an already-adopted `thread/started`
+  left two ids for one session; the response is now cross-checked
+  against the adopted id and fails closed naming both. The cumulative
+  `total_tokens` fold counted a turn that left a component unreported
+  as zero — the total is now null unless every folded turn reported
+  every part. The claude family accepted frames carrying no session id
+  (they now fail closed), dropped empty `text_delta` blocks silently
+  (they now mirror as `unknown`), and resolved a Write/Edit
+  `file_path` against codemux's own cwd when deciding add-vs-edit (the
+  session `--cwd` now decides). Both line framers — the harness-side
+  reader and the caller-stdin framer — rescanned from byte 0 and
+  recopied the whole buffer on every chunk, so a line near the cap
+  arriving in pipe-sized chunks was quadratic; both now grow on demand
+  and resume the scan where it stopped. The held-lock filename pattern
+  was documented as `.<registry>.<pid>.<random>.held`; the real shape
+  is `.<lock>.<pid>.<salt>.held` (CHANGELOG and design doc corrected).
+
+- Live-session review fixes (live16 round). Two user lines sent before a
+  codex session finished its handshake crashed it: the replay opened a
+  turn for the first, queued the second, and then submitted the queued
+  one while the first was still open; the queue now drains only from
+  idle. A claude-family `shutdown` with a mid-turn line queued reported
+  the line dropped, but the harness had already received it and could
+  run it inside the grace window, and its result then hit an idle state
+  machine and turned the clean end into exit 1; the notice now says the
+  harness may still run it, and such a result mirrors as `unknown`. A
+  codex thread id or agy conversation id the harness reported was
+  adopted unchecked, and one over the registry's 128-character cap made
+  the whole registry unreadable — every resume refused and the next
+  start reset it, dropping live owners' records; reported ids must match
+  the `--resume` patterns, and every registry write is validated with
+  the reader's rules first. A resume could widen reach the sandbox-flag
+  guard did not cover: a different `--cwd`, an added `--pass-env` name,
+  or `--enable-playwright-mcp`; the registry now records the pass-env
+  names and the Playwright flag and refuses all three (exit 78). Records
+  written by earlier builds of this branch lack the two new fields and
+  read as corrupt, so the next fresh session backs that file up and
+  starts a new one. A JSON-RPC response whose `error` was not an object,
+  or that carried neither `result` nor `error`, was read as success; both
+  are failures now. Antigravity emitted `turn_started` after the fatal
+  error when the write that opened the turn failed; the start now
+  precedes the write. The registry's signal-0 fallback read `EPERM` as a
+  dead process, so inside a sandbox that denies signals a live lock
+  holder or owner looked dead; only `ESRCH` means dead now.
+
+- Live-session review fixes (live17 round). At `--auto medium` the
+  ceiling blocked only `.git`, so a caller `allow` could let a turn
+  write `.claude/settings.json` hooks that the next interactive claude
+  in that directory runs outside the sandbox; medium now also refuses a
+  caller `allow` for the harnesses' project settings (`.claude`, `.codex`, `.gemini`,
+  `.cursor`), `.vscode`, `.idea`, `.husky`, `.envrc`, `.mcp.json`,
+  `.claude.json`, `.gitconfig`, `.gitmodules`, `.ripgreprc`, and shell
+  startup files below the launch directory (codex patch approvals share
+  the rule). The refusal applies only to requests the harness asks
+  about; see the live18 entry. The harness's stderr was captured and never read, so a
+  startup failure such as an expired login reached the caller only as
+  "exited unexpectedly"; it now passes through on codemux's stderr, as
+  in `run`. A read error on the caller's stdin ended the session as a
+  clean close with exit 0; it is now a fatal error and exit 1. The end
+  path wrote the end-interrupt and sent SIGTERM in one step, so a
+  harness that dies on SIGTERM never answered it, and agy never saw its
+  stdin close; the interrupt (for agy, the stdin close) now gets
+  `--shutdown-grace` before SIGTERM, which then gets a second grace
+  before the kill. A harness that exited nonzero during an idle shutdown
+  was ignored; it now costs success like a mid-turn one. `--turn-timeout`
+  fired once and never re-armed, so a refused or ignored interrupt left
+  the turn uncapped; a turn still open one period after its timeout
+  interrupt now ends the session (`reason: timeout`, exit 1). A crash
+  end's synthesized turn said the process exited unexpectedly even when
+  the end was an outbound overflow or a registry failure; it now carries
+  the fatal that ended the session. Antigravity emitted `user_message`
+  before the `turn_started` it named; the order now matches the other
+  drivers. A codex approval whose decision list named neither `decline`
+  nor `cancel` was answered `decline` anyway after the caller was told
+  deny; it is now never forwarded, answered with a JSON-RPC error, and
+  its turn interrupted.
+
+- Live-session review fixes (live18 round). A plain `allow` on a
+  claude or zai permission request reached the harness without
+  `updatedInput`, the field the harness runs the tool with; it now
+  carries the request's own input, and an allow too large for the
+  harness write cap is rejected `text_too_long` with the request left
+  pending. A claude-family `control_request` other than `can_use_tool`
+  was passed through with no reply, so the harness blocked until the
+  turn timeout; it is now answered with the control protocol's error
+  response, mirrored raw, and reported non-fatal. An `interrupt` sent
+  after the first `user` line but before the harness's init frame was
+  acknowledged and dropped; it is now delivered when that turn opens.
+  The shutdown verdict excused any nonzero child exit after any drained
+  completion; only exit 1 after an interrupted claude-family turn is
+  excused now, and codex or agy exiting nonzero during the drain always
+  costs success. A codex usage update that landed after its turn
+  completed was charged to the next turn; it now counts toward the
+  session total only. The registry writer accepted a symlinked registry
+  directory the reader refuses, so every session recorded and none
+  could resume; the writer now refuses it too. An oversize registry
+  read as untrusted and blocked every new session; it is now corrupt,
+  so the next start backs it up, and the writer prunes to the 4 MiB cap
+  as well as the 1000-entry one. A failed registry write left its temp
+  file behind; it is removed, and the write is flushed before the
+  rename. `requestStop` after the harness exited held the event loop for
+  the grace period and then signaled a reaped process group. The
+  caller-stdin cap missed a line whose newline arrived with the bytes
+  that took it over. A stdin read error during the final flush emitted
+  an event after `session_ended`. Docs: the medium ceiling's
+  executable-configuration list only covers requests the harness asks
+  about, which at medium is Claude Code's own sensitive set (`.git`,
+  `.claude`, `.vscode`, `.idea`); a write to `.envrc` or `.husky/`
+  inside the launch directory is as open as in a medium `run`.
+- Live-session review fixes (live19 round). Two concurrent resumes of
+  one claude or zai session both started a harness and forwarded the
+  caller's first input. The loser was refused only at the init frame,
+  after its harness had acted on that input. A resume now claims the
+  registry record under the lock before it starts the harness, so the
+  second resume exits 78 `session_busy` with nothing spawned; this
+  covers codex and agy resumes too. Bun buffers every write a harness
+  has not read, so a harness that stopped reading its stdin let the
+  caller grow codemux's memory without limit. More than 64 MiB of
+  unread input now ends the session with a fatal error. The codex
+  driver's in-memory holds are bounded at 256 lines or 32 MiB. Past the
+  bound, a `user` line queued behind a turn or a `steer` held for the
+  turn id is rejected `busy`, and a line sent before the handshake
+  completes ends the session. The recorded zai fixtures carried claude's
+  dash-encoded project slug, which named the operator's account and
+  repository path; every fixture is sanitized, and a test scans for the
+  running machine's home, username, and checkout path. Docs: a claude or
+  zai session at `high` is narrower than a `high` run (no
+  `--dangerously-skip-permissions`), where the README and this changelog
+  claimed identical autonomy mapping; only an error result with an
+  interrupt outstanding is an interrupted turn; a late codex
+  `thread/started` is passed through only when it is the first and
+  names the adopted thread; every claude-family allow carries
+  `updatedInput`; the README's medium list now names `.claude.json` and
+  `.ripgreprc`.
+- Live-session review fixes (live21 round). Claude/zai sessions
+  reported `user_during_turn: "queue"` and opened a new turn for every
+  mid-turn `user` line, on a misreading of the step-0 fixture. Print
+  mode folds a mid-turn message into the running turn when that turn
+  makes another model request (one result answers both) and runs it as
+  its own turn when it does not, so the extra turn never completed and
+  every later result was attributed to the turn before it. The flag is
+  now `false` and a mid-turn `user` line is rejected `busy`. With no
+  forwarded mid-turn line, an interrupt that misses its turn is dropped
+  by the idle harness, so the driver no longer keeps it pending for the
+  next turn. `session_ended.resumable` was true for any claimed resume,
+  including one the harness refused (a claude transcript already
+  cleaned up, a codex resume answered with another thread, an agy
+  conversation that never produced a result); a resume the harness
+  never confirmed is now resumable only when its end did not fail. The
+  CLI's claim release after a failed spawn now reports a lost registry
+  stamp on stderr, as the drivers do. A harness line the session state
+  rejected (a duplicate permission request id; the `result` claude
+  sends, with no init frame, for a resume whose transcript is gone) was
+  reported as a fatal but never mirrored raw; it now goes out as
+  `unknown` before the fatal (claude/zai and codex), and the claude
+  fatal names the refused resume. Docs: the fixture notes, the
+  auto-deny evidence, the codex item types, and the session-floor
+  wording now match the recorded frames.
+- Live-session review fixes (live20 round). A resumed session that
+  ended before its first turn (stdin closed with no input, or the
+  harness crashed at startup) left its registry claim open and reported
+  `resumable: false`; every driver now releases the claim on every end
+  path and reports the session resumable, and the CLI releases it when
+  the spawn throws. Real codex sends a turn's usage after
+  `turn/completed`; when queued input had already opened the next turn,
+  that late update ended the session as a grammar error. Late usage,
+  items, and deltas naming the turn that just closed are now accepted
+  with a null `turn_id`. A `permission_decision` whose answer could not
+  be written to the harness was acked accepted although the session was
+  ending; it is now rejected `shutting_down` (codex and claude/zai). On
+  claude/zai, an interrupt that missed its turn relabeled the next
+  turn's API error as interrupted; only an `error_during_execution`
+  result counts as the interrupt there. A resume could refuse its own
+  claim as `session_busy` when one of two `ps` readings timed out; the
+  start write now recognizes its own claim by pid. Two writers stealing
+  the same dead registry lock counted the loser's ENOENT as contention,
+  which failed the per-turn activity stamp. Caller stdin was decoded
+  lossily, so a line with an invalid UTF-8 byte was forwarded with a
+  substitute character; it is now rejected `malformed`. Tests now pin
+  the full `thread/resume` params and the resumed read-only ceiling
+  that the design said were pinned.
+- Live-session review fixes (live22 round). The medium ceiling's
+  executable-configuration check lowercased names with `toLowerCase`, so
+  `.vſcode/tasks.json` (long s) passed it while macOS's case-insensitive
+  lookup opens the real `.vscode`; the check now folds case the Unicode
+  way. A codex session that ended mid-turn dropped the usage the open
+  turn had already reported from `session_ended.usage`, and a refused
+  `turn/start` never added its usage to the total; both now count it. A
+  codex `turn/start` success that names no turn now ends the session
+  instead of sending the next turn to a busy thread. An agy session whose
+  start could not be recorded reported `resumable: true`; it is now
+  `false`. A registry that was busy or unreadable for a transient reason
+  made `--resume` exit 78, the permanent policy refusal; it now exits 1.
+  A claude or zai session, fresh or resumed, is now recorded before its
+  harness starts, and a fresh agy session first checks that the registry
+  can be written, so a registry failure no longer lets the first turn
+  run untracked. A fresh claude or zai record the harness never
+  confirmed is removed at the end. The turn timer no longer re-arms after
+  the session began to end, which raised a second, false
+  `--turn-timeout` fatal. A claude-family interrupt the harness refused
+  stayed pending and labeled the turn's own error `interrupted`; it is
+  now cleared. A pre-init input's result drained at the end now counts
+  toward `session_ended.usage`. A turn answered by codemux after a fatal
+  error is now `failed`, not `interrupted`. A caller-stdin error after
+  the session began to end no longer turns a clean end into exit 1.
+- Live-session review fixes (live23 round). A claude or zai harness that
+  refused the shutdown interrupt left it pending, so the turn's own
+  error was labeled `interrupted`, the harness's exit 1 was excused, and
+  the session ended 0; the refusal is now matched to the exact id sent.
+  A registry with invalid UTF-8 was treated as untrusted and blocked
+  every session until deleted by hand; it is now corrupt, so the next
+  fresh session backs it up and starts a new one. A lock file with
+  invalid UTF-8 left by a dead process is now stolen like other junk. A
+  dangling symlink at the registry directory or file is now refused as
+  untrusted instead of failing every start as a retryable error. A
+  resume whose registry sits inside the recorded working directory now
+  exits 78, as documented, instead of 64. On codex, an `interrupt` or
+  `steer` and, on claude/zai, an `interrupt` whose write the harness
+  refused is now rejected `shutting_down` instead of acked accepted. A
+  codex steer the app-server rejects is reported with its `input_seq`
+  and turn. A codex usage update from two turns back no longer ends the
+  session as a grammar error. Codex response-side violations (an unknown
+  response id, a thread response with a bad id, a `turn/start` success
+  with no turn id, a second thread announcement) now mirror the raw line
+  before the fatal. The tier-3 excerpt is now 4 KiB of bytes in every
+  parser, not 4096 characters. Doc corrections: the README's tier-2 and
+  synthesized-usage paragraphs, HERMETIC's absent-registry case, and the
+  design's ack carve-outs, `updated_input` routing, low-level schemas,
+  and `total_tokens` rule.
+- Live-session review fixes (live25 round). A session ignored the
+  provider override `run` applies: a codex override ran against the
+  operator's own `~/.codex` login with the provider key left in the
+  child's environment, and agents whose `run` refuses an override
+  started anyway. `codemux session` now refuses (exit 64) while any
+  `CODEMUX_<AGENT>_PROVIDER_*` name is set for the session agent. A
+  registry lock the directory would not let codemux create (a denied
+  `~/Library`, a read-only or full disk) waited about 10 seconds and then
+  blamed a live writer; the real error is now reported at once, and so
+  is a dead holder's lock file that cannot be removed.
+  `--enable-playwright-mcp` at `--auto medium` or `high` added a server
+  whose every call the ceiling denied; it now requires `--auto low`. A
+  codex frame the stream ended inside is now reported as a fatal instead
+  of dropped. A refused codex `turn/start` write no longer holds the end
+  path for the full grace. An orderly end whose interrupt the harness
+  would not take (it stopped reading stdin) now exits 1 and answers the
+  turn `failed` instead of ending 0. A stdout read error is now a fatal
+  that ends the session and kills the tree, not an unhandled rejection.
+  Usage errors from `--pass-env`, `--effort`, `--auto`, `--model`, and
+  `--cwd` now exit 64, not 1. `--effort none` is refused for codex
+  sessions instead of accepted and never sent. A resume no longer
+  refuses a record that names its own pid as the live owner. Doc
+  corrections: the design's closed-turn rule and `--timeout` flag name,
+  the `--sandbox-trust untrusted` refusal's sandboxed-only scope, and the
+  registry reader's and fake agy's comments.
+
 ## [0.8.0] - 2026-10-07
 
 ### Added

@@ -35,6 +35,45 @@ function reportedCount(value: unknown): number | null {
 }
 
 /**
+ * Normalize one claude-family usage report into the codemux block
+ * (ResultUsageBlock semantics): `input_tokens` excludes the cache, the
+ * read and write counts fold into `cached_input_tokens`, and the total
+ * is the sum plus output — computed only when all three are known, so
+ * an unreported half stays null rather than guessing zero. Shared by
+ * the `--result-json` envelope parser and the session usage events.
+ */
+export function normalizeClaudeUsage(
+  reported: unknown,
+  costUsd: unknown
+): ResultUsageBlock {
+  const usage = emptyUsage();
+  if (typeof reported === "object" && reported !== null) {
+    const counts = reported as Record<string, unknown>;
+    usage.input_tokens = reportedCount(counts.input_tokens);
+    usage.output_tokens = reportedCount(counts.output_tokens);
+    // A reported zero stays zero: the harness did report the cache count,
+    // and null would drop a known number. Both counts must be reported:
+    // summing a reported one with an unreported one guesses the missing
+    // half as zero, so a one-sided report stays null.
+    const cacheRead = reportedCount(counts.cache_read_input_tokens);
+    const cacheWrite = reportedCount(counts.cache_creation_input_tokens);
+    if (cacheRead !== null && cacheWrite !== null) {
+      usage.cached_input_tokens = cacheRead + cacheWrite;
+    }
+  }
+  if (
+    usage.input_tokens !== null &&
+    usage.cached_input_tokens !== null &&
+    usage.output_tokens !== null
+  ) {
+    usage.total_tokens =
+      usage.input_tokens + usage.cached_input_tokens + usage.output_tokens;
+  }
+  usage.cost_usd = reportedCount(costUsd);
+  return usage;
+}
+
+/**
  * Appends one codemux diagnostic after the harness's own stderr, separating
  * the two with a newline even when the harness's last line was unterminated:
  * appending straight onto `"boom"` produced `"boomcodemux: ..."`, gluing the
@@ -119,32 +158,7 @@ export function parseClaudeResultEnvelope(
     return null;
   }
 
-  const usage = emptyUsage();
-  if (typeof envelope.usage === "object" && envelope.usage !== null) {
-    const reported = envelope.usage as Record<string, unknown>;
-    usage.input_tokens = reportedCount(reported.input_tokens);
-    usage.output_tokens = reportedCount(reported.output_tokens);
-    // A reported zero stays zero: the harness did report the cache count,
-    // and null would drop a known number. Both counts must be reported:
-    // summing a reported one with an unreported one guesses the missing
-    // half as zero, so a one-sided report stays null.
-    const cacheRead = reportedCount(reported.cache_read_input_tokens);
-    const cacheWrite = reportedCount(reported.cache_creation_input_tokens);
-    if (cacheRead !== null && cacheWrite !== null) {
-      usage.cached_input_tokens = cacheRead + cacheWrite;
-    }
-  }
-  // The total is their sum plus output, computed only when all three are
-  // known; `{output_tokens: 5}` once produced 5 by guessing the rest as zero.
-  if (
-    usage.input_tokens !== null &&
-    usage.cached_input_tokens !== null &&
-    usage.output_tokens !== null
-  ) {
-    usage.total_tokens =
-      usage.input_tokens + usage.cached_input_tokens + usage.output_tokens;
-  }
-  usage.cost_usd = reportedCount(envelope.total_cost_usd);
+  const usage = normalizeClaudeUsage(envelope.usage, envelope.total_cost_usd);
 
   let servedModel: string | null = null;
   let multipleModels = false;

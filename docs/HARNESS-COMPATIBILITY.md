@@ -308,7 +308,7 @@ result when the last turn completed without an `agent_message`, with a
 stderr note. Z.AI shares the claude contract (same binary). No run persists
 a session: Claude Code and Z.AI always carry `--no-session-persistence`,
 and Codex always `--ephemeral`, so the codemux block's `session_id` is null
-(reserved for the planned live-sessions release).
+(`codemux session` is the live-sessions surface that carries one).
 
 The strict event-stream grammar also dates from
 this audit round: exactly one `thread.started` naming a non-empty thread
@@ -553,6 +553,183 @@ Goose refuse both (aider 0.86.2 has no max-tokens flag —
 other budgets — and goose's per-model `max_tokens`/`context_limit` live
 only in the config file the override never writes).
 
+## 2026-10-05 addendum: live sessions
+
+`codemux session` (the live-sessions design, docs/LIVE-SESSIONS-DESIGN.md)
+drives four harnesses through one JSONL protocol: Claude Code, Z.AI,
+Codex, Antigravity. Session floors sit at or above the run floors
+because the contracts only sessions exercise are only audited down to
+these builds: Claude Code and Z.AI 2.1.280, above the run floor (the
+audited `--permission-prompt-tool` build; the run contract's 2.1.220
+admits pre-hardening builds), Codex 0.159.3, above the run floor (the
+build the app-server method table below was recorded against), and
+Antigravity 1.2.14, equal to the run floor (the audited release; no
+earlier one exists). An unreadable version is refused on the session path like a
+below-floor build (review live9): a session holds a resumable process
+open behind a floor the design calls the pre-hardening boundary, so a
+wrapper whose `--version` prints nothing parseable cannot slide past it
+with a warning — `CODEMUX_ALLOW_UNTESTED_HARNESS=1` overrides, as
+everywhere. A floor is itself an audited build, so it raises the audited
+ceiling with it (review live10): a version at or below the floor never
+warns `unaudited`, and the warning starts only above it — before this
+correction every valid claude-family session printed a false
+`unaudited` warning, because the floor 2.1.280 sat above the run
+contract's audited ceiling (2.1.223) while being precisely the audited
+session build. The floor can never lower either boundary. Wire facts
+are pinned by the step-0 fixtures
+(tests/fixtures/live/, recorded 2026-10-04/05), and the e2e suites drive
+fakes generated from those same shapes so the parsers cannot drift from
+the recorded reality.
+
+The session capability matrix, honestly false where a harness lacks a
+channel (a false flag means the input is rejected by name, never
+accepted and ignored):
+
+| Capability | Claude 2.1.280 | Z.AI (same binary) | Codex 0.159.3 | Antigravity 1.2.14 |
+|------------|----------------|--------------------|---------------|--------------------|
+| `live_input` | true | true | true | true |
+| `user_during_turn` | false (rejected `busy`; print mode folds a mid-turn message into the running turn or runs it as its own, by the turn's shape) | false (same) | `queue` | false (rejected `busy`) |
+| `steer` | false (no on-demand carrier) | false (same) | true (`turn/steer`) | false |
+| `interrupt` | true (control request) | true | true (`turn/interrupt`) | false (`--turn-timeout` refused) |
+| `permissions` | true (stdio control round-trip) | true | true (server requests) | false |
+| `deltas` | true (`stream_event`) | true | true (`item/agentMessage/delta`) | false |
+| `file_changes` | derived from tool calls | derived | `native` item type | false |
+| `usage_stream` | false (usage only in the turn's `result`) | false (same) | true (`thread/tokenUsage/updated`) | false (usage only in the result) |
+| `resume` | true (`--resume <uuid>`) | true | true (`thread/resume`) | true (`--conversation=<id>`) |
+
+**Codex app-server, pinned at 0.159.3.** One dedicated `codex
+app-server` process per session, never the shared daemon — a singleton
+escapes per-session sandbox and account boundaries. The method
+allowlist codemux sends is exactly `initialize`, `notifications/
+initialized`, `thread/start`, `thread/resume`, `turn/start`,
+`turn/steer`, `turn/interrupt`; never `fs/*`, `remoteControl/*`,
+`thread/realtime/*`, `thread/queue/*`, `turn/settings/update`,
+`command/*`, `process/*`, or `review/start`. Requests carry `jsonrpc`
+while responses omit it; `thread/started` arrives exactly once after
+the thread/start response (whose result also carries the thread
+object) — but NOT after `thread/resume`: the resumed thread is
+announced through the response's own thread object and no
+`thread/started` follows (live-proven 2026-10-05 on 0.159.3, review
+live11 — the notification stream after a resume is
+`remoteControl/status/changed`, a deprecation notice,
+`account/updated`, mcp startup statuses, and `thread/status/changed`
+idle, plus a cumulative `thread/tokenUsage/updated`; no
+`thread/started`), so codemux adopts the id from the response — checking
+that it echoes the requested id, with a mismatch failing closed (one
+fatal naming both ids, review live12). A late `thread/started` passes
+through as tier-1 unknown only when it is the first one this session
+has seen and names the adopted thread; a second one, or one naming a
+different thread, is a tier-2 fatal (the exactly-once rule, review
+live19);
+`turn/started` follows the turn/start response and its turn
+object's id must match; usage arrives only through
+`thread/tokenUsage/updated` with `total` (cumulative) and `last`
+(per-turn delta) — `turn/completed` carries none, and the update can
+arrive after it, even after the next turn's turn/start response; such a
+straggler (or a late item or delta naming the closed turn) is accepted
+with a null `turn_id` and its usage counts toward the session only
+(review live20); items are
+userMessage/agentMessage/delta. Every thread start and every turn
+start carries the explicit sandbox/approval policy pair (`thread/start`
+takes strings, `turn/start` a sandbox-policy object), so a resumed
+thread cannot run under a stale policy, and a scode-wrapped session
+passes the bypass pair at every level because scode is the boundary.
+Approval requests arrive as server requests and are answered `{decision:
+…}` or `{permissions, scope}`. Thread ids codemux resumes must match
+`/^[A-Za-z0-9_-]{8,128}$/` — the fixture's ids are UUIDv7-shaped. The
+thread-level `config` object carries only the project-doc overrides
+(`project_doc_max_bytes: 0`, empty fallback filenames) that skip AGENTS.md
+discovery — it is not the app-server equivalent of `exec`'s `--ignore-rules`
+flag: execpolicy rules (`~/.codex/rules`) have no verified carrier, so a
+codex session still loads them where a run does not (known parity gap,
+review live3; unreachable through any launchable session today — every
+one runs `approvalPolicy: "never"` inside scode — but recorded here
+because `run`'s boundary flag does not carry over).
+
+**Claude Code stream-json, pinned at 2.1.280** (frames recorded
+through the Z.AI endpoint — same binary, same wire format; only the
+billing changes). The spawn is `-p --input-format stream-json
+--output-format stream-json --verbose --include-partial-messages
+--permission-prompt-tool stdio --replay-user-messages` plus
+`--session-id <uuid>` (fresh; codemux mints the id so the registry
+knows it before the wire does) or `--resume <uuid>` (first, before
+every autonomy-derived flag, so a session created at high and resumed
+at read-only emits exactly read-only's flags). `--verbose` is required
+for stream-json output. `system/init` arrives once per turn with the
+same `session_id`; a resumed session reports the same id with no
+`resume` marker on the wire, which is why resume trust comes from the
+registry, not the stream. The first init is emitted only once stdin
+input arrives — a caller that waits for `session_started` before
+submitting its first line deadlocks (verified live 2026-10-05: an idle
+stream-json child emits nothing for minutes, and the frame after the
+first user line is init itself, preceding the replay echo). Permissions round-trip through the stdio
+carrier: a `control_request` with `request.subtype:"can_use_tool"`
+carrying `tool_name`, `input`, `permission_suggestions`,
+`decision_reason`, answered on stdin with a `control_response`
+(`behavior:"allow"` or `"deny"`). Every allow carries `updatedInput`:
+the caller's substitute when it sent one, else the request's own
+`input`, because the harness runs the tool with that object (review
+live18). Without the
+carrier a write outside the allowed directories is auto-denied and
+surfaces as `system/permission_denied` with no request at all.
+Interrupt is a control request with `request.subtype:"interrupt"`; an
+error result arriving with an interrupt outstanding is an interrupted
+turn, not a failed one. A clean result that races the interrupt
+completes its turn with `finish: "end"`, and the interrupt is spent:
+the harness reads it idle and drops it, so the next turn is never
+relabeled by it (review live21 removed the live12/live20 roll, which
+assumed a forwarded mid-turn line was waiting harness-side).
+`--replay-user-messages` makes the harness echo the user frames codemux
+submits (`isReplay: true`, the round trip the protocol's echo is pinned
+against). The echo also shows when print mode consumed a mid-turn line:
+at the running turn's next model request, folded into that turn's
+result, or after the result as a turn of its own when no further
+request comes (fixture `zai-session-a.ndjson`, lines 34/59/74; live21
+probes). Since codemux cannot tell in advance which, a mid-turn `user`
+line is rejected `busy`. Session high autonomy never passes
+`--dangerously-skip-permissions`: it is `--permission-mode default`
+plus an explicit grant list, so the resume ladder's low→high move
+narrows reach on every build the floor admits.
+
+**Z.AI sessions** run the same binary against the Z.AI endpoint
+through the adapter's environment (`ANTHROPIC_AUTH_TOKEN`/
+`ANTHROPIC_BASE_URL`), so the floor, parser, and argv are the claude
+ones verbatim. Transcripts live under the same `~/.claude` (or
+`CLAUDE_CONFIG_DIR`) a claude session uses; the replay hazard that
+creates (a claude-home session resumed through zai replays the
+transcript to the Z.AI endpoint) is closed by the registry's agent
+match at resume, not by splitting the home.
+
+**Antigravity at 1.2.14 is documented, not live-verified.** The audit
+machine's agy login is expired and re-login is interactive, so the
+only live frame ever recorded is the auth-failure result
+(`conversation_id` empty, `status "ERROR"`). The contract below rests
+on that fixture, the 1.2.14 help text, and the official headless
+documentation, and the e2e suite drives a fake built from the same
+shapes — marked as such in the tests. The session loop is
+`--disable-slash-commands --input-format=stream-json
+--output-format=stream-json` with the `=`-form enum flags the 1.2.14
+parser requires, autonomy mapped exactly as the run path maps it, and
+`--conversation=<id>` riding last on resume. There is no init frame:
+a fresh session names its conversation only in the first result
+envelope, so `session_started` waits for that result and events before
+it carry an empty session id; a first result that names no usable id
+ends the session (an untracked live session must not run). Because that
+first turn runs before the record can exist, the CLI checks that the
+registry can be written before it spawns agy (review live22). Input lines
+are claude-style user frames; output is the `{"event":"result",
+"result":{…}}` envelope parsed by the run path's own envelope parser,
+so run and session cannot disagree about what a result is — and that
+parser's rule that any present `error` string, empty included, marks
+failure is part of the contract. The conversation-id pattern is
+deliberately permissive (`/^\S{1,128}$/`): no live id was ever
+observed, and the registry's agent/home/autonomy match is what vouches
+for a resume, not the id's shape. The resume-autonomy ladder is strict
+for agy — `read-only < low < medium < high`, nothing above creation
+(review live9): agy has no permission channel, so low's caller approves
+nothing and passes no mode flag, which makes low the least reach where
+the claude-family order puts it first.
+
 ## Version enforcement
 
 `src/harness-compatibility.ts` is the machine-readable half of this ledger and
@@ -562,6 +739,15 @@ what was reviewed, the matrix records what the CLI enforces.
 Refusing a version requires a determined breaking change, not a version bump.
 Upstream ships patches that change nothing, and refusing those would make
 Codemux unusable, so anything newer than `maxAudited` runs with a warning.
+Sessions carry their own floors above the run contracts, and a session
+floor counts as an audited build: the `unaudited` warning starts above
+the floor, never at it, and the floor cannot lower the refusal point or
+the ceiling (review live10).
+An unreadable version warns and continues on the run path (wrapper scripts
+and vendored builds are real) but is refused on the session path, where the
+floor is the contract being enforced (review live9); copilot's
+`unknownVersion: "refuse"` pins the same refusal for runs, because every
+copilot release at or above its floor answers its probe.
 
 Since the boundary is scode rather than the harness, a stale matrix costs an
 inaccurate warning, not enforcement. That is deliberate: it keeps a missed

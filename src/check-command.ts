@@ -129,11 +129,7 @@ export function registerCheckCommand(
         }
 
         const autonomy = resolveAutonomyForAdapter(agentId, caps, requestedAutonomy);
-        if (
-          autonomy &&
-          adapter.requiresSandboxForAutonomy(autonomy) &&
-          !options.sandbox
-        ) {
+        if (adapter.requiresSandboxForAutonomy(autonomy) && !options.sandbox) {
           console.error(
             `Error: ${agentId} cannot enforce '${autonomy}' autonomy without --sandbox`
           );
