@@ -141,7 +141,12 @@ describe("session process runner", () => {
       // so the discriminator is its CPU time (load-insensitive), not wall
       // clock: the pre-fix scan of eight 12 MiB lines re-read ~8 GiB of
       // bytes (seconds of CPU); the linear framer reads each byte once
-      // (~96 MiB, tens of milliseconds).
+      // (~96 MiB, tens of milliseconds). The bound is an order of magnitude
+      // above that: the CPU time measured here also carries Bun's own
+      // UTF-8 decoding of the 96 MiB and the pipe reads, which on GitHub's
+      // shared macOS runner exceeded a 600 ms bound (the whole test took
+      // 7.5 s of wall clock there); the quadratic pre-fix scan still lands
+      // seconds above 2500 ms on any host.
       const script =
         "i=0; while [ $i -lt 8 ]; do head -c 12582912 /dev/zero | tr '\\0' 'a'; printf '\\n'; i=$((i+1)); done";
       const cpuStarted = process.cpuUsage();
@@ -151,7 +156,7 @@ describe("session process runner", () => {
       expect((await proc.exited).code).toBe(0);
       expect(lines).toHaveLength(8);
       expect(Buffer.byteLength(lines[0] ?? "", "utf8")).toBe(12582912);
-      expect((cpuSpent.user + cpuSpent.system) / 1000).toBeLessThan(600);
+      expect((cpuSpent.user + cpuSpent.system) / 1000).toBeLessThan(2500);
     },
     30_000
   );
