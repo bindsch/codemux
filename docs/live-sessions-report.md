@@ -5653,3 +5653,65 @@ prompt, so it spent nothing.
   on the session carrier.
 - A refused end-path interrupt keeps `resumable` as §4.8 defines it and
   changes only the exit code and the turn's `finish`.
+
+## Linux CI fix (0.9.0)
+
+**Intended commit:** `fix(test): take the session registry path from sessionRegistryPath on every platform`
+
+CI's `release gate (ubuntu-latest)` job failed on main 299066b. macOS
+passed. All seven failures were in `tests/session-cli.test.ts`
+(`scratch/session-14c66a93/ci-090-failures.txt`). Each test seeded or
+read a registry that the CLI then reported `missing`. Refusals that
+must exit 78 exited 66, and the zai and agy runs read back `missing`
+instead of `ok`.
+
+**Root cause.** The tests wrote the registry path by hand as
+`join(home, "Library", "Application Support", "codemux", ...)`, the
+macOS layout. The CLI takes the path from `sessionRegistryPath()`
+(`src/session/registry.ts:93`, called at `src/session/cli.ts:601`).
+On Linux that function returns `$HOME/.local/state/codemux/live-sessions.json`.
+Example: "a corrupt registry's resume refusal names the registry path"
+wrote `{corrupt` under `Library/`. The CLI looked under `.local/state`,
+found nothing, and exited 66.
+
+The task's first hypothesis was that Bun's `os.homedir()` ignores
+`$HOME` on macOS but honors it on Linux. A probe disproved it. On the
+host, `HOME=/tmp/xyz bun -e 'console.log(require("os").homedir())'`
+prints `/tmp/xyz` (Bun 1.4.2), and Linux behaves the same. Both sides
+already used the same home directory. Only the layout under it
+differed. The comment in `src/project-safety.ts:303` that says
+`homedir()` ignores `$HOME` is out of date for Bun 1.4.2. That code was
+not part of this fix and is left as is.
+
+**Fix.** Every hand-written path in `tests/session-cli.test.ts` (eight
+sites) now calls `sessionRegistryPath(home)` or takes its `dirname`.
+The source did not change. A new test, "CLI - registry path seam > no
+test spells the default registry layout by hand", scans `tests/*.test.ts`
+for the `"Application Support", "codemux"` and
+`".local", "state", "codemux"` path segments. With a copy of the HEAD
+version of the file in `tests/`, the test fails and names the copy. It
+fails on any platform, so a test that spells the path by hand can no
+longer pass on macOS and fail only on Linux.
+
+**Verification.** Docker `oven/bun:1.3.14`, the CI Bun version:
+
+- Before: `bun test --max-concurrency=1 tests/session-cli.test.ts`,
+  44 pass, 7 fail, the same seven tests as CI.
+- After, same command: 52 pass, 0 fail (51 old tests plus the new one).
+- After, full suite, as the image's non-root `bun` user with `git` and
+  `curl` installed and `umask 022`: 1416 pass, 0 fail, 1418 ran. The
+  default image runs as root without `git` or `curl`. There, 6
+  unrelated tests fail for those reasons (cleanup-failure and
+  permission probes, `git ls-files`, the `curl` fakes). With `su`'s
+  default umask 002, the registry tests correctly refuse their
+  group-writable temp directories. Neither setup matches a GitHub
+  runner.
+- macOS host, `make release-gate` (Bun 1.4.2): runtime, typecheck,
+  shell, and `test:coverage` passed (1412 pass, 0 fail, 1418 ran).
+  `test:contracts` failed with exit 1, outside anything this change
+  touches (not rerun on HEAD). The installed `copilot` binary got `EPERM` creating
+  `~/Library/Caches/copilot/pkg/darwin-arm64`. The agent process cannot
+  even list `~/Library/Caches` on this host, the macOS 27 `~/Library`
+  denial. The steps after it (`sandbox-contract`, `smoke`, `bun audit`,
+  the frozen-lockfile dry run, and the four `--help` probes) were run
+  one by one, and each exited 0.

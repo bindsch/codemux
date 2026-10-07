@@ -716,6 +716,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   corrections: the design's closed-turn rule and `--timeout` flag name,
   the `--sandbox-trust untrusted` refusal's sandboxed-only scope, and the
   registry reader's and fake agy's comments.
+- Linux CI fix. Seven `tests/session-cli.test.ts` cases failed on
+  `ubuntu-latest` and passed on macOS. They seeded or read the session
+  registry under `$HOME/Library/Application Support/codemux`, while the
+  CLI on Linux uses `$HOME/.local/state/codemux`. The seeded entry read
+  as missing, so refusals exited 66 instead of 78 and a finished run
+  reported `missing` instead of `ok`. The tests now take the path from
+  `sessionRegistryPath`, the function the CLI uses. A new test fails if
+  any test file assembles the default registry layout from its path
+  segments (`"Application Support", "codemux"` or `".local", "state",
+  "codemux"`) instead of asking that function. The CLI did not change.
 
 ## [0.8.0] - 2026-10-07
 

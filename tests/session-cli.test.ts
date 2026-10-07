@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -423,13 +423,13 @@ describe("CLI - session refusals", () => {
     // Design §4.8 rule 2, start-time half: the registry the resume
     // guards rest on must not sit inside a directory the child can
     // write. With the home itself as the cwd, the default registry path
-    // (~/Library/Application Support/codemux/live-sessions.json) is
-    // inside it.
+    // (sessionRegistryPath: ~/Library/Application Support on macOS,
+    // ~/.local/state elsewhere) is inside it.
     const fake = fakeClaudeEnv();
     const home = mkdtempSync(join(tmpdir(), "codemux-session-reginside-"));
     const workdir = join(home, "work");
     mkdirSync(workdir);
-    mkdirSync(join(home, "Library", "Application Support", "codemux"), { recursive: true });
+    mkdirSync(dirname(sessionRegistryPath(home)), { recursive: true });
     try {
       const { stderr, exitCode } = await runCli(
         ["session", "-a", "claude", "--no-sandbox", "--auto", "high", "--cwd", home],
@@ -695,9 +695,9 @@ describe("CLI - session happy path", () => {
 describe("CLI - zai sessions", () => {
   /** A registry with one ended claude session recorded under `home`. */
   function seededClaudeRegistry(home: string): string {
-    const dir = join(home, "Library", "Application Support", "codemux");
+    const dir = dirname(sessionRegistryPath(home));
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const path = join(dir, "live-sessions.json");
+    const path = sessionRegistryPath(home);
     writeFileSync(
       path,
       `${JSON.stringify({
@@ -860,7 +860,7 @@ describe("CLI - zai sessions", () => {
       // The registry entry names zai against the shared claude home —
       // the store is one, the identity is not (§4.8).
       const read = readRegistry(
-        join(isolatedHome, "Library", "Application Support", "codemux", "live-sessions.json")
+        sessionRegistryPath(isolatedHome)
       );
       expect(read.outcome).toBe("ok");
       const entry =
@@ -1053,7 +1053,7 @@ describe("CLI - agy sessions", () => {
 
       // The registry entry names agy under the antigravity home (§4.8).
       const read = readRegistry(
-        join(isolatedHome, "Library", "Application Support", "codemux", "live-sessions.json")
+        sessionRegistryPath(isolatedHome)
       );
       expect(read.outcome).toBe("ok");
       const entry =
@@ -1089,6 +1089,22 @@ describe("claudeFamilyHarnessHome", () => {
   });
 });
 
+describe("CLI - registry path seam", () => {
+  test("no test spells the default registry layout by hand", () => {
+    // Linux CI fix (0.9.0): seven tests seeded the registry under
+    // `Library/Application Support` while the CLI, on Linux, reads
+    // `~/.local/state` — so a seeded entry read as missing (66, not 78).
+    // Every test must take the default path from sessionRegistryPath,
+    // the seam the CLI itself uses.
+    const testsDir = dirname(fileURLToPath(import.meta.url));
+    const handSpelled = /["']Application Support["'],\s*["']codemux["']|["']\.local["'],\s*["']state["'],\s*["']codemux["']/;
+    const offenders = readdirSync(testsDir)
+      .filter((name) => name.endsWith(".test.ts"))
+      .filter((name) => handSpelled.test(readFileSync(join(testsDir, name), "utf8")));
+    expect(offenders).toEqual([]);
+  });
+});
+
 describe("CLI - session resume guards", () => {
   test("a registry inside the entry's own working directory refuses with 78, not 66", async () => {
     // §4.8's containment rule is a policy refusal (the registry is a
@@ -1101,10 +1117,10 @@ describe("CLI - session resume guards", () => {
     const fake = fakeClaudeEnv();
     const home = realpathSync(mkdtempSync(join(tmpdir(), "codemux-resume-inside-")));
     try {
-      const dir = join(home, "Library", "Application Support", "codemux");
+      const dir = dirname(sessionRegistryPath(home));
       mkdirSync(dir, { recursive: true, mode: 0o700 });
       writeFileSync(
-        join(dir, "live-sessions.json"),
+        sessionRegistryPath(home),
         `${JSON.stringify({
           version: 1,
           sessions: [
@@ -1113,7 +1129,7 @@ describe("CLI - session resume guards", () => {
               agent: "claude",
               created_at: "2026-10-04T10:00:00.000Z",
               last_activity: "2026-10-04T10:05:00.000Z",
-              // The registry file sits inside this cwd (under Library/),
+              // The registry file sits inside this cwd (under the home),
               // which is exactly the untrusted placement.
               cwd: home,
               hermetic: false,
@@ -1161,9 +1177,9 @@ describe("CLI - session resume guards", () => {
     const workdir = join(home, "elsewhere");
     mkdirSync(workdir);
     try {
-      const dir = join(home, "Library", "Application Support", "codemux");
+      const dir = dirname(sessionRegistryPath(home));
       mkdirSync(dir, { recursive: true, mode: 0o700 });
-      const registryPath = join(dir, "live-sessions.json");
+      const registryPath = sessionRegistryPath(home);
       writeFileSync(registryPath, "{corrupt", { mode: 0o600 });
       const { stderr, exitCode } = await runCli(
         [
@@ -1195,10 +1211,10 @@ describe("CLI - session resume guards", () => {
     const workdir = join(home, "elsewhere");
     mkdirSync(workdir);
     try {
-      const dir = join(home, "Library", "Application Support", "codemux");
+      const dir = dirname(sessionRegistryPath(home));
       mkdirSync(dir, { recursive: true, mode: 0o700 });
       writeFileSync(
-        join(dir, "live-sessions.json"),
+        sessionRegistryPath(home),
         `${JSON.stringify({
           version: 1,
           sessions: [
@@ -1258,10 +1274,10 @@ describe("CLI - resume reach (review live16)", () => {
     mkdirSync(created);
     mkdirSync(other);
     try {
-      const dir = join(home, "Library", "Application Support", "codemux");
+      const dir = dirname(sessionRegistryPath(home));
       mkdirSync(dir, { recursive: true, mode: 0o700 });
       writeFileSync(
-        join(dir, "live-sessions.json"),
+        sessionRegistryPath(home),
         `${JSON.stringify({
           version: 1,
           sessions: [
