@@ -1,4 +1,5 @@
 import type { HermeticHome } from "./hermetic-home.js";
+import type { CodexProviderHome } from "./codex-provider.js";
 import type { AiderHistoryFile } from "./aider-history.js";
 import type { OpencodeHermeticHome } from "./opencode-hermetic.js";
 import type { OpencodeProviderConfig } from "./opencode-provider.js";
@@ -33,6 +34,14 @@ export interface RunContext {
   lastMessageDir?: string;
   /** Codex: this run's private hermetic home, when the run is hermetic. */
   hermeticHome?: HermeticHome;
+  /**
+   * Codex: this run's private CODEX_HOME holding the provider override's
+   * config.toml, when a provider override is configured on a non-hermetic
+   * run. A hermetic override run carries the same config inside its private
+   * hermetic home instead, which its own finalize removes; this field is
+   * undefined there, so cleanupRun finalizes only what this launch created.
+   */
+  codexProviderHome?: CodexProviderHome;
   /**
    * Aider: this run's chat history file under `~/.aider/.codemux/`, from
    * which processRunResult extracts the reply (aider's stdout is a

@@ -272,7 +272,7 @@ nested `sandbox-exec` was denied; also the first live sighting of the
 $ ./bin/codemux run -a agy -p "Reply with exactly OK"
 Running with agy (sandboxed)...
 Warning: agy 1.2.16 is newer than the 1.2.14 this Codemux audited. No breaking change is known for it, so this run continues. If autonomy stops behaving as documented, that is the first thing to suspect.
-scode: '/Users/kane/.local/bin/agy' is not a known harness — sandbox behavior has not been tested for this command
+scode: '/Users/example/.local/bin/agy' is not a known harness — sandbox behavior has not been tested for this command
 sandbox-exec: sandbox_apply: Operation not permitted
 --- exit 71
 ```
@@ -411,7 +411,7 @@ documented notes about its approval modes).
 The copilot failure is environmental and pre-existing: `copilot --help`
 tries to extract its bundled package into `~/Library/Caches/copilot`,
 which this machine's sandbox denies (`EPERM ... mkdir
-/Users/kane/Library/Caches/copilot/pkg/darwin-arm64`). Identical text at
+/Users/example/Library/Caches/copilot/pkg/darwin-arm64`). Identical text at
 baseline (scratch/baseline-gate.txt line 102) and now. Every other gate
 target passes (`make release-gate` aborts at `contracts`, so the rest ran
 individually — scratch/release-gate-remaining.txt): `runtime`, `check`,

@@ -104,6 +104,47 @@ describe("Adapter Registry", () => {
     }
   });
 
+  test("the round-2 adapters' factories forward the view", () => {
+    // Regression (round-5 review): the claude, codex, and openhands
+    // factories dropped the factory's env argument, so an exported
+    // CODEMUX_*_PROVIDER_* override leaked into `verify`'s empty view — the
+    // same class the droid test above pins. Codex was the loudest: its TUI
+    // refusal ("headless runs only") fired inside verifyTuiBuilds and every
+    // `codemux verify` reported codex as broken; claude and openhands failed
+    // the same way on a modelless override.
+    const trio = (agent: string): Record<string, string> => ({
+      [`CODEMUX_${agent.toUpperCase()}_PROVIDER_BASE_URL`]: "https://override.example",
+      [`CODEMUX_${agent.toUpperCase()}_PROVIDER_API_KEY`]: "override-key",
+      [`CODEMUX_${agent.toUpperCase()}_PROVIDER_MODEL`]: "override-model",
+    });
+    const vars = { ...trio("claude"), ...trio("codex"), ...trio("openhands") };
+    for (const [name, value] of Object.entries(vars)) process.env[name] = value;
+    try {
+      // The empty view (verify's) hides all three overrides.
+      expect(getAdapter("claude", {}).getEnv()).toEqual({
+        CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1",
+      });
+      expect(
+        getAdapter("codex", {}).buildRunCommand({ agent: "codex", prompt: "p" })
+      ).toEqual(["codex", "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "-"]);
+      expect(getAdapter("openhands", {}).getRunEnv({ agent: "openhands", prompt: "p" }))
+        .toEqual({});
+      expect(getAdapter("openhands", {}).buildRunCommand({ agent: "openhands", prompt: "p" }))
+        .toEqual(["openhands", "--headless", "--task", "p"]);
+      // The launch view (no explicit view) still sees them.
+      expect(getAdapter("claude").getEnv().ANTHROPIC_BASE_URL)
+        .toBe("https://override.example");
+      expect(
+        getAdapter("codex").buildRunCommand({ agent: "codex", prompt: "p" })
+          .some((argument) => argument.includes(".codemux-provider"))
+      ).toBe(true);
+      expect(getAdapter("openhands").getRunEnv({ agent: "openhands", prompt: "p" }).LLM_BASE_URL)
+        .toBe("https://override.example");
+    } finally {
+      for (const name of Object.keys(vars)) delete process.env[name];
+    }
+  });
+
   test("getAdapter throws for unknown agent", () => {
     expect(() => getAdapter("unknown" as any)).toThrow("Unknown agent: unknown");
   });

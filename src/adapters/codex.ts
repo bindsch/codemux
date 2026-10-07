@@ -8,6 +8,19 @@ import {
   prepareRunDirParent,
 } from "../hermetic-home.js";
 import {
+  CODEX_MULTI_AGENT_ENV,
+  CODEX_PROVIDER_KEY_ENV,
+  readCodexMultiAgent,
+  writeCodexProviderConfig,
+  writeCodexProviderConfigInto,
+} from "../codex-provider.js";
+import {
+  assertProviderCap,
+  readProviderOverride,
+  requireProviderOverride,
+  type ProviderOverride,
+} from "../provider-override.js";
+import {
   assertNoCodexProjectExecutionConfig,
   assertNoCodexProjectSkills,
 } from "../project-safety.js";
@@ -100,10 +113,10 @@ export class CodexAdapter extends BaseAdapter {
 
   // Seams so tests can point the real CODEX_HOME at a scratch directory.
   constructor(
-    private readonly environment: NodeJS.ProcessEnv = process.env,
+    environment: NodeJS.ProcessEnv = process.env,
     private readonly homeDirectory?: string
   ) {
-    super();
+    super(environment);
   }
 
   capabilities(): AdapterCapabilities {
@@ -120,6 +133,7 @@ export class CodexAdapter extends BaseAdapter {
       // `codex exec --json` prints its events as JSONL, which processRunResult
       // reduces to the result envelope.
       supportsResultJson: true,
+      supportsProviderOverride: true,
     };
   }
 
@@ -193,8 +207,82 @@ export class CodexAdapter extends BaseAdapter {
     return home && isAbsolute(home) ? home : homedir();
   }
 
+  /**
+   * The provider override, validated: a base URL and a key routed through a
+   * private per-run CODEX_HOME (codex-provider.ts), plus the model the
+   * endpoint serves. The output-token cap is refused — no release Codemux
+   * supports reads one — while the context cap rides `model_context_window`
+   * in the same config.toml. The multi-agent knob rides that config too, so
+   * it is validated here as well: every launch path (validateRunRequest
+   * through modelFor, the TUI check, prepareRun's writers) fails loudly on
+   * a value that is not on/off or on a knob set without an override.
+   */
+  private validatedProvider(): (ProviderOverride & { baseUrl: string; apiKey: string }) | null {
+    const override = readProviderOverride("codex", this.environment);
+    this.assertMultiAgentKnob(override);
+    if (override === null) return null;
+    assertProviderCap(
+      "codex",
+      override,
+      "maxOutputTokens",
+      "no release Codemux supports reads a model_max_output_tokens key — the " +
+        "0.160 config reference lists model_context_window but no output cap, " +
+        "and the key never existed in the source through 0.160"
+    );
+    return requireProviderOverride("codex", override, [
+      "baseUrl",
+      "apiKey",
+    ]) as ProviderOverride & { baseUrl: string; apiKey: string };
+  }
+
+  /**
+   * The multi-agent knob (codex-provider.ts) rides the config.toml the
+   * override owns, so a knob set without an override fails loudly — exactly
+   * like a token cap without one — instead of sitting silently on a plain
+   * run's operator config, which codemux never writes. The value check
+   * (on/off) happens inside readCodexMultiAgent and fires on every path
+   * that reaches this method, override or not.
+   */
+  private assertMultiAgentKnob(override: ProviderOverride | null): void {
+    const setting = readCodexMultiAgent(this.environment);
+    if (setting === null || override !== null) return;
+    throw new Error(
+      `${CODEX_MULTI_AGENT_ENV} is set but no provider override is; the ` +
+        "knob rides the override's own config.toml, so also set " +
+        "CODEMUX_CODEX_PROVIDER_BASE_URL, CODEMUX_CODEX_PROVIDER_API_KEY " +
+        "and CODEMUX_CODEX_PROVIDER_MODEL"
+    );
+  }
+
+  /**
+   * The model an override run uses: the request's, else the override's. With
+   * an override one must exist — the config.toml pins `model`, and falling
+   * back to Codex's built-in default would hit the operator's endpoint with
+   * an OpenAI catalog name it may not serve.
+   */
+  private modelFor(model: string | undefined): string | undefined {
+    const override = this.validatedProvider();
+    const resolved = model ?? override?.model;
+    if (resolved === undefined && override !== null) {
+      throw new Error(
+        "codex needs a model for the provider override; pass --model or set CODEMUX_CODEX_PROVIDER_MODEL"
+      );
+    }
+    return resolved;
+  }
+
+  override getEnvOmissions(): readonly string[] {
+    // With an override the provider key is the credential, so the operator's
+    // own Codex/OpenAI keys stay out of the child environment: a stray
+    // CODEX_API_KEY would hand the run a second, operator-funded
+    // authentication path codemux never chose. Without one, both keep
+    // forwarding as before (ALLOWED_CREDENTIAL_ENV.codex).
+    return this.validatedProvider() === null ? [] : ["CODEX_API_KEY", "OPENAI_API_KEY"];
+  }
+
   buildRunCommand(request: RunRequest, context?: RunContext): string[] {
     const cmd: string[] = [];
+    const override = this.validatedProvider();
 
     if (request.hermetic) {
       // The private HOME reaches Codex through env(1), not through the
@@ -210,6 +298,15 @@ export class CodexAdapter extends BaseAdapter {
         codexHome: join(unprepared, ".codex"),
       };
       cmd.push("env", `HOME=${home.home}`, `CODEX_HOME=${home.codexHome}`);
+    } else if (override !== null) {
+      // A non-hermetic override run also gets a private CODEX_HOME — the
+      // per-run directory holding this run's config.toml (codex-provider.ts)
+      // — delivered the same way, so the operator's config.toml and
+      // auth.json are not read by construction. Same fail-closed placeholder
+      // rule as the hermetic home: without prepareRun the home does not
+      // exist and Codex refuses a missing CODEX_HOME.
+      const unprepared = join(this.realCodexHome(request), ".codemux-provider", "unprepared");
+      cmd.push("env", `CODEX_HOME=${context?.codexProviderHome?.codexHome ?? unprepared}`);
     }
     cmd.push("codex");
 
@@ -220,7 +317,10 @@ export class CodexAdapter extends BaseAdapter {
       cmd.push(...CODEX_NO_TOOLS_FLAGS);
     }
 
-    if (request.model) {
+    if (request.model && override === null) {
+      // On an override run the model rides the config.toml, never -m: the
+      // two could disagree across a config rewrite, and one source is
+      // checkable.
       cmd.push("-m", request.model);
     }
 
@@ -274,8 +374,12 @@ export class CodexAdapter extends BaseAdapter {
       // A prepared context with no lastMessagePath is the untrusted launch:
       // there is no file to name, by design.
     }
-    if (request.hermetic) {
+    if (request.hermetic && override === null) {
       // Belt and braces: the private CODEX_HOME holds no config.toml anyway.
+      // An override run is the exception that proves the rule's wording —
+      // `--ignore-user-config` skips "$CODEX_HOME/config.toml" itself, which
+      // is exactly where the override lives (verified in the 0.160 binary's
+      // own help text), so it is never passed on one.
       cmd.push("--ignore-user-config");
     }
     cmd.push("-");
@@ -302,14 +406,37 @@ export class CodexAdapter extends BaseAdapter {
    */
   override prepareRun(request: RunRequest, sandboxTrust?: ScodeTrustLevel): RunContext {
     const context: RunContext = {};
+    const override = this.validatedProvider();
     if (request.hermetic) {
       // One home per run, never shared: a previous run's files or refreshed
       // login state must not reach the next one. hermetic-home.ts tracks
       // live homes itself (signal handling, the exit sweep), so the context
-      // holds the home as plain data and the adapter holds nothing.
+      // holds the home as plain data and the adapter holds nothing. An
+      // override run never links the operator's auth.json either — the
+      // provider key is the credential — so the home starts empty and holds
+      // only the override's config.toml, written below.
       context.hermeticHome = createCodexHermeticHome(
         this.realCodexHome(request),
-        this.apiKeyAuth()
+        this.apiKeyAuth() || override !== null
+      );
+      if (override !== null) {
+        writeCodexProviderConfigInto(
+          context.hermeticHome.codexHome,
+          override,
+          this.modelFor(request.model)!,
+          readCodexMultiAgent(this.environment)
+        );
+      }
+    } else if (override !== null) {
+      // The plain-run variant of the same rule: one private CODEX_HOME per
+      // launch, owned by the run and finalized in cleanupRun (and swept, by
+      // the age-gated rule the hermetic homes use, only once it is stale and
+      // its owning process is gone — codex-provider.ts).
+      context.codexProviderHome = writeCodexProviderConfig(
+        this.realCodexHome(request),
+        override,
+        this.modelFor(request.model)!,
+        readCodexMultiAgent(this.environment)
       );
     }
     if (request.resultJson) {
@@ -364,7 +491,11 @@ export class CodexAdapter extends BaseAdapter {
     // the private home, which dies with the run below (it holds a link to
     // the real login, and a run that never launched needs none of it). An
     // untrusted run carries neither piece of state and returns above.
-    if (context?.lastMessageDir === undefined && context?.hermeticHome === undefined) {
+    if (
+      context?.lastMessageDir === undefined &&
+      context?.hermeticHome === undefined &&
+      context?.codexProviderHome === undefined
+    ) {
       return;
     }
     if (context.lastMessageDir !== undefined) {
@@ -409,6 +540,17 @@ export class CodexAdapter extends BaseAdapter {
           `${error instanceof Error ? error.message : String(error)}`
         );
     }
+    try {
+      // A hermetic override run has no codexProviderHome — its config rides
+      // the hermetic home above — so this finalizes exactly the plain-run
+      // home this launch created.
+      context.codexProviderHome?.finalize();
+    } catch (error) {
+      console.error(
+        "codemux: could not remove codex's provider-override home: " +
+          `${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 
   override getRunEnv(request: RunRequest, context?: RunContext): Record<string, string> {
@@ -418,7 +560,15 @@ export class CodexAdapter extends BaseAdapter {
     if (request.hermetic && context?.hermeticHome === undefined) {
       throw new Error("codex hermetic home was not prepared before launch");
     }
-    return {};
+    const override = this.validatedProvider();
+    if (override === null) return {};
+    if (!request.hermetic && context?.codexProviderHome === undefined) {
+      throw new Error("codex provider config was not prepared before launch");
+    }
+    // The key the config.toml's env_key names, delivered through the
+    // environment codemux provides: never argv, never an operator file, and
+    // immune to the sanitizer because it is adapter-provided.
+    return { [CODEX_PROVIDER_KEY_ENV]: override.apiKey };
   }
 
   override validateRunRequest(request: RunRequest): void {
@@ -428,6 +578,11 @@ export class CodexAdapter extends BaseAdapter {
     // run's `.codemux-scratch/` directory under it: validation owns the
     // refusal, so a value the run would refuse never touches disk.
     this.realCodexHome(request);
+    // Fail before launch on a half-configured override and surface the model
+    // requirement early (validatedProvider's output-cap refusal is reached
+    // through the same call): the config.toml cannot be written without
+    // both, and a run that reached prepareRun would die mid-write.
+    this.modelFor(request.model);
     const cwd = validateWorkingDirectory(request.cwd) ?? process.cwd();
     assertNoCodexProjectExecutionConfig(cwd);
     if (request.hermetic) {
@@ -453,6 +608,16 @@ export class CodexAdapter extends BaseAdapter {
     assertNoCodexProjectExecutionConfig(
       validateWorkingDirectory(cwd) ?? process.cwd()
     );
+    // The private CODEX_HOME's lifecycle rides prepareRun, which only the
+    // headless launch path calls; an interactive session has no hook to
+    // write and remove the override's config.toml, and pointing one at the
+    // operator's real CODEX_HOME would mean writing codemux's provider
+    // table into the operator's config.
+    if (this.validatedProvider() !== null) {
+      throw new Error(
+        "the codex provider override supports headless runs only; unset CODEMUX_CODEX_PROVIDER_* for an interactive session"
+      );
+    }
   }
 
   override getStdinInput(request: RunRequest): string | null {
@@ -472,7 +637,16 @@ export class CodexAdapter extends BaseAdapter {
     // The run was launched with --json, so stdout is the JSONL event stream
     // rather than the reply; codexResult builds the envelope --result-json
     // promises (result = final assistant message, codemux block = usage).
-    return codexResult(result, request, finalMessageFallback);
+    // An override run's model rode the config.toml, never -m, so the request
+    // may carry none while the run used one; resolve it the way prepareRun
+    // did, so the envelope's model fallback (and the reroute note) sees the
+    // model codemux actually selected.
+    const override = this.validatedProvider();
+    return codexResult(
+      result,
+      override === null ? request : { ...request, model: this.modelFor(request.model) },
+      finalMessageFallback
+    );
   }
 
   /**

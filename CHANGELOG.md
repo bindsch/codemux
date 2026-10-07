@@ -7,6 +7,64 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-07
+
+### Added
+
+- **Provider overrides for Claude Code, Codex, and OpenHands, plus token
+  caps for every override-capable harness.** `CODEMUX_CLAUDE_PROVIDER_{
+  BASE_URL,API_KEY,MODEL}` routes Claude Code through the gateway
+  variables the Z.AI endpoint uses — `ANTHROPIC_BASE_URL` +
+  `ANTHROPIC_AUTH_TOKEN`, model on `--model` (the mechanism is shared in
+  `src/claude-family.ts`; Z.AI is unchanged) — and requires an endpoint
+  that serves the Anthropic Messages API and accepts the `system`-role
+  turns Claude Code >= 2.1.2xx puts inside the `messages` list (a proxy in
+  front of a vLLM 0.12 Messages shim must fold them into the top-level
+  `system` field before forwarding; README quotes the exact rejection).
+  With the override set the
+  operator's Claude login plays no part: the sandboxed Keychain
+  credential-mirror sync is skipped (nothing of the operator's login is
+  copied for a run that does not use it), `ANTHROPIC_API_KEY` and
+  `CLAUDE_CODE_OAUTH_TOKEN` are kept out of the child environment, and a
+  mirror that still holds a refresh token still refuses the launch.
+  `CODEMUX_CODEX_PROVIDER_*` writes a per-run private `CODEX_HOME`
+  (0600 config.toml, no `auth.json` link — the provider key is the
+  credential, delivered through `env_key`-named environment) holding a
+  `model_providers.codemux` entry with `wire_api = "responses"` (the only
+  value every supported release accepts, so the endpoint must speak the
+  OpenAI Responses API; `--ignore-user-config` is skipped because it skips
+  the override's own config). The generated config also sets
+  `shell_environment_policy.exclude` for the key variable, so the shell tool
+  never hands the provider key to commands the model runs, whatever codex's
+  default name filter does. `CODEMUX_CODEX_PROVIDER_MULTI_AGENT=off`
+  writes `features.multi_agent = false` into that config, removing the
+  grouped `namespace` tool codex's subagent feature adds to every
+  Responses request — the opt-out that lets an endpoint without
+  namespace tool grouping (vLLM 0.12's `/v1/responses` validator) serve
+  codex, at the cost of spawning no codex subagents; `on` (the default)
+  writes nothing, any other value fails the run before launch, and so
+  does the knob set without an override. `CODEMUX_OPENHANDS_PROVIDER_*` restores the
+  0.7.0-cut override behind `--override-with-envs` (`LLM_BASE_URL`/
+  `LLM_API_KEY`/`LLM_MODEL`, litellm's `openai/` prefix).
+  `CODEMUX_<AGENT>_PROVIDER_MAX_OUTPUT_TOKENS` and
+  `..._MAX_CONTEXT_TOKENS` (positive integers, only meaningful with an
+  override) cap the override where the harness can carry it — Claude Code
+  `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, Codex `model_context_window`, OpenCode
+  `limit.output`/`limit.context` (both required together), Kimi
+  `KIMI_MODEL_MAX_COMPLETION_TOKENS`/`KIMI_MODEL_MAX_CONTEXT_SIZE`, Droid
+  `maxOutputTokens`, Pi `maxTokens`/`contextWindow` — and a cap a harness
+  cannot honor fails the run loudly before launch with the evidence
+  (README's table lists every refusal). Codex, Droid, Pi, and OpenCode
+  overrides support headless runs only (`codemux tui` refuses them; their
+  per-run config files ride the launch lifecycle); the Claude Code,
+  OpenHands, Aider, Kimi, and Goose overrides carry into the TUI. An
+  override exported for a harness without support (Z.AI, Antigravity,
+  Cursor, the 0.7.0 cut) fails the run before launch instead of being
+  ignored. `codemux list` and `codemux doctor` mark the capability
+  ("provider"). (src/provider-override.ts, src/codex-provider.ts,
+  src/claude-family.ts, src/adapters/*; docs/HARNESS-COMPATIBILITY.md's
+  2026-10-07 addendum records the wire_api floor and the cap refusals.)
+
 ## [0.7.1] - 2026-10-05
 
 ### Security

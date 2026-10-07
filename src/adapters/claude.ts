@@ -8,6 +8,7 @@ import {
   readKeychainSecret,
   syncKeychainCredential,
   type SecretReader,
+  type SecretReadResult,
 } from "../credentials.js";
 import { getPlaywrightSandboxMcpArgs } from "../mcp.js";
 import { claudeFamilyResult } from "../result-envelope.js";
@@ -15,7 +16,17 @@ import {
   claudeAutonomyFlags,
   claudeNativeAutonomyFlags,
 } from "../claude-autonomy.js";
-import { assertAbsoluteClaudeConfigDir } from "../claude-family.js";
+import {
+  assertAbsoluteClaudeConfigDir,
+  claudeGatewayEnv,
+  claudeGatewayOmissions,
+} from "../claude-family.js";
+import {
+  assertProviderCap,
+  readProviderOverride,
+  requireProviderOverride,
+  type ProviderOverride,
+} from "../provider-override.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -29,8 +40,91 @@ export class ClaudeAdapter extends BaseAdapter {
   readonly id: AgentId = "claude";
   readonly binaryName = "claude";
 
+  // Seam so tests can point the provider override at a scratch environment;
+  // the view is forwarded to the base, whose checks read it.
+  constructor(environment: NodeJS.ProcessEnv = process.env) {
+    super(environment);
+  }
+
+  /**
+   * The provider override, validated: the same gateway mechanism zai rides
+   * (claude-family.ts), pointed at the operator's endpoint. The endpoint
+   * must serve the Anthropic Messages API (`/v1/messages`) — the binary
+   * speaks no other wire format — and the override needs a base URL and a
+   * key. The token wins over the on-disk login, so the run bills the
+   * operator's endpoint, never the Claude subscription.
+   */
+  private validatedProvider(): (ProviderOverride & { baseUrl: string; apiKey: string }) | null {
+    const override = readProviderOverride("claude", this.environment);
+    if (override === null) return null;
+    // Claude Code exposes no context-window knob: its environment surface
+    // carries CLAUDE_CODE_MAX_OUTPUT_TOKENS only (verified against the
+    // installed 2.1.280 binary), so a context cap cannot ride the override.
+    assertProviderCap(
+      "claude",
+      override,
+      "maxContextTokens",
+      "Claude Code exposes no context-window environment variable (only " +
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS, verified against the installed 2.1.280 " +
+        "binary), so a context cap cannot ride the override"
+    );
+    return requireProviderOverride("claude", override, [
+      "baseUrl",
+      "apiKey",
+    ]) as ProviderOverride & { baseUrl: string; apiKey: string };
+  }
+
+  /**
+   * The model the run uses: the request's, else the override's. With an
+   * override one must exist — the binary's default model would hit the
+   * operator's endpoint with a name it may not serve.
+   */
+  private modelFor(model: string | undefined): string | undefined {
+    const override = this.validatedProvider();
+    const resolved = model ?? override?.model;
+    if (resolved === undefined && override !== null) {
+      throw new Error(
+        "claude needs a model for the provider override; pass --model or set CODEMUX_CLAUDE_PROVIDER_MODEL"
+      );
+    }
+    return resolved;
+  }
+
   override getEnv(): Record<string, string> {
-    return { CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1" };
+    const override = this.validatedProvider();
+    if (override === null) {
+      return { CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1" };
+    }
+    // Every model tier Claude Code may pick on its own — the haiku tier for
+    // background requests and subagents, the small-fast model, and the
+    // sonnet/opus defaults a `--model` alias can resolve to — is pinned to
+    // the override model, so no request leaves for a model the endpoint
+    // does not serve (the four names are verified against Claude Code
+    // 2.1.280's binary strings). The model may instead arrive on `--model`
+    // alone (modelFor); the tiers are pinned when the override names it,
+    // which the README states.
+    const env: Record<string, string> = {
+      ...claudeGatewayEnv(override.apiKey, override.baseUrl),
+      CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1",
+    };
+    if (override.model !== undefined) {
+      env.ANTHROPIC_DEFAULT_HAIKU_MODEL = override.model;
+      env.ANTHROPIC_SMALL_FAST_MODEL = override.model;
+      env.ANTHROPIC_DEFAULT_SONNET_MODEL = override.model;
+      env.ANTHROPIC_DEFAULT_OPUS_MODEL = override.model;
+    }
+    if (override.maxOutputTokens !== undefined) {
+      env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(override.maxOutputTokens);
+    }
+    return env;
+  }
+
+  override getEnvOmissions(): readonly string[] {
+    // With an override the token is the credential and Claude Code's own
+    // login must play no part: the operator's API key and OAuth token stay
+    // out of the child environment. Without one, both keep forwarding as
+    // before (ALLOWED_CREDENTIAL_ENV.claude).
+    return this.validatedProvider() === null ? [] : claudeGatewayOmissions();
   }
 
   // Overridable seams so unit tests exercise the launch wiring without
@@ -89,6 +183,47 @@ export class ClaudeAdapter extends BaseAdapter {
     // elsewhere: it sits in ~/.claude, which the sandbox lets the child
     // read, so a refresh token left in it is the same hazard.
     const target = this.credentialTarget();
+    // A provider override authenticates with its own token, so nothing of
+    // the operator's login is copied for the run: the Keychain sync is
+    // skipped entirely. The mirror is still guarded, because the child
+    // reads ~/.claude whatever credential it uses — a refresh token left in
+    // the file is the same revoke hazard here as on a subscription run.
+    if (readProviderOverride("claude", this.environment) !== null) {
+      // A refresh token in the file is a hazard only when the file is a
+      // MIRROR, i.e. a Keychain entry owns the login (macOS). With no entry
+      // at all (Linux, a file-only macOS login) the file is Claude Code's
+      // only store and that token is normal — the same rule the sync
+      // module applies. The Keychain is consulted for presence only, and
+      // only when the file carries a refresh token; nothing is copied.
+      if (fileCarriesRefreshToken(target)) {
+        // The opt-out means "do not consult the Keychain" here as on a plain
+        // run: the file is reported, never refused, and the operator who
+        // set it owns what is in it.
+        if (process.env.CODEMUX_NO_KEYCHAIN_SYNC === "1") {
+          console.error(
+            `claude: CODEMUX_NO_KEYCHAIN_SYNC is set and ${target} holds a refresh token ` +
+              "codemux will not touch without the Keychain; a sandboxed child can read it"
+          );
+          return;
+        }
+        let read: SecretReadResult;
+        try {
+          read = this.credentialReader(CLAUDE_KEYCHAIN_SERVICE);
+        } catch {
+          read = { kind: "error", detail: "the Keychain read threw" };
+        }
+        if (read.kind !== "missing") {
+          throw new Error(
+            `claude: the credential mirror at ${target} holds a refresh token. A ` +
+              "provider-override run never uses the operator login, but a sandboxed " +
+              "child can still read the file, and a refresh token in it could revoke " +
+              "your Claude login (2026-10-05). One plain sandboxed claude run scrubs " +
+              "it (a Keychain entry owns the login), then retry."
+          );
+        }
+      }
+      return;
+    }
     const outcome = syncKeychainCredential(
       CLAUDE_KEYCHAIN_SERVICE,
       target,
@@ -145,6 +280,7 @@ export class ClaudeAdapter extends BaseAdapter {
       supportsHermetic: true,
       supportsToolSelection: true,
       supportsResultJson: true,
+      supportsProviderOverride: true,
     };
   }
 
@@ -163,7 +299,12 @@ export class ClaudeAdapter extends BaseAdapter {
     // The adapter pins no CLAUDE_CONFIG_DIR, so a passed-through one is the
     // only redirect -- and a relative one would resolve against the child's
     // working directory, landing the config store somewhere --cwd decides.
-    assertAbsoluteClaudeConfigDir(request.passthroughEnv);
+    assertAbsoluteClaudeConfigDir(request.passthroughEnv, this.environment);
+    // Fail before launch on a half-configured override, and surface the
+    // model requirement early: the binary's default model would hit the
+    // operator's endpoint with a name it may not serve. The context-cap
+    // refusal lives in validatedProvider, so this call covers it too.
+    this.modelFor(request.model);
   }
 
   override validateTuiRequest(
@@ -175,7 +316,11 @@ export class ClaudeAdapter extends BaseAdapter {
     enablePlaywrightMcp = false
   ): void {
     super.validateTuiRequest(model, cwd, autonomy, effort, passthroughEnv, enablePlaywrightMcp);
-    assertAbsoluteClaudeConfigDir(passthroughEnv);
+    assertAbsoluteClaudeConfigDir(passthroughEnv, this.environment);
+    // The override is environment-only, so an interactive session carries
+    // it too -- but the model requirement holds for the same reason as a
+    // headless run.
+    this.modelFor(model);
   }
 
   buildRunCommand(request: RunRequest): string[] {
@@ -227,8 +372,12 @@ export class ClaudeAdapter extends BaseAdapter {
       forbiddenRoot: request.cwd ?? process.cwd(),
     }));
 
-    if (request.model) {
-      cmd.push("--model", request.model);
+    // With an override the model is always explicit — the request's or the
+    // override's — because the binary's default model is a subscription
+    // name the operator's endpoint may not serve (the same rule as zai).
+    const model = this.modelFor(request.model);
+    if (model !== undefined) {
+      cmd.push("--model", model);
     }
 
     if (request.autonomy) {
@@ -252,7 +401,15 @@ export class ClaudeAdapter extends BaseAdapter {
     // is not the envelope fails loudly: the raw stdout stays on stdout,
     // stderr says what is missing, and the exit is non-zero.
     if (request.resultJson) {
-      return claudeFamilyResult(result, request, this.id);
+      // An override run always launched with --model resolved (the same
+      // fallback buildRunCommand applies), so the envelope's model fallback
+      // sees the model codemux actually selected.
+      const override = this.validatedProvider();
+      return claudeFamilyResult(
+        result,
+        override === null ? request : { ...request, model: this.modelFor(request.model) },
+        this.id
+      );
     }
     return result;
   }
@@ -272,8 +429,11 @@ export class ClaudeAdapter extends BaseAdapter {
       enabled: enablePlaywrightMcp,
       forbiddenRoot: cwd ?? process.cwd(),
     }));
-    if (model) {
-      cmd.push("--model", model);
+    // The override's model fallback, same as buildRunCommand: an override
+    // session never runs the binary's default model.
+    const resolved = this.modelFor(model);
+    if (resolved !== undefined) {
+      cmd.push("--model", resolved);
     }
     if (autonomy) {
       // The TUI has a human to approve; write grants ride only on

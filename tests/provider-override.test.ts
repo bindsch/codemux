@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
+  assertProviderCap,
   providerOverrideEnvNames,
   readProviderOverride,
   requireProviderOverride,
 } from "../src/provider-override.js";
+import { ClaudeAdapter } from "../src/adapters/claude.js";
+import { getAdapter } from "../src/adapters/index.js";
+import type { RunRequest } from "../src/types.js";
 
 describe("provider override: environment names", () => {
   test("names are derived from the agent id", () => {
@@ -11,9 +15,14 @@ describe("provider override: environment names", () => {
       baseUrl: "CODEMUX_AIDER_PROVIDER_BASE_URL",
       apiKey: "CODEMUX_AIDER_PROVIDER_API_KEY",
       model: "CODEMUX_AIDER_PROVIDER_MODEL",
+      maxOutputTokens: "CODEMUX_AIDER_PROVIDER_MAX_OUTPUT_TOKENS",
+      maxContextTokens: "CODEMUX_AIDER_PROVIDER_MAX_CONTEXT_TOKENS",
     });
     expect(providerOverrideEnvNames("opencode").apiKey).toBe(
       "CODEMUX_OPENCODE_PROVIDER_API_KEY"
+    );
+    expect(providerOverrideEnvNames("codex").maxContextTokens).toBe(
+      "CODEMUX_CODEX_PROVIDER_MAX_CONTEXT_TOKENS"
     );
   });
 });
@@ -50,6 +59,177 @@ describe("provider override: reading", () => {
     expect(
       readProviderOverride("pi", { CODEMUX_PI_PROVIDER_API_KEY: "k-1" })
     ).toEqual({ apiKey: "k-1" });
+  });
+
+  test("caps round-trip with the override, trimmed like the rest", () => {
+    expect(
+      readProviderOverride("kimi", {
+        CODEMUX_KIMI_PROVIDER_BASE_URL: "http://localhost:8011/v1",
+        CODEMUX_KIMI_PROVIDER_API_KEY: "k-1",
+        CODEMUX_KIMI_PROVIDER_MODEL: "clawvm-qwen32b-coder",
+        CODEMUX_KIMI_PROVIDER_MAX_OUTPUT_TOKENS: " 4096 ",
+        CODEMUX_KIMI_PROVIDER_MAX_CONTEXT_TOKENS: "32768",
+      })
+    ).toEqual({
+      baseUrl: "http://localhost:8011/v1",
+      apiKey: "k-1",
+      model: "clawvm-qwen32b-coder",
+      maxOutputTokens: 4096,
+      maxContextTokens: 32768,
+    });
+  });
+
+  test("a cap alone is refused, not treated as an override", () => {
+    // A cap sizes a provider the override names; without one it would sit
+    // silently on the harness's native provider.
+    expect(() =>
+      readProviderOverride("goose", {
+        CODEMUX_GOOSE_PROVIDER_MAX_OUTPUT_TOKENS: "4096",
+      })
+    ).toThrow(
+      "CODEMUX_GOOSE_PROVIDER_MAX_OUTPUT_TOKENS is set but no provider override is; " +
+        "a token cap applies only to a provider override, so also set " +
+        "CODEMUX_GOOSE_PROVIDER_BASE_URL, CODEMUX_GOOSE_PROVIDER_API_KEY and CODEMUX_GOOSE_PROVIDER_MODEL"
+    );
+    expect(() =>
+      readProviderOverride("aider", {
+        CODEMUX_AIDER_PROVIDER_MAX_CONTEXT_TOKENS: "32768",
+      })
+    ).toThrow(
+      "CODEMUX_AIDER_PROVIDER_MAX_CONTEXT_TOKENS is set but no provider override is"
+    );
+  });
+
+  const capCases: [string, Record<string, string>][] = [
+    ["non-numeric", { CODEMUX_KIMI_PROVIDER_MAX_OUTPUT_TOKENS: "lots" }],
+    ["signed", { CODEMUX_KIMI_PROVIDER_MAX_OUTPUT_TOKENS: "-1" }],
+    ["zero", { CODEMUX_KIMI_PROVIDER_MAX_OUTPUT_TOKENS: "0" }],
+    ["decimal", { CODEMUX_KIMI_PROVIDER_MAX_CONTEXT_TOKENS: "1.5" }],
+    ["exponent", { CODEMUX_KIMI_PROVIDER_MAX_CONTEXT_TOKENS: "1e6" }],
+  ];
+  for (const [name, env] of capCases) {
+    test(`a cap that is not a positive integer is refused (${name})`, () => {
+      expect(() =>
+        readProviderOverride("kimi", {
+          CODEMUX_KIMI_PROVIDER_BASE_URL: "http://localhost:8011/v1",
+          ...env,
+        })
+      ).toThrow(/must be a positive integer number of tokens/);
+    });
+  }
+
+  test("a blank cap counts as unset", () => {
+    expect(
+      readProviderOverride("kimi", {
+        CODEMUX_KIMI_PROVIDER_BASE_URL: "http://localhost:8011/v1",
+        CODEMUX_KIMI_PROVIDER_MAX_OUTPUT_TOKENS: "  ",
+      })
+    ).toEqual({ baseUrl: "http://localhost:8011/v1" });
+  });
+});
+
+describe("provider override: cap support", () => {  test("a supported cap passes", () => {
+    const override = readProviderOverride("pi", {
+      CODEMUX_PI_PROVIDER_BASE_URL: "http://localhost:8011/v1",
+      CODEMUX_PI_PROVIDER_MAX_OUTPUT_TOKENS: "4096",
+    })!;
+    expect(() =>
+      assertProviderCap("pi", override, "maxOutputTokens", true)
+    ).not.toThrow();
+  });
+
+  test("an unsupported cap fails loudly with its evidence", () => {
+    const override = readProviderOverride("codex", {
+      CODEMUX_CODEX_PROVIDER_BASE_URL: "http://localhost:8011/v1",
+      CODEMUX_CODEX_PROVIDER_MAX_OUTPUT_TOKENS: "4096",
+    })!;
+    expect(() =>
+      assertProviderCap("codex", override, "maxOutputTokens", "no key exists")
+    ).toThrow(
+      "CODEMUX_CODEX_PROVIDER_MAX_OUTPUT_TOKENS cannot be honored: no key exists"
+    );
+  });
+
+  test("no override or no cap means no refusal", () => {
+    expect(() =>
+      assertProviderCap("codex", null, "maxOutputTokens", "no key exists")
+    ).not.toThrow();
+    const override = readProviderOverride("codex", {
+      CODEMUX_CODEX_PROVIDER_BASE_URL: "http://localhost:8011/v1",
+    })!;
+    expect(() =>
+      assertProviderCap("codex", override, "maxOutputTokens", "no key exists")
+    ).not.toThrow();
+  });
+});
+
+describe("provider override: unsupported harnesses", () => {
+  // The refusal reads the adapter's environment view (the base validator's
+  // seam, forwarded from the constructor), so the launch direction drives
+  // process.env directly and restores it, and the verify direction builds
+  // against an explicit empty view.
+  const withEnv = (vars: Record<string, string>, body: () => void): void => {
+    const saved: [string, string | undefined][] = [];
+    for (const [name, value] of Object.entries(vars)) {
+      saved.push([name, process.env[name]]);
+      process.env[name] = value;
+    }
+    try {
+      body();
+    } finally {
+      for (const [name, value] of saved) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  };
+
+  const zaiOverride: Record<string, string> = {
+    CODEMUX_ZAI_PROVIDER_BASE_URL: "http://localhost:8011",
+    CODEMUX_ZAI_PROVIDER_API_KEY: "k",
+    CODEMUX_ZAI_PROVIDER_MODEL: "m",
+  };
+
+  test("an override set for a harness without support fails the run loudly", () => {
+    withEnv(zaiOverride, () => {
+      expect(() =>
+        getAdapter("zai").validateRunRequest({ agent: "zai", prompt: "p" } as RunRequest)
+      ).toThrow("zai does not support a provider override");
+      expect(() => getAdapter("zai").validateTuiRequest(undefined, undefined))
+        .toThrow("zai does not support a provider override");
+    });
+  });
+
+  test("an explicit environment view hides the refusal (verify's contract)", () => {
+    // Round-5 regression: the base check read process.env directly, so the
+    // exported trio made `codemux verify` FAIL zai ("run command generation
+    // failed: zai does not support a provider override") although verify
+    // builds its adapters against an explicitly empty view. The refusal
+    // must read the adapter's own view: the empty view hides the override,
+    // the launch view above still refuses it.
+    withEnv(zaiOverride, () => {
+      expect(() =>
+        getAdapter("zai", {}).validateRunRequest({ agent: "zai", prompt: "p" } as RunRequest)
+      ).not.toThrow();
+      expect(() => getAdapter("zai", {}).validateTuiRequest(undefined, undefined))
+        .not.toThrow();
+    });
+  });
+
+  test("a supporting harness reads the override instead", () => {
+    // Constructed against the populated view (round 5): with the adapter
+    // handed `{}`, the base capability-flag early return alone made the old
+    // `.not.toThrow()` pass, so the named claim was never exercised.
+    const adapter = new ClaudeAdapter({
+      CODEMUX_CLAUDE_PROVIDER_BASE_URL: "http://localhost:8011",
+      CODEMUX_CLAUDE_PROVIDER_API_KEY: "k",
+      CODEMUX_CLAUDE_PROVIDER_MODEL: "m",
+    });
+    expect(() =>
+      adapter.validateRunRequest({ agent: "claude", prompt: "p" } as RunRequest)
+    ).not.toThrow();
+    // The adapter really read the override, not merely tolerated it.
+    expect(adapter.getEnv().ANTHROPIC_BASE_URL).toBe("http://localhost:8011");
   });
 });
 

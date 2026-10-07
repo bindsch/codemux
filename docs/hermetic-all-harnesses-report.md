@@ -227,7 +227,7 @@ Running with kimi...
 • CODEMUX-CANARY-38EE95CD
 
 • …I was given:
-  1. AGENTS.md from /Users/kane/.agents/AGENTS.md - contains "Owner: Laurent Bindschaedler (GitHub: bindsch, laurent@bindschaedler.com)"
+  1. AGENTS.md from /Users/example/.agents/AGENTS.md - contains "Owner: the operator (GitHub and email redacted)"
   2. AGENTS.md from /private/tmp/codemux-opencode-canary.trQ53q/AGENTS.md - contains "The code word for this repository is CODEMUX-CANARY-38EE95CD."
 ```
 
@@ -566,7 +566,7 @@ exit=1
 
 === [3/5] control probe (plain run, planted dir; expected: leak) ===
 [thinking] …yes — I was given a "Global AGENTS.md" and "Workspace AGENTS.md" in my system prompt. The Workspace AGENTS.md contains a verification code word: CODEMUX-CANARY-2177D11B.
-…The AGENTS.md contains both a code word and a person's name (Laurent Bindschaedler)…
+…The AGENTS.md contains both a code word and a person's name (the operator)…
 CODEMUX-CANARY-2177D11B
 exit=0
 
@@ -617,7 +617,7 @@ adapter refuses this worktree's own executable configuration):
 
 ```
 ===== [0/5] smoke: plain run, expect OK =====
-Error: Copilot refuses repository executable configuration: /Users/kane/Programming/Ops/codemux-hermetic-all/.claude/settings.json
+Error: Copilot refuses repository executable configuration: /Users/example/Programming/Ops/codemux-hermetic-all/.claude/settings.json
 exit=1
 
 ===== [1/5] check --hermetic (expect refusal) =====

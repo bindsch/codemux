@@ -131,8 +131,9 @@ const STALE_RUN_DIR_MS = 2 * 86_400_000;
 
 /**
  * Removes run directories (`run-<pid>-<random>`) left behind by codemux
- * processes that no longer exist. `.codemux-hermetic` and `.codemux-scratch`
- * both hold them.
+ * processes that no longer exist, once they are also stale (the age gate
+ * above). `.codemux-hermetic` and `.codemux-scratch` hold them, and so does
+ * codex's `.codemux-provider` (codex-provider.ts).
  */
 function sweepStaleRunDirs(parent: string): void {
   let entries: string[];
@@ -181,9 +182,10 @@ export function assertTrustedDirectory(path: string): void {
 /**
  * Creates the parent a run's per-run directories live under inside the real
  * CODEX_HOME (`.codemux-hermetic` for private homes, `.codemux-scratch` for
- * `--output-last-message` files): made if missing, checked for the shape and
- * ownership a run can trust, and swept of directories left by codemux
- * processes that no longer exist. Returns the parent's path.
+ * `--output-last-message` files, `.codemux-provider` for provider-override
+ * homes): made if missing, checked for the shape and ownership a run can
+ * trust, and swept of directories left by codemux processes that no longer
+ * exist. Returns the parent's path.
  */
 export function prepareRunDirParent(codexHome: string, name: string): string {
   const parent = join(codexHome, name);

@@ -1,12 +1,16 @@
+import type { SecretReader } from "../src/credentials.js";
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunContext } from "../src/adapters/base.js";
 import { AiderAdapter } from "../src/adapters/aider.js";
+import { ClaudeAdapter } from "../src/adapters/claude.js";
+import { CodexAdapter } from "../src/adapters/codex.js";
 import { DroidAdapter } from "../src/adapters/droid.js";
 import { GooseAdapter, gooseOpenAiEndpoint } from "../src/adapters/goose.js";
 import { KimiAdapter } from "../src/adapters/kimi.js";
+import { OpenHandsAdapter } from "../src/adapters/openhands.js";
 import { PiAdapter } from "../src/adapters/pi.js";
 import type { RunRequest } from "../src/types.js";
 
@@ -101,6 +105,25 @@ describe("aider provider override", () => {
       OPENAI_API_KEY: ZAI.CODEMUX_AIDER_PROVIDER_API_KEY,
       OPENAI_API_BASE: ZAI.CODEMUX_AIDER_PROVIDER_BASE_URL,
     });
+  });
+
+  test("both token caps are refused: no channel carries one", () => {
+    // Regression: aider 0.86.2 has no max-tokens flag and codemux writes no
+    // aider config, so a set cap must fail the run rather than ride along
+    // silently uncapped.
+    const request: RunRequest = { agent: "aider", prompt: "p", cwd: cwdOf() } as RunRequest;
+    const outputCap = new AiderAdapter({
+      ...ZAI,
+      CODEMUX_AIDER_PROVIDER_MAX_OUTPUT_TOKENS: "4096",
+    });
+    expect(() => outputCap.validateRunRequest(request))
+      .toThrow("CODEMUX_AIDER_PROVIDER_MAX_OUTPUT_TOKENS cannot be honored");
+    const contextCap = new AiderAdapter({
+      ...ZAI,
+      CODEMUX_AIDER_PROVIDER_MAX_CONTEXT_TOKENS: "32768",
+    });
+    expect(() => contextCap.getRunEnv(request))
+      .toThrow("CODEMUX_AIDER_PROVIDER_MAX_CONTEXT_TOKENS cannot be honored");
   });
 });
 
@@ -211,6 +234,22 @@ describe("kimi provider override", () => {
       KIMI_MODEL_API_KEY: ZAI_KIMI.CODEMUX_KIMI_PROVIDER_API_KEY,
       KIMI_MODEL_BASE_URL: ZAI_KIMI.CODEMUX_KIMI_PROVIDER_BASE_URL,
       KIMI_MODEL_PROVIDER_TYPE: "openai",
+    });
+  });
+
+  test("both caps ride the sibling KIMI_MODEL_* variables", () => {
+    const adapter = adapterOf({
+      ...ZAI_KIMI,
+      CODEMUX_KIMI_PROVIDER_MAX_OUTPUT_TOKENS: "4096",
+      CODEMUX_KIMI_PROVIDER_MAX_CONTEXT_TOKENS: "32768",
+    });
+    expect(adapter.getRunEnv({ agent: "kimi", prompt: "p" } as RunRequest)).toEqual({
+      KIMI_MODEL_NAME: "glm-5.3",
+      KIMI_MODEL_API_KEY: ZAI_KIMI.CODEMUX_KIMI_PROVIDER_API_KEY,
+      KIMI_MODEL_BASE_URL: ZAI_KIMI.CODEMUX_KIMI_PROVIDER_BASE_URL,
+      KIMI_MODEL_PROVIDER_TYPE: "openai",
+      KIMI_MODEL_MAX_COMPLETION_TOKENS: "4096",
+      KIMI_MODEL_MAX_CONTEXT_SIZE: "32768",
     });
   });
 });
@@ -420,6 +459,25 @@ describe("droid provider override", () => {
     expect(() => adapter.validateTuiRequest(undefined, cwdOf()))
       .toThrow("supports headless runs only");
   });
+
+  test("the output cap rides the BYOK entry; the context cap is refused", () => {
+    const adapter = adapterOf({
+      ...ZAI_DROID,
+      CODEMUX_DROID_PROVIDER_MAX_OUTPUT_TOKENS: "4096",
+    });
+    const request: RunRequest = { agent: "droid", prompt: "p", cwd: cwdOf() };
+    const context = prepare(adapter, request);
+    const path = adapter.buildRunCommand(request, context)[2]!;
+    expect(JSON.parse(readFileSync(path, "utf8")).customModels[0].maxOutputTokens).toBe(4096);
+    // There is no context-window BYOK field, so that cap fails the run
+    // loudly instead of being dropped.
+    const capped = adapterOf({
+      ...ZAI_DROID,
+      CODEMUX_DROID_PROVIDER_MAX_CONTEXT_TOKENS: "32768",
+    });
+    expect(() => capped.validateRunRequest({ agent: "droid", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toThrow("CODEMUX_DROID_PROVIDER_MAX_CONTEXT_TOKENS cannot be honored");
+  });
 });
 
 const ZAI_PI = {
@@ -501,6 +559,22 @@ describe("pi provider override", () => {
     expect(JSON.stringify(models)).not.toContain(ZAI_PI.CODEMUX_PI_PROVIDER_API_KEY);
     expect(env.CODEMUX_PI_PROVIDER_API_KEY).toBe(ZAI_PI.CODEMUX_PI_PROVIDER_API_KEY);
     expect(statSync(join(env.PI_CODING_AGENT_DIR!, "models.json")).mode & 0o777).toBe(0o600);
+  });
+
+  test("both caps ride the model entry as maxTokens and contextWindow", () => {
+    const adapter = adapterOf({
+      ...ZAI_PI,
+      CODEMUX_PI_PROVIDER_MAX_OUTPUT_TOKENS: "4096",
+      CODEMUX_PI_PROVIDER_MAX_CONTEXT_TOKENS: "32768",
+    });
+    const request: RunRequest = { agent: "pi", prompt: "p", cwd: cwdOf() };
+    const env = adapter.getRunEnv(request, prepare(adapter, request));
+    const models = JSON.parse(
+      readFileSync(join(env.PI_CODING_AGENT_DIR!, "models.json"), "utf8")
+    );
+    const entry = models.providers.codemux.models[0];
+    expect(entry.maxTokens).toBe(4096);
+    expect(entry.contextWindow).toBe(32768);
   });
 
   test("the command selects the provider-qualified model", () => {
@@ -774,6 +848,641 @@ describe("goose provider override", () => {
       OPENAI_API_KEY: ZAI_GOOSE.CODEMUX_GOOSE_PROVIDER_API_KEY,
       GOOSE_MODEL: "glm-5.3",
     });
+  });
+
+  test("both token caps are refused: the knobs live only in goose's config file", () => {
+    // Regression: goose's per-model max_tokens/context_limit exist only in
+    // the config file the override never writes; a set cap must fail the
+    // run rather than ride along silently uncapped.
+    const request = { agent: "goose" as const, prompt: "p", cwd: cwdOf() };
+    const outputCap = new GooseAdapter({
+      ...ZAI_GOOSE,
+      CODEMUX_GOOSE_PROVIDER_MAX_OUTPUT_TOKENS: "4096",
+    });
+    expect(() => outputCap.validateRunRequest(request as RunRequest))
+      .toThrow("CODEMUX_GOOSE_PROVIDER_MAX_OUTPUT_TOKENS cannot be honored");
+    const contextCap = new GooseAdapter({
+      ...ZAI_GOOSE,
+      CODEMUX_GOOSE_PROVIDER_MAX_CONTEXT_TOKENS: "32768",
+    });
+    expect(() => contextCap.getRunEnv(request as RunRequest))
+      .toThrow("CODEMUX_GOOSE_PROVIDER_MAX_CONTEXT_TOKENS cannot be honored");
+  });
+});
+
+const VLLM_CLAUDE = {
+  CODEMUX_CLAUDE_PROVIDER_BASE_URL: "http://localhost:8011",
+  CODEMUX_CLAUDE_PROVIDER_API_KEY: "test-key-do-not-print",
+  CODEMUX_CLAUDE_PROVIDER_MODEL: "clawvm-qwen32b-coder",
+};
+
+describe("claude provider override", () => {
+  const scratch: string[] = [];
+  afterEach(() => {
+    while (scratch.length > 0) {
+      const dir = scratch.pop()!;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  const adapterOf = (env: NodeJS.ProcessEnv = {}): ClaudeAdapter => new ClaudeAdapter(env);
+
+  test("without an override nothing changes", () => {
+    const adapter = adapterOf();
+    expect(adapter.getEnv()).toEqual({ CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1" });
+    expect(adapter.getEnvOmissions()).toEqual([]);
+    expect(adapter.buildRunCommand({ agent: "claude", prompt: "p" } as RunRequest))
+      .not.toContain("--model");
+  });
+
+  test("the override rides the gateway env; the operator login stays out", () => {
+    const adapter = adapterOf(VLLM_CLAUDE);
+    const model = VLLM_CLAUDE.CODEMUX_CLAUDE_PROVIDER_MODEL;
+    expect(adapter.getEnv()).toEqual({
+      ANTHROPIC_AUTH_TOKEN: VLLM_CLAUDE.CODEMUX_CLAUDE_PROVIDER_API_KEY,
+      ANTHROPIC_BASE_URL: VLLM_CLAUDE.CODEMUX_CLAUDE_PROVIDER_BASE_URL,
+      // Every tier Claude Code picks on its own goes to the same model, so
+      // background requests and subagents never ask the endpoint for a
+      // model it does not serve.
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: model,
+      ANTHROPIC_SMALL_FAST_MODEL: model,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: model,
+      ANTHROPIC_DEFAULT_OPUS_MODEL: model,
+      CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1",
+    });
+    // The token is the credential; a stray operator API key or OAuth token
+    // would be a second, operator-funded authentication path.
+    expect(adapter.getEnvOmissions()).toEqual(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]);
+  });
+
+  test("the model is always explicit: the override's, else --model's", () => {
+    const adapter = adapterOf(VLLM_CLAUDE);
+    const request: RunRequest = { agent: "claude", prompt: "p" };
+    expect(adapter.buildRunCommand(request)).toContain("clawvm-qwen32b-coder");
+    const explicit = adapterOf(VLLM_CLAUDE);
+    const cmd = explicit.buildRunCommand({
+      agent: "claude",
+      prompt: "p",
+      model: "other-model",
+    } as RunRequest);
+    expect(cmd[cmd.indexOf("--model") + 1]).toBe("other-model");
+  });
+
+  test("an override without any model fails validation; a keyless override names it", () => {
+    const keyless = adapterOf({
+      CODEMUX_CLAUDE_PROVIDER_BASE_URL: VLLM_CLAUDE.CODEMUX_CLAUDE_PROVIDER_BASE_URL,
+    });
+    expect(() => keyless.validateRunRequest({ agent: "claude", prompt: "p" } as RunRequest))
+      .toThrow("provider override is missing CODEMUX_CLAUDE_PROVIDER_API_KEY");
+    const modelless = adapterOf({
+      CODEMUX_CLAUDE_PROVIDER_BASE_URL: VLLM_CLAUDE.CODEMUX_CLAUDE_PROVIDER_BASE_URL,
+      CODEMUX_CLAUDE_PROVIDER_API_KEY: VLLM_CLAUDE.CODEMUX_CLAUDE_PROVIDER_API_KEY,
+    });
+    expect(() => modelless.validateRunRequest({ agent: "claude", prompt: "p" } as RunRequest))
+      .toThrow("claude needs a model for the provider override");
+    expect(() => modelless.validateTuiRequest(undefined, undefined))
+      .toThrow("claude needs a model for the provider override");
+  });
+
+  test("the output cap rides CLAUDE_CODE_MAX_OUTPUT_TOKENS; the context cap is refused", () => {
+    const adapter = adapterOf({
+      ...VLLM_CLAUDE,
+      CODEMUX_CLAUDE_PROVIDER_MAX_OUTPUT_TOKENS: "4096",
+    });
+    expect(adapter.getEnv().CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe("4096");
+    const capped = adapterOf({
+      ...VLLM_CLAUDE,
+      CODEMUX_CLAUDE_PROVIDER_MAX_CONTEXT_TOKENS: "32768",
+    });
+    expect(() => capped.validateRunRequest({ agent: "claude", prompt: "p" } as RunRequest))
+      .toThrow("CODEMUX_CLAUDE_PROVIDER_MAX_CONTEXT_TOKENS cannot be honored");
+    // And without the cap the env carries only the gateway.
+    expect(adapterOf(VLLM_CLAUDE).getEnv()).not.toHaveProperty("CLAUDE_CODE_MAX_OUTPUT_TOKENS");
+  });
+
+  test("the tui carries the override's model fallback, same as a run", () => {
+    const adapter = adapterOf(VLLM_CLAUDE);
+    expect(adapter.buildTuiCommand("other-model")).toContain("other-model");
+    expect(adapter.buildTuiCommand(undefined)).toContain("clawvm-qwen32b-coder");
+  });
+
+  test("the sanitizer keeps the gateway env and drops the operator's own login", () => {
+    const adapter = adapterOf(VLLM_CLAUDE);
+    const saved: [string, string | undefined][] = [
+      ["ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY],
+      ["CLAUDE_CODE_OAUTH_TOKEN", process.env.CLAUDE_CODE_OAUTH_TOKEN],
+    ];
+    process.env.ANTHROPIC_API_KEY = "operator-key-do-not-print";
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "operator-token-do-not-print";
+    try {
+      const env = adapter.buildExecutionEnv();
+      expect(env.ANTHROPIC_AUTH_TOKEN).toBe(VLLM_CLAUDE.CODEMUX_CLAUDE_PROVIDER_API_KEY);
+      expect(env.ANTHROPIC_BASE_URL).toBe(VLLM_CLAUDE.CODEMUX_CLAUDE_PROVIDER_BASE_URL);
+      expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    } finally {
+      for (const [name, value] of saved) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
+  test("the sandbox sync is skipped under an override; a refresh token refuses only when a Keychain entry owns the login", () => {
+    // Nothing of the operator's login may be copied for a run that does not
+    // use it: prepareSandbox must not read the Keychain at all. The mirror
+    // is still guarded, because the child reads ~/.claude whatever
+    // credential it uses.
+    const home = mkdtempSync(join(tmpdir(), "codemux-claude-home-"));
+    scratch.push(home);
+    const mirror = join(home, ".credentials.json");
+    writeFileSync(
+      mirror,
+      JSON.stringify({ claudeAiOauth: { accessToken: "t", refreshToken: "" } })
+    );
+    let keychainReads = 0;
+    class TestableClaudeAdapter extends ClaudeAdapter {
+      protected override credentialReader: SecretReader = () => {
+        keychainReads++;
+        return { kind: "missing" };
+      };
+      protected override credentialTarget = (): string => mirror;
+      protected override credentialBackupDir = (): string => home;
+    }
+    // A plain run syncs an existing mirror, so the Keychain is consulted.
+    const noKeychainSync = process.env.CODEMUX_NO_KEYCHAIN_SYNC;
+    delete process.env.CODEMUX_NO_KEYCHAIN_SYNC;
+    try {
+      const plain = new TestableClaudeAdapter({});
+      expect(() => plain.prepareSandbox()).not.toThrow();
+      expect(keychainReads).toBeGreaterThan(0);
+
+      const override = new TestableClaudeAdapter(VLLM_CLAUDE);
+      keychainReads = 0;
+      expect(() => override.prepareSandbox()).not.toThrow();
+      expect(keychainReads).toBe(0);
+
+      writeFileSync(
+        mirror,
+        JSON.stringify({ claudeAiOauth: { accessToken: "t", refreshToken: "rt" } })
+      );
+      // No Keychain entry (Linux, a file-only login): the file is Claude
+      // Code's only store, the token is normal, the launch proceeds and the
+      // file is left alone. Presence was checked, nothing copied.
+      expect(() => override.prepareSandbox()).not.toThrow();
+      expect(keychainReads).toBe(1);
+      expect(readFileSync(mirror, "utf8")).toContain('"rt"');
+      // The Keychain opt-out means "do not consult the Keychain" here too:
+      // reported, never refused, and no read happens.
+      process.env.CODEMUX_NO_KEYCHAIN_SYNC = "1";
+      keychainReads = 0;
+      expect(() => override.prepareSandbox()).not.toThrow();
+      expect(keychainReads).toBe(0);
+      delete process.env.CODEMUX_NO_KEYCHAIN_SYNC;
+      // A Keychain entry owns the login: the file is a mirror and the
+      // token in it is the second copy — refused.
+      class MirroredClaudeAdapter extends TestableClaudeAdapter {
+        protected override credentialReader: SecretReader = () => ({
+          kind: "secret",
+          value: JSON.stringify({ claudeAiOauth: { accessToken: "k", refreshToken: "k" } }),
+        });
+      }
+      expect(() => new MirroredClaudeAdapter(VLLM_CLAUDE).prepareSandbox()).toThrow(/holds a refresh token/);
+      expect(readFileSync(mirror, "utf8")).toContain('"rt"'); // untouched either way
+    } finally {
+      if (noKeychainSync !== undefined) process.env.CODEMUX_NO_KEYCHAIN_SYNC = noKeychainSync;
+    }
+  });
+});
+
+const VLLM_CODEX = {
+  CODEMUX_CODEX_PROVIDER_BASE_URL: "http://localhost:8011/v1",
+  CODEMUX_CODEX_PROVIDER_API_KEY: "test-key-do-not-print",
+  CODEMUX_CODEX_PROVIDER_MODEL: "clawvm-qwen32b-coder",
+};
+
+describe("codex provider override", () => {
+  const scratch: string[] = [];
+  const prepared: { adapter: CodexAdapter; context: RunContext }[] = [];
+  afterEach(() => {
+    for (const { adapter, context } of prepared.splice(0)) adapter.cleanupRun(context);
+    while (scratch.length > 0) {
+      const dir = scratch.pop()!;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  const cwdOf = (): string => {
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-codex-override-"));
+    mkdirSync(join(cwd, ".git"));
+    scratch.push(cwd);
+    return cwd;
+  };
+  const adapterOf = (env: NodeJS.ProcessEnv = {}): CodexAdapter => {
+    const home = mkdtempSync(join(tmpdir(), "codemux-codex-home-"));
+    scratch.push(home);
+    return new CodexAdapter(env, home);
+  };
+  const prepare = (adapter: CodexAdapter, request: RunRequest): RunContext => {
+    const context = adapter.prepareRun(request);
+    prepared.push({ adapter, context });
+    return context;
+  };
+  const codexHomeOf = (cmd: string[]): string | undefined =>
+    cmd.find((part) => part.startsWith("CODEX_HOME="))?.slice("CODEX_HOME=".length);
+  const configOf = (context: RunContext): string =>
+    readFileSync(join(context.codexProviderHome!.codexHome, "config.toml"), "utf8");
+
+  test("without an override nothing changes", () => {
+    const adapter = adapterOf();
+    expect(adapter.getRunEnv({ agent: "codex", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toEqual({});
+    expect(adapter.getEnvOmissions()).toEqual([]);
+    const cmd = adapter.buildRunCommand({
+      agent: "codex",
+      prompt: "p",
+      cwd: cwdOf(),
+      model: "gpt-5.4-codex",
+    } as RunRequest);
+    expect(cmd).toContain("-m");
+  });
+
+  test("the override rides a private CODEX_HOME whose config.toml carries the provider", () => {
+    const adapter = adapterOf(VLLM_CODEX);
+    const request: RunRequest = { agent: "codex", prompt: "p", cwd: cwdOf() };
+    const context = prepare(adapter, request);
+    const cmd = adapter.buildRunCommand(request, context);
+    expect(cmd[0]).toBe("env");
+    const home = codexHomeOf(cmd)!;
+    expect(home).toContain(join(".codex", ".codemux-provider", `run-${process.pid}-`));
+    expect(home).not.toBe(join(process.env.HOME ?? "", ".codex"));
+    // The model rides the config, never -m; the key rides neither.
+    expect(cmd).not.toContain("-m");
+    expect(cmd.join(" ")).not.toContain(VLLM_CODEX.CODEMUX_CODEX_PROVIDER_API_KEY);
+    expect(adapter.getRunEnv(request, context)).toEqual({
+      CODEMUX_CODEX_PROVIDER_API_KEY: VLLM_CODEX.CODEMUX_CODEX_PROVIDER_API_KEY,
+    });
+    const config = configOf(context);
+    expect(config).toContain('model_provider = "codemux"\n');
+    expect(config).toContain('model = "clawvm-qwen32b-coder"\n');
+    expect(config).toContain('[model_providers.codemux]\n');
+    expect(config).toContain(`base_url = "http://localhost:8011/v1"\n`);
+    expect(config).toContain('env_key = "CODEMUX_CODEX_PROVIDER_API_KEY"\n');
+    // Unconditional and the only value every supported release accepts.
+    expect(config).toContain('wire_api = "responses"\n');
+    // The provider key never reaches commands the model runs: the private
+    // home replaces any operator shell_environment_policy, so the config
+    // excludes the key variable itself rather than relying on codex's default
+    // name filter.
+    expect(config).toContain('[shell_environment_policy]\nexclude = ["CODEMUX_CODEX_PROVIDER_API_KEY"]\n');
+    // Top-level keys stay above the first table (TOML would otherwise attach
+    // them to it).
+    expect(config.indexOf("model_provider = ")).toBeLessThan(config.indexOf("[shell_environment_policy]"));
+    expect(config).not.toContain(VLLM_CODEX.CODEMUX_CODEX_PROVIDER_API_KEY);
+    expect(statSync(join(home, "config.toml")).mode & 0o777).toBe(0o600);
+    // The operator's login never enters the private home.
+    expect(existsSync(join(home, "auth.json"))).toBe(false);
+  });
+
+  test("the context cap rides model_context_window; the output cap is refused", () => {
+    const adapter = adapterOf({
+      ...VLLM_CODEX,
+      CODEMUX_CODEX_PROVIDER_MAX_CONTEXT_TOKENS: "32768",
+    });
+    const request: RunRequest = { agent: "codex", prompt: "p", cwd: cwdOf() };
+    expect(configOf(prepare(adapter, request))).toContain("model_context_window = 32768\n");
+    const capped = adapterOf({
+      ...VLLM_CODEX,
+      CODEMUX_CODEX_PROVIDER_MAX_OUTPUT_TOKENS: "4096",
+    });
+    expect(() => capped.validateRunRequest({ agent: "codex", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toThrow("CODEMUX_CODEX_PROVIDER_MAX_OUTPUT_TOKENS cannot be honored");
+  });
+
+  test("MULTI_AGENT=off writes features.multi_agent = false; on and unset write nothing", () => {
+    const request: RunRequest = { agent: "codex", prompt: "p", cwd: cwdOf() };
+    expect(
+      configOf(
+        prepare(
+          adapterOf({ ...VLLM_CODEX, CODEMUX_CODEX_PROVIDER_MULTI_AGENT: "off" }),
+          request
+        )
+      )
+    ).toContain("features.multi_agent = false\n");
+    // "on" and unset both leave codex's own default in force: restating it
+    // would pin a value a future release could change.
+    expect(
+      configOf(
+        prepare(
+          adapterOf({ ...VLLM_CODEX, CODEMUX_CODEX_PROVIDER_MULTI_AGENT: "on" }),
+          request
+        )
+      )
+    ).not.toContain("multi_agent");
+    expect(configOf(prepare(adapterOf(VLLM_CODEX), request))).not.toContain(
+      "multi_agent"
+    );
+  });
+
+  test("the knob rides the hermetic override home too", () => {
+    const adapter = adapterOf({
+      ...VLLM_CODEX,
+      CODEMUX_CODEX_PROVIDER_MULTI_AGENT: "off",
+    });
+    const request: RunRequest = {
+      agent: "codex",
+      prompt: "p",
+      cwd: cwdOf(),
+      hermetic: true,
+    };
+    const context = prepare(adapter, request);
+    expect(
+      readFileSync(join(context.hermeticHome!.codexHome, "config.toml"), "utf8")
+    ).toContain("features.multi_agent = false\n");
+  });
+
+  test("a knob value other than on/off is refused before launch", () => {
+    const adapter = adapterOf({
+      ...VLLM_CODEX,
+      CODEMUX_CODEX_PROVIDER_MULTI_AGENT: "maybe",
+    });
+    expect(() =>
+      adapter.validateRunRequest({ agent: "codex", prompt: "p", cwd: cwdOf() } as RunRequest)
+    ).toThrow('CODEMUX_CODEX_PROVIDER_MULTI_AGENT must be "on" or "off"');
+  });
+
+  test("the knob without an override fails loudly like the caps", () => {
+    const adapter = adapterOf({ CODEMUX_CODEX_PROVIDER_MULTI_AGENT: "off" });
+    expect(() =>
+      adapter.validateRunRequest({ agent: "codex", prompt: "p", cwd: cwdOf() } as RunRequest)
+    ).toThrow("CODEMUX_CODEX_PROVIDER_MULTI_AGENT is set but no provider override is");
+    // The TUI path refuses it the same way, before its own headless-only
+    // refusal: the knob still has no channel without an override.
+    expect(() => adapter.validateTuiRequest(undefined, cwdOf())).toThrow(
+      "CODEMUX_CODEX_PROVIDER_MULTI_AGENT is set but no provider override is"
+    );
+  });
+
+  test("an explicit --model wins inside the config", () => {
+    const adapter = adapterOf(VLLM_CODEX);
+    const request: RunRequest = {
+      agent: "codex",
+      prompt: "p",
+      cwd: cwdOf(),
+      model: "other-model",
+    };
+    expect(configOf(prepare(adapter, request))).toContain('model = "other-model"\n');
+  });
+
+  test("the envelope reports the override's model when the request named none", () => {
+    // Round-1 review finding: the model rode the config.toml, never -m, so
+    // codexResult's request fallback saw no model and the envelope reported
+    // null ("the harness default") for a run the override's model served.
+    // The reroute note had the same hole: it could not name the model that
+    // was requested away. processRunResult must resolve the model the way
+    // prepareRun did.
+    const adapter = adapterOf(VLLM_CODEX);
+    const request: RunRequest = {
+      agent: "codex",
+      prompt: "p",
+      cwd: cwdOf(),
+      resultJson: true,
+    };
+    const events = (extra: object[] = []): string =>
+      `${[
+        { type: "thread.started", thread_id: "t" },
+        { type: "turn.started" },
+        ...extra,
+        { type: "item.completed", item: { id: "item_0", type: "agent_message", text: "OK" } },
+        { type: "turn.completed", usage: { input_tokens: 10, output_tokens: 2 } },
+      ].map((line) => JSON.stringify(line)).join("\n")}\n`;
+    const plain = adapter.processRunResult(
+      { stdout: events(), stderr: "", exitCode: 0, success: true },
+      request
+    );
+    expect(JSON.parse(plain.stdout).codemux.model).toBe("clawvm-qwen32b-coder");
+    const rerouted = adapter.processRunResult(
+      {
+        stdout: events([
+          {
+            type: "item.completed",
+            item: {
+              id: "item_err",
+              type: "error",
+              message: "model rerouted: clawvm-qwen32b-coder -> other-model (Unavailable)",
+            },
+          },
+        ]),
+        stderr: "",
+        exitCode: 0,
+        success: true,
+      },
+      request
+    );
+    expect(JSON.parse(rerouted.stdout).codemux.model).toBe("other-model");
+    expect(rerouted.stderr).toContain("not the requested clawvm-qwen32b-coder");
+  });
+
+  test("a half-configured override fails validation with the missing name", () => {
+    const adapter = adapterOf({
+      CODEMUX_CODEX_PROVIDER_BASE_URL: VLLM_CODEX.CODEMUX_CODEX_PROVIDER_BASE_URL,
+    });
+    expect(() => adapter.validateRunRequest({ agent: "codex", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toThrow("provider override is missing CODEMUX_CODEX_PROVIDER_API_KEY");
+    const modelless = adapterOf({
+      CODEMUX_CODEX_PROVIDER_BASE_URL: VLLM_CODEX.CODEMUX_CODEX_PROVIDER_BASE_URL,
+      CODEMUX_CODEX_PROVIDER_API_KEY: VLLM_CODEX.CODEMUX_CODEX_PROVIDER_API_KEY,
+    });
+    expect(() => modelless.validateRunRequest({ agent: "codex", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toThrow("codex needs a model for the provider override");
+  });
+
+  test("a static command without prepareRun fails closed", () => {
+    const adapter = adapterOf(VLLM_CODEX);
+    const cmd = adapter.buildRunCommand({
+      agent: "codex",
+      prompt: "p",
+      cwd: cwdOf(),
+    } as RunRequest);
+    expect(codexHomeOf(cmd)).toMatch(/\.codemux-provider\/unprepared$/);
+    expect(() => adapter.getRunEnv({ agent: "codex", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toThrow("codex provider config was not prepared before launch");
+  });
+
+  test("every prepared run gets a fresh home; cleanupRun removes each launch's own only", () => {
+    const adapter = adapterOf(VLLM_CODEX);
+    const request: RunRequest = { agent: "codex", prompt: "p", cwd: cwdOf() };
+    const firstContext = prepare(adapter, request);
+    const secondContext = prepare(adapter, request);
+    expect(secondContext.codexProviderHome!.codexHome)
+      .not.toBe(firstContext.codexProviderHome!.codexHome);
+    expect(existsSync(join(firstContext.codexProviderHome!.codexHome, "config.toml"))).toBe(true);
+    adapter.cleanupRun(firstContext);
+    expect(existsSync(firstContext.codexProviderHome!.codexHome)).toBe(false);
+    expect(existsSync(join(secondContext.codexProviderHome!.codexHome, "config.toml"))).toBe(true);
+  });
+
+  test("the override survives --hermetic: config inside the private home, user config loaded", () => {
+    // --ignore-user-config skips $CODEX_HOME/config.toml itself — the exact
+    // file the override lives in — so an override run never passes it, and
+    // the operator's auth.json is not linked (the provider key is the
+    // credential).
+    const adapter = adapterOf(VLLM_CODEX);
+    const request: RunRequest = {
+      agent: "codex",
+      prompt: "p",
+      cwd: cwdOf(),
+      hermetic: true,
+      resultJson: true,
+    };
+    const context = prepare(adapter, request);
+    const home = context.hermeticHome!;
+    expect(existsSync(join(home.codexHome, "config.toml"))).toBe(true);
+    expect(existsSync(join(home.codexHome, "auth.json"))).toBe(false);
+    const cmd = adapter.buildRunCommand(request, context);
+    expect(codexHomeOf(cmd)).toBe(home.codexHome);
+    expect(cmd).not.toContain("--ignore-user-config");
+    expect(cmd.join(" ")).not.toContain(VLLM_CODEX.CODEMUX_CODEX_PROVIDER_API_KEY);
+    expect(adapter.getRunEnv(request, context)).toEqual({
+      CODEMUX_CODEX_PROVIDER_API_KEY: VLLM_CODEX.CODEMUX_CODEX_PROVIDER_API_KEY,
+    });
+  });
+
+  test("the operator's CODEX_API_KEY stays out of an override run's environment", () => {
+    const adapter = adapterOf({
+      ...VLLM_CODEX,
+      CODEX_API_KEY: "operator-key-do-not-print",
+      OPENAI_API_KEY: "operator-key-do-not-print",
+    });
+    expect(adapter.getEnvOmissions()).toEqual(["CODEX_API_KEY", "OPENAI_API_KEY"]);
+    expect(adapterOf().getEnvOmissions()).toEqual([]);
+  });
+
+  test("the tui refuses the override; without one it is unchanged", () => {
+    expect(() => adapterOf().validateTuiRequest(undefined, cwdOf())).not.toThrow();
+    expect(() => adapterOf(VLLM_CODEX).validateTuiRequest(undefined, cwdOf()))
+      .toThrow("supports headless runs only");
+  });
+});
+
+const VLLM_OPENHANDS = {
+  CODEMUX_OPENHANDS_PROVIDER_BASE_URL: "http://localhost:8011/v1",
+  CODEMUX_OPENHANDS_PROVIDER_API_KEY: "test-key-do-not-print",
+  CODEMUX_OPENHANDS_PROVIDER_MODEL: "clawvm-qwen32b-coder",
+};
+
+describe("openhands provider override", () => {
+  const scratch: string[] = [];
+  afterEach(() => {
+    while (scratch.length > 0) {
+      const dir = scratch.pop()!;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  const cwdOf = (): string => {
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-openhands-override-"));
+    mkdirSync(join(cwd, ".git"));
+    scratch.push(cwd);
+    return cwd;
+  };
+  const adapterOf = (env: NodeJS.ProcessEnv = {}): OpenHandsAdapter => new OpenHandsAdapter(env);
+
+  test("without an override nothing changes", () => {
+    const adapter = adapterOf();
+    expect(adapter.getRunEnv({ agent: "openhands", prompt: "p" } as RunRequest)).toEqual({});
+    expect(adapter.buildRunCommand({ agent: "openhands", prompt: "p" } as RunRequest))
+      .toEqual(["openhands", "--headless", "--task", "p"]);
+  });
+
+  test("the override rides the LLM_* trio with the openai/ prefix and --override-with-envs", () => {
+    const adapter = adapterOf(VLLM_OPENHANDS);
+    const request: RunRequest = { agent: "openhands", prompt: "p" };
+    expect(adapter.getRunEnv(request)).toEqual({
+      LLM_BASE_URL: VLLM_OPENHANDS.CODEMUX_OPENHANDS_PROVIDER_BASE_URL,
+      LLM_API_KEY: VLLM_OPENHANDS.CODEMUX_OPENHANDS_PROVIDER_API_KEY,
+      LLM_MODEL: "openai/clawvm-qwen32b-coder",
+    });
+    const cmd = adapter.buildRunCommand(request);
+    expect(cmd).toEqual([
+      "openhands",
+      "--headless",
+      "--override-with-envs",
+      "--task",
+      "p",
+    ]);
+    expect(cmd.join(" ")).not.toContain(VLLM_OPENHANDS.CODEMUX_OPENHANDS_PROVIDER_API_KEY);
+    // An explicit --model wins and is prefixed once.
+    expect(adapter.getRunEnv({ ...request, model: "other-model" } as RunRequest).LLM_MODEL)
+      .toBe("openai/other-model");
+    expect(adapter.getRunEnv({ ...request, model: "openai/other-model" } as RunRequest).LLM_MODEL)
+      .toBe("openai/other-model");
+  });
+
+  test("a half-configured override fails validation with the missing name", () => {
+    const adapter = adapterOf({
+      CODEMUX_OPENHANDS_PROVIDER_BASE_URL: VLLM_OPENHANDS.CODEMUX_OPENHANDS_PROVIDER_BASE_URL,
+    });
+    expect(() => adapter.validateRunRequest({ agent: "openhands", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toThrow("provider override is missing CODEMUX_OPENHANDS_PROVIDER_API_KEY");
+    const modelless = adapterOf({
+      CODEMUX_OPENHANDS_PROVIDER_BASE_URL: VLLM_OPENHANDS.CODEMUX_OPENHANDS_PROVIDER_BASE_URL,
+      CODEMUX_OPENHANDS_PROVIDER_API_KEY: VLLM_OPENHANDS.CODEMUX_OPENHANDS_PROVIDER_API_KEY,
+    });
+    expect(() => modelless.validateRunRequest({ agent: "openhands", prompt: "p", cwd: cwdOf() } as RunRequest))
+      .toThrow("openhands needs a model for the provider override");
+    expect(() => modelless.validateTuiRequest(undefined, cwdOf()))
+      .toThrow("openhands needs a model for the provider override");
+  });
+
+  test("both token caps are refused: the env trio is the entire override surface", () => {
+    const outputCap = adapterOf({
+      ...VLLM_OPENHANDS,
+      CODEMUX_OPENHANDS_PROVIDER_MAX_OUTPUT_TOKENS: "4096",
+    });
+    expect(() =>
+      outputCap.validateRunRequest({ agent: "openhands", prompt: "p", cwd: cwdOf() } as RunRequest)
+    ).toThrow("CODEMUX_OPENHANDS_PROVIDER_MAX_OUTPUT_TOKENS cannot be honored");
+    const contextCap = adapterOf({
+      ...VLLM_OPENHANDS,
+      CODEMUX_OPENHANDS_PROVIDER_MAX_CONTEXT_TOKENS: "32768",
+    });
+    expect(() =>
+      contextCap.getRunEnv({ agent: "openhands", prompt: "p" } as RunRequest)
+    ).toThrow("CODEMUX_OPENHANDS_PROVIDER_MAX_CONTEXT_TOKENS cannot be honored");
+  });
+
+  test("the tui command and env carry the same override", () => {
+    const adapter = adapterOf(VLLM_OPENHANDS);
+    expect(adapter.buildTuiCommand("clawvm-qwen32b-coder"))
+      .toEqual(["openhands", "--override-with-envs"]);
+    expect(adapter.getTuiEnv()).toEqual({
+      LLM_BASE_URL: VLLM_OPENHANDS.CODEMUX_OPENHANDS_PROVIDER_BASE_URL,
+      LLM_API_KEY: VLLM_OPENHANDS.CODEMUX_OPENHANDS_PROVIDER_API_KEY,
+      LLM_MODEL: "openai/clawvm-qwen32b-coder",
+    });
+  });
+
+  test("an override launch warns that LLM_API_KEY is visible to the model", () => {
+    // Round-5 security finding: OpenHands' terminal tool builds the shell's
+    // environment from the CLI process's own (both the subprocess and the
+    // tmux implementation; its sanitizer strips only SESSION_API_KEY), so
+    // the override key reaches any command the model runs. No exclusion
+    // channel exists, so every launch that carries an override says so.
+    const errors: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+    try {
+      adapterOf(VLLM_OPENHANDS).beforeLaunch();
+      expect(errors.length).toBe(1);
+      expect(errors[0]).toContain("openhands: provider override active");
+      expect(errors[0]).toContain("LLM_API_KEY is visible to the model");
+      // Without an override there is nothing to disclose.
+      errors.length = 0;
+      adapterOf().beforeLaunch();
+      expect(errors).toEqual([]);
+    } finally {
+      console.error = originalError;
+    }
   });
 });
 

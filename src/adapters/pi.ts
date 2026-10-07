@@ -26,10 +26,10 @@ export class PiAdapter extends BaseAdapter {
   readonly binaryName = "pi";
 
   constructor(
-    private readonly environment: NodeJS.ProcessEnv = process.env,
+    environment: NodeJS.ProcessEnv = process.env,
     private readonly homeDirectory?: string
   ) {
-    super();
+    super(environment);
   }
 
   capabilities(): AdapterCapabilities {
@@ -49,13 +49,15 @@ export class PiAdapter extends BaseAdapter {
       // produced both.
       supportsHermetic: false,
       supportsToolSelection: true,
+      supportsProviderOverride: true,
     };
   }
 
   /**
    * The provider override, validated: the private models.json needs a
    * base URL and a key (the model may come from `--model` instead of the
-   * variable).
+   * variable). Both token caps ride the model entry (maxTokens,
+   * contextWindow — first-class models.json fields).
    */
   private validatedProvider(): (ProviderOverride & { baseUrl: string; apiKey: string }) | null {
     const override = readProviderOverride("pi", this.environment);

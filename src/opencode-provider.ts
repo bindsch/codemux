@@ -12,14 +12,17 @@
  * the override survive `--hermetic` (there the env prefix keeps its
  * `env -u OPENCODE_CONFIG{,_DIR,_CONTENT}` removal and appends
  * `OPENCODE_CONFIG=<path>` after it, so the blanked-variable leak stays
- * closed; nothing else changes).
+ * closed; nothing else changes). The override's token caps ride the model
+ * entry's `limit` object (opencodeLimit below), written only as the pair the
+ * schema requires.
  *
  * The file lives under the real OpenCode data directory in `.codemux/`, a
  * directory no OpenCode discovery scans (config comes from the XDG config
  * home, project directories, and the env passthroughs the hermetic run
  * neutralizes) and one scode keeps reachable as harness state; never under
  * the temp root, whose Linux sandbox mount would hide it. It is removed at
- * exit and swept once its owning codemux process is gone.
+ * exit and swept once it is stale (two days) and its owning codemux process
+ * is gone.
  */
 
 import { randomBytes } from "node:crypto";
@@ -58,6 +61,41 @@ export function opencodeProviderModel(model: string): string {
   return model.startsWith(`${OPENCODE_PROVIDER_ID}/`)
     ? model
     : `${OPENCODE_PROVIDER_ID}/${model}`;
+}
+
+/**
+ * The model entry's `limit` object, when the override carries caps: OpenCode
+ * enforces both through one object whose published schema requires exactly
+ * `context` and `output` (`limit` under a model in opencode.ai/config.json —
+ * `required: ["context","output"]`, `additionalProperties: false`), so the
+ * pair is written whole or not at all. A one-sided cap is refused loudly —
+ * writing only the half the schema allows would silently drop the other.
+ * Returns undefined when the override carries neither cap.
+ */
+export function opencodeLimit(
+  override: ProviderOverride
+): { context: number; output: number } | undefined {
+  if (
+    override.maxContextTokens === undefined &&
+    override.maxOutputTokens === undefined
+  ) {
+    return undefined;
+  }
+  if (
+    override.maxContextTokens === undefined ||
+    override.maxOutputTokens === undefined
+  ) {
+    const missing =
+      override.maxContextTokens === undefined
+        ? "CODEMUX_OPENCODE_PROVIDER_MAX_CONTEXT_TOKENS"
+        : "CODEMUX_OPENCODE_PROVIDER_MAX_OUTPUT_TOKENS";
+    throw new Error(
+      "the opencode provider override cannot carry a one-sided token cap: " +
+        "the config schema's model limit object requires both context and " +
+        `output (opencode.ai/config.json, additionalProperties false); also set ${missing}`
+    );
+  }
+  return { context: override.maxContextTokens, output: override.maxOutputTokens };
 }
 
 /**
@@ -143,6 +181,9 @@ export function writeOpencodeProviderConfig(
   model: string
 ): OpencodeProviderConfig {
   const bareModel = opencodeBareModel(model);
+  // Refused before anything is created: an unwritable cap leaves no
+  // directory behind for the sweep to find.
+  const limit = opencodeLimit(override);
   const parent = join(dataDir, PARENT_DIR_NAME);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   // A run with write access to the data directory could have replaced the
@@ -170,7 +211,14 @@ export function writeOpencodeProviderConfig(
           apiKey: `{env:${OPENCODE_PROVIDER_KEY_ENV}}`,
         },
         models: {
-          [bareModel]: { name: bareModel },
+          // limit rides only when the override carries both caps; the
+          // conditional spread keeps an uncapped override's file byte-identical
+          // to the pre-caps shape (opencodeLimit refuses one-sided before
+          // anything is written).
+          [bareModel]: {
+            name: bareModel,
+            ...(limit !== undefined ? { limit } : {}),
+          },
         },
       },
     },

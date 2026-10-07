@@ -472,6 +472,87 @@ model entry declares `reasoning: true`: pi 0.85.1 defaults a custom
 model's reasoning to false, which clamps the `--thinking` flag
 `--effort` maps to off.
 
+## 2026-10-07 addendum: provider overrides for Claude Code, Codex, and OpenHands; token caps
+
+Three harnesses gain a provider override (`CODEMUX_<AGENT>_PROVIDER_{
+BASE_URL,API_KEY,MODEL}`, the same shape every supporting harness reads),
+and with it two optional caps,
+`CODEMUX_<AGENT>_PROVIDER_MAX_OUTPUT_TOKENS` and
+`CODEMUX_<AGENT>_PROVIDER_MAX_CONTEXT_TOKENS`. The OpenHands override is
+the 0.7.0 cut restored: its `--override-with-envs` channel now has a
+non-refusal purpose (model selection), so the override rides the same
+mechanism — `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL`, read by
+`LLMEnvOverrides.from_env` (`agent_store.py` at 1.16.0) with litellm's
+`openai/` model prefix; that trio is the entire surface the flag reads, so
+both caps are refused for OpenHands. The channel that delivers the key also
+exposes it: OpenHands' terminal tool (both the subprocess and the tmux
+implementation) builds the shell's environment from the CLI process's own,
+and the sanitizer in between strips only `SESSION_API_KEY` (`sanitized_env`
+in openhands.sdk at CLI 1.16.0, verified 2026-10-07), so `LLM_API_KEY` is
+visible to any command the model runs — codemux warns at launch, and the
+key should be scoped and revocable (README). An override exported for a harness
+without support (Z.AI, Antigravity, Cursor, the four cut ones) now fails
+the run before launch instead of being ignored.
+
+**Codex and the `wire_api` floor.** The override's config.toml always
+writes `wire_api = "responses"` under a synthesized
+`model_providers.codemux` entry: the `WireApi` enum in codex-rs
+(`model_provider_info.rs`) has carried only the `Responses` variant from
+the configurable-providers work (0.130) through 0.160 — "chat" was never a
+selectable value on any release in codemux's supported range (floor
+0.146.0) — so a Responses-capable endpoint is a hard requirement of the
+override. Two cap findings from the same source: `model_context_window`
+is the context cap and rides the override's config, and no
+output-token cap key has ever existed — `model_max_output_tokens` appears
+nowhere in the config reference or the source through 0.160 (the keys the
+reference lists around it are `model_context_window`, `model_reasoning_effort`,
+`model_verbosity`), so `MAX_OUTPUT_TOKENS` is refused for Codex with that
+evidence. `--ignore-user-config` is never passed on an override run: the
+0.160 binary's own help text says it skips `$CODEX_HOME/config.toml`
+itself — the file the override lives in ("auth still uses CODEX_HOME", so
+the skip was never needed to keep the key out). The run owns a private
+per-run `CODEX_HOME` holding the config (0600) and no `auth.json`; the key
+rides `env_key`-named environment codemux provides. One more codex key is
+written conditionally: `CODEMUX_CODEX_PROVIDER_MULTI_AGENT=off` adds
+`features.multi_agent = false` (the persistent form of `--disable
+multi_agent`, which the binary's help documents as
+`-c features.<name>=false`), because codex 0.160's subagent feature is on
+by default and puts a grouped `namespace` tool (`multi_agent_v1`) in every
+Responses request — an endpoint whose Responses validator does not
+implement namespace tool grouping (vLLM 0.12's, verified 2026-10-07)
+rejects the tool with a 400, and the opt-out is what lets such an endpoint
+serve codex; `on` and unset write nothing, leaving codex's own default in
+force, and the knob fails the run when set without an override. See
+docs/HERMETIC.md's private-home section for the home lifecycle.
+
+**Claude Code.** The override routes through the gateway variables the Z.AI
+endpoint already uses — `ANTHROPIC_BASE_URL` plus `ANTHROPIC_AUTH_TOKEN`
+(generalized into `src/claude-family.ts`; the Z.AI adapter is unchanged in
+behavior) — with the model on `--model`, so the endpoint must serve the
+Anthropic Messages API (`/v1/messages`), not only OpenAI-compatible chat
+completions. The operator's login plays no part: the sandboxed Keychain
+credential-mirror sync is skipped, `ANTHROPIC_API_KEY` and
+`CLAUDE_CODE_OAUTH_TOKEN` are kept out of the child environment, and a
+mirror still holding a refresh token still refuses the launch (the child
+reads `~/.claude` whatever credential it runs on). The output cap rides
+`CLAUDE_CODE_MAX_OUTPUT_TOKENS`; Claude Code exposes no context-window
+variable (only that one, verified against the installed 2.1.280 binary),
+so `MAX_CONTEXT_TOKENS` is refused with that evidence.
+
+Per-harness cap channels, for the record: OpenCode `limit.output`/
+`limit.context` on the override's model entry (the schema's limit object
+requires both, `additionalProperties` false, so a one-sided cap is refused
+rather than half-written); Kimi `KIMI_MODEL_MAX_COMPLETION_TOKENS`/
+`KIMI_MODEL_MAX_CONTEXT_SIZE` (`KIMI_MODEL_MAX_OUTPUT_SIZE` is a different
+unit — bytes of output — and is deliberately unused); Droid
+`maxOutputTokens` on the BYOK entry (no context field exists in the BYOK
+schema, docs.factory.ai/model-independence/byok, so the context cap is
+refused); Pi `maxTokens`/`contextWindow` on the model entry; Aider and
+Goose refuse both (aider 0.86.2 has no max-tokens flag —
+`--max-chat-history-tokens`, `--thinking-tokens` and `--map-tokens` cap
+other budgets — and goose's per-model `max_tokens`/`context_limit` live
+only in the config file the override never writes).
+
 ## Version enforcement
 
 `src/harness-compatibility.ts` is the machine-readable half of this ledger and

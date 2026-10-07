@@ -162,6 +162,42 @@ describe("opencode provider override", () => {
       .toEqual(["OPENCODE_AUTH_CONTENT", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR"]);
   });
 
+  test("both caps ride the model entry's limit object", () => {
+    const adapter = adapterOf({
+      ...ZAI,
+      CODEMUX_OPENCODE_PROVIDER_MAX_OUTPUT_TOKENS: "4096",
+      CODEMUX_OPENCODE_PROVIDER_MAX_CONTEXT_TOKENS: "32768",
+    });
+    const request: RunRequest = { agent: "opencode", prompt: "p" };
+    const env = adapter.getRunEnv(request, prepare(adapter, request));
+    const config = JSON.parse(readFileSync(env.OPENCODE_CONFIG!, "utf8"));
+    expect(config.provider[OPENCODE_PROVIDER_ID].models["glm-5.3"].limit).toEqual({
+      context: 32768,
+      output: 4096,
+    });
+  });
+
+  test("a one-sided cap is refused at validation and at the write", () => {
+    // The schema's limit object requires both context and output
+    // (additionalProperties false), so a one-sided cap cannot be written
+    // without silently dropping the other half.
+    const outputOnly = adapterOf({
+      ...ZAI,
+      CODEMUX_OPENCODE_PROVIDER_MAX_OUTPUT_TOKENS: "4096",
+    });
+    expect(() =>
+      outputOnly.validateRunRequest({ agent: "opencode", prompt: "p", cwd: cwdOf() })
+    ).toThrow("cannot carry a one-sided token cap");
+    expect(() => outputOnly.prepareRun({ agent: "opencode", prompt: "p" }))
+      .toThrow("also set CODEMUX_OPENCODE_PROVIDER_MAX_CONTEXT_TOKENS");
+    const contextOnly = adapterOf({
+      ...ZAI,
+      CODEMUX_OPENCODE_PROVIDER_MAX_CONTEXT_TOKENS: "32768",
+    });
+    expect(() => contextOnly.prepareRun({ agent: "opencode", prompt: "p" }))
+      .toThrow("also set CODEMUX_OPENCODE_PROVIDER_MAX_OUTPUT_TOKENS");
+  });
+
   test("a model containing braces is refused before it reaches the config", () => {
     // Regression (h3 review): OpenCode substitutes {env:…} and {file:…}
     // in config text before parsing (packages/opencode/src/config/

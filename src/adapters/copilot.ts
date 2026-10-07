@@ -29,6 +29,12 @@ import type {
 // secret and a true byte count under every spelling). See docs/HERMETIC.md.
 
 export class CopilotAdapter extends BaseAdapter {
+  // The environment the adapter sees is the one its factory was handed:
+  // `verify` passes an explicitly empty view so an exported override cannot
+  // change its rows, and a run passes the real one.
+  constructor(environment: NodeJS.ProcessEnv = process.env) {
+    super(environment);
+  }
   readonly id: AgentId = "copilot";
   readonly binaryName = "copilot";
 

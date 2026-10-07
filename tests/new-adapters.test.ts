@@ -194,6 +194,7 @@ describe("AiderAdapter", () => {
       // own config layers, and a live 2026-10-04 probe leaked through
       // `.aider.conf.yml` (docs/HERMETIC.md names the channels).
       supportsHermetic: false,
+      supportsProviderOverride: true,
     });
   });
 

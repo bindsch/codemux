@@ -118,7 +118,8 @@ came from, so use an stdin-capable harness for larger prompts.
 ### Provider overrides
 
 Point one harness at a different model provider — an OpenAI-compatible
-gateway or a subscription endpoint such as Z.AI's — by exporting three
+gateway, an Anthropic Messages endpoint, or a subscription endpoint such
+as Z.AI's — by exporting three
 environment variables before invoking codemux:
 
 ```bash
@@ -150,12 +151,96 @@ codemux provides, Pi into a private agent directory behind
 `PI_CODING_AGENT_DIR` holding a one-provider `models.json` with the same
 kind of `${VAR}` key reference, and Goose into the pure-environment
 `GOOSE_PROVIDER`/`OPENAI_HOST`/`OPENAI_BASE_PATH`/`OPENAI_API_KEY`/`GOOSE_MODEL`
-group of its built-in OpenAI provider. The other harnesses have no
-override: the ones whose `--hermetic` and `--tools none` are both refused
-(Copilot, Gemini CLI, Cline, OpenHands, Qwen) carried override machinery
-only to ground those refusals' live checks, and it was removed in 0.7.0 as
-dead surface. The Cursor agent CLI, which has no custom-provider mechanism,
-documents that limit instead.
+group of its built-in OpenAI provider.
+
+Claude Code routes through the same gateway variables Z.AI's endpoint
+uses — `ANTHROPIC_BASE_URL` plus `ANTHROPIC_AUTH_TOKEN` carrying the key
+— with the model on `--model`, and the haiku, small-fast, sonnet and opus
+tier variables pinned to the same model when `CODEMUX_CLAUDE_PROVIDER_MODEL`
+names it, so background requests and subagents never ask the endpoint for a
+model it does not serve (with the model on `--model` alone the tiers keep
+Claude Code's defaults). Claude Code
+still reads the operator's user
+settings on a plain run, and an `env` block there naming either variable
+competes with the override; run with `--hermetic` (which loads no user
+settings) when the override must be the only source of those values. The endpoint must serve the Anthropic
+Messages API (`/v1/messages`) and accept Claude Code's own request shape:
+Claude Code >= 2.1.2xx puts `system`-role turns inside the `messages`
+list (feature gate `mid-conversation-system-2026-04-07`, with a force
+variable but no disable one), so an endpoint that validates roles to
+user/assistant rejects the run. vLLM 0.12's Messages shim does exactly
+that, answering
+
+```
+400 {'type': 'literal_error', 'loc': ('body', 'messages', 1, 'role'), 'msg': "Input should be 'user' or 'assistant'", 'input': 'system', 'ctx': {'expected': "'user' or 'assistant'"}}
+```
+
+(the same request with the entry folded into the top-level `system`
+field is accepted), so a proxy in front of such a shim must do that
+folding before forwarding; an OpenAI-compatible `/v1/chat/completions`
+gateway is not enough in any case. With the override set the
+operator's Claude login
+plays no part: the sandboxed Keychain credential-mirror sync is skipped
+entirely, and the operator's own `ANTHROPIC_API_KEY` and
+`CLAUDE_CODE_OAUTH_TOKEN` are kept out of the child environment so no
+second, operator-funded credential path exists. Codex gets a private
+per-run `CODEX_HOME` whose `config.toml` names a `model_providers.codemux`
+entry — base URL plus `env_key`, so the key rides the environment and
+never a file — with `wire_api = "responses"` (the only value every
+supported release accepts, so the endpoint must speak the OpenAI
+Responses API, not only chat completions). The operator's `config.toml`
+is not read at all on an override run, which also means profiles, MCP
+servers, and hooks from it do not load. One codex-specific variable
+shapes that config: `CODEMUX_CODEX_PROVIDER_MULTI_AGENT=off` writes
+`features.multi_agent = false` into it (`on`, the default, writes
+nothing — codex's own default). Off removes the grouped `namespace`
+tool (`multi_agent_v1`) that codex's subagent feature adds to every
+Responses request, so an endpoint whose Responses API does not
+implement OpenAI's namespace tool grouping can still serve codex —
+vLLM 0.12's `/v1/responses` validator rejects that tool with a 400
+(`tools[N]` carrying `type: "namespace"`). The trade is semantic: the
+run cannot spawn codex subagents. An operator holding the model fixed
+across harnesses may want that for the comparison's sake too — a
+harness that fans out subagents runs a different workload than one that
+cannot, and `off` keeps codex's turn comparable to a harness with no
+subagent feature. The knob accepts only `on`/`off`, and like a token
+cap it fails the run when set without an override. OpenHands carries the override
+through `--override-with-envs`, the same channel its model selection
+uses, with `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL` (litellm's `openai/`
+model prefix added, as aider's). The Codex, Droid, Pi, and OpenCode
+overrides support headless runs only — their per-run config files ride
+the launch lifecycle — and `codemux tui` refuses them; the Claude Code,
+OpenHands, Aider, Kimi Code, and Goose overrides carry into the TUI,
+which delivers them through the environment alone. OpenHands has no equivalent of codex's `shell_environment_policy`: both of its terminal implementations (subprocess and tmux) build the shell's environment from the CLI process's own, and the sanitizer in between strips only `SESSION_API_KEY` (`sanitized_env`, openhands.sdk under CLI 1.16.0, verified 2026-10-07), so the provider key in `LLM_API_KEY` is visible to any command the model runs. Codemux prints that warning at launch; use a key you can revoke and scope it to the endpoint.
+
+Two optional variables cap the override's tokens:
+`CODEMUX_<AGENT>_PROVIDER_MAX_OUTPUT_TOKENS` and
+`CODEMUX_<AGENT>_PROVIDER_MAX_CONTEXT_TOKENS`, each a positive integer.
+A cap applies only to an override (one set without an override fails the
+run), and only where the harness can actually carry it — a cap it cannot
+honor fails the run loudly before launch instead of being silently
+dropped:
+
+| Harness | Output cap | Context cap |
+|---------|-----------|-------------|
+| Claude Code | `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | refused — Claude Code exposes no context-window variable |
+| Codex | refused — no such config key exists | `model_context_window` in the override's config.toml |
+| OpenCode | `limit.output` (both caps required together) | `limit.context` (both caps required together) |
+| Aider | refused — no max-tokens flag exists | refused — no max-tokens flag exists |
+| Kimi Code | `KIMI_MODEL_MAX_COMPLETION_TOKENS` | `KIMI_MODEL_MAX_CONTEXT_SIZE` |
+| Droid | `maxOutputTokens` in the BYOK entry | refused — the BYOK entry has no context field |
+| Pi | `maxTokens` in the model entry | `contextWindow` in the model entry |
+| Goose | refused — the knobs live only in its config file | refused — the knobs live only in its config file |
+| OpenHands | refused — the LLM trio is the whole surface | refused — the LLM trio is the whole surface |
+
+The other harnesses have no override: Copilot, Gemini CLI, Cline, and
+Qwen carried override machinery only to ground their refusals' live
+checks, and it was removed in 0.7.0 as dead surface (OpenHands kept its
+channel because `--override-with-envs` is also how its model selection
+works). An override exported for any harness without support — Z.AI,
+Antigravity, Cursor, the rest — fails the run before launch rather than
+being ignored. The Cursor agent CLI, which has no custom-provider
+mechanism, documents that limit instead.
 
 ### `check` options
 

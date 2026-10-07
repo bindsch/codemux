@@ -11,6 +11,7 @@ import {
   readAiderHistory,
 } from "../aider-history.js";
 import {
+  assertProviderCap,
   readProviderOverride,
   requireProviderOverride,
   type ProviderOverride,
@@ -40,10 +41,10 @@ export class AiderAdapter extends BaseAdapter {
   readonly binaryName = "aider";
 
   constructor(
-    private readonly environment: NodeJS.ProcessEnv = process.env,
+    environment: NodeJS.ProcessEnv = process.env,
     private readonly homeDirectory?: string
   ) {
-    super();
+    super(environment);
   }
 
   /** The user home a run sees: the seam, else $HOME, else the account home. */
@@ -146,11 +147,18 @@ export class AiderAdapter extends BaseAdapter {
    * through litellm's `openai/` model prefix with `OPENAI_API_BASE` and
    * `OPENAI_API_KEY` ("export OPENAI_API_BASE=<endpoint>", "Prefix the model
    * name with openai/", aider.chat/docs/llms/openai-compat.html), so the
-   * override needs all three settings.
+   * override needs all three settings. Both token caps are refused: the
+   * channel carries no token-budget knob at all.
    */
   private validatedProvider(): (ProviderOverride & { baseUrl: string; apiKey: string }) | null {
     const override = readProviderOverride("aider", this.environment);
     if (override === null) return null;
+    const noCapSurface =
+      "aider 0.86.2 has no max-tokens flag (--max-chat-history-tokens, " +
+      "--thinking-tokens and --map-tokens cap other budgets) and codemux writes " +
+      "no aider config, so no output or context cap can ride the override";
+    assertProviderCap("aider", override, "maxOutputTokens", noCapSurface);
+    assertProviderCap("aider", override, "maxContextTokens", noCapSurface);
     return requireProviderOverride("aider", override, [
       "baseUrl",
       "apiKey",
@@ -193,6 +201,7 @@ export class AiderAdapter extends BaseAdapter {
       // is why the live pass certified what the flags do not close; see
       // docs/HERMETIC.md.
       supportsHermetic: false,
+      supportsProviderOverride: true,
     };
   }
 

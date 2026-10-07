@@ -190,6 +190,7 @@ export function registerInfoCommands(
         if (caps.supportsEffort) features.push("effort");
         if (caps.supportsHermetic) features.push("hermetic");
         if (caps.supportsToolSelection) features.push("tools");
+        if (caps.supportsProviderOverride) features.push("provider");
         const featureText = features.length > 0 ? ` [${features.join(", ")}]` : "";
         console.log(`  ${status} ${adapter.id}${featureText}`);
       }
@@ -231,6 +232,7 @@ export function registerInfoCommands(
           }
           console.log(`  Hermetic runs: ${caps.supportsHermetic ? "yes" : "no"}`);
           console.log(`  Tool selection: ${caps.supportsToolSelection ? "yes" : "no"}`);
+          console.log(`  Provider override: ${caps.supportsProviderOverride ? "yes" : "no"}`);
           for (const issue of configurationIssues) console.log(`  Configuration: ${issue}`);
         } else {
           missing++;

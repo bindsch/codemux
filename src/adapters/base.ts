@@ -9,6 +9,7 @@ import {
   type AdapterCapabilities,
 } from "../types.js";
 import { sanitizeEnvironment } from "../environment.js";
+import { readProviderOverride } from "../provider-override.js";
 import { launchRunRequest } from "../launch.js";
 import type { ScodeTrustLevel } from "../sandbox.js";
 import { resolveTrustedCommand } from "../executable-security.js";
@@ -48,6 +49,17 @@ export type { RunContext } from "../run-context.js";
 export abstract class BaseAdapter {
   abstract readonly id: AgentId;
   abstract readonly binaryName: string;
+
+  /**
+   * The environment view this adapter reads operator opt-ins and provider
+   * overrides from. The launch path hands it the operator's shell
+   * (process.env, the default here and in getAdapter); static diagnostics
+   * (`verify`) hand it an explicitly empty view, so an exported variable
+   * cannot change a static wiring result — the contract adapters/index.ts
+   * states. Every check in this class that reads an override reads this
+   * view, so an adapter constructed against a view must forward it here.
+   */
+  constructor(protected readonly environment: NodeJS.ProcessEnv = process.env) {}
 
   /**
    * The name diagnostics display for this adapter. Spawn-free by contract:
@@ -277,6 +289,29 @@ export abstract class BaseAdapter {
     return [];
   }
 
+  /**
+   * Refuses a provider override this harness cannot carry. A set
+   * CODEMUX_<AGENT>_PROVIDER_* name on an unsupported harness must fail the
+   * run loudly: honoring it silently would bill the operator's ordinary
+   * provider while they believe the override routed the run (the same rule
+   * that refuses an uncarryable token cap). Base validators call this;
+   * supporting adapters read the override themselves past it. The override
+   * is read from this adapter's environment view, not process.env, so
+   * `verify` (empty view) never reports an exported override as broken
+   * wiring while a real launch still refuses it.
+   */
+  protected assertNoUnsupportedProviderOverride(): void {
+    if (this.capabilities().supportsProviderOverride) return;
+    const override = readProviderOverride(this.id, this.environment);
+    if (override !== null) {
+      throw new Error(
+        `${this.id} does not support a provider override; unset ` +
+          `CODEMUX_${this.id.toUpperCase()}_PROVIDER_* to run it, or route ` +
+          "through an agent that does (codemux list marks them \"provider\")"
+      );
+    }
+  }
+
   validateRunRequest(request: RunRequest): void {
     if (typeof request !== "object" || request === null) {
       throw new Error("run request must be an object");
@@ -290,6 +325,7 @@ export abstract class BaseAdapter {
     if (!caps.supportsNonInteractive) {
       throw new Error(`${this.id} does not support non-interactive execution`);
     }
+    this.assertNoUnsupportedProviderOverride();
     validatePrompt(request.prompt);
     if (request.model !== undefined) {
       validateModelName(request.model);
@@ -386,6 +422,7 @@ export abstract class BaseAdapter {
     if (!caps.supportsInteractive) {
       throw new Error(`${this.id} does not support interactive execution`);
     }
+    this.assertNoUnsupportedProviderOverride();
     if (model !== undefined) {
       validateModelName(model);
       if (!this.supportsTuiModel()) {

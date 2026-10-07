@@ -71,7 +71,7 @@ export class CursorAdapter extends BaseAdapter {
       Bun.which(name, { PATH: process.env.PATH }),
     env: Record<string, string | undefined> = process.env
   ) {
-    super();
+    super(env);
     this.cursorBinary = findBinary("cursor");
     this.agentBinary = findBinary("agent");
     this.aliasBinary = findBinary("cursor-agent");

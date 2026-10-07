@@ -8,7 +8,11 @@ import {
 } from "../claude-autonomy.js";
 import { readUtf8FileBounded } from "../file-io.js";
 import { claudeFamilyResult } from "../result-envelope.js";
-import { assertAbsoluteClaudeConfigDir } from "../claude-family.js";
+import {
+  assertAbsoluteClaudeConfigDir,
+  claudeGatewayEnv,
+  claudeGatewayOmissions,
+} from "../claude-family.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -33,10 +37,10 @@ export class ZaiAdapter extends BaseAdapter {
   readonly binaryName = "claude";
 
   constructor(
-    private readonly environment: NodeJS.ProcessEnv = process.env,
+    environment: NodeJS.ProcessEnv = process.env,
     private readonly homeDirectory?: string
   ) {
-    super();
+    super(environment);
   }
 
   capabilities(): AdapterCapabilities {
@@ -140,15 +144,17 @@ export class ZaiAdapter extends BaseAdapter {
   override getEnv(): Record<string, string> {
     const apiKey = this.getZaiApiKey();
     return {
-      ANTHROPIC_AUTH_TOKEN: apiKey,
-      ANTHROPIC_BASE_URL: ZAI_BASE_URL,
+      // The shared gateway mechanism (claude-family.ts): the token wins over
+      // the operator's on-disk login, and the endpoint serves the Anthropic
+      // Messages API.
+      ...claudeGatewayEnv(apiKey, ZAI_BASE_URL),
       API_TIMEOUT_MS: this.getApiTimeout(),
       CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1",
     };
   }
 
   override getEnvOmissions(): readonly string[] {
-    return ["ZAI_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"];
+    return ["ZAI_API_KEY", ...claudeGatewayOmissions()];
   }
 
   override beforeLaunch(): void {

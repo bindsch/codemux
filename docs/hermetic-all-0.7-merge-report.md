@@ -143,7 +143,7 @@ copilot, whose loader self-extracts about 132 MB under
 `~/Library/Caches/copilot/pkg` on first run. A sandboxed session cannot
 create that directory — `ls ~/Library/Caches/copilot/pkg/` answers
 "Operation not permitted" from this shell — so the target fails there
-with `EPERM ... mkdir '/Users/kane/Library/Caches/copilot/pkg/darwin-arm64'`.
+with `EPERM ... mkdir '/Users/example/Library/Caches/copilot/pkg/darwin-arm64'`.
 This is pre-existing, not a merge regression: `bun run test:contracts`
 fails identically on the main checkout (1 pass, 1 fail, the same
 copilot EPERM). The remedy is the one the branch's ledger documents:

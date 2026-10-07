@@ -103,6 +103,35 @@ describe("Verifier", () => {
     }
   });
 
+  test("exported provider overrides never change the static wiring result", () => {
+    // Round-5 regression: an exported CODEMUX_<AGENT>_PROVIDER_* trio made
+    // `codemux verify` FAIL the agents it named — the factories dropped the
+    // view for claude/codex/openhands (codex's "headless runs only" TUI
+    // refusal fired inside verifyTuiBuilds; claude and openhands failed the
+    // same way on a modelless override), and the base unsupported-override
+    // check read process.env directly, failing every non-supporting harness
+    // (zai pinned here). Verify is static: its rows must be identical
+    // whatever the operator exported.
+    const clean = verifyAgentsWiring(AGENT_IDS);
+    const vars: Record<string, string> = {};
+    // Supporting and non-supporting harnesses alike: a non-supporting one
+    // (gemini, qwen) must not turn FAIL because the operator exported an
+    // override for it — verify reads the empty view, not the shell.
+    for (const agent of ["claude", "codex", "openhands", "zai", "gemini", "qwen", "agy"]) {
+      vars[`CODEMUX_${agent.toUpperCase()}_PROVIDER_BASE_URL`] = "https://override.example";
+      vars[`CODEMUX_${agent.toUpperCase()}_PROVIDER_API_KEY`] = "k";
+      vars[`CODEMUX_${agent.toUpperCase()}_PROVIDER_MODEL`] = "m";
+    }
+    for (const [name, value] of Object.entries(vars)) process.env[name] = value;
+    try {
+      const withOverrides = verifyAgentsWiring(AGENT_IDS);
+      expect(withOverrides.every((row) => row.status !== "FAIL")).toBe(true);
+      expect(withOverrides).toEqual(clean);
+    } finally {
+      for (const name of Object.keys(vars)) delete process.env[name];
+    }
+  });
+
   test("buildEffectiveScodeCommands returns run+tui rows for each autonomy level", () => {
     const rows = buildEffectiveScodeCommands(["codex"]);
     expect(rows.length).toBe(8);

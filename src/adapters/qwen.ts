@@ -38,9 +38,10 @@ export class QwenAdapter extends BaseAdapter {
 
   constructor(
     private readonly findBinary: (name: string) => string | null = (name) =>
-      Bun.which(name, { PATH: process.env.PATH })
+      Bun.which(name, { PATH: process.env.PATH }),
+    environment: NodeJS.ProcessEnv = process.env
   ) {
-    super();
+    super(environment);
     const currentBinary = this.findBinary("qwen");
     const legacyBinary = currentBinary ? null : this.findBinary("qwen-coder");
     this.resolvedBinary = currentBinary ?? legacyBinary;

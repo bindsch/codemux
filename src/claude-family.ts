@@ -1,10 +1,34 @@
 import { isAbsolute } from "node:path";
 
 /**
- * Validation the `claude` and `zai` adapters share: they run the same
- * binary, so a rule about its environment belongs to both, in one place
- * neither adapter imports from the other.
+ * What the `claude` and `zai` adapters share: they run the same binary, so
+ * a rule about its environment belongs to both, in one place neither
+ * adapter imports from the other.
  */
+
+/**
+ * The gateway environment the claude binary reads for an
+ * Anthropic-compatible endpoint: the credential rides
+ * `ANTHROPIC_AUTH_TOKEN` — never `ANTHROPIC_API_KEY`, which the binary
+ * treats as an API-key billing switch rather than a bearer token — and the
+ * endpoint as `ANTHROPIC_BASE_URL`, which must serve the Anthropic
+ * Messages API (`/v1/messages`). Z.AI's fixed gateway rides it (the
+ * original mechanism) and claude's provider override rides it with the
+ * operator's endpoint; the token wins over the on-disk login in both.
+ */
+export function claudeGatewayEnv(apiKey: string, baseUrl: string): Record<string, string> {
+  return { ANTHROPIC_AUTH_TOKEN: apiKey, ANTHROPIC_BASE_URL: baseUrl };
+}
+
+/**
+ * The operator-login variables a gateway run must not also carry: the
+ * token above is the credential, and a stray API key or OAuth token would
+ * give the child a second, operator-funded authentication path codemux
+ * never chose. Composed into each adapter's `getEnvOmissions`.
+ */
+export function claudeGatewayOmissions(): readonly string[] {
+  return ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"];
+}
 
 /**
  * Refuses a passed-through `CLAUDE_CONFIG_DIR` that is relative, or one

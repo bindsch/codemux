@@ -49,10 +49,10 @@ export class KimiAdapter extends BaseAdapter {
 
   // Seams so tests can point the real brand home at a scratch directory.
   constructor(
-    private readonly environment: NodeJS.ProcessEnv = process.env,
+    environment: NodeJS.ProcessEnv = process.env,
     private readonly homeDirectory?: string
   ) {
-    super();
+    super(environment);
   }
 
   capabilities(): AdapterCapabilities {
@@ -69,6 +69,7 @@ export class KimiAdapter extends BaseAdapter {
       // via Z.AI): under --tools none the read and shell probes produced
       // neither secret, while a plain run produced both (docs/HERMETIC.md).
       supportsToolSelection: true,
+      supportsProviderOverride: true,
     };
   }
 
@@ -108,6 +109,18 @@ export class KimiAdapter extends BaseAdapter {
       // The Z.AI-style endpoints the override targets speak the OpenAI
       // chat-completions protocol; kimi's own protocol is the default.
       KIMI_MODEL_PROVIDER_TYPE: "openai",
+      // The caps ride the sibling variables the synthesis reads:
+      // KIMI_MODEL_MAX_COMPLETION_TOKENS is the reply budget's hard cap and
+      // KIMI_MODEL_MAX_CONTEXT_SIZE the context window (both parsed from the
+      // environment in the installed binary; the cap names differ by one
+      // word and are not interchangeable — MAX_OUTPUT_SIZE is an output-SIZE
+      // knob of a different unit, deliberately unused).
+      ...(override.maxOutputTokens !== undefined
+        ? { KIMI_MODEL_MAX_COMPLETION_TOKENS: String(override.maxOutputTokens) }
+        : {}),
+      ...(override.maxContextTokens !== undefined
+        ? { KIMI_MODEL_MAX_CONTEXT_SIZE: String(override.maxContextTokens) }
+        : {}),
     };
   }
 

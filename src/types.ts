@@ -156,6 +156,10 @@ export interface AdapterCapabilities {
   // The harness can return a structured result envelope carrying token usage
   // (`--result-json`). Absent means unsupported and the flag is refused.
   supportsResultJson?: boolean;
+  // The harness can route a run to an operator-named provider endpoint
+  // (`CODEMUX_<AGENT>_PROVIDER_*`, src/provider-override.ts). Absent means
+  // unsupported and a set override fails the run before launch.
+  supportsProviderOverride?: boolean;
 }
 
 export type ModelMapping = Partial<Record<AgentId, string>>;

@@ -27,22 +27,22 @@ type AdapterEnv = Record<string, string | undefined>;
 type AdapterFactory = (env: AdapterEnv) => BaseAdapter;
 
 const adapterFactories: Readonly<Record<AgentId, AdapterFactory>> = Object.freeze({
-  agy: () => new AgyAdapter(),
+  agy: (env) => new AgyAdapter(env),
   aider: (env) => new AiderAdapter(env),
-  claude: () => new ClaudeAdapter(),
-  cline: () => new ClineAdapter(),
-  codex: () => new CodexAdapter(),
-  copilot: () => new CopilotAdapter(),
+  claude: (env) => new ClaudeAdapter(env),
+  cline: (env) => new ClineAdapter(env),
+  codex: (env) => new CodexAdapter(env),
+  copilot: (env) => new CopilotAdapter(env),
   cursor: (env) => new CursorAdapter(undefined, env),
   droid: (env) => new DroidAdapter(env),
   goose: (env) => new GooseAdapter(env),
-  gemini: () => new GeminiAdapter(),
+  gemini: (env) => new GeminiAdapter(env),
   kimi: (env) => new KimiAdapter(env),
-  openhands: () => new OpenHandsAdapter(),
+  openhands: (env) => new OpenHandsAdapter(env),
   opencode: (env) => new OpencodeAdapter(env),
   pi: (env) => new PiAdapter(env),
-  qwen: () => new QwenAdapter(),
-  zai: () => new ZaiAdapter(),
+  qwen: (env) => new QwenAdapter(undefined, env),
+  zai: (env) => new ZaiAdapter(env),
 });
 
 // Constructed per call, never cached: an adapter views the environment at

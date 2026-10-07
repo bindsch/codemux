@@ -7,6 +7,7 @@ import {
   OPENCODE_PROVIDER_ID,
   OPENCODE_PROVIDER_KEY_ENV,
   opencodeBareModel,
+  opencodeLimit,
   writeOpencodeProviderConfig,
 } from "../opencode-provider.js";
 import { assertNoOpenCodeProjectExecutionConfig } from "../project-safety.js";
@@ -122,10 +123,10 @@ export class OpencodeAdapter extends BaseAdapter {
 
   // Seams so tests can point the real data directory at a scratch directory.
   constructor(
-    private readonly environment: NodeJS.ProcessEnv = process.env,
+    environment: NodeJS.ProcessEnv = process.env,
     private readonly homeDirectory?: string
   ) {
-    super();
+    super(environment);
   }
 
   capabilities(): AdapterCapabilities {
@@ -153,6 +154,7 @@ export class OpencodeAdapter extends BaseAdapter {
       supportsHermetic: true,
       supportsToolSelection: true,
       toolsNoneRequiresHermetic: true,
+      supportsProviderOverride: true,
     };
   }
 
@@ -404,10 +406,14 @@ export class OpencodeAdapter extends BaseAdapter {
     // requirement early (the operator's own login and default model would
     // otherwise silently answer), and refuse a model the config file
     // cannot carry verbatim: OpenCode substitutes {env:…}/{file:…} in
-    // config text (opencode-provider.ts).
+    // config text (opencode-provider.ts). A one-sided token cap is refused
+    // here for the same reason it is refused at the write: the schema's
+    // limit object takes the pair, not a half.
     const resolved = this.modelFor(request.model);
-    if (resolved !== undefined && this.validatedProvider() !== null) {
+    const override = this.validatedProvider();
+    if (resolved !== undefined && override !== null) {
       opencodeBareModel(resolved);
+      opencodeLimit(override);
     }
   }
 

@@ -1,6 +1,7 @@
 import { BaseAdapter } from "./base.js";
 import { assertNoGooseProjectExecutionConfig } from "../project-safety.js";
 import {
+  assertProviderCap,
   readProviderOverride,
   requireProviderOverride,
   type ProviderOverride,
@@ -55,8 +56,8 @@ export class GooseAdapter extends BaseAdapter {
   readonly id: AgentId = "goose";
   readonly binaryName = "goose";
 
-  constructor(private readonly environment: NodeJS.ProcessEnv = process.env) {
-    super();
+  constructor(environment: NodeJS.ProcessEnv = process.env) {
+    super(environment);
   }
 
   capabilities(): AdapterCapabilities {
@@ -76,17 +77,25 @@ export class GooseAdapter extends BaseAdapter {
       // could produce its secret while plain runs produced both.
       supportsHermetic: false,
       supportsToolSelection: true,
+      supportsProviderOverride: true,
     };
   }
 
   /**
    * The provider override, validated: goose's env delivery needs a base
    * URL and a key (the model may come from `--model` instead of the
-   * variable).
+   * variable). Both token caps are refused: the per-model token knobs live
+   * only in goose's config file, which the override never writes.
    */
   private validatedProvider(): (ProviderOverride & { baseUrl: string; apiKey: string }) | null {
     const override = readProviderOverride("goose", this.environment);
     if (override === null) return null;
+    const noCapSurface =
+      "goose's per-model max_tokens and context_limit exist only in its config " +
+      "file, which the override never writes; its environment surface (OPENAI_HOST, " +
+      "OPENAI_BASE_PATH, OPENAI_API_KEY) carries no token limit";
+    assertProviderCap("goose", override, "maxOutputTokens", noCapSurface);
+    assertProviderCap("goose", override, "maxContextTokens", noCapSurface);
     return requireProviderOverride("goose", override, [
       "baseUrl",
       "apiKey",

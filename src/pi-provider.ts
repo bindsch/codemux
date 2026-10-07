@@ -26,7 +26,8 @@
  * load from named siblings under the agent directory, never from
  * `.codemux`), and one scode keeps reachable as harness state; never
  * under the temp root, whose Linux sandbox mount would hide it. It is
- * removed at exit and swept once its owning codemux process is gone.
+ * removed at exit and swept once it is stale (two days) and its owning
+ * codemux process is gone.
  */
 
 import { randomBytes } from "node:crypto";
@@ -185,6 +186,17 @@ export function writePiProviderAgentDir(
             name: bareModel,
             api: "openai-completions",
             reasoning: true,
+            // The caps, when the override carries them: maxTokens is the
+            // reply budget pi requests and contextWindow the window it
+            // truncates to (both first-class models.json fields). The
+            // conditional spreads keep an uncapped override's file
+            // byte-identical to the pre-caps shape.
+            ...(override.maxOutputTokens !== undefined
+              ? { maxTokens: override.maxOutputTokens }
+              : {}),
+            ...(override.maxContextTokens !== undefined
+              ? { contextWindow: override.maxContextTokens }
+              : {}),
           },
         ],
       },

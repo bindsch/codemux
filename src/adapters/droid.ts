@@ -9,6 +9,7 @@ import {
   DROID_PROVIDER_KEY_ENV,
 } from "../droid-provider.js";
 import {
+  assertProviderCap,
   readProviderOverride,
   requireProviderOverride,
   type ProviderOverride,
@@ -53,10 +54,10 @@ export class DroidAdapter extends BaseAdapter {
 
   // Seams so tests can point the real brand home at a scratch directory.
   constructor(
-    private readonly environment: NodeJS.ProcessEnv = process.env,
+    environment: NodeJS.ProcessEnv = process.env,
     private readonly homeDirectory?: string
   ) {
-    super();
+    super(environment);
   }
 
   capabilities(): AdapterCapabilities {
@@ -73,6 +74,7 @@ export class DroidAdapter extends BaseAdapter {
       // could produce its secret, while a plain run produced both
       // (docs/HERMETIC.md).
       supportsToolSelection: true,
+      supportsProviderOverride: true,
     };
   }
 
@@ -109,10 +111,20 @@ export class DroidAdapter extends BaseAdapter {
   /**
    * The provider override, validated: droid's BYOK entry needs a base URL
    * and a key (the model may come from `--model` instead of the variable).
+   * The output cap rides the entry's maxOutputTokens; the context cap is
+   * refused — the BYOK surface has no context-window field.
    */
   private validatedProvider(): (ProviderOverride & { baseUrl: string; apiKey: string }) | null {
     const override = readProviderOverride("droid", this.environment);
     if (override === null) return null;
+    assertProviderCap(
+      "droid",
+      override,
+      "maxContextTokens",
+      "droid's BYOK customModels entries carry no context-window field " +
+        "(docs.factory.ai model-independence/byok documents model, baseUrl, " +
+        "apiKey and maxOutputTokens only), so a context cap cannot ride the override"
+    );
     return requireProviderOverride("droid", override, [
       "baseUrl",
       "apiKey",

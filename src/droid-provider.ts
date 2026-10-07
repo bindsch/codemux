@@ -24,8 +24,8 @@
  * droid discovery scans (skills come from `~/.factory/skills`, hooks and
  * custom droids from named files under `~/.factory`) and one scode keeps
  * reachable as harness state; never under the temp root, whose Linux
- * sandbox mount would hide it. It is removed at exit and swept once its
- * owning codemux process is gone.
+ * sandbox mount would hide it. It is removed at exit and swept once it is
+ * stale (two days) and its owning codemux process is gone.
  */
 
 import { randomBytes } from "node:crypto";
@@ -171,6 +171,14 @@ export function writeDroidProviderSettings(
         // endpoints other than OpenAI's own API.
         provider: "generic-chat-completion-api",
         noImageSupport: true,
+        // The reply budget droid's model selection honors (docs.factory.ai
+        // model-independence/byok lists maxOutputTokens among the BYOK
+        // fields); the conditional spread keeps an uncapped override's file
+        // byte-identical to the pre-caps shape. There is no context-window
+        // BYOK field — the adapter refuses that cap instead of dropping it.
+        ...(override.maxOutputTokens !== undefined
+          ? { maxOutputTokens: override.maxOutputTokens }
+          : {}),
       },
     ],
   };
