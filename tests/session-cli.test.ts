@@ -1799,42 +1799,40 @@ describe("CLI - caller stdin framing", () => {
     // frameCallerStdin recopied the whole buffer on every chunk
     // (Buffer.concat) and restarted its newline scan from byte 0, so a
     // caller line near the cap arriving in ~64 KiB pipe chunks was
-    // quadratic. The buffer now grows on demand and the scan resumes
-    // where the last one stopped. Same discriminator as the harness-side
-    // test: the framing runs in THIS process, so CPU time is
-    // load-insensitive — the pre-fix re-copy and re-scan of 32
-    // 12 MiB lines moves ~70 GiB of memory through concat and indexOf
-    // (seconds of CPU); the linear framer touches each byte a constant
-    // number of times (~2 GiB, well under a tenth of a second).
-    const lines: string[] = [];
-    let ends = 0;
-    const input = new StubInput();
-    frameCallerStdin(
-      {
-        handleCallerLine: (line: string) => lines.push(line),
-        handleCallerEnd: () => {
-          ends += 1;
-        },
-      },
-      input
-    );
-    const stream = Buffer.concat(
-      Array.from(
-        { length: 32 },
-        () => Buffer.concat([Buffer.alloc(12 * 1024 * 1024, 0x61), Buffer.from("\n")])
-      )
-    );
-    const cpuStarted = process.cpuUsage();
-    for (let offset = 0; offset < stream.length; offset += 64 * 1024) {
-      input.emitData(stream.subarray(offset, Math.min(offset + 64 * 1024, stream.length)));
-    }
-    const cpuSpent = process.cpuUsage(cpuStarted);
-    input.emitEnd();
-    expect(lines).toHaveLength(32);
-    expect(lines[0]?.length).toBe(12 * 1024 * 1024);
-    expect(ends).toBe(1);
-    expect((cpuSpent.user + cpuSpent.system) / 1000).toBeLessThan(600);
-  }, 30_000);
+    // quadratic in the line size. The discriminator compares the SAME
+    // 12 MiB line delivered in one chunk and in 8 KiB chunks (smaller than
+    // a pipe's, to amplify the quadratic term): the linear framer pays
+    // about the same CPU either way (one pass over the bytes plus a
+    // per-chunk constant), the quadratic one rescans the whole buffer on
+    // each of the 1536 chunks (~9 GiB of indexOf). Same bytes, same host,
+    // same decode: no absolute bound, so a fast or a slow runner reads the
+    // same ratio. Measured 2026-10-07: linear 2.2 ms whole / 2.6 ms
+    // chunked; with `searchFrom = 0` reinstated in `deliver` (the
+    // quadratic restart) 165 ms chunked — 60x, against a 4x bound.
+    const line = Buffer.concat([Buffer.alloc(12 * 1024 * 1024, 0x61), Buffer.from("\n")]);
+    const frameCpuMs = (chunkBytes: number): number => {
+      const lines: string[] = [];
+      const input = new StubInput();
+      frameCallerStdin(
+        { handleCallerLine: (text: string) => lines.push(text), handleCallerEnd: () => {} },
+        input
+      );
+      const started = process.cpuUsage();
+      for (let offset = 0; offset < line.length; offset += chunkBytes) {
+        input.emitData(line.subarray(offset, Math.min(offset + chunkBytes, line.length)));
+      }
+      const spent = process.cpuUsage(started);
+      input.emitEnd();
+      expect(lines).toHaveLength(1);
+      expect(lines[0]?.length).toBe(12 * 1024 * 1024);
+      return (spent.user + spent.system) / 1000;
+    };
+    const best = (chunkBytes: number): number =>
+      Math.min(...Array.from({ length: 3 }, () => frameCpuMs(chunkBytes)));
+    const whole = best(line.length);
+    const chunked = best(8 * 1024);
+    expect(chunked).toBeLessThan(4 * whole + 10);
+  }, 60_000);
 });
 
 describe("CLI - the registry before the first turn (review live22)", () => {

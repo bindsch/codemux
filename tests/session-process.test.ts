@@ -137,28 +137,40 @@ describe("session process runner", () => {
     async () => {
       // Review live15: the framer restarted its newline scan from byte 0
       // on every chunk, so a line near the cap arriving in ~64 KiB pipe
-      // chunks cost a quadratic scan. The scan work runs in THIS process,
-      // so the discriminator is its CPU time (load-insensitive), not wall
-      // clock: the pre-fix scan of eight 12 MiB lines re-read ~8 GiB of
-      // bytes (seconds of CPU); the linear framer reads each byte once
-      // (~96 MiB, tens of milliseconds). The bound is an order of magnitude
-      // above that: the CPU time measured here also carries Bun's own
-      // UTF-8 decoding of the 96 MiB and the pipe reads, which on GitHub's
-      // shared macOS runner exceeded a 600 ms bound (the whole test took
-      // 7.5 s of wall clock there); the quadratic pre-fix scan still lands
-      // seconds above 2500 ms on any host.
-      const script =
-        "i=0; while [ $i -lt 8 ]; do head -c 12582912 /dev/zero | tr '\\0' 'a'; printf '\\n'; i=$((i+1)); done";
-      const cpuStarted = process.cpuUsage();
-      const { proc, lines, done } = harness(script);
-      await done;
-      const cpuSpent = process.cpuUsage(cpuStarted);
-      expect((await proc.exited).code).toBe(0);
-      expect(lines).toHaveLength(8);
-      expect(Buffer.byteLength(lines[0] ?? "", "utf8")).toBe(12582912);
-      expect((cpuSpent.user + cpuSpent.system) / 1000).toBeLessThan(2500);
+      // chunks cost a scan quadratic in the line size. The discriminator
+      // compares the SAME 12 MiB of bytes written by the child as one line
+      // and as 192 lines of 64 KiB: spawn, pipe reads, and decoding cost
+      // the same in both runs, the linear framer pays about the same for
+      // both, and the quadratic one rescans the growing buffer on every
+      // chunk of the long line (~1.2 GiB of indexOf). CPU time of this
+      // process is measured, so the host's speed cancels out; no absolute
+      // bound. Measured 2026-10-07: linear 35 ms short / 18 ms long (the
+      // long line has fewer per-line deliveries); with `searchFrom = 0`
+      // reinstated in `readStdoutLines` (the quadratic restart) 301 ms
+      // long — 8x the short run, against a 2x bound.
+      const total = 12 * 1024 * 1024;
+      const cpuMs = async (lineBytes: number): Promise<number> => {
+        const count = total / lineBytes;
+        const script = `i=0; while [ $i -lt ${count} ]; do head -c ${lineBytes} /dev/zero | tr '\\0' 'a'; printf '\\n'; i=$((i+1)); done`;
+        const started = process.cpuUsage();
+        const { proc, lines, done } = harness(script);
+        await done;
+        const spent = process.cpuUsage(started);
+        expect((await proc.exited).code).toBe(0);
+        expect(lines).toHaveLength(count);
+        expect(Buffer.byteLength(lines[0] ?? "", "utf8")).toBe(lineBytes);
+        return (spent.user + spent.system) / 1000;
+      };
+      const best = async (lineBytes: number): Promise<number> => {
+        let min = Number.POSITIVE_INFINITY;
+        for (let i = 0; i < 2; i += 1) min = Math.min(min, await cpuMs(lineBytes));
+        return min;
+      };
+      const short = await best(64 * 1024);
+      const long = await best(total);
+      expect(long).toBeLessThan(2 * short + 30);
     },
-    30_000
+    120_000
   );
 
   test("invalid UTF-8 on its own line is a fatal with an excerpt", async () => {
