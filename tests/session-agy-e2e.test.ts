@@ -72,6 +72,7 @@ async function startSession(
     sessionTimeoutMs: null,
     registryPath: join(registryDir, "live-sessions.json"),
     harnessHome: join(dir, "home"),
+    providerBaseUrl: null,
     sink: (line) => {
       events.push(JSON.parse(line) as Event);
     },
@@ -663,6 +664,7 @@ describe("agy session e2e - stream tiers", () => {
       sessionTimeoutMs: null,
       registryPath: null,
       harnessHome: join(dir, "home"),
+      providerBaseUrl: null,
       sink: () => {},
     });
     // The pre-attach end: the driver finishes with no child to stop.

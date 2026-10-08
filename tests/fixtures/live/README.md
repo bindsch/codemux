@@ -58,6 +58,26 @@ result.
   status, response, error, duration_seconds, num_turns, usage}}`. The
   full-exchange probe was NOT run: agy's login is expired and re-login is
   interactive.
+- `opencode-session.ndjson` — recorded 2026-10-07 with `opencode` 1.18.18
+  through the provider override against the local vLLM gateway
+  (`clawvm-qwen32b-coder`): a three-turn exchange whose first turn plants
+  a codename and whose third recalls it (`zephyr-mango-42`), proving the
+  native session store carries state across the per-turn `run` processes
+  under an override. Shows the deferred identity (`session_started`
+  after the first turn's output names the `ses_…` id) and the wire model
+  in `session_started.model` (`codemux/clawvm-qwen32b-coder`). No
+  `step_finish` line arrived in this recording (the gateway-backed run
+  produced only `step_start` raws), so every `turn_completed` and
+  `session_ended` carries all-null usage — the driver folds `step_finish`
+  into `turn_completed.usage`, so had any arrived the fields would be
+  non-null (review D1, 2.2; review D2 fixed the fold's wire level — the
+  tokens and cost ride inside the line's `part`, so a real line parses).
+- `aider-session.ndjson` — recorded 2026-10-07 with `aider` 0.86.2
+  through the same override: the same plant/recall shape across three
+  turn-per-process exchanges over the chat history file. Shows the
+  announce-before-input identity (a codemux UUID), aider's transcript
+  lines as tier-1 `unknown` passthrough, and the all-null usage (aider
+  reports none headlessly).
 
 ## Sanitization
 

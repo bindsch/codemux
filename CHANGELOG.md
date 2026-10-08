@@ -7,6 +7,222 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-08
+
+### Upgrade notes
+
+- The shared session registry (`live-sessions.json`) records now carry a
+  `provider_base_url` field. codemux 0.10.0 reads 0.9.0-era records
+  without it, but a co-installed or downgraded 0.9.0 binary validates
+  records by exact key count, so once 0.10.0 writes the registry, 0.9.0
+  reads the whole file as corrupt: it refuses every `--resume` and stops
+  recording sessions. Upgrade every codemux binary that shares the
+  machine's home before mixing versions; a downgrade back to 0.9.0 needs
+  the registry file removed (it sits under
+  `~/Library/Application Support/codemux` on macOS and
+  `~/.local/state/codemux` elsewhere) at the cost of losing resume
+  history.
+
+### Added
+
+- `codemux session` supports two more harnesses, both turn-per-process
+  with their own state carriers: `opencode` (one `opencode run --format
+  json --session <id>` per turn over the harness's native session store,
+  identity adopted from the first output line, floor 1.18.18) and
+  `aider` (one headless `aider --message` per turn replaying a chat
+  history file codemux owns under `~/.aider/.codemux/sessions/<uuid>/`,
+  floor 0.86.2). Both carry the honest-false capability matrix — no
+  steer, interrupt, permissions, deltas, or file changes — and their
+  registry entries and resume guards match the other agents (opencode
+  resumes by native `ses_` id, aider by the codemux UUID; a missing
+  history file makes an aider resume fail before any turn).
+- Provider overrides reach sessions: `CODEMUX_<AGENT>_PROVIDER_*` (token
+  caps and codex's `MULTI_AGENT` knob included) applies to every
+  session-capable harness's spawn through the same adapter seams `run`
+  uses. A codex override session owns a `CODEX_HOME` keyed per session
+  (`~/.codex/.codemux-provider/session-home-<hash>-<session id>` —
+  written atomically, never shared between sessions, removed at a
+  non-resumable end of a fresh session, never removed at all for a
+  resumed one) so its threads survive that session's turns and
+  resumes; an opencode session keeps the real
+  data directory under the override; a cap a harness cannot carry
+  (aider's) is refused before spawn exactly as `run` refuses it. The
+  override no longer makes `codemux session` exit 64. Every session
+  record carries its provider identity (the override base URL in its
+  identity form, or operator login when none) and `--resume` refuses a
+  mismatch.
+
+### Fixed
+
+- Live-session review fixes (D11 round). Correctness: a graceful end
+  (stdin close, `shutdown`) that begins while an opencode or aider
+  turn's process is still spawning now runs that turn instead of
+  killing it on arrival — the end path delivers the turn's payload
+  itself (the prompt on opencode's stdin, the canned negatives on
+  aider's) and drains the turn with its grace period, so `printf one
+  user line | codemux session -a opencode` (or `-a aider`) answers the
+  prompt it was sent; a signal, timeout, or crash end still stops a
+  late child on arrival, and whichever way the turn ends its tree
+  settles before the session resolves. Also: the codex home sweep no
+  longer fails every later codemux run over one undeletable stale
+  entry (a directory without write permission a sandboxed child left
+  inside a run directory or session home) — it warns and moves on, the
+  other sweeps' rule.
+- Live-session review fixes (D10 round). Security: a prompt whose first
+  non-whitespace character is `/` or `!` is refused before aider ever
+  sees it — on the session path before the ack (`input_rejected`,
+  `unsupported`), on the run path at validation (a usage refusal, exit
+  64) — because aider's `preproc_user_input` dispatches those as its
+  own commands before any model turn and `!` (the `/run` alias)
+  executes the shell immediately, ungated by `--dry-run`, so relaying
+  one through a read-only run or session was code execution the
+  autonomy never authorized. The session registry's `provider_base_url`
+  records the override's base URL in its identity form — query and
+  fragment stripped — so a gateway key riding the query no longer lands
+  in the registry file or in resume-refusal messages, a rotated key
+  still resumes the session it belongs to, and the codex session-home
+  hash reads the same form so key rotation cannot move a home.
+  Correctness: an aider session whose turn was killed partway ends
+  not-resumable — aider writes the `#### ` user block at the turn's
+  start and the reply only at its end, so the killed turn leaves an
+  unanswered prompt a `--restore-chat-history` resume would replay; the
+  stale-session-home sweep consults the registry BEFORE walking (a held
+  or unknown id costs no walk) and falls back to the directory's own
+  mtime for a home the registry has POSITIVELY freed, so an over-cap
+  keyed home no longer survives forever while every later run re-walks
+  it to the cap; and a codex override resume spares its own keyed home
+  from the sweep its setup runs — an ended record plus a home idle past
+  the 28-day gate was deleted after the resume lookup had already
+  vouched for it, and the resume refused "missing or untrusted" as a
+  result.
+- Live-session review fixes (D9 round). Correctness: a dead run
+  directory whose tree is larger than the sweep's walk cap is aged by
+  the directory's own mtime instead of being spared forever — the pid
+  gate has already shown nothing owns it, so a codemux crash that
+  leaves a run HOME filled past the cap (npm/pip/cargo caches) can no
+  longer leak it under `~/.codex` and slow every later run with a walk
+  to the cap; a session home keeps being spared on an over-budget
+  walk, because a removal needs a positive reading. Contracts: the
+  live-sessions D report's header no longer claims the tree is
+  unreleased at 0.9.0 — it names the 0.10.0 release the tree carries,
+  pinned against package.json so the claim cannot drift again.
+- Live-session review fixes (D8 round). Correctness: an aider session's
+  history read-back is bounded per TURN, never per file — the run
+  path's 32 MiB whole-file bound, sized for one `--message` exchange,
+  was applied to the session history, which accumulates every
+  exchange, so a long session's finished turns were reported
+  "unreadable or truncated", the session ended, and every later
+  `--resume` was refused the same way though nothing was corrupt; the
+  driver now keeps a byte offset and reads only each turn's delta (a
+  single exchange larger than one run's whole history still fails
+  closed), so a session's history has no size limit from codemux's
+  side. `codexHarnessHome`'s CODEX_HOME validation (absolute,
+  unpadded) runs for codex sessions only: it ran at every session's
+  setup, so a claude/zai/agy/opencode/aider session with `--pass-env
+  CODEX_HOME` and a relative value exited 64 on a codex rule its
+  harness never reads. The same-class audit found the mirror and fixed
+  it with it: `assertAbsoluteClaudeConfigDir`'s CLAUDE_CONFIG_DIR
+  validation also ran eagerly for every agent, and now runs for claude
+  and zai sessions only — the run path's shape, where the check has
+  always lived in the two adapters rather than the shared launcher. The aider-history module header no longer
+  claims nothing reads the extraction today and only hermetic runs
+  create the file — the session driver reads and extracts the history
+  every turn, and every session owns a persistent history file kept as
+  the resume state.
+- Live-session review fixes (D7 round). Security: the aider session now
+  re-checks its chat history file before EVERY turn spawn — the ownership
+  chain (`.codemux` down, lstat) plus the file itself (regular file, not
+  a link, owned by the invoking user, mode 0600) — and a trip fails the
+  turn, not the session. The creation-time check and the post-turn
+  `O_NOFOLLOW` read left the between-turns window where a sandboxed child
+  that can write `~/.aider` could replace the history file with a symlink
+  to a file outside its sandbox and the next turn's aider would follow
+  it: read the target into the model context and append to it. The same
+  class was audited across the other drivers: the codex override session
+  home is re-asserted (trusted directory, owned) at the config write
+  itself, closing the open-time-assertion-to-prepareConfig window across
+  the registry claim; opencode needed no change (its per-turn provider
+  config is written fresh per turn into an unguessable directory the
+  previous turn's child cannot have predicted, and its session store is
+  harness-owned state, not a codemux-written file). Correctness: a codex
+  override session settles its home onto the session-keyed path BEFORE
+  releasing the registry record, so a `--resume` arriving in the old
+  window no longer finds a released record whose `harness_home` names a
+  path that does not exist yet; the stale-run sweep checks a run-shaped
+  entry's pid from its NAME before any tree walk (a live run's tree was
+  walked for nothing on every codemux codex run) and the freshness walk
+  is entry-capped, so a child that creates a huge tree under `~/.codex`
+  can no longer slow every later run — an over-budget tree is spared,
+  the safe direction for a session-home removal, while an over-budget
+  run directory past its pid gate is aged by the directory's own mtime
+  instead of leaking (see the D9 round below).
+- Live-session review fixes (D5 round). Security: the codex override
+  session-home isolation comment now states the real boundary — keying
+  the home per session id is a naming rule (no two sessions run in one
+  directory), not an access boundary: the shared `.codemux-provider/`
+  parent under `~/.codex` stays writable by every sandboxed codex child,
+  so one session's child can plant files in another session's home, and
+  codemux vouches only for the atomic per-launch config.toml rewrite.
+  Correctness: the stale session-home sweeps (the codex homes and
+  aider's session directories) treat an unreadable registry as `unknown`
+  and spare the directory — only a positive `free` answer removes, and a
+  transient registry read failure folded into "not held" could delete a
+  live session's home; a turn process that lands after the session ended
+  (a shutdown or signal while its spawn was in flight) is stopped and
+  settled before the session's exit, so an opencode child can no longer
+  briefly run past the session with its provider config deleted; and a
+  codex override resume writes its session home's `config.toml` only
+  after the resume claim — a second resume racing past the lookup and
+  refused `session_busy` no longer rewrites the live session's config,
+  and exits before the spawn abandon the home instead of orphaning it
+  to the stale-run sweep.
+- Live-session review fixes (D4 round). Security: the stale session-home
+  sweep never removes a codex home the session registry holds live — the
+  sweep fires from any codemux codex run, and a resumed override session
+  held open past the age gate could lose its `CODEX_HOME` to the next
+  run; the aider history directory's creation and sweep lstat every path
+  component from `.codemux` down, so a symlink planted in the
+  child-writable `~/.aider` can no longer aim them outside the sandbox.
+  Correctness: the aider history header drops the trailing empty element
+  Python's `splitlines` drops, so a multi-line prompt ending in a line
+  break anchors its reply block exactly as aider wrote it — the extra
+  `#### ` line made the anchor miss and leaked the prompt's continuation
+  lines into the reply.
+- Live-session review fixes (D3 round). Security: the session record
+  carries the provider identity — the override's base URL, or operator
+  login when none — and `--resume` refuses a mismatch with exit 78 in
+  both directions; the recorded harness home does not move with the
+  endpoint for claude, opencode, or aider, so before this a transcript
+  recorded on one endpoint (or the operator's login) could replay on
+  another. An opencode session writes its provider config fresh before
+  every turn, finalizing the previous turn's file at the next spawn:
+  the config lives in the child-writable data directory, and a config
+  cached at the first turn let one turn's child rewrite what the next
+  ran with. Correctness: a resumed codex override session's home is
+  never removed at settlement — a failed or interrupted resume deleted
+  every earlier turn of the session; the sweep reclaims the home if no
+  resume comes back.
+- Live-session review fixes (D2 round). Security: the project-config
+  guard re-runs before every turn the turn-per-process agents (opencode,
+  aider) spawn — turn N can write the very `opencode.json` or
+  `.aider.model.settings.yml` turn N+1 reloads, and the
+  once-per-session check left that window open. The on-disk sweep ages
+  aider session directories by the history file's mtime (aider only
+  appends, so the directory's own mtime never moves and live sessions
+  were deleted 28 days after creation) and skips ids the registry holds
+  live; codex session and run homes age by the newest write anywhere in
+  their tree, for the same reason. Contracts: opencode `step_finish`
+  usage is read off the line's `part` — the pinned 1.18.18 envelope
+  carries the tokens and cost there, so every real turn reported
+  all-null usage — and its cost sums per step and per turn (each part's
+  cost is that step's own, never a session-lifetime figure to adopt).
+  Correctness: a codex override session whose settle cannot reach its
+  key reports `resumable: false` instead of failing a later resume
+  inside codex with thread-not-found, a resume of a missing keyed home
+  refuses outright instead of silently remaking an empty one, and a
+  failed aider start record removes the fresh history directory rather
+  than orphaning it to the sweep.
+
 ## [0.9.0] - 2026-10-07
 
 ### Added

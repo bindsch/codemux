@@ -73,6 +73,7 @@ async function startSession(
     sessionTimeoutMs: null,
     registryPath: join(registryDir, "live-sessions.json"),
     harnessHome: join(dir, "home"),
+    providerBaseUrl: null,
     sink: (line) => {
       rawLines.push(line);
       events.push(JSON.parse(line) as Event);
@@ -981,6 +982,7 @@ describe("claude session driver e2e", () => {
       cwd: session.options.cwd,
       passEnv: [],
       playwrightMcp: false,
+      providerBaseUrl: null,
       hermetic: false,
     };
     // Live owner: this test process owns the session, recorded unended.
@@ -1108,6 +1110,7 @@ describe("claude session driver e2e", () => {
       sessionTimeoutMs: null,
       registryPath: null,
       harnessHome: "/tmp",
+      providerBaseUrl: null,
       sink: (line) => {
         lines.push(line);
       },
@@ -1223,6 +1226,7 @@ describe("claude session driver e2e", () => {
       sessionTimeoutMs: null,
       registryPath: null,
       harnessHome: join(dir, "home"),
+      providerBaseUrl: null,
       sink: () => {},
     });
     // The pre-attach end: the driver finishes with no child to stop.
@@ -2135,6 +2139,7 @@ describe("claude session driver e2e - review live20", () => {
       sandboxTrust: "standard",
       sandboxNoNet: false,
       sandboxScrubEnv: false,
+      providerBaseUrl: null,
       hermetic: false,
     });
     expect(claim.outcome).toBe("ok");

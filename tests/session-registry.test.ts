@@ -23,6 +23,7 @@ import {
   releaseSessionRecord,
   recordSessionStart,
   REGISTRY_MAX_ENTRIES,
+  sessionHoldState,
   sessionRegistryPath,
   touchSession,
   type NewSessionRecord,
@@ -32,6 +33,8 @@ import {
 } from "../src/session/registry.js";
 import { MAX_ID_CHARS } from "../src/session/protocol.js";
 import { acquireLock, listHeldLocks, writeRegistryAtomic } from "../src/session/registry-io.js";
+import { aiderSessionAutonomyFlags } from "../src/session/aider-session.js";
+import { opencodeSessionAutonomyFlags } from "../src/session/opencode-session.js";
 import type { AutonomyLevel } from "../src/types.js";
 
 /** A pid above the macOS pid ceiling: never alive, so entries crafted
@@ -64,6 +67,7 @@ function craftEntry(overrides: Partial<SessionRecord> = {}): SessionRecord {
     sandbox_scrub_env: false,
     pass_env: [],
     playwright_mcp: false,
+    provider_base_url: null,
     owner_pid: DEAD_PID,
     owner_start: null,
     ended: null,
@@ -89,6 +93,7 @@ function probe(overrides: Partial<ResumeProbe> = {}): ResumeProbe {
     cwd: "/definitely/not/the/registry",
     passEnv: [],
     playwrightMcp: false,
+    providerBaseUrl: null,
     hermetic: false,
     ...overrides,
   };
@@ -114,6 +119,44 @@ describe("registry path and liveness", () => {
   test("identity liveness: self alive, out-of-range pid dead", () => {
     expect(processIdentityAlive(process.pid, null)).toBe(true);
     expect(processIdentityAlive(DEAD_PID, null)).toBe(false);
+  });
+
+  test("sessionHoldState answers held/free/unknown so a deletion acts only on a positive free (reviews D2, D5)", () => {
+    // The file-sweeper's liveness skip: only a session the registry holds
+    // OPEN under a live owner is protected from the age sweep (`held`) —
+    // an ended or dead-owner session stays sweepable, an unknown id is
+    // not held. The D5 rule: a registry that cannot be READ answers
+    // `unknown`, never a folded-in "not held" — the sweeps spare what
+    // they cannot judge, and only a positive `free` may remove.
+    const path = registryIn(makeRoot());
+    seedRegistry(path, [
+      craftEntry({ id: "live-id", owner_pid: process.pid }),
+      craftEntry({ id: "ended-id", owner_pid: process.pid, ended: "2026-10-05T11:00:00.000Z" }),
+      craftEntry({ id: "dead-id", owner_pid: DEAD_PID }),
+    ]);
+    expect(sessionHoldState(path, "live-id")).toBe("held");
+    expect(sessionHoldState(path, "ended-id")).toBe("free");
+    expect(sessionHoldState(path, "dead-id")).toBe("free");
+    expect(sessionHoldState(path, "unknown-id")).toBe("free");
+    // No registry at all: nothing can be held (a deletion may proceed).
+    expect(sessionHoldState(join(makeRoot(), "absent.json"), "live-id")).toBe("free");
+    // A corrupt file is as unreadable as a busy read: unknown, not free.
+    const corruptRoot = makeRoot();
+    const corruptPath = registryIn(corruptRoot);
+    mkdirSync(join(corruptPath, ".."), { recursive: true });
+    writeFileSync(corruptPath, "not json", { mode: 0o600 });
+    expect(sessionHoldState(corruptPath, "live-id")).toBe("unknown");
+    // An untrusted placement (a symlinked registry file) reads the same
+    // way: unknown — every not-ok read spares the candidate (review D5,
+    // correctness 1 — the transient failure that deleted a live home).
+    const linkedRoot = makeRoot();
+    const linkedPath = registryIn(linkedRoot);
+    mkdirSync(join(linkedPath, ".."), { recursive: true });
+    seedRegistry(join(linkedRoot, "reg", "real.json"), [
+      craftEntry({ id: "live-id", owner_pid: process.pid }),
+    ]);
+    symlinkSync(join(linkedRoot, "reg", "real.json"), linkedPath);
+    expect(sessionHoldState(linkedPath, "live-id")).toBe("unknown");
   });
 
   test("an unreadable table and an EPERM probe mean alive, never dead (review live16)", () => {
@@ -327,6 +370,65 @@ describe("resume guards", () => {
     if (home.outcome === "refused") expect(home.reason).toContain("harness home");
   });
 
+  test("the provider identity pins the endpoint a resume may replay against (review D3, security)", () => {
+    // The recorded state directory does not move with the endpoint for
+    // claude (~/.claude), opencode (the real data dir), or aider
+    // (~/.aider), so the harness-home guard cannot carry this rule: the
+    // override's base URL — or null for the operator's own login — must
+    // equal the resume's, in both directions, or the transcript replays
+    // on a provider the caller never chose at creation.
+    const path = registryIn(makeRoot());
+    seedRegistry(path, [craftEntry({ provider_base_url: "http://127.0.0.1:9/v1" })]);
+    expect(
+      lookupForResume(path, "sess-1", probe({ providerBaseUrl: "http://127.0.0.1:9/v1" })).outcome
+    ).toBe("ok");
+    const other = lookupForResume(path, "sess-1", probe({ providerBaseUrl: "http://127.0.0.1:10/v1" }));
+    expect(other.outcome).toBe("refused");
+    if (other.outcome === "refused") {
+      expect(other.reason).toContain("created against the provider override at http://127.0.0.1:9/v1");
+      expect(other.reason).toContain("cannot resume against the provider override at http://127.0.0.1:10/v1");
+    }
+    const login = lookupForResume(path, "sess-1", probe());
+    expect(login.outcome).toBe("refused");
+    if (login.outcome === "refused") {
+      expect(login.reason).toContain("cannot resume against the operator's own login");
+    }
+    // The mirror: an operator-login session never runs under an override.
+    seedRegistry(path, [craftEntry()]);
+    const flipped = lookupForResume(path, "sess-1", probe({ providerBaseUrl: "http://127.0.0.1:9/v1" }));
+    expect(flipped.outcome).toBe("refused");
+    if (flipped.outcome === "refused") {
+      expect(flipped.reason).toContain("created against the operator's own login");
+    }
+    expect(lookupForResume(path, "sess-1", probe()).outcome).toBe("ok");
+  });
+
+  test("a 0.9.0 record without the provider field reads as operator login (review D3)", () => {
+    // Sessions refused every override before this field existed, so an
+    // absent provider_base_url IS an operator-login record: refusing it
+    // would poison every existing registry as corrupt. The read
+    // normalizes it to null, and the next write persists the explicit
+    // null.
+    const path = registryIn(makeRoot());
+    const { provider_base_url: _omit, ...legacy } = craftEntry();
+    seedRegistry(path, [legacy as unknown as SessionRecord]);
+    expect(readRegistry(path).outcome).toBe("ok");
+    expect(lookupForResume(path, "sess-1", probe()).outcome).toBe("ok");
+    expect(
+      lookupForResume(path, "sess-1", probe({ providerBaseUrl: "http://127.0.0.1:9/v1" })).outcome
+    ).toBe("refused");
+    // Any other missing key is still corrupt, and a non-string value too.
+    const { harness_home: _home, ...noHome } = craftEntry();
+    seedRegistry(path, [noHome as unknown as SessionRecord]);
+    expect(readRegistry(path).outcome).toBe("corrupt");
+    seedRegistry(path, [craftEntry({ provider_base_url: 7 as unknown as string })]);
+    expect(readRegistry(path).outcome).toBe("corrupt");
+    // The normalization persists at the next write.
+    seedRegistry(path, [legacy as unknown as SessionRecord]);
+    expect(recordSessionStart(path, newRecord({ id: "sess-1" })).ok).toBe(true);
+    expect(JSON.parse(readFileSync(path, "utf8")).sessions[0].provider_base_url).toBeNull();
+  });
+
   test("containment may not drop and trust may not rise", () => {
     const path = registryIn(makeRoot());
     seedRegistry(path, [craftEntry({ sandboxed: true, sandbox_trust: "standard" })]);
@@ -473,6 +575,38 @@ describe("resume guards", () => {
     expect(
       lookupForResume(path, "sess-1", probe({ agent: "claude", autonomy: "high" })).outcome
     ).toBe("ok");
+  });
+
+  test("opencode's and aider's adjacent autonomy ties still refuse an upward resume (review D1, 2.1)", () => {
+    // opencode's low and medium both spawn `--agent build`, and aider's
+    // medium and high both spawn `--yes-always` — each ladder has one
+    // adjacent tie, so the strict ranking refuses a resume into a level
+    // whose command is byte-identical to the recorded one. The refusal is
+    // the intended conservatism (a refused byte-identical resume costs a
+    // retry at the recorded level; a folded tie could never be proven
+    // narrow), and this test plus the flag pins keep the ranking and the
+    // ties honest against each other.
+    expect(opencodeSessionAutonomyFlags("low")).toEqual(["--agent", "build"]);
+    expect(opencodeSessionAutonomyFlags("medium")).toEqual(["--agent", "build"]);
+    expect(aiderSessionAutonomyFlags("medium")).toEqual(["--yes-always"]);
+    expect(aiderSessionAutonomyFlags("high")).toEqual(["--yes-always"]);
+    const path = registryIn(makeRoot());
+    const cases: Array<{ agent: "opencode" | "aider"; created: AutonomyLevel; resume: AutonomyLevel }> = [
+      { agent: "aider", created: "medium", resume: "high" }, // byte-identical command, still refused
+      { agent: "opencode", created: "low", resume: "medium" }, // the same shape on the other ladder
+    ];
+    for (const { agent, created, resume } of cases) {
+      seedRegistry(path, [craftEntry({ agent, autonomy: created })]);
+      const result = lookupForResume(path, "sess-1", probe({ agent, autonomy: resume }));
+      expect(result.outcome).toBe("refused");
+      if (result.outcome === "refused") {
+        expect(result.reason).toContain("autonomy");
+      }
+      // The same-level resume stays open: the tie costs nothing downward.
+      expect(
+        lookupForResume(path, "sess-1", probe({ agent, autonomy: created })).outcome
+      ).toBe("ok");
+    }
   });
 
   test("hermetic provenance must match", () => {

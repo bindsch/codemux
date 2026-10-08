@@ -98,6 +98,9 @@ export interface SessionDriverOptions {
   registryPath: string | null;
   /** The harness state home recorded for this session (§4.8). */
   harnessHome: string;
+  /** The provider identity recorded for the resume guard (review D3):
+   * the override's base URL, or null for the operator's own login. */
+  providerBaseUrl: string | null;
   /** Injectable event sink; defaults to codemux stdout, one line each. */
   sink?: (line: string) => Promise<void> | void;
 }
@@ -1389,6 +1392,7 @@ export class ClaudeSessionDriver {
       sandbox_scrub_env: this.options.sandboxScrubEnv,
       pass_env: [...this.options.passEnv],
       playwright_mcp: this.options.playwrightMcp,
+      provider_base_url: this.options.providerBaseUrl,
     });
   }
 

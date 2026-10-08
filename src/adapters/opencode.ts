@@ -117,6 +117,51 @@ const hermeticRemoteConfigRefusal = (carrier: string): string =>
 const PLAIN_NO_TOOLS_REFUSAL =
   "opencode --tools none requires --hermetic: the operator's opencode config can override the permission deny per agent";
 
+/** The user home a run sees: the seam, else $HOME, else the account home. */
+function opencodeEffectiveHome(
+  environment: NodeJS.ProcessEnv,
+  homeDirectory?: string
+): string {
+  if (homeDirectory !== undefined && !isAbsolute(homeDirectory)) {
+    throw new Error("opencode home directory must be an absolute path");
+  }
+  const home = homeDirectory ?? environment.HOME;
+  return home && isAbsolute(home) ? home : homedir();
+}
+
+/**
+ * The XDG data parent a plain run sees, holding the real OpenCode data
+ * directory and its login: the sanitized child environment passes
+ * XDG_DATA_HOME through, so an operator who relocated it keeps their
+ * login in both kinds of run. Exported because the session CLI records
+ * the same directory as the opencode session's harness home (§4.8) —
+ * the native sessions live there, so one rule computes both and they
+ * cannot drift.
+ */
+export function opencodeRealDataParent(
+  environment: NodeJS.ProcessEnv,
+  homeDirectory?: string
+): string {
+  const configured = environment.XDG_DATA_HOME?.trim();
+  if (configured) {
+    if (!isAbsolute(configured)) {
+      throw new Error("XDG_DATA_HOME must be an absolute path");
+    }
+    return configured;
+  }
+  return join(opencodeEffectiveHome(environment, homeDirectory), ".local", "share");
+}
+
+/** The real OpenCode data directory holding the login state the
+ * remote-config inspection reads (opencode-remote-config.ts) and the
+ * native session database a `codemux session` resumes from. */
+export function opencodeRealDataDir(
+  environment: NodeJS.ProcessEnv,
+  homeDirectory?: string
+): string {
+  return join(opencodeRealDataParent(environment, homeDirectory), "opencode");
+}
+
 export class OpencodeAdapter extends BaseAdapter {
   readonly id: AgentId = "opencode";
   readonly binaryName = "opencode";
@@ -179,30 +224,15 @@ export class OpencodeAdapter extends BaseAdapter {
     return false;
   }
 
-  /** The user home a run sees: the seam, else $HOME, else the account home. */
-  private effectiveHome(): string {
-    if (this.homeDirectory !== undefined && !isAbsolute(this.homeDirectory)) {
-      throw new Error("opencode home directory must be an absolute path");
-    }
-    const home = this.homeDirectory ?? this.environment.HOME;
-    return home && isAbsolute(home) ? home : homedir();
-  }
-
   /**
    * The XDG data parent a plain run sees, holding the real OpenCode data
    * directory and its login: the sanitized child environment passes
    * XDG_DATA_HOME through, so an operator who relocated it keeps their
-   * login in both kinds of run.
+   * login in both kinds of run. Shared with the session CLI (see
+   * opencodeRealDataParent).
    */
   private realDataParent(): string {
-    const configured = this.environment.XDG_DATA_HOME?.trim();
-    if (configured) {
-      if (!isAbsolute(configured)) {
-        throw new Error("XDG_DATA_HOME must be an absolute path");
-      }
-      return configured;
-    }
-    return join(this.effectiveHome(), ".local", "share");
+    return opencodeRealDataParent(this.environment, this.homeDirectory);
   }
 
   /**
@@ -210,7 +240,7 @@ export class OpencodeAdapter extends BaseAdapter {
    * remote-config inspection reads (opencode-remote-config.ts).
    */
   private realDataDir(): string {
-    return join(this.realDataParent(), "opencode");
+    return opencodeRealDataDir(this.environment, this.homeDirectory);
   }
 
   /**
@@ -258,6 +288,13 @@ export class OpencodeAdapter extends BaseAdapter {
     return resolved.startsWith(`${OPENCODE_PROVIDER_ID}/`)
       ? resolved
       : `${OPENCODE_PROVIDER_ID}/${resolved}`;
+  }
+
+  /** The wire `--model` value for a launch the caller builds itself (the
+   * session driver's per-turn spawns): exactly what buildRunCommand would
+   * pass, so the session turns and the run path cannot drift. */
+  wireModelFor(model: string | undefined): string | undefined {
+    return this.modelFor(model);
   }
 
   buildRunCommand(request: RunRequest, context?: RunContext): string[] {

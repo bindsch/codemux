@@ -28,11 +28,10 @@
  * operator file the hermetic run would close.
  *
  * Resolution lives here, a pure function of the environment, so any spawn
- * codemux makes can call it: `codemux run` through the adapter today.
- * `codemux session` does not carry overrides in this release: it refuses
- * to start while any `CODEMUX_<AGENT>_PROVIDER_*` name is set for the
- * session agent (review live25), and wiring the override into the session
- * spawn through this same call is the next release's work.
+ * codemux makes can call it: `codemux run` through the adapter, and
+ * `codemux session` through the same adapter seams for every
+ * override-capable harness — a session's spawns carry exactly what a run's
+ * would, so the two paths cannot drift.
  *
  * Blank values count as unset, so an exported empty variable is harmless.
  */
@@ -165,6 +164,22 @@ export function readProviderOverride(
   }
 
   return { baseUrl, apiKey, model, maxOutputTokens, maxContextTokens };
+}
+
+/** The identity form of a base URL — the part that names the endpoint —
+ * for everything codemux records or compares: the session registry's
+ * `provider_base_url` and the codex session-home key. Some gateways
+ * take a key or token in the query (`?key=…`; the validator allows a
+ * query but refuses credentials in the user/password parts and a
+ * fragment), and the recorded URL is written to disk and echoed in
+ * resume refusals, so the identity drops the query and fragment — the
+ * spellings on either side of a resume comparison still match after a
+ * key rotation. A string cut, never a URL re-render: `URL.toString()`
+ * re-spells the rest (a trailing slash on a bare host, case, encoding)
+ * and would silently break comparisons against recorded values. */
+export function providerIdentityBaseUrl(baseUrl: string): string {
+  const cut = baseUrl.search(/[?#]/);
+  return cut === -1 ? baseUrl : baseUrl.slice(0, cut);
 }
 
 /** Reads one cap: blank counts as unset, anything else must be a positive integer. */

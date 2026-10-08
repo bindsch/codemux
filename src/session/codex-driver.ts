@@ -108,6 +108,12 @@ export interface CodexDriverOptions {
   resumeThreadId: string | null;
   autonomy: AutonomyLevel;
   model?: string;
+  /** The model the wire requests carry, when the caller computed one
+   * itself: a string sends exactly that, null sends none, and undefined
+   * falls back to `model`. Under a provider override the session home's
+   * config.toml owns model selection — the run path's never-`-m` rule —
+   * so the CLI passes null there while `model` stays the reported one. */
+  wireModel?: string | null;
   effort?: ReasoningEffort;
   /** The validated working directory — also the ceiling's launch scope. */
   cwd: string;
@@ -131,6 +137,22 @@ export interface CodexDriverOptions {
   registryPath: string | null;
   /** The harness state home recorded for this session (§4.8). */
   harnessHome: string;
+  /** The provider identity recorded for the resume guard (review D3):
+   * the override's base URL, or null for the operator's own login. */
+  providerBaseUrl: string | null;
+  /** The same record's home keyed by the session id, when the recorded
+   * value depends on the id the harness has not named yet — a codex
+   * override session starts in a fresh run-shaped CODEX_HOME whose final
+   * (resume-computed) path names the thread (codex-provider.ts). Preferred
+   * over `harnessHome` at the record, and only once the id exists. */
+  harnessHomeFor?: (sessionId: string) => string;
+  /** The end-of-session settlement of a per-session harness home (the
+   * codex override session home's `settle`, codex-provider.ts), called
+   * once from the end path after the child settled and the resumable
+   * verdict is known. Returns whether the home ended where a resume
+   * finds it; the reported `resumable` is false without it (review D2,
+   * correctness-2 2). Never throws out of the end path. */
+  settleSessionHome?: (sessionId: string | null, resumable: boolean) => boolean;
   /** Injectable event sink; defaults to codemux stdout, one line each. */
   sink?: (line: string) => Promise<void> | void;
 }
@@ -928,6 +950,15 @@ export class CodexSessionDriver {
     this.drainTurnQueue();
   }
 
+  /** The model thread/start and thread/resume carry: `wireModel` when the
+   * caller computed one (null sends none — the provider-override rule),
+   * else `model`. */
+  private threadWireModel(): string | undefined {
+    const wire = this.options.wireModel;
+    if (wire === null) return undefined;
+    return wire ?? this.options.model;
+  }
+
   private applyResponse(id: number | string, result: unknown, rawLine: string): void {
     // Request ids are matched strictly: codemux numbers every request it
     // sends, so a string id — even a numeric-looking "1" — is not the
@@ -971,13 +1002,13 @@ export class CodexSessionDriver {
         this.options.resumeThreadId === null ? "thread_start" : "thread_resume",
         (nextId) =>
           this.options.resumeThreadId === null
-            ? buildThreadStartRequest(nextId, this.policy, this.options.cwd, this.options.model)
+            ? buildThreadStartRequest(nextId, this.policy, this.options.cwd, this.threadWireModel())
             : buildThreadResumeRequest(
                 nextId,
                 this.options.resumeThreadId,
                 this.policy,
                 this.options.cwd,
-                this.options.model
+                this.threadWireModel()
               )
       );
       return;
@@ -1899,11 +1930,6 @@ export class CodexSessionDriver {
     this.settled = true;
     this.fsm.transition({ kind: "shutdown_started" });
     this.fsm.transition({ kind: "ended" });
-    const ownsRecord = this.registryRecorded || this.resumeClaimed;
-    if (ownsRecord && this.options.registryPath !== null && this.threadId !== null) {
-      // A lost stamp rides stderr (releaseSessionRecord, review live13).
-      releaseSessionRecord(this.options.registryPath, this.threadId);
-    }
     // Resumable means the harness confirmed the session (the start was
     // recorded at its first identity-bearing frame) or, for a claimed
     // resume it never confirmed, that the end did not fail: a resume the
@@ -1918,12 +1944,47 @@ export class CodexSessionDriver {
       this.capabilities.resume &&
       (this.registryRecorded ||
         (this.resumeClaimed && this.endExitCode === 0));
+    // The per-session harness home's settlement (a codex override session's
+    // CODEX_HOME, codex-provider.ts) runs here and only here: the child has
+    // settled, so nothing writes the home anymore, and the resumable
+    // verdict — what decides keep-vs-remove for a FRESH home — is final. A
+    // resumed home is never removed at settlement (review D3,
+    // correctness-2): its state predates this process, so an interrupted
+    // resume must not delete the earlier turns with it; the sweep reclaims
+    // it if no resume comes back. Best-effort by contract: a settlement
+    // that cannot complete is reported by the home's own code, never
+    // raised out of the end path. Its return is whether the state reached
+    // where a resume finds it (review D2, correctness-2 2): a rename that
+    // failed leaves the threads on in the run-shaped name a resume never
+    // computes, so the report and the registry's promise must not claim
+    // resumable — the caller is refused now instead of failing inside
+    // codex on a thread-not-found later. The settlement runs BEFORE the
+    // record release below: the release is what a --resume in another
+    // process waits on, and a released record whose harness_home names a
+    // keyed path that does not exist yet is refused "missing or untrusted"
+    // in the window this ordering used to leave (review D7,
+    // correctness-2 1).
+    let settledHome = true;
+    if (this.options.settleSessionHome !== undefined) {
+      try {
+        settledHome = this.options.settleSessionHome(this.threadId, resumable);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.error(`codemux: session home settlement failed: ${detail}`);
+        settledHome = false;
+      }
+    }
+    const ownsRecord = this.registryRecorded || this.resumeClaimed;
+    if (ownsRecord && this.options.registryPath !== null && this.threadId !== null) {
+      // A lost stamp rides stderr (releaseSessionRecord, review live13).
+      releaseSessionRecord(this.options.registryPath, this.threadId);
+    }
     const sent = this.out.enqueue(
       buildEvent(++this.seq, this.sessionIdOrEmpty(), "session_ended", null, {
         reason,
         exit_code: childCode,
         usage: this.cumulative,
-        resumable,
+        resumable: resumable && settledHome,
       })
     );
     // Exit-code honesty: `session_ended` is the one event the caller
@@ -1990,7 +2051,10 @@ export class CodexSessionDriver {
       agent: "codex",
       cwd: this.options.cwd,
       hermetic: false,
-      harness_home: this.options.harnessHome,
+      harness_home:
+        this.options.harnessHomeFor !== undefined
+          ? this.options.harnessHomeFor(this.threadId)
+          : this.options.harnessHome,
       model: this.options.model ?? null,
       autonomy: this.options.autonomy,
       sandboxed: this.options.sandboxed,
@@ -2000,6 +2064,7 @@ export class CodexSessionDriver {
       pass_env: [...this.options.passEnv],
       // The CLI refuses --enable-playwright-mcp outside the claude family.
       playwright_mcp: false,
+      provider_base_url: this.options.providerBaseUrl,
     });
     if (!outcome.ok) {
       // An untracked live session must not run (§4.8): the registry is

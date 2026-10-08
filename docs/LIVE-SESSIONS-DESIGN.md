@@ -1143,7 +1143,7 @@ and the file (mode 0600) and owns both; the path is never derived from
  "model": "opus", "autonomy": "low", "sandboxed": true,
  "sandbox_trust": "standard", "sandbox_no_net": false,
  "sandbox_scrub_env": false, "pass_env": ["GITHUB_TOKEN"],
- "playwright_mcp": false, "owner_pid": 1234,
+ "playwright_mcp": false, "provider_base_url": null, "owner_pid": 1234,
  "owner_start": "Mon Oct  5 09:41:02 2026", "ended": null}
 ```
 
@@ -1330,6 +1330,16 @@ Resume rules, each a refusal with exit 78 (or 66 for a missing entry):
   not by path;
 - `harness_home` must match the currently resolved home — a session may not
   hop accounts;
+- the provider identity must match (review D3): the record carries the
+  override base URL the session ran under, or operator login when none,
+  and a resume under anything else is refused — the recorded home does
+  not move with the endpoint for claude, opencode, or aider, so this is
+  the rule that keeps a transcript recorded on one endpoint from
+  replaying on another, or on the operator's own login, or the reverse.
+  The identity is the base URL's IDENTITY form — query and fragment
+  stripped (review D10): a gateway key can ride the query, the recorded
+  value goes to disk and into refusal messages, and a rotated key must
+  not fork the identity a resume compares;
 - containment may not drop below creation (`sandboxed`, `sandbox_trust`,
   `sandbox_no_net`, `sandbox_scrub_env`): a session created under scode
   resumes under scode, never at a higher trust than it was created with,
@@ -1851,3 +1861,141 @@ an authorization boundary; Antigravity ships in v1 with honest `false`
 capability flags. Prompt B implements this document as written, after a
 panel review (Codex, Gemini, GLM-5.3, Claude) of the plan recorded in
 `docs/LIVE-SESSIONS-PANEL.md`.
+
+## 11. Addendum (2026-10-07): OpenCode and Aider; overrides in sessions
+
+Two harnesses joined after v1, both breaking §4.7's "one harness process
+per session" shape in the same direction: the process is per TURN, not
+per session. Their end paths share one late-child rule as a result: a
+graceful end (stdin close, `shutdown`) that begins while a turn's spawn
+is still in flight — the scode gate delays every turn's spawn — waits
+for the child, delivers its payload (the prompt on opencode's stdin,
+the canned negatives on aider's), and runs the turn through the normal
+end-path drain, settled before done resolves; only a signal, timeout,
+or crash end stops a late child on arrival (review D11, correctness 2
+1).
+
+- **OpenCode** runs its own session natively: each caller input spawns
+  one `opencode --pure run --format json --session <id>` process, and the
+  harness's own session store carries the state between them. §4.7's
+  registry rule holds unchanged for resumes; identity follows the agy
+  model (deferred — the first output line names the `ses_…` id, so a
+  fresh session's first turn runs before the record can exist, and the
+  registry-writability pre-check is agy's). The capability matrix is
+  honest false everywhere the one-shot `run` wire has no channel:
+  no steer, no interrupt (killing the process IS the interrupt, which
+  answers the turn synthesized-interrupted, never a live one), no
+  permissions, no deltas, no file-change frames.
+- **Aider** has no event protocol at all headlessly, so the driver owns
+  the least state that still carries: a codemux-minted UUID and a
+  per-session chat history file under a directory codemux owns
+  (`~/.aider/.codemux/sessions/<id>/history.md`). Each turn is one
+  `aider --message=<prompt> --restore-chat-history --chat-history-file
+  <path>` process; what carries across turns is exactly aider's own
+  history file and aider's own summarization on top of it — codemux adds
+  no second state. That makes the history file the integrity object: the
+  turn verdict reads its delta (the reply is the text past this turn's
+  `#### ` header, rendered exactly as io.py renders it — Python
+  `str.splitlines` parity down to the trailing empty element a final
+  line break leaves, review D4), and a file that shrank below what
+  codemux consumed ends the session, because the resume contract would
+  replay state the caller never saw. The directory the file lives in is
+  created only after every component from `.codemux` down passes an
+  lstat check — `~/.aider` is writable by the sandboxed child, so a
+  planted intermediate symlink must never aim the creation, the sweep,
+  or the record-failure removal (review D4). And before EVERY turn spawn
+  the check runs again — the ownership chain plus an lstat of the file
+  itself (a regular file, not a link, owned by the invoking user, mode
+  0600): the creation-time check and the post-turn `O_NOFOLLOW` read
+  left the between-turns window where a sandboxed child could replace
+  the file with a symlink to something outside its sandbox and the next
+  turn's aider would follow it — read the target into the model context
+  and append to it (review D7). A trip fails the turn, never the
+  session. The turn read-back is bounded per TURN, not per file: the
+  driver keeps a byte offset and reads only the slice past it — the run
+  path's whole-file 32 MiB bound, sized for one `--message` exchange,
+  once ended every long session's finished turns as unreadable and
+  refused every later resume, though nothing was corrupt (review D8) —
+  so a session's history has no size limit from codemux's side (aider's
+  own `--max-chat-history-tokens` compaction governs it), while a
+  single turn's delta larger than one run's whole history fails closed.
+  The same io.py write order shapes the end paths: aider writes the
+  turn's `#### ` user block the moment the message is read
+  (io.user_input) and the reply only at the turn's end, so a turn
+  killed partway — the signal death a shutdown or stdin-close ends on —
+  leaves an unanswered prompt in the file, and that session's end is
+  not resumable: `--restore-chat-history` would replay the unanswered
+  prompt into the next turn as if the caller had sent it again (review
+  D10). And a prompt whose first non-whitespace character is `/` or `!`
+  is refused before aider ever sees it, on the session path before the
+  ack (`input_rejected`, `unsupported`) and on the run path in
+  validateRunRequest (a `UsageRefusalError`, exit 64): aider's
+  `preproc_user_input` dispatches those as its own commands before any
+  model turn, and `!` — the `/run` alias — executes the shell
+  immediately, ungated by `--dry-run`, so relaying one is code
+  execution the autonomy never authorized (review D10).
+
+**Provider overrides reach session spawns** through the same adapter
+seams `run` uses (`prepareRun`/`getRunEnv`/`wireModelFor`), one contract
+for both surfaces. The one session-specific shape: a codex override
+session's `CODEX_HOME` is keyed per session — one
+`session-home-<endpoint hash>-<session id>` directory under the real
+CODEX_HOME's `.codemux-provider/`, run-shaped while the session is
+young, settled onto its key at a resumable end, and removed at any
+other end of a FRESH session (the run path's per-run home would orphan
+the session's threads, and a per-endpoint one would carry one session's
+planted files into the next — review D1). The endpoint hash reads the
+base URL's identity form — query and fragment stripped, the same form
+the registry's `provider_base_url` records — so a gateway key riding
+the query can rotate without moving the home, and the hash never
+varies with credentials (review D10). The key is a naming rule, not
+an access boundary: the shared parent stays writable by every sandboxed
+codex child, so one session's child can still plant files in another
+session's home — codemux vouches for the directory never being shared
+and for config.toml being rewritten per launch, no more (review D5). A
+resumed session's home is
+never removed at settlement — its state predates the resuming process,
+so a failed or interrupted resume must not delete the earlier turns
+with it; the sweep reclaims it if no resume comes back (review D3) and
+never takes a home the registry holds live — the sweep fires from any
+codemux codex run, so age alone deleted a resumed session's home while
+the session still ran (review D4). An unreadable registry spares every
+candidate too: a deletion needs a POSITIVE `free` answer, and `unknown`
+— a transient read failure once folded into "not held" — must not
+become a delete (review D5). The settlement runs BEFORE the end path
+releases the registry record: the release is what a `--resume` in
+another process waits on, and a released record whose `harness_home`
+names a keyed path the rename has not landed on yet was refused
+"missing or untrusted" in that window (review D7). The sweep's
+freshness walk is bounded now: a run-shaped entry's pid gate comes from
+its NAME (no walk for a live run), the walk carries an entry cap, and
+an over-budget tree — `~/.codex` is child-writable, so a child can
+plant a huge one — is spared rather than walked (review D7), except a
+run directory past its pid gate, which falls back to the directory's
+own mtime so a dead run's huge tree is reclaimed by age instead of
+leaking (review D9), and so does a session home whose id the registry
+has POSITIVELY freed — the ownership proof the pid gate provides —
+while every other over-budget home keeps the D7 spare (review D10).
+The consult order is the other half of that bound: a home young by its
+own mtime is skipped without a walk (the walk includes the root, so
+the own mtime is a floor on the tree's age), and the registry runs
+BEFORE the walk, so a held or unknown id costs no walk at all — the
+cap kept a live session's huge home, but every later run still walked
+it to the cap to learn nothing (review D10). And a resume's own open
+spares the keyed entry from this sweep entirely: for an ended record
+the registry answers `free`, the removal condition, so the sweep that
+ran inside the open deleted the home the resume had just been granted
+past every guard, and the resume refused "missing or untrusted" — a
+refusal its own setup caused; every other codemux run may still sweep
+it (review D10). The
+config.toml is written atomically
+every time: the sandboxed child can
+write the parent, so a plain write would follow a planted symlink, and
+the write re-asserts the home directory itself — a resumed home's
+open-time check can go stale across the registry claim, so the config
+lands in a trusted directory or not at all (review D7). And
+the turn-per-process agents assemble each turn's environment lazily, at
+its own turn, so a session that never starts writes nothing; opencode
+re-writes its provider config before every turn — the file lives in the
+child-writable data directory, so a config cached at the first turn let
+one turn's child rewrite what the next ran with (review D3).

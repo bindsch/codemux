@@ -10,6 +10,19 @@ import {
 export const MAX_MODEL_NAME_BYTES = 256;
 export const MAX_PROMPT_BYTES = 16 * 1024 * 1024;
 export const MAX_PASSTHROUGH_ENV_NAMES = 64;
+
+/** A validation refusal that is the caller's usage error, not a runtime
+ * failure (EX_USAGE): the CLI exits 64 rather than 1, so a script can
+ * tell a request only the caller can fix from a run that failed. Thrown
+ * by the adapters' validateRunRequest for exactly those refusals (the
+ * aider slash-command rule, review D10, security); every other
+ * validation keeps the plain throw and exit 1. */
+export class UsageRefusalError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UsageRefusalError";
+  }
+}
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const CONTROL_CHARACTER_PATTERN = /[\p{Cc}\p{Cf}\p{Cs}]/u;
 

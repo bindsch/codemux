@@ -65,6 +65,16 @@ export interface SessionRecord {
    * carry injected content. */
   pass_env: string[];
   playwright_mcp: boolean;
+  /** The provider identity the session ran under (review D3, security):
+   * the override's base URL, or null for the operator's own login. The
+   * resume guard refuses a mismatch in both directions — a transcript
+   * recorded on one endpoint never replays on another, and an
+   * operator-login transcript never runs under an override (the recorded
+   * state directory does not move with the endpoint for claude, opencode,
+   * or aider, so the harness-home guard cannot carry this rule). Absent
+   * on records codemux 0.9.0 wrote: sessions refused every override
+   * there, so an absent field is an operator-login session exactly. */
+  provider_base_url: string | null;
   owner_pid: number;
   /** Opaque process-start token (`ProcessEntry.start`), or null where
    * the process table was unreadable at record time. A null token makes
@@ -116,7 +126,9 @@ const AUTONOMY_REACH: Record<AutonomyLevel, number> = {
   low: 3,
 };
 
-/** The strict (additive) ranking agy's flags actually form. */
+/** The strict (low < medium < high) ranking agy's flags exactly form;
+ * opencode and aider borrow it as their conservative approximation (see
+ * AUTONOMY_REACH_BY_AGENT). */
 const STRICT_AUTONOMY_REACH: Record<AutonomyLevel, number> = {
   "read-only": 0,
   low: 1,
@@ -129,6 +141,19 @@ const AUTONOMY_REACH_BY_AGENT: Record<string, Record<AutonomyLevel, number>> = {
   zai: AUTONOMY_REACH,
   codex: AUTONOMY_REACH,
   agy: STRICT_AUTONOMY_REACH,
+  // opencode's --agent plan/build and aider's --dry-run/--yes-always are
+  // additive flag sets (no permission round-trip exists on either wire),
+  // but NOT strictly: opencode's low and medium both spawn
+  // `--agent build` and aider's medium and high both spawn
+  // `--yes-always` — each ladder has one adjacent tie (opencode-session,
+  // aider-session). Strict ranking stays because it is conservative on a
+  // tie: it refuses a resume into a level whose command is byte-identical
+  // (aider medium→high, opencode low→medium), which costs nothing but a
+  // refused resume, while no ranking that folds a tie could ever allow a
+  // WIDER command than the recorded one — the guard's one rule (review
+  // D1, 2.1).
+  opencode: STRICT_AUTONOMY_REACH,
+  aider: STRICT_AUTONOMY_REACH,
 };
 
 const TRUST_RANK: Record<SandboxTrust, number> = {
@@ -149,9 +174,25 @@ function validRecord(value: unknown): value is SessionRecord {
     "id", "agent", "created_at", "last_activity", "cwd", "hermetic",
     "harness_home", "model", "autonomy", "sandboxed", "sandbox_trust",
     "sandbox_no_net", "sandbox_scrub_env", "pass_env", "playwright_mcp",
-    "owner_pid", "owner_start", "ended",
+    "provider_base_url", "owner_pid", "owner_start", "ended",
   ];
-  if (keys.length !== expected.length || expected.some((key) => !keys.includes(key))) return false;
+  if (keys.some((key) => !expected.includes(key))) return false;
+  // `provider_base_url` may be the one missing key: a record codemux
+  // 0.9.0 wrote. Sessions refused every provider override there, so an
+  // absent field is an operator-login session exactly, and refusing it
+  // would poison every existing registry as corrupt (review D3). Any
+  // other missing key is still corrupt.
+  // The tolerance is one-directional by design (review D7, correctness-2
+  // 3): 0.10.0 records read fine here, but a co-installed 0.9.0 binary's
+  // stricter exact-key validator reads a whole 0.10.0-written registry as
+  // corrupt — it refuses every resume and stops recording. That breakage
+  // is documented in the 0.10.0 release notes (CHANGELOG) as the
+  // downgrade/co-install cost; widening 0.10.0's own validator cannot fix
+  // the old binary.
+  const missing = expected.filter((key) => !keys.includes(key));
+  if (missing.length > 1 || (missing.length === 1 && missing[0] !== "provider_base_url")) {
+    return false;
+  }
   if (!isNonEmptyString(record["id"], MAX_ID_CHARS)) return false;
   if (!isNonEmptyString(record["agent"], 64)) return false;
   if (!isNonEmptyString(record["created_at"], 64)) return false;
@@ -177,6 +218,9 @@ function validRecord(value: unknown): value is SessionRecord {
     return false;
   }
   if (typeof record["playwright_mcp"] !== "boolean") return false;
+  const provider = record["provider_base_url"];
+  if (provider !== undefined && provider !== null && typeof provider !== "string") return false;
+  if (typeof provider === "string" && provider.length === 0) return false;
   if (!Number.isInteger(record["owner_pid"]) || (record["owner_pid"] as number) <= 0) return false;
   if (record["owner_start"] !== null && typeof record["owner_start"] !== "string") return false;
   if (record["ended"] !== null && typeof record["ended"] !== "string") return false;
@@ -190,7 +234,17 @@ function validRegistryFile(value: unknown): RegistryFile | null {
   if (!Array.isArray(file["sessions"])) return null;
   if (file["sessions"].length > REGISTRY_MAX_ENTRIES) return null;
   if (!file["sessions"].every(validRecord)) return null;
-  return { version: 1, sessions: file["sessions"] };
+  // Normalize the legacy shape: a 0.9.0 record that predates
+  // `provider_base_url` (valid above) reads as operator login, so no use
+  // site can ever see an `undefined` the type does not promise. The next
+  // write persists the explicit null.
+  return {
+    version: 1,
+    sessions: file["sessions"].map((entry) => ({
+      ...entry,
+      provider_base_url: entry["provider_base_url"] ?? null,
+    })),
+  };
 }
 
 export type RegistryRead =
@@ -599,6 +653,12 @@ export interface ResumeProbe {
    * not clear one the entry was created under. */
   sandboxNoNet: boolean;
   sandboxScrubEnv: boolean;
+  /** The provider identity the resume runs under (review D3, security):
+   * the override's base URL, or null for the operator's own login. Must
+   * equal the recorded identity — the harness state directory does not
+   * move with the endpoint, so this is the only guard that stops a
+   * transcript replaying on another provider. */
+  providerBaseUrl: string | null;
   hermetic: boolean;
 }
 
@@ -631,11 +691,47 @@ export function registryInside(path: string, dir: string): boolean {
   return resolved === scope || resolved.startsWith(prefix);
 }
 
+/** What the registry says about a session id right now: `held` (an open
+ * record whose owner identity is alive), `free` (a readable registry
+ * holds no live record for the id — no record, an ended one, or a dead
+ * owner), or `unknown` (the registry could not be read: a busy lock, an
+ * I/O error, an untrusted or corrupt file). The file-sweepers'
+ * liveness skip — a session another codemux process is running must
+ * never be aged out of on-disk state however old its files look (aider
+ * only ever appends to `history.md`, so a long-lived session's
+ * directory mtime can sit at creation time; review D2, security 2).
+ * A DELETION acts only on a positive `free`: `unknown` spares the
+ * directory, because an unreadable registry turned into a false
+ * "not held" deleted a live session's home during a transient read
+ * failure (review D5, correctness 1). A missing registry is `free`
+ * outright — no file means no session can be held. */
+export type SessionHold = "held" | "free" | "unknown";
+
+export function sessionHoldState(path: string, id: string): SessionHold {
+  const read = readRegistry(path);
+  if (
+    read.outcome === "unavailable" ||
+    read.outcome === "untrusted" ||
+    read.outcome === "corrupt"
+  ) {
+    return "unknown";
+  }
+  if (read.outcome === "missing") return "free";
+  const entry = read.file.sessions.find((session) => session.id === id);
+  if (entry === undefined) return "free";
+  return entry.ended === null && processIdentityAlive(entry.owner_pid, entry.owner_start)
+    ? "held"
+    : "free";
+}
+
 /** The §4.8 resume guard bundle. Every rule is a refusal (the registry
  * bounds, it never widens): the entry exists (exit 66 at the CLI),
  * `agent` matches (the cross-agent replay guard, checked by agent so it
  * holds even on the shared claude/zai home), `harness_home` matches (no
- * account hop), containment does not drop (`sandboxed`, never at a
+ * account hop), the provider identity matches — the override base URL,
+ * or operator login when none; a transcript recorded on one endpoint
+ * never replays on another (review D3) — containment does not drop
+ * (`sandboxed`, never at a
  * higher trust than creation, and never clearing the recorded
  * `--sandbox-no-net`/`--sandbox-scrub-env` flags), `cwd` matches, no
  * `--pass-env` name and no Playwright MCP is added (review live16), the
@@ -701,6 +797,12 @@ export function claimForResume(path: string, id: string, probe: ResumeProbe): Re
   };
 }
 
+/** The provider identity as a refusal names it: the override's
+ * endpoint, or the operator's own login (review D3). */
+function providerSurface(baseUrl: string | null): string {
+  return baseUrl === null ? "the operator's own login" : `the provider override at ${baseUrl}`;
+}
+
 function judgeResumeEntry(
   path: string,
   file: RegistryFile,
@@ -719,6 +821,19 @@ function judgeResumeEntry(
     return {
       outcome: "refused",
       reason: `session ${id} was created against harness home ${entry.harness_home}, not ${probe.harnessHome}`,
+    };
+  }
+  // The provider identity (review D3, security): the harness state
+  // directory does not move with the endpoint for claude, opencode, or
+  // aider, so the home guard above cannot carry this rule. A transcript
+  // recorded on one endpoint never replays on another, and an
+  // operator-login transcript never runs under an override — either
+  // direction hands the conversation to a provider the caller never
+  // chose at creation.
+  if (entry.provider_base_url !== probe.providerBaseUrl) {
+    return {
+      outcome: "refused",
+      reason: `session ${id} was created against ${providerSurface(entry.provider_base_url)} and cannot resume against ${providerSurface(probe.providerBaseUrl)}`,
     };
   }
   if (entry.sandboxed && !probe.sandboxed) {

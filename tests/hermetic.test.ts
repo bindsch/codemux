@@ -330,6 +330,10 @@ describe("hermetic runs: codex", () => {
     mkdirSync(join(old, ".codex"), { recursive: true });
     mkdirSync(join(recent, ".codex"), { recursive: true });
     const threeDaysAgo = new Date(Date.now() - 3 * 86_400_000);
+    // Age the whole tree (review D2, security 2): the sweep measures the
+    // NEWEST write anywhere inside, so seeding an old top directory alone
+    // no longer makes a home stale.
+    utimesSync(join(old, ".codex"), threeDaysAgo, threeDaysAgo);
     utimesSync(old, threeDaysAgo, threeDaysAgo);
     const hermetic = createCodexHermeticHome(join(home, ".codex"));
     const left = readdirSync(parent).filter((entry) => entry.startsWith("run-9999"));

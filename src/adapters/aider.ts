@@ -4,7 +4,7 @@ import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MAX_ARGV_PROMPT_BYTES } from "../process-runner.js";
 import { assertNoAiderProjectExecutionConfig } from "../project-safety.js";
-import { validateWorkingDirectory } from "../validation.js";
+import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import {
   createAiderHistoryFile,
   extractAiderReply,
@@ -34,7 +34,56 @@ export const AIDER_MODEL_SETTINGS_PATH = fileURLToPath(
 export const AIDER_MODEL_METADATA_PATH = fileURLToPath(
   new URL("../../resources/aider-model-metadata.json", import.meta.url)
 );
-const HEADLESS_NEGATIVE_RESPONSES = "n\n".repeat(64);
+/** The canned declines every headless aider spawn writes to stdin: aider
+ * treats EOF as acceptance for its yes-default prompts (OAuth, URL
+ * opening, supervised tool prompts), so a spawn that never answers must
+ * answer no. Exported for the session driver's per-turn spawns. */
+export const HEADLESS_NEGATIVE_RESPONSES = "n\n".repeat(64);
+
+/** The fixed headless flags every aider spawn shares — run, TUI, and the
+ * session driver's per-turn processes — with the chat history target as
+ * the one varying path. Exported so the session command cannot drift
+ * from the run command. */
+export function aiderBaseFlags(chatHistoryPath: string): string[] {
+  return [
+    "--config",
+    AIDER_EMPTY_CONFIG_PATH,
+    "--env-file",
+    devNull,
+    "--model-settings-file",
+    AIDER_MODEL_SETTINGS_PATH,
+    "--model-metadata-file",
+    AIDER_MODEL_METADATA_PATH,
+    "--input-history-file",
+    devNull,
+    "--chat-history-file",
+    chatHistoryPath,
+    "--no-gitignore",
+    "--no-auto-commits",
+    "--no-dirty-commits",
+    "--no-analytics",
+    "--no-suggest-shell-commands",
+    "--no-check-update",
+    "--no-show-release-notes",
+    "--no-show-model-warnings",
+    "--disable-playwright",
+  ];
+}
+
+/** Whether aider would run this text as one of its own commands rather
+ * than a prompt: aider's `preproc_user_input` dispatches any message
+ * whose first non-whitespace character is `/` (a slash command) or `!`
+ * (the `/run` alias) BEFORE any model turn — and `/run` executes the
+ * shell immediately, ungated by the autonomy flags (`--dry-run` does
+ * not reach it). Codemux refuses such text outright on both surfaces —
+ * `run` here in validateRunRequest, the session driver before the ack —
+ * never escapes it: the autonomy a session records is meant to bound
+ * what caller text can do, and an escaped dispatch would only hide the
+ * intent (review D10, security). Shared so the two paths cannot drift. */
+export function aiderPromptIsCommand(text: string): boolean {
+  const first = text.trimStart()[0];
+  return first === "/" || first === "!";
+}
 
 export class AiderAdapter extends BaseAdapter {
   readonly id: AgentId = "aider";
@@ -60,34 +109,11 @@ export class AiderAdapter extends BaseAdapter {
   }
 
   private baseCommand(context?: RunContext): string[] {
-    return [
-      "aider",
-      "--config",
-      AIDER_EMPTY_CONFIG_PATH,
-      "--env-file",
-      devNull,
-      "--model-settings-file",
-      AIDER_MODEL_SETTINGS_PATH,
-      "--model-metadata-file",
-      AIDER_MODEL_METADATA_PATH,
-      "--input-history-file",
-      devNull,
-      // A per-run file when prepareRun created one (hermetic runs only,
-      // removed in cleanupRun, and the hermetic check's answer source),
-      // /dev/null otherwise: plain runs, TUI sessions and static previews
-      // keep writing nowhere.
-      "--chat-history-file",
-      context?.aiderHistoryFile?.path ?? devNull,
-      "--no-gitignore",
-      "--no-auto-commits",
-      "--no-dirty-commits",
-      "--no-analytics",
-      "--no-suggest-shell-commands",
-      "--no-check-update",
-      "--no-show-release-notes",
-      "--no-show-model-warnings",
-      "--disable-playwright",
-    ];
+    // A per-run file when prepareRun created one (hermetic runs only,
+    // removed in cleanupRun, and the hermetic check's answer source),
+    // /dev/null otherwise: plain runs, TUI sessions and static previews
+    // keep writing nowhere.
+    return ["aider", ...aiderBaseFlags(context?.aiderHistoryFile?.path ?? devNull)];
   }
 
   override prepareRun(request: RunRequest): RunContext {
@@ -179,6 +205,13 @@ export class AiderAdapter extends BaseAdapter {
     }
     if (override === null) return resolved;
     return resolved.startsWith("openai/") ? resolved : `openai/${resolved}`;
+  }
+
+  /** The wire `--model` value for a launch the caller builds itself (the
+   * session driver's per-turn spawns): exactly what buildRunCommand would
+   * pass, so the session turns and the run path cannot drift. */
+  wireModelFor(model: string | undefined): string | undefined {
+    return this.modelFor(model);
   }
 
   capabilities(): AdapterCapabilities {
@@ -290,6 +323,19 @@ export class AiderAdapter extends BaseAdapter {
     assertNoAiderProjectExecutionConfig(
       validateWorkingDirectory(request.cwd) ?? process.cwd()
     );
+    // The refusal class is usage (exit 64, UsageRefusalError), not a run
+    // failure: a prompt that dispatches a slash command is a request only
+    // the caller can fix, and the message names the rule (review D10,
+    // security).
+    if (aiderPromptIsCommand(request.prompt)) {
+      throw new UsageRefusalError(
+        "aider prompts must not start with '/' or '!': aider runs those as " +
+          "its own commands before any model turn (/run, the '!' alias, " +
+          "executes the shell immediately, ungated by --dry-run and the " +
+          "other autonomy flags), so the prompt is refused rather than " +
+          "dispatched"
+      );
+    }
     if (Buffer.byteLength(request.prompt, "utf8") > MAX_ARGV_PROMPT_BYTES) {
       throw new Error(
         `aider passes prompts in argv; prompt exceeds the ${MAX_ARGV_PROMPT_BYTES}-byte safe limit`

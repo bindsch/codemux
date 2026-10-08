@@ -730,6 +730,161 @@ for agy — `read-only < low < medium < high`, nothing above creation
 nothing and passes no mode flag, which makes low the least reach where
 the claude-family order puts it first.
 
+## 2026-10-07 addendum: OpenCode and Aider sessions; overrides in sessions
+
+`codemux session` grew two turn-per-process harnesses — OpenCode and
+Aider — and provider overrides now reach every session-capable harness's
+spawn. Session floors: OpenCode 1.18.18 and Aider 0.86.2, both equal to
+the run floors (the audited releases; the session contracts rest on the
+same builds the run contracts do, so no earlier build is admitted). Both
+follow the unreadable-version rule above: a wrapper whose `--version`
+prints nothing parseable is refused like a below-floor build.
+
+**OpenCode, pinned at 1.18.18.** One `opencode --pure run --format
+json` process per caller input: the run wire is a one-shot JSON-line
+stream (one object per line: `{type, timestamp, sessionID, …}`), the
+prompt is the whole stdin read to EOF, and the process exit ends the
+turn. The harness owns session identity: a fresh session's id (`ses_` +
+8–64 alphanumerics) is minted in the first output line of the first
+turn, so codemux adopts the id from any output line — `session_started`
+waits for it and events before it carry an empty session id; a first
+turn that exits naming no id ends the session (an untracked live session
+must not run). Because that first turn runs before the record can exist,
+the CLI checks the registry can be written before it spawns the first
+turn (the agy rule). Later turns pass `--session <id>`, and every line
+naming a different id is a tier-2 grammar violation (raw mirrored, then
+fatal). The turn verdict is the exit code; a resumed-but-never-confirmed
+session with a clean end is still resumable (the claimed record stands),
+while a crash end without confirmation is not. Usage arrives only in
+`step_finish` parts — the tokens and the dollar `cost` ride inside the
+`part` object of the line (`{type, timestamp, sessionID, part}`), never
+at the line's top level — and each part's cost is that step's own: the
+binary runs `assistantMessage.cost += step.cost`, so codemux sums step
+costs into the turn and turn costs into the session cumulative, never
+adopting a latest value (review D2, contracts). A wrapper that re-exits
+the shutdown SIGTERM as code 143 is the
+signal's coded spelling, not a failure (the drain rule the other
+drivers follow; live-proven against the fakes' `exit143` mode). A
+graceful end (stdin close, `shutdown`) that begins while the turn's
+process is still spawning delivers the prompt itself and drains the
+turn to completion; only a signal, timeout, or crash end stops a late
+child on arrival (review D11).
+
+**Aider, pinned at 0.86.2.** No event protocol exists headlessly, so the
+session is a turn-per-process loop over aider's own chat history: each
+turn spawns one `aider --message=<prompt> --restore-chat-history
+--chat-history-file <path>` process (with canned `n` confirmations on
+stdin), and the state that carries across turns is exactly the history
+file plus aider's own summarization on top of it. Codemux mints the
+identity — a UUID — and owns a private per-session directory
+(`~/.aider/.codemux/sessions/<id>/history.md`), created before the
+harness ever runs, with every path component from `.codemux` down
+lstat-checked first — `~/.aider` is writable by the sandboxed child,
+so a planted symlink at an intermediate must never aim the creation,
+the sweep, or the record-failure removal (review D4); a resume finds
+the file gone fails before any turn
+(`the resumed conversation is not recoverable`). The check also runs
+before EVERY turn spawn — the chain plus an lstat of the file itself
+(regular, not a link, owned by the invoking user, mode 0600), because
+the creation-time check and the post-turn `O_NOFOLLOW` read left the
+between-turns window where a swapped symlink would be followed by the
+next turn's aider itself; a trip fails the turn, never the session
+(review D7). Every stdout line is a
+human transcript, so all of it is tier-1 passthrough and the turn
+verdict is computed from the exit code plus the history delta: the
+reply is the text aider appended after this turn's `#### <prompt>`
+header (multi-line prompts anchor correctly — every prompt line carries
+its own `#### `, split exactly as Python's `str.splitlines` splits,
+trailing empty element dropped, so a prompt ending in a line break
+anchors the same block as one without it; earlier code leaked the
+continuation lines), a clean exit with no new exchange fails the turn
+(the session survives), and a history file that shrank below what
+codemux consumed ends the session — the state is unreliable, so the
+session cannot continue. The read-back is bounded per TURN, not per
+file: the driver reads only the delta past a byte offset that advances
+with each turn, so a session's history — which accumulates every
+exchange — has no size limit from codemux's side (aider's own
+`--max-chat-history-tokens` compaction governs it), while a single
+turn's delta larger than one run's whole history fails closed (review
+D8: the run read's whole-file bound once refused every session past
+it). A prompt whose first non-whitespace character is `/` or `!` is
+refused on both surfaces — the run path at validation (exit 64, a
+usage refusal), the session path before the ack (`input_rejected`,
+`unsupported`) — because aider's `preproc_user_input` dispatches those
+as its own commands before any model turn, and `!` (the `/run` alias)
+executes the shell immediately, ungated by `--dry-run` (review D10).
+A turn killed partway leaves the history half-written — aider writes
+the `#### ` user block at the turn's start (io.user_input) and the
+reply only at the turn's end — so that session's end is not resumable:
+a resume would replay the unanswered prompt (review D10). The
+opencode late-child rule is aider's too: a graceful end that begins
+while the turn's process is still spawning writes the canned negatives
+itself and drains the turn to completion, so the history records the
+full exchange and the end stays resumable; only a signal, timeout, or
+crash end stops a late child on arrival (review D11). Aider reports
+no usage headlessly: the session
+totals stay null. An override maps to litellm's `openai/` prefix with
+the weak model on the same endpoint (aider's ChatSummary runs through
+it), and a token cap on a session is refused before spawn with the run
+path's own message — aider 0.86.2 has no carrier for either cap.
+
+**Overrides in sessions.** Every session-capable harness routes its
+session spawns through the same adapter seams `run` uses
+(`prepareRun`/`getRunEnv`/`wireModelFor`), so `CODEMUX_<AGENT>_
+PROVIDER_*` (caps and codex's `MULTI_AGENT` knob included) applies to a
+session's turns identically. OpenCode's session keeps the real data
+directory (the override swaps the provider, never the store a
+`--resume` reads) and carries the wire model as `codemux/<model>`; the
+per-turn provider config is written fresh before every turn (one file
+per turn process, the run path's own rule — the file lives in the
+child-writable data directory, so a config cached at the first turn let
+one turn's child rewrite what the next ran with; review D3), after
+every startup refusal. Codex's override session owns a home keyed per
+session
+(`~/.codex/.codemux-provider/session-home-<sha256 of the base URL, first
+12 hex>-<thread id>`) whose config.toml is rewritten atomically at every
+session start — the sandboxed child can write the parent, so the write
+never follows a planted symlink, and the write re-asserts the home
+directory itself (a resumed home's open-time check can go stale across
+the registry claim; review D7) — and never shared with another session,
+with model selection owned by the config (thread/start carries no
+model) — a run's per-run home would orphan a session's threads at every
+turn. A resumable end keeps the home (it is the resume state) and
+settles it onto its key BEFORE the registry record is released — the
+release is what a `--resume` in another process waits on, and a record
+released ahead of the rename was refused "missing or untrusted" in the
+window between them (review D7); any other
+end of a FRESH session removes it; a resumed session's home is never
+removed at settlement (its state predates the resuming process, so a
+failed or interrupted resume must not delete the earlier turns with it —
+review D3), and a codemux that dies mid-session leaves it to a 28-day
+sweep that never takes a home the session registry holds live — the
+sweep fires from any codemux codex run, and age alone would delete a
+resumed session's home out from under its running app-server (review
+D4) — and that spares every home when the registry cannot be read: a
+deletion needs a positive free answer, never an unreadable registry's
+silence read as "not held" (review D5). The sweep's freshness walk is
+bounded: a run-shaped entry's pid gate comes from its name (no walk for
+a live run), the walk carries an entry cap, and an over-budget tree —
+`~/.codex` is child-writable, so a child can plant a huge one — is
+spared rather than walked (review D7), except a run directory past its
+pid gate, which falls back to the directory's own mtime so a dead
+run's huge tree is reclaimed by age instead of leaking (review D9), and
+so does a session home the registry has POSITIVELY freed (the ownership
+proof the pid gate provides), while every other over-budget home keeps
+the D7 spare — and a home young by its own mtime, or under a held or
+unknown id, is spared before any walk at all (review D10). A resume's
+own open spares its keyed entry from that sweep: the registry answers
+`free` for an ended record — the removal condition — so the sweep
+inside the open once deleted the home the resume had just been granted
+past every guard (review D10).
+Every session record carries its provider identity — the
+override's base URL in its identity form (query and fragment stripped,
+so a rotated query key neither forks the identity nor writes the key to
+the record; review D10), or operator login when none — and `--resume`
+refuses a mismatch with exit 78: a transcript recorded on one endpoint
+never replays on another.
+
 ## Version enforcement
 
 `src/harness-compatibility.ts` is the machine-readable half of this ledger and

@@ -37,9 +37,15 @@ export const CODEX_THREAD_ID_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
 
 /** The spawn command: one dedicated app-server per session, never the
  * shared daemon (§4.7) — a singleton escapes per-session sandbox and
- * account boundaries. Everything else rides JSON-RPC. */
-export function buildCodexSessionCommand(): string[] {
-  return ["codex", "app-server"];
+ * account boundaries. Everything else rides JSON-RPC. The optional env
+ * prefix is the provider-override launch (CODEX_HOME pointing at the
+ * session's persistent provider home), shaped exactly like the run path's
+ * `["env", …, "codex", …]` so the two spawn shapes cannot drift. */
+export function buildCodexSessionCommand(envPrefix?: string[]): string[] {
+  if (envPrefix === undefined || envPrefix.length === 0) {
+    return ["codex", "app-server"];
+  }
+  return ["env", ...envPrefix, "codex", "app-server"];
 }
 
 /** Capability flags for codex sessions (§4.3): mid-turn input queues in

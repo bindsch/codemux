@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   assertProviderCap,
+  providerIdentityBaseUrl,
   providerOverrideEnvNames,
   readProviderOverride,
   requireProviderOverride,
@@ -323,5 +324,30 @@ describe("provider override: requirements", () => {
   test("a satisfied requirement returns the override", () => {
     const override = { apiKey: "k" };
     expect(requireProviderOverride("pi", override, ["apiKey"])).toBe(override);
+  });
+});
+
+describe("provider override: identity form", () => {
+  test("the identity form strips the query and fragment, never re-spelling the rest (review D10, security)", () => {
+    // A gateway key can ride the base URL's query (`?key=…`), and the raw
+    // value goes to disk (the registry's provider_base_url) and into
+    // refusal messages — so the recorded, compared, and echoed form is the
+    // identity: everything from the first `?` or `#` stripped. The cut is
+    // a string slice, not a URL re-render: `new URL().toString()` re-spells
+    // (a trailing slash on a bare host), which would break the plain
+    // string comparison the resume guard runs on the recorded value.
+    expect(providerIdentityBaseUrl("http://gw.example/v1?key=e2e-secret")).toBe(
+      "http://gw.example/v1"
+    );
+    expect(providerIdentityBaseUrl("http://gw.example/v1#fragment")).toBe(
+      "http://gw.example/v1"
+    );
+    // Whichever comes first wins the cut; the rest is not parsed.
+    expect(providerIdentityBaseUrl("http://gw.example/v1?k=1#f?k=2")).toBe(
+      "http://gw.example/v1"
+    );
+    // No query or fragment: the exact spelling, unchanged.
+    expect(providerIdentityBaseUrl("http://gw.example")).toBe("http://gw.example");
+    expect(providerIdentityBaseUrl("http://gw.example/v1/")).toBe("http://gw.example/v1/");
   });
 });

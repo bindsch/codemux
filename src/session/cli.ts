@@ -11,9 +11,13 @@
  */
 
 import type { Command } from "commander";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { getAdapter, AGENT_IDS } from "../adapters/index.js";
+import type { RunContext } from "../adapters/base.js";
+import { AiderAdapter } from "../adapters/aider.js";
+import { OpencodeAdapter, opencodeRealDataDir } from "../adapters/opencode.js";
 import { assertAbsoluteClaudeConfigDir } from "../claude-family.js";
 import {
   handleUnexpectedError,
@@ -30,11 +34,21 @@ import {
 } from "../cli-runtime.js";
 import { resolveModel } from "../config.js";
 import {
-  assertNoAgyProjectExecutionConfig,
-  assertNoCodexProjectExecutionConfig,
-} from "../project-safety.js";
+  codexProviderSessionsParent,
+  codexSessionProviderHomePath,
+  createCodexSessionProviderHome,
+  openCodexSessionProviderHome,
+  readCodexMultiAgent,
+  type CodexSessionProviderHome,
+} from "../codex-provider.js";
+import {
+  providerIdentityBaseUrl,
+  readProviderOverride,
+  requireProviderOverride,
+  type ProviderOverride,
+} from "../provider-override.js";
 import { resolveSandboxOptionsForAgent } from "../sandbox-policy.js";
-import type { AgentId, CodemuxConfig } from "../types.js";
+import type { AgentId, CodemuxConfig, RunRequest } from "../types.js";
 import { validateWorkingDirectory } from "../validation.js";
 import {
   CODEX_SESSION_FLOOR,
@@ -53,6 +67,17 @@ import {
   buildAgySessionCommand,
 } from "./agy-session.js";
 import { AgySessionDriver } from "./agy-driver.js";
+import {
+  AIDER_SESSION_FLOOR,
+  AIDER_SESSION_ID_PATTERN,
+  aiderSessionHistoryPath,
+} from "./aider-session.js";
+import { AiderSessionDriver } from "./aider-driver.js";
+import {
+  OPENCODE_SESSION_FLOOR,
+  OPENCODE_SESSION_ID_PATTERN,
+} from "./opencode-session.js";
+import { OpenCodeSessionDriver } from "./opencode-driver.js";
 import { ClaudeSessionDriver } from "./driver.js";
 import { MAX_INPUT_LINE_BYTES } from "./process.js";
 import type { SessionFatal, SessionProcess } from "./process.js";
@@ -73,7 +98,10 @@ import { spawnSessionChild } from "./spawn.js";
  * driver-agnostic by design (§4.5). `handleCallerEnd` takes the read
  * error when the stream failed rather than ended. */
 interface SessionDriver {
-  attach(proc: SessionProcess): void;
+  /** Attaches the long-lived session child. Turn-per-process agents
+   * (opencode, aider) have none — they spawn per caller input through
+   * their spawnTurn closure instead. */
+  attach?(proc: SessionProcess): void;
   run(): Promise<number>;
   handleHarnessLine(line: string): void;
   handleFatal(fatal: SessionFatal): void;
@@ -145,6 +173,25 @@ const SESSION_AGENTS: Readonly<Record<string, SessionAgentSupport>> = {
     resumeLabel: "agy conversation id",
     // No tool-removal flag exists on agy, and none is needed: there is
     // no session-carried tool selection to restore.
+    tools: false,
+  },
+  opencode: {
+    floor: OPENCODE_SESSION_FLOOR,
+    // A turn in flight is a process whose stdin already sits at EOF (the
+    // prompt is the whole stdin stream): no verified channel reaches into
+    // it, so --turn-timeout is refused like agy's (§3.4).
+    interrupt: false,
+    resumePattern: OPENCODE_SESSION_ID_PATTERN,
+    resumeLabel: "opencode session id",
+    tools: false,
+  },
+  aider: {
+    floor: AIDER_SESSION_FLOOR,
+    // Same shape as opencode's: one process per turn, stdin at EOF the
+    // moment the canned negatives land (§3.4).
+    interrupt: false,
+    resumePattern: AIDER_SESSION_ID_PATTERN,
+    resumeLabel: "UUID",
     tools: false,
   },
 };
@@ -232,6 +279,25 @@ export function claudeFamilyHarnessHome(passthroughEnv: string[]): string {
  * to honor; the recorded home is always the default one. */
 function agyHarnessHome(): string {
   return join(homedir(), ".gemini", "antigravity-cli");
+}
+
+/** The opencode harness home (§4.5): the real OpenCode data directory,
+ * where the native sessions and the login live (XDG_DATA_HOME honored
+ * when the environment carries an absolute one, else
+ * ~/.local/share/opencode — one rule shared with the adapter, so the
+ * recorded home is the store a `--resume` actually reads). A provider
+ * override does not move it: the override swaps the provider, not the
+ * session database. */
+function opencodeHarnessHome(): string {
+  return opencodeRealDataDir(process.env);
+}
+
+/** The aider harness home (§4.5): ~/.aider. Aider has no environment
+ * redirect for its state, and codemux keeps the per-session history
+ * under this home (aider-session.ts), so the recorded home is always
+ * the default one — override or not. */
+function aiderHarnessHome(): string {
+  return join(homedir(), ".aider");
 }
 
 /** The codex harness home (§4.5): CODEX_HOME reaches the child only via
@@ -428,6 +494,13 @@ export function registerSessionCommand(
     .option("--sandbox-no-net", "Pass --no-net to scode when sandboxed")
     .option("--sandbox-scrub-env", "Pass --scrub-env to scode when sandboxed")
     .action(async (options) => {
+      // Session-scoped state the CATCH below must reach: block-scoped
+      // locals inside the try are invisible in its catch clause (a
+      // sibling scope), so these live outside both — the codex override
+      // session home, abandoned on any exit that never reached the
+      // spawn (review D5, correctness 3), and whether that spawn began.
+      let codexSessionHome: CodexSessionProviderHome | null = null;
+      const spawnBegan = { value: false };
       try {
         requireValidConfig();
         const agentId = options.agent as AgentId;
@@ -443,25 +516,17 @@ export function registerSessionCommand(
           );
         }
 
-        // Provider overrides do not reach sessions in this release (review
-        // live25): the session spawn skips the adapter's override wiring,
-        // so a codex override ran against the operator's own ~/.codex
-        // account with the provider key left in the child's environment,
-        // and agents whose `run` refuses an override launched anyway. Any
-        // set name under the agent's prefix refuses before anything else
-        // is read: the override, a cap, and codex's MULTI_AGENT knob alike.
-        // Blank counts as unset, the override module's own rule.
-        const overridePrefix = `CODEMUX_${agentId.toUpperCase()}_PROVIDER_`;
-        const overrideNames = Object.keys(process.env)
-          .filter((name) => name.startsWith(overridePrefix) && (process.env[name]?.trim() ?? "") !== "")
-          .sort();
-        if (overrideNames.length > 0) {
-          usageError(
-            `provider overrides are refused for sessions in this release; ` +
-              `unset ${overrideNames.join(", ")} to start a ${agentId} session ` +
-              "(overrides reach sessions in the next release)"
-          );
-        }
+        // Provider overrides reach session spawns exactly as run spawns:
+        // every session-capable harness `run` can point at a custom
+        // provider, its session can too, through the same adapter seams
+        // (readProviderOverride here; the adapter's env/config wiring
+        // below). The adapter's own validateRunRequest — the uniform gate
+        // every session agent passes through below — refuses an override
+        // an agent cannot carry, zai and agy, with the run path's message
+        // verbatim, so the two paths cannot drift.
+        const adapter = getAdapter(agentId);
+        const caps = adapter.capabilities();
+        const override = readProviderOverride(agentId);
 
         const requestedAutonomy = parseAutonomyOption(options.auto) ?? "read-only";
         const requestedEffort = parseEffortOption(options.effort);
@@ -490,7 +555,18 @@ export function registerSessionCommand(
           usageError("--enable-playwright-mcp is supported only by claude and zai");
         }
         const passthroughEnv = asUsage(() => parsePassthroughEnvOption(options.passEnv));
-        asUsage(() => assertAbsoluteClaudeConfigDir(passthroughEnv));
+        // CLAUDE_CONFIG_DIR reaches only a claude-family session's child
+        // (claude and zai share the one store, claudeFamilyHarnessHome),
+        // so only they validate it — the CODEX_HOME rule below, mirrored:
+        // the refusals (a relative or padded value) must not end a
+        // codex/agy/opencode/aider session over a variable its harness
+        // never reads (review D8, correctness 2, same-class audit). The
+        // run path has always been scoped this way: the check lives in
+        // the claude and zai adapters' validateRunRequest, never in the
+        // shared launcher.
+        if (agentId === "claude" || agentId === "zai") {
+          asUsage(() => assertAbsoluteClaudeConfigDir(passthroughEnv));
+        }
         if (options.hermetic) {
           usageError(
             "--hermetic is refused for sessions in this release: no verified " +
@@ -534,11 +610,9 @@ export function registerSessionCommand(
         const shutdownGraceMs =
           parseOptionalTimeout(options.shutdownGrace, "--shutdown-grace") ?? 10_000;
 
-        const adapter = getAdapter(agentId);
-        const caps = adapter.capabilities();
         const model = options.model
           ? asUsage(() => resolveModel(options.model, agentId, config))
-          : undefined;
+          : override?.model;
         if (model && !caps.supportsModel) {
           usageError(`${agentId} does not support model selection`);
         }
@@ -573,6 +647,42 @@ export function registerSessionCommand(
           );
         }
 
+        const workdir = asUsage(() => validateWorkingDirectory(options.cwd)) ?? process.cwd();
+        // Run's own validation gate, verbatim, for every session agent:
+        // the placeholder request carries the launch values this session
+        // will use, so every per-adapter rule that judges agent, model,
+        // autonomy, effort, cwd, or the environment holds for sessions
+        // with zero drift from `run` — the provider-override contract
+        // (the model requirement, the cap refusals, zai/agy's refusal)
+        // and the project-execution guards (agy, codex, aider, opencode).
+        // The argv prompt bound is the one rule the placeholder cannot
+        // carry: its prompt is a constant, never a turn's text, so the
+        // session enforces that bound per turn at the driver instead —
+        // aider's text_too_long check before the ack (review D1, 2.3).
+        // The project-execution guards are the one rule the start-time
+        // call alone cannot carry for the turn-per-process agents: turn N
+        // may write the very config turn N+1 reloads, so spawnTurn
+        // re-runs this gate before every turn it spawns (review D2,
+        // security 1).
+        // The plain throw is run's own failure class here too (its CLI
+        // maps validateRunRequest failures to exit 1), except a
+        // UsageRefusalError, which maps to 64 on both paths (review D10:
+        // the aider slash-command rule refuses as usage); asUsage stays
+        // for the flag validators alone (review live25). Pure validation,
+        // so it runs before the environment probes below.
+        const runLike: RunRequest = {
+          agent: agentId,
+          prompt: "codemux session",
+          model,
+          autonomy,
+          effort,
+          cwd: workdir,
+          passthroughEnv,
+          sandboxed: Boolean(options.sandbox),
+          hermetic: false,
+        };
+        adapter.validateRunRequest(runLike);
+
         if (!adapter.isAvailable()) {
           console.error(`Error: ${agentId} is not installed`);
           console.error(`Please install '${adapter.binaryName}' and try again`);
@@ -584,31 +694,78 @@ export function registerSessionCommand(
           process.exit(1);
         }
 
-        const workdir = asUsage(() => validateWorkingDirectory(options.cwd)) ?? process.cwd();
-        if (agentId === "agy") {
-          // The same project-execution guard the run path applies: an
-          // agy executable config in the tree changes what the harness
-          // runs, sessions no less than runs.
-          assertNoAgyProjectExecutionConfig(workdir);
-        }
-        if (agentId === "codex") {
-          // The same guard run's validateRunRequest applies: a repository
-          // `.codex/config.toml` or `.codex/rules/` decides MCP servers,
-          // providers, and model wiring for an app-server spawned in
-          // that directory — sessions no less than runs.
-          assertNoCodexProjectExecutionConfig(workdir);
-        }
         const registryPath = sessionRegistryPath();
+        // CODEX_HOME reaches only a codex session's child, so only codex
+        // validates it: codexHarnessHome's refusals (a relative or padded
+        // value) must not end a claude/zai/agy/opencode/aider session over
+        // a variable its harness never reads (review D8, correctness 2).
+        // Computed at the first codex arm below, at most once.
+        let realCodexHome: string | null = null;
+        const codexHome = (): string =>
+          (realCodexHome ??= codexHarnessHome(passthroughEnv));
+        // The validated override a codex session's provider home is built
+        // from — requireProviderOverride is the adapters' own gate, the
+        // same refusal validateRunRequest already ran above. The home's
+        // path is needed before anything spawns because it feeds the
+        // resume guards: an override session resumes only under the same
+        // endpoint AND session id's home (§4.8).
+        const codexOverride =
+          agentId === "codex" && override !== null
+            ? requireProviderOverride("codex", override, [
+                "baseUrl",
+                "apiKey",
+              ]) as ProviderOverride & { baseUrl: string; apiKey: string }
+            : null;
+        // Resume: the id must match the agent's session id shape (the
+        // registry check follows); extracted here because a codex override
+        // resume's harness home is keyed by it.
+        let resumeId: string | undefined;
+        if (options.resume !== undefined) {
+          if (!sessionSupport.resumePattern.test(options.resume)) {
+            usageError(
+              `--resume expects a ${sessionSupport.resumeLabel} session id; '${options.resume}' is not one`
+            );
+          }
+          resumeId = options.resume;
+        }
+        // The harness state home (§4.8). A codex override session's home
+        // is keyed per session id (review D1, security: no directory is
+        // shared across sessions — a naming rule, not an access
+        // boundary; the shared parent stays child-writable, review D5,
+        // security, stated in full at codexSessionProviderHomePath). A
+        // resume computes its key from the id the registry recorded; a
+        // fresh session learns its id only at thread/start, long after
+        // the spawn env needs a home, so its start-time harness_home is
+        // the `.codemux-provider` parent every final path sits under —
+        // a conservative containment cover, while the record itself
+        // gets the true keyed path (harnessHomeFor) once the id exists.
         const harnessHome =
           agentId === "codex"
-            ? codexHarnessHome(passthroughEnv)
+            ? codexOverride !== null
+              ? resumeId !== undefined
+                ? codexSessionProviderHomePath(codexHome(), codexOverride.baseUrl, resumeId)
+                : codexProviderSessionsParent(codexHome())
+              : codexHome()
             : agentId === "agy"
               ? agyHarnessHome()
-              : claudeFamilyHarnessHome(passthroughEnv);
-        // Resume: the id must match the agent's session id shape and the
-        // registry must vouch for it, with every §4.8 guard passing
-        // before anything spawns.
-        let resumeId: string | undefined;
+              : agentId === "opencode"
+                ? opencodeHarnessHome()
+                : agentId === "aider"
+                  ? aiderHarnessHome()
+                  : claudeFamilyHarnessHome(passthroughEnv);
+        // The provider identity every record carries and the resume guard
+        // pins (review D3, security): the override's base URL, or null for
+        // the operator's own login — recorded and compared in the
+        // IDENTITY form (query and fragment stripped, review D10,
+        // security: a gateway key can ride the query, and the value goes
+        // to disk and into refusal messages). validateRunRequest above
+        // refused every half-configured override the four override-capable
+        // session agents accept (zai and agy refuse overrides outright),
+        // so a non-null override here always carries its base URL.
+        const providerBaseUrl =
+          override?.baseUrl !== undefined
+            ? providerIdentityBaseUrl(override.baseUrl)
+            : null;
         const resumeProbe: ResumeProbe = {
           agent: agentId,
           harnessHome,
@@ -620,20 +777,15 @@ export function registerSessionCommand(
           cwd: workdir,
           passEnv: passthroughEnv,
           playwrightMcp: enablePlaywrightMcp,
+          providerBaseUrl,
           hermetic: false,
         };
-        if (options.resume !== undefined) {
-          if (!sessionSupport.resumePattern.test(options.resume)) {
-            usageError(
-              `--resume expects a ${sessionSupport.resumeLabel} session id; '${options.resume}' is not one`
-            );
-          }
+        if (resumeId !== undefined) {
           exitOnResumeRefusal(
-            options.resume,
+            resumeId,
             registryPath,
-            lookupForResume(registryPath, options.resume, resumeProbe)
+            lookupForResume(registryPath, resumeId, resumeProbe)
           );
-          resumeId = options.resume;
         }
 
         // Design §4.8 rule 2, the start-time half: the registry the
@@ -672,17 +824,10 @@ export function registerSessionCommand(
               enablePlaywrightMcp,
             })
           : null;
-        const argv =
-          claudeBuilt !== null
-            ? claudeBuilt.argv
-            : agentId === "codex"
-              ? buildCodexSessionCommand()
-              : buildAgySessionCommand({
-                  resumeConversationId: resumeId,
-                  model,
-                  autonomy,
-                  effort,
-                });
+        // Turn-per-process agents (opencode, aider) have no session-long
+        // child: their driver spawns one process per caller input, so
+        // there is no argv to build here.
+        const turnPerProcess = agentId === "opencode" || agentId === "aider";
 
         // The session floor, above the run contract (§4.3): the resume
         // ladder's reasoning and the permission carrier are only audited
@@ -702,15 +847,194 @@ export function registerSessionCommand(
         if (options.sandbox) {
           adapter.prepareSandbox({ sandboxTrust, passthroughEnv });
         }
-        const env = adapter.buildExecutionEnv(adapter.getEnv(), passthroughEnv);
+        // A codex override session's CODEX_HOME (review D1): created only
+        // after every refusing step, and its config.toml written only
+        // after the resume claim (prepareConfig, inside the spawn block
+        // below — review D5, correctness 3), so a session that never
+        // spawns writes nothing. FRESH runs in one
+        // `run-<pid>-<random>` directory (the run-path shape, so a
+        // codemux that dies mid-session leaves it to the same stale
+        // sweep) moved onto its session-keyed path at an orderly
+        // resumable end; RESUMED opens the recorded key, its config.toml
+        // rewritten atomically (the earlier session's child could write
+        // that directory) — and a key that is missing or untrusted is
+        // refused outright, never silently remade as an empty home
+        // (review D2, correctness-2 2). One home holds one session's
+        // threads and config — nothing is shared across sessions. The
+        // driver settles it at the end path (a settlement that cannot
+        // reach the key drops the resumable verdict; a resumed home is
+        // never removed there, review D3 — its state predates this
+        // process); a spawn that throws abandons it below.
+        codexSessionHome =
+          agentId === "codex" && codexOverride !== null
+            ? resumeId !== undefined
+              ? openCodexSessionProviderHome(
+                  codexHome(),
+                  codexOverride,
+                  // validateRunRequest refused an override without a model
+                  // (codex's own modelFor), so the config always carries
+                  // one.
+                  model as string,
+                  readCodexMultiAgent(),
+                  resumeId
+                )
+              : createCodexSessionProviderHome(
+                  codexHome(),
+                  codexOverride,
+                  model as string,
+                  readCodexMultiAgent()
+                )
+            : null;
+        const argv =
+          claudeBuilt !== null
+            ? claudeBuilt.argv
+            : agentId === "codex"
+              ? buildCodexSessionCommand(
+                  // The override launch: CODEX_HOME pointed at the
+                  // session's provider home — the live run-shaped one for
+                  // a fresh session, the session-keyed one for a resume —
+                  // through the same env(1) shape the run path spawns with.
+                  codexSessionHome !== null
+                    ? [`CODEX_HOME=${codexSessionHome.codexHome}`]
+                    : undefined
+                )
+              : agentId === "agy"
+                ? buildAgySessionCommand({
+                    resumeConversationId: resumeId,
+                    model,
+                    autonomy,
+                    effort,
+                  })
+                : null;
+        // The run context, exactly as run's launch path builds one
+        // (launch.ts). Codex under an override carries the SESSION's
+        // provider home: a getRunEnv shape requirement (the adapter
+        // refuses an override launch whose home was not prepared) and the
+        // seam that keeps the key off argv. Its finalize is a no-op by
+        // design: the home is per-SESSION state, settled by the driver at
+        // the end path (kept on a resumable end; a fresh one removed
+        // otherwise, a resumed one never — review D3), so no run-scoped
+        // cleanup may own its lifetime.
+        const runContext: RunContext | undefined =
+          codexSessionHome !== null
+            ? {
+                codexProviderHome: {
+                  codexHome: codexSessionHome.codexHome,
+                  finalize: () => {},
+                },
+              }
+            : undefined;
+        // The long-lived children spawn below, so their env is assembled
+        // now; the turn-per-process agents assemble each turn's env at its
+        // own turn (spawnTurn), after every startup refusal — a session
+        // that never starts writes nothing, opencode's provider config in
+        // particular.
+        const env = turnPerProcess
+          ? null
+          : adapter.buildExecutionEnv(adapter.getRunEnv(runLike, runContext), passthroughEnv);
+
+        // The wire models for the turn-per-process agents, through the
+        // adapters' public seam (wireModelFor): exactly what
+        // buildRunCommand would pass — openai/-prefixed for aider,
+        // codemux/-prefixed for opencode under an override — so session
+        // turns and runs cannot drift.
+        const opencodeWireModel =
+          agentId === "opencode" && adapter instanceof OpencodeAdapter
+            ? adapter.wireModelFor(model)
+            : undefined;
+        const aiderWireModel =
+          agentId === "aider" && adapter instanceof AiderAdapter
+            ? adapter.wireModelFor(model)
+            : undefined;
 
         let driver: SessionDriver;
         let claudeDriver: ClaudeSessionDriver | null = null;
+        let aiderDriver: AiderSessionDriver | null = null;
+        let aiderSessionId: string | null = null;
+        // Holder (not a bare let): the assignment happens inside the
+        // spawnTurn closure, which TypeScript's flow analysis cannot see
+        // at the cleanup site below.
+        const turnState: {
+          launch: {
+            env: Record<string, string>;
+            context: RunContext | undefined;
+          } | null;
+        } = { launch: null };
+        const spawnTurn = (turnArgv: string[]): Promise<SessionProcess> => {
+          // Re-run the adapter's validation gate before EVERY turn
+          // (review D2, security 1): the turn-per-process agents (opencode,
+          // aider) reload project config in each fresh process, and turn N
+          // may have written `opencode.json` or `.aider.model.settings.yml`
+          // granting reach the recorded autonomy does not. `run` checks the
+          // tree right before the only process it launches; this is that
+          // same moment per turn. Pure validation, so the throw reaches the
+          // drivers' existing spawn-failure path: a fatal codemux error
+          // carrying the guard's message, and the session ends rather than
+          // spawn a process the tree would have refused.
+          adapter.validateRunRequest(runLike);
+          if (agentId === "opencode") {
+            // A FRESH provider config before every turn (review D3,
+            // security 2): the config file lives in the opencode data
+            // directory, which the sandboxed child can write, and each
+            // turn is a new process that reloads it through
+            // OPENCODE_CONFIG — a config cached at the first turn let
+            // turn N's child rewrite what turn N+1 ran with (permissions,
+            // MCP servers). The run path never shares the file across
+            // processes, and neither does a session now: one file per
+            // turn process, each in its own fresh unguessable directory.
+            // Turns serialize (a second input is refused while one runs),
+            // so the previous turn's process has exited by the time a
+            // next turn spawns: its context is finalized right here,
+            // which also keeps exactly one exit listener registered; the
+            // live one dies with the session below. If prepareRun throws,
+            // the finally below cleans the previous context again —
+            // cleanupRun is idempotent — and nothing leaks.
+            const previous = turnState.launch?.context;
+            if (previous !== undefined) adapter.cleanupRun(previous);
+            const context = adapter.prepareRun(runLike);
+            turnState.launch = {
+              env: adapter.buildExecutionEnv(
+                adapter.getRunEnv(runLike, context),
+                passthroughEnv
+              ),
+              context,
+            };
+          } else if (turnState.launch === null) {
+            // Run's launch order in miniature (launch.ts): prepareRun,
+            // then getRunEnv, then the built environment. Aider's override
+            // rides environment variables alone (OPENAI_API_BASE /
+            // OPENAI_API_KEY) — nothing on disk to refresh — so its env is
+            // built once and cached.
+            turnState.launch = {
+              env: adapter.buildExecutionEnv(
+                adapter.getRunEnv(runLike, undefined),
+                passthroughEnv
+              ),
+              context: undefined,
+            };
+          }
+          return spawnSessionChild(turnArgv, turnState.launch.env, {
+            cwd: workdir,
+            sandboxed: Boolean(options.sandbox),
+            autonomy: requestedAutonomy,
+            sandboxOptions,
+            graceMs: shutdownGraceMs,
+            envOmissions: adapter.getEnvOmissions(),
+          }, {
+            onLine: (line) => driver.handleHarnessLine(line),
+            onFatal: (fatal) => driver.handleFatal(fatal),
+          });
+        };
         if (agentId === "codex") {
           driver = new CodexSessionDriver({
             resumeThreadId: resumeId ?? null,
             autonomy,
             model,
+            // Under an override the session home's config.toml owns model
+            // selection (the run path's never-`-m` rule), so thread/start
+            // and thread/resume carry none; `model` stays the reported
+            // one.
+            wireModel: codexOverride !== null ? null : undefined,
             effort,
             cwd: workdir,
             sandboxed: Boolean(options.sandbox),
@@ -724,6 +1048,20 @@ export function registerSessionCommand(
             sessionTimeoutMs,
             registryPath,
             harnessHome,
+            providerBaseUrl,
+            // The override session's recorded home names the thread id —
+            // the session-keyed path a resume computes — which the
+            // harness only mints at thread/start, after the spawn.
+            harnessHomeFor:
+              codexOverride !== null
+                ? (id) =>
+                    codexSessionProviderHomePath(codexHome(), codexOverride.baseUrl, id)
+                : undefined,
+            // The home's end-of-session settlement: keep on a resumable
+            // end (renamed onto the key when it started run-shaped);
+            // remove otherwise — except a resumed home, which settlement
+            // never removes (review D3).
+            settleSessionHome: codexSessionHome?.settle,
           });
         } else if (agentId === "agy") {
           driver = new AgySessionDriver({
@@ -740,6 +1078,57 @@ export function registerSessionCommand(
             sessionTimeoutMs,
             registryPath,
             harnessHome,
+            providerBaseUrl,
+          });
+        } else if (agentId === "opencode") {
+          driver = new OpenCodeSessionDriver({
+            resumeSessionId: resumeId ?? null,
+            autonomy,
+            model: opencodeWireModel,
+            effort,
+            cwd: workdir,
+            hermetic: false,
+            sandboxed: Boolean(options.sandbox),
+            sandboxTrust,
+            sandboxNoNet,
+            sandboxScrubEnv,
+            passEnv: passthroughEnv,
+            authorPrefix: Boolean(options.authorPrefix),
+            sessionTimeoutMs,
+            registryPath,
+            harnessHome,
+            providerBaseUrl,
+            spawnTurn,
+          });
+        } else if (agentId === "aider") {
+          // Codemux owns the identity: aider has no session id of its own,
+          // so one is minted here and the per-session history directory is
+          // keyed by it (aider-session.ts).
+          aiderSessionId = resumeId ?? randomUUID();
+          driver = aiderDriver = new AiderSessionDriver({
+            sessionId: aiderSessionId,
+            resume: resumeId !== undefined,
+            autonomy,
+            model: aiderWireModel,
+            // Under an override the weak model rides the same endpoint
+            // (aider's ChatSummary runs through it); without one aider
+            // picks its own default, exactly as the run path leaves it.
+            weakModel: override !== null ? aiderWireModel : undefined,
+            effort,
+            historyPath: aiderSessionHistoryPath(harnessHome, aiderSessionId),
+            cwd: workdir,
+            hermetic: false,
+            sandboxed: Boolean(options.sandbox),
+            sandboxTrust,
+            sandboxNoNet,
+            sandboxScrubEnv,
+            passEnv: passthroughEnv,
+            authorPrefix: Boolean(options.authorPrefix),
+            sessionTimeoutMs,
+            registryPath,
+            harnessHome,
+            providerBaseUrl,
+            spawnTurn,
           });
         } else if (claudeBuilt !== null) {
           driver = claudeDriver = new ClaudeSessionDriver({
@@ -760,6 +1149,7 @@ export function registerSessionCommand(
             sessionTimeoutMs,
             registryPath,
             harnessHome,
+            providerBaseUrl,
           });
         } else {
           // Unreachable: every agent either built a claude-family
@@ -776,17 +1166,23 @@ export function registerSessionCommand(
           // spawn (review live19): the lookup above read without the
           // lock, and a concurrent resume of the same id must be refused
           // before its harness can act on any caller input.
-          exitOnResumeRefusal(
-            resumeId,
-            registryPath,
-            claimForResume(registryPath, resumeId, resumeProbe)
-          );
+          const claimed = claimForResume(registryPath, resumeId, resumeProbe);
+          if (claimed.outcome !== "ok") {
+            // The refusal exits below and must not strand this
+            // process's session home on the way out (review D5,
+            // correctness 3): a codex override resume's home is the
+            // resumed one, whose abandon is the designed no-op — its
+            // state predates this process (review D3) — so the call is
+            // what keeps the path honest should that ever change.
+            codexSessionHome?.abandon();
+          }
+          exitOnResumeRefusal(resumeId, registryPath, claimed);
           driver.adoptResumeClaim();
           ownedRecordId = resumeId;
-        } else if (agentId === "agy") {
-          // agy names a fresh conversation only in its first result, so
-          // that turn runs before the record can exist; the registry is
-          // proven writable first (review live22).
+        } else if (agentId === "agy" || agentId === "opencode") {
+          // agy and opencode name a fresh conversation only in their
+          // first turn's output, so that turn runs before the record can
+          // exist; the registry is proven writable first (review live22).
           const probe = probeRegistryForStart(registryPath);
           if (!probe.ok) {
             exitWithCode(1, `cannot record the session in the registry: ${probe.error} (registry: ${registryPath})`);
@@ -809,38 +1205,91 @@ export function registerSessionCommand(
             ownedRecordFresh = true;
           }
         }
-        let proc: SessionProcess;
-        try {
-          proc = await spawnSessionChild(argv, env, {
-            cwd: workdir,
-            sandboxed: Boolean(options.sandbox),
-            autonomy: requestedAutonomy,
-            sandboxOptions,
-            graceMs: shutdownGraceMs,
-            envOmissions: adapter.getEnvOmissions(),
-          }, {
-            onLine: (line) => driver.handleHarnessLine(line),
-            onFatal: (fatal) => driver.handleFatal(fatal),
-          });
-        } catch (error) {
-          // No driver end path runs for a spawn that threw, so the claim
-          // is released here; otherwise it stays open under this pid
-          // until the process dies (review live20). A lost release is
-          // reported like the drivers' (review live21).
-          if (ownedRecordId !== null) {
-            if (ownedRecordFresh) discardUnconfirmedRecord(registryPath, ownedRecordId);
-            else releaseSessionRecord(registryPath, ownedRecordId);
+        if (aiderDriver !== null && aiderSessionId !== null) {
+          // The same pre-spawn record for the other codemux-owned
+          // identity: the fresh session's history file and the start
+          // record are in place before anything spawns; a resume rewrites
+          // only the record, never the history.
+          const failure = aiderDriver.recordBeforeSpawn();
+          if (failure !== null) {
+            if (ownedRecordId !== null) releaseSessionRecord(registryPath, ownedRecordId);
+            // A fresh session's history directory was just created ahead
+            // of this record; with the record failed, nothing points at
+            // it, so remove it now rather than orphan it to the 28-day
+            // sweep (review D2, correctness-2 3). No-op on a resume.
+            aiderDriver.removeFreshHistory();
+            exitWithCode(1, `cannot record the session in the registry: ${failure} (registry: ${registryPath})`);
           }
-          throw error;
+          if (ownedRecordId === null) {
+            ownedRecordId = aiderSessionId;
+            ownedRecordFresh = true;
+          }
         }
-        driver.attach(proc);
+        let proc: SessionProcess | null = null;
+        if (argv !== null && env !== null) {
+          spawnBegan.value = true;
+          try {
+            // The session home's config.toml, written only now — after
+            // the claim, before anything spawns (review D5, correctness
+            // 3): a racing second resume refused `session_busy` above
+            // never rewrote the live session's config. A throw here
+            // takes the catch's abandon-and-release path like any spawn
+            // failure.
+            codexSessionHome?.prepareConfig();
+            proc = await spawnSessionChild(argv, env, {
+              cwd: workdir,
+              sandboxed: Boolean(options.sandbox),
+              autonomy: requestedAutonomy,
+              sandboxOptions,
+              graceMs: shutdownGraceMs,
+              envOmissions: adapter.getEnvOmissions(),
+            }, {
+              onLine: (line) => driver.handleHarnessLine(line),
+              onFatal: (fatal) => driver.handleFatal(fatal),
+            });
+          } catch (error) {
+            // No driver end path runs for a spawn that threw, so the claim
+            // is released here; otherwise it stays open under this pid
+            // until the process dies (review live20). A lost release is
+            // reported like the drivers' (review live21). A codex override
+            // session's home is abandoned the same way: a fresh one's bare
+            // home is removed, a resumed one's is left to the sweep — its
+            // state predates this process (review D1).
+            codexSessionHome?.abandon();
+            if (ownedRecordId !== null) {
+              if (ownedRecordFresh) discardUnconfirmedRecord(registryPath, ownedRecordId);
+              else releaseSessionRecord(registryPath, ownedRecordId);
+            }
+            throw error;
+          }
+          driver.attach?.(proc);
+        }
         const unframe = frameCallerStdin(driver);
-        const code = await driver.run();
+        let code: number;
+        try {
+          code = await driver.run();
+        } finally {
+          // What the latest turn's env assembly left live (opencode's
+          // current provider config; earlier turns' were finalized at the
+          // next turn's spawn) dies with the session. The codex session
+          // home never rode turnState: the driver's end path settled it
+          // (kept on a resumable end; a fresh one removed otherwise, a
+          // resumed one never — review D3) before run() resolved.
+          adapter.cleanupRun(turnState.launch?.context);
+        }
         unframe();
         driver.dispose();
         process.stdin.destroy();
         process.exitCode = code;
       } catch (error) {
+        // An unexpected exit that never reached the spawn must not
+        // strand a fresh codex override home either (review D5,
+        // correctness 3) — abandoned here, not orphaned to the
+        // stale-run sweep. Once the spawn began, the home's lifetime
+        // belongs to the inner catch and the driver's end path: a
+        // settled home's abandon is a no-op, and a live child's
+        // CODEX_HOME is never deleted under it from here.
+        if (!spawnBegan.value) codexSessionHome?.abandon();
         handleUnexpectedError(error);
       }
     });

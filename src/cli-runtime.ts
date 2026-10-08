@@ -34,6 +34,7 @@ import {
 } from "./types.js";
 import {
   MAX_PASSTHROUGH_ENV_NAMES,
+  UsageRefusalError,
   validateEnvironmentNames,
   validateWorkingDirectory,
 } from "./validation.js";
@@ -239,7 +240,10 @@ function failInvalidOption(
 export function handleUnexpectedError(error: unknown): never {
   const message = error instanceof Error ? error.message : String(error);
   console.error(message.startsWith("Error:") ? message : `Error: ${message}`);
-  process.exit(1);
+  // A usage refusal is EX_USAGE, not a runtime failure (review D10,
+  // security): the same 64 the option validators exit with, so one class
+  // of caller-fixable request keeps one code on every path.
+  process.exit(error instanceof UsageRefusalError ? 64 : 1);
 }
 
 export function parseAutonomyOption(value: string | undefined): AutonomyLevel | undefined {

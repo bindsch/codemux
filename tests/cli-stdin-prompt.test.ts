@@ -173,6 +173,36 @@ describe("CLI - stdin prompt", () => {
     }
   });
 
+  test("an aider prompt that would run a slash command is refused as usage, before the harness runs (review D10, security)", async () => {
+    // Aider dispatches a message whose first non-whitespace character is
+    // `/` or `!` as its own command BEFORE any model turn — the `!` alias
+    // of /run executes the shell immediately, ungated by --dry-run — so
+    // even a read-only run would execute the line. The refusal is usage
+    // (exit 64, the UsageRefusalError class), not a run failure (exit 1):
+    // a request only the caller can fix.
+    const markerDir = mkdtempSync(join(tmpdir(), "codemux-d10-aider-"));
+    const marker = join(markerDir, "ran");
+    const fake = createFakeBinaryEnv({
+      aider: `: > ${marker}\nexit 0`,
+    });
+    try {
+      const { stderr, exitCode } = await runCli(
+        ["run", "-a", "aider", "--no-sandbox", "--auto", "high", "-p", "!touch /tmp/codemux-d10-pwned"],
+        fake.env
+      );
+      expect(exitCode).toBe(64);
+      expect(stderr).toContain("aider prompts must not start with '/' or '!'");
+      expect(stderr).toContain("ungated by --dry-run");
+      // The harness never ran: preflight validation precedes even the
+      // version probe, so the marker a successful spawn would leave is
+      // absent.
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      fake.cleanup();
+      rmSync(markerDir, { recursive: true, force: true });
+    }
+  });
+
   // The finding's reproduction: readSync blocked forever on a pipe that
   // stayed open, so `--timeout 1` never fired and the process needed
   // SIGTERM. The read is bounded by the same timeout the run honors, so a

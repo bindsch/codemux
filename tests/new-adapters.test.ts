@@ -14,12 +14,14 @@ import {
   AIDER_MODEL_METADATA_PATH,
   AIDER_MODEL_SETTINGS_PATH,
   AiderAdapter,
+  aiderPromptIsCommand,
 } from "../src/adapters/aider.js";
 import { AgyAdapter } from "../src/adapters/agy.js";
 import { ClineAdapter } from "../src/adapters/cline.js";
 import { CopilotAdapter } from "../src/adapters/copilot.js";
 import { CURSOR_ENTRY_ENV, CursorAdapter } from "../src/adapters/cursor.js";
 import { AGENT_IDS, getAdapter } from "../src/adapters/index.js";
+import { UsageRefusalError } from "../src/validation.js";
 
 describe("new harness registry entries", () => {
   test("registers agy, aider, cline, copilot, and cursor", () => {
@@ -196,6 +198,52 @@ describe("AiderAdapter", () => {
       supportsHermetic: false,
       supportsProviderOverride: true,
     });
+  });
+
+  test("refuses a prompt aider would run as a slash command (review D10, security)", () => {
+    // Aider's preproc_user_input dispatches a message whose first
+    // non-whitespace character is `/` (a slash command) or `!` (the
+    // /run alias, which executes the shell immediately, ungated by
+    // --dry-run) BEFORE any model turn, so relaying one through a
+    // read-only run is code execution the autonomy never authorized.
+    // The rule refuses — never escapes — and the session driver's twin
+    // (before the ack) carries the same predicate.
+    expect(aiderPromptIsCommand("/run whoami")).toBe(true);
+    expect(aiderPromptIsCommand("!touch pwned")).toBe(true);
+    // Leading whitespace does not hide the dispatch: aider skips it too.
+    expect(aiderPromptIsCommand("  /add file")).toBe(true);
+    expect(aiderPromptIsCommand("\n!curl http://127.0.0.1:9")).toBe(true);
+    // A slash later in the text, or an author label ahead of it, is
+    // plain prompt text — only the first non-whitespace character
+    // dispatches.
+    expect(aiderPromptIsCommand("what is /etc/hosts for?")).toBe(false);
+    expect(aiderPromptIsCommand("[ana] /run whoami")).toBe(false);
+
+    const cwd = mkdtempSync(join(tmpdir(), "aider-slash-"));
+    try {
+      for (const prompt of ["/run whoami", "!touch pwned"]) {
+        let refusal: unknown;
+        try {
+          adapter.validateRunRequest({ agent: "aider", prompt, cwd });
+        } catch (error) {
+          refusal = error;
+        }
+        // Usage, not a run failure: the marker the CLI maps to exit 64,
+        // so a script can tell a request only the caller can fix from a
+        // run that failed.
+        expect(refusal).toBeInstanceOf(UsageRefusalError);
+        expect((refusal as Error).message).toContain(
+          "aider prompts must not start with '/' or '!'"
+        );
+        expect((refusal as Error).message).toContain("ungated by --dry-run");
+      }
+      // A plain prompt still validates clean.
+      expect(() =>
+        adapter.validateRunRequest({ agent: "aider", prompt: "fix the tests", cwd })
+      ).not.toThrow();
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   test("builds run commands without confusing model and message flags", () => {

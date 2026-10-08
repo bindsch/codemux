@@ -95,6 +95,11 @@ export interface AgyDriverOptions {
   registryPath: string | null;
   /** The harness state home recorded for this session (§4.8). */
   harnessHome: string;
+  /** The provider identity recorded for the resume guard (review D3):
+   * the override's base URL, or null for the operator's own login. agy
+   * refuses overrides outright, so the CLI's value is always null —
+   * wired uniformly so the record cannot drift from the guard. */
+  providerBaseUrl: string | null;
   /** Injectable event sink; defaults to codemux stdout, one line each. */
   sink?: (line: string) => Promise<void> | void;
 }
@@ -793,6 +798,7 @@ export class AgySessionDriver {
       pass_env: [...this.options.passEnv],
       // The CLI refuses --enable-playwright-mcp outside the claude family.
       playwright_mcp: false,
+      provider_base_url: this.options.providerBaseUrl,
     });
     if (!outcome.ok) {
       // An untracked live session must not run (§4.8): the registry is

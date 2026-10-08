@@ -8,7 +8,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,7 +27,7 @@ const FAKE_AGY = fileURLToPath(new URL("./fixtures/live/fake-agy-session.ts", im
  * itself — the version probe's environment is allowlisted, so a
  * FAKE_VERSION variable would never reach it. */
 function fakeHarnessEnv(
-  binary: "claude" | "codex" | "agy",
+  binary: "claude" | "codex" | "agy" | "opencode" | "aider",
   script: string,
   extra: { version?: string; env?: Record<string, string> } = {}
 ): {
@@ -283,42 +284,48 @@ describe("CLI - session refusals", () => {
     expect(stderr).toContain("--enable-playwright-mcp requires --sandbox");
   });
 
-  test("a provider override for the session agent is refused with 64, naming the variables (review live25)", async () => {
-    // Review live25, security major: sessions skipped run's override
-    // wiring, so a codex override ran on the operator's own ~/.codex
-    // account with the provider key in the child's environment. Each
-    // case is refused before anything spawns; a cap alone counts too.
-    const cases: Array<{ agent: string; env: Record<string, string>; names: string[] }> = [
-      {
-        agent: "codex",
-        env: {
-          CODEMUX_CODEX_PROVIDER_BASE_URL: "https://gateway.example/v1",
-          CODEMUX_CODEX_PROVIDER_API_KEY: "sk-not-a-real-key",
-          CODEMUX_CODEX_PROVIDER_MODEL: "some-model",
-        },
-        names: [
-          "CODEMUX_CODEX_PROVIDER_BASE_URL",
-          "CODEMUX_CODEX_PROVIDER_API_KEY",
-          "CODEMUX_CODEX_PROVIDER_MODEL",
-        ],
-      },
-      { agent: "claude", env: { CODEMUX_CLAUDE_PROVIDER_MAX_OUTPUT_TOKENS: "4096" }, names: ["CODEMUX_CLAUDE_PROVIDER_MAX_OUTPUT_TOKENS"] },
-      { agent: "zai", env: { CODEMUX_ZAI_PROVIDER_MODEL: "glm" }, names: ["CODEMUX_ZAI_PROVIDER_MODEL"] },
-      // Codex's knob shapes the override config, so a session ignores it too.
-      { agent: "codex", env: { CODEMUX_CODEX_PROVIDER_MULTI_AGENT: "off" }, names: ["CODEMUX_CODEX_PROVIDER_MULTI_AGENT"] },
-      { agent: "agy", env: { CODEMUX_AGY_PROVIDER_BASE_URL: "https://gateway.example" }, names: ["CODEMUX_AGY_PROVIDER_BASE_URL"] },
+  test("a provider override an agent cannot carry is refused with run's own message (zai, agy)", async () => {
+    // Overrides reach session spawns through the same adapters `run`
+    // uses, so the refusal is the adapter's own (base.ts), surfaced by
+    // the uniform validateRunRequest gate — verbatim, exit 1 exactly as
+    // `codemux run` exits for it, with no key material echoed.
+    const cases: Array<{ agent: string; env: Record<string, string> }> = [
+      { agent: "zai", env: { CODEMUX_ZAI_PROVIDER_MODEL: "glm" } },
+      { agent: "agy", env: { CODEMUX_AGY_PROVIDER_BASE_URL: "https://gateway.example" } },
     ];
-    for (const { agent, env, names } of cases) {
+    for (const { agent, env } of cases) {
       const { stderr, exitCode } = await runCli(
         ["session", "-a", agent, "--no-sandbox", "--auto", "high"],
         { PATH: minimalPath(), ...env }
       );
-      expect(exitCode).toBe(64);
-      expect(stderr).toContain("provider overrides are refused for sessions in this release");
-      expect(stderr).toContain("next release");
-      for (const name of names) expect(stderr).toContain(name);
-      expect(stderr).not.toContain("sk-not-a-real-key");
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain(
+        `${agent} does not support a provider override; unset CODEMUX_${agent.toUpperCase()}_PROVIDER_* to run it, or route through an agent that does (codemux list marks them "provider")`
+      );
     }
+    // A half-configured override for an agent that does carry them fails
+    // at the same gate with the override module's own message.
+    const { stderr: capStderr, exitCode: capCode } = await runCli(
+      ["session", "-a", "claude", "--no-sandbox", "--auto", "high"],
+      {
+        PATH: minimalPath(),
+        CODEMUX_CLAUDE_PROVIDER_MAX_OUTPUT_TOKENS: "4096",
+      }
+    );
+    expect(capCode).toBe(1);
+    expect(capStderr).toContain(
+      "CODEMUX_CLAUDE_PROVIDER_MAX_OUTPUT_TOKENS is set but no provider override is"
+    );
+    // Codex's knob rides the override's config.toml; set without one it
+    // fails loudly, on the session path exactly as on the run path.
+    const { stderr: knobStderr, exitCode: knobCode } = await runCli(
+      ["session", "-a", "codex", "--no-sandbox", "--auto", "high"],
+      { PATH: minimalPath(), CODEMUX_CODEX_PROVIDER_MULTI_AGENT: "off" }
+    );
+    expect(knobCode).toBe(1);
+    expect(knobStderr).toContain(
+      "CODEMUX_CODEX_PROVIDER_MULTI_AGENT is set but no provider override is"
+    );
     // A blank value counts as unset, the override module's own rule.
     const fake = fakeClaudeEnv({ version: "2.1.100" });
     try {
@@ -326,7 +333,7 @@ describe("CLI - session refusals", () => {
         ["session", "-a", "claude", "--no-sandbox", "--auto", "high"],
         { ...fake.env, CODEMUX_CLAUDE_PROVIDER_BASE_URL: "  " }
       );
-      expect(stderr).not.toContain("provider overrides are refused");
+      expect(stderr).not.toContain("does not support a provider override");
       expect(exitCode).toBe(1);
     } finally {
       fake.cleanup();
@@ -749,6 +756,222 @@ describe("CLI - zai sessions", () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  test("a session recorded under an override refuses a resume on another provider or the operator login (review D3, security)", async () => {
+    // The recorded harness home (~/.claude) does not move with the
+    // endpoint, so without the provider identity in the record every
+    // other guard passed and Claude Code replayed the stored transcript
+    // at whatever endpoint the resume exported. The record now carries
+    // the override's base URL and the resume guard refuses a mismatch in
+    // both directions, exit 78 like the other policy refusals.
+    const fake = fakeClaudeEnv();
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-provider-"));
+    const workdir = join(isolatedHome, "work");
+    mkdirSync(workdir);
+    const overrideAt = (baseUrl: string): Record<string, string> => ({
+      CODEMUX_CLAUDE_PROVIDER_BASE_URL: baseUrl,
+      CODEMUX_CLAUDE_PROVIDER_API_KEY: "e2e-key-do-not-print",
+      CODEMUX_CLAUDE_PROVIDER_MODEL: "clawvm-qwen32b-coder",
+    });
+    try {
+      const session = await driveSession(
+        [
+          "session", "-a", "claude", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--shutdown-grace", "2",
+          "--pass-env", "FAKE_STATE_DIR,FAKE_CWD",
+        ],
+        {
+          HOME: isolatedHome,
+          XDG_CONFIG_HOME: join(isolatedHome, ".config"),
+          FAKE_STATE_DIR: fake.stateDir,
+          FAKE_CWD: workdir,
+          ...fake.env,
+          ...overrideAt("http://127.0.0.1:9/v1"),
+        }
+      );
+      let sessionId = "";
+      try {
+        session.send({ type: "user", text: "scenario:basic hello" });
+        const started = await session.waitFor(
+          "session_started",
+          (event) => event.type === "session_started"
+        );
+        sessionId = started.session_id as string;
+        await session.waitFor("turn_completed", (event) => event.type === "turn_completed");
+        session.send({ type: "shutdown" });
+        const [exitCode] = await session.exit;
+        expect(exitCode).toBe(0);
+      } finally {
+        await session.proc.kill();
+      }
+      // The record carries the endpoint the transcript ran against.
+      const registryPath = sessionRegistryPath(isolatedHome);
+      const registry = readRegistry(registryPath);
+      expect(registry.outcome).toBe("ok");
+      const entry =
+        registry.outcome === "ok"
+          ? registry.file.sessions.find((r) => r.id === sessionId)
+          : undefined;
+      expect(entry?.provider_base_url).toBe("http://127.0.0.1:9/v1");
+
+      // The same transcript on another endpoint: refused before spawn.
+      const other = await runCli(
+        [
+          "session", "-a", "claude", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--resume", sessionId,
+        ],
+        {
+          ...fake.env,
+          HOME: isolatedHome,
+          XDG_CONFIG_HOME: join(isolatedHome, ".config"),
+          ...overrideAt("http://127.0.0.1:10/v1"),
+        }
+      );
+      expect(other.exitCode).toBe(78);
+      expect(other.stderr).toContain("created against the provider override at http://127.0.0.1:9/v1");
+      expect(other.stderr).toContain("cannot resume against the provider override at http://127.0.0.1:10/v1");
+      // And back onto the operator's own login: refused too.
+      const login = await runCli(
+        [
+          "session", "-a", "claude", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--resume", sessionId,
+        ],
+        {
+          ...fake.env,
+          HOME: isolatedHome,
+          XDG_CONFIG_HOME: join(isolatedHome, ".config"),
+        }
+      );
+      expect(login.exitCode).toBe(78);
+      expect(login.stderr).toContain("cannot resume against the operator's own login");
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("the provider identity records the base URL without its query, and a rotated key still resumes (review D10, security)", async () => {
+    // A gateway key can ride the override's base URL query (`?key=…`).
+    // The raw value used to reach the registry verbatim and came back in
+    // every resume-refusal message, so the secret sat on disk (0600, but
+    // on disk) and in logs. The record, the comparison, and the refusal
+    // surface all carry the identity form now — query and fragment
+    // stripped — so a key rotation between the session and its resume
+    // still matches while a different endpoint still refuses, and the
+    // refusal names only the identities.
+    const fake = fakeClaudeEnv();
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-identity-"));
+    const workdir = join(isolatedHome, "work");
+    mkdirSync(workdir);
+    const overrideAt = (baseUrl: string): Record<string, string> => ({
+      CODEMUX_CLAUDE_PROVIDER_BASE_URL: baseUrl,
+      CODEMUX_CLAUDE_PROVIDER_API_KEY: "e2e-key-do-not-print",
+      CODEMUX_CLAUDE_PROVIDER_MODEL: "clawvm-qwen32b-coder",
+    });
+    try {
+      const session = await driveSession(
+        [
+          "session", "-a", "claude", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--shutdown-grace", "2",
+          "--pass-env", "FAKE_STATE_DIR,FAKE_CWD",
+        ],
+        {
+          HOME: isolatedHome,
+          XDG_CONFIG_HOME: join(isolatedHome, ".config"),
+          FAKE_STATE_DIR: fake.stateDir,
+          FAKE_CWD: workdir,
+          ...fake.env,
+          ...overrideAt("http://127.0.0.1:9/v1?key=e2e-secret"),
+        }
+      );
+      let sessionId = "";
+      try {
+        session.send({ type: "user", text: "scenario:basic hello" });
+        const started = await session.waitFor(
+          "session_started",
+          (event) => event.type === "session_started"
+        );
+        sessionId = started.session_id as string;
+        await session.waitFor("turn_completed", (event) => event.type === "turn_completed");
+        session.send({ type: "shutdown" });
+        const [exitCode] = await session.exit;
+        expect(exitCode).toBe(0);
+      } finally {
+        await session.proc.kill();
+      }
+      // The record carries the identity, and the raw registry file — the
+      // thing that lands on disk — never holds the query key.
+      const registryPath = sessionRegistryPath(isolatedHome);
+      const registry = readRegistry(registryPath);
+      expect(registry.outcome).toBe("ok");
+      const entry =
+        registry.outcome === "ok"
+          ? registry.file.sessions.find((r) => r.id === sessionId)
+          : undefined;
+      expect(entry?.provider_base_url).toBe("http://127.0.0.1:9/v1");
+      expect(readFileSync(registryPath, "utf8")).not.toContain("e2e-secret");
+
+      // The same endpoint under a rotated key resumes — a full turn, not
+      // just the guards: the comparison runs on the identity form, so the
+      // query cannot split what the identity joins.
+      const rotatedSession = await driveSession(
+        [
+          "session", "-a", "claude", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--shutdown-grace", "2",
+          "--resume", sessionId,
+          "--pass-env", "FAKE_STATE_DIR,FAKE_CWD",
+        ],
+        {
+          HOME: isolatedHome,
+          XDG_CONFIG_HOME: join(isolatedHome, ".config"),
+          FAKE_STATE_DIR: fake.stateDir,
+          FAKE_CWD: workdir,
+          ...fake.env,
+          ...overrideAt("http://127.0.0.1:9/v1?key=rotated-other"),
+        }
+      );
+      try {
+        rotatedSession.send({ type: "user", text: "scenario:basic again" });
+        const started = await rotatedSession.waitFor(
+          "session_started",
+          (event) => event.type === "session_started"
+        );
+        expect(started.session_id).toBe(sessionId);
+        await rotatedSession.waitFor(
+          "turn_completed",
+          (event) => event.type === "turn_completed"
+        );
+        rotatedSession.send({ type: "shutdown" });
+        const [exitCode] = await rotatedSession.exit;
+        expect(exitCode).toBe(0);
+      } finally {
+        await rotatedSession.proc.kill();
+      }
+
+      // A different endpoint still refuses, naming the two identities —
+      // and neither side of the message carries the query key.
+      const other = await runCli(
+        [
+          "session", "-a", "claude", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--resume", sessionId,
+        ],
+        {
+          ...fake.env,
+          HOME: isolatedHome,
+          XDG_CONFIG_HOME: join(isolatedHome, ".config"),
+          ...overrideAt("http://127.0.0.1:10/v1?key=attacker-key"),
+        }
+      );
+      expect(other.exitCode).toBe(78);
+      expect(other.stderr).toContain("created against the provider override at http://127.0.0.1:9/v1");
+      expect(other.stderr).toContain("cannot resume against the provider override at http://127.0.0.1:10/v1");
+      expect(other.stderr).not.toContain("e2e-secret");
+      expect(other.stderr).not.toContain("attacker-key");
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   test("a zai session without an API key refuses before spawn", async () => {
     const fake = fakeClaudeEnv();
@@ -1954,6 +2177,912 @@ describe("CLI - a claude resume records before the spawn (review live22 audit)",
     } finally {
       fake.cleanup();
       rmSync(home, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+const FAKE_OPENCODE = fileURLToPath(new URL("./fixtures/live/fake-opencode-run.ts", import.meta.url));
+const FAKE_AIDER = fileURLToPath(new URL("./fixtures/live/fake-aider-run.ts", import.meta.url));
+
+function fakeOpenCodeEnv(extra: { version?: string; env?: Record<string, string> } = {}) {
+  return fakeHarnessEnv("opencode", FAKE_OPENCODE, { version: "1.18.18", ...extra });
+}
+
+function fakeAiderEnv(extra: { version?: string; env?: Record<string, string> } = {}) {
+  return fakeHarnessEnv("aider", FAKE_AIDER, { version: "aider 0.86.2", ...extra });
+}
+
+/** One `codemux session` child driven over stdio, with the parsed event
+ * stream and helpers to wait and send (the happy-path shape, factored for
+ * the turn-per-process agents). */
+async function driveSession(
+  args: string[],
+  env: Record<string, string>
+): Promise<{
+  events: Record<string, any>[];
+  waitFor: (label: string, pred: (event: Record<string, any>) => boolean) => Promise<Record<string, any>>;
+  send: (message: unknown) => void;
+  exit: Promise<[number, void]>;
+  proc: Bun.Subprocess;
+}> {
+  const proc = Bun.spawn([join(import.meta.dir, "..", "bin", "codemux"), ...args], {
+    cwd: join(import.meta.dir, ".."),
+    stdout: "pipe",
+    stderr: "pipe",
+    stdin: "pipe",
+    env: { ...process.env, CODEMUX_NO_KEYCHAIN_SYNC: "1", ...env } as Record<string, string>,
+  });
+  const events: Record<string, any>[] = [];
+  const stdoutDone = (async () => {
+    const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline = buffer.indexOf("\n");
+      while (newline !== -1) {
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        if (line.trim() !== "") events.push(JSON.parse(line) as Record<string, any>);
+        newline = buffer.indexOf("\n");
+      }
+    }
+  })();
+  const waitFor = async (label: string, pred: (event: Record<string, any>) => boolean) => {
+    const deadline = Date.now() + 15_000;
+    for (;;) {
+      const found = events.find(pred);
+      if (found !== undefined) return found;
+      if (Date.now() > deadline) {
+        throw new Error(
+          `timed out waiting for ${label}; saw: ${events.map((event) => event.type).join(",")}`
+        );
+      }
+      await Bun.sleep(10);
+    }
+  };
+  return {
+    events,
+    waitFor,
+    send: (message: unknown) => {
+      (proc.stdin as { write: (text: string) => unknown }).write(`${JSON.stringify(message)}\n`);
+    },
+    exit: Promise.all([proc.exited, stdoutDone]),
+    proc,
+  };
+}
+
+describe("CLI - opencode sessions", () => {
+  test("drives a session over the native run wire, records the real data dir, and carries the override", async () => {
+    const fake = fakeOpenCodeEnv();
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-home-"));
+    const workdir = join(isolatedHome, "work");
+    const xdgData = join(isolatedHome, "xdg-data");
+    mkdirSync(workdir);
+    mkdirSync(xdgData);
+    try {
+      const session = await driveSession(
+        [
+          "session", "-a", "opencode", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--shutdown-grace", "2",
+          "--pass-env", "FAKE_STATE_DIR",
+        ],
+        {
+          HOME: isolatedHome,
+          XDG_DATA_HOME: xdgData,
+          FAKE_STATE_DIR: fake.stateDir,
+          ...fake.env,
+          CODEMUX_OPENCODE_PROVIDER_BASE_URL: "http://127.0.0.1:9/v1",
+          CODEMUX_OPENCODE_PROVIDER_API_KEY: "e2e-key-do-not-print",
+          CODEMUX_OPENCODE_PROVIDER_MODEL: "clawvm-qwen32b-coder",
+        }
+      );
+      try {
+        session.send({ type: "user", text: "scenario:basic one" });
+        const started = await session.waitFor(
+          "session_started",
+          (event) => event.type === "session_started"
+        );
+        expect(started.agent).toBe("opencode");
+        expect(started.session_id).toBe("ses_fake1234567890");
+        // The override's wire model is what the spawn carries.
+        expect(started.model).toBe("codemux/clawvm-qwen32b-coder");
+        const completed = await session.waitFor(
+          "turn_completed",
+          (event) => event.type === "turn_completed"
+        );
+        expect(completed.finish).toBe("end");
+
+        session.send({ type: "shutdown" });
+        const [exitCode] = await session.exit;
+        expect(exitCode).toBe(0);
+        const ended = session.events[session.events.length - 1] as Record<string, any>;
+        expect(ended.resumable).toBe(true);
+
+        // The turn spawn carried the adapter's wire model and the
+        // override's env delivery: the key through the environment, the
+        // provider config through OPENCODE_CONFIG (prepareRun at every
+        // turn, exactly the run path's seam).
+        const argv = JSON.parse(
+          readFileSync(join(fake.stateDir, "argv.jsonl"), "utf8").split("\n")[0] as string
+        ) as { args: string[] };
+        expect(argv.args[argv.args.indexOf("--model") + 1]).toBe("codemux/clawvm-qwen32b-coder");
+        const envRecord = JSON.parse(
+          readFileSync(join(fake.stateDir, "env.jsonl"), "utf8").split("\n")[0] as string
+        ) as { hasProviderKey: boolean; openCodeConfig: string | null };
+        expect(envRecord.hasProviderKey).toBe(true);
+        expect(envRecord.openCodeConfig).toMatch(
+          /\.codemux[/\\]provider-[^/\\]+[/\\]opencode\.json$/
+        );
+
+        // The harness home is the real data directory (XDG_DATA_HOME
+        // honored) — the override swaps the provider, never the store a
+        // --resume reads.
+        const registry = readRegistry(
+          sessionRegistryPath(isolatedHome)
+        );
+        expect(registry.outcome).toBe("ok");
+        const entry =
+          registry.outcome === "ok"
+            ? registry.file.sessions.find((r) => r.id === "ses_fake1234567890")
+            : undefined;
+        expect(entry?.agent).toBe("opencode");
+        expect(entry?.harness_home).toBe(join(xdgData, "opencode"));
+      } finally {
+        await session.proc.kill();
+      }
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("a project config written between turns stops the next turn before it spawns (review D2, security 1)", async () => {
+    // The start-time validateRunRequest gate alone left the hole: opencode
+    // and aider spawn a NEW process every turn, and turn N's child can
+    // write the very config turn N+1 reloads (opencode.json granting
+    // permissions, .aider.model.settings.yml). spawnTurn re-runs the
+    // adapter's gate before every turn, so the second turn fails instead
+    // of running with reach the recorded autonomy never granted.
+    const fake = fakeOpenCodeEnv();
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-guard-"));
+    const workdir = join(isolatedHome, "work");
+    mkdirSync(workdir);
+    try {
+      const session = await driveSession(
+        [
+          "session", "-a", "opencode", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--shutdown-grace", "2",
+          "--pass-env", "FAKE_STATE_DIR",
+        ],
+        { HOME: isolatedHome, FAKE_STATE_DIR: fake.stateDir, ...fake.env }
+      );
+      try {
+        session.send({ type: "user", text: "scenario:basic one" });
+        const first = await session.waitFor(
+          "turn_completed",
+          (event) => event.type === "turn_completed"
+        );
+        expect(first.finish).toBe("end");
+        // What turn 1's child could have written: a project config that
+        // widens the next process's reach.
+        writeFileSync(
+          join(workdir, "opencode.json"),
+          JSON.stringify({ permission: { bash: "allow" } })
+        );
+        session.send({ type: "user", text: "scenario:basic two" });
+        const failure = await session.waitFor(
+          "the guard fatal",
+          (event) => event.type === "error" && event.fatal === true
+        );
+        expect(failure.message).toContain("could not spawn the opencode turn process");
+        expect(failure.message).toContain("refuses repository executable configuration");
+        expect(failure.message).toContain("opencode.json");
+        const [exitCode] = await session.exit;
+        expect(exitCode).toBe(1);
+        // Exactly one turn process ever spawned: the guarded turn never
+        // reached the harness.
+        const spawns = readFileSync(join(fake.stateDir, "argv.jsonl"), "utf8")
+          .trim()
+          .split("\n");
+        expect(spawns).toHaveLength(1);
+      } finally {
+        await session.proc.kill();
+      }
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("each turn loads a fresh provider config; an earlier turn's rewrite never reaches the next (review D3, security 2)", async () => {
+    // The provider config file lives in the opencode data directory,
+    // which the sandboxed child can write, and every turn is a new
+    // process that reloads it through OPENCODE_CONFIG. A config cached
+    // at the first turn let turn 1's child rewrite what turn 2 ran with
+    // (permissions, MCP servers) — the run path never shares the file
+    // across processes, and neither does a session now: one fresh
+    // unguessable config per turn, the previous one finalized at the
+    // next turn's spawn.
+    const fake = fakeOpenCodeEnv();
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-turncfg-"));
+    const workdir = join(isolatedHome, "work");
+    const xdgData = join(isolatedHome, "xdg-data");
+    mkdirSync(workdir);
+    mkdirSync(xdgData);
+    try {
+      const session = await driveSession(
+        [
+          "session", "-a", "opencode", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--shutdown-grace", "2",
+          "--pass-env", "FAKE_STATE_DIR",
+        ],
+        {
+          HOME: isolatedHome,
+          XDG_DATA_HOME: xdgData,
+          FAKE_STATE_DIR: fake.stateDir,
+          ...fake.env,
+          CODEMUX_OPENCODE_PROVIDER_BASE_URL: "http://127.0.0.1:9/v1",
+          CODEMUX_OPENCODE_PROVIDER_API_KEY: "e2e-key-do-not-print",
+          CODEMUX_OPENCODE_PROVIDER_MODEL: "clawvm-qwen32b-coder",
+        }
+      );
+      try {
+        session.send({ type: "user", text: "scenario:basic one" });
+        await session.waitFor("turn_completed", (event) => event.type === "turn_completed");
+        const configs = (): Array<{ openCodeConfig: string | null }> =>
+          readFileSync(join(fake.stateDir, "env.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line) as { openCodeConfig: string | null });
+        const first = configs()[0] as { openCodeConfig: string | null };
+
+        // What turn 1's child could have written into its own config:
+        // permissions turn 2 must never run with. Turns serialize, so
+        // turn 1's process has exited by the time this runs.
+        expect(first.openCodeConfig).not.toBeNull();
+        const firstConfig = first.openCodeConfig as string;
+        expect(existsSync(firstConfig)).toBe(true);
+        writeFileSync(firstConfig, JSON.stringify({ permission: { bash: "allow" } }));
+
+        session.send({ type: "user", text: "scenario:basic two" });
+        await session.waitFor(
+          "the second turn",
+          () => session.events.filter((event) => event.type === "turn_completed").length === 2
+        );
+        const second = configs()[1] as { openCodeConfig: string | null };
+        // A different, fresh config file — and turn 1's config directory
+        // is gone, finalized at turn 2's spawn.
+        expect(second.openCodeConfig).not.toBeNull();
+        expect(second.openCodeConfig).not.toBe(firstConfig);
+        expect(second.openCodeConfig).toMatch(
+          /\.codemux[/\\]provider-[^/\\]+[/\\]opencode\.json$/
+        );
+        expect(existsSync(firstConfig)).toBe(false);
+        expect(existsSync(second.openCodeConfig as string)).toBe(true);
+
+        session.send({ type: "shutdown" });
+        const [exitCode] = await session.exit;
+        expect(exitCode).toBe(0);
+        // The live config dies with the session.
+        expect(existsSync(second.openCodeConfig as string)).toBe(false);
+      } finally {
+        await session.proc.kill();
+      }
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe("CLI - aider sessions", () => {
+  test("drives a session over the per-turn history file and records ~/.aider as the home", async () => {
+    const fake = fakeAiderEnv();
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-home-"));
+    const workdir = join(isolatedHome, "work");
+    mkdirSync(workdir);
+    try {
+      const session = await driveSession(
+        [
+          "session", "-a", "aider", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--shutdown-grace", "2",
+          "--pass-env", "FAKE_STATE_DIR",
+        ],
+        { HOME: isolatedHome, FAKE_STATE_DIR: fake.stateDir, ...fake.env }
+      );
+      try {
+        session.send({ type: "user", text: "scenario:basic one" });
+        const started = await session.waitFor(
+          "session_started",
+          (event) => event.type === "session_started"
+        );
+        expect(started.agent).toBe("aider");
+        expect(started.session_id).toMatch(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+        );
+        expect(started.model).toBeNull();
+        const message = await session.waitFor(
+          "assistant_message",
+          (event) => event.type === "assistant_message"
+        );
+        expect(message.text).toBe("Done: scenario:basic one");
+        const completed = await session.waitFor(
+          "turn_completed",
+          (event) => event.type === "turn_completed"
+        );
+        expect(completed.finish).toBe("end");
+
+        session.send({ type: "shutdown" });
+        const [exitCode] = await session.exit;
+        expect(exitCode).toBe(0);
+
+        // The exchange lives in the per-session history file codemux
+        // owns, and the turn spawned with no model flags at all (the
+        // adapter leaves aider's own default alone without an override).
+        const registry = readRegistry(
+          sessionRegistryPath(isolatedHome)
+        );
+        expect(registry.outcome).toBe("ok");
+        const entry =
+          registry.outcome === "ok"
+            ? registry.file.sessions.find((r) => r.id === started.session_id)
+            : undefined;
+        expect(entry?.agent).toBe("aider");
+        expect(entry?.harness_home).toBe(join(isolatedHome, ".aider"));
+        expect(
+          existsSync(join(isolatedHome, ".aider", ".codemux", "sessions", started.session_id, "history.md"))
+        ).toBe(true);
+        const argv = JSON.parse(
+          readFileSync(join(fake.stateDir, "argv.jsonl"), "utf8").split("\n")[0] as string
+        ) as { args: string[] };
+        // Exact flags: aiderBaseFlags always carries --model-settings-file
+        // and --model-metadata-file, which a startsWith match would hit.
+        expect(argv.args).not.toContain("--model");
+        expect(argv.args).not.toContain("--weak-model");
+      } finally {
+        await session.proc.kill();
+      }
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("a provider override carries the wire model and the weak model on the same endpoint", async () => {
+    const fake = fakeAiderEnv();
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-home-"));
+    const workdir = join(isolatedHome, "work");
+    mkdirSync(workdir);
+    try {
+      const session = await driveSession(
+        [
+          "session", "-a", "aider", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--shutdown-grace", "2",
+          "--pass-env", "FAKE_STATE_DIR",
+        ],
+        {
+          HOME: isolatedHome,
+          FAKE_STATE_DIR: fake.stateDir,
+          ...fake.env,
+          CODEMUX_AIDER_PROVIDER_BASE_URL: "http://127.0.0.1:9/v1",
+          CODEMUX_AIDER_PROVIDER_API_KEY: "e2e-key-do-not-print",
+          CODEMUX_AIDER_PROVIDER_MODEL: "clawvm-qwen32b-coder",
+        }
+      );
+      try {
+        session.send({ type: "user", text: "scenario:basic one" });
+        const completed = await session.waitFor(
+          "turn_completed",
+          (event) => event.type === "turn_completed"
+        );
+        expect(completed.finish).toBe("end");
+        session.send({ type: "shutdown" });
+        const [exitCode] = await session.exit;
+        expect(exitCode).toBe(0);
+        // The wire model is openai/-prefixed and the weak model rides
+        // the same endpoint (aider's ChatSummary runs through it) — the
+        // run path's mapping, unchanged by the session boundary.
+        const argv = JSON.parse(
+          readFileSync(join(fake.stateDir, "argv.jsonl"), "utf8").split("\n")[0] as string
+        ) as { args: string[] };
+        expect(argv.args[argv.args.indexOf("--model") + 1]).toBe("openai/clawvm-qwen32b-coder");
+        expect(argv.args[argv.args.indexOf("--weak-model") + 1]).toBe("openai/clawvm-qwen32b-coder");
+      } finally {
+        await session.proc.kill();
+      }
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("a bad passed-through CODEX_HOME never ends a non-codex session (review D8, correctness 2)", async () => {
+    // codexHarnessHome's CODEX_HOME validation (absolute, unpadded) ran
+    // for EVERY agent at session setup, so an aider session with
+    // --pass-env CODEX_HOME and a relative value exited 64 on a codex
+    // rule its harness never reads. Only a codex session validates the
+    // variable now; this session runs a full turn to a clean end.
+    const fake = fakeAiderEnv();
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-home-"));
+    const workdir = join(isolatedHome, "work");
+    mkdirSync(workdir);
+    try {
+      const session = await driveSession(
+        [
+          "session", "-a", "aider", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--shutdown-grace", "2",
+          "--pass-env", "CODEX_HOME,FAKE_STATE_DIR",
+        ],
+        {
+          HOME: isolatedHome,
+          CODEX_HOME: "rel/path",
+          FAKE_STATE_DIR: fake.stateDir,
+          ...fake.env,
+        }
+      );
+      try {
+        session.send({ type: "user", text: "scenario:basic one" });
+        const completed = await session.waitFor(
+          "turn_completed",
+          (event) => event.type === "turn_completed"
+        );
+        expect(completed.finish).toBe("end");
+        session.send({ type: "shutdown" });
+        const [exitCode] = await session.exit;
+        expect(exitCode).toBe(0);
+      } finally {
+        await session.proc.kill();
+      }
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("a bad passed-through CLAUDE_CONFIG_DIR never ends a non-claude-family session (review D8, correctness 2)", async () => {
+    // The CODEX_HOME finding's mirror, found in the same-class audit:
+    // assertAbsoluteClaudeConfigDir ran eagerly for EVERY agent at
+    // session setup, so an aider session with --pass-env
+    // CLAUDE_CONFIG_DIR and a relative value exited 64 on a claude
+    // rule its harness never reads. Only claude and zai sessions
+    // validate the variable now; this session runs a full turn to a
+    // clean end.
+    const fake = fakeAiderEnv();
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-home-"));
+    const workdir = join(isolatedHome, "work");
+    mkdirSync(workdir);
+    try {
+      const session = await driveSession(
+        [
+          "session", "-a", "aider", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--shutdown-grace", "2",
+          "--pass-env", "CLAUDE_CONFIG_DIR,FAKE_STATE_DIR",
+        ],
+        {
+          HOME: isolatedHome,
+          CLAUDE_CONFIG_DIR: "rel/path",
+          FAKE_STATE_DIR: fake.stateDir,
+          ...fake.env,
+        }
+      );
+      try {
+        session.send({ type: "user", text: "scenario:basic one" });
+        const completed = await session.waitFor(
+          "turn_completed",
+          (event) => event.type === "turn_completed"
+        );
+        expect(completed.finish).toBe("end");
+        session.send({ type: "shutdown" });
+        const [exitCode] = await session.exit;
+        expect(exitCode).toBe(0);
+      } finally {
+        await session.proc.kill();
+      }
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("a failed start record removes the fresh session's history directory (review D2, correctness-2 3)", async () => {
+    // recordBeforeSpawn creates ~/.aider/.codemux/sessions/<uuid>/ before
+    // the registry write; when that write fails the CLI exits, and the
+    // directory used to stay behind with nothing pointing at it until the
+    // 28-day sweep. The failure path now removes it.
+    const fake = fakeAiderEnv();
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "codemux-aider-recordfail-")));
+    const workdir = join(home, "work");
+    mkdirSync(workdir);
+    try {
+      // The untrusted registry (mode 0644) fails the start record — the
+      // live22 pattern.
+      const registryPath = sessionRegistryPath(home);
+      mkdirSync(dirname(registryPath), { recursive: true, mode: 0o700 });
+      writeFileSync(registryPath, '{"version":1,"sessions":[]}\n', { mode: 0o644 });
+      const { stderr, exitCode } = await runCli(
+        [
+          "session", "-a", "aider", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--shutdown-grace", "2",
+        ],
+        { ...fake.env, HOME: home },
+        { stdin: "" }
+      );
+      expect(exitCode, stderr).toBe(1);
+      expect(stderr).toContain("cannot record the session in the registry");
+      // No orphaned session directory: nothing was recorded, so nothing
+      // stays under the sessions parent.
+      const sessionsDir = join(home, ".aider", ".codemux", "sessions");
+      const left = existsSync(sessionsDir) ? readdirSync(sessionsDir) : [];
+      expect(left).toEqual([]);
+    } finally {
+      fake.cleanup();
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe("CLI - codex sessions under a provider override", () => {
+  const THREAD_ID = "0123456789abcdef";
+
+  /** The env both override-session tests run under: one endpoint, one
+   * key, one model, isolated HOME. */
+  const overrideEnv = (
+    fake: ReturnType<typeof fakeCodexEnv>,
+    isolatedHome: string,
+    workdir: string
+  ): Record<string, string> => {
+    const env: Record<string, string> = {
+      HOME: isolatedHome,
+      XDG_CONFIG_HOME: join(isolatedHome, ".config"),
+      ...fake.env,
+      FAKE_STATE_DIR: fake.stateDir,
+      FAKE_CWD: workdir,
+      CODEMUX_CODEX_PROVIDER_BASE_URL: "http://127.0.0.1:9/v1",
+      CODEMUX_CODEX_PROVIDER_API_KEY: "e2e-key-do-not-print",
+      CODEMUX_CODEX_PROVIDER_MODEL: "clawvm-qwen32b-coder",
+    };
+    return env;
+  };
+
+  /** One `codexHome` record per harness spawn, in spawn order (the
+   * version probe never reaches the fake: the wrapper answers it). */
+  const recordedHomes = (fake: { stateDir: string }): string[] =>
+    readFileSync(join(fake.stateDir, "env.jsonl"), "utf8")
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .map((line) => (JSON.parse(line) as { codexHome: string | null }).codexHome as string);
+
+  test("the session's home is keyed by session id, settled at the resumable end (review D1)", async () => {
+    const fake = fakeCodexEnv({ version: "codex-cli 0.159.3" });
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-home-"));
+    const workdir = join(isolatedHome, "work");
+    mkdirSync(workdir);
+    const baseUrl = "http://127.0.0.1:9/v1";
+    try {
+      const session = await driveSession(
+        [
+          "session", "-a", "codex", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--shutdown-grace", "2",
+          "--pass-env", "FAKE_STATE_DIR,FAKE_CWD",
+        ],
+        overrideEnv(fake, isolatedHome, workdir)
+      );
+      try {
+        session.send({ type: "user", text: "scenario:basic hello" });
+        const started = await session.waitFor(
+          "session_started",
+          (event) => event.type === "session_started"
+        );
+        expect(started.agent).toBe("codex");
+        expect(started.session_id).toBe(THREAD_ID);
+        // The override's model is the reported one, raw.
+        expect(started.model).toBe("clawvm-qwen32b-coder");
+        const completed = await session.waitFor(
+          "turn_completed",
+          (event) => event.type === "turn_completed"
+        );
+        expect(completed.finish).toBe("end");
+
+        // While the session runs, its home is run-shaped (review D1): a
+        // fresh directory under .codemux-provider, not the keyed path —
+        // the id that keys it only arrives at thread/start.
+        const liveHome = recordedHomes(fake)[0] as string;
+        expect(liveHome.startsWith(join(isolatedHome, ".codex", ".codemux-provider") + "/")).toBe(true);
+        expect(liveHome.split("/").pop()).toMatch(/^run-\d+-/);
+        expect(existsSync(join(liveHome, "config.toml"))).toBe(true);
+
+        session.send({ type: "shutdown" });
+        const [exitCode] = await session.exit;
+        expect(exitCode).toBe(0);
+
+        // The registry recorded the keyed path the resume's guard will
+        // compare (the driver's seam), never the live run-shaped name.
+        const hash = createHash("sha256").update(baseUrl).digest("hex").slice(0, 12);
+        const keyed = join(isolatedHome, ".codex", ".codemux-provider", `session-home-${hash}-${THREAD_ID}`);
+        const registry = readRegistry(
+          sessionRegistryPath(isolatedHome)
+        );
+        expect(registry.outcome).toBe("ok");
+        const entry =
+          registry.outcome === "ok"
+            ? registry.file.sessions.find((r) => r.id === THREAD_ID)
+            : undefined;
+        expect(entry?.harness_home).toBe(keyed);
+
+        // The resumable end settled the home onto its key: the run-shaped
+        // name is gone, the keyed directory holds the config, and nothing
+        // else is left under the parent.
+        expect(existsSync(liveHome)).toBe(false);
+        const config = readFileSync(join(keyed, "config.toml"), "utf8");
+        expect(config).toContain(`base_url = "${baseUrl}"`);
+        expect(config).toContain(`model = "clawvm-qwen32b-coder"`);
+        expect(readdirSync(join(isolatedHome, ".codex", ".codemux-provider"))).toEqual([
+          `session-home-${hash}-${THREAD_ID}`,
+        ]);
+
+        // The spawn delivered CODEX_HOME through env(1) (the run path's
+        // launch shape), and thread/start carried no model — wireModel
+        // null under an override.
+        const requests = readFileSync(join(fake.stateDir, "requests.jsonl"), "utf8")
+          .split("\n")
+          .filter((line) => line.trim() !== "")
+          .map((line) => JSON.parse(line) as { method: string; params: Record<string, unknown> });
+        const start = requests.find((request) => request.method === "thread/start");
+        expect(start).toBeDefined();
+        expect(start?.params.model).toBeUndefined();
+      } finally {
+        await session.proc.kill();
+      }
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("a resume reopens the session-keyed home, rewrites the config, and keeps it at its end", async () => {
+    const fake = fakeCodexEnv({ version: "codex-cli 0.159.3" });
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-home-"));
+    const workdir = join(isolatedHome, "work");
+    mkdirSync(workdir);
+    const baseUrl = "http://127.0.0.1:9/v1";
+    const hash = createHash("sha256").update(baseUrl).digest("hex").slice(0, 12);
+    const keyed = join(isolatedHome, ".codex", ".codemux-provider", `session-home-${hash}-${THREAD_ID}`);
+    const args = [
+      "session", "-a", "codex", "--no-sandbox", "--auto", "high",
+      "--cwd", workdir, "--shutdown-grace", "2",
+      "--pass-env", "FAKE_STATE_DIR,FAKE_CWD",
+    ];
+    try {
+      // Session one: run to a resumable end, leaving the home on its key.
+      const first = await driveSession(args, overrideEnv(fake, isolatedHome, workdir));
+      try {
+        first.send({ type: "user", text: "scenario:basic hello" });
+        await first.waitFor("turn_completed", (event) => event.type === "turn_completed");
+        first.send({ type: "shutdown" });
+        expect((await first.exit)[0]).toBe(0);
+      } finally {
+        await first.proc.kill();
+      }
+      const configInode = statSync(join(keyed, "config.toml")).ino;
+
+      // Session two: the resume. Its guard passes only because the
+      // recorded harness_home is the keyed path this resume computes
+      // (review D1: one session's home, keyed by endpoint AND id).
+      const second = await driveSession([...args, "--resume", THREAD_ID], overrideEnv(fake, isolatedHome, workdir));
+      try {
+        second.send({ type: "user", text: "scenario:basic again" });
+        const started = await second.waitFor(
+          "session_started",
+          (event) => event.type === "session_started"
+        );
+        expect(started.session_id).toBe(THREAD_ID);
+        await second.waitFor("turn_completed", (event) => event.type === "turn_completed");
+        second.send({ type: "shutdown" });
+        const [exitCode] = await second.exit;
+        expect(exitCode).toBe(0);
+      } finally {
+        await second.proc.kill();
+      }
+
+      // The resumed process ran in the keyed home (env(1) delivered it),
+      // resumed the thread rather than starting one, and the resume's
+      // config rewrite replaced the file (a new inode — never a write
+      // through whatever the old session's child left at the name).
+      const homes = recordedHomes(fake);
+      expect(homes).toHaveLength(2);
+      expect(homes[1]).toBe(keyed);
+      const requests = readFileSync(join(fake.stateDir, "requests.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line.trim() !== "")
+        .map((line) => JSON.parse(line) as { method: string; params: Record<string, unknown> });
+      const resumed = requests.find((request) => request.method === "thread/resume");
+      expect(resumed).toBeDefined();
+      expect(statSync(join(keyed, "config.toml")).ino).not.toBe(configInode);
+      // The resumed session's own resumable end keeps the home — it IS
+      // the state the next resume needs — and leaves nothing else.
+      expect(existsSync(keyed)).toBe(true);
+      expect(readdirSync(join(isolatedHome, ".codex", ".codemux-provider"))).toEqual([
+        `session-home-${hash}-${THREAD_ID}`,
+      ]);
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("a resume refused session_busy never rewrote the live session's config (review D5, correctness 3)", async () => {
+    // The race the finding named: two resumes of one id whose lock-free
+    // lookups BOTH pass — the loser's before the winner's claim — so the
+    // loser reaches its home open while the winner is live. That open
+    // used to rewrite config.toml BEFORE the claim: the loser rewrote
+    // the live session's config (here a different context cap would
+    // land) and then exited session_busy. The write now happens only
+    // after the claim, so the loser rewrites nothing.
+    //
+    // The loser is parked at the harness version probe — the CLI's order
+    // is lookup, probe, home open, claim — by a wrapper whose --version
+    // touches a marker and waits for a release file beside it: the
+    // probe's environment is allowlisted, so no FAKE_* variable reaches
+    // it and only the wrapper's own directory can carry the signal. The
+    // marker says the lookup already passed (program order), and the
+    // winner starts only then, so the ordering is deterministic.
+    const fake = fakeCodexEnv({ version: "codex-cli 0.159.3" });
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-home-"));
+    const workdir = join(isolatedHome, "work");
+    mkdirSync(workdir);
+    const baseUrl = "http://127.0.0.1:9/v1";
+    const hash = createHash("sha256").update(baseUrl).digest("hex").slice(0, 12);
+    const keyed = join(isolatedHome, ".codex", ".codemux-provider", `session-home-${hash}-${THREAD_ID}`);
+    const args = [
+      "session", "-a", "codex", "--no-sandbox", "--auto", "high",
+      "--cwd", workdir, "--shutdown-grace", "2",
+      "--pass-env", "FAKE_STATE_DIR,FAKE_CWD",
+    ];
+    try {
+      // Session one: fresh, run to a resumable end so the keyed home
+      // exists with its config and the record is ended.
+      const first = await driveSession(args, overrideEnv(fake, isolatedHome, workdir));
+      try {
+        first.send({ type: "user", text: "scenario:basic hello" });
+        await first.waitFor("turn_completed", (event) => event.type === "turn_completed");
+        first.send({ type: "shutdown" });
+        expect((await first.exit)[0]).toBe(0);
+      } finally {
+        await first.proc.kill();
+      }
+
+      // The loser starts FIRST: its lookup passes (the record is ended),
+      // and it parks at the probe — before the home open, before any
+      // claim — carrying a context cap the pre-D5 write would have
+      // planted into the live session's file.
+      const parked = createFakeBinaryEnv({
+        codex: [
+          'if [ "$1" = "--version" ]; then',
+          '  printf "parked" > "$(dirname "$0")/parked"',
+          '  while [ ! -f "$(dirname "$0")/release" ]; do sleep 0.05; done',
+          "  printf 'codex-cli 0.159.3\\n'",
+          "  exit 0",
+          "fi",
+          `exec bun '${FAKE_CODEX}' "$@"`,
+        ].join("\n"),
+      });
+      try {
+        // createFakeBinaryEnv puts its bin directory first on PATH.
+        const parkedBin = (parked.env.PATH as string).split(":")[0] as string;
+        const loser = Bun.spawn(
+          [join(import.meta.dir, "..", "bin", "codemux"), ...args, "--resume", THREAD_ID],
+          {
+            cwd: join(import.meta.dir, ".."),
+            stdout: "ignore",
+            stderr: "pipe",
+            stdin: "ignore",
+            env: {
+              ...process.env,
+              CODEMUX_NO_KEYCHAIN_SYNC: "1",
+              PATH: parked.env.PATH,
+              HOME: isolatedHome,
+              XDG_CONFIG_HOME: join(isolatedHome, ".config"),
+              FAKE_STATE_DIR: fake.stateDir,
+              FAKE_CWD: workdir,
+              CODEMUX_CODEX_PROVIDER_BASE_URL: baseUrl,
+              CODEMUX_CODEX_PROVIDER_API_KEY: "e2e-key-do-not-print",
+              CODEMUX_CODEX_PROVIDER_MODEL: "clawvm-qwen32b-coder",
+              CODEMUX_CODEX_PROVIDER_MAX_CONTEXT_TOKENS: "999999",
+            } as Record<string, string>,
+          }
+        );
+        const loserStderr = new Response(loser.stderr).text();
+        const parkedMarker = join(parkedBin, "parked");
+        const parkDeadline = Date.now() + 10_000;
+        while (!existsSync(parkedMarker)) {
+          if (Date.now() > parkDeadline) throw new Error("the loser never reached its probe");
+          await Bun.sleep(10);
+        }
+
+        // The winner: the resume that claims. Its lookup still passes
+        // (the loser has claimed nothing), its claim stamps it live, and
+        // its config is prepared before its spawn — the second env.jsonl
+        // entry is its keyed-home child.
+        const winner = await driveSession([...args, "--resume", THREAD_ID], overrideEnv(fake, isolatedHome, workdir));
+        try {
+          winner.send({ type: "user", text: "scenario:basic again" });
+          await winner.waitFor("session_started", (event) => event.type === "session_started");
+          expect(recordedHomes(fake)).toHaveLength(2);
+          expect(recordedHomes(fake)[1]).toBe(keyed);
+
+          // What the loser must not touch, while the winner is live.
+          const configBefore = readFileSync(join(keyed, "config.toml"), "utf8");
+          expect(configBefore).not.toContain("model_context_window = 999999");
+          const inodeBefore = statSync(join(keyed, "config.toml")).ino;
+
+          // Release the loser: probe passes, the home opens — and the
+          // claim, re-judged under the writer lock against the winner's
+          // live ownership, refuses session_busy.
+          writeFileSync(join(parkedBin, "release"), "");
+          expect(await loser.exited).toBe(78);
+          expect(await loserStderr).toContain("session_busy");
+
+          // The live session's config is byte-for-byte what its own
+          // prepareConfig wrote, still the same file, and the loser never
+          // spawned a child.
+          expect(readFileSync(join(keyed, "config.toml"), "utf8")).toBe(configBefore);
+          expect(statSync(join(keyed, "config.toml")).ino).toBe(inodeBefore);
+          expect(recordedHomes(fake)).toHaveLength(2);
+
+          winner.send({ type: "shutdown" });
+          expect((await winner.exit)[0]).toBe(0);
+        } finally {
+          await winner.proc.kill();
+        }
+      } finally {
+        parked.cleanup();
+      }
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("a session that never adopted a thread id leaves no home behind", async () => {
+    // The settle rule's other arm: a fresh session whose handshake never
+    // completes (the fake stalls the initialize) adopts no id, so its end
+    // removes the home instead of settling it onto a key.
+    const fake = fakeCodexEnv({ version: "codex-cli 0.159.3" });
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-home-"));
+    const workdir = join(isolatedHome, "work");
+    mkdirSync(workdir);
+    try {
+      const session = await driveSession(
+        [
+          "session", "-a", "codex", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--shutdown-grace", "2",
+          "--pass-env", "FAKE_STATE_DIR,FAKE_CWD,FAKE_STALL_INIT",
+        ],
+        { ...overrideEnv(fake, isolatedHome, workdir), FAKE_STALL_INIT: "1" }
+      );
+      try {
+        // Give the spawn a moment to make its home, then end the session
+        // before any session_started can exist.
+        await Bun.sleep(500);
+        const homes = recordedHomes(fake);
+        expect(homes).toHaveLength(1);
+        expect(homes[0]?.split("/").pop()).toMatch(/^run-\d+-/);
+        session.send({ type: "shutdown" });
+        const [exitCode] = await session.exit;
+        expect(exitCode).toBe(0);
+        // Nothing survives: no run-shaped dir, no session-keyed one.
+        const parent = join(isolatedHome, ".codex", ".codemux-provider");
+        expect(existsSync(homes[0] as string)).toBe(false);
+        expect(existsSync(parent) ? readdirSync(parent) : []).toEqual([]);
+      } finally {
+        await session.proc.kill();
+      }
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
     }
   }, 30_000);
 });

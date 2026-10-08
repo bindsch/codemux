@@ -307,6 +307,56 @@ export class SessionProcess {
     return { ok: true };
   }
 
+  /**
+   * Write one raw chunk to the harness's stdin with NO appended newline —
+   * the primitive the harnesses that read stdin to EOF need: opencode takes
+   * the whole non-TTY stdin as the one-shot message (`Bun.stdin.text()`), so
+   * a multi-line prompt rides stdin exactly as written, and aider consumes
+   * its canned "n\n" negatives the same way. Everything `writeLine` refuses
+   * on framing grounds except the newline rule still applies: a NUL never
+   * reaches the wire, the oversize and backlog caps are the same, and a
+   * closed stdin is refused. The caller owns the framing — a chunk that is
+   * not a whole number of the harness's input units is a caller bug.
+   */
+  writeRaw(text: string): WriteLineResult {
+    if (this.stdinEnded) return { ok: false, reason: "closed" };
+    if (text.includes("\0")) {
+      return { ok: false, reason: "framing" };
+    }
+    const bytes = utf8ByteLength(text);
+    if (bytes > MAX_INPUT_LINE_BYTES) {
+      return { ok: false, reason: "oversize" };
+    }
+    if (this.backlogBytes + bytes > MAX_HARNESS_BACKLOG_BYTES) {
+      return { ok: false, reason: "backlog" };
+    }
+    const stdin = this.proc.stdin as import("bun").FileSink | number | undefined;
+    if (stdin === undefined || typeof stdin === "number") {
+      return { ok: false, reason: "closed" };
+    }
+    try {
+      const drained = stdin.write(text);
+      // The same drain accounting as writeLine (review live14): an async
+      // drain's EPIPE on a dying child is absorbed, and a resolution clears
+      // the backlog only when no newer write is pending behind it.
+      if (typeof drained === "number") {
+        this.backlogBytes = 0;
+      } else {
+        this.backlogBytes += bytes;
+        const generation = ++this.backlogGeneration;
+        drained.then(
+          () => {
+            if (generation === this.backlogGeneration) this.backlogBytes = 0;
+          },
+          () => {}
+        );
+      }
+    } catch {
+      return { ok: false, reason: "closed" };
+    }
+    return { ok: true };
+  }
+
   /** Half-close the harness's stdin (the EOF half of a graceful end). */
   endInput(): void {
     if (this.stdinEnded) return;

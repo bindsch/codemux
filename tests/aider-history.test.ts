@@ -17,10 +17,13 @@ import { pathToFileURL } from "node:url";
 import { AiderAdapter } from "../src/adapters/aider.js";
 import type { RunContext } from "../src/adapters/base.js";
 import {
+  aiderHistoryHeader,
+  aiderHistorySizeBytes,
   createAiderHistoryFile,
   extractAiderReply,
   MAX_HISTORY_BYTES,
   readAiderHistory,
+  readAiderHistoryDelta,
 } from "../src/aider-history.js";
 
 describe("aider chat history extraction", () => {
@@ -109,6 +112,68 @@ describe("aider chat history extraction", () => {
     expect(
       extractAiderReply(history("#### q\n\n<thinking-content-abc>never closed\n\nOK\n"))
     ).toBe("<thinking-content-abc>never closed\n\nOK");
+  });
+});
+
+describe("the history header aider writes for a prompt (review D1, blocker)", () => {
+  // Byte pins of aiderHistoryHeader: io.py's user_input (0.86.2) puts
+  // `#### ` before EVERY prompt line — the exactness that decides whether
+  // the driver's anchor finds the user block or leaks continuation lines
+  // into the reply.
+  test("every line carries ####, joined on two-space lines, rstripped, closed with two spaces", () => {
+    expect(aiderHistoryHeader("line1")).toBe("\n#### line1  \n");
+    expect(aiderHistoryHeader("line1\nline2")).toBe("\n#### line1  \n#### line2  \n");
+    expect(aiderHistoryHeader("line1\nline2\nline3")).toBe(
+      "\n#### line1  \n#### line2  \n#### line3  \n"
+    );
+  });
+
+  test("an empty prompt is the <blank> line, exactly as io.py writes it", () => {
+    expect(aiderHistoryHeader("")).toBe("\n#### <blank>  \n");
+  });
+
+  test("a trailing-whitespace tail is rstripped before the closing two-space line", () => {
+    // append_chat_history rstrips the joined block, so a last line of
+    // spaces collapses into the closer while an interior join keeps both.
+    expect(aiderHistoryHeader("a\n  ")).toBe("\n#### a  \n####  \n");
+    expect(aiderHistoryHeader("a\nb\t")).toBe("\n#### a  \n#### b  \n");
+  });
+
+  test("Python's splitlines parity: every boundary it splits on, including the Unicode ones", () => {
+    // str.splitlines breaks on more than \n; a boundary JS misses would
+    // hand the driver a header that never matches the harness's block.
+    const boundaries = [
+      "\r\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85",
+      "\u2028", "\u2029",
+    ];
+    for (const sep of boundaries) {
+      expect(aiderHistoryHeader(`a${sep}b`)).toBe("\n#### a  \n#### b  \n");
+    }
+    // \x1f is the odd one out: whitespace to Python's rstrip but NOT a
+    // splitlines boundary, so it rides the line and is stripped from the
+    // tail.
+    expect(aiderHistoryHeader("a\nb\x1f")).toBe("\n#### a  \n#### b  \n");
+  });
+
+  test("a trailing line break adds no line: splitlines drops the empty tail JS split keeps (review D4)", () => {
+    // Python str.splitlines() never returns a trailing empty element
+    // ("a\nb\n".splitlines() is ["a", "b"], while JS split keeps
+    // ["a", "b", ""]) \u2014 kept, the block grew a spurious `#### ` line,
+    // the anchor missed aider's block, and the fallback leaked the
+    // prompt's continuation lines into the reply.
+    expect(aiderHistoryHeader("line1\nline2\n")).toBe("\n#### line1  \n#### line2  \n");
+    expect(aiderHistoryHeader("a\n")).toBe("\n#### a  \n");
+    // Same rendering with and without the trailing break, exactly as
+    // aider records both.
+    expect(aiderHistoryHeader("a\nb")).toBe(aiderHistoryHeader("a\nb\n"));
+    // An interior blank line still records its own `#### ` line; only
+    // the ONE trailing empty is dropped.
+    expect(aiderHistoryHeader("a\n\n")).toBe("\n#### a  \n####  \n");
+    // A prompt of just a line break is one blank line: splitlines("\n")
+    // is [""].
+    expect(aiderHistoryHeader("\n")).toBe("\n####  \n");
+    // The pair boundary behaves the same: "a\r\n" drops exactly one tail.
+    expect(aiderHistoryHeader("a\r\n")).toBe("\n#### a  \n");
   });
 });
 
@@ -223,6 +288,45 @@ describe("aider chat history file", () => {
     rmSync(path);
     writeFileSync(path, "#### q\n\nOK\n");
     expect(readAiderHistory(path)).toBe("#### q\n\nOK\n");
+  });
+
+  test("the session delta read is bounded per turn, not by the accumulated file (review D8, correctness 2)", () => {
+    // A session's history accumulates every exchange and outgrows the
+    // run read's whole-file bound — the bound was sized for ONE
+    // `--message` run. The driver used to read the whole file after
+    // every turn, so a long session's finished turns came back
+    // "unreadable" and every later resume was refused, though nothing
+    // was corrupt. The session reads are a bounded slice past a byte
+    // offset (readAiderHistoryDelta) and a content-free size probe
+    // (aiderHistorySizeBytes) instead.
+    const adapter = new AiderAdapter({}, home());
+    const request = { agent: "aider" as const, prompt: "p", hermetic: true };
+    const context = adapter.prepareRun(request);
+    prepared.push({ adapter, context });
+    const cmd = adapter.buildRunCommand(request, context);
+    const path = cmd[cmd.indexOf("--chat-history-file") + 1]!;
+    // A history past the run bound with a live turn's exchange at its
+    // tail: the shape of a long session when the next turn completes.
+    const exchange = "\n#### the turn's prompt\n\nthe reply\n\n";
+    const offset = MAX_HISTORY_BYTES + 1 - Buffer.byteLength(exchange);
+    const filler = Buffer.alloc(offset, 0x78); // plain "x" filler, no `#### `
+    writeFileSync(path, Buffer.concat([filler, Buffer.from(exchange)]));
+
+    // The run read keeps its whole-file bound (one exchange's size).
+    expect(readAiderHistory(path)).toBeNull();
+    // The session baseline sizes the file without reading its content.
+    expect(aiderHistorySizeBytes(path)).toBe(MAX_HISTORY_BYTES + 1);
+    // The delta read returns exactly the tail exchange, with the next
+    // turn's offset.
+    const delta = readAiderHistoryDelta(path, offset);
+    expect(delta).not.toBeNull();
+    expect(delta!.text).toBe(exchange);
+    expect(delta!.sizeBytes).toBe(MAX_HISTORY_BYTES + 1);
+    // A delta past the bound — one turn cannot append a whole run's
+    // worth of history — and an offset past a shrunken file (the
+    // session's own state truncated) both answer null, fail-closed.
+    expect(readAiderHistoryDelta(path, 0)).toBeNull();
+    expect(readAiderHistoryDelta(path, MAX_HISTORY_BYTES + 2)).toBeNull();
   });
 
   test("a FIFO replacing the history file fails closed instead of hanging", () => {

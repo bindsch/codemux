@@ -127,6 +127,10 @@ if (args.includes("--version")) {
 }
 
 record("argv.jsonl", { args, pid: process.pid });
+// The provider-override launch: CODEX_HOME is delivered through env(1),
+// so the assignment lands in this process's environment (recorded; an
+// un-overridden spawn has none).
+record("env.jsonl", { codexHome: process.env.CODEX_HOME ?? null, pid: process.pid });
 
 // FAKE_THREAD_ID bends the id the fake starts (review live16: an id
 // `--resume` would refuse must never reach the registry).

@@ -77,6 +77,7 @@ async function startSession(
     sessionTimeoutMs: null,
     registryPath: join(registryDir, "live-sessions.json"),
     harnessHome: join(dir, "home"),
+    providerBaseUrl: null,
     sink: (line) => {
       rawLines.push(line);
       events.push(JSON.parse(line) as Event);
@@ -255,6 +256,49 @@ describe("codex session e2e - lifecycle", () => {
         ? registry.file.sessions.find((r) => r.id === "0123456789abcdef")
         : undefined;
     expect(entry?.agent).toBe("codex");
+    expect(entry?.ended).not.toBe(null);
+  });
+
+  test("the home settles onto its key before the registry record is released (review D7, correctness-2 1)", async () => {
+    // The window the finding named: the end path closed the record
+    // BEFORE renaming the fresh override home onto its session-keyed
+    // path, so a --resume arriving in between found a released record
+    // whose harness_home named a path that did not exist yet — refused
+    // "missing or untrusted" for a session that was resumable a moment
+    // later. The settle seam must run while the record is still open:
+    // the release is what a resume waits on.
+    const observed: Array<{ threadId: string | null; recordEnded: boolean | null }> = [];
+    const session = await startSession({
+      settleSessionHome: (threadId) => {
+        const registry = readRegistry(session.options.registryPath as string);
+        const entry =
+          registry.outcome === "ok"
+            ? registry.file.sessions.find((r) => r.id === threadId)
+            : undefined;
+        observed.push({
+          threadId,
+          recordEnded: entry === undefined ? null : entry.ended !== null,
+        });
+        return true; // the rename landed
+      },
+    });
+    send(session.driver, { type: "user", text: "scenario:basic hello" });
+    await waitFor(session.events, of("turn_completed"), "turn_completed");
+    send(session.driver, { type: "shutdown" });
+    expect(await session.code).toBe(0);
+    const ended = session.events[session.events.length - 1] as Event;
+    expect(ended.resumable).toBe(true);
+    // The settle ran exactly once, on the real thread id, and the record
+    // was STILL OPEN when it did — the release had not happened yet.
+    expect(observed).toEqual([{ threadId: "0123456789abcdef", recordEnded: false }]);
+    // After the end the record is closed: the release did happen, just
+    // never before the settle.
+    const registry = readRegistry(session.options.registryPath as string);
+    expect(registry.outcome).toBe("ok");
+    const entry =
+      registry.outcome === "ok"
+        ? registry.file.sessions.find((r) => r.id === "0123456789abcdef")
+        : undefined;
     expect(entry?.ended).not.toBe(null);
   });
 
@@ -630,6 +674,7 @@ describe("codex session e2e - lifecycle", () => {
       sessionTimeoutMs: null,
       registryPath: null,
       harnessHome: join(dir, "home"),
+      providerBaseUrl: null,
       sink: (line) => {
         events.push(JSON.parse(line) as Event);
       },
@@ -2197,6 +2242,7 @@ describe("codex session e2e - review live20", () => {
         cwd: session.options.cwd,
         hermetic: false,
         harness_home: session.options.harnessHome,
+        provider_base_url: null,
         model: null,
         autonomy: "high",
         sandboxed: true,
@@ -2232,6 +2278,7 @@ describe("codex session e2e - review live20", () => {
         cwd: session.options.cwd,
         hermetic: false,
         harness_home: session.options.harnessHome,
+        provider_base_url: null,
         model: null,
         autonomy: "high",
         sandboxed: true,
