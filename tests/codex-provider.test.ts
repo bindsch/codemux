@@ -51,6 +51,11 @@ function canaryOutside(): string {
   return path;
 }
 
+// The over-cap trees cost thousands of file creates and utimes each; under a
+// full-suite run on a loaded disk (or a shared CI runner) that exceeds bun's
+// 5 s default, which is a budget, not an assertion about the sweep.
+const BIG_TREE_TIMEOUT_MS = 120_000;
+
 describe("codex provider session homes (review D1)", () => {
   test("the session home path is keyed by endpoint hash AND session id", () => {
     const home = makeCodexHome();
@@ -328,7 +333,7 @@ describe("codex provider session homes (review D1)", () => {
     expect(existsSync(unknownHuge)).toBe(true); // unknown: the D7 spare holds
     expect(existsSync(idlessHuge)).toBe(true); // no registry key: no proof exists
     expect(existsSync(small)).toBe(false);
-  });
+  }, BIG_TREE_TIMEOUT_MS);
 
   test("a dead run directory too big to walk is aged by its own mtime, not spared (review D9, correctness-2)", () => {
     // The finding: the sweep aged a dead-owner run directory by the
@@ -359,7 +364,7 @@ describe("codex provider session homes (review D1)", () => {
     prepareRunDirParent(home, ".codemux-provider");
     expect(existsSync(deadRun)).toBe(false); // stale by its own mtime: gone
     expect(existsSync(youngRun)).toBe(true); // over-cap but young: kept
-  });
+  }, BIG_TREE_TIMEOUT_MS);
 
   test("an undeletable stale entry never blocks the sweep or later runs (review D11, correctness 2 2)", () => {
     // The finding: a sandboxed codex child can leave a directory
