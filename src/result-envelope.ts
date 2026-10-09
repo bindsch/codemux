@@ -252,6 +252,10 @@ export function claudeFamilyResult(
       ),
       exitCode: result.exitCode === 0 ? 1 : result.exitCode,
       success: false,
+      // The envelope's numbers are still the harness's own record: the
+      // ledger writes what was reported, even on a failed run.
+      usage: parsed.usage,
+      servedModel: parsed.multipleModels ? null : parsed.servedModel,
     };
   }
   if (replyAbsent) {
@@ -267,11 +271,15 @@ export function claudeFamilyResult(
       ),
       exitCode: result.exitCode === 0 ? 1 : result.exitCode,
       success: false,
+      usage: parsed.usage,
+      servedModel: parsed.multipleModels ? null : parsed.servedModel,
     };
   }
   return {
     ...result,
     stdout: `${JSON.stringify({ ...parsed.envelope, codemux: block() })}\n`,
+    usage: parsed.usage,
+    servedModel: parsed.multipleModels ? null : parsed.servedModel,
   };
 }
 
@@ -432,6 +440,8 @@ export function agyResult(result: RunResult, request: RunRequest): RunResult {
       ),
       exitCode: result.exitCode === 0 ? 1 : result.exitCode,
       success: false,
+      usage: parsed.usage,
+      servedModel: null,
     };
   }
   // The parser guarantees a string response on a non-error envelope; the
@@ -452,11 +462,15 @@ export function agyResult(result: RunResult, request: RunRequest): RunResult {
       ),
       exitCode: result.exitCode === 0 ? 1 : result.exitCode,
       success: false,
+      usage: parsed.usage,
+      servedModel: null,
     };
   }
   return {
     ...result,
     stdout: `${JSON.stringify({ ...parsed.envelope, codemux: block() })}\n`,
+    usage: parsed.usage,
+    servedModel: null,
   };
 }
 
@@ -1025,5 +1039,7 @@ export function codexResult(
         : result.stderr,
     exitCode: verdict.failed && result.exitCode === 0 ? 1 : result.exitCode,
     success: !verdict.failed,
+    usage: block.usage,
+    servedModel: stream.servedModel,
   };
 }

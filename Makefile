@@ -37,6 +37,7 @@ smoke:
 	./bin/codemux verify >/dev/null
 	./bin/codemux verify --show-scode >/dev/null
 	./bin/codemux usage --help >/dev/null
+	./bin/codemux calls --help >/dev/null
 
 release-gate: runtime check contracts sandbox-contract smoke
 	bun audit

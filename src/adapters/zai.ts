@@ -8,6 +8,7 @@ import {
 } from "../claude-autonomy.js";
 import { readUtf8FileBounded } from "../file-io.js";
 import { claudeFamilyResult } from "../result-envelope.js";
+import { claudeFamilyPlainResult } from "../plain-unwrap.js";
 import {
   assertAbsoluteClaudeConfigDir,
   claudeGatewayEnv,
@@ -233,13 +234,12 @@ export class ZaiAdapter extends BaseAdapter {
     // No run of this adapter persists a session (same binary and rule as
     // claude): nothing a later run could resume is left behind.
     cmd.push("--no-session-persistence");
-    if (request.resultJson) {
-      // Claude Code's single-result envelope (same binary as claude): the
-      // reply under `result`, plus `usage`, `modelUsage`, and
-      // `total_cost_usd`, which `--result-json` re-emits with the codemux
-      // block appended.
-      cmd.push("--output-format", "json");
-    }
+    // Always the single-result envelope, plain runs included (same binary
+    // and rule as claude): `--result-json` re-emits it with the codemux
+    // block appended; a plain run unwraps it back to the reply text
+    // (plain-unwrap.ts) so stdout keeps its contract while the call ledger
+    // gets the usage.
+    cmd.push("--output-format", "json");
     if (request.tools === "none") {
       // An empty --tools list removes every built-in tool definition.
       cmd.push("--tools", "");
@@ -266,8 +266,8 @@ export class ZaiAdapter extends BaseAdapter {
 
   override processRunResult(result: RunResult, request: RunRequest): RunResult {
     // Same envelope as claude (same binary): with --result-json the harness's
-    // envelope is re-emitted with the codemux block appended. Anything that is
-    // not the envelope fails loudly, as in claude's adapter.
+    // envelope is re-emitted with the codemux block appended, and anything
+    // that is not the envelope fails loudly there, as in claude's adapter.
     if (request.resultJson) {
       // buildRunCommand ran --model opus when the request named none (or an
       // empty string -- same `||` fallback), so the envelope's model fallback
@@ -278,7 +278,13 @@ export class ZaiAdapter extends BaseAdapter {
         this.id
       );
     }
-    return result;
+    // A plain run: the same envelope, unwrapped back to the reply text.
+    // Stdout that is not JSON passes through verbatim with the run
+    // unchanged — the escape hatch for binaries codemux did not structure
+    // the output for; JSON that is not the envelope (an array or scalar
+    // included, or an object cut mid-write) fails with nothing on stdout
+    // (plain-unwrap.ts).
+    return claudeFamilyPlainResult(result, this.id);
   }
 
   buildTuiCommand(

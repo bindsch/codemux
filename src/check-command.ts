@@ -160,6 +160,7 @@ export function registerCheckCommand(
           requestedAutonomy,
           timeoutMs,
           cwd: options.cwd,
+          kind: "check",
         };
         const label = `${agentId}${model ? ` (model: ${model})` : ""}${options.sandbox ? " (sandboxed)" : ""}`;
 

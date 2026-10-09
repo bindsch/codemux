@@ -2,6 +2,7 @@ import { BaseAdapter } from "./base.js";
 import { assertNoAgyProjectExecutionConfig } from "../project-safety.js";
 import { validateWorkingDirectory } from "../validation.js";
 import { agyResult } from "../result-envelope.js";
+import { agyPlainResult } from "../plain-unwrap.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -98,17 +99,23 @@ export class AgyAdapter extends BaseAdapter {
     if (request.autonomy) {
       cmd.push(...this.mapAutonomy(request.autonomy));
     }
-    if (request.resultJson) {
-      cmd.push("--output-format=json");
-    }
+    // Always the result envelope, plain runs included: `--result-json`
+    // re-emits it with the codemux block appended; a plain run unwraps it
+    // back to the response text (plain-unwrap.ts) so stdout keeps its
+    // contract while the call ledger gets the usage.
+    cmd.push("--output-format=json");
 
     cmd.push(`--print=${request.prompt}`);
     return cmd;
   }
 
   override processRunResult(result: RunResult, request: RunRequest): RunResult {
-    if (!request.resultJson) return result;
-    return agyResult(result, request);
+    if (request.resultJson) return agyResult(result, request);
+    // A plain run: the same envelope, unwrapped back to the response text.
+    // Stdout that is not JSON passes through verbatim with the run
+    // unchanged (plain-unwrap.ts's escape hatch); JSON that is not the
+    // envelope fails with nothing on stdout.
+    return agyPlainResult(result);
   }
 
   override validateRunRequest(request: RunRequest): void {

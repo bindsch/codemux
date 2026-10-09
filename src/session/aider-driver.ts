@@ -28,6 +28,12 @@
  */
 
 import type { AutonomyLevel, ReasoningEffort, ResultUsageBlock } from "../types.js";
+import {
+  appendSessionCallRecord,
+  appendSessionTurnCallRecord,
+  providerHost,
+  type SessionCallContext,
+} from "../call-log.js";
 import { emptyUsage } from "../result-envelope.js";
 import { HEADLESS_NEGATIVE_RESPONSES, aiderPromptIsCommand } from "../adapters/aider.js";
 import {
@@ -166,6 +172,14 @@ export class AiderSessionDriver {
   private stdinClosed = false;
   private firstFatal: string | null = null;
   private sessionTimer: Timer | null = null;
+  /** The wall clock each open turn started at, keyed by turn id: the
+   * ledger's session_turn records carry each turn's own duration. */
+  private readonly turnStartedAt = new Map<string, number>();
+  /** The session's own start, for the closing ledger record's duration. */
+  private readonly sessionStartedAt = Date.now();
+  /** The launch facts the call ledger records on every turn and at the
+   * end (call-log.ts); the provider is the override's host or "default". */
+  private readonly callLedger: SessionCallContext;
   private readonly done: Promise<number>;
   private resolveDone!: (code: number) => void;
 
@@ -173,6 +187,15 @@ export class AiderSessionDriver {
     this.done = new Promise<number>((resolve) => {
       this.resolveDone = resolve;
     });
+    this.callLedger = {
+      agent: "aider",
+      model: options.model ?? null,
+      provider: providerHost(options.providerBaseUrl),
+      autonomy: options.autonomy,
+      hermetic: options.hermetic,
+      sandboxed: options.sandboxed,
+      cwd: options.cwd,
+    };
     this.out = new BoundedOutboundQueue(
       options.sink ?? defaultEventSink(),
       (failure) => {
@@ -652,6 +675,18 @@ export class AiderSessionDriver {
         usage,
       })
     );
+    // The ledger's turn record mirrors the event the caller just saw
+    // (call-log.ts); aider reports no usage, so the block is all-null —
+    // the honest null, not a guessed zero.
+    appendSessionTurnCallRecord(
+      this.callLedger,
+      this.options.sessionId,
+      turnId,
+      this.turnStartedAt.get(turnId) ?? Date.now(),
+      finish,
+      usage
+    );
+    this.turnStartedAt.delete(turnId);
     this.stampActivity();
   }
 
@@ -794,13 +829,14 @@ export class AiderSessionDriver {
         this.endExitCode = Math.max(this.endExitCode, 1);
         this.emitError(true, "codemux", error.message);
       } else {
+        const synthFinish =
+          reason === "crash" || drainFailureCode !== null || this.firstFatal !== null
+            ? "failed"
+            : "interrupted";
         this.emit(
           buildEvent(++this.seq, this.options.sessionId, "turn_completed", null, {
             turn_id: turnId,
-            finish:
-              reason === "crash" || drainFailureCode !== null || this.firstFatal !== null
-                ? "failed"
-                : "interrupted",
+            finish: synthFinish,
             reason:
               reason === "crash"
                 ? crashSynthesisReason(this.firstFatal)
@@ -812,6 +848,18 @@ export class AiderSessionDriver {
             usage: emptyUsage(),
           })
         );
+        // The synthesized completion is a turn the caller saw complete, so
+        // it gets its ledger line like any other (all-null usage, the same
+        // honesty the event carries).
+        appendSessionTurnCallRecord(
+          this.callLedger,
+          this.options.sessionId,
+          turnId ?? "none",
+          this.turnStartedAt.get(turnId ?? "") ?? Date.now(),
+          synthFinish,
+          emptyUsage()
+        );
+        this.turnStartedAt.delete(turnId ?? "");
       }
     }
     this.settled = true;
@@ -843,6 +891,16 @@ export class AiderSessionDriver {
         usage: this.cumulative,
         resumable,
       })
+    );
+    // The closing ledger line: the same cumulative usage and end verdict
+    // the caller just received (call-log.ts).
+    appendSessionCallRecord(
+      this.callLedger,
+      this.options.sessionId,
+      this.sessionStartedAt,
+      reason,
+      childCode,
+      this.cumulative
     );
     const delivered = sent ? await awaitFinalFlush(this.out) : false;
     this.signals.dispose();
@@ -915,6 +973,7 @@ export class AiderSessionDriver {
         turn_id: turnId,
       })
     );
+    this.turnStartedAt.set(turnId, Date.now());
     return turnId;
   }
 

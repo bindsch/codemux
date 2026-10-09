@@ -3,6 +3,7 @@ import { readFileSync } from "fs";
 import { resolveSandboxOptionsForAgent } from "./sandbox-policy.js";
 import { getAdapter, AGENT_IDS } from "./adapters/index.js";
 import { registerCheckCommand } from "./check-command.js";
+import { registerCallsCommand } from "./calls-command.js";
 import { getDefaultConfig, loadConfig, resolveModel } from "./config.js";
 import { registerInfoCommands } from "./info-commands.js";
 import { launchRunRequest } from "./launch.js";
@@ -561,6 +562,7 @@ program
 
 registerCheckCommand(program, config, requireValidConfig);
 registerInfoCommands(program, config, configError);
+registerCallsCommand(program);
 registerSessionCommand(program, config, requireValidConfig);
 
 await program.parseAsync();

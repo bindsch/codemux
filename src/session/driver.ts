@@ -21,6 +21,12 @@
 import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import type { AutonomyLevel, ResultUsageBlock } from "../types.js";
+import {
+  appendSessionCallRecord,
+  appendSessionTurnCallRecord,
+  providerHost,
+  type SessionCallContext,
+} from "../call-log.js";
 import { emptyUsage } from "../result-envelope.js";
 import { claudeCeiling } from "./ceiling.js";
 import {
@@ -229,6 +235,14 @@ export class ClaudeSessionDriver {
   private turnTimeoutFired = false;
   private turnTimer: Timer | null = null;
   private sessionTimer: Timer | null = null;
+  /** The wall clock each open turn started at, keyed by turn id: the
+   * ledger's session_turn records carry each turn's own duration. */
+  private readonly turnStartedAt = new Map<string, number>();
+  /** The session's own start, for the closing ledger record's duration. */
+  private readonly sessionStartedAt = Date.now();
+  /** The launch facts the call ledger records on every turn and at the
+   * end (call-log.ts); the provider is the override's host or "default". */
+  private readonly callLedger: SessionCallContext;
   private readonly done: Promise<number>;
   private resolveDone!: (code: number) => void;
 
@@ -236,6 +250,15 @@ export class ClaudeSessionDriver {
     this.done = new Promise<number>((resolve) => {
       this.resolveDone = resolve;
     });
+    this.callLedger = {
+      agent: options.agent,
+      model: options.model ?? null,
+      provider: providerHost(options.providerBaseUrl),
+      autonomy: options.autonomy,
+      hermetic: false,
+      sandboxed: options.sandboxed,
+      cwd: options.cwd,
+    };
     this.out = new BoundedOutboundQueue(
       options.sink ?? defaultEventSink(),
       (failure) => {
@@ -872,6 +895,18 @@ export class ClaudeSessionDriver {
         usage: { ...parse.usage, cost_usd: null },
       })
     );
+    // The ledger's turn record mirrors the event the caller just saw; the
+    // session's closing record carries the cumulative cost this turn's
+    // fold adopted, so the per-turn line stays cost-free like the event.
+    appendSessionTurnCallRecord(
+      this.callLedger,
+      this.options.sessionId,
+      turnId ?? "none",
+      this.turnStartedAt.get(turnId ?? "") ?? Date.now(),
+      finish,
+      { ...parse.usage, cost_usd: null }
+    );
+    this.turnStartedAt.delete(turnId ?? "");
     if (this.registryRecorded && this.options.registryPath !== null) {
       // Best-effort stamp, and never a wait: the lock's retry sleep is a
       // synchronous Atomics.wait on the main thread, and this runs inside
@@ -910,6 +945,7 @@ export class ClaudeSessionDriver {
         turn_id: turnId,
       })
     );
+    this.turnStartedAt.set(turnId, Date.now());
     this.turnTimeoutFired = false;
     this.armTurnTimer();
     return turnId;
@@ -1270,13 +1306,14 @@ export class ClaudeSessionDriver {
         this.endExitCode = Math.max(this.endExitCode, 1);
         this.emitError(true, "codemux", error.message);
       } else {
+        const synthFinish =
+          reason === "crash" || drainFailureCode !== null || this.firstFatal !== null
+            ? "failed"
+            : "interrupted";
         this.emit(
           buildEvent(++this.seq, this.options.sessionId, "turn_completed", null, {
             turn_id: turnId,
-            finish:
-              reason === "crash" || drainFailureCode !== null || this.firstFatal !== null
-                ? "failed"
-                : "interrupted",
+            finish: synthFinish,
             reason:
               reason === "crash"
                 ? crashSynthesisReason(this.firstFatal)
@@ -1291,6 +1328,18 @@ export class ClaudeSessionDriver {
             usage: emptyUsage(),
           })
         );
+        // The synthesized completion is a turn the caller saw complete, so
+        // it gets its ledger line like any other (all-null usage: nothing
+        // reported a turn the harness never answered).
+        appendSessionTurnCallRecord(
+          this.callLedger,
+          this.options.sessionId,
+          turnId ?? "none",
+          this.turnStartedAt.get(turnId ?? "") ?? Date.now(),
+          synthFinish,
+          emptyUsage()
+        );
+        this.turnStartedAt.delete(turnId ?? "");
       }
     }
     // The child is dead and the pipes are drained: nothing more can
@@ -1332,6 +1381,16 @@ export class ClaudeSessionDriver {
         usage: this.cumulative,
         resumable,
       })
+    );
+    // The closing ledger line: the same cumulative usage and end verdict
+    // the caller just received.
+    appendSessionCallRecord(
+      this.callLedger,
+      this.options.sessionId,
+      this.sessionStartedAt,
+      reason,
+      childCode,
+      this.cumulative
     );
     // Exit-code honesty: `session_ended` is the one event the caller
     // cannot afford to lose, so a delivery that failed — the sink

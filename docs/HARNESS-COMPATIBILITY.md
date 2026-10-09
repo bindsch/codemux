@@ -885,6 +885,57 @@ the record; review D10), or operator login when none — and `--resume`
 refuses a mismatch with exit 78: a transcript recorded on one endpoint
 never replays on another.
 
+## 2026-10-08 addendum: the per-call usage ledger
+
+Every completed call now writes one JSON line to a per-call ledger
+(`src/call-log.ts`; `codemux calls` reads it back — README "The call
+ledger"). The structured-output flags the envelope path already pinned are
+now on every plain run of the harnesses that support one, so the unwrap
+(not the caller's flags) is what turns structured stdout back into the
+plain reply: Claude Code and Z.AI `--output-format json`, Antigravity
+`--output-format=json`, OpenCode `--format json` (the run wire the session
+driver parses at 1.18.18; `parseOpenCodeRunLine`). OpenCode's reply is
+spelled as its run command's plain mode prints it (upstream v1.18.18:
+each completed text part trimmed on its own line, empty parts skipped,
+everything else on stderr), and its event stream is never captured whole:
+the stream carries every tool's output on the tool parts (the same volume
+that keeps codex off `--json`), so the launcher feeds it through a
+streaming fold (`OpenCodePlainFold`) that keeps the reply text and folded
+usage alone — tool parts dropped as they arrive — and the output bound
+measures that residue, not the stream. Codex plain runs are the exception:
+the
+`--json` event stream carries every event with all tool output, so an
+agentic run's stream passes the 16 MiB output bound and dies with the
+reply lost — plain codex runs keep human mode and their usage is the
+blended `tokens used` figure on stderr (`print_final_output` in codex-rs's
+human event processor; `total_tokens` alone, the figure is
+(input − cached) + output). Stdout that carries no line of the structured
+wire passes through verbatim — the escape hatch for older binaries and
+wrappers — and the ledger then records null usage rather than a guess; a
+structured stream that arrives broken (an unparseable or cut-off line
+among opencode's wire lines, a claude-family or Antigravity stdout that
+is JSON but not a parseable envelope — any JSON value, an array
+included, or an object cut mid-write) never passes through — the text
+and usage folded so
+far stay and the break becomes a stderr diagnostic.
+
+What each harness's records can carry:
+
+| Harness | Usage the ledger sees | Cost | Effective model |
+|---------|----------------------|------|-----------------|
+| Claude Code, Z.AI | envelope block (input, output, cached, computed total) | `total_cost_usd`; session turns keep null and the closing session record adopts the final figure (the claude-family session rule), which `calls --sum` folds in per field — a resumed session's several closings fold to the newest one | `modelUsage` on single-model runs |
+| Codex | `--result-json` runs: event-stream block (uncached input excludes both cache breakdowns, per the 2026-10-03 pin). Plain runs: the stderr `tokens used` figure, `total_tokens` alone | null | only a mid-run reroute item (`--result-json` runs) |
+| Antigravity | envelope block (raw input includes cache reads; the parser splits them) | null | null |
+| OpenCode | `step_finish` tokens and cost, summed within the run or turn (streamed: the plain-run fold keeps the reply text and usage alone, so what the tool events carried is not kept anywhere) | the cost the endpoint reports; the local vLLM override gateway in the 2026-10-08 live run reported real token counts and a zero cost (a reported zero, not a missing figure) | null |
+| Aider | nulls — the headless `--message` wire prints no usage | null | null |
+| all others | nulls — plain-text stdout, no structured mode | null | null |
+
+The ledger's `provider` field names an override by its base URL host
+only, never its key; the record set is fixed (`ts`, `kind`, `agent`,
+`model`, `model_effective`, `provider`, `session_id`, `turn_id`,
+`autonomy`, `hermetic`, `sandboxed`, `exit_code`, `finish`,
+`duration_ms`, `cwd`, `usage`) so no prompt text can ride along.
+
 ## Version enforcement
 
 `src/harness-compatibility.ts` is the machine-readable half of this ledger and

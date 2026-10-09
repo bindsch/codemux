@@ -1,2 +1,7 @@
 [test]
 coverageSkipTestFiles = true
+# The test-run ledger redirect (review ul6): bun reads this for every
+# `bun test` in the repo, not only the package.json scripts, so a bare
+# `bun test` loads tests/setup.ts and its CODEMUX_TEST_LEDGER before any
+# test file — the operator's real ledger is never written either way.
+preload = ["./tests/setup.ts"]

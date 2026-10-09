@@ -7,6 +7,98 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-08
+
+### Upgrade notes
+
+- Plain `codemux run` invocations of claude, zai, agy, and opencode now
+  launch the harness in its structured output mode unconditionally
+  (`--output-format json` and kin) and unwrap the structured stdout back
+  to the plain reply inside codemux. The stdout contract is unchanged —
+  the reply, byte for byte — and holds on failure too: a failed run
+  prints the harness's own text (the error envelope's `result` or
+  `response`, the text opencode streamed before its error), never the
+  structured wire. A structured stream that arrives broken never passes
+  through as the reply either: one unparseable or cut-off line among
+  opencode's wire lines keeps the text and usage streamed so far with the
+  break on stderr, and a claude/zai or agy stdout that opens like a broken
+  or unrecognized envelope fails the run with nothing on stdout. Stdout that
+  is not the structured output at all (an older binary, a wrapper that
+  strips the flag, not one line of the wire) passes through verbatim as
+  before. Wrapper scripts that parse the child's argv will see the new
+  flags. Codex is not on that list: its `--json` event stream carries
+  every event with all tool output, so plain codex runs keep human mode
+  (stdout verbatim, exactly what the binary printed) and their ledger
+  usage is the blended `tokens used` figure codex prints on stderr
+  (`total_tokens` alone); only `--result-json` codex runs launch
+  `--json`. opencode's event stream carries the same volume (every
+  tool's output rides the tool parts), so its structured stdout is
+  streamed through a fold instead of captured: the fold keeps the reply
+  text and the folded usage — tool parts dropped as they arrive — so no
+  amount of tool output can push a plain opencode run past the 16 MiB
+  output bound.
+- Every completed call now appends one JSON line to
+  `<state dir>/codemux/calls.jsonl` (beside the session registry; 0700
+  directory, 0600 file). Set `CODEMUX_CALL_LOG=<absolute path>` to
+  relocate it or `CODEMUX_CALL_LOG=off` to disable it. Only the default
+  state directory is ever tightened — a relocated ledger never changes
+  its directory's permissions — and the append never throws, path
+  resolution included: a failure warns once on stderr and never fails
+  the run. codemux's own test suite redirects appends through
+  `CODEMUX_TEST_LEDGER` (the `tests/setup.ts` preload the package's test
+  scripts load); no generic variable — `NODE_ENV=test` included — diverts
+  records, so a process outside codemux's test runner that happens to set
+  one keeps its real ledger.
+
+### Added
+
+- The per-call usage ledger: one record per completed `run` and `check`,
+  one per completed session turn, and one closing record per session
+  with the cumulative usage. A run interrupted by SIGINT or SIGTERM
+  writes its receipt too, with the signal exit code (143) and the usage
+  folded so far. So does a run that ran its harness and still failed to
+  finish — a capture the runner could not take (a stream that is not
+  valid UTF-8) or a throw while post-processing — with the launch's
+  failure exit code and the usage folded so far; a launch refused before
+  the spawn ran nothing and records nothing. Records carry the requested
+  and effective
+  model, the provider (an override's base URL host, never its key),
+  autonomy/hermetic/sandboxed flags, exit code or finish, duration,
+  working directory, and the envelope's usage block — nulls when the
+  harness did not report, never guessed. Harness-reported strings (model
+  names, provider host, finish reasons) are stored stripped of ANSI
+  escape sequences and C0/C1 control characters, and the table strips
+  them again at render for ledgers written before the strip. A session
+  whose harness never names a native id is keyed by a codemux-minted id,
+  never an empty one. No prompt text, keys, or
+  environment values are recorded.
+- `codemux calls`: the last 20 records newest first, with
+  `-n/--limit`, `-a/--agent`, `--since <duration|ISO>`, `--json`, and
+  `--sum` (totals over the shown records, with closing `session` summaries
+  folded per field — a summary contributes a usage field only when no
+  shown turn of the same session reported it, so tokens are never counted
+  twice while the claude family's session cost, null on every turn, is
+  counted; a resumed session's several closings fold to the newest one,
+  so the pre-resume share is never counted twice; a summary with no
+  session id — null or empty — keys nothing and is excluded; unreported
+  fields count as unknown, never zero). `--since` keeps a closing
+  `session` record when any turn of the same session falls inside the
+  window, so a session that started before the cutoff keeps its cost; an
+  unusable `--since` value — neither a duration nor a timestamp, or a
+  duration whose cutoff falls outside the date range — is a usage error
+  (exit 64 with a message), never a silently empty view.
+  The view is bounded to the file's newest 16 MiB, and a cut landing
+  mid-line drops that partial line only — a complete record is never
+  dropped for the bound; corrupt or wrong-shaped lines are
+  skipped and counted.
+
+### Changed
+
+- The structured-output flags `--result-json` turns on are now part of
+  every plain run for the harnesses that support one (codex excepted —
+  see the upgrade notes), so `--result-json` changes only the output
+  shape, not the launch (README "Result envelopes").
+
 ## [0.10.0] - 2026-10-08
 
 ### Upgrade notes

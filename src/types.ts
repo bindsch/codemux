@@ -106,6 +106,15 @@ export interface RunResult {
   // scan covers the whole record, not just what was printed. Absent when
   // stdout is the whole record.
   scanSurface?: string;
+  // The token usage a structured wire reported for the run, set by
+  // processRunResult (the envelope paths for --result-json, the plain
+  // unwrap otherwise). Absent when the harness reports no usage: the call
+  // ledger records an all-null block then, never a fabricated one.
+  usage?: ResultUsageBlock;
+  // The model the harness says served the run (an envelope's modelUsage
+  // key, a codex reroute), when it names exactly one. Absent when nothing
+  // reported it; the ledger falls back to null, not to the request's model.
+  servedModel?: string | null;
 }
 
 // Token usage inside the codemux block of a --result-json envelope. Every

@@ -22,7 +22,14 @@
  * session untrackable and ends it (§4.8).
  */
 
+import { randomUUID } from "node:crypto";
 import type { AutonomyLevel, ReasoningEffort, ResultUsageBlock } from "../types.js";
+import {
+  appendSessionCallRecord,
+  appendSessionTurnCallRecord,
+  providerHost,
+  type SessionCallContext,
+} from "../call-log.js";
 import { emptyUsage } from "../result-envelope.js";
 import {
   buildOpenCodeSessionCommand,
@@ -129,6 +136,11 @@ export class OpenCodeSessionDriver {
    * fresh session) or the registry-vouched resume id adopted at run start.
    * Null until one of those lands. */
   private sessionId: string | null;
+  /** Codemux's own id for this session, minted at construction: what the
+   * call ledger records while no run-output line has named the session
+   * (and ever after, if none ever does), so id-less sessions never share
+   * a key (review ul6). */
+  private readonly codemuxSessionId = randomUUID();
   /** A run-output line named this session: the harness confirmed it. A
    * resumed session records at spawn from the vouched id, so the record
    * alone does not prove opencode can load the session (the agy rule,
@@ -160,6 +172,14 @@ export class OpenCodeSessionDriver {
   private stdinClosed = false;
   private firstFatal: string | null = null;
   private sessionTimer: Timer | null = null;
+  /** The wall clock each open turn started at, keyed by turn id: the
+   * ledger's session_turn records carry each turn's own duration. */
+  private readonly turnStartedAt = new Map<string, number>();
+  /** The session's own start, for the closing ledger record's duration. */
+  private readonly sessionStartedAt = Date.now();
+  /** The launch facts the call ledger records on every turn and at the
+   * end (call-log.ts); the provider is the override's host or "default". */
+  private readonly callLedger: SessionCallContext;
   private readonly done: Promise<number>;
   private resolveDone!: (code: number) => void;
 
@@ -168,6 +188,15 @@ export class OpenCodeSessionDriver {
       this.resolveDone = resolve;
     });
     this.sessionId = options.resumeSessionId;
+    this.callLedger = {
+      agent: "opencode",
+      model: options.model ?? null,
+      provider: providerHost(options.providerBaseUrl),
+      autonomy: options.autonomy,
+      hermetic: options.hermetic,
+      sandboxed: options.sandboxed,
+      cwd: options.cwd,
+    };
     this.out = new BoundedOutboundQueue(
       options.sink ?? defaultEventSink(),
       (failure) => {
@@ -492,6 +521,17 @@ export class OpenCodeSessionDriver {
           usage,
         })
       );
+      // The turn completed in front of the caller, so it gets its ledger
+      // line before the session-ending fatal that follows (call-log.ts).
+      appendSessionTurnCallRecord(
+        this.callLedger,
+        this.ledgerSessionId(),
+        turnId,
+        this.turnStartedAt.get(turnId) ?? Date.now(),
+        "failed",
+        usage
+      );
+      this.turnStartedAt.delete(turnId);
       this.emitError(
         true,
         "harness",
@@ -524,6 +564,17 @@ export class OpenCodeSessionDriver {
         usage,
       })
     );
+    // The ledger's turn record mirrors the event the caller just saw
+    // (call-log.ts).
+    appendSessionTurnCallRecord(
+      this.callLedger,
+      this.ledgerSessionId(),
+      turnId,
+      this.turnStartedAt.get(turnId) ?? Date.now(),
+      failed ? "failed" : "end",
+      usage
+    );
+    this.turnStartedAt.delete(turnId);
     this.stampActivity();
   }
 
@@ -669,6 +720,7 @@ export class OpenCodeSessionDriver {
         turn_id: turnId,
       })
     );
+    this.turnStartedAt.set(turnId, Date.now());
     return turnId;
   }
 
@@ -811,14 +863,15 @@ export class OpenCodeSessionDriver {
         this.endExitCode = Math.max(this.endExitCode, 1);
         this.emitError(true, "codemux", error.message);
       } else {
+        const synthFinish =
+          reason === "crash" || drainFailureCode !== null || this.firstFatal !== null
+            ? "failed"
+            : "interrupted";
         this.cumulative = addUsage(this.cumulative, usage);
         this.emit(
           buildEvent(++this.seq, this.sessionIdOrEmpty(), "turn_completed", null, {
             turn_id: turnId,
-            finish:
-              reason === "crash" || drainFailureCode !== null || this.firstFatal !== null
-                ? "failed"
-                : "interrupted",
+            finish: synthFinish,
             reason:
               reason === "crash"
                 ? crashSynthesisReason(this.firstFatal)
@@ -830,6 +883,17 @@ export class OpenCodeSessionDriver {
             usage,
           })
         );
+        // The synthesized completion is a turn the caller saw complete, so
+        // it gets its ledger line like any other (call-log.ts).
+        appendSessionTurnCallRecord(
+          this.callLedger,
+          this.ledgerSessionId(),
+          turnId ?? "none",
+          this.turnStartedAt.get(turnId ?? "") ?? Date.now(),
+          synthFinish,
+          usage
+        );
+        this.turnStartedAt.delete(turnId ?? "");
       }
     }
     this.settled = true;
@@ -858,6 +922,16 @@ export class OpenCodeSessionDriver {
         usage: this.cumulative,
         resumable,
       })
+    );
+    // The closing ledger line: the same cumulative usage and end verdict
+    // the caller just received (call-log.ts).
+    appendSessionCallRecord(
+      this.callLedger,
+      this.ledgerSessionId(),
+      this.sessionStartedAt,
+      reason,
+      childCode,
+      this.cumulative
     );
     const delivered = sent ? await awaitFinalFlush(this.out) : false;
     this.signals.dispose();
@@ -915,6 +989,15 @@ export class OpenCodeSessionDriver {
 
   private sessionIdOrEmpty(): string {
     return this.sessionId ?? "";
+  }
+
+  /** The id the call ledger keys this session's records by: the harness's
+   * own session id once a run-output line has named one (the registry key,
+   * stable across a resume), else the codemux-minted id every session owns
+   * from construction — never "", which merged every id-less session under
+   * one key in `calls --sum` (review ul6). */
+  private ledgerSessionId(): string {
+    return this.sessionId || this.codemuxSessionId;
   }
 
   private emit(line: string): void {

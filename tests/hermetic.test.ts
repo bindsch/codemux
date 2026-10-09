@@ -29,10 +29,12 @@ import { AGENT_IDS, type RunRequest } from "../src/types.js";
 // through a provider override — are in hermetic-harness-mappings.test.ts;
 // the per-harness provider-override suites in their own files.
 
-const PLAIN_CLAUDE = ["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence"];
+// --output-format json rides on every run: the envelope is what the
+// plain-run unwrap consumes, hermetic or not.
+const PLAIN_CLAUDE = ["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json"];
 
 describe("hermetic runs: claude and zai", () => {
-  const HERMETIC_CLAUDE = ["claude", "-p", "--safe-mode", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence"];
+  const HERMETIC_CLAUDE = ["claude", "-p", "--safe-mode", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json"];
 
   test("--hermetic adds --safe-mode, keeps the user setting source and the tools", () => {
     const cmd = new ClaudeAdapter().buildRunCommand({ agent: "claude", prompt: "p", model: "haiku", hermetic: true });
@@ -59,9 +61,9 @@ describe("hermetic runs: claude and zai", () => {
 
   test("instruction directories become --add-dir; the project source turns on only for the working directory itself", () => {
     expect(new ClaudeAdapter().buildRunCommand({ agent: "claude", prompt: "p", cwd: "/tmp/a", instructionDirs: ["/tmp/a", "/tmp/b"] }))
-      .toEqual(["claude", "-p", "--setting-sources", "user,project", "--strict-mcp-config", "--no-session-persistence", "--add-dir", "/tmp/a", "--add-dir", "/tmp/b"]);
+      .toEqual(["claude", "-p", "--setting-sources", "user,project", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--add-dir", "/tmp/a", "--add-dir", "/tmp/b"]);
     expect(new ClaudeAdapter().buildRunCommand({ agent: "claude", prompt: "p", cwd: "/tmp/a", hermetic: true, instructionDirs: ["/tmp/a"] }))
-      .toEqual(["claude", "-p", "--safe-mode", "--setting-sources", "user,project", "--strict-mcp-config", "--no-session-persistence", "--add-dir", "/tmp/a"]);
+      .toEqual(["claude", "-p", "--safe-mode", "--setting-sources", "user,project", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--add-dir", "/tmp/a"]);
     // An instruction directory elsewhere never enables the working
     // directory's own settings file.
     expect(new ClaudeAdapter().buildRunCommand({ agent: "claude", prompt: "p", cwd: "/tmp/repo", instructionDirs: ["/tmp/a"] }))
@@ -117,7 +119,20 @@ describe("hermetic runs: codex", () => {
     for (const feature of ["apps", "plugins", "hooks", "memories", "shell_snapshot"]) {
       expect(cmd[cmd.indexOf(feature) - 1]).toBe("--disable");
     }
-    expect(cmd.slice(-6)).toEqual(["exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "--ignore-user-config", "-"]);
+    // A plain hermetic run keeps human mode (ul3): no --json event
+    // stream and no final-message fallback, just the hermetic config
+    // closer and the stdin marker.
+    expect(cmd.slice(-6)).toEqual([
+      "exec",
+      "--skip-git-repo-check",
+      "--ephemeral",
+      "--ignore-rules",
+      "--ignore-user-config",
+      "-",
+    ]);
+    expect(cmd).not.toContain("--json");
+    expect(cmd).not.toContain("--output-last-message");
+    expect(cmd[cmd.length - 1]).toBe("-");
     // No tools flag unless asked.
     expect(cmd).not.toContain("shell_tool");
   });
@@ -132,7 +147,11 @@ describe("hermetic runs: codex", () => {
     expect(cmd).toContain('web_search="disabled"');
     expect(cmd).not.toContain("tools.web_search=false");
     expect(cmd).not.toContain("--ignore-user-config");
+    // A plain run keeps human mode (ul3): the stream and fallback file
+    // belong to --result-json runs only.
     expect(cmd.slice(-5)).toEqual(["exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "-"]);
+    expect(cmd).not.toContain("--json");
+    expect(cmd).not.toContain("--output-last-message");
   });
 
   test("--tools none is accepted only at read-only autonomy (apply_patch cannot be removed)", () => {
@@ -154,9 +173,20 @@ describe("hermetic runs: codex", () => {
     expect(() => statSync(cmd[1]!.slice("HOME=".length))).toThrow();
   });
 
-  test("plain commands are unchanged", () => {
-    expect(codexAdapter({}, fakeHome()).buildRunCommand({ agent: "codex", prompt: "p" }))
-      .toEqual(["codex", "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "-"]);
+  test("plain commands are unchanged by the hermetic machinery", () => {
+    // No env(1) prefix and no hermetic home — and no event stream either:
+    // a plain run keeps human mode (ul3), its usage the stderr figure the
+    // unwrap reads, so nothing here varies with the ledger machinery.
+    const home = fakeHome();
+    expect(codexAdapter({}, home).buildRunCommand({ agent: "codex", prompt: "p" }))
+      .toEqual([
+        "codex",
+        "exec",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--ignore-rules",
+        "-",
+      ]);
   });
 
   function privateHome(cmd: string[]): { home: string; codexHome: string } {

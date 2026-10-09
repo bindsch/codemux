@@ -196,7 +196,17 @@ const contracts = [
     {
       binary: "opencode",
       args: ["--pure", "run", "--help"],
-      required: ["--pure", "--model", "--agent", "--auto", "--variant"],
+      required: [
+        "--pure",
+        "--model",
+        "--agent",
+        "--auto",
+        "--variant",
+        // Carries the JSON run wire every plain opencode run now parses
+        // for its reply and usage (plain-unwrap.ts); same reason as
+        // claude's --output-format above.
+        "--format",
+      ],
     },
     {
       binary: "pi",

@@ -69,7 +69,7 @@ describe("opencode provider override", () => {
   test("without an override nothing changes", () => {
     const adapter = adapterOf();
     expect(adapter.buildRunCommand({ agent: "opencode", prompt: "p" }))
-      .toEqual(["opencode", "--pure", "run"]);
+      .toEqual(["opencode", "--pure", "run", "--format", "json"]);
     expect(adapter.getRunEnv({ agent: "opencode", prompt: "p" })).toEqual({});
   });
 

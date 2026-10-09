@@ -27,6 +27,7 @@ import {
 import { validateWorkingDirectory } from "../validation.js";
 import { readUtf8FileBounded } from "../file-io.js";
 import { codexResult } from "../result-envelope.js";
+import { codexPlainResult } from "../plain-unwrap.js";
 import type { ScodeTrustLevel } from "../sandbox.js";
 import type {
   AgentId,
@@ -340,12 +341,21 @@ export class CodexAdapter extends BaseAdapter {
     // under CODEX_HOME dies with the run instead of staying resumable.
     cmd.push("--ephemeral");
     cmd.push("--ignore-rules");
+    // A plain run keeps human mode (review ul3): `--json` streams every
+    // event, tool output included, so an agentic run's stream is tens of
+    // MiB and fills the 16 MiB stdout capture -- exit 125, reply lost,
+    // no receipt. Human mode prints the reply on stdout (the contract a
+    // plain run always had) and one blended `tokens used` figure on
+    // stderr, which processRunResult records as the run's usage
+    // (plain-unwrap.ts). Only --result-json asks for the event stream,
+    // which it reduces to the promised envelope.
     if (request.resultJson) {
-      // Events as JSONL on stdout (one per line; codex-rs exec lib.rs), which
-      // processRunResult reduces to the envelope --result-json promises:
-      // the final assistant message plus the codemux usage block. Human mode
-      // carries only a blended token total on stderr and no message boundary,
-      // so the event stream is the robust source.
+      // Events as JSONL on stdout (one per line; codex-rs exec lib.rs),
+      // which processRunResult reduces to the envelope --result-json
+      // promises: the final assistant message plus the codemux usage
+      // block. Human mode carries only a blended token total on stderr
+      // and no message boundary, so the event stream is the robust
+      // source.
       cmd.push("--json");
       // The stream's one blind spot is a turn that ends with a Plan and no
       // agent_message: codex treats that Plan as the final message, but its
@@ -457,7 +467,8 @@ export class CodexAdapter extends BaseAdapter {
       // keep their file whatever the trust: an untrusted sandbox denies the
       // private home itself, so the fallback is not what decides that run.
       // processRunResult removes the file once read; cleanupRun removes the
-      // directory.
+      // directory. A plain run prepares none of this: it launches in human
+      // mode and names no fallback file (review ul3).
       // prepareRun creates the home above whenever request.hermetic is set,
       // so a home here is the hermetic case; a hermetic run that somehow has
       // none fails closed at getRunEnv before anything launches.
@@ -629,7 +640,12 @@ export class CodexAdapter extends BaseAdapter {
     request: RunRequest,
     context?: RunContext
   ): RunResult {
-    if (!request.resultJson) return result;
+    // A plain run keeps human mode (review ul3): stdout is the reply
+    // verbatim -- exactly what a plain run printed before the ledger -- and
+    // the only usage carrier is the `tokens used` figure on stderr, so the
+    // receipt's usage is that blended total and nothing else
+    // (plain-unwrap.ts).
+    if (!request.resultJson) return codexPlainResult(result);
     // Read (and remove) this run's --output-last-message file first: the
     // launch named one, and whether or not the stream needs it, the file must
     // not outlive the run that wrote it.
@@ -642,11 +658,9 @@ export class CodexAdapter extends BaseAdapter {
     // did, so the envelope's model fallback (and the reroute note) sees the
     // model codemux actually selected.
     const override = this.validatedProvider();
-    return codexResult(
-      result,
-      override === null ? request : { ...request, model: this.modelFor(request.model) },
-      finalMessageFallback
-    );
+    const effective =
+      override === null ? request : { ...request, model: this.modelFor(request.model) };
+    return codexResult(result, effective, finalMessageFallback);
   }
 
   /**

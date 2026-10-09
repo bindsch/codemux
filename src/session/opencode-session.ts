@@ -5,17 +5,21 @@
  * launcher-owned driver (src/session/opencode-driver.ts).
  *
  * Wire facts here are pinned against the installed 1.18.18 binary's run
- * command (scratch/opencode-run-fmt.txt holds the extracted strings): `run`
+ * command (upstream v1.18.18 fetched to scratch/upstream-run.ts and
+ * scratch/upstream-ui.ts): `run`
  * prints one JSON object per line of the shape `{type, timestamp,
  * sessionID, …payload}` with types `step_start`, `step_finish` (tokens and
  * cost), `text` (only once the part's time ends), `tool_use` (only once the
- * tool's state is completed or error), and `error`; a non-TTY stdin is read
- * to EOF and used as the message when the argv message is empty, an empty
- * message exits 1, and `--session <id>` resumes the native session (ids are
- * `ses_` plus ~24 mixed-case alphanumerics, verified against the on-disk
- * database). opencode speaks no event protocol beyond this one-shot output,
- * so the session is turn-per-process: one `run` per caller input, state
- * carried by the native session id.
+ * tool's state is completed or error), and `error`; in plain (non-JSON)
+ * mode the same loop prints each completed text part trimmed on its own
+ * line and puts the banner, tool lines, and errors on stderr, which is
+ * the byte-for-byte spelling plain-unwrap.ts reproduces; a non-TTY stdin
+ * is read to EOF and used as the message when the argv message is empty,
+ * an empty message exits 1, and `--session <id>` resumes the native
+ * session (ids are `ses_` plus ~24 mixed-case alphanumerics, verified
+ * against the on-disk database). opencode speaks no event protocol
+ * beyond this one-shot output, so the session is turn-per-process: one
+ * `run` per caller input, state carried by the native session id.
  *
  * Every capability the wire cannot evidence (steer, interrupt, permissions,
  * user-during-turn, deltas, file changes, a usage stream) reports false,

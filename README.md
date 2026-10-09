@@ -75,6 +75,7 @@ codemux [command] [options]
 | `list` | Agent capability overview |
 | `doctor` | Installation and capability diagnostics |
 | `usage` | Subscription quota through optional `usagemux` integration |
+| `calls` | Recent records from the per-call usage ledger |
 | `autonomy` | Autonomy equivalence matrix |
 | `verify` | Static wiring validation + optional scode preview |
 
@@ -337,6 +338,20 @@ but not model or effort flags.
 | `--show-scode` | Print effective `scode` commands (`run`/`tui` x autonomy) |
 | `--sandbox-trust` / `--sandbox-no-net` / `--sandbox-scrub-env` | Same overrides as `run`/`tui`, applied to preview output |
 
+### `calls` options
+
+`codemux calls` shows the last 20 ledger records, newest first. See
+[The call ledger](#the-call-ledger) for what a record carries and where the
+file lives.
+
+| Flag | Description |
+|------|-------------|
+| `-n, --limit <count>` | Records to show, most recent first (1 to 100000; default 20) |
+| `-a, --agent <id>` | Show only one agent's calls |
+| `--since <when>` | Cutoff as a duration (`90m`, `24h`, `7d`) or an ISO timestamp. A value that is neither, or a duration whose cutoff falls outside the date range, is a usage error (exit 64 with a message), never a silently empty view. A record counts when its `ts` is inside; a closing `session` record also counts when any turn of the same session is inside, so a session that started before the cutoff keeps its cost — the claude family reports it only on that closing record |
+| `--json` | Print the raw JSONL records instead of the table |
+| `--sum` | Print totals over the shown records — filters run first, so the totals cover exactly what is shown. Closing `session` summaries fold in per field: a summary contributes a usage field only when no shown turn of the same session reported that field, so a session's tokens come from its turns (never counted twice) while the claude family's session cost — null on every turn, because the wire's `total_cost_usd` is a session-lifetime figure only the closing record adopts — comes from the summary; a summary whose turns are not shown contributes everything it reported. A resumed session's several closings fold to the newest one, so the pre-resume share is never counted twice. A field no record reported is `unknown`, never zero, with the count of records that did not report it |
+
 ### Examples
 
 ```bash
@@ -533,6 +548,38 @@ require) passes through the same way; Codex, whose
 envelope codemux builds: `result` holds the final assistant message as plain
 text. Every envelope carries the same block:
 
+The envelope's inputs ride plain runs too: claude/zai (`--output-format
+json`), agy (`--output-format=json`), and opencode (`--format json`) launch
+in their structured mode unconditionally, and codemux unwraps the structured
+stdout back to the plain reply byte for byte — opencode's reply is spelled
+the way its run command prints it in plain mode, each text part trimmed on
+its own line — so `run`'s stdout contract holds while
+[the call ledger](#the-call-ledger) still gets the usage. The codex
+exception needs saying twice, because its stream is the one shape the
+16 MiB output bound cannot hold: its `--json` carries every event with all
+tool output, so forcing it onto plain runs pushed agentic runs past the
+bound and killed them with the reply lost; a plain codex run keeps human
+mode — stdout verbatim, exactly what the binary printed — and the ledger
+takes its usage from the blended `tokens used` figure codex prints on stderr
+(`total_tokens` alone; the figure mixes input and output and cannot be split
+back apart). opencode's `--format json` stream carries the same volume, so
+its stdout is never captured whole: the launcher feeds the event stream
+through a fold that keeps only the reply text and the folded usage — tool
+parts are dropped as they arrive — and the output bound measures that
+residue, so no amount of tool output can kill the run. A structured stream
+that arrives broken never passes through as
+the reply: for opencode one unparseable or cut-off line among wire lines (a
+timeout can cut the last write) keeps the text and usage folded so far with
+the break on stderr, and for the claude family and agy a stdout that is
+JSON but not a parseable envelope (any JSON value — an array or a scalar
+included — or an object a kill cut mid-write; the envelope is one write a
+kill can halve)
+fails the run with nothing on stdout. Stdout that is not the structured
+output the launch asked for at all — an older binary, a wrapper that strips
+the flag, not one line of the wire — passes through verbatim with the run
+unchanged and nothing recorded. The same verdict rules as the envelope path
+apply to the unwrap: an error result or a result with no text fails the run.
+
 ```json
 "codemux": {
   "agent": "codex",
@@ -627,6 +674,138 @@ token-usage update arrived counts as unreported, not as a measured zero —
 and a
 failed run reports null usage fields as well: an exact-looking figure that
 understates a failed run is worse than none.
+
+## The call ledger
+
+Every completed call writes one JSON line to a ledger file: each `run`, each
+`check`, each session turn, and one closing line per session with the
+cumulative usage. Whoever the caller is and however the run was launched —
+hermetic, sandboxed, or against a provider override, whose throwaway homes
+leave no harness transcript behind — the receipt lands in one place. A run
+interrupted by SIGINT or SIGTERM writes its receipt too: exit code 143 and
+the usage folded so far. So does a run that ran its harness and still
+failed to finish — a capture the runner could not take (a stream that is
+not valid UTF-8) or a throw while post-processing — with the launch's
+failure exit code (1, or 64 for a usage refusal) and the usage folded so
+far; a launch refused before the spawn (a missing sandbox, an unresolved
+binary) ran nothing and records nothing. All through the same never-fail
+append. A
+ledger failure never fails the run: the first failure warns on stderr, later
+ones stay silent, and nothing about the ledger ever touches stdout.
+
+The file is `calls.jsonl` beside the session registry —
+`~/Library/Application Support/codemux/` on macOS,
+`~/.local/state/codemux/` elsewhere, derived from `$HOME` alone. 
+`CODEMUX_CALL_LOG=<absolute path>` relocates it (a relative value resolves
+against the working directory); `CODEMUX_CALL_LOG=off` disables it. The
+file is created 0600 and tightened when it arrives with wider permissions;
+the directory is created 0700, and an existing directory is tightened only
+when it is the default state directory — a relocated ledger never changes
+its directory's permissions (the directory the operator named, `/tmp`
+included, keeps what it has, and a failure to tighten never stops the
+append). The append itself never throws: everything, including resolving
+the path, sits inside the never-fail guard, so a hostile environment value
+warns once and the run proceeds. codemux's own test suite redirects appends
+through `CODEMUX_TEST_LEDGER=<path>` (the preload `tests/setup.ts` sets with
+`--preload`); it is consulted only when `CODEMUX_CALL_LOG` is unset, and no
+generic variable — `NODE_ENV=test` included — ever diverts records, so a
+process outside codemux's test runner that happens to set one keeps its
+real ledger. Each line is one `O_APPEND` write so concurrent codemux processes
+never interleave half-lines. What a harness reports about itself — the
+model names, the provider host, the finish reasons — is stored stripped of
+ANSI escape sequences and C0/C1 control characters, so a hostile or merely
+decorated endpoint cannot store bytes that replay into the operator's
+terminal on every view; `--json` prints the stored bytes verbatim, and the
+table sanitizes again at render for ledgers written before the strip.
+`codemux calls` reads it back (see
+[`calls` options](#calls-options)); the view is bounded to the file's
+newest 16 MiB, and a cut landing mid-line drops that partial line only —
+a complete record is never dropped for the bound, and a corrupt or
+wrong-shaped line is skipped and counted, never fatal.
+
+A record has the same shape on every line — fields that do not apply are
+null, not absent:
+
+```json
+{
+  "ts": "2026-10-08T12:00:00.000Z",
+  "kind": "run",
+  "agent": "codex",
+  "model": null,
+  "model_effective": "gpt-5.3-codex",
+  "provider": "default",
+  "session_id": null,
+  "turn_id": null,
+  "autonomy": "high",
+  "hermetic": false,
+  "sandboxed": true,
+  "exit_code": 0,
+  "finish": null,
+  "duration_ms": 4310,
+  "cwd": "/repo",
+  "usage": {
+    "input_tokens": 200,
+    "output_tokens": 50,
+    "cached_input_tokens": 800,
+    "total_tokens": 1050,
+    "cost_usd": null
+  }
+}
+```
+
+`ts` marks the start of the call, turn, or session; `duration_ms` carries
+the wall time from there. `model` is what the caller requested and
+`model_effective` the model the harness says served the call (null when
+unreported — the codex reroute rule from
+[Result envelopes](#result-envelopes) applies). `provider` is `default` or
+the host of a provider override's base URL — the endpoint's identity, never
+its key. `kind` is `run`, `check`, `session_turn`, or `session`; session
+records carry `session_id` and (for turns) `turn_id`, `finish` names how a
+turn or session ended, and `usage` is the envelope's block exactly: nulls
+when the harness did not report, never guessed. A session whose harness
+has not named a native id yet — one that ends before its first
+identity-bearing result — is keyed by a codemux-minted id instead of
+an empty one, so id-less sessions never share a key in `calls --sum`.
+`cwd` is the run's working
+directory. Nothing else is recorded: no prompt text, no API keys, no
+environment values.
+
+What the ledger can know is what the harness reports, and that differs by
+harness:
+
+| Harness | Usage | Cost | Effective model |
+|---------|-------|------|-----------------|
+| claude, zai | Full (input, output, cached; total computed) | Yes (`total_cost_usd`, per run) | Yes (`modelUsage`, single-model runs) |
+| codex | Full on `--result-json` runs (input, output, cached incl. cache writes); plain runs carry the blended `tokens used` figure from stderr (total only — the figure mixes input and output) | No | Only on a mid-run reroute (`--result-json` runs) |
+| agy | Full (input, output, cache reads; total computed) | No | No |
+| opencode | Per-run sums (input, output, cache read+write, total, cost when the provider reports one). The plain-run path streams the `--format json` events through a fold that keeps the reply text and folded usage alone — tool parts are dropped as they arrive, so the run cannot outgrow the 16 MiB output bound, and what the tool events carried (their inputs, their outputs) is not kept anywhere | When reported | No |
+| aider | None — its headless wire reports no usage | No | No |
+| everything else | None — plain text stdout, no structured mode | No | No |
+
+For opencode sessions the numbers come from the per-turn wire the session
+driver already parses; for claude, zai, codex, and agy sessions, from the
+same envelope or event stream the `--result-json` path reads. A run whose
+stdout is not the structured output the launch asked for (the plain-unwrap
+escape hatch) records null usage honestly rather than a guess. What an
+endpoint reports is its own choice: the local vLLM override gateway this
+release's live check ran against reported real token counts (24709 in,
+2 out, 0 cached) and a zero cost — a reported zero, not a missing figure —
+while an endpoint that reports nothing leaves nulls. The wire's
+capability, not a fixed promise.
+
+Session turns carry that turn's own usage where the harness reports one
+per result (claude, zai, codex, agy, opencode); claude/zai's cost is
+session-lifetime, so a `session_turn` record reports it null and the
+closing `session` record carries the adopted final figure — which is why
+`calls --sum` folds closing summaries per field (see
+[`calls` options](#calls-options)) instead of dropping them: the tokens
+come from the turns, the session's cost from the summary. A resumed
+session writes a second closing record under the same session id, and each
+closing carries session-lifetime usage (the writer cannot subtract the
+pre-resume share: the wire reports only the new total), so `--sum` folds
+the closings of one session to the newest — the older closing is
+superseded and named in the note, never added. Aider sessions
+report no usage on their headless wire, so their records carry nulls.
 
 ## Live sessions
 

@@ -24,7 +24,14 @@
  * turn id is known — before that they buffer and flush on the response.
  */
 
+import { randomUUID } from "node:crypto";
 import type { AutonomyLevel, ReasoningEffort, ResultUsageBlock } from "../types.js";
+import {
+  appendSessionCallRecord,
+  appendSessionTurnCallRecord,
+  providerHost,
+  type SessionCallContext,
+} from "../call-log.js";
 import { emptyUsage } from "../result-envelope.js";
 import {
   buildInitializeRequest,
@@ -223,6 +230,11 @@ export class CodexSessionDriver {
   /** The thread id: the codemux session id. Null on a fresh thread until
    * the thread/start response (or thread/started) names it. */
   private threadId: string | null;
+  /** Codemux's own id for this session, minted at construction: what the
+   * call ledger records while the harness has not named a thread (and
+   * ever after, if it never does), so id-less sessions never share a key
+   * (review ul6). */
+  private readonly codemuxSessionId = randomUUID();
   /** The harness turn id of the open turn, from the turn/start response;
    * null while no turn is open and while a turn/start request is still
    * in flight (steers and interrupts buffer until it is named). */
@@ -249,6 +261,14 @@ export class CodexSessionDriver {
   /** Starts unknown (all-null), not zero: a counter a turn never reports
    * must stay null rather than be guessed as 0 (§4.2). */
   private cumulative: ResultUsageBlock = emptyUsage();
+  /** The wall clock each open turn started at, keyed by turn id: the
+   * ledger's session_turn records carry each turn's own duration. */
+  private readonly turnStartedAt = new Map<string, number>();
+  /** The session's own start, for the closing ledger record's duration. */
+  private readonly sessionStartedAt = Date.now();
+  /** The launch facts the call ledger records on every turn and at the
+   * end (call-log.ts); the provider is the override's host or "default". */
+  private readonly callLedger: SessionCallContext;
   private registryRecorded = false;
   /** The CLI claimed the record for a resume before the spawn
    * (`adoptResumeClaim`): every end path releases the claim and reports
@@ -291,6 +311,15 @@ export class CodexSessionDriver {
     this.done = new Promise<number>((resolve) => {
       this.resolveDone = resolve;
     });
+    this.callLedger = {
+      agent: "codex",
+      model: options.model ?? null,
+      provider: providerHost(options.providerBaseUrl),
+      autonomy: options.autonomy,
+      hermetic: false,
+      sandboxed: options.sandboxed,
+      cwd: options.cwd,
+    };
     this.threadId = options.resumeThreadId;
     this.policy = codexSessionPolicy(options.autonomy, options.sandboxed, options.cwd);
     this.out = new BoundedOutboundQueue(
@@ -1227,6 +1256,17 @@ export class CodexSessionDriver {
         usage,
       })
     );
+    // The ledger's turn record mirrors the event the caller just saw
+    // (call-log.ts).
+    appendSessionTurnCallRecord(
+      this.callLedger,
+      this.ledgerSessionId(),
+      turnId ?? "none",
+      this.turnStartedAt.get(turnId ?? "") ?? Date.now(),
+      finish,
+      usage
+    );
+    this.turnStartedAt.delete(turnId ?? "");
     if (this.registryRecorded && this.options.registryPath !== null) {
       // Best-effort stamp, and never a wait: the lock's retry sleep is a
       // synchronous Atomics.wait on the main thread, and this runs inside
@@ -1287,6 +1327,15 @@ export class CodexSessionDriver {
         usage,
       })
     );
+    appendSessionTurnCallRecord(
+      this.callLedger,
+      this.ledgerSessionId(),
+      turnId ?? "none",
+      this.turnStartedAt.get(turnId ?? "") ?? Date.now(),
+      "failed",
+      usage
+    );
+    this.turnStartedAt.delete(turnId ?? "");
     this.drainTurnQueue();
   }
 
@@ -1341,6 +1390,7 @@ export class CodexSessionDriver {
         turn_id: turnId,
       })
     );
+    this.turnStartedAt.set(turnId, Date.now());
     this.turnTimeoutFired = false;
     this.armTurnTimer();
     return turnId;
@@ -1900,13 +1950,14 @@ export class CodexSessionDriver {
         this.endExitCode = Math.max(this.endExitCode, 1);
         this.emitError(true, "codemux", error.message);
       } else {
+        const synthFinish =
+          reason === "crash" || drainFailureCode !== null || this.firstFatal !== null
+            ? "failed"
+            : "interrupted";
         this.emit(
           buildEvent(++this.seq, this.sessionIdOrEmpty(), "turn_completed", null, {
             turn_id: turnId,
-            finish:
-              reason === "crash" || drainFailureCode !== null || this.firstFatal !== null
-                ? "failed"
-                : "interrupted",
+            finish: synthFinish,
             reason:
               reason === "crash"
                 ? crashSynthesisReason(this.firstFatal)
@@ -1921,6 +1972,17 @@ export class CodexSessionDriver {
             usage,
           })
         );
+        // The synthesized completion is a turn the caller saw complete, so
+        // it gets its ledger line like any other (call-log.ts).
+        appendSessionTurnCallRecord(
+          this.callLedger,
+          this.ledgerSessionId(),
+          turnId ?? "none",
+          this.turnStartedAt.get(turnId ?? "") ?? Date.now(),
+          synthFinish,
+          usage
+        );
+        this.turnStartedAt.delete(turnId ?? "");
       }
     }
     // The child is dead and the pipes are drained: nothing more can
@@ -1986,6 +2048,16 @@ export class CodexSessionDriver {
         usage: this.cumulative,
         resumable: resumable && settledHome,
       })
+    );
+    // The closing ledger line: the same cumulative usage and end verdict
+    // the caller just received (call-log.ts).
+    appendSessionCallRecord(
+      this.callLedger,
+      this.ledgerSessionId(),
+      this.sessionStartedAt,
+      reason,
+      childCode,
+      this.cumulative
     );
     // Exit-code honesty: `session_ended` is the one event the caller
     // cannot afford to lose, so a delivery that failed — the sink
@@ -2093,6 +2165,15 @@ export class CodexSessionDriver {
    * reason.) */
   private sessionIdOrEmpty(): string {
     return this.threadId ?? "";
+  }
+
+  /** The id the call ledger keys this session's records by: the harness's
+   * own thread id once it has named one (the registry key, stable across a
+   * resume), else the codemux-minted id every session owns from
+   * construction — never "", which merged every id-less session under one
+   * key in `calls --sum` (review ul6). */
+  private ledgerSessionId(): string {
+    return this.threadId || this.codemuxSessionId;
   }
 
   private emit(line: string): void {

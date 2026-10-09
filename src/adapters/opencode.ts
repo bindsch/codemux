@@ -22,8 +22,10 @@ import type {
   AutonomyLevel,
   ReasoningEffort,
   RunRequest,
+  RunResult,
   AdapterCapabilities,
 } from "../types.js";
+import { OpenCodePlainFold, opencodePlainResult } from "../plain-unwrap.js";
 
 // Hermetic runs point OpenCode's XDG world at a private home (see
 // opencode-hermetic.ts) and close the channels a home cannot with these
@@ -339,6 +341,14 @@ export class OpencodeAdapter extends BaseAdapter {
       cmd.push("env", ...envPrefix);
     }
     cmd.push("opencode", "--pure", "run");
+    // Always the JSON event lines, plain runs included (the same wire the
+    // session driver's per-turn spawns read): the launcher streams them
+    // through the fold on the run context instead of capturing stdout
+    // whole, and processRunResult reads the reply and usage back off that
+    // fold — so stdout keeps its contract and the call ledger gets the
+    // step_finish usage without tool output ever filling the capture
+    // bound (review ul4).
+    cmd.push("--format", "json");
 
     const model = this.modelFor(request.model);
     if (model) {
@@ -357,6 +367,23 @@ export class OpencodeAdapter extends BaseAdapter {
 
   override getStdinInput(request: RunRequest): string | null {
     return request.prompt;
+  }
+
+  override processRunResult(
+    result: RunResult,
+    _request: RunRequest,
+    context?: RunContext
+  ): RunResult {
+    // The run was launched with --format json, so stdout is the event-line
+    // wire — streamed through the fold prepareRun hung on the context, so
+    // tool output never fills the capture bound (review ul4). Anything the
+    // fold saw that was not the wire passed through verbatim with the run
+    // unchanged (plain-unwrap.ts's escape hatch). Callers that reach here
+    // without the context's sink (a result already captured whole) get the
+    // same fold and verdict from the captured stdout.
+    const sink = context?.stdoutSink;
+    if (sink instanceof OpenCodePlainFold) return sink.verdict(result);
+    return opencodePlainResult(result);
   }
 
   override prepareRun(request: RunRequest): RunContext {
@@ -380,6 +407,12 @@ export class OpencodeAdapter extends BaseAdapter {
     if (request.hermetic) {
       context.opencodeHermeticHome = createOpencodeHermeticHome(this.realDataDir());
     }
+    // The JSON event stream carries every tool's output, so the launcher
+    // feeds it to this fold instead of capturing stdout whole: the fold
+    // keeps the reply text, the folded step_finish usage, and the break
+    // notes — tool parts dropped as they arrive — so no volume of tool
+    // output can reach the 16 MiB capture bound (review ul4).
+    context.stdoutSink = new OpenCodePlainFold();
     return context;
   }
 

@@ -1,8 +1,10 @@
 # Live sessions D: OpenCode and Aider sessions, overrides inside sessions
 
 Prompt D report, 2026-10-07. Branch `sessions-d-0.10` (cut from main
-299066b at version 0.9.0; release prep landed 2026-10-08, so this tree
-carries version 0.10.0 and the CHANGELOG entry sits under `[0.10.0]`).
+299066b at version 0.9.0; release prep landed 2026-10-08 as 0.10.0, and
+this tree has since been cut for the usage-ledger release, so it carries
+version 0.11.0 and the CHANGELOG entry sits under `[0.11.0]` — the
+sessions work itself shipped under `[0.10.0]`).
 Task text: `scratch/prompt-d.md`; operator request:
 `scratch/provider-overrides-2-request.md`.
 

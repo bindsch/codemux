@@ -77,6 +77,7 @@ describe("AgyAdapter", () => {
       "--model=gemini-3-pro",
       "--effort=high",
       "--mode=accept-edits",
+      "--output-format=json",
       "--print=fix the tests",
     ]);
   });
@@ -109,9 +110,14 @@ describe("AgyAdapter", () => {
     expect(adapter.getStdinInput({ agent: "agy", prompt: "t" })).toBeNull();
   });
 
-  test("the envelope is off unless asked for", () => {
-    expect(adapter.buildRunCommand({ agent: "agy", prompt: "t" }))
-      .not.toContain("--output-format=json");
+  test("the envelope is always on, so --result-json adds no flag", () => {
+    // Plain runs ask for the envelope too (it is what the plain-run
+    // unwrap consumes for the ledger's usage); --result-json only stops
+    // the unwrap.
+    const plain = adapter.buildRunCommand({ agent: "agy", prompt: "t" });
+    expect(plain).toContain("--output-format=json");
+    expect(adapter.buildRunCommand({ agent: "agy", prompt: "t", resultJson: true }))
+      .toEqual(plain);
   });
 
   test("builds interactive commands", () => {

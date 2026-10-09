@@ -42,24 +42,24 @@ describe("OpencodeAdapter", () => {
   test("buildRunCommand reads only from stdin", () => {
     const request: RunRequest = { agent: "opencode", prompt: "test" };
     const cmd = adapter.buildRunCommand(request);
-    expect(cmd).toEqual(["opencode", "--pure", "run"]);
+    expect(cmd).toEqual(["opencode", "--pure", "run", "--format", "json"]);
   });
 
   test("buildRunCommand with model", () => {
     const request: RunRequest = { agent: "opencode", prompt: "test", model: "gpt-4" };
     const cmd = adapter.buildRunCommand(request);
-    expect(cmd).toEqual(["opencode", "--pure", "run", "--model", "gpt-4"]);
+    expect(cmd).toEqual(["opencode", "--pure", "run", "--format", "json", "--model", "gpt-4"]);
   });
 
   test("buildRunCommand with autonomy", () => {
     expect(adapter.buildRunCommand({ agent: "opencode", prompt: "t", autonomy: "read-only" }))
-      .toEqual(["opencode", "--pure", "run", "--agent", "plan"]);
+      .toEqual(["opencode", "--pure", "run", "--format", "json", "--agent", "plan"]);
     expect(adapter.buildRunCommand({ agent: "opencode", prompt: "t", autonomy: "low" }))
-      .toEqual(["opencode", "--pure", "run", "--agent", "build"]);
+      .toEqual(["opencode", "--pure", "run", "--format", "json", "--agent", "build"]);
     expect(adapter.buildRunCommand({ agent: "opencode", prompt: "t", autonomy: "medium" }))
-      .toEqual(["opencode", "--pure", "run", "--agent", "build"]);
+      .toEqual(["opencode", "--pure", "run", "--format", "json", "--agent", "build"]);
     expect(adapter.buildRunCommand({ agent: "opencode", prompt: "t", autonomy: "high" }))
-      .toEqual(["opencode", "--pure", "run", "--agent", "build", "--auto"]);
+      .toEqual(["opencode", "--pure", "run", "--format", "json", "--agent", "build", "--auto"]);
   });
 
   test("getStdinInput returns prompt", () => {
@@ -300,6 +300,8 @@ describe("ZaiAdapter", () => {
     "user",
     "--strict-mcp-config",
     "--no-session-persistence",
+    "--output-format",
+    "json",
   ];
 
   test("has correct id and binary name", () => {
@@ -379,15 +381,14 @@ describe("ZaiAdapter", () => {
     expect(adapter.capabilities().supportsResultJson).toBe(true);
   });
 
-  test("--result-json asks for the single-result envelope", () => {
-    const cmd = adapter.buildRunCommand({ agent: "zai", prompt: "t", resultJson: true });
-    expect(cmd).toEqual([
-      ...safeHeadlessArgs,
-      "--output-format",
-      "json",
-      "--model",
-      "opus",
-    ]);
+  test("the envelope is always on, so --result-json adds no flag", () => {
+    // Same rule as the claude adapter: plain runs ask for the envelope
+    // too (it is what makes usage recoverable) and unwrap it in
+    // processRunResult; --result-json only stops the unwrap.
+    const plain = adapter.buildRunCommand({ agent: "zai", prompt: "t" });
+    const enveloped = adapter.buildRunCommand({ agent: "zai", prompt: "t", resultJson: true });
+    expect(plain).toEqual(enveloped);
+    expect(plain).toContain("--output-format");
   });
 
   test("processRunResult appends the codemux block under the zai agent", () => {

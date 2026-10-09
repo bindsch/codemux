@@ -153,7 +153,7 @@ describe("hermetic runs: opencode", () => {
     expect(assignment(cmd, "OPENCODE_CONFIG_DIR")).toBeUndefined();
     expect(assignment(cmd, "OPENCODE_CONFIG_CONTENT")).toBeUndefined();
     expect(assignment(cmd, "OPENCODE_PERMISSION")).toBeUndefined();
-    expect(cmd.slice(program)).toEqual(["opencode", "--pure", "run", "--model", "m"]);
+    expect(cmd.slice(program)).toEqual(["opencode", "--pure", "run", "--format", "json", "--model", "m"]);
   });
 
   test("an operator XDG_DATA_HOME keeps its login; the other XDG vars are overridden", () => {
@@ -208,10 +208,12 @@ describe("hermetic runs: opencode", () => {
     }
   });
 
-  test("plain commands are unchanged", () => {
+  test("plain commands are unchanged by the hermetic machinery", () => {
+    // No env(1) prefix and no private home; the always-on --format json is
+    // part of every opencode run now, plain ones included.
     const { adapter } = opencodeAdapter();
     expect(adapter.buildRunCommand({ agent: "opencode", prompt: "p" }))
-      .toEqual(["opencode", "--pure", "run"]);
+      .toEqual(["opencode", "--pure", "run", "--format", "json"]);
   });
 
   test("a login carrying remote configuration refuses --hermetic", () => {
@@ -254,7 +256,7 @@ describe("hermetic runs: opencode", () => {
     // Plain runs carry the operator's own channels by design; nothing
     // about the login refuses them.
     expect(adapter.buildRunCommand({ agent: "opencode", prompt: "p" }))
-      .toEqual(["opencode", "--pure", "run"]);
+      .toEqual(["opencode", "--pure", "run", "--format", "json"]);
 
     // An account with an active organization is the same carrier; without
     // the organization the account carries nothing remote.

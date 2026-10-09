@@ -23,7 +23,7 @@ const PIPE_GIVE_UP_MS = 1_000;
 const SIGNAL_BURST_WINDOW_MS = 1_000;
 const TIMEOUT_EXIT_CODE = 124;
 // 128 + SIGTERM: the child tree was terminated after a signal to codemux.
-const SIGNAL_EXIT_CODE = 143;
+export const SIGNAL_EXIT_CODE = 143;
 export const OUTPUT_LIMIT_EXIT_CODE = 125;
 
 class OutputLimitError extends Error {
@@ -35,12 +35,46 @@ class OutputLimitError extends Error {
   }
 }
 
+/** A capture failure of a command that ran: the child was spawned and a
+ * stream's output could not be captured (invalid UTF-8). Wrapping marks the
+ * rejection — the launcher's ledger receipt keys on it to tell a run whose
+ * harness ran from a refusal before the spawn (a missing scode, an
+ * unresolved binary), which owes no receipt (review ul8). The message is
+ * the wrapped failure's own, so the caller-facing error text is unchanged. */
+export class CapturedRunFailure extends Error {
+  constructor(failure: unknown) {
+    super(failure instanceof Error ? failure.message : String(failure), {
+      cause: failure,
+    });
+    this.name = "CapturedRunFailure";
+  }
+}
+
+/** An incremental stdout consumer for a run whose harness streams more on
+ * stdout than the capture bound can hold (opencode's `--format json`: every
+ * tool's output rides the event lines). The runner feeds each decoded chunk
+ * to `push` instead of accumulating the stream; the sink keeps only what it
+ * needs, and `keptBytes` bounds that residue: past `MAX_CAPTURE_BYTES` the
+ * run fails at the capture limit exactly as a whole-stream capture would,
+ * with `finish()` as the partial output. */
+export interface StdoutSink {
+  /** One decoded chunk of the stdout stream, in arrival order. */
+  push(chunk: string): void;
+  /** The run's stdout once the stream has ended (or been abandoned). */
+  finish(): string;
+  /** What the sink is currently keeping, in bytes. */
+  keptBytes(): number;
+}
+
 /** Read a stream to its end, or until `giveUp` resolves, in which case the
- * read is canceled and what arrived so far is returned. */
+ * read is canceled and what arrived so far is returned. Without a `sink` the
+ * whole stream is captured, bounded at `MAX_CAPTURE_BYTES`; with one, the
+ * sink consumes the stream and the bound applies to what it keeps. */
 async function readBounded(
   stream: ReadableStream<Uint8Array>,
   streamName: "stdout" | "stderr",
-  giveUp: Promise<void> = new Promise(() => {})
+  giveUp: Promise<void> = new Promise(() => {}),
+  sink?: StdoutSink
 ): Promise<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -76,12 +110,27 @@ async function readBounded(
           // natural end with a partial character is genuinely invalid
           // UTF-8 and still throws.
           try {
-            return output + decoder.decode();
+            const tail = decoder.decode();
+            if (sink !== undefined && tail !== "") sink.push(tail);
+            return sink !== undefined ? sink.finish() : output + tail;
           } catch {
-            return output;
+            return sink !== undefined ? sink.finish() : output;
           }
         }
-        return output + decoder.decode();
+        const tail = decoder.decode();
+        if (sink !== undefined && tail !== "") sink.push(tail);
+        return sink !== undefined ? sink.finish() : output + tail;
+      }
+      if (sink !== undefined) {
+        sink.push(decoder.decode(value, { stream: true }));
+        // The sink's residue is this run's stdout: past the capture bound
+        // the run fails at the limit, partial output and all, exactly as a
+        // whole-stream capture does.
+        if (sink.keptBytes() > MAX_CAPTURE_BYTES) {
+          await reader.cancel();
+          throw new OutputLimitError(streamName, sink.finish());
+        }
+        continue;
       }
       const remaining = MAX_CAPTURE_BYTES - bytesRead;
       bytesRead += value.byteLength;
@@ -192,6 +241,15 @@ export interface CapturedCommandOptions {
   env: Record<string, string>;
   stdinInput?: string | null;
   timeoutMs?: number;
+  /** Consumes stdout incrementally instead of capturing it whole; stderr is
+   * captured normally either way. */
+  stdoutSink?: StdoutSink;
+  /** Called when a signal to codemux stops the run, right before the
+   * runner exits 143 — the launch's one chance to finish what only it
+   * can: the call ledger's receipt, because the runner's exit means the
+   * launch path never resumes. Runs inside the never-resume window and
+   * must not throw (a throw here would only mask the exit). */
+  onSignaled?: () => void;
 }
 
 // Captured commands in flight. While one runs, its own signal handlers own
@@ -283,7 +341,14 @@ export async function runCapturedCommand(
     streamName: "stdout" | "stderr"
   ): Promise<{ value?: string; error?: unknown }> => {
     try {
-      return { value: await readBounded(stream, streamName, giveUp) };
+      return {
+        value: await readBounded(
+          stream,
+          streamName,
+          giveUp,
+          streamName === "stdout" ? options.stdoutSink : undefined
+        ),
+      };
     } catch (error) {
       signalProcess(target, "SIGKILL", "tree");
       // This capture already failed (output limit, invalid UTF-8): arm
@@ -319,7 +384,10 @@ export async function runCapturedCommand(
       };
     }
     if (captureError) {
-      throw captureError;
+      // The command ran and a stream failed to capture: the marker carries
+      // that fact to the launch path, whose failure receipt depends on it
+      // (review ul8).
+      throw new CapturedRunFailure(captureError);
     }
 
     const abandonedNote = pipesAbandoned
@@ -360,7 +428,10 @@ export async function runCapturedCommand(
       // The signal meant "stop codemux", not "skip this step": a version
       // probe interrupted here must not fall through to the launch. The
       // tree is dead, so the exit handlers (a hermetic home's cleanup)
-      // run against a finished run.
+      // run against a finished run. The launch's own receipt is written
+      // first: the tokens were spent, and this exit means the launch's
+      // recordCompletedLaunch never runs (review ul6).
+      options.onSignaled?.();
       console.error("codemux: interrupted; the agent's process tree was terminated");
       process.exit(SIGNAL_EXIT_CODE);
     }

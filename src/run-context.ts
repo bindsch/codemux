@@ -1,4 +1,5 @@
 import type { HermeticHome } from "./hermetic-home.js";
+import type { StdoutSink } from "./process-runner.js";
 import type { CodexProviderHome } from "./codex-provider.js";
 import type { AiderHistoryFile } from "./aider-history.js";
 import type { OpencodeHermeticHome } from "./opencode-hermetic.js";
@@ -69,4 +70,13 @@ export interface RunContext {
   kimiNoToolsFile?: KimiNoToolsFile;
   /** Pi: this run's private agent directory, when a provider override is configured. */
   piProviderAgentDir?: PiProviderAgentDir;
+  /**
+   * An incremental stdout consumer the launcher feeds instead of capturing
+   * stdout whole, for a harness whose stream carries more than the capture
+   * bound allows (opencode's `--format json`: every tool's output rides the
+   * event lines). The adapter's processRunResult reads the folded state —
+   * the reply text and usage the sink kept — off the same object, so the
+   * streamed and whole-capture paths cannot disagree.
+   */
+  stdoutSink?: StdoutSink;
 }

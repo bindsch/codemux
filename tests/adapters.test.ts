@@ -124,9 +124,17 @@ describe("Adapter Registry", () => {
       expect(getAdapter("claude", {}).getEnv()).toEqual({
         CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1",
       });
-      expect(
-        getAdapter("codex", {}).buildRunCommand({ agent: "codex", prompt: "p" })
-      ).toEqual(["codex", "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "-"]);
+      const codexPlain = getAdapter("codex", {}).buildRunCommand({ agent: "codex", prompt: "p" });
+      // A plain run keeps human mode (ul3): no event stream, no fallback
+      // file, just the prompt-from-stdin marker.
+      expect(codexPlain).toEqual([
+        "codex",
+        "exec",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--ignore-rules",
+        "-",
+      ]);
       expect(getAdapter("openhands", {}).getRunEnv({ agent: "openhands", prompt: "p" }))
         .toEqual({});
       expect(getAdapter("openhands", {}).buildRunCommand({ agent: "openhands", prompt: "p" }))
@@ -189,29 +197,20 @@ describe("ClaudeAdapter", () => {
       "user",
       "--strict-mcp-config",
       "--no-session-persistence",
-    ]);
-  });
-
-  test("--result-json asks Claude Code for its single-result envelope", () => {
-    // Without it the reply is bare text and what the run consumed is unrecoverable: these runs
-    // pass --no-session-persistence, so no session file exists to read afterward.
-    const request: RunRequest = { agent: "claude", prompt: "test", resultJson: true };
-    const cmd = adapter.buildRunCommand(request);
-    expect(cmd).toEqual([
-      "claude",
-      "-p",
-      "--setting-sources",
-      "user",
-      "--strict-mcp-config",
-      "--no-session-persistence",
       "--output-format",
       "json",
     ]);
   });
 
-  test("the envelope is off unless asked for", () => {
-    const cmd = adapter.buildRunCommand({ agent: "claude", prompt: "test" });
-    expect(cmd).not.toContain("--output-format");
+  test("the envelope is always on, so --result-json adds no flag", () => {
+    // The envelope is what makes usage recoverable: these runs pass
+    // --no-session-persistence, so no session file exists to read
+    // afterward. Plain runs ask for it too and unwrap it in
+    // processRunResult; --result-json only stops the unwrap.
+    const plain = adapter.buildRunCommand({ agent: "claude", prompt: "test" });
+    const enveloped = adapter.buildRunCommand({ agent: "claude", prompt: "test", resultJson: true });
+    expect(plain).toEqual(enveloped);
+    expect(plain).toContain("--output-format");
   });
 
   test("claude declares it can return a result envelope", () => {
@@ -360,6 +359,8 @@ describe("ClaudeAdapter", () => {
       "user",
       "--strict-mcp-config",
       "--no-session-persistence",
+      "--output-format",
+      "json",
       "--model",
       "opus",
     ]);
@@ -367,20 +368,20 @@ describe("ClaudeAdapter", () => {
 
   test("buildRunCommand with autonomy levels", () => {
     expect(adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: "read-only" }))
-      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--permission-mode", "plan"]);
+      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--permission-mode", "plan"]);
     expect(adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: "low" }))
-      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--permission-mode", "manual"]);
+      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--permission-mode", "manual"]);
     // A real directory, so the grant's canonicalization is exercised and
     // the expectation stays stable regardless of /tmp symlinking.
     const grantWksp = realpathSync(mkdtempSync(join(tmpdir(), "codemux-grant-")));
     try {
       expect(adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: "medium", cwd: grantWksp }))
-        .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--permission-mode", "acceptEdits", "--allowedTools", `Edit(//${grantWksp.replace(/^\/+/, "")}/**)`]);
+        .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--permission-mode", "acceptEdits", "--allowedTools", `Edit(//${grantWksp.replace(/^\/+/, "")}/**)`]);
     } finally {
       rmSync(grantWksp, { recursive: true, force: true });
     }
     expect(adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: "high" }))
-      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--dangerously-skip-permissions", "--allowedTools", "Edit", "Write", "NotebookEdit", "Bash"]);
+      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--dangerously-skip-permissions", "--allowedTools", "Edit", "Write", "NotebookEdit", "Bash"]);
   });
 
   test("buildRunCommand does not inject an MCP server by default", () => {
@@ -392,6 +393,8 @@ describe("ClaudeAdapter", () => {
       "user",
       "--strict-mcp-config",
       "--no-session-persistence",
+      "--output-format",
+      "json",
     ]);
   });
 
@@ -679,15 +682,42 @@ describe("CodexAdapter", () => {
   });
 
   test("buildRunCommand with prompt only", () => {
-    const request: RunRequest = { agent: "codex", prompt: "test prompt" };
-    const cmd = adapter.buildRunCommand(request);
-    expect(cmd).toEqual(["codex", "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "-"]);
+    const home = mkdtempSync(join(tmpdir(), "codemux-codex-"));
+    try {
+      const scoped = new CodexAdapter({}, home);
+      const cmd = scoped.buildRunCommand({ agent: "codex", prompt: "test prompt" });
+      // A plain run keeps human mode: no --json, no fallback file (ul3).
+      expect(cmd).toEqual([
+        "codex",
+        "exec",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--ignore-rules",
+        "-",
+      ]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test("buildRunCommand with model", () => {
-    const request: RunRequest = { agent: "codex", prompt: "test", model: "gpt-5.1" };
-    const cmd = adapter.buildRunCommand(request);
-    expect(cmd).toEqual(["codex", "-m", "gpt-5.1", "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "-"]);
+    const home = mkdtempSync(join(tmpdir(), "codemux-codex-"));
+    try {
+      const scoped = new CodexAdapter({}, home);
+      const cmd = scoped.buildRunCommand({ agent: "codex", prompt: "test", model: "gpt-5.1" });
+      expect(cmd).toEqual([
+        "codex",
+        "-m",
+        "gpt-5.1",
+        "exec",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--ignore-rules",
+        "-",
+      ]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test("buildRunCommand with autonomy levels", () => {
@@ -695,41 +725,61 @@ describe("CodexAdapter", () => {
     // dropped by codex's root-to-exec handoff and 0.159.x accepts only
     // on-request|never there anyway, while the config override reaches
     // exec, exec resume, and the TUI alike.
-    expect(adapter.buildRunCommand({ agent: "codex", prompt: "t", autonomy: "read-only" }))
-      .toEqual(["codex", "-s", "read-only", "-c", 'approval_policy="never"', "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "-"]);
-    expect(adapter.buildRunCommand({ agent: "codex", prompt: "t", autonomy: "low" }))
-      .toEqual(["codex", "-s", "workspace-write", "-c", 'approval_policy="untrusted"', "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "-"]);
-    expect(adapter.buildRunCommand({ agent: "codex", prompt: "t", autonomy: "medium" }))
-      .toEqual(["codex", "-s", "workspace-write", "-c", 'approval_policy="never"', "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "-"]);
-    expect(adapter.buildRunCommand({ agent: "codex", prompt: "t", autonomy: "high" }))
-      .toEqual(["codex", "-s", "danger-full-access", "-c", 'approval_policy="never"', "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "-"]);
+    const home = mkdtempSync(join(tmpdir(), "codemux-codex-"));
+    try {
+      const scoped = new CodexAdapter({}, home);
+      const tail = ["-"];
+      expect(scoped.buildRunCommand({ agent: "codex", prompt: "t", autonomy: "read-only" }))
+        .toEqual(["codex", "-s", "read-only", "-c", 'approval_policy="never"', "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", ...tail]);
+      expect(scoped.buildRunCommand({ agent: "codex", prompt: "t", autonomy: "low" }))
+        .toEqual(["codex", "-s", "workspace-write", "-c", 'approval_policy="untrusted"', "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", ...tail]);
+      expect(scoped.buildRunCommand({ agent: "codex", prompt: "t", autonomy: "medium" }))
+        .toEqual(["codex", "-s", "workspace-write", "-c", 'approval_policy="never"', "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", ...tail]);
+      expect(scoped.buildRunCommand({ agent: "codex", prompt: "t", autonomy: "high" }))
+        .toEqual(["codex", "-s", "danger-full-access", "-c", 'approval_policy="never"', "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", ...tail]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test("buildRunCommand with effort levels", () => {
-    expect(adapter.buildRunCommand({ agent: "codex", prompt: "t", effort: "low" }))
-      .toEqual(["codex", "-c", 'model_reasoning_effort="low"', "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "-"]);
-    expect(adapter.buildRunCommand({ agent: "codex", prompt: "t", effort: "medium" }))
-      .toEqual(["codex", "-c", 'model_reasoning_effort="medium"', "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "-"]);
-    expect(adapter.buildRunCommand({ agent: "codex", prompt: "t", effort: "high" }))
-      .toEqual(["codex", "-c", 'model_reasoning_effort="high"', "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "-"]);
+    const home = mkdtempSync(join(tmpdir(), "codemux-codex-"));
+    try {
+      const scoped = new CodexAdapter({}, home);
+      const tail = ["-"];
+      expect(scoped.buildRunCommand({ agent: "codex", prompt: "t", effort: "low" }))
+        .toEqual(["codex", "-c", 'model_reasoning_effort="low"', "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", ...tail]);
+      expect(scoped.buildRunCommand({ agent: "codex", prompt: "t", effort: "medium" }))
+        .toEqual(["codex", "-c", 'model_reasoning_effort="medium"', "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", ...tail]);
+      expect(scoped.buildRunCommand({ agent: "codex", prompt: "t", effort: "high" }))
+        .toEqual(["codex", "-c", 'model_reasoning_effort="high"', "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", ...tail]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test("buildRunCommand with external sandbox bypasses codex sandbox flags", () => {
-    const cmd = adapter.buildRunCommand({
-      agent: "codex",
-      prompt: "t",
-      autonomy: "high",
-      sandboxed: true,
-    });
-    expect(cmd).toEqual([
-      "codex",
-      "--dangerously-bypass-approvals-and-sandbox",
-      "exec",
-      "--skip-git-repo-check",
-      "--ephemeral",
-      "--ignore-rules",
-      "-",
-    ]);
+    const home = mkdtempSync(join(tmpdir(), "codemux-codex-"));
+    try {
+      const scoped = new CodexAdapter({}, home);
+      const cmd = scoped.buildRunCommand({
+        agent: "codex",
+        prompt: "t",
+        autonomy: "high",
+        sandboxed: true,
+      });
+      expect(cmd).toEqual([
+        "codex",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "exec",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--ignore-rules",
+        "-",
+      ]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test("getStdinInput returns prompt", () => {
@@ -741,17 +791,29 @@ describe("CodexAdapter", () => {
     expect(adapter.capabilities().supportsResultJson).toBe(true);
   });
 
-  test("--result-json asks for the JSONL event stream and the recorded final message", () => {
-    // The --output-last-message path a buildRunCommand without prepareRun
-    // names: under the real CODEX_HOME's .codemux-scratch/, where prepareRun
-    // puts the real per-run file, with the unprepared marker standing where
-    // the per-run directory would be (the same fail-closed shape the
-    // hermetic home's preview uses).
+  test("--result-json turns the event stream on; a plain run keeps human mode (ul3)", () => {
+    // The --output-last-message path a resultJson buildRunCommand without
+    // prepareRun names: under the real CODEX_HOME's .codemux-scratch/,
+    // where prepareRun puts the real per-run file, with the unprepared
+    // marker standing where the per-run directory would be (the same
+    // fail-closed shape the hermetic home's preview uses). Plain runs ask
+    // for none of it: the stream carries every event with all tool
+    // output, which pushed agentic runs past the 16 MiB capture bound —
+    // stdout stays human mode and the ledger reads the stderr figure.
     const home = mkdtempSync(join(tmpdir(), "codemux-codex-"));
     try {
       const scoped = new CodexAdapter({}, home);
-      const cmd = scoped.buildRunCommand({ agent: "codex", prompt: "t", resultJson: true });
-      expect(cmd).toEqual([
+      expect(scoped.buildRunCommand({ agent: "codex", prompt: "t" })).toEqual([
+        "codex",
+        "exec",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--ignore-rules",
+        "-",
+      ]);
+      expect(
+        scoped.buildRunCommand({ agent: "codex", prompt: "t", resultJson: true })
+      ).toEqual([
         "codex",
         "exec",
         "--skip-git-repo-check",
@@ -765,11 +827,6 @@ describe("CodexAdapter", () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
-  });
-
-  test("the event stream is off unless asked for", () => {
-    const cmd = adapter.buildRunCommand({ agent: "codex", prompt: "t" });
-    expect(cmd).not.toContain("--json");
   });
 
   test("processRunResult reduces the event stream to the envelope", () => {

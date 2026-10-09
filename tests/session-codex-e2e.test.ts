@@ -51,7 +51,8 @@ function workRoot(): string {
 async function startSession(
   overrides: Partial<CodexDriverOptions> = {},
   extraEnv: Record<string, string> = {},
-  beforeAttach?: (driver: CodexSessionDriver, proc: SessionProcess) => void
+  beforeAttach?: (driver: CodexSessionDriver, proc: SessionProcess) => void,
+  graceMs = 500
 ): Promise<Session> {
   const dir = mkdtempSync(join(workRoot(), "s-"));
   const workDir = join(dir, "work");
@@ -97,7 +98,7 @@ async function startSession(
     },
     onLine: (line) => driver.handleHarnessLine(line),
     onFatal: (fatal) => driver.handleFatal(fatal),
-    graceMs: 500,
+    graceMs,
   });
   // A harness line that lands before attach queues as an early line.
   beforeAttach?.(driver, proc);
@@ -168,9 +169,10 @@ const send = (driver: CodexSessionDriver, message: unknown): void => {
 
 async function startAndWait(
   overrides: Partial<CodexDriverOptions> = {},
-  extraEnv: Record<string, string> = {}
+  extraEnv: Record<string, string> = {},
+  graceMs = 500
 ): Promise<Session> {
-  const session = await startSession(overrides, extraEnv);
+  const session = await startSession(overrides, extraEnv, undefined, graceMs);
   await waitFor(session.events, of("session_started"), "session_started");
   return session;
 }
@@ -2617,12 +2619,17 @@ describe("codex session e2e - review live23 audit siblings", () => {
     // started saw a turn/start in flight, queued its interrupt behind the
     // response, and waited the full 500 ms grace for an answer that could
     // not come.
-    const session = await startAndWait();
+    // Scale-based, not time-bound: with a 5 s grace, an end that waited
+    // the grace takes at least 5 s, and one that ends at once takes well
+    // under half of it even on a loaded runner (the 400 ms absolute bound
+    // this replaced failed at 514 ms under a full gate).
+    const graceMs = 5_000;
+    const session = await startAndWait({}, {}, graceMs);
     refuseWrites(session.proc, (line) => line.includes("turn/start"));
     const started = Date.now();
     send(session.driver, { type: "user", text: "scenario:wait hold" });
     expect(await session.code).toBe(1);
-    expect(Date.now() - started).toBeLessThan(400);
+    expect(Date.now() - started).toBeLessThan(graceMs / 2);
     const completed = session.events.find((event) => event.type === "turn_completed");
     expect(completed?.finish).toBe("failed");
   });

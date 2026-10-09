@@ -1,6 +1,6 @@
 import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
-import { guardedWait, runCapturedCommand } from "./process-runner.js";
+import { guardedWait, runCapturedCommand, type StdoutSink } from "./process-runner.js";
 import {
   resolveTrustedCommand,
   resolveTrustedExecutable,
@@ -237,13 +237,18 @@ function failInvalidOption(
   process.exit(64);
 }
 
+/** The exit code a failed launch rejects with: a usage refusal is EX_USAGE
+ * (64), everything else 1 (review D10, security). One rule for the CLI's
+ * error handler and the ledger's failure receipt, so the record's
+ * exit_code is the code the process actually exits with (review ul8). */
+export function unexpectedErrorExitCode(error: unknown): 64 | 1 {
+  return error instanceof UsageRefusalError ? 64 : 1;
+}
+
 export function handleUnexpectedError(error: unknown): never {
   const message = error instanceof Error ? error.message : String(error);
   console.error(message.startsWith("Error:") ? message : `Error: ${message}`);
-  // A usage refusal is EX_USAGE, not a runtime failure (review D10,
-  // security): the same 64 the option validators exit with, so one class
-  // of caller-fixable request keeps one code on every path.
-  process.exit(error instanceof UsageRefusalError ? 64 : 1);
+  process.exit(unexpectedErrorExitCode(error));
 }
 
 export function parseAutonomyOption(value: string | undefined): AutonomyLevel | undefined {
@@ -563,7 +568,12 @@ export async function runSandboxedWithStdin(
   autonomy?: AutonomyLevel,
   sandboxOptions?: SandboxOptions,
   timeoutMs?: number,
-  envOmissions: readonly string[] = []
+  envOmissions: readonly string[] = [],
+  stdoutSink?: StdoutSink,
+  // The launch's receipt hook for a signal interrupt (runCapturedCommand's
+  // onSignaled): the sandboxed run stops the same way, and the receipt
+  // must be written before the runner's exit 143 (review ul6).
+  onSignaled?: () => void
 ): Promise<RunResult> {
   const workdir = validateWorkingDirectory(cwd) ?? process.cwd();
   assertNoProjectScodePolicy(workdir);
@@ -596,5 +606,7 @@ export async function runSandboxedWithStdin(
     env,
     stdinInput: stdinData,
     timeoutMs,
+    stdoutSink,
+    onSignaled,
   });
 }

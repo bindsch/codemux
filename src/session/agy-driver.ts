@@ -29,7 +29,14 @@
  * the session: an untracked live session must not run (§4.8).
  */
 
+import { randomUUID } from "node:crypto";
 import type { AutonomyLevel, ReasoningEffort, ResultUsageBlock } from "../types.js";
+import {
+  appendSessionCallRecord,
+  appendSessionTurnCallRecord,
+  providerHost,
+  type SessionCallContext,
+} from "../call-log.js";
 import { emptyUsage } from "../result-envelope.js";
 import {
   agySessionCapabilities,
@@ -126,6 +133,11 @@ export class AgySessionDriver {
    * envelope that names it (a fresh session), or the registry-vouched
    * resume id adopted at spawn. Null until one of those lands. */
   private conversationId: string | null;
+  /** Codemux's own id for this session, minted at construction: what the
+   * call ledger records while no result frame has named the conversation
+   * (and ever after, if none ever does), so id-less sessions never share
+   * a key (review ul6). */
+  private readonly codemuxSessionId = randomUUID();
   /** Starts unknown (all-null), not zero: a counter a turn never reports
    * must stay null rather than be guessed as 0 (§4.2). */
   private cumulative: ResultUsageBlock = emptyUsage();
@@ -164,6 +176,15 @@ export class AgySessionDriver {
    * synthesized turn completion (review live17). */
   private firstFatal: string | null = null;
   private sessionTimer: Timer | null = null;
+  /** The wall clock each open turn started at, keyed by turn id: the
+   * ledger's session_turn records carry each turn's own duration. */
+  private readonly turnStartedAt = new Map<string, number>();
+  /** The session's own start, for the closing ledger record's duration. */
+  private readonly sessionStartedAt = Date.now();
+  /** The launch facts the call ledger records on every turn and at the
+   * end (call-log.ts); agy refuses overrides, so the provider is always
+   * "default". */
+  private readonly callLedger: SessionCallContext;
   private readonly done: Promise<number>;
   private resolveDone!: (code: number) => void;
 
@@ -172,6 +193,15 @@ export class AgySessionDriver {
       this.resolveDone = resolve;
     });
     this.conversationId = options.resumeConversationId;
+    this.callLedger = {
+      agent: "agy",
+      model: options.model ?? null,
+      provider: providerHost(options.providerBaseUrl),
+      autonomy: options.autonomy,
+      hermetic: false,
+      sandboxed: options.sandboxed,
+      cwd: options.cwd,
+    };
     this.out = new BoundedOutboundQueue(
       options.sink ?? defaultEventSink(),
       (failure) => {
@@ -510,6 +540,18 @@ export class AgySessionDriver {
         usage: parse.usage,
       })
     );
+    // The ledger's turn record mirrors the event the caller just saw
+    // (call-log.ts); agy's usage carries no cost, so this is the event's
+    // own block verbatim.
+    appendSessionTurnCallRecord(
+      this.callLedger,
+      this.ledgerSessionId(),
+      turnId ?? "none",
+      this.turnStartedAt.get(turnId ?? "") ?? Date.now(),
+      parse.isError ? "failed" : "end",
+      parse.usage
+    );
+    this.turnStartedAt.delete(turnId ?? "");
     if (this.registryRecorded && this.options.registryPath !== null) {
       // Best-effort stamp, and never a wait: the lock's retry sleep is a
       // synchronous Atomics.wait on the main thread, and this runs inside
@@ -594,6 +636,7 @@ export class AgySessionDriver {
         turn_id: turnId,
       })
     );
+    this.turnStartedAt.set(turnId, Date.now());
     return turnId;
   }
 
@@ -700,13 +743,14 @@ export class AgySessionDriver {
         this.endExitCode = Math.max(this.endExitCode, 1);
         this.emitError(true, "codemux", error.message);
       } else {
+        const synthFinish =
+          reason === "crash" || drainFailureCode !== null || this.firstFatal !== null
+            ? "failed"
+            : "interrupted";
         this.emit(
           buildEvent(++this.seq, this.sessionIdOrEmpty(), "turn_completed", null, {
             turn_id: turnId,
-            finish:
-              reason === "crash" || drainFailureCode !== null || this.firstFatal !== null
-                ? "failed"
-                : "interrupted",
+            finish: synthFinish,
             reason:
               reason === "crash"
                 ? crashSynthesisReason(this.firstFatal)
@@ -721,6 +765,18 @@ export class AgySessionDriver {
             usage: emptyUsage(),
           })
         );
+        // The synthesized completion is a turn the caller saw complete, so
+        // it gets its ledger line like any other (all-null usage: the
+        // harness never reported one).
+        appendSessionTurnCallRecord(
+          this.callLedger,
+          this.ledgerSessionId(),
+          turnId ?? "none",
+          this.turnStartedAt.get(turnId ?? "") ?? Date.now(),
+          synthFinish,
+          emptyUsage()
+        );
+        this.turnStartedAt.delete(turnId ?? "");
       }
     }
     // The child is dead and the pipes are drained: nothing more can
@@ -762,6 +818,16 @@ export class AgySessionDriver {
         usage: this.cumulative,
         resumable,
       })
+    );
+    // The closing ledger line: the same cumulative usage and end verdict
+    // the caller just received (call-log.ts).
+    appendSessionCallRecord(
+      this.callLedger,
+      this.ledgerSessionId(),
+      this.sessionStartedAt,
+      reason,
+      childCode,
+      this.cumulative
     );
     // Exit-code honesty: `session_ended` is the one event the caller
     // cannot afford to lose, so a delivery that failed — the sink
@@ -820,6 +886,15 @@ export class AgySessionDriver {
    * forever, since its result is what names the conversation. */
   private sessionIdOrEmpty(): string {
     return this.conversationId ?? "";
+  }
+
+  /** The id the call ledger keys this session's records by: the harness's
+   * own conversation id once a result frame has named one (the registry
+   * key, stable across a resume), else the codemux-minted id every session
+   * owns from construction — never "", which merged every id-less session
+   * under one key in `calls --sum` (review ul6). */
+  private ledgerSessionId(): string {
+    return this.conversationId || this.codemuxSessionId;
   }
 
   private emit(line: string): void {
