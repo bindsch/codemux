@@ -4,10 +4,18 @@ The audit itself lives in `code-review`, which owns the reviewers, the prompts,
 and the verdict. Hookrun's job is only to decide when it runs and whether a
 failure stops the commit.
 
-`code-review run` follows the work: it reviews what changed, or the whole tree
-when nothing has. It fires at `task-end`, the moment the writing agent finishes
-a turn, because a finding is still cheap to act on then. Auditing at commit time
-reports problems into code that has already been committed.
+`code-review run` reviews what changed since the last commit. It fires at
+`task-end`, the moment the writing agent finishes a turn, because a finding is
+still cheap to act on then. Auditing at commit time reports problems into code
+that has already been committed.
+
+These are the settings of hookrun's `strict` starter profile (`hookrun
+profiles strict`), which runs code-review's `default` reviewer set: five
+reviewers. The review never covers the whole tree automatically, and does
+nothing on a clean tree or one it already reviewed. A change set is everything
+since the last commit. After five reviews of one change set, only blocker
+findings block, so a change has a known last round. The round count lives in
+`.code-review/` with the verdict, so the same caveat below applies to it.
 
 `code-review gate` reads the verdict the review recorded and calls no model, so
 it refuses a commit without adding the review's latency to one.
@@ -48,8 +56,8 @@ review instead.
 ## Hook: review
 - on: task-end
 - mode: async
-- timeout: 1800
-- run: code-review run --profile default
+- timeout: 3600
+- run: code-review run --scope changed --profile default --rounds 5
 
 ## Hook: review-gate
 - on: commit
