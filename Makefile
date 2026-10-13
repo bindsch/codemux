@@ -16,7 +16,8 @@ typecheck:
 	bun run typecheck
 
 shell:
-	sh -n bin/codemux scripts/aliases.sh
+	sh -n bin/codemux
+	sh -n scripts/aliases.sh
 
 test:
 	bun run test:coverage
@@ -38,6 +39,11 @@ smoke:
 	./bin/codemux verify --show-scode >/dev/null
 	./bin/codemux usage --help >/dev/null
 	./bin/codemux calls --help >/dev/null
+	./bin/codemux session --help >/dev/null
+	./bin/codemux check --help >/dev/null
+	./bin/codemux list --help >/dev/null
+	./bin/codemux doctor --help >/dev/null
+	./bin/codemux autonomy --help >/dev/null
 
 release-gate: runtime check contracts sandbox-contract smoke
 	bun audit

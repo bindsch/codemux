@@ -275,9 +275,8 @@ test.each(["API key", "file token", "Keychain"])("sandboxed agy with %s refuses 
   expect(response.exitCode).not.toBe(0);
   expect(response.stderr).toContain("every sandboxed agy run requires scode 0.6.0 or newer");
   expect(response.stdout).toBe("");
-  for (const name of ["README.md", "CHANGELOG.md", "docs/HERMETIC.md"]) {
-    expect(readFileSync(join(import.meta.dir, "..", name), "utf8")).toMatch(/Every sandboxed agy run requires scode 0\.6\.0 or newer/i);
-  }
+  const authentication = readFileSync(join(import.meta.dir, "../docs/authentication.md"), "utf8");
+  expect(authentication).toMatch(/Every sandboxed Antigravity headless run.*requires scode 0\.6\.0 or newer/);
 });
 
 test("agy isolation cannot attest a different cwd or writable sandbox", async () => {
@@ -289,32 +288,28 @@ test("agy isolation cannot attest a different cwd or writable sandbox", async ()
   }
 });
 
-test("Antigravity documentation records both operator-verified mechanisms and the current round", () => {
-  const doc = readFileSync(join(import.meta.dir, "../docs/HERMETIC.md"), "utf8");
-  expect(doc).toContain("| Antigravity | VERIFIED | VERIFIED |");
-  expect(doc).toContain("scode 0.6.0");
-  expect(doc).toContain("mirror");
+test("Antigravity documentation separates supported policy from dated live evidence", () => {
+  const doc = readFileSync(join(import.meta.dir, "../docs/isolation.md"), "utf8");
+  expect(doc).toContain("| Antigravity |");
+  expect(doc).toContain("read-only scode");
+  expect(doc).toContain("Tool schemas can remain visible");
   const report = readFileSync(join(import.meta.dir, "../docs/experiment-mcp-report.md"), "utf8");
-  const outcome = report.split("## Outcome")[1]!.split("## Part 1")[0]!;
+  const outcome = report.split("## Outcome")[1]!.split("\n## ")[0]!;
   expect(outcome).toContain("Round 11");
+  expect(outcome).toContain("They were not included in that");
   expect(outcome).not.toMatch(/\d+ pass/);
 });
 
-test("all current Antigravity verification claims use the Round 11 live record", () => {
-  for (const name of ["README.md", "CHANGELOG.md", "docs/HERMETIC.md"]) {
-    const prose = readFileSync(join(import.meta.dir, "..", name), "utf8");
-    expect(prose).toContain("VERIFIED");
-    expect(prose).toContain("Round 11");
-    expect(prose).not.toContain("Round 8");
-    expect(prose).not.toMatch(/mirror.{0,40}awaits|live canaries remain pending/);
-  }
+test("Antigravity compatibility evidence does not renew the historical live claim", () => {
+  const compatibility = readFileSync(join(import.meta.dir, "../docs/harnesses.md"), "utf8");
+  const row = compatibility.split("\n").find((line) => line.startsWith("| Antigravity CLI |"))!;
+  expect(row).toContain("1.3.3, 2026-10-13");
+  expect(row).toContain("Round 11");
+  expect(row).toContain("Later hardening was not live-retested");
   const report = readFileSync(join(import.meta.dir, "../docs/experiment-mcp-report.md"), "utf8");
-  const outcome = report.split("## Outcome")[1]!.split("## Part 1")[0]!;
-  const round8 = report.split("## Round 8")[1]!.split("### Why")[0]!;
-  for (const section of [outcome, round8]) {
-    expect(section).toContain("VERIFIED");
-    expect(section).not.toContain("pending");
-  }
+  expect(report).toContain("> Historical report:");
+  expect(report).toContain("[experiment MCP](experiment-mcp.md)");
+  expect(report).toContain("**unavailable**");
 });
 
 test("the capability test comment records the supported policies", () => {
@@ -332,7 +327,7 @@ test("the base capability comment describes the supported Antigravity mechanism"
 
 test("the Round 11 live record retains the operator's date, outcomes, and gate", () => {
   const report = readFileSync(join(import.meta.dir, "../docs/experiment-mcp-report.md"), "utf8");
-  const live = report.split("## Final live verification on the Round 11 tree")[1]!.split("## Round 12")[0]!;
+  const live = report.split("## Final live verification on the Round 11 tree")[1]!.split("\n## ")[0]!;
   for (const fact of ["2026-10-13 at 07:41 CEST", "scode 0.6.0 and agy 1.3.3", "1931 pass, 2 skip, 0 fail",
     "only the login keychain before and after", "`OK` (exit 0)", "`HERMETIC agy: OK`", "`TOOLS agy: OK` (exit 0)",
     "No private home remained."]) expect(live).toContain(fact);

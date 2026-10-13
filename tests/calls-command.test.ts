@@ -85,9 +85,11 @@ describe("parseSinceOption", () => {
     expect(parseSinceOption("2w", now)!.toISOString()).toBe("2026-09-24T12:00:00.000Z");
   });
 
-  test("an ISO timestamp passes through; anything else is refused", () => {
+  test("Date accepts ISO and non-ISO dates; invalid date text is refused", () => {
     expect(parseSinceOption("2026-10-01T00:00:00Z")!.getTime())
       .toBe(Date.parse("2026-10-01T00:00:00Z"));
+    expect(parseSinceOption("October 1, 2026 00:00:00 GMT")!.toISOString())
+      .toBe("2026-10-01T00:00:00.000Z");
     expect(parseSinceOption("yesterday")).toBeNull();
     expect(parseSinceOption("1x")).toBeNull();
   });

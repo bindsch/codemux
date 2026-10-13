@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { probeEnvironment } from "../src/environment.js";
 import { assertHarnessSupported } from "../src/cli-runtime.js";
+import { AGENT_IDS, getAdapter } from "../src/adapters/index.js";
 import {
   ALLOW_UNTESTED_ENV,
   assertSupportedHarnessVersion,
@@ -625,136 +626,79 @@ describe("the gate itself", () => {
   });
 });
 
-describe("the ledger and the version gate agree", () => {
-  // Ledger name to agent id. An installed row whose name is missing here FAILS the test rather
-  // than being skipped -- see below for why that direction matters.
-  const AGENT_BY_LEDGER_NAME: Record<string, keyof typeof HARNESS_CONTRACTS> = {
-    "Antigravity CLI": "agy",
-    Aider: "aider",
-    "Claude Code": "claude",
-    "Cline CLI": "cline",
-    "Codex CLI": "codex",
-    Droid: "droid",
-    "GitHub Copilot CLI": "copilot",
-    "Cursor Agent": "cursor",
-    Goose: "goose",
-    "Gemini CLI": "gemini",
-    "Kimi Code": "kimi",
-    OpenHands: "openhands",
-    OpenCode: "opencode",
-    Pi: "pi",
-    "Qwen Code": "qwen",
-    "Z.AI": "zai",
-  };
+describe("current harness documentation and the version gate agree", () => {
+  test("headless capability rows match the implemented adapters", async () => {
+    const document = await Bun.file(new URL("../docs/harnesses.md", import.meta.url)).text();
+    const section = document.split("## Headless capabilities\n")[1]?.split("\n## ")[0];
+    expect(section).toBeDefined();
+    const rows = (section ?? "").split("\n")
+      .filter((line) => line.startsWith("| ") && !line.startsWith("| ---"))
+      .map((line) => line.split("|").slice(1, -1).map((cell) => cell.trim()))
+      .filter((cells) => cells[0] !== "Agent");
+    expect(rows.map((row) => row[0]).sort()).toEqual([...AGENT_IDS].sort());
+    for (const row of rows) {
+      const agent = row[0] as typeof AGENT_IDS[number];
+      // Adapter construction only resolves names; it does not launch a harness.
+      const caps = getAdapter(agent, { PATH: "" }).capabilities();
+      expect(row[1], agent).toBe(agent === "qwen" ? "current binary only" : "yes");
+      expect(row[2], agent).toBe("all four");
+      expect(caps.autonomyLevels, agent).toEqual(["read-only", "low", "medium", "high"]);
+      expect(row[3], agent).toBe(caps.supportsEffort ? caps.effortLevels.join(", ") : "unsupported");
+      expect(row[4] !== "no", agent).toBe(Boolean(caps.supportsHermetic));
+      expect(row[5] !== "no", agent).toBe(Boolean(caps.supportsToolSelection));
+      expect(row[6] === "yes", agent).toBe(Boolean(caps.supportsResultJson));
+      expect(row[7] === "yes", agent).toBe(Boolean(caps.supportsProviderOverride));
+    }
+  });
 
-  function installedRows(ledger: string): string[] {
-    // Only the master table at the top counts as installed-harness rows:
-    // the region before the first "## " heading. Addenda may carry their
-    // own tables (the 2026-10-05 live-sessions capability matrix), and
-    // those rows are not installed claims -- scanning them made the
-    // matrix's "Capability" header fail the map lookup below.
-    const firstHeading = ledger.indexOf("\n## ");
-    const master = firstHeading === -1 ? ledger : ledger.slice(0, firstHeading);
-    return master
-      .split("\n")
-      .filter((line) => line.startsWith("|") && !line.includes("---"))
-      .map((line) => line.split("|").map((cell) => cell.trim()))
-      .filter((cells) => cells.length > 4)
-      // The header row is skipped by its own name cell, never by matching the
-      // installed column's wording -- the round29 finding: the old filter also
-      // exempted /^Installed during/i there, which is what the header's third
-      // column reads, so a data row worded "Installed during the re-audit" --
-      // a claim that a machine exercised the harness -- would silently skip
-      // the version-contract requirement this test exists to enforce.
-      .filter((cells) => cells[1] !== "Harness")
-      // The installed column holds a version, "same" (matches the audited
-      // column), "not installed", or a phrase saying when it was installed.
-      // Anything that is not an explicit "not installed" claims a machine
-      // exercised it.
-      .filter((cells) => {
-        const installed = cells[3] ?? "";
-        return installed !== "" && !/^not installed/i.test(installed);
-      })
-      .map((cells) => cells[1] ?? "");
+  async function documentedContracts(): Promise<Map<string, string[]>> {
+    const document = await Bun.file(
+      new URL("../docs/harnesses.md", import.meta.url)
+    ).text();
+    const section = document.split("## Version contracts\n")[1]?.split("\n## ")[0];
+    expect(section).toBeDefined();
+    const rows = (section ?? "").split("\n")
+      .filter((line) => line.startsWith("| ") && !line.startsWith("| ---"))
+      .map((line) => line.split("|").slice(1, -1).map((cell) => cell.trim()))
+      .filter((cells) => cells[0] !== "Harness");
+    expect(rows).toHaveLength(16);
+    expect(new Set(rows.map((cells) => cells[1])).size).toBe(rows.length);
+    return new Map(rows.map((cells) => [cells[1]!, cells]));
   }
 
-  test("every harness the ledger records as installed has a version contract", async () => {
-    // `assertSupportedHarnessVersion` returns immediately when a harness has no contract -- not a
-    // warning, a silent pass. Copilot sat in that state while the ledger recorded it as audited,
-    // and copilot is the harness that renamed a flag between patch releases, so an unpinned
-    // version there was the least safe default in the table.
-    //
-    // The first version of this test filtered out any ledger name it did not recognize, so three
-    // of seven installed rows went unchecked and two map entries were dead. A guard that exempts
-    // what it does not recognize is the defect it was written to prevent. An unknown name now
-    // fails, which forces the map to be extended when a row is added.
-    const ledger = await Bun.file(
-      new URL("../docs/HARNESS-COMPATIBILITY.md", import.meta.url)
-    ).text();
-    const rows = installedRows(ledger);
-    expect(rows.length).toBeGreaterThan(4);
-
-    const unmapped = rows.filter((name) => AGENT_BY_LEDGER_NAME[name] === undefined);
-    expect(unmapped).toEqual([]);
-
-    const ungated = rows.filter((name) => {
-      const agent = AGENT_BY_LEDGER_NAME[name];
-      return agent !== undefined && HARNESS_CONTRACTS[agent] === undefined;
-    });
-    expect(ungated).toEqual([]);
+  test("every declared contract has its exact minimum and audited ceiling documented", async () => {
+    const rows = await documentedContracts();
+    for (const [agent, contract] of Object.entries(HARNESS_CONTRACTS)) {
+      const row = rows.get(agent);
+      expect(row, agent).toBeDefined();
+      expect(row?.[2], agent).toBe(contract.min);
+      expect(row?.[3], agent).toBe(contract.maxAudited);
+    }
   });
 
-  test("the ledger rows this test reads are the ones it claims to read", async () => {
-    // Pins the parse itself. If the table's shape changes, this fails rather than quietly
-    // matching nothing and reporting success.
-    const ledger = await Bun.file(
-      new URL("../docs/HARNESS-COMPATIBILITY.md", import.meta.url)
-    ).text();
-    const rows = installedRows(ledger);
-    expect(rows).toContain("GitHub Copilot CLI");
-    expect(rows).toContain("Droid");
-    expect(rows).toContain("Kimi Code");
-    expect(rows).toContain("Cursor Agent"); // installed column reads "same", still installed
-    expect(rows).not.toContain("Goose"); // "not installed"
+  test("historical installation never invents a version gate", async () => {
+    const rows = await documentedContracts();
+    const ungated = ["cline", "goose", "gemini", "pi", "qwen"];
+    for (const agent of ungated) {
+      expect(rows.get(agent)?.[2], agent).toBe("none");
+      expect(rows.get(agent)?.[3], agent).toBe("none");
+      expect(HARNESS_CONTRACTS[agent as keyof typeof HARNESS_CONTRACTS]).toBeUndefined();
+    }
+    expect(rows.get("agy")?.[4]).toContain("1.3.3");
+    expect(rows.get("agy")?.[3]).toBe("1.2.14");
+    expect(rows.get("claude")?.[4]).toContain("2.1.280");
+    expect(rows.get("claude")?.[3]).toBe("2.1.223");
   });
 
-  test("a row whose installed column phrases its installation is still an installed row", () => {
-    // The round29 finding, at the parse itself: installedRows exempted any
-    // installed cell matching /^Installed during/i -- a pattern written for
-    // the header row, whose third column reads "Installed during audit" --
-    // so a ledger row worded like the header claimed installation while
-    // silently skipping the version-contract check. The header is skipped
-    // by its name cell now, and a phrased row counts like any other.
-    const ledger = [
-      "| Harness | Audited upstream | Installed during audit | Primary source | Important contract |",
-      "|---------|------------------|------------------------|----------------|--------------------|",
-      "| Droid | 0.186.0 | Installed during the round-29 re-audit | docs | stdin |",
-      "| Goose | 1.45.0 | not installed | docs | modes |",
-    ].join("\n");
-    const rows = installedRows(ledger);
-    expect(rows).toContain("Droid");
-    expect(rows).not.toContain("Goose");
-    expect(rows).not.toContain("Harness"); // the header, skipped by name
-  });
-
-  test("a table inside an addendum is not an installed row", () => {
-    // The 2026-10-05 live-sessions addendum carries a capability matrix;
-    // the parser read its rows as installed-harness claims and failed the
-    // map lookup on "Capability". Only the region before the first "## "
-    // heading -- the master table -- speaks about installation.
-    const ledger = [
-      "| Harness | Audited upstream | Installed during audit | Primary source | Important contract |",
-      "|---------|------------------|------------------------|----------------|--------------------|",
-      "| Droid | 0.186.0 | 0.186.0 | docs | stdin |",
-      "",
-      "## 2026-10-05 addendum: live sessions",
-      "",
-      "| Capability | Claude | Z.AI | Codex | Antigravity |",
-      "|------------|--------|------|-------|-------------|",
-      "| steer | true | true | true | false |",
-    ].join("\n");
-    const rows = installedRows(ledger);
-    expect(rows).toEqual(["Droid"]);
+  test("legacy entry points link to current contracts without duplicating version tables", async () => {
+    for (const [name, target] of [
+      ["HARNESS-COMPATIBILITY.md", "harnesses.md"],
+      ["HERMETIC.md", "isolation.md"],
+    ]) {
+      const document = await Bun.file(new URL(`../docs/${name}`, import.meta.url)).text();
+      expect(document).toContain(`(${target})`);
+      expect(document).not.toContain("| Harness |");
+    }
   });
 });
 

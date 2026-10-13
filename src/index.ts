@@ -152,20 +152,20 @@ program
   .option("-f, --file <path>", "Read prompt from file, or from stdin with -")
   .option(
     "--timeout <seconds>",
-    "Maximum run time in seconds; also bounds the -f - stdin prompt read",
+    "Timeout in seconds for each phase: stdin collection and subprocess execution have separate budgets",
     "1800"
   )
   .option("--pass-env <names>", "Pass comma-separated sensitive environment names")
   .option("--enable-playwright-mcp", "Enable local Playwright MCP inside the sandbox")
   .option(
     "--hermetic",
-    "Load none of the operator's customizations (instruction files, skills, plugins, hooks, MCP servers); harnesses with a verified mechanism only, see docs/HERMETIC.md"
+    "Suppress supported automatic customization loading; exceptions and harness requirements: docs/isolation.md"
   )
   .option("--tools <selection>", "Built-in tools the harness exposes: default, none")
   .option("--experiment-mcp <spec.json>", "One experiment stdio MCP server through Claude's SDK bridge; requires hermetic, tools none, read-only")
   .option(
     "--result-json",
-    "Return the harness's structured result envelope on stdout, carrying token usage"
+    "Return a structured result with harness-specific normalization and reported token usage"
   )
   .option("-s, --sandbox", "Run in sandbox (default; requires scode)", true)
   .option("--no-sandbox", "Run without the scode boundary (autonomy below high is unavailable)")

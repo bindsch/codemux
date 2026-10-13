@@ -1,19 +1,20 @@
 /**
  * `codemux calls`: reads the per-call usage ledger (call-log.ts) and shows
- * recent records — a table of the last 20 newest first by default. Filters
+ * recent records — the last 20 in reverse append order by default. Filters
  * (`-a`, `--since`) apply before the limit, so the shown set is exactly
  * what the totals (`--sum`) cover. A `--since` window keeps a record whose
  * `ts` falls inside it, and a closing `session` record also when any turn
  * of the same session does — its `ts` is the session's start, so a session
- * that began before the cutoff keeps the summary its turns' window owes it
- * (review ul6). Closing `session` records fold in per
+ * that began before the cutoff can include cost from outside that interval.
+ * Closing `session` records fold in per
  * field: a summary contributes a field only when no shown turn of the same
  * session reported it, so its tokens are never counted beside the turns
  * that already carry them (review ul2) while the claude family's session
  * cost — null on every turn by wire design — still lands in the totals
  * (review ul3), a resumed session's several closings fold to the
- * newest one, so the pre-resume share is never counted twice (review
- * ul4), and a summary with no session id (null or empty) is excluded,
+ * newest one. Tokens restart per driver, so missing turn records can make
+ * that fold omit earlier invocation usage. A summary with no session id
+ * (null or empty) is excluded,
  * never merged under one key (review ul6). Reads are bounded to the
  * ledger's last 16 MiB; a corrupt
  * or wrong-shaped line is skipped and counted, never fatal. Everything
@@ -45,7 +46,7 @@ function parseLimitOption(value: string): number | null {
   return limit;
 }
 
-/** `--since` accepts a duration ("90m", "24h", "7d", "30s") or an ISO
+/** `--since` accepts a duration ("90m", "24h", "7d", "30s") or a Date-parsed
  * timestamp; returns the cutoff instant, or null when the value is neither
  * — or when the duration it names lands outside the representable date
  * range, whose cutoff is an invalid Date. Returning that unchecked made
@@ -210,16 +211,13 @@ function printTotals(records: readonly CallRecord[]): void {
     turnsReported.set(key, reported);
   }
   // A resumed session writes a second closing record under the same session
-  // id, and every closing record carries session-lifetime usage — the
-  // claude family's cost is one figure the wire reports whole — so two
-  // closings shown together double-count the pre-resume share (review ul4).
+  // id. Claude-family cost is session-lifetime, so summing those closings
+  // would double-count it. Token counters restart per driver; retaining
+  // only the newest summary can omit earlier tokens when turns are absent.
   // The records are newest-first, so the first closing per session is the
-  // newest one and wins; older closings of the same session are superseded
-  // and excluded from the totals. The writer cannot subtract instead: the
-  // resumed run's wire reports only the new session-lifetime total, blended
-  // with the resumed turn, so this run's share is not recoverable at the
-  // write. A closing record with no session id (null or empty) is excluded
-  // like the fold above: it matches no session (review ul6).
+  // newest one and wins; older closings are excluded. The ledger has no
+  // invocation identifier or persisted cost baseline to reconstruct exact
+  // usage for arbitrary filtered histories.
   const closedSessions = new Set<string>();
   const supersededClosings = new Set<CallRecord>();
   for (const record of records) {
@@ -306,8 +304,8 @@ function printTotals(records: readonly CallRecord[]): void {
  * shown records with closing `session` summaries folded per field — a
  * summary counts only what its shown turns left unreported, so turns are
  * never counted twice and the claude family's session cost is — and a
- * resumed session's closing summaries fold to the newest one, so the
- * pre-resume share is never counted twice either.
+ * resumed session's closing summaries fold to the newest one. This avoids
+ * duplicate lifetime cost but can omit tokens when earlier turns are absent.
  */
 export function registerCallsCommand(
   program: Command,
@@ -318,11 +316,11 @@ export function registerCallsCommand(
   program
     .command("calls")
     .description("Show recent records from the per-call usage ledger")
-    .option("-n, --limit <count>", "Records to show, most recent first", String(DEFAULT_LIMIT))
+    .option("-n, --limit <count>", "Records to show, newest ledger append first", String(DEFAULT_LIMIT))
     .option("-a, --agent <id>", "Show only one agent's calls")
-    .option("--since <when>", "Cutoff as a duration (90m, 24h, 7d) or ISO timestamp")
-    .option("--json", "Print the raw JSONL records")
-    .option("--sum", "Print totals over the shown records (session summaries folded per field)")
+    .option("--since <when>", "Cutoff as a duration (90m, 24h, 7d) or date accepted by JavaScript Date")
+    .option("--json", "Print raw JSONL records; --sum appends human-readable totals")
+    .option("--sum", "Append totals over selected records, not necessarily interval-attributable usage")
     .action(async (options) => {
       const fail = (message: string): Promise<void> => {
         console.error(`Error: ${message}`);
@@ -358,7 +356,7 @@ export function registerCallsCommand(
         since = parseSinceOption(options.since);
         if (since === null) {
           return usageFail(
-            "--since must be a duration (90m, 24h, 7d) or an ISO timestamp, " +
+            "--since must be a duration (90m, 24h, 7d) or a date accepted by JavaScript Date, " +
               "and the cutoff it names must land inside the date range"
           );
         }

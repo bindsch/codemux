@@ -1,109 +1,77 @@
-# Testing codemux
+---
+read_when: "Choosing focused tests or interpreting release-gate evidence."
+---
+# Testing
 
-## Prerequisites
+Install dependencies with `bun install --frozen-lockfile`.
+The [release gate](RELEASE-GATE.md#automated-gate) is the single full
+verification entry point. Its checklist defines required checks and evidence.
 
-```bash
-bun install
+## Focused development checks
+
+```sh
+make typecheck
+make shell
+bun run test tests/result-envelope.test.ts tests/cli-result-json.test.ts
+bun run test tests/session-exit-contract.test.ts tests/session-cli.test.ts
+bun run test tests/experiment-mcp.test.ts tests/experiment-bridge.test.ts tests/agy-isolation.test.ts
 ```
 
-## Core checks
+These selected suites help diagnose a change. They do not replace the
+unfiltered suite in the full gate. There is no separate lint target;
+type checking and shell syntax checks are included.
 
-Run the full quality gate:
+All package test scripts preload `tests/setup.ts`. Its
+`CODEMUX_TEST_LEDGER` redirect prevents test receipts from entering the
+operator ledger. Do not rely on `NODE_ENV=test` for that isolation.
 
-```bash
-make check
-```
+## Coverage
 
-Equivalent direct commands:
+`bun run test:coverage` runs the unfiltered suite and enforces at least
+80% whole-source line and function coverage. Bun reports loaded modules and
+does not merge spawned-child coverage into the parent report.
+`scripts/check-source-coverage.ts` counts omitted source files as entirely
+uncovered before enforcing the thresholds. Bun does not report branch
+coverage here.
 
-```bash
-bun run typecheck
-bun run test:coverage
-```
+## Installed contracts
 
-## Targeted test runs
+`bun run test:contracts` enables installed-harness help and version checks.
+The full release gate already runs this target. The default test suite skips
+those opt-in checks; the release gate does not leave them disabled.
 
-```bash
-# CLI-focused tests
-bun test tests/cli.test.ts tests/cli-run.test.ts tests/usage.test.ts
+Absent binaries are skipped and reported. Installed versions must satisfy
+their required help contracts and compatibility rules. The checks run
+serially with a 60-second per-command timeout and terminate timed-out process
+trees. Copilot extraction uses a private temporary cache rather than the
+operator cache. Cursor uses a standalone entry, not the desktop installer.
 
-# Sandbox and policy tests
-bun test tests/sandbox.test.ts tests/sandbox-policy.test.ts
+A missing harness is not verified by a passing skip. Record available
+versions, skipped harnesses, and separate upstream evidence in the
+[compatibility reference](HARNESS-COMPATIBILITY.md). The scode contract likewise
+skips when scode is absent. CI runs the full gate on macOS and Linux.
 
-# Adapter command construction tests
-bun test tests/adapters.test.ts tests/adapters-extended.test.ts tests/new-adapters.test.ts
+## Static checks and live probes
 
-# Experiment MCP bridge, refusals, recordings, and agy isolation (fake peers only)
-bun test --preload ./tests/setup.ts tests/experiment-mcp.test.ts tests/experiment-bridge.test.ts tests/agy-isolation.test.ts
+Help, version, `list`, `autonomy`, `doctor`, and `verify` do not submit
+model prompts. The gate covers every command's help surface, including
+`check --help` and `session --help`.
 
-# Process lifecycle, timeout, process-tree, output-limit, file-input, and credential tests
-bun test tests/base.test.ts tests/process-table.test.ts tests/credentials.test.ts tests/zai.test.ts
+Actual `check`, `run`, `session`, and `tui` invocations can send provider
+requests and spend quota. They are outside the automated gate. A hermetic
+check normally makes two requests: the isolated probe and its plain control.
+Obtain explicit authorization and a budget before new live probes.
+Use codemux for authorized model work and record the exact version,
+authentication conditions, requested capabilities, result, and evidence path.
 
-# Order/race stress
-bun test --max-concurrency=1 --randomize --rerun-each=3
-```
+A `usage` query can invoke usagemux and access provider APIs or local
+credentials. `usage --help` does neither. Follow
+[isolation evidence requirements](HERMETIC.md) and the
+[experiment procedure](experiment-mcp.md) when applicable.
 
-## Installed harness contracts
+## Reporting a failure
 
-The default suite is hermetic and never starts locally installed third-party
-agents. To compare adapter flags with the harness versions on your machine:
-
-```bash
-bun run test:contracts
-```
-
-These opt-in checks can be slow or fail after an upstream CLI changes its
-interface. They run serially, use a 60-second per-command timeout, and terminate
-the process tree on timeout.
-
-The contract output reports which locally installed harnesses were exercised.
-Absent harnesses still require the release/changelog and latest-distribution
-checks recorded in `docs/HARNESS-COMPATIBILITY.md`.
-
-## CLI smoke checks
-
-These are lightweight runtime checks that do not require network/model calls.
-
-```bash
-./bin/codemux --help
-./bin/codemux list
-./bin/codemux autonomy
-./bin/codemux verify
-./bin/codemux verify --show-scode
-./bin/codemux usage --help
-```
-
-## Sandbox behavior checks
-
-```bash
-# installed wrapper compatibility (skips when scode is absent)
-bun run scripts/check-scode-version.ts
-
-# preview policy overrides
-./bin/codemux verify --show-scode -a codex --sandbox-trust trusted --sandbox-scrub-env
-```
-
-## Notes
-
-- `verify` is static wiring validation and does not execute model/network calls.
-- `usage --help` is static. A real `usage` query starts the optional `usagemux`
-  integration and can access provider APIs and local credential stores.
-- `check` makes a real provider/model request. It requires configured
-  credentials and may consume quota or incur charges. `check --hermetic`
-  makes two (see `docs/HERMETIC.md`); run it for every harness that claims
-  `--hermetic` before a release.
-- `run` and `tui` may require installed external harness binaries for end-to-end behavior.
-- Installed harness contract checks are opt-in so local tools, network state, or
-  auto-updaters cannot make the release gate nondeterministic.
-- Copilot's installed help contract extracts its bundled package into a private
-  temporary cache through `COPILOT_PKG_CACHE_HOME`. It does not write to the
-  operator's cache. Session-home age tests use an empty private registry.
-- CI runs the release gate on macOS and Linux, the supported platforms.
-- The full `test:coverage` script enforces at least 80% whole-source line and
-  function coverage; targeted test commands intentionally skip coverage.
-  Bun reports only modules loaded in the test process and does not emit branch
-  coverage. Core CLI helpers are imported by unit tests; `src/index.ts` behavior
-  is covered by hardened-launcher end-to-end tests whose child-process coverage
-  is not merged into Bun's report. `scripts/check-source-coverage.ts` closes the
-  loaded-module loophole by counting every omitted source file as fully uncovered
-  and enforcing 80% on that conservative whole-source result.
+Include the failing command, exit code, diagnostic, environment limitation,
+and whether a focused rerun or full rerun passed. Separate missing binaries,
+host-dependent skips, schema fixtures, and successful live observations.
+An isolated passing retry does not make a failed full gate green.

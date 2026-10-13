@@ -46,14 +46,14 @@ export function registerCheckCommand(
 ): void {
   program
     .command("check")
-    .description("Check agent/model configuration with a quick probe")
+    .description("Check configuration with real model requests (credentials and quota required; canaries use multiple probes)")
     .option("-a, --agent <agent>", "Agent to use", config.defaultAgent)
     .option("-m, --model <model>", "Model to use (supports aliases)")
     .option("--auto <level>", "Autonomy level: read-only, low, medium, high", "read-only")
     .option("--effort <level>", "Reasoning effort: none, minimal, low, medium, high, xhigh, max, ultra")
     .option(
       "--hermetic",
-      "Prove the harness ignores its customizations: plant instruction files in a scratch directory and probe twice"
+      "Test specified customization channels against a positive control in a managed directory; incompatible with --cwd"
     )
     .option("--tools <selection>", "Built-in tools for the probe: default, none")
     .option("--experiment-mcp <spec.json>", "Extend Claude's hermetic canary with the experiment MCP bridge")
@@ -67,8 +67,8 @@ export function registerCheckCommand(
     .option("--sandbox-no-net", "Pass --no-net to scode when sandboxed")
     .option("--sandbox-scrub-env", "Pass --scrub-env to scode when sandboxed")
     .option("--pass-env <names>", "Pass comma-separated sensitive environment names")
-    .option("--timeout <seconds>", "Maximum probe time in seconds", "60")
-    .option("--cwd <path>", "Working directory")
+    .option("--timeout <seconds>", "Timeout per probe in seconds; paired and multiple probes each receive this budget", "60")
+    .option("--cwd <path>", "Working directory (incompatible with --hermetic and Agy isolation canaries)")
     .action(async (options) => {
       try {
         requireValidConfig();

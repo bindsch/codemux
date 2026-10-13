@@ -1,43 +1,38 @@
 # Contributing to codemux
 
-Thanks for helping improve `codemux`.
+Read the [documentation index](docs/index.md) and
+[architecture](docs/architecture.md) before changing a launch or session path.
+Keep changes focused. Preserve validation before side effects, launcher-owned
+state, and explicit capability refusals. Add regression coverage for bugs.
 
-## Before opening a change
+## Setup and verification
 
-1. Check existing issues and pull requests for overlapping work.
-2. Keep changes focused and preserve the normalized autonomy and sandbox
-   invariants documented in `README.md`.
-3. Add a regression test for bug fixes when practical.
-4. Update user-facing documentation and `CHANGELOG.md` when behavior changes.
+Use Bun 1.3.14 or newer and the repository's existing lockfile:
 
-## Development setup
-
-Install Bun 1.3.14 or newer, then run:
-
-```bash
+```sh
 bun install --frozen-lockfile
-make check
-make release-gate
 ```
 
-The default suite is hermetic. If supported agent CLIs are installed locally,
-their current help surfaces can be checked separately:
+Run the [canonical full release gate](docs/RELEASE-GATE.md#automated-gate)
+before requesting review. [Testing](docs/TESTING.md) describes focused checks,
+coverage, installed contracts, and the separate authorization needed for
+live model probes.
 
-```bash
-bun run test:contracts
-```
+The default test suite uses fake peers. The full gate also enables installed
+help/version contracts, which skip absent tools. A green gate with skips is
+not proof that those tools or live provider behavior were checked.
 
-See `docs/TESTING.md` for targeted commands and coverage details.
+## Changes and pull requests
 
-## Pull requests
+Use conventional commit subjects such as `fix:`, `feat:`, or `docs:`.
+Keep files focused and preferably below 500 lines. Explain the concrete
+behavior change, relevant constraints, and the commands and outcomes used
+to verify it. Include pass, fail, and skip counts, and compare test totals
+when coverage changes.
 
-- Use clear, conventional commit subjects (`feat:`, `fix:`, `docs:`, and so on).
-- Keep source files focused and preferably below 500 lines.
-- Explain user-visible and security-relevant behavior changes.
-- Confirm type checking, tests, coverage, dependency audit, and smoke checks
-  pass before requesting review.
+Update the current reference page and `CHANGELOG.md` when behavior changes.
+Historical reports remain dated evidence; do not rewrite their version to
+match every new release. Link new outcomes separately.
 
-## Security
-
-Do not open public issues for suspected vulnerabilities. Follow the private
-reporting instructions in `SECURITY.md`.
+For suspected vulnerabilities, follow [private reporting](SECURITY.md).
+For publication, follow [releasing](docs/RELEASING.md).
