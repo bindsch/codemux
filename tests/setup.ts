@@ -11,8 +11,12 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import "./fixtures/agy-host.js";
+import { agyKeychainHost } from "../src/agy-keychain.js";
 
 const dir = mkdtempSync(join(tmpdir(), "codemux-test-ledger-"));
+// No in-process test may read file-fallback credentials from the real home.
+agyKeychainHost.home = () => dir;
 process.env.CODEMUX_TEST_LEDGER ??= join(dir, "calls.jsonl");
 process.on("exit", () => {
   try {

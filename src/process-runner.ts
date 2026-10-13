@@ -14,12 +14,12 @@ export const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
 export const MAX_ARGV_PROMPT_BYTES = 32 * 1024;
 export const MAX_RUN_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
-const FORCE_KILL_DELAY_MS = 2_000;
+export const FORCE_KILL_DELAY_MS = 2_000;
 // After a timeout's SIGKILL escalation, how much longer to keep reading the
 // captured pipes before abandoning them. A descendant no signal can reach
 // (orphaned into another process group before the first snapshot) may hold
 // them open forever; the run must still return.
-const PIPE_GIVE_UP_MS = 1_000;
+export const PIPE_GIVE_UP_MS = 1_000;
 const SIGNAL_BURST_WINDOW_MS = 1_000;
 const TIMEOUT_EXIT_CODE = 124;
 // 128 + SIGTERM: the child tree was terminated after a signal to codemux.
@@ -58,10 +58,15 @@ export class CapturedRunFailure extends Error {
  * run fails at the capture limit exactly as a whole-stream capture would,
  * with `finish()` as the partial output. */
 export interface StdoutSink {
+  /** Optional duplex protocol. The runner retains timeout and signal ownership. */
+  start?(write: (line: string) => void, end: () => void, abort: () => void): void;
+  closeProtocol?(): void | Promise<void>;
+  /** Stop an external protocol process immediately on timeout or signal. */
+  terminateProtocol?(): void;
   /** One decoded chunk of the stdout stream, in arrival order. */
   push(chunk: string): void;
   /** The run's stdout once the stream has ended (or been abandoned). */
-  finish(): string;
+  finish(options?: { timedOut: boolean; aborted?: boolean }): string;
   /** What the sink is currently keeping, in bytes. */
   keptBytes(): number;
 }
@@ -75,7 +80,8 @@ async function readBounded(
   stream: ReadableStream<Uint8Array>,
   streamName: "stdout" | "stderr",
   giveUp: Promise<void> = new Promise(() => {}),
-  sink?: StdoutSink
+  sink?: StdoutSink,
+  finishOptions: () => { timedOut: boolean; aborted?: boolean } = () => ({ timedOut: false })
 ): Promise<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -124,7 +130,7 @@ async function readBounded(
           // finish() can push what it keeps past the limit exactly as at
           // a natural EOF (the al30 rule) — an abandoned run over the
           // bound fails at 125, never succeeds over the bound at 124.
-          const folded = sink.finish();
+          const folded = sink.finish({ ...finishOptions(), aborted: true });
           if (sink.keptBytes() > MAX_CAPTURE_BYTES) {
             await reader.cancel();
             throw new OutputLimitError(streamName, folded);
@@ -142,7 +148,7 @@ async function readBounded(
           // rule), so a final unterminated event whose value crosses the
           // limit latches it exactly there — the run fails at 125 instead
           // of succeeding over the bound.
-          const folded = sink.finish();
+          const folded = sink.finish(finishOptions());
           if (sink.keptBytes() > MAX_CAPTURE_BYTES) {
             await reader.cancel();
             throw new OutputLimitError(streamName, folded);
@@ -158,7 +164,7 @@ async function readBounded(
         // whole-stream capture does.
         if (sink.keptBytes() > MAX_CAPTURE_BYTES) {
           await reader.cancel();
-          throw new OutputLimitError(streamName, sink.finish());
+          throw new OutputLimitError(streamName, sink.finish({ ...finishOptions(), aborted: true }));
         }
         continue;
       }
@@ -350,10 +356,10 @@ export async function runCapturedCommand(
     detached: useProcessGroup,
   });
 
-  if (options.stdinInput !== null && options.stdinInput !== undefined) {
+  if (!options.stdoutSink?.start && options.stdinInput !== null && options.stdinInput !== undefined) {
     proc.stdin.write(options.stdinInput);
   }
-  proc.stdin.end();
+  if (!options.stdoutSink?.start) proc.stdin.end();
 
   const target = createTerminationTarget(proc, useProcessGroup);
   // Counted only once everything that can throw synchronously is done, so
@@ -369,18 +375,33 @@ export async function runCapturedCommand(
   // and let the run complete normally, so exit handlers (a hermetic home's
   // cleanup) still see the child gone.
   let signaled = false;
+  let captureFailed = false;
+  let protocolAborted = false;
+  let cleanupStarted = false;
+  let terminationNote: string | undefined;
+  const terminateRun = (): void => {
+    const starting = !cleanupStarted && forceKillTimer === null;
+    // Arm forced reaping before protocol code can throw. The server still
+    // receives SIGTERM before the harness, so it stops accepting work first.
+    if (starting) {
+      forceKillDeadline = performance.now() + FORCE_KILL_DELAY_MS;
+      forceKillTimer = setTimeout(() => signalProcess(target, "SIGKILL", "tree"), FORCE_KILL_DELAY_MS);
+      giveUpTimer = setTimeout(() => {
+        pipesAbandoned = true;
+        giveUpReads();
+        giveUpExit();
+      }, FORCE_KILL_DELAY_MS + PIPE_GIVE_UP_MS);
+    }
+    try { options.stdoutSink?.terminateProtocol?.(); }
+    catch (error) {
+      terminationNote ??= `protocol termination failed: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    if (starting) signalProcess(target, "SIGTERM", "tree");
+  };
   const onSignal = (): void => {
     if (signaled) return;
     signaled = true;
-    // One SIGTERM now (forceKillAfterGrace sends it), SIGKILL after the
-    // grace period, and the same bounded pipe abandonment as a timeout, so
-    // a descendant that keeps the pipes open cannot stall the stop.
-    forceKillTimer ??= forceKillAfterGrace(target, "tree");
-    forceKillDeadline = performance.now() + FORCE_KILL_DELAY_MS;
-    giveUpTimer ??= setTimeout(() => {
-      pipesAbandoned = true;
-      giveUpReads();
-    }, FORCE_KILL_DELAY_MS + PIPE_GIVE_UP_MS);
+    terminateRun();
   };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
@@ -390,16 +411,25 @@ export async function runCapturedCommand(
   const giveUp = new Promise<void>((resolve) => {
     giveUpReads = resolve;
   });
+  // Canceling capture after a failure must not release the child exit wait.
+  // Only the bounded termination deadline can abandon that wait.
+  let giveUpExit: () => void = () => {};
+  const exitGiveUp = new Promise<void>((resolve) => { giveUpExit = resolve; });
   const timeoutTimer = setTimeout(() => {
     timedOut = true;
-    forceKillTimer = forceKillAfterGrace(target, "tree");
-    forceKillDeadline = performance.now() + FORCE_KILL_DELAY_MS;
-    giveUpTimer = setTimeout(() => {
-      pipesAbandoned = true;
-      giveUpReads();
-    }, FORCE_KILL_DELAY_MS + PIPE_GIVE_UP_MS);
+    terminateRun();
   }, timeoutMs);
 
+  const abortCapture = (): void => {
+    const firstFailure = !captureFailed;
+    captureFailed = true;
+    if (firstFailure) terminateRun();
+    giveUpReads();
+  };
+
+  let firstError: CapturedRunFailure | undefined;
+  let firstCaptureError: unknown;
+  let failureResult: RunResult | undefined;
   const capture = async (
     stream: ReadableStream<Uint8Array>,
     streamName: "stdout" | "stderr"
@@ -410,28 +440,47 @@ export async function runCapturedCommand(
           stream,
           streamName,
           giveUp,
-          streamName === "stdout" ? options.stdoutSink : undefined
+          streamName === "stdout" ? options.stdoutSink : undefined,
+          () => ({ timedOut, aborted: captureFailed || signaled })
         ),
       };
     } catch (error) {
-      signalProcess(target, "SIGKILL", "tree");
-      // This capture already failed (output limit, invalid UTF-8): arm
-      // abandonment now so the other stream is released at once instead
-      // of stalling an already-failed run until the timeout fires.
-      giveUpReads();
+      firstCaptureError ??= error;
+      abortCapture();
       return { error };
     }
   };
 
   try {
+    try {
+      options.stdoutSink?.start?.(
+        (line) => { proc.stdin.write(line); },
+        () => { proc.stdin.end(); },
+        () => { protocolAborted = true; abortCapture(); }
+      );
+    } catch (error) {
+      // start() ran after the spawn, so the child is live: a throw must not
+      // leave it running. Give it the same termination a signal gets --
+      // SIGTERM now, the promised grace, a tree-wide SIGKILL, and bounded
+      // pipe abandonment -- wait for the exit, then fail the run.
+      abortCapture();
+      await waitForDescendantsGrace(target, forceKillDeadline);
+      signalProcess(target, "SIGKILL", "tree");
+      await Promise.race([proc.exited, exitGiveUp]);
+      throw new CapturedRunFailure(error);
+    }
     const [stdoutResult, stderrResult, exitCode] = await Promise.all([
       capture(proc.stdout as ReadableStream<Uint8Array>, "stdout"),
       capture(proc.stderr as ReadableStream<Uint8Array>, "stderr"),
-      proc.exited,
+      // Bun can retain the exit promise while inherited stdio is open.
+      // Duplex callbacks keep the subprocess alive, so canceling the readers
+      // alone is insufficient: abandonment must release this wait as well.
+      Promise.race([proc.exited, exitGiveUp.then(() => TIMEOUT_EXIT_CODE)]),
     ]);
 
-    const captureError = stdoutResult.error ?? stderrResult.error;
+    const captureError = firstCaptureError;
     if (captureError instanceof OutputLimitError) {
+      firstError = new CapturedRunFailure(captureError);
       const stdout = captureError.streamName === "stdout"
         ? captureError.partialOutput
         : stdoutResult.value ?? "";
@@ -440,7 +489,7 @@ export async function runCapturedCommand(
         : stderrResult.value ?? "";
       const separator =
         stderrOutput.length > 0 && !stderrOutput.endsWith("\n") ? "\n" : "";
-      return {
+      return failureResult = {
         stdout,
         stderr: `${stderrOutput}${separator}Error: ${captureError.message}\n`,
         exitCode: OUTPUT_LIMIT_EXIT_CODE,
@@ -458,7 +507,7 @@ export async function runCapturedCommand(
       ? "Note: a process out of the runner's reach kept the output open after " +
         "the timeout; it may still be running\n"
       : "";
-    return {
+    const result = {
       stdout: stdoutResult.value ?? "",
       stderr: timedOut
         ? `${stderrResult.value ?? ""}Error: agent timed out after ${timeoutMs}ms\n${abandonedNote}`
@@ -468,7 +517,16 @@ export async function runCapturedCommand(
       exitCode: timedOut ? TIMEOUT_EXIT_CODE : signaled ? SIGNAL_EXIT_CODE : exitCode,
       success: !timedOut && !signaled && exitCode === 0,
     };
+    if (timedOut) {
+      firstError = new CapturedRunFailure(`agent timed out after ${timeoutMs}ms`);
+      failureResult = result;
+    }
+    return result;
+  } catch (error) {
+    firstError = error instanceof CapturedRunFailure ? error : new CapturedRunFailure(error);
+    throw firstError;
   } finally {
+    cleanupStarted = true;
     clearTimeout(timeoutTimer);
     if (forceKillTimer) clearTimeout(forceKillTimer);
     if (giveUpTimer) clearTimeout(giveUpTimer);
@@ -478,16 +536,34 @@ export async function runCapturedCommand(
     // they were promised, then kill the tree unconditionally: the group
     // SIGKILL reaches a member the pid walk never saw (or could not see), as
     // it did in 0.5.0, so none can escape the timeout.
-    if (timedOut || signaled) {
+    if (timedOut || signaled || captureFailed) {
       await waitForDescendantsGrace(target, forceKillDeadline);
       signalProcess(target, "SIGKILL", "tree");
     }
-    // Only now: a second signal during the descendants' grace period must
-    // not end codemux before the SIGKILL reaches them.
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
-    process.off("SIGHUP", onSignal);
-    activeCapturedCommands--;
+    // Protocol cleanup can fail (for example, a full recording disk). Finish
+    // the runner's own cleanup first so that failure cannot strand its timers.
+    // A protocol abort predates cleanup, too. Never replace its diagnosis.
+    firstError ??= protocolAborted ? new CapturedRunFailure("protocol capture aborted") : undefined;
+    let cleanupNote: string | undefined;
+    try { await options.stdoutSink?.closeProtocol?.(); }
+    catch (error) {
+      const note = `cleanup failed: ${error instanceof Error ? error.message : String(error)}`;
+      cleanupNote = note;
+      if (failureResult) failureResult.stderr += `Note: ${note}\n`;
+      if (firstError) firstError.message += `; ${note}`;
+      else firstError = new CapturedRunFailure(error);
+    } finally {
+      // Signals must remain handled through asynchronous recording finalization.
+      process.off("SIGINT", onSignal);
+      process.off("SIGTERM", onSignal);
+      process.off("SIGHUP", onSignal);
+      activeCapturedCommands--;
+    }
+    if (terminationNote) {
+      if (failureResult) failureResult.stderr += `Note: ${terminationNote}\n`;
+      if (firstError) firstError.message += `; ${terminationNote}`;
+      if (signaled) console.error(`Note: ${terminationNote}`);
+    }
     if (signaled) {
       // The signal meant "stop codemux", not "skip this step": a version
       // probe interrupted here must not fall through to the launch. The
@@ -496,9 +572,12 @@ export async function runCapturedCommand(
       // first: the tokens were spent, and this exit means the launch's
       // recordCompletedLaunch never runs (review ul6).
       options.onSignaled?.();
+      if (cleanupNote) console.error(`Note: ${cleanupNote}`);
       console.error("codemux: interrupted; the agent's process tree was terminated");
       process.exit(SIGNAL_EXIT_CODE);
     }
+    if (firstError && !failureResult) throw firstError;
+    if (protocolAborted && !failureResult) throw new CapturedRunFailure("protocol capture aborted");
   }
 }
 

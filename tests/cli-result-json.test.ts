@@ -55,6 +55,7 @@ describe("CLI - result envelopes", () => {
           cost_usd: 0.12735,
         },
         session_id: null,
+        recording: null,
       });
     } finally {
       fake.cleanup();
@@ -90,6 +91,7 @@ describe("CLI - result envelopes", () => {
         // but no later run can resume it, so the block does not offer it as
         // a session.
         session_id: null,
+        recording: null,
       });
     } finally {
       fake.cleanup();

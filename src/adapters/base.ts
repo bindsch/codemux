@@ -9,9 +9,10 @@ import {
   type AdapterCapabilities,
 } from "../types.js";
 import { sanitizeEnvironment } from "../environment.js";
+import { validateExperimentRequest } from "../experiment-mcp.js";
 import { readProviderOverride } from "../provider-override.js";
 import { launchRunRequest } from "../launch.js";
-import type { ScodeTrustLevel } from "../sandbox.js";
+import type { SandboxOptions, ScodeTrustLevel } from "../sandbox.js";
 import { resolveTrustedCommand } from "../executable-security.js";
 import type { RunContext } from "../run-context.js";
 import {
@@ -248,8 +249,9 @@ export abstract class BaseAdapter {
    * so preparation can skip what an untrusted sandbox denies the child
    * (codex prepares no `--output-last-message` file under it); a direct
    * launch passes nothing, and adapters that need no trust keep ignoring it.
+   * The full sandbox options let authentication selection account for scrubbing.
    */
-  prepareRun(_request: RunRequest, _sandboxTrust?: ScodeTrustLevel): RunContext {
+  prepareRun(_request: RunRequest, _sandboxTrust?: ScodeTrustLevel, _sandboxOptions?: SandboxOptions): RunContext {
     // Most adapters need no per-run state.
     return {};
   }
@@ -265,12 +267,12 @@ export abstract class BaseAdapter {
    * cannot finish (the process runner's exit 143 on a signal;
    * run-exit-cleanup registers that call). Whatever the run may already
    * have written on disk (codex's `--output-last-message` file holds model
-   * output) must not outlive the run. Must not throw: the outcome it
-   * follows -- a rejection above all -- is the failure the caller needs,
-   * and a cleanup error must not replace it. Only ever receives the
-   * context the same launch created, never another run's.
+   * output) must not outlive the run. May throw or reject when cleanup fails;
+   * callers await completion and retain both the launch and cleanup errors.
+   * Exit handlers can only perform synchronous termination and report errors.
+   * Only receives the context the same launch created, never another run's.
    */
-  cleanupRun(_context?: RunContext): void {
+  cleanupRun(_context?: RunContext): void | Promise<void> {
     // Default: no-op
   }
 
@@ -331,6 +333,7 @@ export abstract class BaseAdapter {
         `request agent '${request.agent}' does not match adapter '${this.id}'`
       );
     }
+    validateExperimentRequest(request);
     const caps = this.capabilities();
     if (!caps.supportsNonInteractive) {
       throw new Error(`${this.id} does not support non-interactive execution`);
@@ -385,8 +388,8 @@ export abstract class BaseAdapter {
       );
     }
     if (request.hermetic && !caps.supportsHermetic) {
-      // Only a mechanism verified by `codemux check --hermetic` may claim this;
-      // an unverified harness would quietly run with the operator's context.
+      // Capabilities explicitly opt in; HERMETIC.md records each supported
+      // mechanism and its verification evidence, including Antigravity.
       throw new Error(
         `${this.id} has no verified hermetic mode; see docs/HERMETIC.md`
       );

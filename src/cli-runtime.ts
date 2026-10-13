@@ -125,7 +125,8 @@ export function isVersionAtLeast(
 export async function assertCompatibleScode(
   scode: string,
   workdir: string,
-  extraEnv?: Record<string, string>
+  extraEnv?: Record<string, string>,
+  minimumVersion = SCODE_MINIMUM_VERSION
 ): Promise<void> {
   const result = await runCapturedCommand([scode, "--version"], {
     cwd: workdir,
@@ -135,19 +136,19 @@ export async function assertCompatibleScode(
   const output = `${result.stdout}\n${result.stderr}`.trim();
   if (!result.success) {
     throw new Error(
-      `could not verify scode version (requires ${SCODE_MINIMUM_VERSION} or newer)${output ? `: ${output}` : ""}`
+      `could not verify scode version (requires ${minimumVersion} or newer)${output ? `: ${output}` : ""}`
     );
   }
   const actual = parseVersion(output);
-  const minimum = parseVersion(SCODE_MINIMUM_VERSION)!;
+  const minimum = parseVersion(minimumVersion)!;
   if (!actual) {
     throw new Error(
-      `could not parse scode version '${output}' (requires ${SCODE_MINIMUM_VERSION} or newer)`
+      `could not parse scode version '${output}' (requires ${minimumVersion} or newer)`
     );
   }
   if (!isVersionAtLeast(actual, minimum)) {
     throw new Error(
-      `scode ${actual.join(".")} is too old; ${SCODE_MINIMUM_VERSION} or newer is required`
+      `scode ${actual.join(".")} is too old; ${minimumVersion} or newer is required`
     );
   }
 }

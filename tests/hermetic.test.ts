@@ -458,6 +458,13 @@ describe("hermetic runs: the other harnesses refuse", () => {
       mkdirSync(join(cwd, ".git"));
       try {
         const base: RunRequest = { agent: agentId, prompt: "p", cwd, sandboxed: true, autonomy: "high" };
+        if (agentId === "agy") {
+          expect(adapter.capabilities().supportsHermetic).toBe(true);
+          expect(adapter.capabilities().supportsToolSelection).toBe(true);
+          expect(() => adapter.validateRunRequest({ ...base, autonomy: "read-only", hermetic: true, tools: "none" }))
+            .not.toThrow();
+          return;
+        }
         if (!supportedHermetic.has(agentId)) {
           expect(adapter.capabilities().supportsHermetic ?? false).toBe(false);
           expect(() => adapter.validateRunRequest({ ...base, hermetic: true }))

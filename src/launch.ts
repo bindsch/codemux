@@ -1,6 +1,6 @@
 import type { BaseAdapter, RunContext } from "./adapters/base.js";
 import { appendCallRecord, providerHost } from "./call-log.js";
-import { runSandboxedWithStdin, unexpectedErrorExitCode } from "./cli-runtime.js";
+import { assertCompatibleScode, assertHarnessSupported, resolveScodeExecutableForEnv, runSandboxedWithStdin, unexpectedErrorExitCode } from "./cli-runtime.js";
 import { foldedSinkUsage } from "./plain-unwrap.js";
 import { readProviderOverride } from "./provider-override.js";
 import {
@@ -60,7 +60,31 @@ export async function launchRunRequest(
   // while it is registered, an exit from anywhere -- the process runner's
   // exit 143 on a signal above all -- still cleans this launch's scratch.
   let releaseExitCleanup: (() => void) | undefined;
+  let captured = false;
+  let receiptRequest = request;
+  let processed: RunResult | undefined;
+  let cleanupStarted = false;
+  const cleanup = async () => {
+    if (context === undefined || cleanupStarted) return;
+    cleanupStarted = true;
+    try { await adapter.cleanupRun(context); }
+    finally { releaseExitCleanup?.(); }
+  };
   try {
+    // An omitted directory means process.cwd() on both sides; comparing the
+    // canonicalized args alone made an explicit cwd equal to the current
+    // directory look like a mismatch (the review's cwd finding).
+    const effectiveWorkingDirectory = (value?: string): string =>
+      validateWorkingDirectory(value) ?? process.cwd();
+    if (request.experimentMcp && (!options.sandbox || options.requestedAutonomy !== "read-only" ||
+        effectiveWorkingDirectory(options.cwd) !== effectiveWorkingDirectory(request.cwd))) {
+      throw new Error("experiment MCP launch must use read-only scode and the request's working directory");
+    }
+    if (request.agent === "agy" && (request.hermetic || request.tools === "none") &&
+        (!options.sandbox || options.requestedAutonomy !== "read-only" ||
+         effectiveWorkingDirectory(options.cwd) !== effectiveWorkingDirectory(request.cwd))) {
+      throw new Error("agy isolation launch requires read-only scode and the run's own working directory");
+    }
     if (!options.sandbox) {
       // A direct launch has no sandbox it could attest, so a request that
       // claims one is refused: the sandboxed branch below is the only launch
@@ -83,6 +107,7 @@ export async function launchRunRequest(
           ? { ...request, autonomy: "read-only" }
           : request;
       const effectiveAutonomy: AutonomyLevel = request.autonomy ?? "read-only";
+      receiptRequest = effective;
       if (adapter.requiresSandboxForAutonomy(effectiveAutonomy)) {
         throw new Error(
           `${adapter.id} cannot enforce '${effectiveAutonomy}' autonomy without an external sandbox`
@@ -111,28 +136,16 @@ export async function launchRunRequest(
       // owe the failure receipt. A refusal before the spawn inside the
       // runner helpers (an unresolved binary) is neither and records
       // nothing (review ul8).
-      let captured = false;
-      let processed: RunResult;
-      try {
-        const raw = await runDirect(
-          adapter,
-          effective,
-          runContext,
-          () => appendInterruptedLaunchReceipt(effective, options, runContext, startedAt)
-        );
-        captured = true;
-        processed = adapter.processRunResult(raw, effective, context);
-      } catch (error) {
-        // The harness ran and the launch still rejects: the receipt is
-        // written before the rejection travels to the caller (review ul8).
-        appendFailedLaunchReceipt(effective, options, runContext, startedAt, error, captured);
-        throw error;
-      }
-      // The receipt precedes cleanup: a launch whose cleanup failed still
-      // spent its tokens, and the record is the one thing that must survive.
+      const raw = await runDirect(
+        adapter,
+        effective,
+        runContext,
+        () => appendInterruptedLaunchReceipt(effective, options, runContext, startedAt)
+      );
+      captured = true;
+      processed = adapter.processRunResult(raw, effective, context);
+      await cleanup();
       recordCompletedLaunch(effective, options, processed, startedAt);
-      adapter.cleanupRun(context);
-      releaseExitCleanup();
       return processed;
     }
     let sandboxOptions = resolveSandboxOptionsForAgent(
@@ -145,8 +158,13 @@ export async function launchRunRequest(
     // The resolved trust rides into prepareRun so per-run scratch can be
     // shaped for the sandbox the child will actually run in (an untrusted
     // sandbox denies harness state, where codex's fallback file lives).
-    context = adapter.prepareRun(request, sandboxOptions.trust);
+    context = adapter.prepareRun(request, sandboxOptions.trust, sandboxOptions);
     releaseExitCleanup = registerRunExitCleanup(adapter, context);
+    if (context.agyProbe?.diagnostic && context.agyProbe.operatorHome) {
+      // Shared temp storage is hidden. Expose only this check's HOME,
+      // never the planted parent or cwd; --ro still protects the project.
+      sandboxOptions.harnessStateDirs = [context.agyProbe.home ?? context.agyProbe.operatorHome];
+    }
     // Same const capture as the direct path, for the receipt closures.
     const runContext = context;
     // One source for the whole launch (round15): request.passthroughEnv is
@@ -171,6 +189,20 @@ export async function launchRunRequest(
       ...adapter.getRunEnv(request, context),
     };
     const envArg = adapter.buildExecutionEnv(injectedEnv, request.passthroughEnv);
+    // Probe the same binaries and environment that the sandbox runner resolves.
+    if (request.agent === "agy") {
+      const cwd = effectiveWorkingDirectory(options.cwd);
+      const scode = resolveScodeExecutableForEnv(envArg, cwd);
+      if (!scode) throw new Error("every sandboxed agy run requires scode 0.6.0 or newer");
+      try { await assertCompatibleScode(scode, cwd, envArg, "0.6.0"); }
+      catch (error) {
+        throw new Error(`every sandboxed agy run requires scode 0.6.0 or newer: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (request.experimentMcp) {
+      await assertHarnessSupported(adapter.id, adapter.binaryName, options.cwd, envArg,
+        request.autonomy, true, request.passthroughEnv, "2.1.280");
+    }
     // The override question reads the ADAPTER's environment view, not
     // process.env: a custom-environment launch (an adapter built against
     // its own view) must decide on the same environment it validated
@@ -186,50 +218,36 @@ export async function launchRunRequest(
     // processRunResult throw owes the failure receipt; a refusal before
     // the spawn (a missing scode, an untrusted command) owes nothing
     // (review ul8).
-    let captured = false;
-    let processed: RunResult;
-    try {
-      const raw = await runSandboxedWithStdin(
-        adapter.buildRunCommand(request, context),
-        adapter.getStdinInput(request),
-        options.cwd,
-        envArg,
-        options.requestedAutonomy,
-        sandboxOptions,
-        options.timeoutMs,
-        adapter.getEnvOmissions(),
-        context.stdoutSink,
-        () => appendInterruptedLaunchReceipt(request, options, runContext, startedAt)
-      );
-      captured = true;
-      processed = adapter.processRunResult(raw, request, context);
-    } catch (error) {
-      appendFailedLaunchReceipt(request, options, runContext, startedAt, error, captured);
-      throw error;
-    }
-    // The receipt precedes cleanup for the same reason as the direct path.
+    const raw = await runSandboxedWithStdin(
+      adapter.buildRunCommand(request, context),
+      adapter.getStdinInput(request),
+      options.cwd,
+      envArg,
+      options.requestedAutonomy,
+      sandboxOptions,
+      options.timeoutMs,
+      adapter.getEnvOmissions(),
+      context.stdoutSink,
+      () => appendInterruptedLaunchReceipt(request, options, runContext, startedAt)
+    );
+    captured = true;
+    processed = adapter.processRunResult(raw, request, context);
+    await cleanup();
     recordCompletedLaunch(request, options, processed, startedAt);
-    // processRunResult consumed what it could (codex reads and removes its
-    // --output-last-message file there); whatever remains -- an unread
-    // file, the private hermetic home -- is disposed now that the run is
-    // over.
-    adapter.cleanupRun(context);
-    releaseExitCleanup();
     return processed;
   } catch (error) {
-    // A launch that rejects (a captured stdout that is not UTF-8, a missing
-    // scode, a refused working directory) never reaches processRunResult,
-    // where adapters consume per-run state -- codex removes its
-    // --output-last-message file there, and the model output that file holds
-    // must not outlive the run even when the run itself failed. Any ledger
-    // receipt the rejection owed was already written on the run path above
-    // (appendFailedLaunchReceipt). Dispose only
-    // the context THIS launch created, then rethrow: the launch's own failure
-    // is the diagnostic the caller gets, and a concurrent launch through the
-    // same adapter keeps its own context untouched.
-    if (context !== undefined) adapter.cleanupRun(context);
-    releaseExitCleanup?.();
-    throw error;
+    // Dispose once before recording the actual outcome, preserving the first error.
+    let failure = error;
+    try { await cleanup(); }
+    catch (cleanupError) {
+      if (cleanupError !== error) {
+        failure = new AggregateError([error, cleanupError],
+          `${error instanceof Error ? error.message : String(error)}; cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+      }
+    }
+    if (context) appendFailedLaunchReceipt(receiptRequest, options, context, startedAt, failure,
+      captured || error instanceof CapturedRunFailure, processed);
+    throw failure;
   }
 }
 
@@ -370,7 +388,8 @@ function appendFailedLaunchReceipt(
   context: RunContext,
   startedAt: number,
   error: unknown,
-  captured: boolean
+  captured: boolean,
+  processed?: RunResult
 ): void {
   if (!captured && !(error instanceof CapturedRunFailure)) return;
   try {
@@ -380,7 +399,7 @@ function appendFailedLaunchReceipt(
       kind: options.kind ?? "run",
       agent: request.agent,
       model: request.model ?? null,
-      model_effective: null,
+      model_effective: processed?.servedModel ?? null,
       provider: providerHostFor(request.agent),
       session_id: null,
       turn_id: null,
@@ -391,7 +410,7 @@ function appendFailedLaunchReceipt(
       finish: null,
       duration_ms: Math.max(0, Date.now() - startedAt),
       cwd: request.cwd ?? process.cwd(),
-      usage: folded ?? emptyUsage(),
+      usage: processed?.usage ?? folded ?? emptyUsage(),
     });
   } catch {
     // The never-fail contract, as the interrupted receipt enforces it.

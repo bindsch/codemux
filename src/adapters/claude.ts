@@ -1,5 +1,7 @@
 import { isAbsolute, join } from "node:path";
-import { BaseAdapter, type SandboxPreparation } from "./base.js";
+import { BaseAdapter, type SandboxPreparation, type RunContext } from "./base.js";
+import { ExperimentBridge } from "../experiment-bridge.js";
+import { readExperimentRunSpec } from "../experiment-mcp.js";
 import {
   CLAUDE_KEYCHAIN_SERVICE,
   claudeCredentialTarget,
@@ -11,7 +13,7 @@ import {
   type SecretReadResult,
 } from "../credentials.js";
 import { getPlaywrightSandboxMcpArgs } from "../mcp.js";
-import { claudeFamilyResult } from "../result-envelope.js";
+import { appendDiagnostic, claudeFamilyResult } from "../result-envelope.js";
 import { claudeFamilyPlainResult } from "../plain-unwrap.js";
 import {
   claudeAutonomyFlags,
@@ -330,7 +332,18 @@ export class ClaudeAdapter extends BaseAdapter {
     this.modelFor(model);
   }
 
-  buildRunCommand(request: RunRequest): string[] {
+  override prepareRun(request: RunRequest): RunContext {
+    if (!request.experimentMcp) return {};
+    const experimentBridge = new ExperimentBridge(readExperimentRunSpec(request),
+      request.cwd ?? process.cwd(), request.prompt, this.environment);
+    return { experimentBridge, stdoutSink: experimentBridge };
+  }
+
+  override cleanupRun(context?: RunContext): void | Promise<void> {
+    return context?.experimentBridge?.close();
+  }
+
+  buildRunCommand(request: RunRequest, context?: RunContext): string[] {
     const cmd = ["claude", "-p"];
     if (request.hermetic) {
       // --safe-mode starts with every customization disabled: CLAUDE.md
@@ -365,7 +378,12 @@ export class ClaudeAdapter extends BaseAdapter {
     // `--result-json` re-emits it with the codemux block appended; a plain
     // run unwraps it back to the reply text (plain-unwrap.ts) so stdout
     // keeps its contract while the call ledger gets the usage.
-    cmd.push("--output-format", "json");
+    cmd.push("--output-format", request.experimentMcp ? "stream-json" : "json");
+    if (request.experimentMcp) {
+      const spec = context?.experimentBridge?.spec ?? readExperimentRunSpec(request);
+      cmd.push("--input-format", "stream-json", "--verbose", "--permission-prompt-tool", "stdio",
+        "--mcp-config", JSON.stringify({ mcpServers: { [spec.name]: { type: "sdk", name: spec.name } } }));
+    }
     if (request.tools === "none") {
       // An empty --tools list removes every built-in tool definition.
       cmd.push("--tools", "");
@@ -387,7 +405,11 @@ export class ClaudeAdapter extends BaseAdapter {
     cmd.push(...this.modelFlags(request.model));
 
     if (request.autonomy) {
-      cmd.push(...claudeAutonomyFlags(request.autonomy, request.cwd ?? process.cwd()));
+      // scode enforces read-only for the harness. The host authorizes only
+      // experiment tools, whose separate process owns its writes; plan mode
+      // must not suppress those before they reach the control callback.
+      cmd.push(...(request.experimentMcp ? ["--permission-mode", "default"] :
+        claudeAutonomyFlags(request.autonomy, request.cwd ?? process.cwd())));
     }
     if (request.effort) {
       cmd.push(...this.mapEffort(request.effort));
@@ -419,9 +441,13 @@ export class ClaudeAdapter extends BaseAdapter {
     return request.prompt;
   }
 
-  override processRunResult(result: RunResult, request: RunRequest): RunResult {
-    // Every run is launched with --output-format json, so stdout should be
-    // one result envelope. Under --result-json it is re-emitted with every
+  override processRunResult(result: RunResult, request: RunRequest, context?: RunContext): RunResult {
+    if (context?.experimentBridge) {
+      if (result.exitCode === 0 && !result.stdout) throw new Error("Claude returned no experiment result envelope");
+      result = { ...result, scanSurface: context.experimentBridge.scanSurface() };
+    }
+    // Ordinary runs use --output-format json; the experiment bridge extracts
+    // the final result envelope from stream-json. Under --result-json it is re-emitted with every
     // original field untouched plus the codemux block (usage, model);
     // anything that is not the envelope fails loudly there: the raw stdout
     // stays on stdout, stderr says what is missing, and the exit is
@@ -434,7 +460,8 @@ export class ClaudeAdapter extends BaseAdapter {
       return claudeFamilyResult(
         result,
         override === null ? request : { ...request, model: this.modelFor(request.model) },
-        this.id
+        this.id,
+        context?.experimentBridge?.recordingPath ?? null
       );
     }
     // A plain run: the same envelope, unwrapped back to the reply text.
@@ -443,7 +470,13 @@ export class ClaudeAdapter extends BaseAdapter {
     // the output for; JSON that is not the envelope (an array or scalar
     // included, or an object cut mid-write) fails with nothing on stdout
     // (plain-unwrap.ts).
-    return claudeFamilyPlainResult(result, this.id);
+    const plain = claudeFamilyPlainResult(result, this.id);
+    // A plain run has no codemux block to carry the recording path, so the
+    // run's stderr summary names it instead.
+    return context?.experimentBridge
+      ? { ...plain, stderr: appendDiagnostic(plain.stderr,
+          `codemux: experiment MCP recording: ${context.experimentBridge.recordingPath}`) }
+      : plain;
   }
 
   buildTuiCommand(

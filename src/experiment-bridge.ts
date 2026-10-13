@@ -1,0 +1,361 @@
+import { closeSync, fsyncSync, mkdirSync, openSync, unlinkSync, writeSync } from "node:fs";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import { codemuxStateDir } from "./call-log.js";
+import type { StdoutSink } from "./process-runner.js";
+import type { ExperimentSpec } from "./experiment-mcp.js";
+import { ExperimentServer, MAX_EXPERIMENT_MESSAGE_BYTES, type JsonObject } from "./experiment-server.js";
+
+const EXPERIMENT_TOOLS = new Set(["bash", "bash_bg", "poll", "kill", "read", "write"]);
+const MAX_RECORDING_BYTES = 256 * 1024 * 1024;
+
+/** One bound governs every experiment control frame; the prompt preflight in
+ * experiment-mcp.ts and this bridge's send path measure against the same
+ * constant. Re-exported so the preflight needs no second copy. */
+export { MAX_EXPERIMENT_MESSAGE_BYTES };
+
+/** The exact user frame the bridge serializes for a prompt. The preflight
+ * must measure the bytes send() would actually write, not the prompt alone. */
+export function experimentUserFrameBytes(prompt: string): number {
+  return Buffer.byteLength(JSON.stringify({ type: "user", message: { role: "user", content: prompt } }) + "\n");
+}
+
+/** Claude's SDK control transport. Raw stdio and the harness's emitted
+ * model-bound tool_result blocks are different evidence and remain separate.
+ */
+export class ExperimentBridge implements StdoutSink {
+  readonly runId = randomUUID();
+  readonly recordingPath: string;
+  private fd: number;
+  private sequence = 0;
+  private recordedBytes = 0;
+  private buffer = "";
+  private result = "";
+  private trace = "";
+  private server: ExperimentServer;
+  private write?: (line: string) => void;
+  private end?: () => void;
+  private abort?: () => void;
+  private failure?: Error;
+  private closed = false;
+  private closing?: Promise<void>;
+  private closeFailure?: Error;
+  private closeFailureReported = false;
+  private initialized = false;
+  private inventoryValidated = false;
+  private initRequest = randomUUID();
+  private calls = new Map<string, { name: string; input: unknown; claimed: boolean; result?: JsonObject; received: boolean }>();
+  private activeControls = new Set<string>();
+  private toolNames = new Set<string>();
+  private toolDefinitions?: unknown[];
+
+  constructor(readonly spec: ExperimentSpec, cwd: string, private prompt: string,
+    environment: NodeJS.ProcessEnv = process.env) {
+    // Recordings are codemux state, not run-directory output: the run
+    // directory belongs to the experiment, and a recording landing there is
+    // visible to the harness's own tools. A spec may relocate the directory.
+    const directory = spec.recording ?? join(codemuxStateDir(environment), "experiments");
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    this.recordingPath = join(directory, `${this.runId}${spec.control ? ".control" : ""}.jsonl`);
+    this.fd = openSync(this.recordingPath, "wx", 0o600);
+    try {
+      this.server = new ExperimentServer(spec, cwd, environment,
+        (kind, fields) => this.record(kind, fields), (error) => this.fail(error));
+      this.record("run_start", { server: spec.name, cwd, env_names: spec.env,
+        server_sandbox: "outside scode; experiment-owned", harness_sandbox: "scode read-only" });
+      console.error(`codemux: experiment MCP recording: ${this.recordingPath}`);
+    } catch (error) {
+      try { closeSync(this.fd); }
+      finally { unlinkSync(this.recordingPath); }
+      throw error;
+    }
+  }
+
+  private record(kind: string, fields: JsonObject): void {
+    if (this.closed) return;
+    const line = JSON.stringify({ run_id: this.runId, seq: this.sequence++, kind, ...fields }) + "\n";
+    this.recordedBytes += Buffer.byteLength(line);
+    if (this.recordedBytes > MAX_RECORDING_BYTES && kind !== "failure" && kind !== "run_end") throw new Error("experiment MCP recording exceeds 256 MiB");
+    const bytes = Buffer.from(line);
+    let offset = 0;
+    while (offset < bytes.length) offset += writeSync(this.fd, bytes, offset);
+  }
+
+  start(write: (line: string) => void, end: () => void, abort: () => void): void {
+    this.write = write;
+    this.end = end;
+    this.abort = abort;
+    try {
+      this.server.start();
+      this.send({ type: "control_request", request_id: this.initRequest,
+        request: { subtype: "initialize", sdkMcpServers: [this.spec.name] } });
+    } catch (error) { this.fail(error instanceof Error ? error : new Error(String(error))); }
+  }
+
+  private send(message: JsonObject): void {
+    const line = JSON.stringify(message) + "\n";
+    if (Buffer.byteLength(line) > MAX_EXPERIMENT_MESSAGE_BYTES) throw new Error("experiment control frame exceeds 1 MiB");
+    this.record("control_stdin", { bytes_base64: Buffer.from(line).toString("base64") });
+    this.write!(line);
+  }
+
+  push(chunk: string): void {
+    try { this.consume(chunk); }
+    catch (error) {
+      this.fail(error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
+  }
+
+  private consume(chunk: string): void {
+    if (this.failure) throw this.failure;
+    this.trace += chunk;
+    this.record("control_stdout", { bytes_base64: Buffer.from(chunk).toString("base64") });
+    this.buffer += chunk;
+    let newline: number;
+    while ((newline = this.buffer.indexOf("\n")) !== -1) {
+      const line = this.buffer.slice(0, newline);
+      this.buffer = this.buffer.slice(newline + 1);
+      if (Buffer.byteLength(line) + 1 > MAX_EXPERIMENT_MESSAGE_BYTES) throw new Error("experiment control frame exceeds 1 MiB");
+      if (line.trim()) this.frame(JSON.parse(line));
+    }
+    if (Buffer.byteLength(this.buffer) >= MAX_EXPERIMENT_MESSAGE_BYTES) throw new Error("experiment control frame exceeds 1 MiB");
+  }
+
+  private frame(frame: JsonObject): void {
+    if (this.result) throw new Error("Claude sent a frame after its result");
+    if (!frame || typeof frame !== "object" || Array.isArray(frame)) throw new Error("invalid experiment control frame");
+    if (frame.type === "control_response") {
+      if (frame.response?.request_id !== this.initRequest || this.initialized) throw new Error("unexpected control response");
+      if (frame.response.subtype !== "success") throw new Error("Claude refused experiment SDK initialization");
+      this.initialized = true;
+      this.send({ type: "user", message: { role: "user", content: this.prompt } });
+    } else if (frame.type === "control_request") {
+      void this.control(frame).catch((error) => this.fail(error));
+    } else if (frame.type === "control_cancel_request") {
+      this.record("cancellation", { control_id: frame.request_id });
+      throw new Error("Claude canceled an experiment control request");
+    } else if (frame.type === "system" && frame.subtype === "init") {
+      if (!this.initialized || !this.toolDefinitions || this.inventoryValidated ||
+        !Array.isArray(frame.tools) || frame.tools.length === 0 || frame.tools.some((name: unknown) =>
+        typeof name !== "string")) {
+        throw new Error("Claude sent an invalid experiment tool inventory");
+      }
+      // The exposed set must equal the advertised set: a built-in tool the
+      // server never offered is as much a leak as a dropped experiment tool.
+      const advertised = [...this.toolNames].sort();
+      const exposed = [...new Set<string>(frame.tools)].sort();
+      const equal = exposed.length === frame.tools.length && isDeepStrictEqual(exposed, advertised);
+      this.record("tool_inventory", { tools: frame.tools, server_tools: advertised, equal, mcp_servers: frame.mcp_servers });
+      if (!equal) {
+        throw new Error(`Claude's exposed tools must equal the experiment server's advertised set (server: ${advertised.join(", ") || "none"}; claude: ${JSON.stringify(frame.tools)})`);
+      }
+      this.inventoryValidated = true;
+    } else if (frame.type === "assistant" || frame.type === "user") {
+      if (!this.inventoryValidated) throw new Error("Claude conversation frame before validated Claude inventory");
+      const content = frame.message?.content;
+      if (!Array.isArray(content)) throw new Error("Claude message.content must be an array");
+      if (frame.message.role !== frame.type) throw new Error("Claude message.role must match the conversation frame type");
+      for (const block of content) {
+        if (block.type === "tool_use") {
+          if (frame.type !== "assistant" || frame.message.role !== "assistant") throw new Error("tool_use must come from the assistant");
+          if (typeof block.id !== "string" || this.calls.has(block.id) || !this.toolNames.has(block.name)) {
+            throw new Error("Claude called an unknown, duplicate, or built-in tool");
+          }
+          this.calls.set(block.id, { name: block.name, input: block.input, claimed: false, received: false });
+          this.record("tool_call", { tool_use_id: block.id, name: block.name, input: block.input });
+        } else if (block.type === "tool_result") {
+          if (frame.type !== "user" || frame.message.role !== "user") throw new Error("tool_result must be delivered in a user frame");
+          const call = this.calls.get(block.tool_use_id);
+          this.record("model_tool_result", { tool_use_id: block.tool_use_id, block });
+          if (!call?.result || call.received) throw new Error("unmatched model-bound experiment tool result");
+          const expected = call.result.content;
+          const actual = block.content;
+          const equal = isDeepStrictEqual(expected, actual) ||
+            (Array.isArray(expected) && expected.length === 1 && expected[0].type === "text" && expected[0].text === actual);
+          const isErrorEqual = Boolean(call.result.isError) === Boolean(block.is_error);
+          this.record("result_comparison", { tool_use_id: block.tool_use_id, equal: equal && isErrorEqual });
+          if (!equal || !isErrorEqual) throw new Error("Claude changed the experiment tool result before model delivery");
+          call.received = true;
+        }
+      }
+    } else if (frame.type === "result") {
+      if (!this.initialized) throw new Error("Claude returned a result before SDK initialization");
+      if (!this.inventoryValidated || !this.toolDefinitions || this.activeControls.size) {
+        throw new Error("Claude returned a result before experiment inventory and control completion");
+      }
+      this.result = JSON.stringify(frame);
+      this.end?.();
+    }
+  }
+
+  private async control(frame: JsonObject): Promise<void> {
+    const id = frame.request_id;
+    if (typeof id !== "string" || this.activeControls.has(id)) throw new Error("invalid or duplicate Claude control id");
+    this.activeControls.add(id);
+    try {
+      const request = frame.request;
+      let response: JsonObject;
+      if (request?.subtype === "mcp_message" && request.server_name === this.spec.name) {
+        const message = request.message;
+        if (!message || message.jsonrpc !== "2.0" || typeof message.method !== "string") throw new Error("invalid Claude MCP request");
+        let callId: string | undefined;
+        if (message.method === "tools/call") {
+          if (!this.inventoryValidated) throw new Error("MCP tools/call before validated Claude inventory");
+          const name = `mcp__${this.spec.name}__${message.params?.name}`;
+          const nativeId = message.params?._meta?.["claudecode/toolUseId"];
+          const call = typeof nativeId === "string" ? this.calls.get(nativeId) : undefined;
+          if (message.id === undefined || !call || call.claimed || call.name !== name ||
+              !isDeepStrictEqual(call.input, message.params?.arguments ?? {})) {
+            throw new Error("MCP call lacks a matching native tool_use id");
+          }
+          callId = nativeId;
+          call.claimed = true;
+        }
+        this.record("mcp_request", { control_id: id, rpc_id: message.id ?? null, tool_use_id: callId ?? null, message });
+        const reply = await this.server.request(message);
+        if (this.closed || this.failure) return;
+        // A control acknowledgment is required even for an MCP notification,
+        // but it must not contain a fabricated JSON-RPC response.
+        if (reply === undefined) {
+          this.send({ type: "control_response", response: { subtype: "success", request_id: id, response: {} } });
+          return;
+        }
+        if (reply.id !== message.id) throw new Error("experiment MCP response id mismatch");
+        // Any JSON-RPC error reply, for any method, fails the run: forwarding
+        // one as if it were the tool's output would let the server inject a
+        // result Claude never produced. Ping and tools/list are included.
+        if (reply.error !== undefined) {
+          const detail = reply.error && typeof reply.error.message === "string" ? `: ${reply.error.message}` : "";
+          throw new Error(`experiment MCP ${message.method} returned a JSON-RPC error${detail}`);
+        }
+        if (message.method === "tools/list") {
+          if (message.params?.cursor !== undefined) throw new Error("experiment tools/list must start at the first page");
+          const tools: JsonObject[] = [];
+          const names = new Set<string>();
+          const cursors = new Set<string>();
+          let page = reply;
+          for (;;) {
+            if (!Array.isArray(page.result?.tools)) throw new Error("experiment server requires one complete nonempty tools/list");
+            for (const tool of page.result.tools) {
+              if (!tool || !EXPERIMENT_TOOLS.has(tool.name) || names.has(tool.name)) throw new Error("experiment server exposes an unsupported or duplicate tool name");
+              names.add(tool.name);
+              tools.push(tool);
+            }
+            const cursor = page.result.nextCursor;
+            if (cursor === undefined) break;
+            if (typeof cursor !== "string" || cursors.has(cursor)) throw new Error("invalid or repeated experiment tools/list cursor");
+            cursors.add(cursor);
+            const next = { jsonrpc: "2.0", id: crypto.randomUUID(), method: "tools/list", params: { cursor } };
+            this.record("mcp_request", { control_id: id, rpc_id: next.id, tool_use_id: null, message: next });
+            const nextPage = await this.server.request(next);
+            if (this.closed || this.failure) return;
+            if (!nextPage || nextPage.id !== next.id) throw new Error("experiment MCP response id mismatch");
+            if (nextPage.error !== undefined) throw new Error("experiment MCP tools/list returned a JSON-RPC error");
+            page = nextPage;
+          }
+          if (tools.length === 0) throw new Error("experiment server requires one complete nonempty tools/list");
+          if (this.toolDefinitions && !isDeepStrictEqual(this.toolDefinitions, tools)) throw new Error("experiment tool definitions changed during the run");
+          for (const name of names) this.toolNames.add(`mcp__${this.spec.name}__${name}`);
+          this.toolDefinitions = tools;
+          reply.result = { ...reply.result, tools };
+          delete reply.result.nextCursor;
+        }
+        if (callId) {
+          if (!Array.isArray(reply.result?.content)) throw new Error("experiment tools/call must return an MCP content result");
+          this.calls.get(callId)!.result = reply.result;
+          this.record("server_tool_result", { tool_use_id: callId, rpc_id: message.id, result: reply.result });
+        }
+        response = { mcp_response: reply };
+      } else if (request?.subtype === "can_use_tool") {
+        const allowed = this.toolNames.has(request.tool_name);
+        response = allowed ? { behavior: "allow", updatedInput: request.input } :
+          { behavior: "deny", message: "Only experiment MCP tools are allowed" };
+        this.record("permission", { tool: request.tool_name, allowed });
+      } else {
+        throw new Error(`unsupported Claude control request: ${String(request?.subtype)}`);
+      }
+      this.send({ type: "control_response", response: { subtype: "success", request_id: id, response } });
+    } finally { this.activeControls.delete(id); }
+  }
+
+  private fail(error: Error): void {
+    if (this.failure || this.closed) return;
+    this.failure = error;
+    try { this.record("failure", { message: error.message }); }
+    catch { console.error(`codemux: experiment recording failed: ${error.message}`); }
+    finally { this.abort?.(); }
+  }
+
+  finish(options?: { timedOut: boolean; aborted?: boolean }): string {
+    if (this.failure) throw this.failure;
+    if (this.buffer.length) {
+      this.record("control_stdout_partial", { bytes_base64: Buffer.from(this.buffer).toString("base64") });
+      this.buffer = "";
+      if (!options?.timedOut && !options?.aborted) {
+        const error = new Error("incomplete Claude control frame");
+        this.fail(error);
+        throw error;
+      }
+    }
+    if (options?.aborted) {
+      this.record("cancellation", { reason: "stdout capture aborted" });
+      return this.result;
+    }
+    if (this.result && [...this.calls.values()].some((call) => !call.received)) {
+      const error = new Error("Claude ended without emitting every model-bound tool result");
+      this.fail(error);
+      throw error;
+    }
+    return this.result;
+  }
+  keptBytes(): number { return Buffer.byteLength(this.trace) + Buffer.byteLength(this.result); }
+  scanSurface(): string { return this.trace; }
+  terminateProtocol(): void { this.server.terminate(); }
+
+  async closeProtocol(): Promise<void> {
+    await this.close();
+    // The run's single decision point: after every failure source (protocol,
+    // comparison, server exit) has had its chance and the run_end record
+    // holds the outcome, a recorded failure makes the whole run fail --
+    // including one recorded after Claude's own successful finish().
+    const failure = this.failure ?? this.closeFailure;
+    if (failure) throw failure;
+  }
+
+  async close(): Promise<void> {
+    // Cache a settled outcome, so launcher and exit cleanup cannot replay a
+    // finalization rejection already reported by the protocol owner.
+    await (this.closing ??= this.finalize().catch((error) => {
+      this.closeFailure = error instanceof Error ? error : new Error(String(error));
+    }));
+    if (this.closeFailure !== undefined && !this.closeFailureReported) {
+      this.closeFailureReported = true;
+      throw this.closeFailure;
+    }
+  }
+
+  private async finalize(): Promise<void> {
+    try {
+      try {
+        try { await this.server.close(); }
+        catch (error) {
+          this.fail(error instanceof Error ? error : new Error(String(error)));
+          throw error;
+        }
+        if (this.buffer.length) {
+          this.record("control_stdout_partial", { bytes_base64: Buffer.from(this.buffer).toString("base64") });
+          this.buffer = "";
+          this.fail(new Error("incomplete Claude control frame"));
+        }
+      } finally { this.record("run_end", { result_received: Boolean(this.result), tool_calls: this.calls.size,
+      model_results: [...this.calls.values()].filter((call) => call.received).length, error: this.failure?.message ?? null });
+        fsyncSync(this.fd);
+      }
+    } finally {
+      this.closed = true;
+      closeSync(this.fd);
+    }
+  }
+}

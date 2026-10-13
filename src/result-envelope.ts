@@ -109,9 +109,10 @@ export interface ClaudeEnvelopeInfo {
 }
 
 /**
- * Parses the single JSON result object Claude Code prints for headless runs
- * launched with `--output-format json` (`claude --help`: json is "single
- * result"). Returns null when stdout is not that object -- an older binary,
+ * Parses Claude Code's result object: the single output from
+ * `--output-format json`, or the result frame the experiment bridge extracts
+ * and validates from `--output-format stream-json`.
+ * Returns null when stdout is not that object -- an older binary,
  * a wrapper, JSON that is not the result envelope, or an envelope that
  * reports no outcome at all -- and the caller treats that as the contract
  * violation it is.
@@ -177,8 +178,9 @@ export function parseClaudeResultEnvelope(
 /**
  * Finishes a `--result-json` run for a Claude-family harness: the envelope
  * is re-emitted with every original field untouched plus the codemux block.
- * Stdout that is not the envelope breaks the contract the launch made (it
- * ran with `--output-format json`, whose single result is that object), so
+ * Stdout must be the `--output-format json` envelope or the validated result
+ * frame extracted by the experiment bridge from `--output-format stream-json`.
+ * Other stdout breaks that launch contract, so
  * the run fails loudly: the raw stdout stays on stdout, stderr says what is
  * missing, and the exit is non-zero -- a silent success without the block
  * would leave the caller parsing nothing. An envelope that reports its own
@@ -195,7 +197,8 @@ export function parseClaudeResultEnvelope(
 export function claudeFamilyResult(
   result: RunResult,
   request: RunRequest,
-  agent: AgentId
+  agent: AgentId,
+  recording: string | null = null
 ): RunResult {
   const parsed = parseClaudeResultEnvelope(result.stdout);
   if (parsed === null) {
@@ -233,6 +236,9 @@ export function claudeFamilyResult(
     // --no-session-persistence, so no run leaves a session a later resume
     // could reach (reserved for the live-sessions release; see types.ts).
     session_id: null,
+    // The experiment bridge's JSONL path on an --experiment-mcp run, so the
+    // caller can find the recording without scraping stderr; null otherwise.
+    recording,
   });
   if (parsed.isError) {
     // The subtype is the specific reason when the envelope names one; the
@@ -424,6 +430,7 @@ export function agyResult(result: RunResult, request: RunRequest): RunResult {
     model: request.model ?? null,
     usage: parsed.usage,
     session_id: null,
+    recording: null,
   });
   if (parsed.isError) {
     const reason =
@@ -1254,6 +1261,7 @@ export function codexResult(
     // thread a run leaves behind can be resumed (reserved for the
     // live-sessions release; see types.ts).
     session_id: null,
+    recording: null,
   };
   const notes: string[] = stream.warnings.map((message) => `codemux: codex warning: ${message}`);
   // Round al29 (contracts minor): a named fallback file that is missing,

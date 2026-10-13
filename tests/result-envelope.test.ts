@@ -153,6 +153,9 @@ describe("claudeFamilyResult", () => {
       // --no-session-persistence, so no run leaves a resumable session
       // behind -- not even when the harness's own envelope names an id.
       session_id: null,
+      // Set only on --experiment-mcp runs, where the bridge records the
+      // protocol exchange to a per-run JSONL file.
+      recording: null,
     });
   });
 
@@ -604,6 +607,7 @@ describe("agyResult", () => {
       },
       // conversation_id is agy's own; no codemux run can resume it.
       session_id: null,
+      recording: null,
     });
   });
 
@@ -1321,6 +1325,7 @@ describe("codexResult", () => {
       // but no later run can resume it, so it is not reported as though
       // one could.
       session_id: null,
+      recording: null,
     });
   });
 

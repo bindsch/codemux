@@ -280,14 +280,9 @@ describe("codex provider session homes (review D1)", () => {
     const deadRun = join(parent, "run-999999999-gone");
     mkdirSync(deadRun);
     utimesSync(deadRun, threeDaysAgo, threeDaysAgo);
-    // The next prepareRunDirParent (any session or run start) sweeps. The
-    // consult is injected, not defaulted: the default reads the machine's
-    // one real registry, and a process tree denied ~/Library (macOS TCC —
-    // agent hosts included) reads it as `unknown`, which spares by design
-    // (review D5). This test pins the age gates with the registry question
-    // answered `free` — exactly what a readable registry holding no record
-    // for these ids answers.
-    prepareRunDirParent(home, ".codemux-provider", () => "free");
+    // The next prepareRunDirParent (any session or run start) sweeps.
+    // Use an empty private registry, never the operator's live registry.
+    prepareRunDirParent(home, ".codemux-provider", (id) => sessionHoldState(join(home, "registry.json"), id));
     expect(existsSync(staleSession)).toBe(false);
     expect(existsSync(deadRun)).toBe(false);
     expect(existsSync(freshSession)).toBe(true);
@@ -539,10 +534,7 @@ describe("codex provider session homes (review D1)", () => {
     const idle = join(parent, "session-home-abc123def456-2222222222222222");
     mkdirSync(idle);
     utimesSync(idle, twentyNineDaysAgo, twentyNineDaysAgo);
-    // The injected consult of the sweep tests — the default reads the
-    // machine's real registry, which this tree may be denied (see the
-    // sweep-by-age test above); the registry question is `free` here.
-    prepareRunDirParent(home, ".codemux-provider", () => "free");
+    prepareRunDirParent(home, ".codemux-provider", (id) => sessionHoldState(join(home, "registry.json"), id));
     expect(existsSync(longRunning)).toBe(true);
     expect(existsSync(deadRun)).toBe(true);
     expect(existsSync(idle)).toBe(false);
@@ -583,5 +575,3 @@ describe("codex provider session homes (review D1)", () => {
     expect(existsSync(sibling)).toBe(false);
   });
 });
-
-

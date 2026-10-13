@@ -25,19 +25,21 @@ export function registerRunExitCleanup(
   context: RunContext
 ): () => void {
   const onExit = (): void => {
+    const report = (error: unknown): void => {
+      console.error("codemux: could not clean up per-run state at exit: " +
+        (error instanceof Error ? error.message : String(error)));
+    };
     try {
-      adapter.cleanupRun(context);
+      // Async readers are drained by the runner before its signal exit.
+      // An unexpected exit still terminates the external process synchronously.
+      context.stdoutSink?.terminateProtocol?.();
+      const cleanup = adapter.cleanupRun(context);
+      if (cleanup) void cleanup.catch(report);
     } catch (error) {
-      // An exit handler that throws would mask the exit itself, and
-      // cleanupRun's contract says the same; an adapter that violates it
-      // cannot take the exit path down with it.
-      console.error(
-        "codemux: could not clean up per-run state at exit: " +
-          (error instanceof Error ? error.message : String(error))
-      );
+      report(error);
     }
   };
-  process.once("exit", onExit);
+  process.prependOnceListener("exit", onExit);
   return () => {
     process.off("exit", onExit);
   };

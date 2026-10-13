@@ -2,9 +2,9 @@
 
 Prompt D report, 2026-10-07. Branch `sessions-d-0.10` (cut from main
 299066b at version 0.9.0; release prep landed 2026-10-08 as 0.10.0, and
-this tree has since been cut for the usage-ledger release and then for
-the 0.12.0 alignment, so it carries
-version 0.12.0 and the usage-ledger CHANGELOG entry sits under
+this tree has since been cut for the usage-ledger release, the 0.12.0
+alignment, and the 0.13.0 experiment MCP merge, so it carries
+version 0.13.0 and the usage-ledger CHANGELOG entry sits under
 `[0.11.0]` — the sessions work itself shipped under `[0.10.0]`).
 Task text: `scratch/prompt-d.md`; operator request:
 `scratch/provider-overrides-2-request.md`.

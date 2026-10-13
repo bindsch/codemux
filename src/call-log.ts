@@ -159,6 +159,29 @@ function defaultStateDir(
   return join(home, ".local", "state", "codemux");
 }
 
+/**
+ * The state directory experiment recordings share with the ledger: the same
+ * relocation and test-redirect chain `appendLedgerPath` applies
+ * (`CODEMUX_CALL_LOG` to relocate, `CODEMUX_TEST_LEDGER` from codemux's own
+ * test preload, else the home-derived default). `CODEMUX_CALL_LOG=off`
+ * disables the ledger only — a recording is the run's evidence, not
+ * telemetry, so it still lands in the default state directory.
+ */
+export function codemuxStateDir(
+  environment: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform
+): string {
+  const override = environment[CALL_LOG_ENV]?.trim();
+  if (override !== undefined && override !== "" && override !== "off") {
+    return dirname(resolve(override));
+  }
+  const testLedger = environment[CALL_LOG_TEST_ENV]?.trim();
+  if (testLedger !== undefined && testLedger !== "") {
+    return dirname(resolve(testLedger));
+  }
+  return defaultStateDir(environment, platform);
+}
+
 // A run must never fail because the ledger could not be written; the
 // operator hears about the first failure only.
 let warnedAboutLog = false;

@@ -31,6 +31,8 @@ export interface SandboxOptions {
   accountFile?: string;
   /** Opaque correlation token recorded in the accounting line (SCODE_ACCOUNT_ID). */
   accountId?: string;
+  /** Launcher-owned temporary harness state, outside the read-only project. */
+  harnessStateDirs?: readonly string[];
 }
 
 export function mapAutonomyToScodeFsMode(autonomy?: AutonomyLevel): ScodeFsMode {
@@ -76,6 +78,12 @@ export function buildScodeCommand(
   }
   if (options?.keepEnv && options.keepEnv.length > 0) {
     scodeCmd.push("--keep-env", options.keepEnv.join(","));
+  }
+  for (const directory of options?.harnessStateDirs ?? []) {
+    if (!directory.startsWith("/") || directory.includes("\0")) {
+      throw new Error("sandbox harness state directory must be an absolute non-NUL path");
+    }
+    scodeCmd.push("--allow", directory);
   }
 
   scodeCmd.push("--", ...command);

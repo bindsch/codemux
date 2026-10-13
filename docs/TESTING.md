@@ -33,6 +33,9 @@ bun test tests/sandbox.test.ts tests/sandbox-policy.test.ts
 # Adapter command construction tests
 bun test tests/adapters.test.ts tests/adapters-extended.test.ts tests/new-adapters.test.ts
 
+# Experiment MCP bridge, refusals, recordings, and agy isolation (fake peers only)
+bun test --preload ./tests/setup.ts tests/experiment-mcp.test.ts tests/experiment-bridge.test.ts tests/agy-isolation.test.ts
+
 # Process lifecycle, timeout, process-tree, output-limit, file-input, and credential tests
 bun test tests/base.test.ts tests/process-table.test.ts tests/credentials.test.ts tests/zai.test.ts
 
@@ -92,6 +95,9 @@ bun run scripts/check-scode-version.ts
 - `run` and `tui` may require installed external harness binaries for end-to-end behavior.
 - Installed harness contract checks are opt-in so local tools, network state, or
   auto-updaters cannot make the release gate nondeterministic.
+- Copilot's installed help contract extracts its bundled package into a private
+  temporary cache through `COPILOT_PKG_CACHE_HOME`. It does not write to the
+  operator's cache. Session-home age tests use an empty private registry.
 - CI runs the release gate on macOS and Linux, the supported platforms.
 - The full `test:coverage` script enforces at least 80% whole-source line and
   function coverage; targeted test commands intentionally skip coverage.

@@ -1,4 +1,5 @@
 import { program } from "commander";
+import { assertExperimentMcpUnavailable, validateExperimentRequest } from "./experiment-mcp.js";
 import { readFileSync } from "fs";
 import { resolveSandboxOptionsForAgent } from "./sandbox-policy.js";
 import { getAdapter, AGENT_IDS } from "./adapters/index.js";
@@ -161,6 +162,7 @@ program
     "Load none of the operator's customizations (instruction files, skills, plugins, hooks, MCP servers); harnesses with a verified mechanism only, see docs/HERMETIC.md"
   )
   .option("--tools <selection>", "Built-in tools the harness exposes: default, none")
+  .option("--experiment-mcp <spec.json>", "One experiment stdio MCP server through Claude's SDK bridge; requires hermetic, tools none, read-only")
   .option(
     "--result-json",
     "Return the harness's structured result envelope on stdout, carrying token usage"
@@ -203,6 +205,7 @@ program
       }
 
       const requestedAutonomy = parseAutonomyOption(options.auto) ?? "read-only";
+      assertExperimentMcpUnavailable(agentId, options.experimentMcp);
       const requestedEffort = parseEffortOption(options.effort);
       const passthroughEnv = parsePassthroughEnvOption(options.passEnv);
       const enablePlaywrightMcp = Boolean(options.enablePlaywrightMcp);
@@ -214,6 +217,8 @@ program
       }
       const hermetic = Boolean(options.hermetic);
       const tools = parseToolsOption(options.tools);
+      validateExperimentRequest({ agent: agentId, prompt: PREFLIGHT_PROMPT, experimentMcp: options.experimentMcp,
+        hermetic, tools, autonomy: requestedAutonomy, sandboxed: Boolean(options.sandbox), enablePlaywrightMcp });
       if ((hermetic || tools === "none") && enablePlaywrightMcp) {
         throw new Error("--hermetic and --tools none cannot be combined with --enable-playwright-mcp");
       }
@@ -334,6 +339,7 @@ program
         passthroughEnv,
         enablePlaywrightMcp,
         hermetic,
+        experimentMcp: options.experimentMcp,
         tools,
         resultJson: Boolean(options.resultJson),
       };

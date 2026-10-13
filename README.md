@@ -1,6 +1,6 @@
 # codemux
 
-> **Beta software (v0.12.0).** `codemux` is under active development. Expect behavior changes as adapters and sandbox policy continue to harden.
+> **Beta software (v0.13.0).** `codemux` is under active development. Expect behavior changes as adapters and sandbox policy continue to harden.
 
 `codemux` is a unified CLI for AI coding agents. It gives one command surface
 for multiple harnesses, normalizes autonomy/effort semantics, and can route
@@ -41,7 +41,8 @@ codemux verify --show-scode
 
 - [Bun](https://bun.sh) 1.3.14 or newer (runtime + package manager; CI pins 1.3.14 exactly)
 - Installed agent CLIs you plan to use (`aider`, `agy`, `claude`, `cline`, `copilot`, Cursor's `cursor-agent`, etc.)
-- [scode](https://github.com/bindsch/scode) 0.2.0 or newer if you use `--sandbox` (a run whose only credential is one codemux injects — a provider override's key, or a `zai` run's Z.AI gateway token — needs 0.6.0's `--keep-env` under `--sandbox-scrub-env` or `--sandbox-trust untrusted`, both of which scrub)
+- [scode](https://github.com/bindsch/scode) 0.2.0 or newer if you use `--sandbox`. Every sandboxed agy run requires scode 0.6.0 or newer, regardless of login method.
+  A run whose only credential is one codemux injects (a provider override's key or a `zai` run's Z.AI gateway token) needs 0.6.0's `--keep-env` under `--sandbox-scrub-env` or `--sandbox-trust untrusted`, both of which scrub.
 
 The installed launcher and process-tree controls currently support macOS and
 Linux. Windows is not a supported target in this release.
@@ -90,8 +91,9 @@ codemux [command] [options]
 | `--timeout <seconds>` | Kill a hung non-interactive run and its whole process tree (a descendant whose parent chain broke before the first snapshot can still escape; also bounds the `-f -` stdin prompt read — a producer that stalls with the pipe open fails the run at the timeout; default: `1800`, maximum: `86400`) |
 | `--pass-env <names>` | Explicitly pass comma-separated parent environment names |
 | `--enable-playwright-mcp` | Enable a local Playwright MCP binary inside `--sandbox` |
-| `--hermetic` | Load none of the operator's customizations (instruction files, skills, plugins, hooks, MCP servers); the login still works. Claude, Z.AI, Codex and OpenCode (OpenCode also refuses while its login carries remote configuration — a well-known login or an active organization, whose fetched config could override the run's guarantees); every other harness is refused until its mechanism passes the live check. Aider alone keeps an implemented mapping behind its refusal; the mechanisms that sat unverifiable behind the other refusals were removed in 0.7.0. See [docs/HERMETIC.md](docs/HERMETIC.md) |
-| `--tools <selection>` | Built-in tools the harness exposes: `default` or `none`. Independent of `--hermetic`; Codex takes `none` only with `--auto read-only`, OpenCode only with `--hermetic` (on a plain run the operator's opencode config can override the deny per agent; `check --hermetic --tools none` refuses for it, since its control probe would be that plain run), and harnesses that cannot remove their tools refuse `none` |
+| `--experiment-mcp <spec.json>` | Claude only: one experiment stdio server through a codemux-owned SDK control bridge. Requires `--hermetic --tools none --auto read-only` and scode. Records server bytes and Claude's emitted tool results separately; the recording lives under codemux's state directory and `--result-json` names its path as `codemux.recording`. VERIFIED on Claude 2.1.280 by the operator's marker probe and extended canary with a leaking control. Codex refuses because its `Wall time:` header changes result bytes. See [the experiment report](docs/experiment-mcp-report.md). |
+| `--hermetic` | Load none of the operator's customizations (instruction files, skills, plugins, hooks, MCP servers); the login still works. Claude, Z.AI, Codex, OpenCode, and Antigravity have live verification evidence (OpenCode refuses logins carrying remote configuration). Antigravity uses private HOME + a Keychain mirror + an explicit clean run directory under read-only scode 0.6.0 or newer; VERIFIED on the operator's Round 11 tree. Other harnesses refuse. See [docs/HERMETIC.md](docs/HERMETIC.md) |
+| `--tools <selection>` | `default` or `none`. Codex requires `--auto read-only`; OpenCode requires `--hermetic` and refuses the combined canary because its plain control cannot enforce the deny. Antigravity uses deny-all settings + plan mode + attempt detection under read-only scode 0.6.0 or newer; any native tool attempt fails the run. VERIFIED with the login mirror on the operator's Round 11 tree. Other unsupported harnesses refuse `none`. |
 | `--result-json` | Return a structured result envelope on stdout instead of plain text, so a caller can read what the run consumed (tokens, cost). Claude, Z.AI, Codex and Antigravity; other harnesses refuse the flag rather than silently returning text. Claude-family and Antigravity envelopes are the harness's own with one added `codemux` block; Codex reports the final assistant message as `result` plus the same block. See [Result envelopes](#result-envelopes) |
 | `-s, --sandbox` | Execute via `scode` (default: on; `--no-sandbox` opts out, and autonomy below `high` then refuses) |
 | `--sandbox-trust <level>` | `scode` trust override (`trusted`, `standard`, `untrusted`; the `untrusted` preset implies the scrub, so the `--keep-env` exemption below rides on it as on `--sandbox-scrub-env`) |
@@ -116,6 +118,61 @@ cannot remove that upstream limitation for Aider, Cline, Copilot, Gemini,
 Goose, Kimi, OpenHands, or legacy `qwen-coder`. Codemux rejects argv
 prompts above 32 KiB — the rule applies to the prompt's content wherever it
 came from, so use an stdin-capable harness for larger prompts.
+
+### Experiment MCP runs
+
+The experiment specification has five fields, the last optional:
+
+```json
+{
+  "name": "experiment",
+  "command": "/absolute/path/to/server",
+  "args": [],
+  "env": ["EXPERIMENT_VARIABLE"],
+  "recording": "/absolute/path/to/recordings"
+}
+```
+
+`env` names variables to copy from codemux's environment. Nothing else is
+inherited. The server runs outside scode with the run's working directory;
+the experiment owns its containment. The server executable must pass the
+harness trust check: a regular
+executable owned by the user or root, without group/world write permission,
+outside the run directory. Its process group is terminated on timeout,
+signal, and normal cleanup. SIGKILL or a host crash cannot run cleanup.
+Both server readers settle before the recording is finalized. Claude runs
+under read-only scode, with safe mode enabled and every built-in tool removed. Claude
+2.1.280 or newer is required. Supported tool names are `bash`, `bash_bg`,
+`poll`, `kill`, `read`, and `write`; a server may expose a subset — and
+Claude must expose exactly the server's advertised set, checked before the
+first turn. A prompt whose user control frame exceeds the 1 MiB message
+bound is refused before anything is spawned.
+
+```sh
+codemux run -a claude --hermetic --tools none --auto read-only \
+  --experiment-mcp spec.json --cwd /absolute/run-directory -f prompt.txt
+```
+
+The per-run recording is `experiments/<run-id>.jsonl` under codemux's state
+directory (beside the `calls.jsonl` ledger), created with mode 0600. A spec
+`recording` names a directory, absolute or relative to the spec file, created
+with mode 0700 if absent. An existing non-directory is refused before spawn.
+Each run writes `<dir>/<run-id>.jsonl`; a paired `check` control writes
+`<dir>/<run-id>.control.jsonl` using its own run ID. Repeated runs keep
+separate files. The check prints both paths on stderr.
+`--result-json` reports the path as `codemux.recording`, and a plain run
+names it on stderr. It preserves raw server bytes as base64,
+native tool calls, control traffic, emitted model-bound result blocks,
+and content comparisons. Changed or missing result content fails the run,
+and so does any JSON-RPC error from the server, for any method — `ping`
+included; tool failures should use MCP `isError` results instead.
+Recordings contain the full prompt and tool data; they are not redacted.
+They establish the control-protocol boundary, not a capture of a provider's
+HTTP request. See [HERMETIC.md](docs/HERMETIC.md) for limits and verification.
+
+Codex is refused before the spec is read: version 0.160.1 prepends its own
+`Wall time: … seconds` header to MCP results. Codemux does not strip it.
+Every other adapter, including Z.AI and Antigravity, refuses this flag.
 
 ### `session` options
 
@@ -349,6 +406,80 @@ directory and probes twice, once hermetically (the model must answer `OK`)
 and once as a control carrying everything but `--hermetic` — the same
 tools selection included (the planted code word must reach the model).
 Two requests. Use `--help` for the full option list.
+
+With `--experiment-mcp`, Claude's canary also plants a skill, hook, and MCP
+configuration. Both probes retain the same experiment server and tool
+selection. The control intentionally omits safe mode. Canary fixtures are
+planted under `.codemux-experiment-check-<random>/` in the system temp
+root and removed when the check ends — on success, failure, or
+interruption. Recordings go to the state directory like any run.
+
+The operator verified Claude 2.1.280 on this branch from an unsandboxed
+process. The marker run exited 0 and retained 46 JSONL records with
+`CODEMUX-MCP-RESULT-8B73E209` in the delivered result and the model's reply.
+Names seen were `bash`, `experiment`, and `mcp__experiment__bash`, with no
+built-in shell tool. The extended check reported `HERMETIC claude: OK`
+and `control: planted code word reached the model, as expected`.
+
+Antigravity's `--hermetic` and `--tools none` policies are **VERIFIED** on agy 1.3.3
+with the login mirror by the operator's Round 11 live checks on installed scode 0.6.0.
+Hermetic runs require an explicit clean `--cwd`
+owned by the run and refuse `GEMINI.md`, `AGENTS.md`, or `.agents/`, naming
+the path. Every sandboxed agy run gets a private HOME. Authentication precedence
+is an API key in the adapter environment (`GEMINI_API_KEY` or `GOOGLE_API_KEY`),
+then a file token from the real login home, then the Keychain item. API-key and
+file-token runs do not build a mirror or look up a Keychain credential. Only a
+Keychain login needs a parent-built `Library/Keychains/login.keychain-db`
+containing the Antigravity item. With none of these credentials, launch refuses
+with "agy is not logged in; run `agy` to log in".
+Plain runs link `.gemini` to the operator's real `~/.gemini`; hermetic,
+tools-none, and probe runs retain clean state. The mirror is a 0600 file holding the whole
+token, including the refresh token, for the run's lifetime. A refresh stays
+in the mirror; the next run copies the real Keychain item again. Cleanup
+removes the private home or fails loudly and names any remaining credential.
+The parent trust-checks `/usr/bin/security`. Creation, unlocking, and credential
+insertion use interactive stdin; neither token nor passphrase enters process argv.
+An empty template keychain and its random password are cached with mode 0600
+in the real user's fixed codemux state root. `CODEMUX_CALL_LOG` cannot move
+the template or its lock, so runs with different logs share both.
+Template creation runs once under an exclusive lock with stale detection;
+that step snapshots and restores the user's search list. Every launch first
+repairs leftover template or mirror entries under the same lock, including
+when a cached template exists or an API key supplies authentication. Per-run
+copies leave the list untouched. Failed insertion rebuilds and retries once.
+Each private home records its owner's PID before credentials are copied.
+Every launch sweeps stale `run-*` homes when `kill(pid, 0)` reports that the
+owner is gone. This removes mirrors left by SIGKILL or a crash on the next
+launch. Live owners and uncertain process states are retained.
+Cleanup verifies that no mirror entry remains. File-token copies read
+from `os.homedir()`, independently of the instruction/config home.
+Tools-none runs use plan mode, deny all seven documented action classes,
+and fail on native attempts, including tool-step refusals and
+`denied_actions`, naming the attempted actions. Tool schemas remain.
+Both policies require read-only scode. Every sandboxed agy run requires scode 0.6.0 or newer,
+including API-key and file-token runs that do not need a Keychain mirror.
+
+`check -a agy --hermetic` uses a planted scratch operator home and an empty
+cwd, then requires its non-hermetic control to reveal the code word.
+`check -a agy --tools none` requires a denied shell attempt and a control
+that executes the same command with `--dangerously-skip-permissions`
+under read-only scode. Only `command`, `unsandboxed`, or a denied `run_command`
+step qualifies; unrelated denials fail. The first and only command attempt must
+be denied. Any completed command step or command output anywhere in the stream
+fails the probe, even if another attempt is denied. The control must contain the expected
+output in a completed native command step and in its reply.
+Combining the flags runs both pairs.
+`check -a agy --agy-isolation-probe <mode>` exposes `login`, `hermetic`,
+`control`, `tools`, and `tools-control` separately. Checks never write the
+real `~/.gemini`; scratch homes and native logs are removed at completion.
+The operator's Round 11 plain run answered `OK` and the public check reported
+`HERMETIC agy: OK` and `TOOLS agy: OK`, both exit 0, on 2026-10-13 at 07:41 CEST
+with agy 1.3.3 and installed scode 0.6.0. The user search list held only the
+login keychain before and after. No private home remained. Round 12's stricter
+command ordering and cancellation changes have synthetic regression coverage;
+no Round 12 live run is claimed.
+Commands and live results are in the
+[experiment report](docs/experiment-mcp-report.md).
 
 ### `tui` options
 

@@ -7,6 +7,63 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-13
+
+### Changed
+
+- Add Claude's `--experiment-mcp <spec.json>` SDK control bridge for
+  hermetic runs with no built-in tools and read-only scode. The experiment
+  stdio server runs outside scode with only named environment variables.
+  Per-run JSONL records server bytes and emitted model-bound tool results;
+  it lives at `experiments/<run-id>.jsonl` under codemux's state directory
+  (relocatable by a spec `recording` path), and `--result-json` names it
+  as `codemux.recording`. Any server JSON-RPC error, `ping` included,
+  fails the run, and Claude's exposed tool set must equal the server's
+  advertised set before the first turn.
+  The operator verified marker delivery on Claude 2.1.280 and the extended
+  hermetic canary with a leaking positive control.
+- Keep the Codex experiment-MCP refusal because its `Wall time:` header
+  changes result bytes. Do not strip the header; other adapters also refuse.
+- Retain Antigravity 1.3.3 hermetic and tools-none policy evidence from
+  the operator's 2026-10-13 live checks at 07:41 CEST. Remove the unsupported customization flag.
+  VERIFIED on the Round 11 tree with the template Keychain mirror and installed
+  scode 0.6.0: the plain run and public check passed, the search list held only
+  the login keychain before and after, and no private home remained.
+  Round 12 hardening has synthetic regression coverage without a new live run.
+  Hermetic runs use a private HOME + mirror and a dedicated clean cwd,
+  refusing instruction paths by name. Tools-none runs use plan mode,
+  deny-all settings, attempt detection, and read-only scode; any native tool attempt
+  fails and names its actions. Every sandboxed agy run requires scode 0.6.0 or newer,
+  including API-key and file-token logins.
+  Every sandboxed run gets a private HOME; plain runs link `.gemini` to
+  the operator's real state. Paired checks plant only scratch operator
+  homes and require positive instruction and shell-command controls.
+  The scode probe inherits the parent environment. Tool-step deny-rule
+  refusals count alongside result denials, including `unsandboxed` actions.
+  A separate temporary token file is copied only for the keyring's
+  file fallback. The parent mirrors only the Antigravity Keychain item into
+  a 0600 keychain, including its refresh token, for the run's lifetime.
+  Refreshes stay in the mirror; the next run copies the real item again.
+  The parent trust-checks absolute `/usr/bin/security` and inserts the secret
+  through interactive stdin, never argv. A cached empty template and random
+  password have mode 0600. Template creation runs once under an exclusive
+  lock with stale detection and restores the real search list inside the lock.
+  Per-run copies never change the list; failed insertion rebuilds once.
+  Cleanup verifies that no mirror entry remains. File fallback copies use
+  `os.homedir()`, independently of the instruction/config home.
+  API-key and file-token logins skip the mirror; otherwise missing login or
+  absent `/usr/bin/security` refuses before launch.
+  Cleanup removes the home and mirror or fails loudly. The real Keychain
+  remains hidden from scode, and secrets never enter codemux diagnostics.
+  See `docs/experiment-mcp-report.md` for the operator's evidence.
+- Fail protocol aborts even when the child exits zero. Bound experiment server
+  reader cleanup by the runner's grace and pipe give-up periods; abandon pipes
+  held by unreachable orphans and report the incomplete capture. Retain the first
+  failure when cleanup also fails, appending a cleanup note. Prevent late aborts from
+  recreating termination timers. Count newlines in inbound frame limits.
+  Apply executable trust checks to experiment servers and terminate their
+  process groups on timeout and signal. Preserve launch and cleanup errors.
+
 ## [0.12.0] - 2026-10-12
 
 - Recovered Codex top-level errors remain stderr notes after a successful

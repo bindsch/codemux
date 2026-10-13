@@ -40,6 +40,8 @@ const RUN_ARGS = ["run", "--no-sandbox", "--auto", "high", "-a", "claude", "-p",
 // the runner's grace windows; that is seconds of wall time, past bun's 5 s
 // default. The budget is not an assertion about the receipt.
 const SIGNAL_TEST_TIMEOUT_MS = 30_000;
+// Two CLI launches each stream more than 16 MiB; throughput is not the assertion.
+const LARGE_STREAM_TEST_TIMEOUT_MS = 30_000;
 
 function ledgerFile(): { path: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "codemux-ledger-e2e-"));
@@ -583,7 +585,7 @@ describe("the launched call ledger", () => {
       failing.cleanup();
       failedLedger.cleanup();
     }
-  });
+  }, LARGE_STREAM_TEST_TIMEOUT_MS);
 
   test("a cut-off trailing opencode line keeps the reply and usage, never the wire (ul3)", async () => {
     // The timeout shape end to end: the fake streams a real text part and

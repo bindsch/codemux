@@ -1,5 +1,6 @@
 import type { HermeticHome } from "./hermetic-home.js";
 import type { StdoutSink } from "./process-runner.js";
+import type { ExperimentBridge } from "./experiment-bridge.js";
 import type { CodexProviderHome } from "./codex-provider.js";
 import type { AiderHistoryFile } from "./aider-history.js";
 import type { OpencodeHermeticHome } from "./opencode-hermetic.js";
@@ -23,6 +24,9 @@ import type { PiProviderAgentDir } from "./pi-provider.js";
  * state.
  */
 export interface RunContext {
+  /** Agy private HOME for every sandboxed run; mode also selects native stream handling. */
+  agyProbe?: { mode: string; home?: string; operatorHome?: string; diagnostic?: boolean };
+  experimentBridge?: ExperimentBridge;
   /**
    * Codex: this run's `--output-last-message` file, on every launch that can
    * have one (every `--json` launch — which is all of them — except an

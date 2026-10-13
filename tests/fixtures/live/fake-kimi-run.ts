@@ -320,4 +320,5 @@ if (process.env.FAKE_DRAIN_SELFKILL === "1" || process.env.FAKE_DRAIN_EXIT143 ==
     }, 100);
   });
   process.stdin.resume();
+  record("drain-ready.jsonl", { turn: process.env.FAKE_TURN_NUMBER });
 }

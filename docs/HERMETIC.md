@@ -11,7 +11,7 @@ Two flags, deliberately independent:
 | Flag | Meaning |
 |------|---------|
 | `--hermetic` | No user or project instruction files (CLAUDE.md, AGENTS.md), skills, plugins, hooks, MCP servers, memories, or account-level integrations. |
-| `--tools <default\|none>` | Which built-in tools the harness exposes. `none` removes the harness's own tools; it cannot be combined with `--enable-playwright-mcp`. |
+| `--tools <default\|none>` | Which built-in tools the harness exposes. `none` removes tools where supported. Antigravity instead denies actions and fails on any native tool attempt. It cannot be combined with `--enable-playwright-mcp`. |
 
 A hermetic run keeps the harness's built-in tools unless `--tools none` is
 added. `--tools none` works without `--hermetic` too — except on OpenCode,
@@ -19,12 +19,215 @@ where it is refused without it (the operator's config can override the
 deny per agent; see the table). Both are headless (`run` and `check`)
 only.
 
-Codemux refuses `--hermetic` for any harness whose mechanism has not been
-verified with the live check below, and refuses `--tools none` for any
-harness that cannot remove its tools. A refusal is deliberate: an unverified
-harness would quietly run with the operator's context.
+Codemux refuses these flags for harnesses without an implemented mechanism.
+Antigravity's policies and login mirror are VERIFIED on the operator's Round 11
+agy 1.3.3 live checks with installed scode 0.6.0.
+Its tool policy denies attempts and checks the native protocol;
+it does not remove tool schemas.
 
 ## Verification: `codemux check --hermetic`
+
+### Experiment-supplied MCP servers
+
+Claude's `run` and `check` accept one explicit stdio specification with
+`--hermetic --tools none --auto read-only`. Codemux presents it as an
+SDK-type server over Claude's control protocol. Safe mode stays on:
+Claude 2.1.280 drops stdio entries but retains SDK servers. The bridge
+requires at least that version. Authentication follows the existing
+adapter unchanged. The host answers permission requests only for the
+experiment server; Claude's permission mode is `default` so plan mode
+cannot suppress experiment-owned writes. The harness itself remains under
+read-only scode with no built-in tools.
+
+The experiment process runs outside scode with cwd equal to the run
+directory. It receives only the spec's named environment variables.
+No shell interpolates its absolute command and arguments. Cwd is not
+containment: the experiment is responsible for its server and commands.
+The command passes the same executable trust check as a harness: it must
+be a regular executable owned by the user or root, without group/world
+write permission, outside the run directory.
+Codemux terminates its process group and known descendants at run end,
+timeout, or signal, using the existing process-tree controls and their
+documented orphan-before-snapshot limitation. SIGKILL and host crashes
+cannot run cleanup. Both server readers settle before recording finalization;
+late bytes remain recorded and an incomplete frame fails the run.
+
+Each run records to a mode-0600 `experiments/<run-id>.jsonl` under codemux's
+state directory, beside the `calls.jsonl` ledger. A spec `recording` names
+a directory (absolute, or relative to the spec file), created with mode
+0700 if absent. An existing non-directory is refused before spawn.
+Each run writes `<dir>/<run-id>.jsonl`; a paired `check` control writes
+`<dir>/<run-id>.control.jsonl` with its own run ID. The check prints both paths
+on stderr. Repeated runs keep separate files.
+The recording holds
+raw server stdin,
+stdout and stderr bytes as base64, control traffic, tool-use identifiers,
+and Claude's emitted `tool_result` blocks. The content comparison permits
+a single text block to appear as a string, but its text must be identical.
+Other content blocks must match structurally; changed text, transport errors,
+truncation, missing results, unexpected tools, or canceled control
+requests fail the run. This captures the harness's control-protocol
+boundary, not a provider HTTP request. Recordings are not redacted or
+tamper-resistant against the trusted experiment process.
+
+The implementation accepts a fixed tool list drawn
+from `bash`, `bash_bg`, `poll`, `kill`, `read`, and `write`, and requires
+Claude's exposed set to equal the server's advertised set without duplicate
+names. It fetches all inventory pages, including an empty-string cursor,
+before exposing the combined list. Assistant and user frames and tool calls
+are refused until `system/init` validates that inventory.
+The result frame ends the protocol; every later frame fails the bridge.
+A timeout returns exit 124 even with an incomplete control frame, which is
+recorded as `control_stdout_partial`.
+Server-initiated requests or notifications are refused. JSON-RPC
+errors are retained in raw traffic and abort the experiment, whatever the
+method — `ping` included; tool failures should use MCP
+`isError` content results, whose content is compared normally. Messages
+are bounded to 1 MiB, pending requests to 64, the recording to 256 MiB,
+and the retained harness transcript to the existing 16 MiB capture limit;
+a prompt whose user frame exceeds the 1 MiB message bound is refused
+before anything is spawned.
+
+The extended canary plants project instructions, a skill, a prompt hook,
+and MCP configuration. Its paired control keeps the experiment server
+and empty built-in list while intentionally disabling safe mode. Canary
+fixtures are planted under `.codemux-experiment-check-*` in the system
+temp root and removed when the check ends — on success, failure, or
+signal; recordings go to the state directory like any run.
+The normal `run` surface cannot request this non-hermetic control.
+
+**Claude experiment mechanism: VERIFIED on 2.1.280.** The operator ran
+both checks from an unsandboxed process on this branch. The marker probe
+exited 0, retained 46 JSONL records, and delivered
+`CODEMUX-MCP-RESULT-8B73E209` to the model with matching result content.
+Names seen were `bash`, `experiment`, and `mcp__experiment__bash`, with no
+built-in shell tool. The extended check reported `HERMETIC claude: OK`
+and `control: planted code word reached the model, as expected`.
+The [experiment report](experiment-mcp-report.md) records both commands
+with `--timeout 180` and distinguishes these live results from the
+subsequent Round 2 automated regressions.
+
+Antigravity 1.3.3's policies and mirror are **VERIFIED** on the operator's Round 11
+tree with installed scode 0.6.0. On 2026-10-13 at 07:41 CEST, the plain run
+answered `OK` and the public check reported `HERMETIC agy: OK` and `TOOLS agy: OK`,
+both exit 0. The user search list held only the login keychain before and after.
+No private home remained. Round 12's stricter command ordering and cancellation
+changes have synthetic regression coverage, without a new live run.
+The login store is the macOS Keychain through `go-keyring`. Every sandboxed
+run gets a private HOME. Authentication precedence is an API key in the adapter's
+environment (`GEMINI_API_KEY` or `GOOGLE_API_KEY`), then a file token from the
+real login home, then a Keychain item. API-key and file-token runs skip mirror
+creation and credential lookup. If neither is available, the parent reads
+only service `gemini`, account `antigravity`, and builds
+`Library/Keychains/login.keychain-db` with that one item before launch.
+Once per real user's fixed codemux state root, it creates an empty
+`agy-mirror-template.keychain-db` under an exclusive lock with stale-owner
+detection. The template and its adjacent random 32-hex password file have
+mode 0600. `CODEMUX_CALL_LOG` and the adapter's relocated HOME cannot move the
+template or lock. Creation snapshots and restores the real search list inside
+the lock. Every launch also removes leftover template or private-mirror entries
+from the search list under that lock, even with a cached template or API-key
+authentication. Other entries keep their original order.
+Each Keychain-authenticated run copies the template, unlocks the copy, disables
+auto-lock, and inserts the item with trust for `/usr/bin/security` and the
+resolved agy executable. Creation and those commands use interactive stdin.
+No passphrase appears on argv. A fresh copy
+can report an incorrect passphrase while remaining usable; insertion must
+succeed. An insertion failure rebuilds the template and retries once.
+Per-run copies leave the search list untouched. Cleanup verifies that no mirror
+entry remains and fails loudly if one does.
+Every sandboxed agy run requires scode 0.6.0 or newer, including API-key and
+file-token runs without a mirror; the real `~/Library` stays blocked.
+The parent uses only trust-checked `/usr/bin/security`, with the real login HOME
+and a minimal environment. Credential insertion uses `security -i` with the
+command on stdin; no credential enters process argv. Without an API key or
+file token, an unavailable `/usr/bin/security` or a failed item lookup refuses
+before harness launch: "agy is not logged in; run `agy` to log in".
+Plain runs link `.gemini` to the operator's real `~/.gemini`, preserving
+settings, MCP servers, conversations, and project state. Hermetic, tools-none,
+and probe runs keep private state. Tools-none retains its private deny settings
+so it cannot overwrite the operator's settings through a symlink.
+Controls copy only the planted control channels.
+The accepted trade-off is a 0600 mirror containing the whole token, refresh
+token included, for the run's lifetime. Refreshes stay in the mirror; the
+next run re-mirrors from the real Keychain. No secret goes into codemux's
+logs, errors, recordings, or ledger.
+Only for the keyring's file fallback, where one exists,
+the private home gets a mode-0600 copy from `os.homedir()`, never from the
+instruction/config home and never through a link. A file-token
+rotation during a probe lands only in the private home and is removed with
+that home at cleanup. The copy is never written back, and the real file
+store is never modified. The copy exists only for the run's lifetime.
+Cleanup holds open descriptors for the home and its parent, verifies their
+identities with `fstat`, and finds a renamed home by inode among the parent's
+entries. If cleanup cannot locate or safely remove it, the diagnostic exits
+nonzero and names the token copy or mirror that may remain. An uncatchable SIGKILL or
+host crash prevents cleanup from running and can leave the copy behind until
+the next launch. Each private home records the owner's PID before receiving
+credentials. Every agy launch sweeps `run-*` homes under the probe root when
+`kill(pid, 0)` reports the owner no longer exists. Live owners, permission errors,
+and homes without a valid PID are retained. Recovery removes the whole stale
+home, including its mirror; it never follows a symlinked home.
+
+### Antigravity rule
+
+`run -a agy --hermetic --cwd <run-directory> --auto read-only` uses a
+private HOME with the selected login source and any required file-token copy. It copies
+no GEMINI.md, settings, memories, projects, plugins, or MCP configuration.
+HOME and XDG paths change after scode establishes the operator's boundary.
+The explicitly supplied working directory must belong to this run.
+Use a dedicated clean directory. Agy has no flag that disables project
+instructions: codemux refuses `GEMINI.md`, `AGENTS.md`, or `.agents/`, even
+an empty directory or a dangling symlink, and names the offending path.
+It checks ancestor directories through the project root too. Existing
+executable-project-configuration guards still apply.
+
+`--tools none` uses `--mode=plan` and a private settings file denying
+`read_file`, `write_file`, `read_url`, `execute_url`, `command`,
+`unsandboxed`, and `mcp`. Both flags require read-only scode.
+Any non-text native step type, tool-step permission refusal, or non-empty `denied_actions` result is a
+tool attempt. Codemux fails an ordinary text-only run and names those
+actions, even if agy reports success. Unknown step types count as attempts;
+malformed streams also fail. Tool schemas can still be visible to the model.
+
+`check -a agy --hermetic` plants a code word in a scratch operator home's
+`.gemini/GEMINI.md` and a fake MCP server in its agy settings. The private
+HOME derives from this scratch home; the real `~/.gemini` is never written
+by the check. The cwd is empty. The reply must be OK without the code word,
+and a native init event must omit the planted server. The paired control
+copies the planted settings and instruction into its own private HOME and
+must reply with the code word.
+Each probe and control that needs Keychain login gets its own mirror;
+the real Keychain stays hidden.
+The launcher allows only that check's temporary HOME as writable harness
+state, since scode otherwise hides shared temporary storage. The cwd
+remains read-only, and the real operator HOME is not redirected for scode.
+
+`check -a agy --tools none` prompts a shell command and requires a native
+command denial with no command output. Only `command`, `unsandboxed`, or a
+denied `run_command` tool step qualifies; any unrelated denial fails the probe.
+The first and only command attempt must be denied. A command step in state
+`DONE` or any command output anywhere in the stream fails the probe, even
+when another attempt is denied. Updates sharing a native step index describe
+one attempt; separate unindexed command events cannot prove a single attempt.
+Its control uses the same prompt
+with `--dangerously-skip-permissions`, still under read-only scode in the
+empty cwd. It must emit a completed native command step whose `tool_info.output`
+contains the expected output, and quote that output in its reply. File-tool
+activity or assistant text alone cannot pass. A denied control proves nothing. Combining both flags runs both
+pairs. Scratch homes, cwd, and native logs are removed on completion.
+The five `--agy-isolation-probe` modes expose these same mechanisms as
+individual diagnostics. The report retains earlier individual-probe results
+as history. Its Round 11 live record verifies the template mirror and public
+check on that tree; the Round 12 section records subsequent automated checks.
+
+Codex still refuses the flag before reading the spec: 0.160.1 prepends
+`Wall time: … seconds` and `Output:` after receiving MCP output. No header
+stripping is attempted. Its existing read-only requirement and the
+`apply_patch` exception remain unchanged; no Codex experiment was launched.
+Every other adapter also refuses experiment MCP injection.
+
+### Existing planted-canary check
 
 A flag inspection cannot prove that a harness ignored its customizations;
 only the model's answer can. `codemux check --hermetic -a <agent>` makes
@@ -52,7 +255,7 @@ two real requests:
 The hermetic answer must be exactly `OK` (a trailing period or code fence is
 tolerated). An `OK` beside anything else, such as an owner's name, fails.
 
-Add `--tools none` and both probes run without built-in tools: the control
+For harnesses other than Antigravity, add `--tools none` and both probes run without built-in tools: the control
 repeats the hermetic probe's tools selection unchanged, so `--hermetic` is
 the only difference between the two requests. That is what makes the
 comparison mean anything — a control that leaks with the same tools proves
@@ -87,7 +290,7 @@ pass was withdrawn on 2026-10-04; see its row below.
 | Z.AI | verified | verified | Same as Claude Code (same binary, Z.AI endpoint). |
 | Codex | verified | verified at read-only | A private HOME and CODEX_HOME per run, holding only a hard link to the real `auth.json` (see below). `-c project_doc_max_bytes=0` skips AGENTS.md in the working directory; `--ignore-user-config` and `--ignore-rules` skip the user config and execpolicy rules; `--disable` for apps, plugins, remote plugins, hooks, memories, goals, shell snapshot; `include_apps_instructions=false`. `--tools none` disables the shell, unified exec, view_image, multi-agent, browser, computer-use, image-generation and tool-suggest features and sets `web_search = "disabled"`. `apply_patch` is tied to the model and cannot be removed, so `--tools none` is accepted only with `--auto read-only`, where scode denies writes to the working directory; locations scode keeps writable (harness state such as `~/.codex`, temp) remain reachable to it. Repositories (and a HOME used as the working directory) shipping `.agents/skills` or `.codex/skills` are refused. A provider-override run (`CODEMUX_CODEX_PROVIDER_*`) reuses the private-home mechanism with one difference: the home holds the override's own `config.toml` — a `model_providers.codemux` entry whose `env_key` points at the environment codemux provides, so the provider key is the credential — and links no `auth.json`; `--ignore-user-config` is not passed because it skips `$CODEX_HOME/config.toml` itself, exactly where the override lives (the other hermetic flags still ride). |
 | Aider | refused | refused | No switch closes aider's own config layers, and they load inside the aider process, where codemux's `AIDER_*` sanitizer block and the project-config assertions never see them: configargparse reads `.aider.conf.yml` from the working directory, the git root and the home alongside whatever `--config` names (`default_config_files`, `main.py` at 0.86.2), and `generate_search_path_list` runs the same home/git-root/cwd search for `.env` (every found file loads with `override=True` before arguments are re-parsed, so an `AIDER_READ` in `~/.env` takes effect) and for `.aider.model.settings.yml` (which can set `system_prompt_prefix`) alongside the pinned `--model-settings-file`. Every codemux run already pins the config, env file, model metadata and input history to packaged or null paths, and the `--hermetic` mapping would add `--map-tokens 0` to keep the repository map out of the prompt — but a `.aider.conf.yml` with `read: <file>` still injects that file's content into every chat, and the working-directory and git-root variants cannot be closed at all while the run works on the operator's project. Confirmed live on 2026-10-04 through the provider override (GLM-5.3 via Z.AI, `CODEMUX_AIDER_PROVIDER_{BASE_URL,API_KEY,MODEL}` → litellm's `openai/` model prefix with `OPENAI_API_BASE`/`OPENAI_API_KEY`; the key rides the environment codemux provides, never an operator file): a plain run whose working directory held only a `.aider.conf.yml` naming a canary note answered with the note's code word — "Added canary-note.md to the chat (read-only)" in the transcript, `CODEMUX-PROBE-… OK` as the reply, the prompt itself carrying no code word — with every pinned flag in place. The 2026-09-17 two-probe check had passed because its canary plants `AGENTS.md`/`CLAUDE.md`, a channel the control already exercises through `--read`; it never rode the config layers, so it certified what the pinned flags do not close (withdrawn in the 2026-10-04 review). The answer-extraction machinery — a per-run chat-history file under `~/.aider/.codemux/`, 0600 under a 0700 parent, removed at exit, whose bare reply and reasoning the check would read — stays for the day aider grows a switch; only a hermetic run creates it, and plain runs keep `--chat-history-file /dev/null`, so no run today writes its conversation to disk (2026-10-04 h6 review). No tool set to remove; `--tools none` has nothing to map onto. |
-| Antigravity | refused | refused | No mechanism: nothing disables the instruction files, config manifests, MCP servers, and plugins under `~/.gemini` and `.agents/`, and `--disable-slash-commands` (1.2.14) covers only slash-command and skill expansion in print mode. There is also no tool-removal flag for `--tools none`. Unverifiable besides: the audit machine has no Antigravity login, so the live canary could not run (2026-10-04). |
+| Antigravity | VERIFIED | VERIFIED | The operator's Round 11 live record verifies agy 1.3.3 with private HOME + template-based Keychain mirror and installed scode 0.6.0: the plain run and public check passed, the user search list was unchanged, and no private home remained. Hermetic runs require a clean working directory. Deny-all settings + plan mode + attempt detection enforce `--tools none` under read-only scode. Round 12 hardening is covered by synthetic regressions. See the Antigravity rule above. |
 | Cursor Agent | refused | refused | No flag or setting disables rules, `AGENTS.md`, hooks, or MCP servers, and `--plugin-dir` adds plugins rather than removing them (2026.08.11 `--help`); `~/.cursor` cannot be relocated with the login intact. No tool-removal flag exists, so `--tools none` has nothing to map onto. This machine has no Cursor login either (`agent models` fails authentication), so no live check is possible here regardless. |
 | Droid | refused | verified | No switch disables instruction files: AGENTS.md and CLAUDE.md load from the working directory up to the git root, skills load from both `~/.factory/skills` and `~/.agents/skills` (`droid doctor`, 0.221.0, names both), and hooks, MCP servers and custom droids from `~/.factory` still load; `--disable-builtin-skills` (0.221.0 `exec --help`) covers only Factory's builtins. Confirmed live on 2026-09-17 through the provider override (GLM-5.3 via Z.AI, `CODEMUX_DROID_PROVIDER_{BASE_URL,API_KEY,MODEL}` → a per-run BYOK settings file passed as the root-level `--settings <path>`, "merged for this process only", holding one `customModels` entry whose `apiKey` is the `${CODEMUX_DROID_PROVIDER_API_KEY}` reference — the value rides the environment codemux provides; docs.factory.ai/model-independence/byok): a plain control run in the planted canary directory answered with the code word, so the instruction-file channel demonstrably reaches the model and the refusal stands on a live leak. Selection note: droid resolves a custom model by the entry's `id`, not its `model` name — the entry and the `-m` value use `custom:codemux:<model>-0`, the shape of the operator's own working entries; a `-m` naming only the API model id falls through to Factory inference and fails authentication. `--tools none` maps onto `--only-tools ToolSearch`: IDs are validated, so a renamed tool aborts the launch, and the binary's free `--list-tools` inventory (0.221.0) shows every Read, Edit, Execute and MCP tool blocked under it. Verified live through the same override: under `--tools none` the session transcripts contain no tool call at all, the read probe produced no secret, and the shell probe produced fabricated output rather than the real transform of the planted token (the transform design is what makes the fabrication detectable), while a plain run's model read the file and produced the secret. The plain-run shell probe could not execute on this machine — every `Execute`, even `echo ok`, was SIGKILLed because droid's own command sandbox cannot nest inside the session's outer sandbox — an environment artifact of the probe host, not of the mapping; the read probe carried the plain-run burden. An empty `--only-tools ""` is silently ignored and `--remove-tools` cannot drop the pinned ToolSearch, so neither was used. |
 | Kimi Code | refused | verified | Hermetic has no mechanism: the AGENTS.md merger (`loadAgentsMdForRoots`, embedded `packages/agent-core` source in the 0.31.1 binary) unconditionally merges `<brand home>/AGENTS.md` and `~/.agents/AGENTS.md` — the latter under the real OS home, so `KIMI_CODE_HOME`, which 0.31.1 does honor for config.toml, mcp.json, skills, agents and SYSTEM.md, cannot close it — plus `.kimi-code/AGENTS.md` and then `AGENTS.md`/`agents.md` in the working directory, and the system prompt carries the merged text (`{{ KIMI_AGENTS_MD }}`); no flag or environment variable turns any of it off (skills are the one channel with a switch, `--skills-dir`). Confirmed live on 2026-09-17 through the provider override (GLM-5.3 via Z.AI, `CODEMUX_KIMI_PROVIDER_{BASE_URL,API_KEY,MODEL}` → the `KIMI_MODEL_*` environment group, which synthesizes a temporary provider in memory — kimi-code docs, "Define a model from environment variables"; the override suppresses the `-m` flag because a config alias would outrank the synthesized model): the control probe quoted the planted code word and named `~/.agents/AGENTS.md`'s owner, exactly the channels the refusal documents. `--tools none` maps onto a generated agent file passed as `--agent-file` ("Load an agent definition from a Markdown file", 0.31.1 `--help`): the frontmatter `tools` key is the profile's own allowlist (`tools: []` is the file's set; the tool manager's gates are strict membership tests over it, so no built-in and no MCP tool is exposed, and a profile renderer prints the state as "Tools: none"), and the file's required prompt body is `${base_prompt}`, which an explicit agent file renders as the default profile's own prompt, so kimi's base instructions stay. Codemux writes the file under `<brand home>/.codemux/`, a directory no discovery scans (user agents come from `<brand home>/agents` and `~/.agents/agents`, embedded `roots.ts`), and removes it at exit. Verified live through the same override: under `--tools none` the read probe could not produce a planted secret and the shell probe could not produce a transformed one (the model announced the task but never executed), while a plain run produced the secret. |
@@ -206,8 +409,8 @@ hermetically created session would be marked clean enough to resume under
 `--hermetic` again (a resumed session replays its transcript, and the
 transcript was written while the session ran with its tools), and what a
 resume means for a Codex session whose private `CODEX_HOME` is destroyed
-at exit. Antigravity adds a third: no verified hermetic mechanism exists
-for it at all (see the ledger).
+at exit. Antigravity's verified mechanism applies to headless runs only; its live
+session isolation remains unverified (see the ledger).
 
 What a session does instead is record liveness in a local registry
 (`~/Library/Application Support/codemux/live-sessions.json` on macOS,

@@ -1,4 +1,6 @@
 import type { Command } from "commander";
+import { runAgyCanaryChecks, runAgyIsolationProbe } from "./agy-isolation-probe.js";
+import { assertExperimentMcpUnavailable, experimentCanaryControl, validateExperimentRequest } from "./experiment-mcp.js";
 import { getAdapter } from "./adapters/index.js";
 import {
   handleUnexpectedError,
@@ -54,6 +56,8 @@ export function registerCheckCommand(
       "Prove the harness ignores its customizations: plant instruction files in a scratch directory and probe twice"
     )
     .option("--tools <selection>", "Built-in tools for the probe: default, none")
+    .option("--experiment-mcp <spec.json>", "Extend Claude's hermetic canary with the experiment MCP bridge")
+    .option("--agy-isolation-probe <mode>", "Unverified agy diagnostic: login, hermetic, control, tools, tools-control")
     .option("-s, --sandbox", "Run probe in sandbox (default; requires scode)", true)
     .option("--no-sandbox", "Probe without the scode boundary (autonomy below high is unavailable)")
     .option(
@@ -80,17 +84,41 @@ export function registerCheckCommand(
         const requestedEffort = parseEffortOption(options.effort);
         const passthroughEnv = parsePassthroughEnvOption(options.passEnv);
         const tools = parseToolsOption(options.tools);
+        assertExperimentMcpUnavailable(agentId, options.experimentMcp);
         const hermetic = Boolean(options.hermetic);
+        validateExperimentRequest({ agent: agentId, prompt: "probe", experimentMcp: options.experimentMcp,
+          hermetic, tools, autonomy: requestedAutonomy, sandboxed: Boolean(options.sandbox) });
         if (hermetic && options.cwd !== undefined) {
           throw new Error("--hermetic plants its own working directory; drop --cwd");
         }
         const timeoutMs = parseTimeoutOption(options.timeout);
+        const model = options.model
+          ? resolveModel(options.model, agentId, config)
+          : undefined;
+        if (options.agyIsolationProbe !== undefined) {
+          if (agentId !== "agy" || hermetic || tools === "none" || options.experimentMcp ||
+              !options.sandbox || requestedAutonomy !== "read-only" || options.cwd || passthroughEnv.length ||
+              options.sandboxTrust || options.sandboxNoNet || options.sandboxScrubEnv || requestedEffort) {
+            throw new Error("--agy-isolation-probe requires -a agy --auto read-only with default scode and no other isolation flags");
+          }
+          process.exitCode = await runAgyIsolationProbe(options.agyIsolationProbe, timeoutMs, model);
+          return;
+        }
         const sandboxPolicyOverrides = parseSandboxPolicyOverrides({
           sandbox: Boolean(options.sandbox),
           sandboxTrust: options.sandboxTrust,
           sandboxNoNet: Boolean(options.sandboxNoNet),
           sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
         });
+
+        if (agentId === "agy" && (hermetic || tools === "none")) {
+          if (!options.sandbox || requestedAutonomy !== "read-only" || options.cwd || passthroughEnv.length ||
+              options.sandboxTrust || options.sandboxNoNet || options.sandboxScrubEnv || requestedEffort) {
+            throw new Error("agy canary checks require default read-only scode and manage their own scratch cwd and HOME");
+          }
+          process.exitCode = await runAgyCanaryChecks(hermetic, tools === "none", timeoutMs, model);
+          return;
+        }
 
         const adapter = getAdapter(agentId);
 
@@ -99,10 +127,6 @@ export function registerCheckCommand(
           console.error(`Please install '${adapter.binaryName}' and try again`);
           process.exit(1);
         }
-
-        const model = options.model
-          ? resolveModel(options.model, agentId, config)
-          : undefined;
 
         const caps = adapter.capabilities();
         if (model && !caps.supportsModel) {
@@ -153,6 +177,7 @@ export function registerCheckCommand(
           passthroughEnv,
           timeoutMs,
           tools,
+          experimentMcp: options.experimentMcp,
         };
         const launch: LaunchOptions = {
           sandbox: Boolean(options.sandbox),
@@ -183,7 +208,7 @@ export function registerCheckCommand(
           return;
         }
 
-        const canary = plantCanary();
+        const canary = plantCanary(Boolean(options.experimentMcp));
         try {
           const canaryLaunch = { ...launch, cwd: canary.cwd };
           const probe: RunRequest = {
@@ -227,7 +252,8 @@ export function registerCheckCommand(
           // isolation, not tool removal. A harness whose --tools none is
           // hermetic-only was refused before any probe ran.
           console.error("Control probe without --hermetic...");
-          const controlResult = await launchRunRequest(adapter, probe, canaryLaunch);
+          const controlResult = await launchRunRequest(adapter,
+            options.experimentMcp ? experimentCanaryControl(probe) : probe, canaryLaunch);
           const control = controlResult.exitCode === 0
             ? evaluateCanary(controlResult.scanSurface ?? controlResult.stdout, canary.marker)
             : null;

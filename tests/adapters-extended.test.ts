@@ -431,6 +431,7 @@ describe("ZaiAdapter", () => {
         cost_usd: null,
       },
       session_id: null,
+      recording: null,
     });
   });
 

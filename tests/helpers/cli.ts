@@ -24,7 +24,10 @@ export async function runCli(
   const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-cli-home-"));
   try {
     const proc = Bun.spawn(
-      [join(import.meta.dir, "..", "..", "bin", "codemux"), ...args],
+      envOverrides?.CODEMUX_TEST_AGY_SECURITY
+        ? [process.execPath, "--no-env-file", "--no-install", "--config=./bunfig.runtime.toml",
+          "--preload", join(import.meta.dir, "../fixtures/agy-host.ts"), "src/index.ts", ...args]
+        : [join(import.meta.dir, "..", "..", "bin", "codemux"), ...args],
       {
         cwd: join(import.meta.dir, "..", ".."),
         stdout: "pipe",
@@ -81,13 +84,25 @@ export function minimalPath(): string {
 }
 
 export function createFakeBinaryEnv(
-  binaries: Record<string, string>
+  binaries: Record<string, string>,
+  scodeVersion = "0.6.0"
 ): { env: Record<string, string>; cleanup: () => void } {
   const binDir = mkdtempSync(join(tmpdir(), "codemux-cli-bin-"));
+  const apiKeyLogin = binaries.agy && !binaries.security;
+  // Never consult the operator's real Keychain from a synthetic agy launch.
+  if (binaries.agy && !binaries.security) binaries = { ...binaries, security: `
+case "$1" in
+  find-generic-password) printf 'synthetic-agy-token\\n' ;;
+  create-keychain) for last do :; done; /usr/bin/touch "$last" ;;
+  list-keychains) exit 0 ;;
+  -i) /bin/cat >/dev/null ;;
+  set-keychain-settings) exit 0 ;;
+  *) exit 1 ;;
+esac` };
   for (const [name, body] of Object.entries(binaries)) {
     const scriptPath = join(binDir, name);
     const versionPreamble = name === "scode"
-      ? "if [ \"$1\" = \"--version\" ]; then printf 'scode 0.2.0\\n'; exit 0; fi\n"
+      ? `if [ "$1" = "--version" ]; then printf 'scode ${scodeVersion}\\n'; exit 0; fi\n`
       : "";
     writeFileSync(scriptPath, `#!/bin/sh\n${versionPreamble}${body}\n`);
     chmodSync(scriptPath, 0o755);
@@ -96,6 +111,8 @@ export function createFakeBinaryEnv(
   return {
     env: {
       PATH: `${binDir}:${minimalPath()}`,
+      ...(apiKeyLogin ? { GEMINI_API_KEY: "synthetic-api-key" } : {}),
+      ...(binaries.security ? { CODEMUX_TEST_AGY_SECURITY: join(binDir, "security") } : {}),
     },
     cleanup: () => {
       rmSync(binDir, { recursive: true, force: true });

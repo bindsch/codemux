@@ -71,6 +71,8 @@ export interface RunRequest {
   // Independent of `tools`: a hermetic run keeps the harness's built-in tools
   // unless `tools` removes them. See docs/HERMETIC.md.
   hermetic?: boolean;
+  // One stdio experiment server through Claude's SDK bridge; every other adapter refuses.
+  experimentMcp?: string;
   // Ask the harness for a machine-readable result envelope on stdout instead of plain text,
   // so a caller can read what the run actually consumed. Headless runs only: there is no
   // envelope to parse in an interactive session. The envelope's shape is the harness's, not
@@ -135,12 +137,14 @@ export interface ResultUsageBlock {
 // codemux normalized across harnesses: which adapter ran, the model that
 // served the run when it is known, and token usage. `session_id` is always
 // null in this release -- reserved for the live-sessions design that will
-// add `--session` back.
+// add `--session` back. `recording` names the experiment bridge's per-run
+// JSONL on an `--experiment-mcp` run and is null on every other run.
 export interface CodemuxResultBlock {
   agent: string;
   model: string | null;
   usage: ResultUsageBlock;
   session_id: string | null;
+  recording: string | null;
 }
 
 export interface AdapterCapabilities {

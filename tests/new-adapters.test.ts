@@ -53,11 +53,13 @@ describe("AgyAdapter", () => {
       supportsEffort: true,
       effortLevels: ["low", "medium", "high", "xhigh", "max"],
       supportsResultJson: true,
+      supportsHermetic: true,
+      supportsToolSelection: true,
     });
-    // No verified hermetic mode and no tool-removal flag: both requests are
-    // refused rather than degraded (docs/HERMETIC.md names the reasons).
-    expect(adapter.capabilities().supportsHermetic).toBeUndefined();
-    expect(adapter.capabilities().supportsToolSelection).toBeUndefined();
+    // VERIFIED by Round 11 live checks: private HOME and a login mirror isolate
+    // configuration; deny settings and native attempt checks enforce tools-none.
+    expect(adapter.capabilities().supportsHermetic).toBe(true);
+    expect(adapter.capabilities().supportsToolSelection).toBe(true);
   });
 
   test("builds a headless command with the value flags in = form and the prompt last", () => {

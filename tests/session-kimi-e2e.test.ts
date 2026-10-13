@@ -118,6 +118,7 @@ async function startSession(
         env: {
           PATH: process.env.PATH ?? "/usr/bin:/bin",
           FAKE_STATE_DIR: stateDir,
+          FAKE_TURN_NUMBER: String(turnCount),
           HOME: dir,
           ...extraEnv,
         },
@@ -128,6 +129,18 @@ async function startSession(
       procs.push(proc);
       order.push("spawned");
       void proc.settled.then(() => order.push("settled"));
+      const prompt = argv[argv.indexOf("--prompt") + 1] ?? "";
+      if (/\bscenario:wait\b/.test(prompt) &&
+          (extraEnv.FAKE_DRAIN_SELFKILL === "1" || extraEnv.FAKE_DRAIN_EXIT143 === "1")) {
+        // Start the drain only after the fake has installed its EOF handler.
+        // Interpreter startup must not consume the drain's 500 ms budget.
+        const readyPath = join(stateDir, "drain-ready.jsonl");
+        await waitFor(events, () => {
+          if (!existsSync(readyPath)) return undefined;
+          const ready = readFileSync(readyPath, "utf8").trim().split("\n");
+          return ready.some((line) => JSON.parse(line).turn === String(turnCount)) ? true : undefined;
+        }, "the fake's drain handler");
+      }
       return proc;
     },
     sink: (line) => {

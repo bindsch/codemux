@@ -1485,7 +1485,7 @@ export function registerSessionCommand(
           // home never rode turnState: the driver's end path settled it
           // (kept on a resumable end; a fresh one removed otherwise, a
           // resumed one never — review D3) before run() resolved.
-          adapter.cleanupRun(turnState.launch?.context);
+          await adapter.cleanupRun(turnState.launch?.context);
         }
         unframe();
         driver.dispose();

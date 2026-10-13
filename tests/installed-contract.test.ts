@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { runCapturedCommand } from "../src/process-runner.js";
 import { getDefaultConfig } from "../src/config.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const RUN_INSTALLED_CONTRACTS =
   process.env.CODEMUX_RUN_INSTALLED_CONTRACTS === "1";
@@ -19,13 +22,20 @@ function standaloneCursorBinary(): string {
 }
 
 async function help(binary: string, args: string[]): Promise<string> {
-  const result = await runCapturedCommand([binary, ...args], {
-    cwd: process.cwd(),
-    env: process.env as Record<string, string>,
-    timeoutMs: CONTRACT_TIMEOUT_MS,
-  });
-  expect(result.exitCode, result.stderr).toBe(0);
-  return `${result.stdout}\n${result.stderr}`;
+  // Copilot extracts its bundled help package even for --help. Keep this
+  // test write out of the operator's cache, which may be read-only in CI.
+  const cache = binary === "copilot" ? mkdtempSync(join(tmpdir(), "codemux-copilot-contract-")) : undefined;
+  try {
+    const result = await runCapturedCommand([binary, ...args], {
+      cwd: process.cwd(),
+      env: { ...process.env, ...(cache ? { COPILOT_PKG_CACHE_HOME: cache } : {}) } as Record<string, string>,
+      timeoutMs: CONTRACT_TIMEOUT_MS,
+    });
+    expect(result.exitCode, result.stderr).toBe(0);
+    return `${result.stdout}\n${result.stderr}`;
+  } finally {
+    if (cache) rmSync(cache, { recursive: true, force: true });
+  }
 }
 
 // Module scope, not describe scope: the pin-sync test below reads the same

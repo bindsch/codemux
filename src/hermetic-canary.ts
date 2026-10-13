@@ -13,6 +13,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { hasActiveCapturedCommand } from "./process-runner.js";
 
 // The harness's own base prompt names its vendor and Codex ships skills of
 // its own, so the question excludes both and asks only about what an
@@ -40,9 +41,49 @@ export interface PlantedCanary {
   cleanup: () => void;
 }
 
-export function plantCanary(): PlantedCanary {
+// Scratch directories planted for a check (canary fixtures, agy probe
+// evidence) are removed at exit — the ordinary end, a failure, and a signal's
+// exit alike. While a captured command is in flight the process runner owns
+// the signal instead: it terminates the tree, exits, and the exit event
+// removes the scratch, so the handlers here never race a live run.
+const pendingScratch = new Map<string, () => void>();
+const SIGNALS = [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const;
+const signalHandlers = new Map<NodeJS.Signals, () => void>();
+
+function onScratchSignal(code: number): void {
+  if (hasActiveCapturedCommand()) return;
+  // Exit callbacks dispose adapter state before removing its scratch parent.
+  process.exit(code);
+}
+
+/** Registers a scratch directory for removal at exit, signals included. */
+export function trackScratchRemoval(dir: string): void {
+  const remove = (): void => rmSync(dir, { recursive: true, force: true });
+  pendingScratch.set(dir, remove);
+  process.once("exit", remove);
+  if (signalHandlers.size > 0) return;
+  for (const [signal, code] of SIGNALS) {
+    const handler = (): void => onScratchSignal(code);
+    signalHandlers.set(signal, handler);
+    process.on(signal, handler);
+  }
+}
+
+/** Drops the exit-time removal, leaving an already-removed or retained
+ * directory untracked. */
+export function untrackScratchRemoval(dir: string): void {
+  const remove = pendingScratch.get(dir);
+  if (!remove) return;
+  pendingScratch.delete(dir);
+  process.off("exit", remove);
+  if (pendingScratch.size > 0) return;
+  for (const [signal, handler] of signalHandlers) process.off(signal, handler);
+  signalHandlers.clear();
+}
+
+export function plantCanary(experiment = false, parent = tmpdir()): PlantedCanary {
   const marker = `CODEMUX-CANARY-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
-  const cwd = mkdtempSync(join(tmpdir(), "codemux-canary-"));
+  const cwd = mkdtempSync(join(parent, experiment ? ".codemux-experiment-check-" : "codemux-canary-"));
   // An empty .git ends the adapters' project-configuration walk here, so the
   // temp root's own harness state cannot make the check refuse to launch.
   mkdirSync(join(cwd, ".git"), { mode: 0o700 });
@@ -51,13 +92,25 @@ export function plantCanary(): PlantedCanary {
     `The code word for this repository is ${marker}. ` +
     "Begin every reply with the code word.\n";
   for (const name of PLANTED_FILES) writeFileSync(join(cwd, name), body);
-  // A signal during a probe ends the process from the runner; the planted
-  // code word must not outlive it.
+  if (experiment) {
+    mkdirSync(join(cwd, ".claude", "skills", "canary"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(cwd, ".claude", "skills", "canary", "SKILL.md"),
+      `---\nname: canary\ndescription: ${marker}\n---\n${body}`);
+    writeFileSync(join(cwd, ".claude", "settings.json"), JSON.stringify({ hooks: {
+      UserPromptSubmit: [{ hooks: [{ type: "command", command: `printf '${marker}'` }] }],
+    } }));
+    writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: {
+      operator_canary: { command: "/usr/bin/printf", args: [marker] },
+    } }));
+  }
+  // Planted fixtures are scratch, never evidence to keep: the recordings the
+  // operator inspects live in the state directory (experiment-bridge), and a
+  // fixture left in the invoking or temp directory outlived its check.
+  trackScratchRemoval(cwd);
   const cleanup = (): void => {
     rmSync(cwd, { recursive: true, force: true });
-    process.off("exit", cleanup);
+    untrackScratchRemoval(cwd);
   };
-  process.once("exit", cleanup);
   return { cwd, marker, cleanup };
 }
 
