@@ -255,8 +255,8 @@ describe("kimi session e2e - lifecycle", () => {
 
     send(session.driver, { type: "shutdown" });
     expect(await session.code).toBe(0);
-    const ended = session.events[session.events.length - 1] as Event;
-    expect(ended.type).toBe("session_ended");
+    // session_ended arrives asynchronously after the events awaited above.
+    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
     expect(ended.reason).toBe("shutdown");
     expect(ended.resumable).toBe(true);
     expect(ended.usage).toEqual(NULL_USAGE);
@@ -921,8 +921,8 @@ describe("kimi session e2e - stream tiers", () => {
     );
     expect(error.message).toContain("unusable harness output (not JSON");
     expect(await session.code).toBe(1);
-    const ended = session.events[session.events.length - 1] as Event;
-    expect(ended.type).toBe("session_ended");
+    // session_ended arrives asynchronously after the events awaited above.
+    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
     expect(ended.reason).toBe("harness_failed");
   });
 
@@ -956,8 +956,8 @@ describe("kimi session e2e - stream tiers", () => {
     // named another session, so the crash must not end resumable —
     // before the fix the stale confirmation kept resumable:true, telling
     // a retrying caller one more --resume could work.
-    const ended = session.events[session.events.length - 1] as Event;
-    expect(ended.type).toBe("session_ended");
+    // session_ended arrives asynchronously after the events awaited above.
+    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
     expect(ended.reason).toBe("crash");
     expect(ended.resumable).toBe(false);
   });
@@ -987,8 +987,8 @@ describe("kimi session e2e - stream tiers", () => {
     expect(error.message).toContain(OTHER);
     expect(error.message).toContain(ID);
     expect(await session.code).toBe(1);
-    const ended = session.events[session.events.length - 1] as Event;
-    expect(ended.type).toBe("session_ended");
+    // session_ended arrives asynchronously after the events awaited above.
+    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
     expect(ended.reason).toBe("crash");
     // Never rebound: the one session_started is the resumed id, and no
     // second announcement ever carried the foreign one.
@@ -1088,8 +1088,8 @@ describe("kimi session e2e - stream tiers", () => {
       expect(completed.reason).toContain("the session ended on a failure before the turn completed");
       expect(completed.reason).toContain(phrase);
       expect(await session.code).toBe(1);
-      const ended = session.events[session.events.length - 1] as Event;
-      expect(ended.type).toBe("session_ended");
+      // session_ended arrives asynchronously after the events awaited above.
+      const ended = await waitFor(session.events, of("session_ended"), "session_ended");
       expect(ended.reason).toBe("harness_failed");
       // The regression's core: the hint had confirmed the session, and the
       // fatal must withdraw that confirmation — before the fix this read
@@ -1125,8 +1125,8 @@ describe("kimi session e2e - stream tiers", () => {
     expect(completed.finish).toBe("failed");
     expect(completed.reason).toContain("the session ended on a failure");
     expect(await session.code).toBe(1);
-    const ended = session.events[session.events.length - 1] as Event;
-    expect(ended.type).toBe("session_ended");
+    // session_ended arrives asynchronously after the events awaited above.
+    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
     expect(ended.reason).toBe("crash");
     // The regression's core, both halves: no assistant message the fatal
     // already disowned (turn one's is the only one), and no late hint
@@ -1157,8 +1157,8 @@ describe("kimi session e2e - end paths", () => {
     expect(completed.raw).toBeNull();
     expect(completed.usage).toEqual(NULL_USAGE);
     expect(await session.code).toBe(1);
-    const ended = session.events[session.events.length - 1] as Event;
-    expect(ended.type).toBe("session_ended");
+    // session_ended arrives asynchronously after the events awaited above.
+    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
     expect(ended.reason).toBe("harness_failed");
     // exit_code is the end path's own code (the stdin-close cause at 0,
     // the same code the process exits with) — the killed child's signal
@@ -1350,8 +1350,8 @@ describe("kimi session e2e - end paths", () => {
     expect(completed.reason).toBe("the kimi process exited with signal SIGKILL");
     const fatal = session.events.find((event) => event.type === "error" && event.fatal === true);
     expect(fatal?.message).toContain("the kimi process exited with signal SIGKILL");
-    const ended = session.events[session.events.length - 1] as Event;
-    expect(ended.type).toBe("session_ended");
+    // session_ended arrives asynchronously after the events awaited above.
+    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
     expect(ended.reason).toBe("harness_failed");
     // The external death recorded a crash cause at 1: exit_code is that
     // raised code, matching the process exit (round al29; the child's
@@ -1390,8 +1390,9 @@ describe("kimi session e2e - end paths", () => {
     const fatal = session.events.find((event) => event.type === "error" && event.fatal === true);
     expect(fatal?.message).toContain("the kimi process exited with code 143");
     expect(fatal?.fatal).toBe(true);
-    const ended = session.events[session.events.length - 1] as Event;
-    expect(ended.type).toBe("session_ended");
+    // session_ended follows the failed turn_completed asynchronously, so
+    // it is awaited rather than assumed to be the last event already.
+    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
     expect(ended.reason).toBe("harness_failed");
     // The external coded 143 recorded a crash cause at 1: exit_code is
     // that raised code, matching the process exit (round al29; the
@@ -1467,8 +1468,8 @@ describe("kimi session e2e - end paths", () => {
     expect(completed.reason).toContain("the kimi process exited with signal SIGTERM");
     expect(completed.usage).toEqual(NULL_USAGE);
     expect(await session.code).toBe(1);
-    const ended = session.events[session.events.length - 1] as Event;
-    expect(ended.type).toBe("session_ended");
+    // session_ended arrives asynchronously after the events awaited above.
+    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
     expect(ended.reason).toBe("harness_failed");
     // The clean end's own code: the child's signal death was observed
     // after the drain's recorded stop, so by ordering it is the
@@ -1519,8 +1520,8 @@ describe("kimi session e2e - end paths", () => {
     expect(await session.code).toBe(1);
     const fatal = session.events.find((event) => event.type === "error" && event.fatal === true);
     expect(fatal?.message).toContain("cannot record the session in the registry");
-    const ended = session.events[session.events.length - 1] as Event;
-    expect(ended.type).toBe("session_ended");
+    // session_ended arrives asynchronously after the events awaited above.
+    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
     expect(ended.reason).toBe("crash");
     expect(ended.resumable).toBe(false);
     expect(session.events.some((event) => event.type === "session_started")).toBe(false);
@@ -1556,8 +1557,8 @@ describe("kimi session e2e - end paths", () => {
     expect(completed.turn_id).toBe("t1");
     expect(completed.finish).toBe("interrupted");
     expect(completed.reason).toContain("the session ended (timeout)");
-    const ended = session.events[session.events.length - 1] as Event;
-    expect(ended.type).toBe("session_ended");
+    // session_ended arrives asynchronously after the events awaited above.
+    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
     expect(ended.reason).toBe("timeout");
     // The timeout cause's own code, the same one the process exits with
     // (round al29 — never a child's exit, and no child landed yet).
@@ -1604,8 +1605,8 @@ describe("kimi session e2e - end paths", () => {
     );
     expect(completed.finish).toBe("interrupted");
     expect(completed.reason).toContain("the session ended (timeout)");
-    const ended = session.events[session.events.length - 1] as Event;
-    expect(ended.type).toBe("session_ended");
+    // session_ended arrives asynchronously after the events awaited above.
+    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
     expect(ended.reason).toBe("timeout");
     // The timeout cause's own code, matching the process exit (round
     // al29 — no child ever existed to report).
@@ -1682,8 +1683,8 @@ describe("kimi session e2e - end paths", () => {
     expect(completed.turn_id).toBe("t1");
     expect(completed.finish).toBe("interrupted");
     expect(completed.reason).toContain("before the turn completed");
-    const ended = session.events[session.events.length - 1] as Event;
-    expect(ended.type).toBe("session_ended");
+    // session_ended arrives asynchronously after the events awaited above.
+    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
     // The end path's own reason stands (the stdin close started it); the
     // exit code is the signal cause's — the one later cause the end path
     // met, the same code the process exits with — and the killed child's
@@ -1730,8 +1731,8 @@ describe("kimi session e2e - end paths", () => {
     );
     expect(completed.finish).toBe("interrupted");
     expect(completed.reason).toContain("the session ended (stdin-close) before the turn completed");
-    const ended = session.events[session.events.length - 1] as Event;
-    expect(ended.type).toBe("session_ended");
+    // session_ended arrives asynchronously after the events awaited above.
+    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
     expect(ended.reason).toBe("stdin-close");
     // The timeout's raised code: the graceful end's 0 is gone.
     expect(await session.code).toBe(1);
@@ -1797,8 +1798,8 @@ describe("kimi session e2e - end paths", () => {
     expect(completed.reason).toContain(
       "the kimi process exited with signal SIGTERM and named no session id"
     );
-    const ended = session.events[session.events.length - 1] as Event;
-    expect(ended.type).toBe("session_ended");
+    // session_ended arrives asynchronously after the events awaited above.
+    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
     expect(ended.reason).toBe("harness_failed");
     expect(ended.shutdown_requested).toBe(true);
     expect(ended.exit_code).toBe(1);
@@ -1948,8 +1949,8 @@ describe("kimi session e2e - end paths", () => {
     expect(completed.reason).toContain("EPIPE: broken pipe");
     const fatal = session.events.find((event) => event.type === "error" && event.fatal === true);
     expect(fatal?.message).toContain("reading the caller's stdin failed");
-    const ended = session.events[session.events.length - 1] as Event;
-    expect(ended.type).toBe("session_ended");
+    // session_ended arrives asynchronously after the events awaited above.
+    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
     expect(ended.reason).toBe("harness_failed");
     expect(ended.resumable).toBe(false);
     expect(await session.code).toBe(1);
@@ -1996,8 +1997,8 @@ describe("kimi session e2e - end paths", () => {
     // nowhere: no assistant message, no re-confirmation, no resumable
     // end.
     expect(session.events.find((event) => event.type === "assistant_message")).toBeUndefined();
-    const ended = session.events[session.events.length - 1] as Event;
-    expect(ended.type).toBe("session_ended");
+    // session_ended arrives asynchronously after the events awaited above.
+    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
     // A child that answered and exited 0 is no harness failure (al41): the
     // caller's stdin read failure is the end's own reason, with its code 1.
     expect(ended.reason).toBe("stdin-close");
