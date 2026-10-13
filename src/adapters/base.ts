@@ -9,6 +9,7 @@ import {
   type AdapterCapabilities,
 } from "../types.js";
 import { sanitizeEnvironment } from "../environment.js";
+import { isAbsolute } from "node:path";
 import { validateExperimentRequest } from "../experiment-mcp.js";
 import { readProviderOverride } from "../provider-override.js";
 import { launchRunRequest } from "../launch.js";
@@ -60,7 +61,11 @@ export abstract class BaseAdapter {
    * states. Every check in this class that reads an override reads this
    * view, so an adapter constructed against a view must forward it here.
    */
-  constructor(protected readonly environment: NodeJS.ProcessEnv = process.env) {}
+  constructor(protected readonly environment: NodeJS.ProcessEnv = process.env) {
+    if (environment.HOME !== undefined && !isAbsolute(environment.HOME)) {
+      throw new Error("HOME must be an absolute path");
+    }
+  }
 
   /**
    * The name diagnostics display for this adapter. Spawn-free by contract:

@@ -7,6 +7,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.13.2] - 2026-10-13
+
+### Fixed
+
+- Accept and record documented Claude control-protocol notifications, including compaction boundaries and tool-progress heartbeats, while rejecting unknown frame types.
+- Suppress the Codex Plan fallback after a protocol failure, including a top-level error after turn completion.
+- Share Antigravity configuration entries individually so API-key runs never link the unused OAuth token into their private homes.
+- Recover stale private homes and Keychain mirrors from both validated, user-owned login and injected HOME probe roots.
+- Reject symlinked probe roots before Keychain recovery and restrict mirror ownership to the exact private run-directory layout.
+- Preserve inaccessible unrelated Keychain search-list entries without blocking recovery.
+- Bound asynchronous adapter cleanup on signals by the existing grace period and report incomplete cleanup before exiting.
+- Reject relative and empty injected HOME values in the shared adapter constructor, before credential preparation.
+
 ## [0.13.1] - 2026-10-13
 
 ### Fixed

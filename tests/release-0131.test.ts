@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgyAdapter } from "../src/adapters/agy.js";
 import { ClaudeAdapter } from "../src/adapters/claude.js";
-import { agyKeychainHost, AGY_TEMPLATE_NAME, agyKeychainStateDir, recoverAgyKeychainSearchList } from "../src/agy-keychain.js";
+import { agyKeychainHost, AGY_MIRROR_PATH, AGY_TEMPLATE_NAME, agyKeychainStateDir, recoverAgyKeychainSearchList } from "../src/agy-keychain.js";
 import { CodexPlainFold, codexPlainStreamResult } from "../src/plain-unwrap.js";
 import { CodexEventReducer } from "../src/result-envelope.js";
 import { MAX_CAPTURE_BYTES, runCapturedCommand } from "../src/process-runner.js";
@@ -37,7 +37,7 @@ test("selected API keys never inspect or read the unused file token", () => {
   }
 });
 
-test("stale sweeping validates HOME first and requires owned entries in the real root", () => {
+test("stale sweeping validates HOME first and requires owned entries in both roots", () => {
   const home = fs.mkdtempSync(join(tmpdir(), "codemux-0131-sweep-"));
   const host = spyOn(agyKeychainHost, "home").mockReturnValue(home);
   const security = spyOn(agyKeychainHost, "securityPath").mockReturnValue(undefined);
@@ -52,7 +52,7 @@ test("stale sweeping validates HOME first and requires owned entries in the real
   };
   const owned = seed(home, "run-owned");
   const unmarked = seed(home, "run-unmarked", false);
-  const foreign = seed(supplied, "run-foreign");
+  const relocated = seed(supplied, "run-relocated");
   const request = { agent: "agy" as const, prompt: "test", sandboxed: false };
   try {
     expect(() => new AgyAdapter({ HOME: "." }).prepareRun(request)).toThrow("absolute");
@@ -69,7 +69,7 @@ test("stale sweeping validates HOME first and requires owned entries in the real
     new AgyAdapter({ HOME: supplied }).prepareRun(request);
     expect(fs.existsSync(owned)).toBe(false);
     expect(fs.existsSync(unmarked)).toBe(true);
-    expect(fs.existsSync(foreign)).toBe(true);
+    expect(fs.existsSync(relocated)).toBe(false);
   } finally {
     security.mockRestore(); host.mockRestore(); fs.rmSync(home, { recursive: true, force: true });
   }
@@ -86,7 +86,7 @@ test("Keychain recovery preserves unrelated lookalikes and canonical symlink esc
   const foreign = "/Volumes/team/.codemux-isolation-probes/run-production/customer.keychain-db";
   const escape = join(root, "run-link/customer.keychain-db");
   const parentEscape = `${root}/run-link/../customer.keychain-db`;
-  const owned = join(root, "run-old/customer.keychain-db");
+  const owned = join(root, "run-old", AGY_MIRROR_PATH);
   const template = join(agyKeychainStateDir(), AGY_TEMPLATE_NAME);
   let list = [foreign, owned, escape, parentEscape, template, join(home, "ordinary.keychain-db")];
   const spawn = spyOn(agyKeychainHost, "spawnSync").mockImplementation(((args: string[]) => {

@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import type { AgyProbeMode } from "../agy-isolation-probe.js";
 import { summarizeAgyStream } from "../agy-stream.js";
-import { AGY_MIRROR_PATH, agyKeychainHost, buildAgyKeychainMirror, recoverAgyKeychainSearchList, verifyAgyKeychainSearchList } from "../agy-keychain.js";
+import { AGY_MIRROR_PATH, agyKeychainHost, agyProbeRoots, buildAgyKeychainMirror, recoverAgyKeychainSearchList, verifyAgyKeychainSearchList } from "../agy-keychain.js";
 import { assertNoAgyProjectExecutionConfig } from "../project-safety.js";
 import { validateWorkingDirectory } from "../validation.js";
 import { agyResult } from "../result-envelope.js";
@@ -31,8 +31,7 @@ const PROBE_PID = ".codemux-probe-pid";
 const PROBE_TOKEN = ".gemini/antigravity-cli/antigravity-oauth-token";
 
 /** Remove only identified private homes whose owner is known to have exited. */
-function sweepStaleHomes(realHome: string): void {
-  const root = join(realHome, ".gemini", ".codemux-isolation-probes");
+function sweepStaleHomes(root: string): void {
   const rootStat = lstatSync(root, { throwIfNoEntry: false });
   if (!rootStat) return;
   if (!rootStat.isDirectory()) throw new Error("agy probe home root must be a directory, not a symlink");
@@ -160,16 +159,10 @@ export class AgyAdapter extends BaseAdapter {
     const probe = isolationProbes.get(request);
     const mode = probe?.mode ?? (request.tools === "none" ? "tools" : request.hermetic ? "hermetic" : undefined);
     const operatorHome = probe?.operatorHome ?? this.environment.HOME ?? homedir();
-    const realHome = agyKeychainHost.home();
-    for (const home of new Set([realHome, operatorHome])) {
-      if (!isAbsolute(home)) throw new Error("agy probe HOME must be absolute");
-      const stat = lstatSync(realpathSync(home));
-      if (!stat.isDirectory() || stat.uid !== process.getuid?.()) {
-        throw new Error("agy probe HOME must be a user-owned directory");
-      }
-    }
-    recoverAgyKeychainSearchList(this.environment, request.cwd);
-    sweepStaleHomes(realpathSync(realHome));
+    const recoveryEnvironment = { ...this.environment, HOME: operatorHome };
+    const roots = agyProbeRoots(recoveryEnvironment);
+    recoverAgyKeychainSearchList(recoveryEnvironment, request.cwd);
+    for (const root of roots) sweepStaleHomes(root);
     if (!request.sandboxed) return {};
     const context: RunContext = { agyProbe: { mode: mode ?? "plain", diagnostic: Boolean(probe),
       operatorHome: probe?.operatorHome } };
@@ -212,10 +205,6 @@ export class AgyAdapter extends BaseAdapter {
       if (!hasApiKey && !fileToken) {
         buildAgyKeychainMirror(home, this.environment, request.cwd);
       }
-      if (shareState && !fileToken) {
-        symlinkSync(join(realHome, ".gemini"), join(home, ".gemini"));
-        return context;
-      }
       const state = join(home, ".gemini", "antigravity-cli");
       mkdirSync(state, { recursive: true, mode: 0o700 });
       // Copy only the file fallback. Refreshes stay in this private home;
@@ -226,7 +215,7 @@ export class AgyAdapter extends BaseAdapter {
         writeFileSync(join(state, "antigravity-oauth-token"), readFileSync(token), { flag: "wx", mode: 0o600 });
       }
       if (shareState) {
-        // Keep configuration sharing, but never link over the selected token.
+        // Share entries individually; an unused token must never become a link.
         for (const [relative, excluded] of [[".gemini", "antigravity-cli"],
           [".gemini/antigravity-cli", "antigravity-oauth-token"]] as const) {
           const source = join(realHome, relative);
@@ -281,8 +270,9 @@ export class AgyAdapter extends BaseAdapter {
     let homePath = owned.home;
     let searchError: unknown;
     try {
-      recoverAgyKeychainSearchList(this.environment);
-      verifyAgyKeychainSearchList(this.environment);
+      const recoveryEnvironment = { ...this.environment, HOME: context?.agyProbe?.operatorHome ?? this.environment.HOME };
+      recoverAgyKeychainSearchList(recoveryEnvironment);
+      verifyAgyKeychainSearchList(recoveryEnvironment);
     }
     catch (error) { searchError = error; }
     try {

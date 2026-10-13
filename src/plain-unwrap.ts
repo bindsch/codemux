@@ -1101,7 +1101,7 @@ function codexFoldVerdict(
       : "";
   // The ONE bounded fallback (round al29): a completed messageless turn —
   // the Plan-only shape, the one item the JSONL wire cannot carry — and
-  // only that, even when the child subsequently exits nonzero, consults the
+  // only that, with no protocol failure even when the child exits nonzero, consults the
   // --output-last-message file the launch named. The thunk reads nothing
   // itself (the launch read and removed the file before the verdict ran,
   // so it cannot outlive the run), and no other arm invokes it: a stream
@@ -1109,6 +1109,7 @@ function codexFoldVerdict(
   // stream alone, exactly as it did before the file existed.
   if (
     planFallback !== undefined &&
+    stream.failure === null &&
     stream.turnCompleted &&
     stream.finalMessage === null
   ) {

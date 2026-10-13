@@ -2148,3 +2148,96 @@ does not create a new protocol abort.
 No code-review, commit, push, or live Agy request ran. Installed contracts use
 help and version commands only. No literal home path was added. Branch remains
 `release-0.13.1` at `a5af184`.
+
+## 0.13.2
+
+This release starts from `a88329d` on `release-0.13.2` in worktree
+`codemux-0132`. The two regressions introduced by 0.13.1 were fixed first.
+The decisions below supersede conflicting historical recovery rules above.
+
+### Fixes and regressions
+
+| Finding | Fix and evidence |
+|---|---|
+| Valid Claude notifications abort experiments | `src/experiment-bridge.ts:14` lists accepted SDK and control-transport frame types. Compaction boundaries, heartbeats, and other documented notifications remain in the raw recording and trace. Missing, non-string, and unknown types still fail. `tests/experiment-protocol.test.ts` adds a successful run containing a compaction boundary and a tool-progress heartbeat, then checks their recorded bytes. |
+| Codex fallback prints after a protocol failure | `src/plain-unwrap.ts:1112` requires no protocol failure before consulting the Plan fallback. `tests/release-0132.test.ts:38` completes a messageless turn, emits a top-level error, and requires empty stdout, failure status, and no fallback read. A later nonzero process exit without a protocol error still preserves the completed Plan reply. |
+| API-key runs expose the unused file token | `src/adapters/agy.ts:217` shares configuration entries individually, excluding the token and probe directory. `tests/release-0132.test.ts:50` covers both API keys, distinct login and injected tokens, and plain and hermetic runs. Writing a new private token leaves both originals unchanged. |
+| Relocated HOME loses stale credential recovery | `src/adapters/agy.ts:163` validates both roots before recovery or sweeping. `tests/release-0132.test.ts:75` plants marked homes with dead owners and mirrors in both roots, then checks removal of both homes and both search-list entries. |
+| Recovery removes unrelated Keychain entries | `src/agy-keychain.ts:46` rejects symlinked, noncanonical, or foreign-owned probe roots before search-list access. `:66` recognizes only the template or an exact mirror path beneath a direct `run-*` directory in a validated root. `tests/release-0132.test.ts:92` proves a symlinked root causes no search-list mutation; `:105` preserves unrelated files and directory layouts. |
+| An inaccessible unrelated Keychain entry blocks recovery | `src/agy-keychain.ts:70` preserves entries whose canonicalization fails. `tests/release-0132.test.ts:116` injects EACCES and ENOTDIR for unrelated entries and still recovers the owned mirror. |
+| Signal handling waits indefinitely for adapter cleanup | `src/process-runner.ts:559` bounds the asynchronous callback by the existing 2000 ms grace and reports that adapter cleanup and the interruption receipt remain incomplete before exit 143. `tests/release-0132.test.ts:142` runs a synthetic subprocess with cleanup that never settles and checks bounded exit and the diagnostic. |
+| Relative or empty HOME can prepare credentials in the wrong directory | `src/adapters/base.ts:64` rejects those values in the shared constructor, before adapter preparation. `tests/release-0132.test.ts:136` checks every registered adapter with empty and relative values. |
+
+The notification shapes follow the
+[SDK reference](https://code.claude.com/docs/en/agent-sdk/typescript#sdkcompactboundarymessage)
+and [streaming documentation](https://code.claude.com/docs/en/agent-sdk/streaming-output#message-flow).
+No compaction-boundary sample existed in the repository fixtures, so the
+regression uses the documented shape with synthetic session identifiers.
+
+For example, `turn.completed` followed by `error` previously printed a stale
+Plan from the fallback file. It now prints no reply and retains the protocol
+failure. The regression confirms the file reader is never called.
+
+### Verification
+
+- `make install`: exit 0; nine dependencies installed in the new worktree.
+- The first two new regressions failed before their fixes: 32 pass / 2 fail.
+  Afterward the same command passed 34/0 across 34 tests.
+- The remaining regression file reproduced seven failures before their fixes.
+  Afterward it passed 8/0 across eight tests, including the Codex regression.
+- The broader focused run reported 270 pass / 4 fail across 274 tests.
+  Four older fixtures encoded superseded rules: preserving a relocated stale
+  home, removing any Keychain filename beneath a probe root, sharing the whole
+  configuration directory, and supplying a nonexistent HOME to a security-path
+  test. Their assertions now match the approved rules while retaining the
+  original checks for unrelated entries and login-home Keychain selection.
+- `bun run test tests/release-0131.test.ts tests/release-0132.test.ts tests/agy-keychain.test.ts`:
+  exit 0, 69 pass / 0 fail across 69 tests. Log: `scratch/0132-recovery.log`.
+- `make typecheck`: exit 0 after correcting a filesystem mock's overload type.
+
+- Final full gate:
+  `env -u NODE_OPTIONS COPILOT_PKG_CACHE_HOME="$PWD/scratch/copilot-cache-0132" make release-gate`
+  — exit 0. Log: `scratch/0132-release-gate.log`.
+
+```text
+2320 pass
+6 skip
+0 fail
+17954 expect() calls
+Ran 2326 tests across 85 files. [242.26s]
+3 pass
+0 fail
+148 expect() calls
+Ran 3 tests across 1 file. [14.02s]
+Release gate passed. Review docs/RELEASE-GATE.md before tagging.
+```
+
+Compared with the supplied 0.13.1 baseline of **2315/2/0**, this adds nine
+tests, five passes, and four skips. Four existing process-table checks skip
+because this host denies the required operations. The other two skips are
+installed-contract cases covered by the separate stage. No test filter or
+permission workaround was used. The full suite grows from 2317 to 2326 tests.
+
+Runtime compatibility, type checking, shell syntax, the unfiltered suite,
+coverage, installed contracts, scode compatibility, CLI smoke checks,
+dependency audit, and frozen-lockfile validation passed. There is no separate
+lint target. Conservative coverage is 87.82% lines and 93.00% functions.
+
+`uv run --no-project ~/.agents/skills/humanizer/scripts/check_american.py`
+on all 14 touched files exited 0: zero British spellings,
+`American English: CLEAN`. Final prose, whitespace, and added-line home-path
+checks also exited 0. `git add -A` exited 0; all 14 changed files are staged.
+
+| Requested item | Status |
+|---|---|
+| Two 0.13.1 regressions fixed first | Done |
+| Every remaining supplied finding fixed at its root cause | Done |
+| Regression coverage for every finding | Done; nine new tests |
+| Version 0.13.2, dated changelog, and this report section | Done |
+| Full release gate | Done; exit 0, 2320/6/0 |
+| Existing process-table checks | Host-blocked; four skips |
+| American English, whitespace, and added-line home-path checks | Done; exit 0 |
+| Stage all changes with `git add -A` | Done; no commit |
+
+No code-review, commit, push, or live Agy request ran. Installed contracts use
+help and version commands only. No literal home path was added.

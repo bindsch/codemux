@@ -94,6 +94,26 @@ test("unknown, missing, and non-string frame types fail closed", async () => {
   }
 });
 
+test("documented compaction boundaries and tool heartbeats are recorded without aborting", async () => {
+  const p = peer();
+  await p.ready();
+  const notifications = [
+    { type: "system", subtype: "compact_boundary", uuid: crypto.randomUUID(), session_id: "session",
+      compact_metadata: { trigger: "auto", pre_tokens: 150000 } },
+    { type: "tool_progress", tool_use_id: "first", tool_name: "mcp__experiment__bash",
+      parent_tool_use_id: null, elapsed_time_seconds: 30, uuid: crypto.randomUUID(), session_id: "session" },
+  ];
+  for (const frame of notifications) p.push(frame);
+  p.result();
+  expect(JSON.parse(p.bridge.finish()).result).toBe("OK");
+  await p.bridge.closeProtocol();
+  const records = readFileSync(p.bridge.recordingPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const frames = records.filter((record) => record.kind === "control_stdout")
+    .map((record) => JSON.parse(Buffer.from(record.bytes_base64, "base64").toString()));
+  for (const frame of notifications) expect(frames).toContainEqual(frame);
+  expect(records.some((record) => record.kind === "failure")).toBe(false);
+});
+
 test("identical parallel calls retain native IDs when requests and replies reverse order", async () => {
   const p = peer();
   await p.ready();

@@ -42,12 +42,38 @@ function canonicalPath(path: string): string {
   return canonical;
 }
 
-function isPrivateKeychain(path: string): boolean {
+/** Validate every recovery root before reading or changing the search list. */
+export function agyProbeRoots(environment: NodeJS.ProcessEnv): string[] {
+  const roots = new Set<string>();
+  for (const home of new Set([agyKeychainHost.home(), environment.HOME ?? agyKeychainHost.home()])) {
+    if (!isAbsolute(home)) throw new Error("agy probe HOME must be absolute");
+    const canonicalHome = realpathSync(home);
+    const homeStat = lstatSync(canonicalHome);
+    if (!homeStat.isDirectory() || homeStat.uid !== process.getuid?.()) {
+      throw new Error("agy probe HOME must be a user-owned directory");
+    }
+    const root = join(canonicalHome, ".gemini", ".codemux-isolation-probes");
+    const stat = lstatSync(root, { throwIfNoEntry: false });
+    if (stat && !stat.isDirectory()) throw new Error("agy probe home root must be a directory, not a symlink");
+    if ((stat && stat.uid !== process.getuid?.()) || canonicalPath(root) !== root) {
+      throw new Error("agy probe root must be canonical and user-owned, without symlink components");
+    }
+    roots.add(root);
+  }
+  return [...roots];
+}
+
+function isPrivateKeychain(path: string, roots: readonly string[], template: string): boolean {
   if (!isAbsolute(path)) return false;
-  const canonical = canonicalPath(path);
-  const root = canonicalPath(join(agyKeychainHost.home(), ".gemini", ".codemux-isolation-probes"));
-  return canonical === canonicalPath(join(agyKeychainStateDir(), AGY_TEMPLATE_NAME)) ||
-    canonical.startsWith(root + sep);
+  let canonical: string;
+  try { canonical = canonicalPath(path); }
+  catch { return false; } // An inaccessible unrelated entry must be preserved.
+  if (canonical === template) return true;
+  return roots.some((root) => {
+    if (!canonical.startsWith(root + sep)) return false;
+    const run = canonical.slice(root.length + 1).split(sep)[0]!;
+    return run.startsWith("run-") && canonical === join(root, run, AGY_MIRROR_PATH);
+  });
 }
 
 function client(environment: NodeJS.ProcessEnv, cwd?: string) {
@@ -89,8 +115,10 @@ function interactiveCommand(args: string[]): string {
 }
 
 export function verifyAgyKeychainSearchList(environment: NodeJS.ProcessEnv): void {
+  const roots = agyProbeRoots(environment);
+  const template = canonicalPath(join(agyKeychainStateDir(), AGY_TEMPLATE_NAME));
   const invoke = client(environment);
-  if (invoke && searchList(invoke).some(isPrivateKeychain)) {
+  if (invoke && searchList(invoke).some((path) => isPrivateKeychain(path, roots, template))) {
     throw new Error("agy keychain cleanup failed: mirror remains in the user's Keychain search list");
   }
 }
@@ -102,9 +130,10 @@ function restoreSearchList(invoke: NonNullable<ReturnType<typeof client>>, origi
   }
 }
 
-function recoverSearchList(invoke: NonNullable<ReturnType<typeof client>>): void {
+function recoverSearchList(invoke: NonNullable<ReturnType<typeof client>>, roots: readonly string[]): void {
+  const template = canonicalPath(join(agyKeychainStateDir(), AGY_TEMPLATE_NAME));
   const current = searchList(invoke);
-  const restored = current.filter((path) => !isPrivateKeychain(path));
+  const restored = current.filter((path) => !isPrivateKeychain(path, roots, template));
   if (restored.length !== current.length) restoreSearchList(invoke, restored);
   if (restored.some((path) => basename(path) === AGY_TEMPLATE_NAME || path.includes("/.codemux-isolation-probes/"))) {
     console.error("codemux: left an unrelated keychain with a codemux-like path in the user search list");
@@ -113,12 +142,13 @@ function recoverSearchList(invoke: NonNullable<ReturnType<typeof client>>): void
 
 /** Repair interrupted creation even when authentication does not need a mirror. */
 export function recoverAgyKeychainSearchList(environment: NodeJS.ProcessEnv, cwd?: string): void {
+  const roots = agyProbeRoots(environment);
   const invoke = client(environment, cwd);
   if (!invoke) return;
   const state = agyKeychainStateDir();
   mkdirSync(state, { recursive: true, mode: 0o700 });
   const unlock = templateLock(join(state, `${AGY_TEMPLATE_NAME}.lock`));
-  try { recoverSearchList(invoke); }
+  try { recoverSearchList(invoke, roots); }
   finally { unlock(); }
 }
 
@@ -163,14 +193,14 @@ function templateLock(path: string): () => void {
 }
 
 function copyTemplate(invoke: NonNullable<ReturnType<typeof client>>,
-  keychain: string, failedPassword?: string): string {
+  keychain: string, roots: readonly string[], failedPassword?: string): string {
   const state = agyKeychainStateDir();
   mkdirSync(state, { recursive: true, mode: 0o700 });
   const template = join(state, AGY_TEMPLATE_NAME);
   const passwordPath = `${template}.password`;
   const unlock = templateLock(`${template}.lock`);
   try {
-    recoverSearchList(invoke);
+    recoverSearchList(invoke, roots);
     let password = existsSync(passwordPath) ? readFileSync(passwordPath, "utf8") : "";
     if (!existsSync(template) || !/^[a-f0-9]{32}$/.test(password) || password === failedPassword) {
       for (const path of [template, passwordPath]) if (existsSync(path)) unlinkSync(path);
@@ -206,6 +236,7 @@ function copyTemplate(invoke: NonNullable<ReturnType<typeof client>>,
 
 /** Build outside scode. Never attach argv, output, or a subprocess error to an error. */
 export function buildAgyKeychainMirror(home: string, environment: NodeJS.ProcessEnv, cwd?: string): void {
+  const roots = agyProbeRoots(environment);
   const invoke = client(environment, cwd);
   if (!invoke) throw new Error("agy is not logged in; run `agy` to log in");
   const secret = invoke(["find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"],
@@ -220,7 +251,7 @@ export function buildAgyKeychainMirror(home: string, environment: NodeJS.Process
     "-w", secret, "-T", "/usr/bin/security", "-T", executable, keychain]);
   let failedPassword: string | undefined;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const password = copyTemplate(invoke, keychain, failedPassword);
+    const password = copyTemplate(invoke, keychain, roots, failedPassword);
     // The observed backend reports -25293 on a usable copy. Insertion decides.
     try { invoke(["-i"], "cannot unlock agy keychain mirror",
       interactiveCommand(["unlock-keychain", "-p", password, keychain])); }

@@ -281,9 +281,9 @@ test.each([false, true])("parent builds one private mirror; hermetic=%s", (herme
   expect(records().every((r) => r.home === home)).toBe(true);
   expect(JSON.stringify(records().map((r) => r.args))).not.toContain(secret.slice(0, 64));
   const state = join(privateHome, ".gemini");
-  expect(lstatSync(state).isSymbolicLink()).toBe(!hermetic);
+  expect(lstatSync(state).isSymbolicLink()).toBe(false);
   if (hermetic) expect(readdirSync(join(state, "antigravity-cli"))).toEqual([]);
-  else expect(realpathSync(state)).toBe(realpathSync(join(home, ".gemini")));
+  else expect(realpathSync(join(state, "GEMINI.md"))).toBe(realpathSync(join(home, ".gemini/GEMINI.md")));
   expect(adapter.buildRunCommand(run, context)).toContain(`HOME=${privateHome}`);
   if (!hermetic) {
     expect(adapter.buildRunCommand(run, context)).toContain("--output-format=json");
@@ -403,6 +403,8 @@ test("a cleanup refusal names the mirror without disclosing its secret", () => {
 
 test("the production security path ignores PATH and receives only the real login HOME", () => {
   const { home, env, request } = setup();
+  const supplied = join(home, "supplied");
+  mkdirSync(supplied);
   expect(productionSecurityPath(env)).toBe(existsSync("/usr/bin/security") ? "/usr/bin/security" : undefined);
   const path = spyOn(agyKeychainHost, "securityPath").mockImplementation(productionSecurityPath);
   const spawn = spyOn(agyKeychainHost, "spawnSync").mockImplementation((() => {
@@ -410,7 +412,7 @@ test("the production security path ignores PATH and receives only the real login
   }) as typeof Bun.spawnSync);
   try {
     if (!existsSync("/usr/bin/security")) return;
-    expect(() => buildAgyKeychainMirror(home, { ...env, HOME: "/wrong", DYLD_INSERT_LIBRARIES: "hostile" }, request.cwd))
+    expect(() => buildAgyKeychainMirror(home, { ...env, HOME: supplied, DYLD_INSERT_LIBRARIES: "hostile" }, request.cwd))
       .toThrow("agy is not logged in");
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(spawn.mock.calls[0]![0][0]).toBe(realpathSync("/usr/bin/security"));

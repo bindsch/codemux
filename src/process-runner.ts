@@ -316,8 +316,8 @@ export interface CapturedCommandOptions {
   stdoutSink?: StdoutSink;
   /** Called when a signal to codemux stops the run, right before the
    * runner exits 143. Await adapter cleanup and write the call receipt,
-   * since the launch path never resumes. Rejections are reported without
-   * replacing the signal exit. */
+   * since the launch path never resumes. Rejections and waits beyond
+   * FORCE_KILL_DELAY_MS are reported without replacing the signal exit. */
   onSignaled?: () => void | Promise<void>;
 }
 
@@ -556,8 +556,19 @@ export async function runCapturedCommand(
       else if (!retained) firstError = new CapturedRunFailure(error);
     } finally {
       if (signaled) {
-        try { await options.onSignaled?.(); }
+        let cleanupDeadline: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            Promise.resolve().then(() => options.onSignaled?.()),
+            new Promise<never>((_, reject) => {
+              cleanupDeadline = setTimeout(() => reject(new Error(
+                "adapter cleanup and interruption receipt remain incomplete after the signal cleanup grace"
+              )), FORCE_KILL_DELAY_MS);
+            }),
+          ]);
+        }
         catch (error) { console.error(`Note: cleanup failed: ${error instanceof Error ? error.message : String(error)}`); }
+        finally { clearTimeout(cleanupDeadline); }
       }
       // Signals must remain handled through asynchronous recording finalization.
       process.off("SIGINT", onSignal);

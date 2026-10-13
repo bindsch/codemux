@@ -9,6 +9,13 @@ import { ExperimentServer, MAX_EXPERIMENT_MESSAGE_BYTES, type JsonObject } from 
 
 const EXPERIMENT_TOOLS = new Set(["bash", "bash_bg", "poll", "kill", "read", "write"]);
 const MAX_RECORDING_BYTES = 256 * 1024 * 1024;
+// SDKMessage discriminants and the SDK control transport envelopes.
+// https://code.claude.com/docs/en/agent-sdk/typescript#sdkmessage
+const CLAUDE_FRAME_TYPES = new Set([
+  "assistant", "user", "result", "system", "stream_event", "tool_progress",
+  "auth_status", "tool_use_summary", "rate_limit_event", "prompt_suggestion",
+  "conversation_reset", "control_request", "control_response", "control_cancel_request", "keep_alive",
+]);
 
 /** One bound governs every experiment control frame; the prompt preflight in
  * experiment-mcp.ts and this bridge's send path measure against the same
@@ -127,6 +134,9 @@ export class ExperimentBridge implements StdoutSink {
   private frame(frame: JsonObject): void {
     if (this.result) throw new Error("Claude sent a frame after its result");
     if (!frame || typeof frame !== "object" || Array.isArray(frame)) throw new Error("invalid experiment control frame");
+    if (typeof frame.type !== "string" || !CLAUDE_FRAME_TYPES.has(frame.type)) {
+      throw new Error("unknown or invalid experiment control frame type");
+    }
     if (frame.type === "control_response") {
       if (frame.response?.request_id !== this.initRequest || this.initialized) throw new Error("unexpected control response");
       if (frame.response.subtype !== "success") throw new Error("Claude refused experiment SDK initialization");
@@ -153,9 +163,6 @@ export class ExperimentBridge implements StdoutSink {
         throw new Error(`Claude's exposed tools must equal the experiment server's advertised set (server: ${advertised.join(", ") || "none"}; claude: ${JSON.stringify(frame.tools)})`);
       }
       this.inventoryValidated = true;
-    } else if (frame.type === "system" && frame.subtype === "status") {
-      // Claude status notifications carry no inventory or result evidence.
-      return;
     } else if (frame.type === "assistant" || frame.type === "user") {
       if (!this.inventoryValidated) throw new Error("Claude conversation frame before validated Claude inventory");
       const content = frame.message?.content;
@@ -194,9 +201,8 @@ export class ExperimentBridge implements StdoutSink {
       }
       this.result = JSON.stringify(frame);
       this.end?.();
-    } else {
-      throw new Error("unknown or invalid experiment control frame type");
     }
+    // Other documented notifications remain in control_stdout and the trace.
   }
 
   private async control(frame: JsonObject): Promise<void> {
