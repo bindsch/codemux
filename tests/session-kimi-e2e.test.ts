@@ -1967,9 +1967,20 @@ describe("kimi session e2e - end paths", () => {
     // now closes the drain the same way every other fatal does: the
     // drained answer is accepted nowhere, and the session ends with the
     // error.
-    const session = await startSession({}, { FAKE_SIGTERM_PERSIST: "1" });
+    // A long grace so the fake always answers and exits 0 inside it: the
+    // end reason is then the fatal's own, not a timing-dependent kill
+    // (a 500 ms grace under load let the kill timer fire first and the
+    // reason flip to harness_failed; CI's faster runner saw stdin-close).
+    const session = await startSession({}, { FAKE_SIGTERM_PERSIST: "1" }, 0, 1, 5_000);
     send(session.driver, { type: "user", text: "scenario:wait hold" });
-    await waitFor(session.events, of("turn_started"), "turn_started");
+    // turn_started is the driver's own spawn event; the fake's SIGTERM
+    // handler exists only once its module has run, which its startup
+    // record proves. Ending before that kills a fake that has not armed
+    // itself and the reason flips to harness_failed (seen locally under
+    // load; CI's faster runner saw the armed fake answer and exit 0).
+    const armed = join(session.stateDir, "argv.jsonl");
+    for (let i = 0; i < 200 && !existsSync(armed); i++) await Bun.sleep(25);
+    expect(existsSync(armed)).toBe(true);
     session.driver.handleCallerEnd();
     session.driver.handleCallerEnd(new Error("EPIPE: broken pipe"));
 
@@ -1987,7 +1998,9 @@ describe("kimi session e2e - end paths", () => {
     expect(session.events.find((event) => event.type === "assistant_message")).toBeUndefined();
     const ended = session.events[session.events.length - 1] as Event;
     expect(ended.type).toBe("session_ended");
-    expect(ended.reason).toBe("harness_failed");
+    // A child that answered and exited 0 is no harness failure (al41): the
+    // caller's stdin read failure is the end's own reason, with its code 1.
+    expect(ended.reason).toBe("stdin-close");
     expect(ended.resumable).toBe(false);
     expect(await session.code).toBe(1);
   });
