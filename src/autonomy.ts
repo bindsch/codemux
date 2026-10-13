@@ -70,7 +70,7 @@ export const AUTONOMY_EQUIVALENCE: Record<AgentId, AutonomyMapping> = {
       high: "--force",
     },
     notes:
-      "agent is preferred; cursor-agent remains a compatibility fallback; the desktop cursor agent entry needs the CODEMUX_CURSOR_ENTRY opt-in",
+      "cursor-agent is the standalone entry; agent is its alias; the desktop cursor agent entry needs the CODEMUX_CURSOR_ENTRY opt-in",
   },
   droid: {
     byLevel: {

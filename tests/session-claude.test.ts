@@ -21,6 +21,7 @@ import {
   ClaudeStreamParser,
 } from "../src/session/claude-session.js";
 import { claudeAutonomyFlags } from "../src/claude-autonomy.js";
+import { claudeProviderPickerSettings } from "../src/claude-family.js";
 import { CodexStreamParser } from "../src/session/codex-session.js";
 import { parseAgySessionLine } from "../src/session/agy-session.js";
 import { emptyUsage } from "../src/result-envelope.js";
@@ -162,6 +163,39 @@ describe("buildClaudeSessionCommand", () => {
         sandboxed: true,
       }).argv
     ).not.toContain("--mcp-config");
+  });
+
+  test("the providerSettings payload rides --settings right after the model it describes", () => {
+    // The override's modelPicker mapping (claude-family.ts): the session
+    // record carries the already-rendered payload, so the argv position —
+    // after --model, before the autonomy block — is this builder's own
+    // contract.
+    const { argv } = buildClaudeSessionCommand({
+      agent: "claude",
+      autonomy: "read-only",
+      cwd: "/tmp/launch",
+      model: "clawvm-qwen32b-coder",
+      providerSettings: claudeProviderPickerSettings("clawvm-qwen32b-coder"),
+    });
+    const settingsAt = argv.indexOf("--settings");
+    const modelAt = argv.indexOf("--model");
+    expect(modelAt).toBeGreaterThan(-1);
+    expect(settingsAt).toBe(modelAt + 2);
+    expect(settingsAt).toBeLessThan(argv.indexOf("--permission-mode"));
+    expect(JSON.parse(argv[settingsAt + 1] ?? "")).toEqual({
+      modelPicker: {
+        options: [{ model: "clawvm-qwen32b-coder", behavesAs: "claude-sonnet-5" }],
+      },
+    });
+    // Absent when the caller passed none — the plain session's shape.
+    expect(
+      buildClaudeSessionCommand({
+        agent: "claude",
+        autonomy: "read-only",
+        cwd: "/tmp/launch",
+        model: "some-model",
+      }).argv
+    ).not.toContain("--settings");
   });
 });
 

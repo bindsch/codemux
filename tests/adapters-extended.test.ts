@@ -316,8 +316,13 @@ describe("ZaiAdapter", () => {
     expect(caps.supportsModel).toBe(true);
     expect(caps.supportsAutonomy).toBe(true);
     expect(caps.autonomyLevels).toEqual(["read-only", "low", "medium", "high"]);
-    expect(caps.supportsEffort).toBe(false);
-    expect(caps.effortLevels).toEqual([]);
+    // Claude's flag verbatim (same binary), enabled live 2026-10-10
+    // against the Z.AI endpoint: glm-5.3 answered under --effort low.
+    // `none` leads the list: it is the adapter's "no flag" spelling
+    // mapEffort accepts, so the capability list must carry it or the CLI
+    // refuses what the mapper maps (review al11).
+    expect(caps.supportsEffort).toBe(true);
+    expect(caps.effortLevels).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
   });
 
   test("buildRunCommand defaults to opus model", () => {
@@ -330,6 +335,15 @@ describe("ZaiAdapter", () => {
     const request: RunRequest = { agent: "zai", prompt: "test", model: "sonnet" };
     const cmd = adapter.buildRunCommand(request);
     expect(cmd).toEqual([...safeHeadlessArgs, "--model", "sonnet"]);
+  });
+
+  test("buildRunCommand with effort rides claude's flag; none adds nothing", () => {
+    // Claude's mapping verbatim (same binary): a level rides --effort,
+    // and `none` is the adapter's "no flag", not a value the binary takes.
+    expect(adapter.buildRunCommand({ agent: "zai", prompt: "t", effort: "low" }))
+      .toEqual([...safeHeadlessArgs, "--model", "opus", "--effort", "low"]);
+    expect(adapter.buildRunCommand({ agent: "zai", prompt: "t", effort: "none" }))
+      .toEqual([...safeHeadlessArgs, "--model", "opus"]);
   });
 
   test("buildRunCommand with autonomy levels", () => {
@@ -516,21 +530,21 @@ describe("ZaiAdapter", () => {
     const homeAdapter = new ZaiAdapter({ ZAI_API_KEY: "test-key-123" }, "/home/zai-user");
     expect("CLAUDE_CONFIG_DIR" in homeAdapter.getEnv()).toBe(false);
     const home = mkdtempSync(join(tmpdir(), "codemux-zai-home-"));
-    const previous = process.env.CLAUDE_CONFIG_DIR;
-    process.env.CLAUDE_CONFIG_DIR = "/home/claude-user/.claude";
+    const environment = {
+      ZAI_API_KEY: "test-key-123",
+      CLAUDE_CONFIG_DIR: join(home, "claude-profile"),
+    };
     try {
       // No pass-through: the sanitizing builder drops the inherited value.
-      const dropped = new ZaiAdapter({ ZAI_API_KEY: "test-key-123" }, home)
+      const dropped = new ZaiAdapter(environment, home)
         .buildExecutionEnv();
       expect(dropped.CLAUDE_CONFIG_DIR).toBeUndefined();
       // With the pass-through the operator's profile is honored exactly as
       // a claude run's would be.
-      const passed = new ZaiAdapter({ ZAI_API_KEY: "test-key-123" }, home)
+      const passed = new ZaiAdapter(environment, home)
         .buildExecutionEnv({}, ["CLAUDE_CONFIG_DIR"]);
-      expect(passed.CLAUDE_CONFIG_DIR).toBe("/home/claude-user/.claude");
+      expect(passed.CLAUDE_CONFIG_DIR).toBe(environment.CLAUDE_CONFIG_DIR);
     } finally {
-      if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
-      else process.env.CLAUDE_CONFIG_DIR = previous;
       rmSync(home, { recursive: true, force: true });
     }
   });

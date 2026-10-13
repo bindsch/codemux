@@ -8,6 +8,7 @@ import {
   prepareRunDirParent,
 } from "../hermetic-home.js";
 import {
+  assertNoCodexStoreKnob,
   CODEX_MULTI_AGENT_ENV,
   CODEX_PROVIDER_KEY_ENV,
   readCodexMultiAgent,
@@ -26,8 +27,12 @@ import {
 } from "../project-safety.js";
 import { validateWorkingDirectory } from "../validation.js";
 import { readUtf8FileBounded } from "../file-io.js";
-import { codexResult } from "../result-envelope.js";
-import { codexPlainResult } from "../plain-unwrap.js";
+import { appendDiagnostic, codexResult } from "../result-envelope.js";
+import {
+  CodexPlainFold,
+  codexPlainStreamResult,
+  type CodexPlanFallbackRead,
+} from "../plain-unwrap.js";
 import type { ScodeTrustLevel } from "../sandbox.js";
 import type {
   AgentId,
@@ -107,6 +112,59 @@ const LAST_MESSAGE_BASENAME = "last-message";
 // the parent). The private hermetic home follows the same rule for the
 // same reason (see hermetic-home.ts).
 const SCRATCH_PARENT_DIR_NAME = ".codemux-scratch";
+
+/** What reading a run's --output-last-message file produced (round al18,
+ * the classes redrawn in round al26): `absent` is no file named for this
+ * run (an untrusted sandbox launch passes none); `empty` is a named file
+ * read and holding nothing — upstream's own spelling of a messageless
+ * turn (handle_last_message writes an empty file and warns); `text` is a
+ * named file read and holding the message, VERBATIM, whatever it ends
+ * with (round al26, correctness minor: codex's writer is
+ * `fs::write(path, message)`, no newline added, so a message ending in
+ * one keeps it and the reply prints it the way human mode's println!
+ * does); `missing` is a named file that is not there — upstream writes
+ * SOMETHING for every completed turn, so an absent file is a write codex
+ * only logged (round al26, correctness major: the writer's failure path
+ * is an eprintln) or a sabotaged path, never a message that never
+ * existed; and `unreadable` is a file codemux could not safely read (a
+ * permission error, an oversized or non-UTF-8 file, a refused symlink or
+ * directory). The classes stay distinct because both verdicts turn on
+ * them: on the envelope path an unreadable file fails the run outright
+ * (finalMessageReadFailure) rather than arriving as the absent-message
+ * null, and a missing one fails it naming the absent file; on the plain
+ * path (round al29) the read maps into CodexPlanFallbackRead and the
+ * ONE bounded verdict arm turns on it — `text`/`empty` to text, `missing`
+ * to absent, `unreadable` carried whole, and `absent` (no file named:
+ * the untrusted launch) meaning the arm never fires. */
+type FinalMessageRead =
+  | { outcome: "absent" }
+  | { outcome: "empty" }
+  | { outcome: "text"; text: string }
+  | { outcome: "missing" }
+  | { outcome: "unreadable"; error: string };
+
+/** The failed run a --output-last-message file that could not be read
+ * produces (round al18): the read error rides stderr, the exit is nonzero,
+ * and the run reports failure. Round al29 scoped it to the --result-json
+ * branch alone: that path applies it BEFORE its verdict builds its result
+ * (round al20), so it goes through the same failure normalization as every
+ * other failed run — the envelope serializes a null result and null usage.
+ * The plain path never calls it: the fallback there is the bounded thunk
+ * (CodexPlanFallbackRead) the verdict consults only for a completed turn
+ * with no message anywhere, so a stream that carried the reply still
+ * prints it and the unreadable file changes nothing — the read failure
+ * loses the file's message, not the run's. */
+function finalMessageReadFailure(result: RunResult, error: string): RunResult {
+  return {
+    ...result,
+    stderr: appendDiagnostic(
+      result.stderr,
+      `codemux: could not read codex's --output-last-message file: ${error}`
+    ),
+    exitCode: result.exitCode === 0 ? 1 : result.exitCode,
+    success: false,
+  };
+}
 
 export class CodexAdapter extends BaseAdapter {
   readonly id: AgentId = "codex";
@@ -219,6 +277,14 @@ export class CodexAdapter extends BaseAdapter {
    * a value that is not on/off or on a knob set without an override.
    */
   private validatedProvider(): (ProviderOverride & { baseUrl: string; apiKey: string }) | null {
+    // Refused before EVERY override check — the multi-agent knob's
+    // included (round al21, contracts-2 minor 2: the call sat below
+    // assertMultiAgentKnob, so a malformed multi-agent override masked
+    // it and the "fires with or without an override" guarantee below did
+    // not hold) — so it fires with or without an override, well-formed
+    // or not: the knob names a key no supported release has, so even the
+    // "on" reading would be a silent no-op on a real override run.
+    assertNoCodexStoreKnob(this.environment);
     const override = readProviderOverride("codex", this.environment);
     this.assertMultiAgentKnob(override);
     if (override === null) return null;
@@ -341,34 +407,46 @@ export class CodexAdapter extends BaseAdapter {
     // under CODEX_HOME dies with the run instead of staying resumable.
     cmd.push("--ephemeral");
     cmd.push("--ignore-rules");
-    // A plain run keeps human mode (review ul3): `--json` streams every
-    // event, tool output included, so an agentic run's stream is tens of
-    // MiB and fills the 16 MiB stdout capture -- exit 125, reply lost,
-    // no receipt. Human mode prints the reply on stdout (the contract a
-    // plain run always had) and one blended `tokens used` figure on
-    // stderr, which processRunResult records as the run's usage
-    // (plain-unwrap.ts). Only --result-json asks for the event stream,
-    // which it reduces to the promised envelope.
-    if (request.resultJson) {
-      // Events as JSONL on stdout (one per line; codex-rs exec lib.rs),
-      // which processRunResult reduces to the envelope --result-json
-      // promises: the final assistant message plus the codemux usage
-      // block. Human mode carries only a blended token total on stderr
-      // and no message boundary, so the event stream is the robust
-      // source.
-      cmd.push("--json");
-      // The stream's one blind spot is a turn that ends with a Plan and no
-      // agent_message: codex treats that Plan as the final message, but its
-      // JSONL mapper drops the item, so the recorded final message is the
-      // only carrier (see CODEX_FINAL_MESSAGE_FALLBACK_NOTE). prepareRun
-      // puts the file in a per-run directory under `.codemux-scratch/` in
-      // the real CODEX_HOME -- harness state, which every scode platform
-      // keeps writable and none shadows -- or inside the private home on a
-      // hermetic run. An untrusted sandbox denies harness state, so that
-      // launch prepares no file and the stream is the result's only source.
-      // A static preview (`verify`) has no prepared context, so it names a
-      // placeholder under a directory that cannot exist, failing closed the
-      // way the hermetic home's preview does.
+    // Events as JSONL on stdout (one per line; codex-rs exec lib.rs), on
+    // every run: the ledger's usage and the reply both come from the
+    // stream. A plain run never captures it whole -- an agentic stream is
+    // tens of MiB and fills the 16 MiB capture bound (the ul3 finding) --
+    // so prepareRun hangs a streaming fold on the context and the launcher
+    // feeds the stream through it, keeping the reply text, the usage
+    // snapshot, and the served model while the tool output is dropped as
+    // it arrives (plain-unwrap.ts). The fold reproduces human mode's
+    // stdout exactly on every shape whose bytes the wire can carry: the
+    // final assistant message of a completed turn (kept even when codex
+    // then exits nonzero), nothing for a turn that never completed, and —
+    // the one shape whose bytes it cannot — a completed turn with no
+    // message anywhere succeeding with empty stdout, human mode's own
+    // exit-0 verdict for it (round al10). --result-json additionally
+    // reduces the same stream to the promised envelope.
+    cmd.push("--json");
+    // Round al29: every run names a --output-last-message file — a
+    // Plan-only turn's recorded final message is the reply's only
+    // carrier, the one item the JSONL wire does not carry (see
+    // CODEX_FINAL_MESSAGE_FALLBACK_NOTE), and the plain verdict needs it
+    // for exactly that turn. The two paths consult it under two rules
+    // that cannot let it contradict the stream: the envelope path applies
+    // it to a messageless stream as before, and the plain verdict reads
+    // it only in the ONE bounded arm — a turn that completed with no
+    // agent_message and nothing else failed (plain-unwrap.ts,
+    // CodexPlanFallbackRead) — so a stream that carried the reply, or
+    // failed, answers from the stream alone. Round al28's rule (the file
+    // deleted from plain runs entirely) lost the Plan-only turn's reply
+    // on the one path operators run by hand. prepareRun puts the file in
+    // a per-run directory under `.codemux-scratch/` in the real
+    // CODEX_HOME -- harness state, which every scode platform keeps
+    // writable and none shadows -- or inside the private home on a
+    // hermetic run. An untrusted sandbox denies harness state, so that
+    // launch prepares no file and the stream is the result's only source
+    // (a Plan-only turn there succeeds empty on a plain run, the al10
+    // rule, and reports a null result on --result-json, README's
+    // documented cost). A static preview (`verify`) has no prepared
+    // context, so it names a placeholder under a directory that cannot
+    // exist, failing closed the way the hermetic home's preview does.
+    {
       const fallbackPath = context?.lastMessagePath;
       if (fallbackPath !== undefined) {
         cmd.push("--output-last-message", fallbackPath);
@@ -381,8 +459,8 @@ export class CodexAdapter extends BaseAdapter {
         );
         cmd.push("--output-last-message", placeholder);
       }
-      // A prepared context with no lastMessagePath is the untrusted launch:
-      // there is no file to name, by design.
+      // A prepared context with no lastMessagePath is the untrusted
+      // launch: there is no file to name, by design.
     }
     if (request.hermetic && override === null) {
       // Belt and braces: the private CODEX_HOME holds no config.toml anyway.
@@ -449,44 +527,70 @@ export class CodexAdapter extends BaseAdapter {
         readCodexMultiAgent(this.environment)
       );
     }
-    if (request.resultJson) {
-      // The --output-last-message file of THIS run, placed where the child
-      // can write it and the parent can read it back: scode keeps harness
-      // state writable on every platform and never shadows it, unlike the
-      // OS temp root, which its Linux sandbox replaces with a fresh /tmp
-      // the parent never sees. Under hermetic the file lives inside the
-      // private home (itself under the real CODEX_HOME), and finalize
-      // removes it with the home; otherwise it gets a per-run directory
-      // under `.codemux-scratch/` in the real CODEX_HOME, so two runs never
-      // see each other's message, and prepareRunDirParent sweeps
-      // directories a dead codemux left behind. An untrusted sandbox denies
-      // harness state -- no location is both writable by the child and
-      // readable by the parent -- so that run passes no file at all and the
-      // event stream is the result's only source; a Plan-only turn then
-      // reports a null result, the documented cost (README). Hermetic runs
-      // keep their file whatever the trust: an untrusted sandbox denies the
-      // private home itself, so the fallback is not what decides that run.
-      // processRunResult removes the file once read; cleanupRun removes the
-      // directory. A plain run prepares none of this: it launches in human
-      // mode and names no fallback file (review ul3).
-      // prepareRun creates the home above whenever request.hermetic is set,
-      // so a home here is the hermetic case; a hermetic run that somehow has
-      // none fails closed at getRunEnv before anything launches.
+    // The plain run's streaming fold (review ul4's rule, the opencode
+    // shape): the launcher feeds the `--json` event stream through it
+    // instead of capturing it whole, so an agentic run's tool output
+    // cannot fill the capture bound, and processRunResult reads the folded
+    // reply and usage back off the same object. A --result-json run
+    // captures the stream whole and reduces it to the envelope, as before.
+    if (!request.resultJson) {
+      context.stdoutSink = new CodexPlainFold();
+    }
+    // The --output-last-message file of THIS run, on every launch that can
+    // have one (round al29 restores the plain run's file, scoped by the
+    // verdict to the Plan-only turn alone — plain-unwrap.ts's
+    // CodexPlanFallbackRead — where the recorded message is the reply's
+    // only carrier), placed where the child can write it and the
+    // parent can read it back: scode keeps harness state writable on
+    // every platform and never shadows it, unlike the OS temp root, which
+    // its Linux sandbox replaces with a fresh /tmp the parent never sees.
+    // Under hermetic the file lives inside the private home (itself under
+    // the real CODEX_HOME), and finalize removes it with the home;
+    // otherwise it gets a per-run directory under `.codemux-scratch/` in
+    // the real CODEX_HOME, so two runs never see each other's message, and
+    // prepareRunDirParent sweeps directories a dead codemux left behind.
+    // An untrusted sandbox denies harness state -- no location is both
+    // writable by the child and readable by the parent -- so that run
+    // passes no file at all and the event stream is the result's only
+    // source; a Plan-only turn then reports a null result on
+    // `--result-json` and succeeds empty on a plain run, the documented
+    // costs (README).
+    // Hermetic runs keep their file whatever the
+    // trust: an untrusted sandbox denies the private home itself, so the
+    // fallback is not what decides that run.
+    // processRunResult removes the file once read; cleanupRun removes the
+    // directory.
+    // prepareRun creates the home above whenever request.hermetic is set,
+    // so a home here is the hermetic case; a hermetic run that somehow has
+    // none fails closed at getRunEnv before anything launches.
+    {
       const home = context.hermeticHome;
       if (home !== undefined) {
         context.lastMessagePath = join(home.home, LAST_MESSAGE_BASENAME);
       } else if (sandboxTrust !== "untrusted") {
-        const scratchParent = prepareRunDirParent(
-          this.realCodexHome(request),
-          SCRATCH_PARENT_DIR_NAME
-        );
-        context.lastMessageDir = mkdtempSync(
-          join(scratchParent, `run-${process.pid}-`)
-        );
-        context.lastMessagePath = join(
-          context.lastMessageDir,
-          LAST_MESSAGE_BASENAME
-        );
+        try {
+          const scratchParent = prepareRunDirParent(
+            this.realCodexHome(request),
+            SCRATCH_PARENT_DIR_NAME
+          );
+          context.lastMessageDir = mkdtempSync(
+            join(scratchParent, `run-${process.pid}-`)
+          );
+          context.lastMessagePath = join(
+            context.lastMessageDir,
+            LAST_MESSAGE_BASENAME
+          );
+        } catch (error) {
+          // Round al24 (edges minor): a scratch step that throws must not
+          // orphan what the context already holds. The provider-override
+          // home (or a hermetic home) was created above, and this throw
+          // means the caller never receives the context — cleanupRun
+          // cannot run — so the home and its process-exit listener would
+          // sit until termination, one per failed launch. Finalize what
+          // the context holds here, then let the failure through.
+          this.cleanupRun(context);
+          throw error;
+        }
       }
     }
     return context;
@@ -640,16 +744,86 @@ export class CodexAdapter extends BaseAdapter {
     request: RunRequest,
     context?: RunContext
   ): RunResult {
-    // A plain run keeps human mode (review ul3): stdout is the reply
-    // verbatim -- exactly what a plain run printed before the ledger -- and
-    // the only usage carrier is the `tokens used` figure on stderr, so the
-    // receipt's usage is that blended total and nothing else
-    // (plain-unwrap.ts).
-    if (!request.resultJson) return codexPlainResult(result);
-    // Read (and remove) this run's --output-last-message file first: the
-    // launch named one, and whether or not the stream needs it, the file must
-    // not outlive the run that wrote it.
-    const finalMessageFallback = this.readFinalMessageFallback(context);
+    if (!request.resultJson) {
+      // A plain run streamed its `--json` events through the fold
+      // prepareRun hung on the context; the verdict reproduces human
+      // mode's stdout on every shape whose bytes the wire can carry (the
+      // final assistant message of a completed turn — kept even when codex
+      // then exits nonzero; nothing for a turn that never completed) and
+      // succeeds with empty stdout for the one shape whose bytes it cannot
+      // (a completed turn with no message anywhere; round al10), and the
+      // receipt's usage is the stream's full block, not the blended
+      // stderr figure. A caller holding captured stdout without a context
+      // folds it whole through the same verdict; a hatch run -- stdout
+      // that is not the wire at all -- passes through verbatim with the
+      // stderr figure as before (plain-unwrap.ts). Round al29: the plain
+      // run names a --output-last-message file again, read (and removed)
+      // HERE before the verdict runs — the file must not outlive the run
+      // that wrote it — and handed over as the bounded thunk the verdict
+      // consults only for a completed messageless turn (the Plan-only
+      // shape; CodexPlanFallbackRead): a stream that carried the reply,
+      // failed, or never completed answers from the stream alone, exactly
+      // as it did before the file existed. A launch that named no file
+      // (the untrusted sandbox) reads `absent` and passes no thunk.
+      const fallback = this.readFinalMessageFallback(context);
+      const fallbackPath = context?.lastMessagePath ?? null;
+      const planFallback: (() => CodexPlanFallbackRead) | undefined =
+        fallback.outcome === "absent" || fallbackPath === null
+          ? undefined
+          : () => {
+              if (fallback.outcome === "text") {
+                return { outcome: "text", text: fallback.text };
+              }
+              // An empty file is upstream's messageless-turn record: text
+              // of zero length, which the verdict's arm answers with the
+              // empty reply human mode printed.
+              if (fallback.outcome === "empty") {
+                return { outcome: "text", text: "" };
+              }
+              // A named file that is not there is a write codex only
+              // logged (round al34, edges major 2): the thunk carries it
+              // as `missing` with the path, and the verdict fails the
+              // completed messageless turn naming the unwritten file —
+              // only a launch that named no file at all passes no thunk.
+              if (fallback.outcome === "missing") {
+                return { outcome: "missing", path: fallbackPath };
+              }
+              return { outcome: "unreadable", error: fallback.error };
+            };
+      const sink = context?.stdoutSink;
+      if (sink instanceof CodexPlainFold) {
+        return sink.verdict(result, planFallback);
+      }
+      return codexPlainStreamResult(result, planFallback);
+    }
+    // A --result-json run named a --output-last-message file: read (and
+    // remove) it before the verdict runs, for whether or not the stream
+    // needs it, the file must not outlive the run that wrote it. A read
+    // that FAILED is not a message that is absent (round al18): the
+    // verdict below reads a null fallback as an intentionally missing
+    // message, so an unreadable file fails the run with its read error
+    // instead of passing that failure in as the absent-message null.
+    // Round al20: the failure is applied to the run BEFORE the verdict
+    // builds its result, so it goes through the same failure
+    // normalization as every other failed run -- the envelope path's
+    // failed-envelope contract (null result, null usage) reads the
+    // already-failed run, where serializing the verdict first kept a
+    // successful envelope's result and usage beside success:false.
+    // Round al29 (contracts minor): a NAMED file that is missing travels
+    // as its own shape, so the messageless stream that needed it fails
+    // naming the absent file — the README's documented rule — rather than
+    // the generic no-message diagnostic.
+    const fallback = this.readFinalMessageFallback(context);
+    const fallbackText =
+      fallback.outcome === "text"
+        ? fallback.text
+        : fallback.outcome === "missing" && context?.lastMessagePath !== undefined
+        ? { missing: context.lastMessagePath }
+        : null;
+    const run =
+      fallback.outcome === "unreadable"
+        ? finalMessageReadFailure(result, fallback.error)
+        : result;
     // The run was launched with --json, so stdout is the JSONL event stream
     // rather than the reply; codexResult builds the envelope --result-json
     // promises (result = final assistant message, codemux block = usage).
@@ -660,23 +834,32 @@ export class CodexAdapter extends BaseAdapter {
     const override = this.validatedProvider();
     const effective =
       override === null ? request : { ...request, model: this.modelFor(request.model) };
-    return codexResult(result, effective, finalMessageFallback);
+    return codexResult(run, effective, fallbackText);
   }
 
   /**
-   * Reads and removes this run's --output-last-message file, returning its
-   * text as the fallback final message: null when this run launched without
-   * one (no context path -- an untrusted sandbox launch passes no file), when
-   * the directory holding it is not a real user-owned directory (a swapped
-   * symlink, the check above), when codex wrote nothing (no file, or an
-   * empty one -- upstream warns and writes an empty file for a turn without
-   * a final message), or when the file cannot be read, in which case a
-   * warning says so, because a message codemux cannot read must not quietly
-   * become the run's result.
+   * Reads and removes this run's --output-last-message file, classifying
+   * what the read produced (FinalMessageRead, the taxonomy documented at
+   * the type): `absent` when this run launched without one (no context
+   * path — an untrusted sandbox launch passes no file), `empty` when the
+   * named file holds nothing (upstream's messageless-turn record), `text`
+   * when it holds the recorded message verbatim, `missing` when the named
+   * file is not there, and `unreadable` when the file cannot be safely
+   * read — a permission error, an oversized or non-UTF-8 file, a refused
+   * symlink at its name, or a directory holding it that is not a real
+   * user-owned one (a swapped symlink, the check below). The classes stay
+   * distinct (round al18): before it, every failed read collapsed into
+   * the absent-message null, and the plain path's verdict — which
+   * succeeds a completed turn with no message anywhere — passed a
+   * Plan-only turn whose file was unreadable as a successful empty reply.
+   * A message codemux cannot read must not quietly become the run's
+   * result; now it fails the run outright — finalMessageReadFailure on
+   * the envelope path, and the bounded thunk's unreadable arm on the
+   * plain one (round al29).
    */
-  private readFinalMessageFallback(context?: RunContext): string | null {
+  private readFinalMessageFallback(context?: RunContext): FinalMessageRead {
     const path = context?.lastMessagePath ?? null;
-    if (path === null) return null;
+    if (path === null) return { outcome: "absent" };
     // The noFollow below refuses a symlink at the file's own name only:
     // a compromised child could instead replace the directory holding the
     // file -- this run's per-run directory, or its `.codemux-scratch` /
@@ -692,13 +875,17 @@ export class CodexAdapter extends BaseAdapter {
       assertTrustedDirectory(dirname(path));
       assertTrustedDirectory(dirname(dirname(path)));
     } catch (error) {
-      console.error(
-        "codemux: refusing codex's --output-last-message file: " +
-          `${error instanceof Error ? error.message : String(error)}`
-      );
-      return null;
+      const detail = error instanceof Error ? error.message : String(error);
+      // One channel only (round al21, contracts-2 minor 6): on the
+      // envelope path the refusal rides the run's stderr through
+      // finalMessageReadFailure, which the CLI prints -- a console.error
+      // here printed the same failure a second time on the terminal. On
+      // the plain path (round al29) the unreadable outcome rides the
+      // bounded thunk instead, failing only a completed messageless turn;
+      // a stream that answered ignores it.
+      return { outcome: "unreadable", error: `the read was refused (${detail})` };
     }
-    let contents: string | null = null;
+    let contents: FinalMessageRead = { outcome: "absent" };
     try {
       const read = readUtf8FileBounded(path, {
         maxBytes: MAX_FINAL_MESSAGE_BYTES,
@@ -709,18 +896,34 @@ export class CodexAdapter extends BaseAdapter {
         // codemux should follow.
         noFollow: true,
       });
-      // Codex writes the message plus one trailing newline; both consumers
-      // (the plain path's println shape, the envelope's result text) add
-      // their own, so the file's newline is stripped here. Only the file's
-      // own newline is: interior lines are the message.
-      const trimmed = read.endsWith("\n") ? read.slice(0, -1) : read;
-      contents = trimmed.length === 0 ? null : trimmed;
+      // The file IS the message, verbatim (round al26, correctness minor:
+      // codex's writer is fs::write(path, message) with no newline of its
+      // own, so a message ending in one keeps it — and the plain path's
+      // println! spelling prints it back exactly). An empty file is
+      // upstream's own messageless-turn record (the warning beside the
+      // write), never a message; only a wholly absent file says the write
+      // failed, and that is the `missing` arm below.
+      contents = read.length === 0 ? { outcome: "empty" } : { outcome: "text", text: read };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        console.error(
-          "codemux: could not read codex's --output-last-message file: " +
-            `${error instanceof Error ? error.message : String(error)}`
-        );
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        // Round al26 (correctness major): a launch that named this file
+        // and a completed turn later found no file is a WRITE codex only
+        // logged (upstream writes something for every completed turn — a
+        // message, or the empty file plus its warning), so the absence is
+        // its own outcome, never the intentional no-message null. Round
+        // al29 routes it: the envelope path fails the messageless turn
+        // naming the absent file (codexResult's missing arm), and round
+        // al34 (edges major 2) aligned the plain path with it — the
+        // thunk carries the outcome as CodexPlanFallbackRead's `missing`
+        // arm with the path, and the verdict fails the turn naming the
+        // unwritten file.
+        contents = { outcome: "missing" };
+      } else {
+        const detail = error instanceof Error ? error.message : String(error);
+        // Same single-channel rule as the refused read above: the error
+        // rides the run's channels via finalMessageReadFailure (envelope)
+        // or the bounded thunk (plain) alone.
+        contents = { outcome: "unreadable", error: detail };
       }
     }
     try {

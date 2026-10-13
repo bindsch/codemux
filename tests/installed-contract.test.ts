@@ -11,11 +11,11 @@ const SUITE_TIMEOUT_MS = 15 * 60_000;
 // (CODEMUX_CURSOR_ENTRY=cursor through --pass-env) precisely because the
 // desktop wrapper may install or update the agent on first use. A contract
 // run is codemux acting on its own initiative, so this suite resolves the
-// standalone entries only -- `agent`, else the legacy `cursor-agent` --
+// standalone entries only -- `cursor-agent`, else the `agent` alias --
 // never the desktop wrapper, even when the opt-in variable happens to be
 // set in the environment running the gate.
 function standaloneCursorBinary(): string {
-  return Bun.which("agent", { PATH: process.env.PATH }) ? "agent" : "cursor-agent";
+  return Bun.which("cursor-agent", { PATH: process.env.PATH }) ? "cursor-agent" : "agent";
 }
 
 async function help(binary: string, args: string[]): Promise<string> {
@@ -32,7 +32,7 @@ async function help(binary: string, args: string[]): Promise<string> {
 // table the installed probes check, so the two can never drift apart.
 // Resolved only when the installed suite runs (see standaloneCursorBinary
 // above); the pin-sync test never reads the cursor entry's binary.
-const cursorBinary = RUN_INSTALLED_CONTRACTS ? standaloneCursorBinary() : "agent";
+const cursorBinary = RUN_INSTALLED_CONTRACTS ? standaloneCursorBinary() : "cursor-agent";
 const contracts = [
     {
       binary: "agy",
@@ -303,7 +303,8 @@ describe("version probes run the arguments the contracts actually send", () => {
       const checked: string[] = [];
       for (const [agent, contract] of Object.entries(HARNESS_CONTRACTS)) {
         if (contract === undefined) continue;
-        // The executable is not always the agent id: cursor runs `agent`, zai runs `claude`.
+        // The executable is not always the agent id: cursor runs `cursor-agent` first
+        // (the bare `agent` name is its fallback alias, round al7), zai runs `claude`.
         // Probing the id would silently skip those two and pass on a smaller set than it claims.
         // Cursor never resolves to the desktop entry here, opt-in environment
         // or not: this suite must not execute the installer-capable wrapper

@@ -69,7 +69,8 @@ export interface StdoutSink {
 /** Read a stream to its end, or until `giveUp` resolves, in which case the
  * read is canceled and what arrived so far is returned. Without a `sink` the
  * whole stream is captured, bounded at `MAX_CAPTURE_BYTES`; with one, the
- * sink consumes the stream and the bound applies to what it keeps. */
+ * sink consumes the stream and the bound applies to what it keeps — on
+ * every exit branch, the give-up cancellation included (round al32). */
 async function readBounded(
   stream: ReadableStream<Uint8Array>,
   streamName: "stdout" | "stderr",
@@ -109,17 +110,46 @@ async function readBounded(
           // timeout result instead of rejecting the whole capture. A
           // natural end with a partial character is genuinely invalid
           // UTF-8 and still throws.
+          let tail = "";
           try {
-            const tail = decoder.decode();
-            if (sink !== undefined && tail !== "") sink.push(tail);
-            return sink !== undefined ? sink.finish() : output + tail;
+            tail = decoder.decode();
           } catch {
-            return sink !== undefined ? sink.finish() : output;
+            // Only the incomplete suffix is lost.
           }
+          if (sink === undefined) return output + tail;
+          if (tail !== "") sink.push(tail);
+          // The capture bound holds on EVERY exit branch (round al32,
+          // edges major 1): a timeout or signal abandonment ends the
+          // read with give-up, and the fold a sink performs inside
+          // finish() can push what it keeps past the limit exactly as at
+          // a natural EOF (the al30 rule) — an abandoned run over the
+          // bound fails at 125, never succeeds over the bound at 124.
+          const folded = sink.finish();
+          if (sink.keptBytes() > MAX_CAPTURE_BYTES) {
+            await reader.cancel();
+            throw new OutputLimitError(streamName, folded);
+          }
+          return folded;
         }
         const tail = decoder.decode();
         if (sink !== undefined && tail !== "") sink.push(tail);
-        return sink !== undefined ? sink.finish() : output + tail;
+        if (sink !== undefined) {
+          // The EOF tail — and the fold a sink performs inside finish()
+          // — are accounted against the capture bound like any completed
+          // chunk (round al30, edges major 1): the check runs AFTER
+          // finish(), because a wire-regime fold does not count the
+          // buffered partial line until close() folds it (round al27's
+          // rule), so a final unterminated event whose value crosses the
+          // limit latches it exactly there — the run fails at 125 instead
+          // of succeeding over the bound.
+          const folded = sink.finish();
+          if (sink.keptBytes() > MAX_CAPTURE_BYTES) {
+            await reader.cancel();
+            throw new OutputLimitError(streamName, folded);
+          }
+          return folded;
+        }
+        return output + tail;
       }
       if (sink !== undefined) {
         sink.push(decoder.decode(value, { stream: true }));
@@ -155,15 +185,26 @@ async function readBounded(
  * Signal the child. `scope: "tree"` also signals its process group (when it
  * leads one) and every descendant found by walking the process table;
  * `scope: "process"` signals the child alone but still records its
- * descendants so a later tree-scoped escalation can reach them.
+ * descendants so a later tree-scoped escalation can reach them. This
+ * function sends signals and reports send failures. Every nonzero or
+ * signal child exit remains a failure, regardless of signal delivery.
+ * Process-table reads serve tree cleanup alone:
+ * `signalDescendants` walks before it signals — an agent that exits
+ * promptly reparents its escaped descendants within milliseconds, so the
+ * walk must come first or the tree kill has nothing to remember — and
+ * the process-scope arm's `rememberDescendants` read keeps the map a
+ * later escalation will need.
  *
- * The table is read BEFORE the first signal is delivered, deliberately. An
- * agent that exits promptly on SIGTERM (the common case) reparents its
- * escaped descendants within milliseconds, after which no walk rooted at
- * the child can find them; the snapshot must come first or the tree kill
- * has nothing to remember. The cost is that the signal waits for one table
- * read: tens of milliseconds normally, and never more than
- * PROCESS_TABLE_TIMEOUT_MS on macOS (Linux reads `/proc` in memory).
+ * The child is signaled through its subprocess handle, which cannot
+ * address a reused pid even before the exit continuation runs. After an
+ * observed exit only tree cleanup runs: the group and remembered
+ * descendants, with isStillOurs guarding remembered pid reuse.
+ *
+ * A send that throws ESRCH is silent — the pid no longer exists.
+ * Every other refusal names a process that exists (EPERM above
+ * all — a live process the sender may not signal), so it is reported on
+ * stderr as a signal failure the operator should see, never taken to
+ * mean the child is gone (round al35, edges major 3).
  */
 export function signalProcess(
   target: TerminationTarget,
@@ -177,12 +218,15 @@ export function signalProcess(
     if (scope === "tree") {
       leftToGroup = signalDescendants(target, signal, groupSignaled);
     } else {
+      // Remember the descendants a process-scoped send leaves alive, so
+      // the later tree-scoped escalation can reach them (the tree-kill
+      // mechanics above).
       rememberDescendants(target, readProcessTable());
     }
     if (groupSignaled !== null) {
       try {
         process.kill(-proc.pid, signal);
-        return;
+        return; // the group send reached the child with it
       } catch (error) {
         // The group signal did not go out. ESRCH means the group is gone
         // (the child exited between the timer and delivery); anything else
@@ -198,11 +242,31 @@ export function signalProcess(
         for (const pid of leftToGroup) signalDescendant(pid, signal);
       }
     }
+    // The handle also guards the interval before the exit callback runs.
+    if (target.childExited) return;
+    try {
+      proc.kill(signal);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+        console.error(
+          `codemux: could not send ${signal} to child ${proc.pid}: ` +
+            (error instanceof Error ? error.message : String(error))
+        );
+      }
+    }
+    return;
   }
+  // The same pid-reuse guard on the platform without process groups.
+  if (target.childExited) return;
   try {
     proc.kill(signal);
-  } catch {
-    // Signaling an already-exited process is harmless.
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+      console.error(
+        `codemux: could not send ${signal} to child ${proc.pid}: ` +
+          (error instanceof Error ? error.message : String(error))
+      );
+    }
   }
 }
 
@@ -445,7 +509,8 @@ export async function runCapturedCommand(
  *
  * - SIGINT: swallowed in parent (child receives it from the terminal via the
  *   shared process group). Rapid triple-SIGINT forces a SIGTERM to the child.
- * - SIGTERM/SIGHUP: forwarded to child only (proc.kill), not broadcast, so
+ * - SIGTERM/SIGHUP: forwarded to child only (a child-directed
+ *   process.kill inside signalProcess), not broadcast, so
  *   the child gets the grace period to shut down its own children. The
  *   SIGKILL escalation after the grace period covers the whole process tree.
  */

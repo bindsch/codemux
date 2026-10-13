@@ -31,6 +31,44 @@ export function claudeGatewayOmissions(): readonly string[] {
 }
 
 /**
+ * The catalog id a provider-override model behaves as. Claude Code
+ * validates `--model` against its own model catalog before any request
+ * leaves the client, and a provider-format id (`clawvm-…`, a gateway
+ * name) is not in it: 2.1.280 answers "There's an issue with the selected
+ * model (<id>)" — the run dies client-side, zero requests reaching the
+ * endpoint. The binary's own rejection names the remedy ("map it with
+ * behavesAs on a modelPicker row"), and its settings schema pins the row
+ * shape `{ model, label?, description?, behavesAs? }` and the semantics:
+ * behavesAs is "the ID of a model it does know … whose client-side
+ * handling — prompt profile, capability and effort defaults — applies to
+ * it. Changes neither the row's label nor the model ID sent." Sonnet is
+ * the tier an arbitrary coding model should be assumed to carry (the
+ * catalog id, not the alias: the field takes full ids like
+ * "claude-opus-4-8", and `claude-sonnet-5` is in the 2.1.280 catalog).
+ */
+export const CLAUDE_PROVIDER_BEHAVES_AS = "claude-sonnet-5";
+
+/**
+ * The `--settings` payload that lets the binary accept the override's
+ * model: one modelPicker row mapping it onto the behavesAs tier above.
+ * The wire model id is unchanged — the id must be what the endpoint
+ * serves; the tier is only what the client assumes. Rides argv as inline
+ * `--settings` JSON (the flag accepts a JSON string starting with `{`,
+ * the same carrier `--mcp-config` uses), so nothing lands on disk and
+ * the mapping lives exactly as long as the launch. flagSettings outrank
+ * user settings, and a modelPicker definition wins outright across
+ * sources, so an operator's own picker rows cannot override the
+ * endpoint's model under an override run.
+ */
+export function claudeProviderPickerSettings(model: string): string {
+  return JSON.stringify({
+    modelPicker: {
+      options: [{ model, behavesAs: CLAUDE_PROVIDER_BEHAVES_AS }],
+    },
+  });
+}
+
+/**
  * Refuses a passed-through `CLAUDE_CONFIG_DIR` that is relative, or one
  * with surrounding whitespace. Claude Code resolves the variable against
  * the child's working directory, so a relative value lands the config

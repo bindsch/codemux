@@ -42,6 +42,12 @@ export interface ClaudeSessionCommand {
   sandboxed?: boolean;
   /** Enable the local Playwright MCP inside the sandbox (run parity). */
   enablePlaywrightMcp?: boolean;
+  /** The inline `--settings` payload for a provider-override session:
+   * the modelPicker row mapping the override's model onto a tier the
+   * binary's catalog knows (claude-family.ts). Undefined — no flag —
+   * without an override; zai never sets it (its models are catalog
+   * aliases). */
+  providerSettings?: string;
 }
 
 /** The session high mapping: `--permission-mode default` plus the grant
@@ -119,6 +125,12 @@ export function buildClaudeSessionCommand(
   );
   if (command.model !== undefined) {
     argv.push("--model", command.model);
+  }
+  // The provider-override picker mapping, right after the model it
+  // describes: the same carrier the run path uses (modelFlags), pinned
+  // here because the session's argv is built from this record alone.
+  if (command.providerSettings !== undefined) {
+    argv.push("--settings", command.providerSettings);
   }
   argv.push(...claudeSessionAutonomyFlags(command.autonomy, launchDir));
   if (command.effort !== undefined && command.effort !== "none") {

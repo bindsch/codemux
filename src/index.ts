@@ -7,6 +7,7 @@ import { registerCallsCommand } from "./calls-command.js";
 import { getDefaultConfig, loadConfig, resolveModel } from "./config.js";
 import { registerInfoCommands } from "./info-commands.js";
 import { launchRunRequest } from "./launch.js";
+import { withKeepEnvExemption } from "./sandbox.js";
 import { registerSessionCommand } from "./session/cli.js";
 import {
   handleUnexpectedError,
@@ -518,13 +519,26 @@ program
         passthroughEnv
       );
 
-      if (options.sandbox) {
+      // `sandboxOptions` resolves exactly when `options.sandbox` is set;
+      // the compound guard lets the type system see that too.
+      if (options.sandbox && sandboxOptions !== undefined) {
         adapter.beforeLaunch();
         adapter.prepareSandbox({ sandboxTrust: sandboxOptions?.trust, passthroughEnv });
-        const adapterEnv = adapter.buildExecutionEnv(
-          adapter.getTuiEnv(model, autonomy, effort, true),
-          passthroughEnv
-        );
+        // The environment codemux itself chose for this child: the
+        // adapter's standing variables plus the tui-specific ones — the
+        // two maps buildExecutionEnv merges — captured here for their
+        // names, exactly as the run launcher does (launch.ts). Under
+        // --sandbox-scrub-env those names ride scode's --keep-env
+        // exemption; a provider override makes that exemption mandatory —
+        // its key is the launch's only credential, the operator's own
+        // having been omitted on purpose — so a scode without the flag
+        // refuses the launch rather than run it stripped. The same rule
+        // the run and session spawns apply (withKeepEnvExemption).
+        const injectedEnv = {
+          ...adapter.getEnv(),
+          ...adapter.getTuiEnv(model, autonomy, effort, true),
+        };
+        const adapterEnv = adapter.buildExecutionEnv(injectedEnv, passthroughEnv);
         const command = adapter.buildTuiCommand(
           model,
           autonomy,
@@ -539,7 +553,11 @@ program
           adapterEnv,
           true,
           sandboxAutonomy,
-          sandboxOptions,
+          withKeepEnvExemption(
+            sandboxOptions,
+            injectedEnv,
+            adapter.providerOverrideActive()
+          ),
           adapter.getEnvOmissions()
         );
         process.exitCode = exitCode;

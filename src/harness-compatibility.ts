@@ -70,8 +70,8 @@ export interface HarnessContract {
   unknownVersion?: "warn" | "refuse";
   /**
    * Per-entry version arguments, when the probe depends on which entry
-   * point resolved. Cursor is the case: the adapter runs `agent` or the
-   * legacy `cursor-agent` by default, and `cursor` (the `agent` subcommand
+   * point resolved. Cursor is the case: the adapter runs `cursor-agent` or
+   * the `agent` alias by default, and `cursor` (the `agent` subcommand
    * of the desktop CLI) only under the CODEMUX_CURSOR_ENTRY opt-in; only
    * the last needs the subcommand -- `cursor --version` reports the
    * desktop app's own semver (3.23.12), which never matches this
@@ -198,9 +198,12 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
   cursor: {
     scheme: "calendar",
     versionArgs: ["--version"],
-    // The adapter runs the standalone `agent`, then the legacy
-    // `cursor-agent`, and touches `cursor agent` (the desktop CLI's
-    // subcommand) only under the CODEMUX_CURSOR_ENTRY opt-in -- the desktop
+    // The adapter runs the standalone `cursor-agent`, then the `agent`
+    // alias (scode 0.6.0 dropped the bare `agent` name from its
+    // known-harness list, so a sandboxed `agent` launch warns that its
+    // sandbox behavior is untested), and touches `cursor agent` (the
+    // desktop CLI's subcommand) only under the CODEMUX_CURSOR_ENTRY
+    // opt-in -- the desktop
     // wrapper installs or updates `~/.local/bin/cursor-agent` before
     // forwarding to it, so codemux never executes it on its own initiative,
     // not from diagnostics and not from the installed-contract suite (see

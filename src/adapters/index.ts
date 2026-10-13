@@ -20,7 +20,7 @@ import { ZaiAdapter } from "./zai.js";
 // The environment view an adapter is constructed against. The launch path
 // passes nothing and gets process.env — the operator's shell, exported
 // opt-ins and provider overrides included. Static diagnostics pass their
-// own explicit view (verify an empty one), so an exported variable cannot
+// own explicit view (verify keeps only PATH), so an exported opt-in cannot
 // change a static wiring result: every constructor that consumes a view is
 // handed the factory's argument here.
 type AdapterEnv = Record<string, string | undefined>;

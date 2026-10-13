@@ -93,10 +93,12 @@ export function verificationCwd(): string {
 // validation refuses it. Verify builds those same commands, so inheriting
 // the operator's shell made a plain `codemux verify` report cursor's
 // wiring as broken while a real launch with the passthrough worked. Every
-// adapter verify consults is instead constructed against this explicitly
-// empty view: the default entry chain, no per-launch opt-ins, the same
-// result whatever the operator exported.
-const STATIC_WIRING_ENV: Record<string, string | undefined> = {};
+// adapter verify consults receives only PATH: installation checks and
+// default entry selection still see installed binaries, while provider
+// overrides and per-launch opt-ins cannot change the wiring result.
+function staticWiringEnv(): Record<string, string | undefined> {
+  return { PATH: process.env.PATH };
+}
 
 export type VerificationStatus = "PASS" | "WARN" | "FAIL";
 
@@ -168,7 +170,7 @@ function verifyMapping(agentId: AgentId, issues: string[]): boolean {
 }
 
 function verifyRunBuilds(agentId: AgentId, issues: string[]): { ok: boolean; warnings: string[] } {
-  const adapter = getAdapter(agentId, STATIC_WIRING_ENV);
+  const adapter = getAdapter(agentId, staticWiringEnv());
   const caps = adapter.capabilities();
 
   try {
@@ -257,7 +259,7 @@ function verifyRunBuilds(agentId: AgentId, issues: string[]): { ok: boolean; war
 }
 
 function verifyTuiBuilds(agentId: AgentId, issues: string[]): { ok: boolean; warnings: string[] } {
-  const adapter = getAdapter(agentId, STATIC_WIRING_ENV);
+  const adapter = getAdapter(agentId, staticWiringEnv());
   const caps = adapter.capabilities();
 
   try {
@@ -335,7 +337,7 @@ function classifyStatus(
 
 export function verifyAgentWiring(agentId: AgentId): VerificationResult {
   const issues: string[] = [];
-  const adapter = getAdapter(agentId, STATIC_WIRING_ENV);
+  const adapter = getAdapter(agentId, staticWiringEnv());
   const installed = adapter.isAvailable();
 
   const mappingOk = verifyMapping(agentId, issues);
@@ -375,7 +377,7 @@ export function buildEffectiveScodeCommands(
   const rows: EffectiveScodeCommand[] = [];
 
   for (const agentId of agentIds) {
-    const adapter = getAdapter(agentId, STATIC_WIRING_ENV);
+    const adapter = getAdapter(agentId, staticWiringEnv());
     const caps = adapter.capabilities();
 
     for (const autonomy of AUTONOMY_LEVELS) {

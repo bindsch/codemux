@@ -11,7 +11,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { ClaudeAdapter } from "../src/adapters/claude.js";
 import { AgyAdapter } from "../src/adapters/agy.js";
@@ -125,16 +125,25 @@ describe("Adapter Registry", () => {
         CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1",
       });
       const codexPlain = getAdapter("codex", {}).buildRunCommand({ agent: "codex", prompt: "p" });
-      // A plain run keeps human mode (ul3): no event stream, no fallback
-      // file, just the prompt-from-stdin marker.
+      // Every run asks for the event stream and names a fallback file
+      // whose static no-context shape is the fail-closed placeholder
+      // (round al29: the plain verdict reads the file for the Plan-only
+      // turn's messageless stream alone, so plain and --result-json argv
+      // are one shape again).
       expect(codexPlain).toEqual([
         "codex",
         "exec",
         "--skip-git-repo-check",
         "--ephemeral",
         "--ignore-rules",
+        "--json",
+        "--output-last-message",
+        join(homedir(), ".codex", ".codemux-scratch", "unprepared", "last-message"),
         "-",
       ]);
+      expect(
+        getAdapter("codex", {}).buildRunCommand({ agent: "codex", prompt: "p", resultJson: true })
+      ).toEqual(codexPlain);
       expect(getAdapter("openhands", {}).getRunEnv({ agent: "openhands", prompt: "p" }))
         .toEqual({});
       expect(getAdapter("openhands", {}).buildRunCommand({ agent: "openhands", prompt: "p" }))
@@ -681,19 +690,31 @@ describe("CodexAdapter", () => {
     expect(caps.effortLevels).toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
   });
 
+  // Every exec run carries the event stream flag and names the
+  // final-message fallback file, whose static no-context shape is the
+  // fail-closed placeholder. Round al29 restored the plain run's file
+  // (al28 had deleted it from plain runs): the plain verdict reads it
+  // only for the Plan-only turn's messageless stream, so plain and
+  // --result-json runs share one tail.
+  const runTail = (home: string): string[] => [
+    "--json",
+    "--output-last-message",
+    join(home, ".codex", ".codemux-scratch", "unprepared", "last-message"),
+    "-",
+  ];
+
   test("buildRunCommand with prompt only", () => {
     const home = mkdtempSync(join(tmpdir(), "codemux-codex-"));
     try {
       const scoped = new CodexAdapter({}, home);
       const cmd = scoped.buildRunCommand({ agent: "codex", prompt: "test prompt" });
-      // A plain run keeps human mode: no --json, no fallback file (ul3).
       expect(cmd).toEqual([
         "codex",
         "exec",
         "--skip-git-repo-check",
         "--ephemeral",
         "--ignore-rules",
-        "-",
+        ...runTail(home),
       ]);
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -713,7 +734,7 @@ describe("CodexAdapter", () => {
         "--skip-git-repo-check",
         "--ephemeral",
         "--ignore-rules",
-        "-",
+        ...runTail(home),
       ]);
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -728,7 +749,7 @@ describe("CodexAdapter", () => {
     const home = mkdtempSync(join(tmpdir(), "codemux-codex-"));
     try {
       const scoped = new CodexAdapter({}, home);
-      const tail = ["-"];
+      const tail = runTail(home);
       expect(scoped.buildRunCommand({ agent: "codex", prompt: "t", autonomy: "read-only" }))
         .toEqual(["codex", "-s", "read-only", "-c", 'approval_policy="never"', "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", ...tail]);
       expect(scoped.buildRunCommand({ agent: "codex", prompt: "t", autonomy: "low" }))
@@ -746,7 +767,7 @@ describe("CodexAdapter", () => {
     const home = mkdtempSync(join(tmpdir(), "codemux-codex-"));
     try {
       const scoped = new CodexAdapter({}, home);
-      const tail = ["-"];
+      const tail = runTail(home);
       expect(scoped.buildRunCommand({ agent: "codex", prompt: "t", effort: "low" }))
         .toEqual(["codex", "-c", 'model_reasoning_effort="low"', "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", ...tail]);
       expect(scoped.buildRunCommand({ agent: "codex", prompt: "t", effort: "medium" }))
@@ -775,7 +796,7 @@ describe("CodexAdapter", () => {
         "--skip-git-repo-check",
         "--ephemeral",
         "--ignore-rules",
-        "-",
+        ...runTail(home),
       ]);
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -791,39 +812,34 @@ describe("CodexAdapter", () => {
     expect(adapter.capabilities().supportsResultJson).toBe(true);
   });
 
-  test("--result-json turns the event stream on; a plain run keeps human mode (ul3)", () => {
-    // The --output-last-message path a resultJson buildRunCommand without
-    // prepareRun names: under the real CODEX_HOME's .codemux-scratch/,
-    // where prepareRun puts the real per-run file, with the unprepared
-    // marker standing where the per-run directory would be (the same
-    // fail-closed shape the hermetic home's preview uses). Plain runs ask
-    // for none of it: the stream carries every event with all tool
-    // output, which pushed agentic runs past the 16 MiB capture bound —
-    // stdout stays human mode and the ledger reads the stderr figure.
+  test("every run names the --output-last-message file; the verdict scopes it (al29)", () => {
+    // Round al29 restores what al28 deleted: a plain run names the file
+    // again — the Plan-only turn's recorded final message is the reply's
+    // only carrier, the one item the JSONL wire does not carry — and the
+    // al28 defect (a second source that could contradict the stream) is
+    // answered by scoping the READ, not deleting the file: the plain
+    // verdict consults it only for a completed messageless turn
+    // (plain-unwrap.test.ts's bounded-fallback tests), so plain and
+    // --result-json argv are one shape. The path a buildRunCommand
+    // without prepareRun names sits under the real CODEX_HOME's
+    // .codemux-scratch/, with the unprepared marker standing where the
+    // per-run directory would be (the same fail-closed shape the
+    // hermetic home's preview uses).
     const home = mkdtempSync(join(tmpdir(), "codemux-codex-"));
     try {
       const scoped = new CodexAdapter({}, home);
-      expect(scoped.buildRunCommand({ agent: "codex", prompt: "t" })).toEqual([
+      const plain = scoped.buildRunCommand({ agent: "codex", prompt: "t" });
+      expect(plain).toEqual([
         "codex",
         "exec",
         "--skip-git-repo-check",
         "--ephemeral",
         "--ignore-rules",
-        "-",
+        ...runTail(home),
       ]);
       expect(
         scoped.buildRunCommand({ agent: "codex", prompt: "t", resultJson: true })
-      ).toEqual([
-        "codex",
-        "exec",
-        "--skip-git-repo-check",
-        "--ephemeral",
-        "--ignore-rules",
-        "--json",
-        "--output-last-message",
-        join(home, ".codex", ".codemux-scratch", "unprepared", "last-message"),
-        "-",
-      ]);
+      ).toEqual(plain);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -965,6 +981,42 @@ describe("CodexAdapter", () => {
       expect(readdirSync(join(home, ".codex", ".codemux-scratch"))).toEqual([]);
     } finally {
       for (const dir of scratchDirs) rmSync(dir, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a scratch step that throws after the provider home was created cleans the home (al24)", () => {
+    // The edges minor: the override home was created first and the caller
+    // never received the context when the scratch step threw, so cleanupRun
+    // could not finalize it — the home and its process-exit listener sat
+    // until termination, one per failed launch. The failing scratch step
+    // here is a file standing at the `.codemux-scratch` parent's name, so
+    // prepareRunDirParent refuses while `.codemux-provider` (made earlier
+    // in the same prepareRun) already holds the run's home. Round al29
+    // restored the scratch step to every launch that can name a fallback
+    // file (all of them but an untrusted sandbox's), so a plain run hits
+    // the same throw; this launch is a --result-json one.
+    const home = mkdtempSync(join(tmpdir(), "codemux-codex-"));
+    try {
+      const codexHome = join(home, ".codex");
+      mkdirSync(codexHome);
+      writeFileSync(join(codexHome, ".codemux-scratch"), "not a directory");
+      const adapter = new CodexAdapter(
+        {
+          CODEMUX_CODEX_PROVIDER_BASE_URL: "https://override.example/v1",
+          CODEMUX_CODEX_PROVIDER_API_KEY: "sk-override-test-key",
+          CODEMUX_CODEX_PROVIDER_MODEL: "gpt-test",
+        },
+        home
+      );
+      expect(() =>
+        adapter.prepareRun({ agent: "codex", prompt: "t", resultJson: true })
+      ).toThrow();
+      // The provider home is gone: the throw cleaned up what the context
+      // held, instead of leaving a run directory under `.codemux-provider`.
+      const providerParent = join(codexHome, ".codemux-provider");
+      expect(readdirSync(providerParent)).toEqual([]);
+    } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
@@ -1229,8 +1281,14 @@ describe("CodexAdapter", () => {
       expect(outRun.success).toBe(false);
       expect(outRun.exitCode).toBe(1);
       expect(JSON.parse(outRun.stdout).result).toBeNull();
-      expect(outRun.stderr).toContain("ended without a final assistant message");
-      expect(errors.join("\n")).toContain("refusing codex's --output-last-message file");
+      // One channel, once (round al21, contracts-2 minor 6): the refusal
+      // rides the run's stderr -- with its directory detail -- and the
+      // console stays silent, where before the same failure printed a
+      // second line there.
+      expect(outRun.stderr).toContain("could not read codex's --output-last-message file");
+      expect(outRun.stderr).toContain("the read was refused");
+      expect(outRun.stderr.match(/--output-last-message file/g)).toHaveLength(1);
+      expect(errors.join("\n")).not.toContain("--output-last-message file");
       expect(readFileSync(victimFile, "utf8")).toBe("the victim's own text");
       // cleanupRun removes only the link standing in for the run
       // directory, never following it into the victim.
@@ -1258,11 +1316,262 @@ describe("CodexAdapter", () => {
       );
       expect(outParent.success).toBe(false);
       expect(JSON.parse(outParent.stdout).result).toBeNull();
-      expect(errors.join("\n")).toContain("refusing codex's --output-last-message file");
+      // Same single-channel rule as plant 1: stderr carries the refusal,
+      // the console does not repeat it.
+      expect(outParent.stderr).toContain("the read was refused");
+      expect(errors.join("\n")).not.toContain("--output-last-message file");
       expect(readFileSync(plantedFile, "utf8")).toBe("the victim's own text");
     } finally {
       console.error = originalError;
       for (const dir of victims) rmSync(dir, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a --output-last-message file that cannot be read fails the run with the read error (al18)", () => {
+    // The correctness review's major: readFinalMessageFallback folded
+    // every failed read into the same null it returns for an
+    // intentionally absent message, and the plain path's verdict
+    // succeeded a completed turn with no message anywhere (round al10)
+    // -- so a Plan-only turn whose fallback file was unreadable exited
+    // 0 with empty stdout, the reply lost and the failure nowhere the
+    // caller reads (the review's mocked repro: stdout "", exitCode 0,
+    // success true). Every failure shape must stay distinct from the
+    // intentional absence and fail the run instead. The envelope path
+    // already failed a messageless turn on the lost fallback; it says
+    // the read error now too. Round al29 restored the file to every
+    // launch that can name one, and the unreadable shape fails both
+    // paths — the plain verdict consults it for the completed
+    // messageless turn and fails the run on the read error, the same
+    // arm the envelope path carries — so the shapes below run against
+    // the envelope path as the stricter of the two.
+    const home = mkdtempSync(join(tmpdir(), "codemux-codex-"));
+    const errors: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+    try {
+      mkdirSync(join(home, ".codex"));
+      const adapter = new CodexAdapter({ CODEX_API_KEY: "sk-test" }, home);
+      // A --result-json run (round al29: the file rides every launch
+      // that can name one; this one is a --result-json run because the
+      // envelope path is the arm under test) captures the stream whole
+      // for the envelope; it completes a turn
+      // whose only message would be the fallback file's.
+      const request: RunRequest = { agent: "codex", prompt: "t", resultJson: true };
+      const planOnlyStream = [
+        { type: "thread.started", thread_id: "0192b8d4-4d4f-7c4a-9d0e-6f5a4b3c2d1e" },
+        { type: "turn.started" },
+        { type: "item.completed", item: { id: "item_0", type: "reasoning", text: "thinking" } },
+        { type: "turn.completed", usage: { input_tokens: 10, output_tokens: 2 } },
+      ].map((line) => JSON.stringify(line)).join("\n") + "\n";
+
+      // Each failure shape, planted at the path the launch itself named
+      // (each on its own prepared context: a refused read leaves the
+      // planted entry for cleanupRun).
+      const shapes: Array<{ name: string; plant: (path: string) => void }> = [
+        {
+          name: "a permission error",
+          plant: (path) => {
+            writeFileSync(path, "the plan");
+            chmodSync(path, 0o000);
+          },
+        },
+        {
+          name: "a directory standing at the file's name",
+          plant: (path) => mkdirSync(path),
+        },
+        {
+          name: "a symlink at the file's own name",
+          plant: (path) => symlinkSync(join(home, "elsewhere"), path),
+        },
+        {
+          name: "a file over the size bound",
+          plant: (path) => writeFileSync(path, Buffer.alloc(16 * 1024 * 1024 + 1, 0x78)),
+        },
+      ];
+      const runnable =
+        process.getuid?.() === 0
+          ? shapes.slice(1) // root reads through mode 000; the shape is not its own
+          : shapes;
+      for (const shape of runnable) {
+        const context = adapter.prepareRun(request);
+        shape.plant(context.lastMessagePath!);
+        const out = adapter.processRunResult(
+          { stdout: planOnlyStream, stderr: "", exitCode: 0, success: true },
+          request,
+          context
+        );
+        // The failed read is a failed run with the read error on stderr
+        // -- never the null fallback the absent message earns: the
+        // envelope reports no result beside the read failure (the
+        // failed-envelope contract, al20's normalization).
+        expect(out.success, shape.name).toBe(false);
+        expect(out.exitCode, shape.name).toBe(1);
+        expect(JSON.parse(out.stdout).result, shape.name).toBeNull();
+        expect(out.stderr, shape.name).toContain(
+          "codemux: could not read codex's --output-last-message file"
+        );
+        adapter.cleanupRun(context);
+      }
+
+      // A stream that carried its own reply under the unreadable file:
+      // the failed-envelope contract holds there too — null result, the
+      // read error on stderr — the al20 test's envelope repro below.
+      // One channel (round al21, contracts-2 minor 6): the failure rode
+      // the run's stderr above; the console never repeats it. (A planted
+      // DIRECTORY the cleanup cannot remove says so on the console — a
+      // cleanup note, not the verdict's failure.)
+      expect(errors.join("\n")).not.toContain("could not read codex's --output-last-message file");
+    } finally {
+      console.error = originalError;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("the fallback-read failure is normalized before the verdict (al20)", () => {
+    // Correctness 2 with contracts minor 1 under it: the unreadable
+    // fallback's failure was applied AFTER the envelope was built, so a
+    // completed stream with a reply kept `"result":"the reply"` and its
+    // usage beside success:false -- a failed envelope carrying a
+    // successful run's payload. The failure is applied to the run
+    // BEFORE the verdict now, so the verdict reads the same
+    // already-failed run and the envelope honors the failed-envelope
+    // contract: null result, null usage, the read error on stderr.
+    // Round al29 restored the plain reader (the verdict consults the
+    // file for the completed messageless turn), and its failure is
+    // normalized the same way before the verdict; the envelope path —
+    // the stricter grammar — is the home this test exercises.
+    const home = mkdtempSync(join(tmpdir(), "codemux-codex-"));
+    const errors: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+    try {
+      mkdirSync(join(home, ".codex"));
+      const adapter = new CodexAdapter({ CODEX_API_KEY: "sk-test" }, home);
+      const replyStream = [
+        { type: "thread.started", thread_id: "0192b8d4-4d4f-7c4a-9d0e-6f5a4b3c2d1e" },
+        { type: "turn.started" },
+        { type: "item.completed", item: { id: "item_0", type: "agent_message", text: "the reply" } },
+        { type: "turn.completed", usage: { input_tokens: 10, output_tokens: 2 } },
+      ].map((line) => JSON.stringify(line)).join("\n") + "\n";
+      const nullUsage = {
+        input_tokens: null,
+        output_tokens: null,
+        cached_input_tokens: null,
+        total_tokens: null,
+        cost_usd: null,
+      };
+
+      // The envelope path, the review's repro: a completed stream that
+      // carried its own reply, and a fallback file the read cannot take
+      // (a directory standing at the file's name -- root-safe, unlike a
+      // mode-000 file). The envelope that comes back is the failed one:
+      // null result, null usage, the read error on stderr. Before the
+      // reorder it kept "the reply" and total_tokens 12 beside exit 1.
+      const envelopeRequest: RunRequest = { agent: "codex", prompt: "t", resultJson: true };
+      const envelopeContext = adapter.prepareRun(envelopeRequest);
+      mkdirSync(envelopeContext.lastMessagePath!);
+      const envelopeOut = adapter.processRunResult(
+        { stdout: replyStream, stderr: "", exitCode: 0, success: true },
+        envelopeRequest,
+        envelopeContext
+      );
+      expect(envelopeOut.success).toBe(false);
+      expect(envelopeOut.exitCode).toBe(1);
+      const envelope = JSON.parse(envelopeOut.stdout);
+      expect(envelope.result).toBeNull();
+      expect(envelope.codemux.usage).toEqual(nullUsage);
+      expect(envelopeOut.usage).toEqual(nullUsage);
+      expect(envelopeOut.stderr).toContain(
+        "codemux: could not read codex's --output-last-message file"
+      );
+    } finally {
+      console.error = originalError;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("the fallback read's outcome classes on the envelope path: verbatim text, empty file, missing file (al26)", () => {
+    // Round al26 at the adapter seam, narrowed to the file's one reader
+    // by round al28 and widened back to every launch by round al29 (a
+    // plain run names the file again, its verdict scoped to the Plan-only
+    // turn; these envelope-path pins are unchanged by that). Correctness
+    // minor: codex's writer is fs::write(path, message) with no newline
+    // of its own, so the reader keeps the file verbatim and the
+    // envelope's result carries "the plan\n" exactly as recorded.
+    // Correctness major 3: a named file that is MISSING is not the
+    // intentional no-message absence -- upstream writes an empty file
+    // for a messageless turn, so an absent file is a write codex only
+    // logged -- and on the envelope path the lost fallback fails the
+    // messageless turn NAMING THE ABSENT FILE (round al29, the README's
+    // documented rule; the pre-al29 code failed it with the generic
+    // no-message diagnostic), never a silently emptied success. The
+    // empty file is upstream's own messageless record and answers the
+    // same: no fallback text, so the same messageless arm decides.
+    const home = mkdtempSync(join(tmpdir(), "codemux-codex-"));
+    const errors: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+    try {
+      mkdirSync(join(home, ".codex"));
+      const adapter = new CodexAdapter({ CODEX_API_KEY: "sk-test" }, home);
+      const planOnlyStream = [
+        { type: "thread.started", thread_id: "0192b8d4-4d4f-7c4a-9d0e-6f5a4b3c2d1e" },
+        { type: "turn.started" },
+        { type: "item.completed", item: { id: "item_0", type: "reasoning", text: "thinking" } },
+        { type: "turn.completed", usage: { input_tokens: 10, output_tokens: 2 } },
+      ].map((line) => JSON.stringify(line)).join("\n") + "\n";
+      const envelopeRequest: RunRequest = { agent: "codex", prompt: "t", resultJson: true };
+
+      // Verbatim: the envelope carries the message exactly as recorded,
+      // newline included.
+      const envelopeContext = adapter.prepareRun(envelopeRequest);
+      writeFileSync(envelopeContext.lastMessagePath!, "the plan\n");
+      const envelopeOut = adapter.processRunResult(
+        { stdout: planOnlyStream, stderr: "", exitCode: 0, success: true },
+        envelopeRequest,
+        envelopeContext
+      );
+      expect(envelopeOut.success).toBe(true);
+      expect(JSON.parse(envelopeOut.stdout).result).toBe("the plan\n");
+
+      // Missing: the launch named the file and no file is there -- the
+      // write failed or the path was sabotaged, never a message that
+      // never existed. The messageless completed turn fails naming the
+      // absent file (round al29), so the caller learns the write codex
+      // logged never happened rather than a generic no-result.
+      const missingContext = adapter.prepareRun(envelopeRequest);
+      const missingOut = adapter.processRunResult(
+        { stdout: planOnlyStream, stderr: "", exitCode: 0, success: true },
+        envelopeRequest,
+        missingContext
+      );
+      expect(missingOut.success).toBe(false);
+      expect(missingOut.exitCode).toBe(1);
+      expect(JSON.parse(missingOut.stdout).result).toBeNull();
+      expect(missingOut.stderr).toContain("is missing");
+      expect(missingOut.stderr).toContain(missingContext.lastMessagePath!);
+      expect(missingOut.stderr).toContain("no result to report");
+
+      // Empty: upstream's own messageless record. The read succeeded and
+      // the text is null, so the same messageless arm decides.
+      const emptyContext = adapter.prepareRun(envelopeRequest);
+      writeFileSync(emptyContext.lastMessagePath!, "");
+      const emptyOut = adapter.processRunResult(
+        { stdout: planOnlyStream, stderr: "", exitCode: 0, success: true },
+        envelopeRequest,
+        emptyContext
+      );
+      expect(emptyOut.success).toBe(false);
+      expect(JSON.parse(emptyOut.stdout).result).toBeNull();
+    } finally {
+      console.error = originalError;
       rmSync(home, { recursive: true, force: true });
     }
   });

@@ -220,11 +220,17 @@ describe("codex session e2e - lifecycle", () => {
     // harness echo of codemux's own announcement and mirrors as tier-1
     // unknown.
     expect(turnStarted.raw).toBeNull();
-    expect(
-      session.events.find(
-        (event) => event.type === "unknown" && String(event.raw).includes("turn/started")
-      )
-    ).toBeDefined();
+    // Waited, not read at once: turn_started is emitted at submit, so the
+    // notification's mirror needs its own pipe round-trip after it — a
+    // loaded runner once split that round-trip past the immediate read.
+    await waitFor(
+      session.events,
+      (events) =>
+        events.find(
+          (event) => event.type === "unknown" && String(event.raw).includes("turn/started")
+        ),
+      "the turn/started mirror"
+    );
     const message = await waitFor(session.events, of("assistant_message"), "assistant_message");
     expect(message.text).toBe("Hello.");
     expect(message.turn_id).toBe("t1");
@@ -1398,9 +1404,8 @@ describe("codex session e2e - stream tiers", () => {
     // failure story, but the live9 verdict then added a second, false
     // "during the shutdown drain" fatal for the same exit, and the open
     // turn's turn_started was never answered — the synthesis only covered
-    // exit codes null and 0. The crash end now exempts itself from the
-    // drain verdict and the turn is synthesized failed with the crash as
-    // its reason.
+    // exit codes null and 0. The crash now emits one fatal and the turn
+    // receives a failed completion.
     const session = await startAndWait();
     send(session.driver, { type: "user", text: "scenario:crash boom" });
     await waitFor(
@@ -1410,7 +1415,7 @@ describe("codex session e2e - stream tiers", () => {
     );
     expect(await session.code).toBe(1);
     const ended = session.events[session.events.length - 1] as Event;
-    expect(ended.reason).toBe("crash");
+    expect(ended.reason).toBe("harness_failed");
     // Exactly one fatal — the crash itself — and no drain fatal behind it.
     const fatals = session.events.filter(
       (event) => event.type === "error" && event.fatal === true
@@ -1429,7 +1434,7 @@ describe("codex session e2e - stream tiers", () => {
     expect(completed.turn_id).toBe("t1");
     expect(completed.finish).toBe("failed");
     // Review live17: the reason is the fatal that ended the session.
-    expect(completed.reason).toContain("the codex process exited unexpectedly (code");
+    expect(completed.reason).toContain("the codex process exited with code 1 during the shutdown drain before completing its open turn");
     expect(completed.usage).toEqual({
       input_tokens: null,
       output_tokens: null,
@@ -1650,7 +1655,13 @@ describe("codex session e2e - stream tiers", () => {
     );
     expect(resolved.resolution).toBe("superseded");
     // The decline reached the app-server, keyed to the request it denied.
-    const decisions = fakeRecord(session, "decisions.jsonl");
+    // Polled, not read at once: permission_resolved fires when the driver
+    // WRITES the decline, while the fake records it only after reading it
+    // off its stdin — a pipe round-trip the one-shot read used to race.
+    // (The file's other synchronous decisions.jsonl reads all sit behind
+    // a wait that already proves the record exists; this one is the only
+    // read whose event cannot order it.)
+    const decisions = await waitForRecord(session, "decisions.jsonl");
     const decline = decisions.find((entry) => String(entry.id) === "appr-drain");
     expect(decline?.result?.decision).toBe("decline");
     // The denial does not forfeit the drain: the held interrupt is
@@ -1704,17 +1715,16 @@ describe("codex session e2e - stream tiers", () => {
     // exit — driver exit 0 while session_ended.exit_code said 42. The
     // verdict now reads the child: a turn still open at the drain's end
     // (no completion delivered) plus a nonzero exit is a failure, with
-    // the error on the stream ahead of session_ended. A delivered
-    // completion exempts (the drain test above, exit 0) and a signal
-    // death exempts itself (code null).
+    // the error on the stream ahead of session_ended. Signal deaths
+    // fail too, whether a completion arrived or not.
     const session = await startAndWait({}, { FAKE_SIGTERM_PERSIST: "exit42" });
     send(session.driver, { type: "user", text: "scenario:wait held" });
     await waitFor(session.events, of("turn_started"), "turn_started");
     send(session.driver, { type: "shutdown" });
 
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.reason).toBe("shutdown");
-    expect(ended.exit_code).toBe(42);
+    expect(ended.reason).toBe("harness_failed");
+    expect(ended.exit_code).toBe(1);
     const fatal = session.events.find((event) => event.type === "error" && event.fatal === true);
     expect(fatal).toBeDefined();
     expect(fatal!.source).toBe("harness");
@@ -1742,30 +1752,20 @@ describe("codex session e2e - stream tiers", () => {
     expect(interrupts).toHaveLength(1);
   });
 
-  test("a wrapper exiting 143 during the drain is the signal's coded spelling, not a failure", async () => {
-    // Review live11: the live9 verdict read any nonzero exit as failure,
-    // so a wrapper that answers the shutdown SIGTERM with exit code 143
-    // (the scode spelling, 128+SIGTERM) cost success while the signal
-    // death it encodes (code null) did not. 143 now exempts itself like
-    // the signal, and the still-open turn is synthesized interrupted —
-    // the harness never answered the end-interrupt.
+  test("a wrapper exiting 143 during shutdown fails the session (al41)", async () => {
     const session = await startAndWait({}, { FAKE_SIGTERM_PERSIST: "exit143" });
     send(session.driver, { type: "user", text: "scenario:wait held" });
     await waitFor(session.events, of("turn_started"), "turn_started");
     send(session.driver, { type: "shutdown" });
 
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.reason).toBe("shutdown");
-    expect(ended.exit_code).toBe(143);
-    // No false "during the shutdown drain" fatal: the coded signal death
-    // is the kill the end path itself ordered.
-    expect(of("error")(session.events)).toBeUndefined();
-    // The open turn is still answered — synthesized interrupted,
-    // codemux-originated, usage never guessed.
+    expect(ended.reason).toBe("harness_failed");
+    expect(ended.exit_code).toBe(1);
+    expect(of("error")(session.events)?.fatal).toBe(true);
     const completed = of("turn_completed")(session.events) as Event;
     expect(completed).toBeDefined();
     expect(completed.turn_id).toBe("t1");
-    expect(completed.finish).toBe("interrupted");
+    expect(completed.finish).toBe("failed");
     expect(completed.raw).toBeNull();
     expect(completed.usage).toEqual({
       input_tokens: null,
@@ -1774,20 +1774,14 @@ describe("codex session e2e - stream tiers", () => {
       total_tokens: null,
       cost_usd: null,
     });
-    expect(await session.code).toBe(0);
-    // The end-interrupt was delivered but died unanswered.
+    expect(await session.code).toBe(1);
     const interrupts = fakeRecord(session, "interrupts.jsonl");
     expect(interrupts).toHaveLength(1);
   });
 
   test("a shutdown while turn/start is in flight still interrupts the open turn", async () => {
-    // Review live11, major 1: the end path's interrupt was gated on the
-    // harness turn id, which stays null until the turn/start response —
-    // a shutdown in that window skipped the graceful interrupt entirely
-    // and the turn ran until the kill. FAKE_HOLD_TURNSTART holds the
-    // response until the shutdown SIGTERM, so it lands inside the drain
-    // window, where the buffered end-interrupt must ride it.
-    const session = await startAndWait({}, { FAKE_HOLD_TURNSTART: "1" });
+    // The delayed turn/start response arrives during the protocol grace.
+    const session = await startAndWait({}, { FAKE_TURNSTART_DELAY: "100" });
     send(session.driver, { type: "user", text: "scenario:wait held" });
     // The fake must have READ the turn/start before the shutdown's
     // SIGTERM arrives, or the signal finds nothing held to release and
@@ -2064,7 +2058,7 @@ describe("codex session e2e - review live17", () => {
     await waitFor(session.events, of("turn_completed"), "turn_completed");
     send(session.driver, { type: "shutdown" });
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.exit_code).toBe(42);
+    expect(ended.exit_code).toBe(1);
     expect(await session.code).toBe(1);
     const fatal = session.events.find((event) => event.type === "error" && event.fatal === true);
     expect(fatal?.message).toBe("the codex process exited with code 42 during the shutdown drain");
@@ -2371,7 +2365,7 @@ describe("codex session e2e - review live22", () => {
     await waitFor(session.events, of("turn_started"), "turn_started");
     session.proc.writeLine = () => ({ ok: false, reason: "backlog" });
     const ended = await waitFor(session.events, of("session_ended"), "session_ended", 8_000);
-    expect(ended.reason).toBe("crash");
+    expect(ended.reason).toBe("harness_failed");
     const fatals = session.events.filter((event) => event.type === "error" && event.fatal === true);
     expect(fatals.map((event) => event.message)).toEqual([
       "could not deliver a line to the harness (backlog)",
@@ -2598,7 +2592,14 @@ describe("codex session e2e - review live23 audit siblings", () => {
   });
 
   test("a timeout interrupt that was never written does not label the end's interrupt turn-timeout", async () => {
-    const session = await startAndWait({ turnTimeoutMs: 100 });
+    // Scale-based, not time-bound: the pinned path needs the turn/start
+    // response handled BEFORE the timer fires, so the timeout's interrupt
+    // is written (not queued behind the response) and the refusal lands on
+    // it. At 100 ms a loaded runner (a paired batch) once read the
+    // response later than the timer and the test took the queued path;
+    // 1500 ms is a few pipe round-trips scaled to a margin no runner load
+    // crosses — the live25 grace test's graceMs/2 argument.
+    const session = await startAndWait({ turnTimeoutMs: 1_500 });
     // Installed before the turn opens, so the timer cannot win the race.
     let refused = false;
     refuseWrites(session.proc, (line) => {
@@ -2611,7 +2612,47 @@ describe("codex session e2e - review live23 audit siblings", () => {
     const completed = session.events.find((event) => event.type === "turn_completed");
     expect(completed?.finish).toBe("interrupted");
     expect(completed?.reason).not.toBe("turn-timeout");
-  });
+  }, 15_000);
+
+  test("a queued timeout interrupt whose delivery is refused does not label the end's interrupt turn-timeout", async () => {
+    // The middle window of the same race, forced deterministically: the
+    // timeout fires while the turn/start response is still held
+    // (FAKE_TURNSTART_DELAY past the first expiry, before the second), so
+    // the timeout's interrupt queues, and its delivery — once the
+    // response lands — is the refused write. The crash end's own
+    // interrupt (which passes the latch) then answers the turn, and that
+    // completion must not wear the timeout's label: the label names only
+    // an interrupt the timeout produced (the stale-flag mislabel this
+    // pins; review live23's rule). The window's two edges (response
+    // after the first expiry, handled before the second) each carry
+    // ~1,000 ms of margin: a 250 ms window flaked once under a full
+    // gate's coverage load and was widened to ~500 ms, and round al31's
+    // gate crossed that too (the crash end still unfinished when the
+    // second expiry fired, the turn labeled turn-timeout), so the
+    // margins doubled again rather than trust the same load twice.
+    const session = await startAndWait(
+      { turnTimeoutMs: 2_000 },
+      { FAKE_TURNSTART_DELAY: "3000" }
+    );
+    let refused = false;
+    refuseWrites(session.proc, (line) => {
+      if (refused || !line.includes("turn/interrupt")) return false;
+      refused = true;
+      return true;
+    });
+    send(session.driver, { type: "user", text: "scenario:wait hold" });
+    await waitFor(session.events, of("session_ended"), "session_ended");
+    const completed = session.events.find((event) => event.type === "turn_completed");
+    expect(completed?.finish).toBe("interrupted");
+    expect(completed?.reason).not.toBe("turn-timeout");
+    // The pinned path: the queued interrupt's refused write is the fatal
+    // that ended the session (the crash end), not the timeout's second
+    // expiry — the response landed inside the first re-arm window.
+    const fatal = session.events.find(
+      (event) => event.type === "error" && event.fatal === true
+    );
+    expect(String(fatal?.message)).toContain("could not deliver a line to the harness");
+  }, 15_000);
 
   test("a refused turn/start write ends at once, without waiting the grace for its response (review live25)", async () => {
     // Review live25, correctness-2 minor 4: call() registered the

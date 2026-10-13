@@ -21,10 +21,15 @@ import type {
 export const CURSOR_ENTRY_ENV = "CODEMUX_CURSOR_ENTRY";
 
 /**
- * One of the entries a launch may run. By default -- and exactly as in
- * 0.6.0 -- the standalone `agent` (Cursor's shipped CLI) wins, then the
- * legacy `cursor-agent` alias; neither resolving means "not installed".
- * The desktop `cursor agent` subcommand is not in that chain at all: the
+ * One of the entries a launch may run. By default the standalone
+ * `cursor-agent` wins, then the `agent` alias; neither resolving means
+ * "not installed". `cursor-agent` is the name Cursor's own installer lays
+ * down (`~/.local/bin/cursor-agent`) and the name scode's known-harness
+ * list carries; scode 0.6.0 dropped the bare `agent` name from that list
+ * (the surface was too generic to keep), so a sandboxed launch of `agent`
+ * warns that its sandbox behavior is untested -- the alias stays only as
+ * a fallback for machines where `cursor-agent` does not resolve. The
+ * desktop `cursor agent` subcommand is not in that chain at all: the
  * Cursor.app 3.23.12 launcher downloads and runs
  * `https://cursor.com/install` when `~/.local/bin/cursor-agent` is absent
  * and runs `cursor-agent update` when the installed build is older than it
@@ -48,33 +53,33 @@ interface CursorEntry {
   readonly prefix: readonly string[];
 }
 
-const AGENT_ENTRY: CursorEntry = { name: "agent", prefix: ["agent"] };
-const CURSOR_AGENT_ENTRY: CursorEntry = {
-  name: "cursor",
-  prefix: ["cursor", "agent"],
-};
-const LEGACY_ALIAS_ENTRY: CursorEntry = {
+const STANDALONE_ENTRY: CursorEntry = {
   name: "cursor-agent",
   prefix: ["cursor-agent"],
 };
+const DESKTOP_ENTRY: CursorEntry = {
+  name: "cursor",
+  prefix: ["cursor", "agent"],
+};
+const AGENT_ALIAS_ENTRY: CursorEntry = { name: "agent", prefix: ["agent"] };
 
 export class CursorAdapter extends BaseAdapter {
   readonly id: AgentId = "cursor";
 
   private readonly cursorBinary: string | null;
   private readonly agentBinary: string | null;
-  private readonly aliasBinary: string | null;
+  private readonly standaloneBinary: string | null;
   private readonly desktopOptIn: boolean;
 
   constructor(
-    findBinary: (name: string) => string | null = (name) =>
-      Bun.which(name, { PATH: process.env.PATH }),
+    findBinary: ((name: string) => string | null) | undefined = undefined,
     env: Record<string, string | undefined> = process.env
   ) {
     super(env);
+    findBinary ??= (name) => Bun.which(name, { PATH: env.PATH ?? "" });
     this.cursorBinary = findBinary("cursor");
     this.agentBinary = findBinary("agent");
-    this.aliasBinary = findBinary("cursor-agent");
+    this.standaloneBinary = findBinary("cursor-agent");
     this.desktopOptIn = env[CURSOR_ENTRY_ENV] === "cursor";
   }
 
@@ -88,12 +93,12 @@ export class CursorAdapter extends BaseAdapter {
     // the binary the wrapper would forward to. When the opt-in names a
     // `cursor` that does not resolve, the default chain answers instead.
     if (this.desktopOptIn && this.cursorBinary !== null) {
-      return CURSOR_AGENT_ENTRY;
+      return DESKTOP_ENTRY;
     }
-    if (this.agentBinary !== null) return AGENT_ENTRY;
-    if (this.aliasBinary !== null) return LEGACY_ALIAS_ENTRY;
+    if (this.standaloneBinary !== null) return STANDALONE_ENTRY;
+    if (this.agentBinary !== null) return AGENT_ALIAS_ENTRY;
     // The name the "harness not found" error reports.
-    return AGENT_ENTRY;
+    return STANDALONE_ENTRY;
   }
 
   override isAvailable(): boolean {
@@ -102,8 +107,8 @@ export class CursorAdapter extends BaseAdapter {
     // only under the opt-in; without it a desktop-only machine reports
     // cursor as not installed, exactly as before the desktop entry existed.
     return (
+      this.standaloneBinary !== null ||
       this.agentBinary !== null ||
-      this.aliasBinary !== null ||
       (this.desktopOptIn && this.cursorBinary !== null)
     );
   }
@@ -144,8 +149,8 @@ export class CursorAdapter extends BaseAdapter {
    * precedes the gate's `cursor agent --version` probe -- the wrapper cannot
    * execute against an invocation the operator did not authorize. Static
    * diagnostics never see the refusal at all: verify constructs its
-   * adapters against an explicitly empty environment view (see
-   * STATIC_WIRING_ENV in src/verify.ts), so the desktop entry is not even
+   * adapters against a PATH-only environment view (see
+   * staticWiringEnv in src/verify.ts), so the desktop entry is not even
    * selected there and an exported variable cannot fail a wiring check.
    */
   private assertDesktopEntryAuthorized(

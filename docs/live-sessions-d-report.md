@@ -2,9 +2,10 @@
 
 Prompt D report, 2026-10-07. Branch `sessions-d-0.10` (cut from main
 299066b at version 0.9.0; release prep landed 2026-10-08 as 0.10.0, and
-this tree has since been cut for the usage-ledger release, so it carries
-version 0.11.0 and the CHANGELOG entry sits under `[0.11.0]` — the
-sessions work itself shipped under `[0.10.0]`).
+this tree has since been cut for the usage-ledger release and then for
+the 0.12.0 alignment, so it carries
+version 0.12.0 and the usage-ledger CHANGELOG entry sits under
+`[0.11.0]` — the sessions work itself shipped under `[0.10.0]`).
 Task text: `scratch/prompt-d.md`; operator request:
 `scratch/provider-overrides-2-request.md`.
 
@@ -26,7 +27,7 @@ staged with `git add -A`, as asked.
    for it; a first turn that exits naming no id ends the session), later turns
    pass `--session <id>`, and `--resume` accepts the native id against the
    registry pattern (`OPENCODE_SESSION_FLOOR = "1.18.18"`,
-   src/session/opencode-session.ts:33). Capability flags are honest:
+   src/session/opencode-session.ts:37). Capability flags are honest:
    `live_input` and `resume` true; `user_during_turn`, `steer`, `interrupt`,
    `permissions`, `deltas`, `file_changes` false (a false flag rejects the
    input by name); `usage_stream` false because usage arrives only in each
@@ -42,7 +43,7 @@ staged with `git add -A`, as asked.
    (a UUID) and owns a private per-session directory
    (`~/.aider/.codemux/sessions/<id>/history.md`), recorded in the registry
    before spawn; a resume whose history file is gone fails before any turn
-   (`AIDER_SESSION_FLOOR = "0.86.2"`, src/session/aider-session.ts:46). All
+   (`AIDER_SESSION_FLOOR = "0.86.2"`, src/session/aider-session.ts:47). All
    stdout is human transcript (tier-1 `unknown` passthrough); the turn reply
    is the text aider appended after this turn's `#### <prompt>` header, and
    the verdict is the exit code plus the history delta — a clean exit with no

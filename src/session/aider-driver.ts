@@ -25,6 +25,23 @@
  * (`recordBeforeSpawn`, the claude-family pattern), and session_started
  * is announced at run() start — no deferred identity, because nothing
  * about the id waits on the harness.
+ *
+ * Round al28 gives this lifecycle a shared state table
+ * (src/session/turn-per-process.ts), written against kimi's rewrite.
+ * Aider keeps its own implementation — the FSM below is the
+ * caller-visible protocol grammar, and its ladder overlays the table:
+ * `turn_active` spans the table's spawning and running, `shutting_down`
+ * spans draining and ending, `ended` is ended — but the table's
+ * invariants are this driver's too, and its DELIBERATE DIVERGENCES
+ * section is the contract this file must not silently leave: aider
+ * always awaits an in-flight spawn at the end (no abandon, no hold —
+ * its end path has no deadline-vs-probe tension, and every child is
+ * settled before done resolves), and its end exit code keeps the
+ * monotone maximum over the end path, whose single reachable rung (a
+ * late child that cannot take its canned negatives raises 1) is not the
+ * interleaving pile that made the maximum wrong for kimi. A reader
+ * reasoning about aider's interleavings should hold the table, then
+ * those two divergences; nothing else here may disagree with either.
  */
 
 import type { AutonomyLevel, ReasoningEffort, ResultUsageBlock } from "../types.js";
@@ -54,6 +71,9 @@ import {
 import { SessionFsm } from "./fsm.js";
 import {
   awaitFinalFlush,
+  buildSessionEnded,
+  harnessFailed,
+  shutdownRequested,
   BoundedOutboundQueue,
   callerStdinFailure,
   codemuxFatalMessage,
@@ -168,6 +188,8 @@ export class AiderSessionDriver {
   /** The end path's exit code, updatable while cleanup drains (review
    * live7). Monotone: only a higher code ever wins. */
   private endExitCode = 0;
+  private lastChildOutcome: SessionChildOutcome | null = null;
+  private sawHarnessFailure = false;
   private settled = false;
   private stdinClosed = false;
   private firstFatal: string | null = null;
@@ -564,7 +586,7 @@ export class AiderSessionDriver {
 
   /** The turn process exited: after its tree settles, its outcome
    * completes the turn — unless the end path's synthesis won the race or
-   * a signal death inside an end path belongs to that end's story. */
+   * the end path has already synthesized its completion. */
   private async onTurnExited(
     proc: SessionProcess,
     outcome: SessionChildOutcome
@@ -582,14 +604,9 @@ export class AiderSessionDriver {
    * failure: the file IS the session's state, so the session ends
    * rather than continue blind. */
   private completeTurn(outcome: SessionChildOutcome): void {
+    this.lastChildOutcome = outcome;
+    this.sawHarnessFailure ||= harnessFailed(outcome);
     if (this.fsm.state !== "turn_active") return; // the synthesis answered it
-    const signaled = outcome.code === null || outcome.signal !== null;
-    if (this.finished && (signaled || outcome.code === SESSION_SIGNAL_EXIT_CODE)) {
-      // A death the end path itself caused (the drain's SIGTERM, or the
-      // 143 a wrapper re-exits it as): the synthesis pairs the turn with
-      // the end's own story.
-      return;
-    }
     this.turnProc = null;
     const turnId = this.fsm.activeTurn;
     if (turnId === null) return;
@@ -701,7 +718,10 @@ export class AiderSessionDriver {
    * primed with the canned negatives and run through the same drain
    * (review D11, correctness 2 1); a signal, timeout, or crash end
    * kills the late child on arrival (review D5, correctness 2). */
+  private shutdownWasRequested = false;
+
   private async finish(reason: SessionEndReason, exitCode: number): Promise<void> {
+    this.shutdownWasRequested ||= shutdownRequested(reason);
     if (this.finished) {
       // Idempotent cleanup, honest verdict (review live7).
       this.endExitCode = Math.max(this.endExitCode, exitCode);
@@ -714,7 +734,6 @@ export class AiderSessionDriver {
     this.clearTimers();
     const proc = this.turnProc;
     const spawn = this.turnSpawn;
-    let childCode: number | null = null;
     // The turn's process to drain, once landed: the one already running,
     // or — on a graceful end — the one that lands while this path waits.
     let drain: SessionProcess | null = proc;
@@ -732,10 +751,8 @@ export class AiderSessionDriver {
       // the child untouched for exactly this) and give it the landed
       // path's drain below — the turn finishes and settles before done
       // resolves, or the drain's grace expiry stops it. A signal,
-      // timeout, or crash end keeps the D5 rule: stop on arrival; the
-      // exit is codemux's own kill, not a turn verdict, and
-      // session_ended reports exit_code null, exactly as an idle session
-      // does.
+      // timeout, or crash end stops the late child on arrival. Any
+      // nonzero or signal exit still fails the session.
       let late: SessionProcess | null = null;
       try {
         late = await spawn;
@@ -775,6 +792,8 @@ export class AiderSessionDriver {
         if (drain === null) {
           late.requestStop();
           await late.settled;
+          this.lastChildOutcome = await late.exited;
+
         }
       }
     }
@@ -784,31 +803,28 @@ export class AiderSessionDriver {
       // for the turn's own completion (the FSM leaving turn_active
       // through completeTurn), a raised verdict, or the child's exit —
       // then the stop signal, then the settle.
-      const startCode = this.endExitCode;
-      await drain.awaitEndAnswer(
-        () => this.fsm.state !== "turn_active" || this.endExitCode > startCode
-      );
+      await drain.awaitEndAnswer(() => false);
       drain.requestStop();
       await drain.settled;
-      childCode = (await drain.exited).code;
+      this.lastChildOutcome = await drain.exited;
+
       this.turnProc = null;
     }
-    // Non-null exactly when the child's exit is itself a failure the
-    // verdict reports (review live9): nonzero, not the 143 coded signal
-    // death, not a crash end (which emitted its own fatal).
-    const drainFailureCode =
-      childCode !== null &&
-      childCode !== 0 &&
-      childCode !== SESSION_SIGNAL_EXIT_CODE &&
-      reason !== "crash"
-        ? childCode
-        : null;
-    if (drainFailureCode !== null) {
+    if (this.sawHarnessFailure) {
       this.endExitCode = Math.max(this.endExitCode, 1);
-      this.emitError(
+      reason = "harness_failed";
+    }
+    // Every nonzero code and signal exit fails, including during shutdown.
+    const drainFailureCode = harnessFailed(this.lastChildOutcome)
+      ? this.lastChildOutcome!.code ?? 1
+      : null;
+    if (drainFailureCode !== null) {
+      reason = "harness_failed";
+      this.endExitCode = Math.max(this.endExitCode, 1);
+      if (this.firstFatal === null) this.emitError(
         true,
         "harness",
-        drainFailureMessage("aider", drainFailureCode, this.fsm.state === "turn_active")
+        drainFailureMessage("aider", this.lastChildOutcome!, this.fsm.state === "turn_active")
       );
     }
     // Captured before the block below: the transition inside it moves
@@ -841,12 +857,13 @@ export class AiderSessionDriver {
               reason === "crash"
                 ? crashSynthesisReason(this.firstFatal)
                 : drainFailureCode !== null
-                  ? drainFailureMessage("aider", drainFailureCode, true)
+                  ? drainFailureMessage("aider", this.lastChildOutcome!, true)
                   : this.firstFatal !== null
                     ? crashSynthesisReason(this.firstFatal)
                     : `the session ended (${reason}) before the turn completed`,
             usage: emptyUsage(),
-          })
+          }),
+          { terminal: "fatal" }
         );
         // The synthesized completion is a turn the caller saw complete, so
         // it gets its ledger line like any other (all-null usage, the same
@@ -883,14 +900,16 @@ export class AiderSessionDriver {
       this.capabilities.resume &&
       ownsRecord &&
       this.endExitCode === 0 &&
-      !openTurnInterrupted;
+      !openTurnInterrupted && !harnessFailed(this.lastChildOutcome);
     const sent = this.out.enqueue(
-      buildEvent(++this.seq, this.options.sessionId, "session_ended", null, {
+      buildSessionEnded(++this.seq, this.options.sessionId, this.lastChildOutcome, {
         reason,
-        exit_code: childCode,
+        shutdown_requested: this.shutdownWasRequested,
+        exit_code: this.endExitCode,
         usage: this.cumulative,
         resumable,
-      })
+      }),
+      { terminal: true }
     );
     // The closing ledger line: the same cumulative usage and end verdict
     // the caller just received (call-log.ts).
@@ -899,7 +918,7 @@ export class AiderSessionDriver {
       this.options.sessionId,
       this.sessionStartedAt,
       reason,
-      childCode,
+      this.endExitCode,
       this.cumulative
     );
     const delivered = sent ? await awaitFinalFlush(this.out) : false;
@@ -993,8 +1012,20 @@ export class AiderSessionDriver {
     }
   }
 
-  private emit(line: string): void {
-    this.out.enqueue(line);
+  /** Queue one event line. The session's end events (the option) ride
+   * the queue's terminal lane (round al32): session_ended and the fatals
+   * that end the session reach the caller even when the ordinary bounds
+   * refuse everything else, while turn_completed and the input acks are
+   * ordinary entries that drop with the rest. Two terminal classes
+   * (round al35, edges major 4): `terminal: true` is session_ended
+   * alone, and `terminal: "fatal"` is a fatal, so the lane reserves its
+   * last slot for the end event and a flood of fatals cannot take it.
+   * The enqueue's boolean is deliberately ignored — a refused line has
+   * already fired the queue's own failure callback, which starts the
+   * crash end; a terminal line is refused only when its lane class is
+   * full, and the overflow that reports starts the same end. */
+  private emit(line: string, options?: { terminal?: boolean | "fatal" }): void {
+    this.out.enqueue(line, options);
   }
 
   private ack(inputSeq: number, accepted: boolean, reason?: InputRejectionReason): void {
@@ -1014,7 +1045,11 @@ export class AiderSessionDriver {
         fatal,
         source,
         message,
-      })
+      }),
+      // A fatal rides the lane's fatal class (capped one slot short of
+      // the lane), so the slot the end event needs survives a flood of
+      // them (round al35, edges major 4).
+      { terminal: fatal ? "fatal" : undefined }
     );
   }
 

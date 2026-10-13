@@ -36,7 +36,7 @@ import type {
  */
 export class AgyAdapter extends BaseAdapter {
   // The environment the adapter sees is the one its factory was handed:
-  // `verify` passes an explicitly empty view so an exported override cannot
+  // `verify` passes only PATH so an exported override cannot
   // change its rows, and a run passes the real one.
   constructor(environment: NodeJS.ProcessEnv = process.env) {
     super(environment);

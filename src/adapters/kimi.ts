@@ -1,8 +1,10 @@
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { BaseAdapter, type RunContext } from "./base.js";
 import { assertNoKimiProjectExecutionConfig } from "../project-safety.js";
-import { validateWorkingDirectory } from "../validation.js";
+import { kimiPromptIsCommand } from "../session/kimi-session.js";
+import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import { writeKimiNoToolsFile } from "../kimi-no-tools.js";
 import {
   readProviderOverride,
@@ -129,19 +131,61 @@ export class KimiAdapter extends BaseAdapter {
    * a plain run of this request reads config.toml, skills and agents from.
    * The sanitized child environment drops KIMI_CODE_HOME unless the operator
    * passes it through with --pass-env, in which case both kinds of run use
-   * that directory.
+   * that directory. The value is read exactly as the child receives it --
+   * the session boundary's belief (round al11), applied to the run path
+   * (round al21, contracts-2 minor 7): kimi reads the variable without
+   * trimming, so a padded value names a real (differently spelled)
+   * directory to the child, and a trimmed copy here placed the generated
+   * agent file under a spelling the child never reads. An empty value is
+   * refused rather than treated as unset (round al16, the session's rule):
+   * kimi's own resolver preserves an empty KIMI_CODE_HOME and places its
+   * store under the working directory, so no default codemux could fall
+   * back to names the directory the child actually uses. A value that names
+   * no existing directory is refused too, on every run that passes the
+   * variable through (round al29, correctness major 5; the TUI path joined
+   * in round al30, contracts minor — validateTuiRequest ran the model and
+   * project checks but not this one, so `codemux tui -a kimi` launched with
+   * a typo'd home where the same run was refused): the child reads its
+   * config, skills and store from that directory whatever the run kind, so
+   * a passed-through value is the operator naming their real brand home,
+   * and a missing one is a typo kimi would paper over by creating a fresh,
+   * empty store. The DEFAULT home carries no such check: it legitimately
+   * does not exist before kimi's own first run.
    */
-  private realBrandHome(request: RunRequest): string {
-    const passedThrough =
-      request.passthroughEnv?.includes("KIMI_CODE_HOME") ?? false;
-    const configured = this.environment.KIMI_CODE_HOME?.trim();
-    if (passedThrough && configured) {
-      if (!isAbsolute(configured)) {
-        throw new Error("KIMI_CODE_HOME must be an absolute path");
-      }
-      return configured;
+  private realBrandHome(passthroughEnv?: readonly string[]): string {
+    const passedThrough = passthroughEnv?.includes("KIMI_CODE_HOME") ?? false;
+    const configured = this.environment.KIMI_CODE_HOME;
+    if (!passedThrough || configured === undefined) {
+      return join(this.effectiveHome(), ".kimi-code");
     }
-    return join(this.effectiveHome(), ".kimi-code");
+    if (configured === "") {
+      throw new UsageRefusalError(
+        "KIMI_CODE_HOME must not be empty when passed through; kimi's own " +
+          "resolver preserves an empty value and places its store under the " +
+          "working directory — unset the variable or give it an absolute " +
+          "path"
+      );
+    }
+    if (!isAbsolute(configured)) {
+      throw new UsageRefusalError("KIMI_CODE_HOME must be an absolute path");
+    }
+    let stat: ReturnType<typeof statSync> | null;
+    try {
+      stat = statSync(configured);
+    } catch {
+      stat = null;
+    }
+    if (stat === null || !stat.isDirectory()) {
+      throw new UsageRefusalError(
+        "KIMI_CODE_HOME must be an existing directory when passed through; " +
+          "the value names no directory here — kimi would create a fresh, " +
+          "empty store under it instead of reading the brand home the " +
+          "operator meant, so the typo fails the launch rather than " +
+          "silently forking the store. Create the directory or unset the " +
+          "variable"
+      );
+    }
+    return configured;
   }
 
   /** The user home a run sees: the seam, else $HOME, else the account home. */
@@ -158,7 +202,9 @@ export class KimiAdapter extends BaseAdapter {
     // recorded on the adapter: the launcher owns the returned context and
     // finalizes the file in cleanupRun when this launch ends.
     if (request.tools !== "none") return {};
-    return { kimiNoToolsFile: writeKimiNoToolsFile(this.realBrandHome(request)) };
+    return {
+      kimiNoToolsFile: writeKimiNoToolsFile(this.realBrandHome(request.passthroughEnv)),
+    };
   }
 
   override cleanupRun(context?: RunContext): void {
@@ -208,7 +254,7 @@ export class KimiAdapter extends BaseAdapter {
       // path does not exist, and kimi fails to read it, so a command built
       // without prepareRun fails closed.
       const unprepared = join(
-        this.realBrandHome(request),
+        this.realBrandHome(request.passthroughEnv),
         ".codemux",
         "unprepared"
       );
@@ -230,10 +276,49 @@ export class KimiAdapter extends BaseAdapter {
     assertNoKimiProjectExecutionConfig(
       validateWorkingDirectory(request.cwd) ?? process.cwd()
     );
+    // The refusal class is usage (exit 64, UsageRefusalError), the aider
+    // rule the session driver already applies before its ack (round al11;
+    // the README's live-sessions sentence names the run path's refusal,
+    // which did not exist). What is refused narrowed in al17 to what
+    // kimi's headless path actually dispatches: 0.31.1 parses only
+    // goal-creates before the model turn, so every other `/`-leading
+    // prompt (a path like /tmp/notes.md first among them) reaches the
+    // model unchanged, and the refusals are the word-bounded `/goal`
+    // name (dispatched as the goal flow with its own exit codes, never
+    // a model turn) and the `!` shell-escape shape (kimiPromptIsCommand
+    // states the full rule). Round al18 corrected the message to the
+    // per-shape truth: only /goal CREATES dispatch (the goal flow, its
+    // own exit codes), while the other /goal subcommands fall through
+    // to the model as prompt text in 0.31.1 — the whole name is refused
+    // as codemux's own policy, not as a claim that kimi would have run
+    // every spelling headlessly.
+    if (kimiPromptIsCommand(request.prompt)) {
+      throw new UsageRefusalError(
+        "kimi prompts must not be the /goal command or a '!' shell line: " +
+          "kimi dispatches only /goal creates headlessly (its goal flow, " +
+          "with its own exit codes, never a model turn), while the other " +
+          "/goal subcommands fall through to the model as prompt text — " +
+          "codemux refuses the whole word-bounded /goal name as policy, so " +
+          "the boundary does not ride on kimi's dispatch table, and '!' is " +
+          "kimi's shell-escape shape, refused rather than dispatched; every " +
+          "other prompt (a /-leading path included) is model text and passes"
+      );
+    }
     // Fail before launch on a half-configured override, and surface the
     // model requirement early: the operator's own login and default model
     // would otherwise silently answer.
     this.modelFor(request.model);
+    // The passed-through KIMI_CODE_HOME is checked exactly as the child
+    // reads it here, before prepareRun writes the agent file under it
+    // (round al21, contracts-2 minor 7). Round al29 (correctness major 5)
+    // widened the check to EVERY run that passes the variable through: the
+    // child reads its config, skills and store from that directory
+    // whatever the run kind, so the empty/relative/missing refusals cannot
+    // depend on --tools none being the one kind codemux itself writes
+    // under it — and the refusals are UsageRefusalErrors (exit 64, the
+    // session boundary's own class for them, zero drift between the two
+    // paths). The default home (no passthrough) stays exempt.
+    this.realBrandHome(request.passthroughEnv);
   }
 
   override validateTuiRequest(
@@ -256,6 +341,12 @@ export class KimiAdapter extends BaseAdapter {
       validateWorkingDirectory(cwd) ?? process.cwd()
     );
     this.modelFor(model);
+    // The passed-through KIMI_CODE_HOME is validated on the TUI path too
+    // (round al30, contracts minor): the child kimi reads its config,
+    // skills and store from that directory whatever the launch kind, so
+    // the run path's empty/relative/missing refusals apply unchanged —
+    // same UsageRefusalError class, exit 64, both paths.
+    this.realBrandHome(passthroughEnv);
   }
 
   buildTuiCommand(model?: string, autonomy?: AutonomyLevel): string[] {

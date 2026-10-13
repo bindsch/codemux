@@ -45,4 +45,14 @@ describe("Autonomy equivalence matrix", () => {
       }
     }
   });
+
+  test("the cursor note names the 0.12.0 entry order: cursor-agent first, agent its alias (al25)", () => {
+    // The contracts major: the note still described the 0.11.0 entry
+    // (agent first, cursor-agent unnamed), but 0.12.0 resolves and runs
+    // cursor-agent as the standalone entry with agent as its alias — and
+    // `codemux autonomy` prints this note in its equivalence matrix, so
+    // an operator reading the old order would reach for the alias first.
+    const note = AUTONOMY_EQUIVALENCE.cursor.notes ?? "";
+    expect(note).toContain("cursor-agent is the standalone entry; agent is its alias");
+  });
 });

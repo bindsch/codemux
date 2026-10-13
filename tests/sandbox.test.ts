@@ -4,6 +4,7 @@ import {
   buildSandboxEnv,
   mapAutonomyToScodeFsMode,
   mapAutonomyToScodeTrust,
+  withKeepEnvExemption,
 } from "../src/sandbox.js";
 
 describe("sandbox utilities", () => {
@@ -74,6 +75,51 @@ describe("sandbox utilities", () => {
     ]);
   });
 
+  test("buildScodeCommand renders the keep-env exemption beside --scrub-env", () => {
+    // scode 0.6.0's --keep-env takes one comma-joined list of names.
+    // buildScodeCommand renders it whenever the list is non-empty, with
+    // no --scrub-env condition of its own — the tie between the two
+    // lives in withKeepEnvExemption (the only setter of keepEnv, and it
+    // requires a scrub that can be on), so passing both together here is
+    // the shape every spawn path reaches.
+    expect(
+      buildScodeCommand(
+        ["codex", "exec"],
+        "/tmp/work",
+        "medium",
+        {
+          trust: "standard",
+          scrubEnv: true,
+          keepEnv: ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"],
+        }
+      )
+    ).toEqual([
+      "scode",
+      "-C",
+      "/tmp/work",
+      "--trust",
+      "standard",
+      "--rw",
+      "--scrub-env",
+      "--keep-env",
+      "ANTHROPIC_AUTH_TOKEN,ANTHROPIC_BASE_URL",
+      "--",
+      "codex",
+      "exec",
+    ]);
+    // An empty list renders nothing -- an exemption with no names is no
+    // exemption, and a scode without the flag must never see it.
+    expect(
+      buildScodeCommand(["codex", "exec"], undefined, "high", {
+        scrubEnv: true,
+        keepEnv: [],
+      })
+    ).not.toContain("--keep-env");
+    expect(buildScodeCommand(["codex", "exec"], undefined, "high")).not.toContain(
+      "--keep-env"
+    );
+  });
+
   test("untrusted trust cannot be weakened by non-read-only autonomy", () => {
     const cmd = buildScodeCommand(
       ["codex", "exec"],
@@ -83,6 +129,47 @@ describe("sandbox utilities", () => {
     );
     expect(cmd).toContain("--ro");
     expect(cmd).not.toContain("--rw");
+  });
+
+  test("withKeepEnvExemption rides untrusted trust like an explicit scrub (al21)", () => {
+    // scode's untrusted preset implies --scrub-env (0.6.0 --help:
+    // "--trust untrusted    Maximum lockdown: --strict + --no-net +
+    // --scrub-env + --ro"), so credentials codemux injected are stripped
+    // there exactly as under --sandbox-scrub-env. Before al21 the
+    // exemption keyed on scrubEnv alone and an untrusted override run
+    // launched with its only credential scrubbed away.
+    const injected = {
+      ANTHROPIC_BASE_URL: "https://override.example/v1",
+      ANTHROPIC_AUTH_TOKEN: "unit-key",
+    };
+    const untrusted = withKeepEnvExemption({ trust: "untrusted" }, injected, false);
+    expect(untrusted.keepEnv).toEqual(["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"]);
+    // The gateway token is credential-shaped, so the exemption is
+    // required even without an override marking it.
+    expect(untrusted.keepEnvRequired).toBe(true);
+    // An explicit scrub keeps its shape under any trust spelling.
+    expect(
+      withKeepEnvExemption({ trust: "standard", scrubEnv: true }, injected, true)
+    ).toEqual({
+      trust: "standard",
+      scrubEnv: true,
+      keepEnv: ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"],
+      keepEnvRequired: true,
+    });
+    // No scrub can be on: standard and trusted trust come back unchanged,
+    // because scode prints "--keep-env has no effect without
+    // --scrub-env" on stderr for every run that carries the flag without
+    // a scrub (verified on the installed 0.6.0).
+    expect(withKeepEnvExemption({ trust: "standard" }, injected, true)).toEqual({
+      trust: "standard",
+    });
+    expect(withKeepEnvExemption({ trust: "trusted" }, injected, true)).toEqual({
+      trust: "trusted",
+    });
+    // Nothing injected: nothing to exempt, even under untrusted trust.
+    expect(withKeepEnvExemption({ trust: "untrusted" }, {}, true)).toEqual({
+      trust: "untrusted",
+    });
   });
 
   test("mapAutonomyToScodeFsMode maps normalized levels", () => {

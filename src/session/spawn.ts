@@ -6,15 +6,16 @@
  * that makes "codemux executes only what it validated" true is reused
  * verbatim here: the working-directory validation, the project scode
  * policy refusal, the scode resolution and compatibility probe, the
- * trusted-command resolution, and the scode argv/env builders. A parity
- * test asserts the scode argv prefix and environment this builds match
- * `run`'s for the same request.
+ * trusted-command resolution, the --keep-env resolution, and the scode
+ * argv/env builders. A parity test asserts the scode argv prefix and
+ * environment this builds match `run`'s for the same request.
  */
 
 import {
   assertCompatibleScode,
   assertNoProjectScodePolicy,
-  resolveScodeExecutable,
+  resolveKeepEnvSandboxOptions,
+  resolveScodeExecutableForEnv,
 } from "../cli-runtime.js";
 import { resolveTrustedCommand } from "../executable-security.js";
 import { buildSandboxEnv, buildScodeCommand, type SandboxOptions } from "../sandbox.js";
@@ -67,23 +68,38 @@ export async function spawnSessionChild(
   }
   if (options.sandboxed) {
     assertNoProjectScodePolicy(workdir);
-    const scode = resolveScodeExecutable(workdir);
+    // The launch environment's PATH, the same resolver the run runner
+    // uses (resolveScodeExecutableForEnv): the session's scode and the
+    // run's are one binary for one launch environment, never two
+    // lookups that can disagree (round al14).
+    const scode = resolveScodeExecutableForEnv(env, workdir);
     if (!scode) throw new Error("scode is not installed");
     await assertCompatibleScode(scode, workdir, env);
+    // The keep-env seam the run runner owns (runSandboxedWithStdin): the
+    // session's sandbox options may carry the exemption for the env the
+    // CLI injected (an override's credential above all), and the same
+    // resolver decides — keep, drop, or refuse with the run path's
+    // message — so the two spawn paths cannot drift.
+    const effectiveSandboxOptions = await resolveKeepEnvSandboxOptions(
+      scode,
+      workdir,
+      env,
+      options.sandboxOptions
+    );
     const resolved = resolveTrustedCommand(
       command,
       "sandbox command",
       workdir,
-      env.PATH ?? process.env.PATH
+      env.PATH ?? ""
     );
     const scodeCmd = buildScodeCommand(
       resolved,
       workdir,
       options.autonomy,
-      options.sandboxOptions,
+      effectiveSandboxOptions,
       scode
     );
-    const sandboxEnv = buildSandboxEnv(env, options.sandboxOptions);
+    const sandboxEnv = buildSandboxEnv(env, effectiveSandboxOptions);
     for (const name of options.envOmissions ?? []) delete sandboxEnv[name];
     return new SessionProcess({
       command: scodeCmd,
@@ -99,7 +115,7 @@ export async function spawnSessionChild(
     command,
     "session command",
     workdir,
-    env.PATH ?? process.env.PATH
+    env.PATH ?? ""
   );
   return new SessionProcess({
     command: resolved,

@@ -542,6 +542,142 @@ describe("hermetic runs: kimi", () => {
       .toContain(profile);
   });
 
+  test("a padded or empty passed-through KIMI_CODE_HOME is used exactly as the child reads it (al21)", () => {
+    // Round al21, contracts-2 minor 7: the run adapter trimmed the value
+    // before the absolute check and treated all-padding as unset, while the
+    // session boundary records exactly the bytes the child receives (round
+    // al11) and refuses an empty value outright (round al16). kimi reads
+    // the variable without trimming, so the trimmed run path placed the
+    // generated agent file under a spelling the child never reads. The run
+    // path follows the session's belief now; round al29 widened the
+    // refusals from --tools none to every passthrough run (see the test
+    // that follows) and added the existing-directory rule, so the padded
+    // spelling below is created for real — it must exist to pass.
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-kimi-cwd-"));
+    scratch.push(cwd);
+    mkdirSync(join(cwd, ".git"));
+    const profile = mkdtempSync(join(tmpdir(), "codemux-kimi-profile-"));
+    scratch.push(profile);
+    const paddedHome = `${profile} `;
+    mkdirSync(paddedHome); // the padded spelling is a directory that exists
+    scratch.push(paddedHome);
+
+    // A padded absolute value names the directory literally: the agent
+    // file lands under the padded spelling, the one the child reads --
+    // not under a trimmed normalization of it.
+    const paddedAdapter = kimiAdapter({ KIMI_CODE_HOME: paddedHome });
+    const request: RunRequest = {
+      agent: "kimi",
+      prompt: "p",
+      tools: "none",
+      cwd,
+      passthroughEnv: ["KIMI_CODE_HOME"],
+    };
+    expect(() => paddedAdapter.validateRunRequest(request)).not.toThrow();
+    const context = prepare(paddedAdapter, request);
+    const agentFile = agentFileOf(paddedAdapter.buildRunCommand(request, context));
+    expect(agentFile.startsWith(`${paddedHome}/.codemux/`)).toBe(true);
+    expect(agentFile.startsWith(join(profile, ".codemux"))).toBe(false);
+    expect(statSync(agentFile).isFile()).toBe(true);
+
+    // Empty and padding-relative values are refused at validation, before
+    // prepareRun writes anything -- the session's al16 rule and the
+    // relative-path rule, neither of which a trim may wave through.
+    const empty = kimiAdapter({ KIMI_CODE_HOME: "" });
+    expect(() => empty.validateRunRequest(request))
+      .toThrow("KIMI_CODE_HOME must not be empty");
+    const spaces = kimiAdapter({ KIMI_CODE_HOME: "   " });
+    expect(() => spaces.validateRunRequest(request))
+      .toThrow("KIMI_CODE_HOME must be an absolute path");
+    const relative = kimiAdapter({ KIMI_CODE_HOME: ` ${profile}` });
+    expect(() => relative.validateRunRequest(request))
+      .toThrow("KIMI_CODE_HOME must be an absolute path");
+  });
+
+  test("a passed-through KIMI_CODE_HOME is validated on every run, not only --tools none (al29)", () => {
+    // Round al29, correctness major 5: the empty/absolute/existing
+    // refusals used to fire only under --tools none — the one kind whose
+    // agent file codemux writes under the brand home — so a plain run
+    // passed the variable through unvalidated, and a typo'd or empty value
+    // reached the child, whose resolver happily placed a fresh, empty
+    // store under it. The child reads that directory whatever the run
+    // kind, so every run that passes the variable through is validated
+    // now. The default home (no passthrough) stays exempt: it does not
+    // exist before kimi's own first run.
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-kimi-cwd-"));
+    scratch.push(cwd);
+    mkdirSync(join(cwd, ".git"));
+    const home = mkdtempSync(join(tmpdir(), "codemux-kimi-home-"));
+    scratch.push(home);
+    const plain: RunRequest = {
+      agent: "kimi",
+      prompt: "p",
+      cwd,
+      passthroughEnv: ["KIMI_CODE_HOME"],
+    };
+
+    // The three refusals, each on a PLAIN run this time.
+    expect(() => kimiAdapter({ KIMI_CODE_HOME: "" }).validateRunRequest(plain))
+      .toThrow("KIMI_CODE_HOME must not be empty");
+    expect(() => kimiAdapter({ KIMI_CODE_HOME: "relative/home" }).validateRunRequest(plain))
+      .toThrow("KIMI_CODE_HOME must be an absolute path");
+    expect(() =>
+      kimiAdapter({ KIMI_CODE_HOME: join(home, "no-such-directory") }).validateRunRequest(plain)
+    ).toThrow("KIMI_CODE_HOME must be an existing directory");
+    // A value naming a file is refused by the same rule: a file is not a
+    // directory, whatever it is named.
+    const file = join(home, "not-a-directory");
+    writeFileSync(file, "x");
+    expect(() => kimiAdapter({ KIMI_CODE_HOME: file }).validateRunRequest(plain))
+      .toThrow("KIMI_CODE_HOME must be an existing directory");
+
+    // An existing directory passes on a plain run, and a stray value the
+    // operator never passes through is not read at all.
+    expect(() => kimiAdapter({ KIMI_CODE_HOME: home }).validateRunRequest(plain)).not.toThrow();
+    const stray: RunRequest = { agent: "kimi", prompt: "p", cwd };
+    expect(() =>
+      kimiAdapter({ KIMI_CODE_HOME: join(home, "no-such-directory") }).validateRunRequest(stray)
+    ).not.toThrow();
+  });
+
+  test("a passed-through KIMI_CODE_HOME is validated on the TUI path too (al30)", () => {
+    // Round al30, contracts minor: validateTuiRequest ran the model and
+    // project checks but not realBrandHome, so `codemux tui -a kimi`
+    // launched with a typo'd, empty, or relative home where the same
+    // operator's run was refused — and the interactive child is the one
+    // that reads config.toml, skills, and the store from that directory
+    // for its whole session. The three run-path refusals fire on the TUI
+    // request unchanged, the same UsageRefusalError class.
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-kimi-cwd-"));
+    scratch.push(cwd);
+    mkdirSync(join(cwd, ".git"));
+    const home = mkdtempSync(join(tmpdir(), "codemux-kimi-home-"));
+    scratch.push(home);
+    const tui = (env: NodeJS.ProcessEnv) =>
+      kimiAdapter(env).validateTuiRequest(
+        undefined,
+        cwd,
+        "high",
+        undefined,
+        ["KIMI_CODE_HOME"]
+      );
+    expect(() => tui({ KIMI_CODE_HOME: "" }))
+      .toThrow("KIMI_CODE_HOME must not be empty");
+    expect(() => tui({ KIMI_CODE_HOME: "relative/home" }))
+      .toThrow("KIMI_CODE_HOME must be an absolute path");
+    expect(() => tui({ KIMI_CODE_HOME: join(home, "no-such-directory") }))
+      .toThrow("KIMI_CODE_HOME must be an existing directory");
+    // An existing directory passes, and no passthrough reads nothing.
+    expect(() => tui({ KIMI_CODE_HOME: home })).not.toThrow();
+    expect(() =>
+      kimiAdapter({ KIMI_CODE_HOME: join(home, "no-such-directory") }).validateTuiRequest(
+        undefined,
+        cwd,
+        "high"
+      )
+    ).not.toThrow();
+  });
+
   test("every prepared run gets a fresh file; cleanupRun removes each launch's own only", () => {
     const adapter = kimiAdapter();
     const request: RunRequest = { agent: "kimi", prompt: "p", tools: "none" };

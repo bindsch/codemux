@@ -255,6 +255,43 @@ exit 3
     }
   });
 
+  test("codex: the STORE knob is refused for every value, with and without an override", async () => {
+    // No supported codex release has a response-storage config key, and
+    // every Responses request already carries store: false — there is
+    // nothing to turn on or off, so even "on" is refused before the
+    // spawn (the ask-5 verification: the 0.159.3 generated config schema
+    // and the 0.160.1 binary both lack the key).
+    const fake = createFakeBinaryEnv({
+      codex: `
+if [ "$1" = "--version" ]; then printf 'codex-cli 0.159.3\\n'; exit 0; fi
+exit 3
+`,
+    });
+    try {
+      for (const [label, env] of [
+        ["on with an override", {
+          CODEMUX_CODEX_PROVIDER_BASE_URL: `${BASE}/v1`,
+          CODEMUX_CODEX_PROVIDER_API_KEY: KEY,
+          CODEMUX_CODEX_PROVIDER_MODEL: MODEL,
+          CODEMUX_CODEX_PROVIDER_STORE: "on",
+        }],
+        ["off without an override", { CODEMUX_CODEX_PROVIDER_STORE: "off" }],
+      ] as const) {
+        const { stdout, stderr, exitCode } = await runCli(
+          ["run", "--no-sandbox", "--auto", "high", "-a", "codex", "-p", "x"],
+          { ...fake.env, ...env }
+        );
+        // Refused before launch: the harness never ran.
+        expect(exitCode, label).not.toBe(0);
+        expect(stdout, label).not.toContain(KEY);
+        expect(stderr, label).toContain("CODEMUX_CODEX_PROVIDER_STORE is refused");
+        expect(stderr, label).not.toContain(KEY);
+      }
+    } finally {
+      fake.cleanup();
+    }
+  });
+
   test("openhands: the LLM_* trio routes the run with the openai/ prefix", async () => {
     const fake = createFakeBinaryEnv({
       openhands: `

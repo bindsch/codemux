@@ -52,7 +52,10 @@ const DEFAULT_CONFIG: CodemuxConfig = {
       cursor: "gemini-3.1-pro",
     },
     "gemini-flash": {
-      droid: "gemini-3.5-flash",
+      // One flash model per alias, 3.6 everywhere (droid's installed
+      // catalog serves gemini-3.6-flash; it pinned 3.5 through 0.11
+      // while the rest of the table had moved on).
+      droid: "gemini-3.6-flash",
       gemini: "gemini-3.6-flash",
       copilot: "gemini-3.6-flash",
       cursor: "gemini-3.6-flash-high",

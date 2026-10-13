@@ -309,10 +309,10 @@ describe("opencode session e2e - lifecycle", () => {
     expect(failed.finish).toBe("failed");
     expect(failed.reason).toBe("the opencode process exited with code 1");
     send(clean.driver, { type: "shutdown" });
-    expect(await clean.code).toBe(0);
+    expect(await clean.code).toBe(1);
     const cleanEnded = clean.events.at(-1) as Event;
     expect(cleanEnded.type).toBe("session_ended");
-    expect(cleanEnded.resumable).toBe(true);
+    expect(cleanEnded.resumable).toBe(false);
 
     const crashing = await startSession({ resumeSessionId: "ses_resume00003" });
     await waitFor(crashing.events, of("session_started"), "session_started");
@@ -320,7 +320,7 @@ describe("opencode session e2e - lifecycle", () => {
     expect(await crashing.code).toBe(1);
     const crashEnded = crashing.events.at(-1) as Event;
     expect(crashEnded.type).toBe("session_ended");
-    expect(crashEnded.reason).toBe("crash");
+    expect(crashEnded.reason).toBe("harness_failed");
     expect(crashEnded.resumable).toBe(false);
   });
 
@@ -364,7 +364,8 @@ describe("opencode session e2e - lifecycle", () => {
     expect(second.finish).toBe("end");
     expect(second.turn_id).toBe("t2");
     send(session.driver, { type: "shutdown" });
-    expect(await session.code).toBe(0);
+    expect(await session.code).toBe(1);
+    expect(of("session_ended")(session.events)?.reason).toBe("harness_failed");
   });
 
   test("a silent nonzero exit mid-session fails the turn on the exit code alone", async () => {
@@ -381,7 +382,7 @@ describe("opencode session e2e - lifecycle", () => {
     expect(failed.reason).toBe("the opencode process exited with code 1");
     // A failed turn is not a failed session.
     send(session.driver, { type: "shutdown" });
-    expect(await session.code).toBe(0);
+    expect(await session.code).toBe(1);
     const ended = session.events[session.events.length - 1] as Event;
     expect(ended.resumable).toBe(true);
   });
@@ -403,7 +404,7 @@ describe("opencode session e2e - lifecycle", () => {
     expect(await session.code).toBe(1);
     const ended = session.events[session.events.length - 1] as Event;
     expect(ended.type).toBe("session_ended");
-    expect(ended.reason).toBe("crash");
+    expect(ended.reason).toBe("harness_failed");
     expect(ended.resumable).toBe(false);
     // Never identified, never announced.
     expect(of("session_started")(session.events)).toBeUndefined();
@@ -508,7 +509,7 @@ describe("opencode session e2e - honest false capabilities", () => {
     expect(rejection.reason).toBe("busy");
     expect(rejection.input_seq).toBe(2);
     session.driver.handleCallerEnd();
-    expect(await session.code).toBe(0);
+    expect(await session.code).toBe(1);
   });
 });
 
@@ -524,7 +525,7 @@ describe("opencode session e2e - stream tiers", () => {
     expect(await session.code).toBe(1);
     const ended = session.events[session.events.length - 1] as Event;
     expect(ended.type).toBe("session_ended");
-    expect(ended.reason).toBe("crash");
+    expect(ended.reason).toBe("harness_failed");
   });
 
   test("a line naming a foreign session is a tier-2 fatal with the raw preserved", async () => {
@@ -579,7 +580,7 @@ describe("opencode session e2e - stream tiers", () => {
 });
 
 describe("opencode session e2e - end paths", () => {
-  test("stdin close mid-turn ends cleanly, with the open turn answered interrupted", async () => {
+  test("stdin close mid-turn reports a non-complying child's signal exit as failed", async () => {
     const session = await startSession();
     send(session.driver, { type: "user", text: "scenario:wait hold" });
     await waitFor(session.events, of("turn_started"), "turn_started");
@@ -593,8 +594,8 @@ describe("opencode session e2e - end paths", () => {
       "the synthesized turn_completed"
     );
     expect(completed.turn_id).toBe("t1");
-    expect(completed.finish).toBe("interrupted");
-    expect(completed.reason).toContain("stdin-close");
+    expect(completed.finish).toBe("failed");
+    expect(completed.reason).toContain("the opencode process exited with signal SIGTERM");
     expect(completed.raw).toBeNull();
     expect(completed.usage).toEqual({
       input_tokens: null,
@@ -603,13 +604,13 @@ describe("opencode session e2e - end paths", () => {
       total_tokens: null,
       cost_usd: null,
     });
-    expect(await session.code).toBe(0);
+    expect(await session.code).toBe(1);
     const ended = session.events[session.events.length - 1] as Event;
     expect(ended.type).toBe("session_ended");
-    expect(ended.reason).toBe("stdin-close");
-    // The signal death (exit_code null) is the normal kill path, not a
-    // failure — and the confirmed session stays resumable.
-    expect(ended.exit_code).toBeNull();
+    expect(ended.reason).toBe("harness_failed");
+    expect(ended.exit_code).toBe(1);
+    expect(ended.harness_exit).toEqual({ code: null, signal: "SIGTERM" });
+    expect(ended.shutdown_requested).toBe(true);
     expect(ended.resumable).toBe(true);
     expect(session.events.filter((event) => event.type === "turn_started")).toHaveLength(1);
   });
@@ -666,8 +667,8 @@ describe("opencode session e2e - end paths", () => {
     send(session.driver, { type: "shutdown" });
 
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.reason).toBe("shutdown");
-    expect(ended.exit_code).toBe(42);
+    expect(ended.reason).toBe("harness_failed");
+    expect(ended.exit_code).toBe(1);
     const fatal = session.events.find((event) => event.type === "error" && event.fatal === true);
     expect(fatal).toBeDefined();
     expect(fatal!.message).toContain("exited with code 42 during the shutdown drain");
@@ -682,7 +683,7 @@ describe("opencode session e2e - end paths", () => {
     expect(await session.code).toBe(1);
   });
 
-  test("a wrapper exiting 143 during the drain is the signal's coded spelling, not a failure", async () => {
+  test("a wrapper exiting 143 during the drain fails the session", async () => {
     const session = await startSession({}, { FAKE_SIGTERM_PERSIST: "exit143" });
     send(session.driver, { type: "user", text: "scenario:basic one" });
     await waitFor(session.events, of("turn_completed"), "first turn_completed");
@@ -695,14 +696,13 @@ describe("opencode session e2e - end paths", () => {
     send(session.driver, { type: "shutdown" });
 
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.reason).toBe("shutdown");
-    expect(ended.exit_code).toBe(143);
-    // No false "during the shutdown drain" fatal.
-    expect(of("error")(session.events)).toBeUndefined();
+    expect(ended.reason).toBe("harness_failed");
+    expect(ended.exit_code).toBe(1);
+    expect(of("error")(session.events)?.fatal).toBe(true);
     const second = session.events.filter((event) => event.type === "turn_completed")[1] as Event;
-    expect(second.finish).toBe("interrupted");
-    expect(second.reason).toBe("the session ended (shutdown) before the turn completed");
-    expect(await session.code).toBe(0);
+    expect(second.finish).toBe("failed");
+    expect(second.reason).toContain("exited with code 143");
+    expect(await session.code).toBe(1);
   });
 
   test("caller input during the shutdown drain is rejected shutting_down, never dropped", async () => {
@@ -722,7 +722,7 @@ describe("opencode session e2e - end paths", () => {
       "the shutting_down rejection"
     );
     expect(rejection.input_seq).toBe(3);
-    expect(await session.code).toBe(0);
+    expect(await session.code).toBe(1);
   });
 
   test("a confirmed session whose start was never recorded is not resumable", async () => {
@@ -766,12 +766,12 @@ describe("opencode session e2e - end paths", () => {
       "the synthesized turn_completed"
     );
     expect(completed.turn_id).toBe("t1");
-    expect(completed.finish).toBe("interrupted");
-    expect(completed.reason).toContain("the session ended (timeout)");
+    expect(completed.finish).toBe("failed");
+    expect(completed.reason).toContain("the opencode process exited with signal SIGTERM during the shutdown drain before completing its open turn");
     const ended = session.events[session.events.length - 1] as Event;
     expect(ended.type).toBe("session_ended");
-    expect(ended.reason).toBe("timeout");
-    expect(ended.exit_code).toBeNull();
+    expect(ended.reason).toBe("harness_failed");
+    expect(ended.exit_code).toBe(1);
     expect(await session.code).toBe(1);
     // The ordering the finding named, and exactly one child for the
     // turn: the late child settled before the session's done resolved.

@@ -169,6 +169,457 @@ describe("CLI - Run validation", () => {
     }
   });
 
+  test("a provider override's injected environment rides scode's --keep-env exemption", async () => {
+    // scode 0.6.0's --scrub-env strips by pattern, credentials included;
+    // the environment codemux itself injected for the override (the
+    // gateway pair, the pinned model tiers, the subprocess scrub pin)
+    // must ride the --keep-env exemption, and the run must still reply.
+    const argvDir = mkdtempSync(join(tmpdir(), "codemux-keepenv-e2e-"));
+    const argvFile = join(argvDir, "scode-argv.txt");
+    const fake = createFakeBinaryEnv({
+      claude: `
+if [ "$1" = "--version" ]; then printf '2.1.280\\n'; exit 0; fi
+printf 'OK'
+`,
+      scode: `
+if [ "$1" = "--help" ]; then printf 'Usage: scode [options] command\\n  --keep-env NAME[,NAME...]  keep named variables under --scrub-env\\n'; exit 0; fi
+printf '%s\\n' "$@" > ${argvFile}
+while [ "$1" != "--" ]; do shift; done
+shift
+exec "$@"
+`,
+    });
+    try {
+      const { stdout, stderr, exitCode } = await runCli(
+        [
+          "run",
+          "-a",
+          "claude",
+          "--sandbox-scrub-env",
+          "--auto",
+          "high",
+          "-p",
+          "Reply with exactly the word OK",
+        ],
+        {
+          ...fake.env,
+          CODEMUX_CLAUDE_PROVIDER_BASE_URL: "https://override.example/v1",
+          CODEMUX_CLAUDE_PROVIDER_API_KEY: "e2e-keepenv-key",
+          CODEMUX_CLAUDE_PROVIDER_MODEL: "claw-32b",
+        }
+      );
+      expect(exitCode).toBe(0);
+      expect(stdout).toBe("OK");
+      const argv = readFileSync(argvFile, "utf8").split("\n");
+      expect(argv).toContain("--scrub-env");
+      const keepIndex = argv.indexOf("--keep-env");
+      expect(keepIndex).toBeGreaterThan(-1);
+      // Exactly what the adapter injected for this run, nothing ambient.
+      expect(argv[keepIndex + 1]!.split(",").sort()).toEqual([
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_SMALL_FAST_MODEL",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB",
+      ].sort());
+      expect(stderr).not.toContain("e2e-keepenv-key");
+    } finally {
+      fake.cleanup();
+      rmSync(argvDir, { recursive: true, force: true });
+    }
+  });
+
+  test("an override under --sandbox-trust untrusted rides the --keep-env exemption (al21)", async () => {
+    // scode's untrusted preset implies --scrub-env (0.6.0 --help), so the
+    // credentials codemux injected are stripped there exactly as under
+    // --sandbox-scrub-env. Before al21 the exemption keyed on scrubEnv
+    // alone: this run launched with no --keep-env and its only credential
+    // scrubbed away by the trust preset.
+    const argvDir = mkdtempSync(join(tmpdir(), "codemux-keepenv-untrusted-"));
+    const argvFile = join(argvDir, "scode-argv.txt");
+    const fake = createFakeBinaryEnv({
+      claude: `
+if [ "$1" = "--version" ]; then printf '2.1.280\\n'; exit 0; fi
+printf 'OK'
+`,
+      scode: `
+if [ "$1" = "--help" ]; then printf 'Usage: scode [options] command\\n  --keep-env NAME[,NAME...]  keep named variables under --scrub-env\\n'; exit 0; fi
+printf '%s\\n' "$@" > ${argvFile}
+while [ "$1" != "--" ]; do shift; done
+shift
+exec "$@"
+`,
+    });
+    try {
+      const { stdout, stderr, exitCode } = await runCli(
+        [
+          "run",
+          "-a",
+          "claude",
+          "--sandbox-trust",
+          "untrusted",
+          "--auto",
+          "high",
+          "-p",
+          "Reply with exactly the word OK",
+        ],
+        {
+          ...fake.env,
+          CODEMUX_CLAUDE_PROVIDER_BASE_URL: "https://override.example/v1",
+          CODEMUX_CLAUDE_PROVIDER_API_KEY: "e2e-untrusted-key",
+          CODEMUX_CLAUDE_PROVIDER_MODEL: "claw-32b",
+        }
+      );
+      expect(exitCode).toBe(0);
+      expect(stdout).toBe("OK");
+      const argv = readFileSync(argvFile, "utf8").split("\n");
+      // The trust spelling the operator asked for, with the ro the preset
+      // forces regardless of --auto high.
+      const trustIndex = argv.indexOf("--trust");
+      expect(trustIndex).toBeGreaterThan(-1);
+      expect(argv[trustIndex + 1]).toBe("untrusted");
+      expect(argv).toContain("--ro");
+      // The exemption rides the implied scrub: the same name set the
+      // explicit --sandbox-scrub-env run carries.
+      const keepIndex = argv.indexOf("--keep-env");
+      expect(keepIndex).toBeGreaterThan(-1);
+      expect(argv[keepIndex + 1]!.split(",").sort()).toEqual([
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_SMALL_FAST_MODEL",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB",
+      ].sort());
+      expect(stderr).not.toContain("e2e-untrusted-key");
+    } finally {
+      fake.cleanup();
+      rmSync(argvDir, { recursive: true, force: true });
+    }
+  });
+
+  test("an override under --sandbox-trust untrusted refuses on a scode without --keep-env (al21)", async () => {
+    // The untrusted preset scrubs, so the override's key needs the
+    // exemption and a scode without it refuses — naming the trust
+    // spelling, never --sandbox-scrub-env, which this argv never passed
+    // (the remedy must match the operator's own flags).
+    const argvDir = mkdtempSync(join(tmpdir(), "codemux-keepenv-untrusted-refuse-"));
+    const argvFile = join(argvDir, "scode-argv.txt");
+    const fake = createFakeBinaryEnv({
+      claude: "printf 'OK'",
+      scode: `
+if [ "$1" = "--help" ]; then printf 'Usage: scode [options] command\\n'; exit 0; fi
+printf '%s\\n' "$@" > ${argvFile}
+while [ "$1" != "--" ]; do shift; done
+shift
+exec "$@"
+`,
+    });
+    try {
+      const { stdout, stderr, exitCode } = await runCli(
+        [
+          "run",
+          "-a",
+          "claude",
+          "--sandbox-trust",
+          "untrusted",
+          "--auto",
+          "high",
+          "-p",
+          "Reply with exactly the word OK",
+        ],
+        {
+          ...fake.env,
+          CODEMUX_CLAUDE_PROVIDER_BASE_URL: "https://override.example/v1",
+          CODEMUX_CLAUDE_PROVIDER_API_KEY: "e2e-untrusted-key",
+          CODEMUX_CLAUDE_PROVIDER_MODEL: "claw-32b",
+        }
+      );
+      expect(exitCode).toBe(1);
+      expect(stdout).toBe("");
+      expect(stderr).toContain("no --keep-env");
+      expect(stderr).toContain("--sandbox-trust untrusted");
+      // Never names the flag this argv did not pass.
+      expect(stderr).not.toContain("--sandbox-scrub-env");
+      // Refused before the spawn: the --version and --help probes are the
+      // only scode invocations.
+      expect(existsSync(argvFile)).toBe(false);
+      expect(stderr).not.toContain("e2e-untrusted-key");
+    } finally {
+      fake.cleanup();
+      rmSync(argvDir, { recursive: true, force: true });
+    }
+  });
+
+  test("an override under both --sandbox-scrub-env and --sandbox-trust untrusted refuses naming both in the remedy (al23)", async () => {
+    // The correctness minor: with both scrub spellings active the refusal
+    // once recommended dropping either one — but each alone keeps the
+    // scrub on, so following either suggestion repeated the refusal. The
+    // remedy must say to remove both flags (or upgrade scode), and the
+    // refusal still never carries the key.
+    const argvDir = mkdtempSync(join(tmpdir(), "codemux-keepenv-both-refuse-"));
+    const argvFile = join(argvDir, "scode-argv.txt");
+    const fake = createFakeBinaryEnv({
+      claude: "printf 'OK'",
+      scode: `
+if [ "$1" = "--help" ]; then printf 'Usage: scode [options]\\n'; exit 0; fi
+printf '%s\\n' "$@" > ${argvFile}
+while [ "$1" != "--" ]; do shift; done
+shift
+exec "$@"
+`,
+    });
+    try {
+      const { stdout, stderr, exitCode } = await runCli(
+        [
+          "run",
+          "-a",
+          "claude",
+          "--sandbox-scrub-env",
+          "--sandbox-trust",
+          "untrusted",
+          "--auto",
+          "high",
+          "-p",
+          "Reply with exactly the word OK",
+        ],
+        {
+          ...fake.env,
+          CODEMUX_CLAUDE_PROVIDER_BASE_URL: "https://override.example/v1",
+          CODEMUX_CLAUDE_PROVIDER_API_KEY: "e2e-both-key",
+          CODEMUX_CLAUDE_PROVIDER_MODEL: "claw-32b",
+        }
+      );
+      expect(exitCode).toBe(1);
+      expect(stdout).toBe("");
+      expect(stderr).toContain("no --keep-env");
+      // The cause names both spellings; the remedy names both too — never
+      // an "or" that would leave the other scrubbing.
+      expect(stderr).toContain("--sandbox-scrub-env under --sandbox-trust untrusted");
+      expect(stderr).toContain(
+        "drop both --sandbox-scrub-env and --sandbox-trust untrusted"
+      );
+      expect(stderr).not.toContain("drop --sandbox-scrub-env or --sandbox-trust untrusted");
+      // Refused before the spawn: the --version and --help probes are the
+      // only scode invocations, and the key never appears.
+      expect(existsSync(argvFile)).toBe(false);
+      expect(stderr).not.toContain("e2e-both-key");
+    } finally {
+      fake.cleanup();
+      rmSync(argvDir, { recursive: true, force: true });
+    }
+  });
+
+  test("an override under --sandbox-scrub-env refuses on a scode without --keep-env", async () => {
+    // The override's key is the run's only credential (the operator's own
+    // was omitted on purpose), so a sandbox that cannot exempt it refuses
+    // the launch instead of running it stripped. The fixture's scode —
+    // version 0.2.0, its --help documenting no --keep-env — is exactly
+    // such a scode.
+    const argvDir = mkdtempSync(join(tmpdir(), "codemux-keepenv-refuse-"));
+    const argvFile = join(argvDir, "scode-argv.txt");
+    const fake = createFakeBinaryEnv({
+      claude: "printf 'OK'",
+      scode: `
+if [ "$1" = "--help" ]; then printf 'Usage: scode [options] command\\n'; exit 0; fi
+printf '%s\\n' "$@" > ${argvFile}
+while [ "$1" != "--" ]; do shift; done
+shift
+exec "$@"
+`,
+    });
+    try {
+      const { stdout, stderr, exitCode } = await runCli(
+        [
+          "run",
+          "-a",
+          "claude",
+          "--sandbox-scrub-env",
+          "--auto",
+          "high",
+          "-p",
+          "Reply with exactly the word OK",
+        ],
+        {
+          ...fake.env,
+          CODEMUX_CLAUDE_PROVIDER_BASE_URL: "https://override.example/v1",
+          CODEMUX_CLAUDE_PROVIDER_API_KEY: "e2e-keepenv-key",
+          CODEMUX_CLAUDE_PROVIDER_MODEL: "claw-32b",
+        }
+      );
+      expect(exitCode).toBe(1);
+      expect(stdout).toBe("");
+      expect(stderr).toContain("no --keep-env");
+      expect(stderr).toContain("--sandbox-scrub-env");
+      // Refused before the spawn: the --version and --help probes are the
+      // only scode invocations, and neither reached the command.
+      expect(existsSync(argvFile)).toBe(false);
+      expect(stderr).not.toContain("e2e-keepenv-key");
+    } finally {
+      fake.cleanup();
+      rmSync(argvDir, { recursive: true, force: true });
+    }
+  });
+
+  test("a zai run under --sandbox-scrub-env refuses on a scode without --keep-env (al11 re-review)", async () => {
+    // zai injects its gateway credential (ANTHROPIC_AUTH_TOKEN from
+    // ZAI_API_KEY) with no provider override to mark it, so the run
+    // path's keepEnvRequired — override presence alone — stayed false and
+    // a scode without --keep-env dropped the exemption and launched with
+    // the scrub stripping the run's only credential (round al11's
+    // re-review, edges 1). The requirement now keys on the injected
+    // names themselves: a credential-shaped name refuses exactly as an
+    // override's key does.
+    const argvDir = mkdtempSync(join(tmpdir(), "codemux-keepenv-zai-"));
+    const argvFile = join(argvDir, "scode-argv.txt");
+    const fake = createFakeBinaryEnv({
+      claude: `
+if [ "$1" = "--version" ]; then printf '2.1.280\\n'; exit 0; fi
+printf 'OK'
+`,
+      scode: `
+if [ "$1" = "--help" ]; then printf 'Usage: scode [options] command\\n'; exit 0; fi
+printf '%s\\n' "$@" > ${argvFile}
+while [ "$1" != "--" ]; do shift; done
+shift
+exec "$@"
+`,
+    });
+    try {
+      const { stdout, stderr, exitCode } = await runCli(
+        [
+          "run",
+          "-a",
+          "zai",
+          "--sandbox-scrub-env",
+          "--auto",
+          "high",
+          "-p",
+          "Reply with exactly the word OK",
+        ],
+        {
+          ...fake.env,
+          ZAI_API_KEY: "e2e-zai-keepenv-key",
+        }
+      );
+      expect(exitCode).toBe(1);
+      expect(stdout).toBe("");
+      expect(stderr).toContain("no --keep-env");
+      expect(stderr).toContain("--sandbox-scrub-env");
+      // The refusal names both remedies by name: the release that carries
+      // the flag and the flag itself, so an operator on 0.5.0 knows the
+      // upgrade target without reading the docs (round al12 — zai is an
+      // injected-credential route, and the README says so).
+      expect(stderr).toContain("0.6.0");
+      expect(stderr).toContain("--keep-env");
+      // Refused before the spawn: the --version and --help probes are the
+      // only scode invocations.
+      expect(existsSync(argvFile)).toBe(false);
+      expect(stderr).not.toContain("e2e-zai-keepenv-key");
+    } finally {
+      fake.cleanup();
+      rmSync(argvDir, { recursive: true, force: true });
+    }
+  });
+
+  test("a tui under a provider override rides the same --keep-env exemption (al7)", async () => {
+    // The run and session paths gained the exemption in 0.12.0; the tui
+    // path still passed --scrub-env through without it, so an override
+    // tui ran with its only credential scrubbed away. The tui launch now
+    // attaches the exemption over the adapter's injected names — the
+    // standing getEnv() set for claude — with the same resolver, so a
+    // supporting scode keeps exactly those names.
+    const argvDir = mkdtempSync(join(tmpdir(), "codemux-keepenv-tui-"));
+    const argvFile = join(argvDir, "scode-argv.txt");
+    const fake = createFakeBinaryEnv({
+      claude: `
+if [ "$1" = "--version" ]; then printf '2.1.280\\n'; exit 0; fi
+exit 0
+`,
+      scode: `
+if [ "$1" = "--help" ]; then printf 'Usage: scode [options] command\\n  --keep-env NAME[,NAME...]  keep named variables under --scrub-env\\n'; exit 0; fi
+printf '%s\\n' "$@" > ${argvFile}
+while [ "$1" != "--" ]; do shift; done
+shift
+exec "$@"
+`,
+    });
+    try {
+      const { exitCode, stderr } = await runCli(
+        ["tui", "-a", "claude", "--sandbox-scrub-env"],
+        {
+          ...fake.env,
+          CODEMUX_CLAUDE_PROVIDER_BASE_URL: "https://override.example/v1",
+          CODEMUX_CLAUDE_PROVIDER_API_KEY: "e2e-keepenv-key",
+          CODEMUX_CLAUDE_PROVIDER_MODEL: "claw-32b",
+        }
+      );
+      expect(exitCode).toBe(0);
+      const argv = readFileSync(argvFile, "utf8").split("\n");
+      expect(argv).toContain("--scrub-env");
+      const keepIndex = argv.indexOf("--keep-env");
+      expect(keepIndex).toBeGreaterThan(-1);
+      // The adapter's standing environment for the tui child — the same
+      // set a run keeps, nothing ambient.
+      expect(argv[keepIndex + 1]!.split(",").sort()).toEqual([
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_SMALL_FAST_MODEL",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB",
+      ].sort());
+      expect(stderr).not.toContain("e2e-keepenv-key");
+    } finally {
+      fake.cleanup();
+      rmSync(argvDir, { recursive: true, force: true });
+    }
+  });
+
+  test("a tui override under --sandbox-scrub-env refuses on a scode without --keep-env (al7)", async () => {
+    // The run path's refusal, verbatim, on the tui path: the override's
+    // key is the launch's only credential, so a scode that cannot exempt
+    // it refuses instead of running the tui stripped. Refused before the
+    // spawn — the --version and --help probes are the only scode
+    // invocations.
+    const argvDir = mkdtempSync(join(tmpdir(), "codemux-keepenv-tui-refuse-"));
+    const argvFile = join(argvDir, "scode-argv.txt");
+    const fake = createFakeBinaryEnv({
+      claude: "exit 0",
+      scode: `
+if [ "$1" = "--help" ]; then printf 'Usage: scode [options] command\\n'; exit 0; fi
+printf '%s\\n' "$@" > ${argvFile}
+while [ "$1" != "--" ]; do shift; done
+shift
+exec "$@"
+`,
+    });
+    try {
+      const { stdout, stderr, exitCode } = await runCli(
+        ["tui", "-a", "claude", "--sandbox-scrub-env"],
+        {
+          ...fake.env,
+          CODEMUX_CLAUDE_PROVIDER_BASE_URL: "https://override.example/v1",
+          CODEMUX_CLAUDE_PROVIDER_API_KEY: "e2e-keepenv-key",
+          CODEMUX_CLAUDE_PROVIDER_MODEL: "claw-32b",
+        }
+      );
+      expect(exitCode).toBe(1);
+      expect(stdout).toBe("");
+      expect(stderr).toContain("no --keep-env");
+      expect(stderr).toContain("--sandbox-scrub-env");
+      expect(existsSync(argvFile)).toBe(false);
+      expect(stderr).not.toContain("e2e-keepenv-key");
+    } finally {
+      fake.cleanup();
+      rmSync(argvDir, { recursive: true, force: true });
+    }
+  });
+
   test("run surfaces adapter errors without stack traces", async () => {
     const fake = createFakeBinaryEnv({
       claude: "exit 0",
@@ -834,6 +1285,142 @@ describe("CLI - Check probe", () => {
       expect(stderr).toContain("timed out");
     } finally {
       fake.cleanup();
+    }
+  });
+});
+
+describe("CLI - zai effort none (review al11)", () => {
+  // 0.11 accepted `--effort none` on zai as the mapper's "no flag"
+  // spelling; 0.12's capabilities list omitted it, so the same command
+  // failed with "does not support reasoning effort 'none'" — a
+  // regression against the mapper and the README both. The list carries
+  // it again (src/adapters/zai.ts), and these pin both run kinds end to
+  // end: the refusal is gone and no --effort flag reaches the binary.
+  const zaiArgvFake = (argvFile: string) =>
+    createFakeBinaryEnv({
+      claude: `
+if [ "$1" = "--version" ]; then printf '2.1.223\\n'; exit 0; fi
+printf '%s\\n' "$@" > ${argvFile}
+printf 'OK'
+`,
+    });
+
+  test("run accepts --effort none and sends no flag; a real level still sends it", async () => {
+    const argvDir = mkdtempSync(join(tmpdir(), "codemux-zai-effort-"));
+    const argvFile = join(argvDir, "argv.txt");
+    const fake = zaiArgvFake(argvFile);
+    try {
+      const none = await runCli(
+        ["run", "--no-sandbox", "--auto", "high", "-a", "zai", "--effort", "none", "-p", "test"],
+        { ...fake.env, ZAI_API_KEY: "zai-effort-key" }
+      );
+      expect(none.exitCode).toBe(0);
+      expect(none.stderr).not.toContain("does not support reasoning effort");
+      expect(none.stdout).toBe("OK");
+      const noneArgv = readFileSync(argvFile, "utf8").split("\n");
+      expect(noneArgv).not.toContain("--effort");
+
+      const low = await runCli(
+        ["run", "--no-sandbox", "--auto", "high", "-a", "zai", "--effort", "low", "-p", "test"],
+        { ...fake.env, ZAI_API_KEY: "zai-effort-key" }
+      );
+      expect(low.exitCode).toBe(0);
+      const lowArgv = readFileSync(argvFile, "utf8").split("\n");
+      expect(lowArgv[lowArgv.indexOf("--effort") + 1]).toBe("low");
+    } finally {
+      fake.cleanup();
+      rmSync(argvDir, { recursive: true, force: true });
+    }
+  });
+
+  test("tui accepts --effort none and sends no flag", async () => {
+    const argvDir = mkdtempSync(join(tmpdir(), "codemux-zai-effort-"));
+    const argvFile = join(argvDir, "argv.txt");
+    const fake = zaiArgvFake(argvFile);
+    try {
+      const { exitCode, stderr } = await runCli(
+        ["tui", "--no-sandbox", "--auto", "high", "-a", "zai", "--effort", "none"],
+        { ...fake.env, ZAI_API_KEY: "zai-effort-key" }
+      );
+      expect(exitCode).toBe(0);
+      expect(stderr).not.toContain("does not support reasoning effort");
+      const argv = readFileSync(argvFile, "utf8").split("\n");
+      expect(argv).not.toContain("--effort");
+    } finally {
+      fake.cleanup();
+      rmSync(argvDir, { recursive: true, force: true });
+    }
+  });
+
+  test("the same spelling through -a claude still refuses: each adapter keeps its own surface (al21)", async () => {
+    // contracts-2 minor 4: same binary, two adapters, two CLI surfaces.
+    // zai carries `none` (its 0.11 surface, pinned above); claude never
+    // took the spelling, so its effortLevels omit it and the gate
+    // refuses. Both adapters' comments name the divergence so neither
+    // list "fixes" the other by accident.
+    const fake = createFakeBinaryEnv({ claude: "exit 0" });
+    try {
+      const { stderr, exitCode } = await runCli(
+        ["run", "--no-sandbox", "--auto", "high", "-a", "claude", "--effort", "none", "-p", "test"],
+        fake.env
+      );
+      expect(exitCode).not.toBe(0);
+      expect(stderr).toContain("does not support reasoning effort 'none'");
+    } finally {
+      fake.cleanup();
+    }
+  });
+});
+
+describe("CLI - kimi run-path command refusal (review al11, narrowed al17)", () => {
+  test("the /goal command and ! shape refuse with 64; a /-leading path runs", async () => {
+    // The binary's own rule (0.31.1): only goal-creates are dispatched
+    // before the model turn, so the refusal is the word-bounded /goal
+    // name (dispatched as the goal flow with its own exit codes, never
+    // a model turn) and the ! shell-escape shape — and nothing else.
+    // The al11 rule refused every /- or !-leading prompt; al17's
+    // correctness review caught the cost — an ordinary path-like prompt
+    // exited 64. Exit 64 (usage), the marker a script can tell apart
+    // from a failed run; the path-like prompt launches the harness.
+    const fake = createFakeBinaryEnv({
+      kimi: `
+if [ "$1" = "--version" ]; then printf '0.31.1\\n'; exit 0; fi
+exit 0
+`,
+    });
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-kimi-slash-"));
+    try {
+      for (const prompt of ["/goal create ship it", "/goal status", "!rm -rf /"]) {
+        const { stderr, exitCode } = await runCli(
+          ["run", "--no-sandbox", "--auto", "high", "-a", "kimi", "--cwd", cwd, "-p", prompt],
+          fake.env
+        );
+        expect(exitCode, prompt).toBe(64);
+        expect(stderr, prompt).toContain(
+          "must not be the /goal command or a '!' shell line"
+        );
+      }
+      // A path-like prompt — the major's own example — is model text in
+      // 0.31.1 (verified live post-fix): the run launches and exits 0.
+      const { exitCode } = await runCli(
+        [
+          "run",
+          "--no-sandbox",
+          "--auto",
+          "high",
+          "-a",
+          "kimi",
+          "--cwd",
+          cwd,
+          "-p",
+          "/tmp/notes.md please summarize",
+        ],
+        fake.env
+      );
+      expect(exitCode).toBe(0);
+    } finally {
+      fake.cleanup();
+      rmSync(cwd, { recursive: true, force: true });
     }
   });
 });

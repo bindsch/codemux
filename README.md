@@ -1,6 +1,6 @@
 # codemux
 
-> **Beta software (v0.7.0).** `codemux` is under active development. Expect behavior changes as adapters and sandbox policy continue to harden.
+> **Beta software (v0.12.0).** `codemux` is under active development. Expect behavior changes as adapters and sandbox policy continue to harden.
 
 `codemux` is a unified CLI for AI coding agents. It gives one command surface
 for multiple harnesses, normalizes autonomy/effort semantics, and can route
@@ -40,8 +40,8 @@ codemux verify --show-scode
 ### Prerequisites
 
 - [Bun](https://bun.sh) 1.3.14 or newer (runtime + package manager; CI pins 1.3.14 exactly)
-- Installed agent CLIs you plan to use (`aider`, `agy`, `claude`, `cline`, `copilot`, Cursor's `agent`, etc.)
-- [scode](https://github.com/bindsch/scode) 0.2.0 or newer if you use `--sandbox`
+- Installed agent CLIs you plan to use (`aider`, `agy`, `claude`, `cline`, `copilot`, Cursor's `cursor-agent`, etc.)
+- [scode](https://github.com/bindsch/scode) 0.2.0 or newer if you use `--sandbox` (a run whose only credential is one codemux injects — a provider override's key, or a `zai` run's Z.AI gateway token — needs 0.6.0's `--keep-env` under `--sandbox-scrub-env` or `--sandbox-trust untrusted`, both of which scrub)
 
 The installed launcher and process-tree controls currently support macOS and
 Linux. Windows is not a supported target in this release.
@@ -94,9 +94,9 @@ codemux [command] [options]
 | `--tools <selection>` | Built-in tools the harness exposes: `default` or `none`. Independent of `--hermetic`; Codex takes `none` only with `--auto read-only`, OpenCode only with `--hermetic` (on a plain run the operator's opencode config can override the deny per agent; `check --hermetic --tools none` refuses for it, since its control probe would be that plain run), and harnesses that cannot remove their tools refuse `none` |
 | `--result-json` | Return a structured result envelope on stdout instead of plain text, so a caller can read what the run consumed (tokens, cost). Claude, Z.AI, Codex and Antigravity; other harnesses refuse the flag rather than silently returning text. Claude-family and Antigravity envelopes are the harness's own with one added `codemux` block; Codex reports the final assistant message as `result` plus the same block. See [Result envelopes](#result-envelopes) |
 | `-s, --sandbox` | Execute via `scode` (default: on; `--no-sandbox` opts out, and autonomy below `high` then refuses) |
-| `--sandbox-trust <level>` | `scode` trust override (`trusted`, `standard`, `untrusted`) |
+| `--sandbox-trust <level>` | `scode` trust override (`trusted`, `standard`, `untrusted`; the `untrusted` preset implies the scrub, so the `--keep-env` exemption below rides on it as on `--sandbox-scrub-env`) |
 | `--sandbox-no-net` | Add `--no-net` to `scode` |
-| `--sandbox-scrub-env` | Add `--scrub-env` to `scode` |
+| `--sandbox-scrub-env` | Add `--scrub-env` to `scode`. scode 0.6.0's scrub strips by pattern, credentials included, so the environment codemux itself injected for the run (a provider override's gateway pair and key above all) rides the paired `--keep-env` exemption. The exemption rides whenever the scrub may be on through codemux's own flags — `--sandbox-scrub-env`, and `--sandbox-trust untrusted`, whose scode preset implies the scrub — and only then, because scode 0.6.0 prints a "no effect" warning on every non-scrubbed run that carries `--keep-env`. A run whose injected environment carries its only credential — a provider override's key, or zai's Z.AI gateway token, which zai injects on every launch with no override involved — refuses before the spawn on a scode whose `--help` does not document `--keep-env` (0.5.0 does not; the refusal names the flag you passed and scode 0.6.0), because a launch that might run stripped is not launched. Every other scrubbed run keeps its previous behavior on a scode without the flag: the exemption is dropped, never rendered as an unknown flag. A scode config file that sets `scrub_env: true` is invisible to codemux, so the exemption does not ride there — an operator who scrubs through the config passes the credential names to `--keep-env` themselves, or uses `--sandbox-scrub-env` so codemux's exemption rides. `verify`'s static preview shows the scrub alone — the exempted names are computed at launch from what the adapter injects |
 | `--sandbox-account <file>` | Request scode's per-run scratch accounting; scode appends one JSON line per run (scratch KiB, duration, exit code) to `file` — absolute path required; keep it outside the sandbox's writable area (a sink inside the working directory warns: records there are forgeable) |
 | `--sandbox-account-id <id>` | Opaque correlation token recorded in that accounting line; accepts letters, digits, and `. _ : -` (1-128 chars), and requires `--sandbox-account` |
 | `--auto <level>` | Autonomy (`read-only`, `low`, `medium`, `high`) |
@@ -120,7 +120,7 @@ came from, so use an stdin-capable harness for larger prompts.
 ### `session` options
 
 `codemux session` starts (or resumes) a live agent session for `claude`,
-`zai`, `codex`, `agy`, `opencode`, or `aider`: JSONL input on stdin,
+`zai`, `codex`, `agy`, `opencode`, `aider`, or `kimi`: JSONL input on stdin,
 JSONL events on stdout,
 and the harness's own stderr passed through on codemux's stderr as `run`
 passes it — the protocol, capability matrix, and per-harness version floors are in
@@ -135,9 +135,10 @@ reaches the caller as a `permission_request`, and the ceiling refuses an
 narrower than a `high` run.
 
 Provider overrides reach session spawns exactly as they reach `run`'s:
-the same `CODEMUX_<AGENT>_PROVIDER_*` variables (token caps and codex's
-`MULTI_AGENT` knob included) flow through the same adapter seams, so a
-session's turns hit the override's endpoint under the session protocol.
+the same `CODEMUX_<AGENT>_PROVIDER_*` variables (token caps, codex's
+`MULTI_AGENT` knob, and codex's refused `STORE` knob included) flow
+through the same adapter seams, so a session's turns hit the override's
+endpoint under the session protocol.
 The caps ride where the harness can carry them and fail the session
 loudly where it cannot — an aider session started with a cap set is
 refused before spawn with the same message `run` gives. One codex
@@ -163,12 +164,12 @@ transcript recorded on one endpoint never replays on another.
 |------|-------------|
 | `-a, --agent <agent>` | Agent id (default: `claude`) |
 | `-m, --model <model>` | Model name or alias |
-| `--resume <id>` | Resume a recorded session id (claude/zai UUID, codex thread id, agy conversation id, opencode `ses_…` id, aider codemux UUID); the session registry must vouch for it |
+| `--resume <id>` | Resume a recorded session id (claude/zai UUID, codex thread id, agy conversation id, opencode `ses_…` id, aider codemux UUID, kimi `session_<uuid>` id); the session registry must vouch for it |
 | `--auto <level>` | Autonomy (`read-only`, `low`, `medium`, `high`) |
 | `--effort <level>` | Effort (`none` through `ultra`; availability is harness-specific; `none` is refused for codex sessions, whose turn carrier has no audited `none`) |
 | `--cwd <path>` | Working directory |
 | `--timeout <seconds>` | Absolute cap on the whole session (default: none); expiry runs the shutdown path, ends with `session_ended` reason `timeout`, and exits 1 — the same code as a failure, distinguishable only by the reason, so a broker reading the code alone cannot tell them apart |
-| `--turn-timeout <seconds>` | Per-turn cap; expiry interrupts the turn and the session continues; a turn still open one further period after that interrupt ends the session (`reason: timeout`, exit 1) (default: none; refused for agents whose sessions cannot interrupt — `agy`, `opencode`, `aider`) |
+| `--turn-timeout <seconds>` | Per-turn cap; expiry interrupts the turn and the session continues; a turn still open one further period after that interrupt ends the session (`reason: timeout`, exit 1) (default: none; refused for agents whose sessions cannot interrupt — `agy`, `opencode`, `aider`, `kimi`) |
 | `--permission-timeout <seconds>` | How long a permission request waits before codemux answers deny (default: `300`; never grants beyond the autonomy ceiling) |
 | `--shutdown-grace <seconds>` | How long the harness gets to answer the end (the end-interrupt, or for agy the stdin close) before SIGTERM, and again to exit after it before the kill (default: `10`) |
 | `--no-author-prefix` | Do not prefix harness-bound text with `[author]` |
@@ -177,7 +178,7 @@ transcript recorded on one endpoint never replays on another.
 | `--hermetic` | Refused for sessions (see [docs/HERMETIC.md](docs/HERMETIC.md)) |
 | `-s, --sandbox` | Execute via `scode` (default: on; `--no-sandbox` opts out, and autonomy below `high` then refuses) |
 | `--sandbox-trust <level>` | `scode` trust override; `untrusted` is refused for sandboxed sessions — it denies the harness state a persistent session must write. With `--no-sandbox` the flag is ignored with a warning, as in `run` |
-| `--sandbox-no-net` / `--sandbox-scrub-env` | Add `--no-net` / `--scrub-env` to `scode` |
+| `--sandbox-no-net` / `--sandbox-scrub-env` | Add `--no-net` / `--scrub-env` to `scode` (the scrub — which a session can only request through `--sandbox-scrub-env`, since `untrusted` is refused above — carries the same `--keep-env` exemption as `run` at every session spawn, and a session whose turns carry an injected credential — a provider override's key, or zai's Z.AI gateway token — refuses to start on a scode whose `--help` lacks `--keep-env`; see [Sandbox Integration](#sandbox-integration-scode)) |
 | `--enable-playwright-mcp` | Enable the local Playwright MCP inside the sandbox (claude/zai only; requires `--sandbox` and `--auto low`: the session ceiling grants no MCP tool at `medium` or `high`, and `read-only` allows no tool use) |
 
 ### Provider overrides
@@ -224,7 +225,22 @@ uses — `ANTHROPIC_BASE_URL` plus `ANTHROPIC_AUTH_TOKEN` carrying the key
 tier variables pinned to the same model when `CODEMUX_CLAUDE_PROVIDER_MODEL`
 names it, so background requests and subagents never ask the endpoint for a
 model it does not serve (with the model on `--model` alone the tiers keep
-Claude Code's defaults). Claude Code
+Claude Code's defaults). The model id must be what the endpoint serves;
+the tier the client assumes is codemux's to declare: Claude Code >= 2.1.280
+validates `--model` against its own model catalog before any request
+leaves the client, and a provider-format id is not in it — the run dies
+client-side ("There's an issue with the selected model (<id>)") with zero
+requests reaching the endpoint. Under an override codemux therefore also
+passes `--settings` with a `modelPicker` row mapping the override's model
+onto `behavesAs: "claude-sonnet-5"` — the binary's own remedy: the row
+names the catalog tier whose client-side handling applies, and it
+"changes neither the row's label nor the model ID sent". The payload
+rides argv as inline JSON, outranks the operator's user settings, and
+lives exactly as long as the launch; `run`, `tui`, and `session` all
+carry it, and without an override nothing is added. The base URL is the
+host root: Claude Code appends `/v1/messages` itself, so a value ending
+in `/v1` doubles the segment (`/v1/v1/messages`, a 404) — unlike codex's
+override, whose config `base_url` does include the `/v1`. Claude Code
 still reads the operator's user
 settings on a plain run, and an `env` block there naming either variable
 competes with the override; run with `--hermetic` (which loads no user
@@ -269,7 +285,17 @@ across harnesses may want that for the comparison's sake too — a
 harness that fans out subagents runs a different workload than one that
 cannot, and `off` keeps codex's turn comparable to a harness with no
 subagent feature. The knob accepts only `on`/`off`, and like a token
-cap it fails the run when set without an override. OpenHands carries the override
+cap it fails the run when set without an override. A response-storage
+knob does not exist to set: `CODEMUX_CODEX_PROVIDER_STORE` is refused
+outright, for any value that is non-empty after trimming and on every
+path — an empty or whitespace-only value counts as unset, the same
+convention as `MULTI_AGENT` (both knobs trim before they test). No supported
+Codex release has a response-storage config key (the generated config
+schema shipped in codex-cli 0.159.3 and the 0.160.1 binary's own config
+surface both lack it), and both already send `store: false` on every
+Responses request, with `previous_response_id` absent from the HTTP wire
+entirely, so turn 2+ never relies on server-side response storage in the
+first place. OpenHands carries the override
 through `--override-with-envs`, the same channel its model selection
 uses, with `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL` (litellm's `openai/`
 model prefix added, as aider's). The Codex, Droid, Pi, and OpenCode
@@ -386,7 +412,7 @@ codemux verify --show-scode --sandbox-trust trusted
 | `cline` | `cline` | yes | yes | yes |
 | `codex` | `codex` | yes | yes | yes |
 | `copilot` | `copilot` | yes | yes | yes |
-| `cursor` | `agent` (preferred; `cursor-agent` fallback; desktop `cursor agent` only via the `CODEMUX_CURSOR_ENTRY=cursor` opt-in) | yes | yes | no |
+| `cursor` | `cursor-agent` (preferred; `agent` fallback; desktop `cursor agent` only via the `CODEMUX_CURSOR_ENTRY=cursor` opt-in) | yes | yes | no |
 | `droid` | `droid` | yes | yes | yes |
 | `gemini` | `gemini` | yes | yes | no |
 | `goose` | `goose` | yes | yes | no |
@@ -395,7 +421,7 @@ codemux verify --show-scode --sandbox-trust trusted
 | `openhands` | `openhands` | yes (`--override-with-envs`) | yes | no |
 | `pi` | `pi` | yes | yes | yes |
 | `qwen` | `qwen` (`qwen-coder` fallback is sandbox-only) | current CLI only | yes | no |
-| `zai` | `claude` (z.ai proxy) | yes | yes | no |
+| `zai` | `claude` (z.ai proxy) | yes | yes | yes |
 
 Adapter flags follow current upstream CLI interfaces and can drift when a
 provider releases a breaking change. The audited versions, upstream sources,
@@ -416,7 +442,7 @@ alias that has no mapping for the selected agent fails with a descriptive error.
 | `gpt5` | - | `gpt-5.6-sol` | `gpt-5.6` | - | `gpt-5.6-sol` | `gpt-5.6-sol-medium` |
 | `gpt5-codex` / `gpt53` | - | `gpt-5.3-codex` | `gpt-5.3-codex` | - | `gpt-5.3-codex` | `gpt-5.3-codex` |
 | `gemini-pro` | - | `gemini-3.1-pro-preview` | - | `gemini-3.1-pro-preview` | `gemini-3.1-pro-preview` | `gemini-3.1-pro` |
-| `gemini-flash` | - | `gemini-3.5-flash` | - | `gemini-3.6-flash` | `gemini-3.6-flash` | `gemini-3.6-flash-high` |
+| `gemini-flash` | - | `gemini-3.6-flash` | - | `gemini-3.6-flash` | `gemini-3.6-flash` | `gemini-3.6-flash-high` |
 
 ## Autonomy Mapping
 
@@ -471,9 +497,44 @@ explicitly:
 - `low`, `medium`, `high`: `standard` + `--rw`
 
 Use `--sandbox-trust untrusted` for strict, read-only, scrubbed, offline
-execution. The preset denies the harness-state directories. Environment
-scrubbing can also remove provider credentials; prefer
-harness keychains/config files when using `--sandbox-scrub-env`.
+execution. The preset denies the harness-state directories. scode 0.6.0's
+`--scrub-env` strips by pattern, credentials included, and pairs the scrub
+with a `--keep-env <NAME[,NAME...]>` exemption; on a sandboxed `run` the
+environment codemux itself injected (the adapter's standing and per-run
+variables — a provider override's gateway pair and key above all) rides
+that exemption, so the scrub takes the ambient environment without taking
+codemux's choices. The exemption rides whenever the scrub may be on
+through codemux's own flags, and only then: under `--sandbox-scrub-env`,
+and under `--sandbox-trust untrusted`, whose scode 0.6.0 preset implies
+the scrub and cannot be weakened by config. Nowhere else — scode 0.6.0
+prints a "no effect" warning on every non-scrubbed run that carries
+`--keep-env`, so an unsolicited flag would warn on every launch. A run
+whose injected environment carries its only credential refuses before
+the spawn on a scode whose `--help` does not document `--keep-env`
+(0.5.0 does not; the refusal names the flag you passed — the scrub-env
+spelling, the untrusted spelling, or both — and scode 0.6.0): a provider
+override's key — the operator's own was omitted on purpose — and zai's
+Z.AI gateway token alike, for zai injects `ANTHROPIC_AUTH_TOKEN` (from
+`ZAI_API_KEY` or `~/.zai`) on every launch with no override involved, so
+a scrubbed zai run's only credential is one codemux injected and it
+refuses on the same rule. Every other scrubbed run keeps its previous
+behavior on a scode without the flag: the exemption is dropped, never
+rendered as an unknown flag. One scrub is outside codemux's reach: a
+scode config file that sets `scrub_env: true` is invisible to codemux,
+so the exemption does not ride there — that case is the operator's to
+manage (pass the credential names to scode's `--keep-env` yourself, or
+request the scrub through `--sandbox-scrub-env`, where codemux's
+exemption covers it). A `session` applies the same rule at its spawns —
+the long-lived child once, each per-turn process of the
+turn-per-process agents (kimi, opencode, aider) per turn; a session can
+only scrub through `--sandbox-scrub-env` (`--sandbox-trust untrusted` is
+refused for sessions up front, since a persistent session must write
+harness state) — and a session whose turns carry an injected credential
+(an override's key, zai's gateway token) refuses to START on a scode
+without `--keep-env`, with the run path's message verbatim. `tui` carries
+the same exemption: the names the launch injected ride `--keep-env` too,
+and a tui carrying an injected credential refuses to start on a scode
+without `--keep-env`, with the run path's message verbatim.
 
 Codemux builds child environments from a small operational allowlist and the
 selected harness's credentials. Aider receives its documented common provider
@@ -485,8 +546,13 @@ For example, Claude Bedrock users can explicitly grant the required AWS
 credential names. Treat every grant as authority available to model-invoked tools.
 
 Cursor's programmatic mode exposes write and shell tools. Codemux runs the
-standalone `agent` entry, then the legacy `cursor-agent` alias, and reports
-cursor as not installed when neither resolves. The desktop CLI's
+standalone `cursor-agent` entry, then the `agent` alias, and reports
+cursor as not installed when neither resolves. `cursor-agent` is the name
+Cursor's own installer lays down and the name scode's known-harness list
+carries — scode 0.6.0 dropped the bare `agent` name from that list (the
+surface was too generic to keep), and `agent` is a name other tools
+install too, so it stays only as a fallback for machines where
+`cursor-agent` does not resolve. The desktop CLI's
 `cursor agent` subcommand wraps the same agent, but the wrapper may
 install or update it on first use — the Cursor.app launcher downloads and
 runs the Cursor installer when `~/.local/bin/cursor-agent` is absent and
@@ -549,36 +615,91 @@ envelope codemux builds: `result` holds the final assistant message as plain
 text. Every envelope carries the same block:
 
 The envelope's inputs ride plain runs too: claude/zai (`--output-format
-json`), agy (`--output-format=json`), and opencode (`--format json`) launch
-in their structured mode unconditionally, and codemux unwraps the structured
-stdout back to the plain reply byte for byte — opencode's reply is spelled
-the way its run command prints it in plain mode, each text part trimmed on
-its own line — so `run`'s stdout contract holds while
-[the call ledger](#the-call-ledger) still gets the usage. The codex
-exception needs saying twice, because its stream is the one shape the
-16 MiB output bound cannot hold: its `--json` carries every event with all
-tool output, so forcing it onto plain runs pushed agentic runs past the
-bound and killed them with the reply lost; a plain codex run keeps human
-mode — stdout verbatim, exactly what the binary printed — and the ledger
-takes its usage from the blended `tokens used` figure codex prints on stderr
-(`total_tokens` alone; the figure mixes input and output and cannot be split
-back apart). opencode's `--format json` stream carries the same volume, so
-its stdout is never captured whole: the launcher feeds the event stream
-through a fold that keeps only the reply text and the folded usage — tool
-parts are dropped as they arrive — and the output bound measures that
-residue, so no amount of tool output can kill the run. A structured stream
-that arrives broken never passes through as
+json`), agy (`--output-format=json`), opencode (`--format json`), and codex
+(`--json`) launch in their structured mode unconditionally, and codemux
+unwraps the structured stdout back to the plain reply byte for byte
+wherever the wire can carry the bytes —
+opencode's reply is spelled the way its run command prints it in plain mode,
+each text part trimmed on its own line; codex's is the final assistant
+message its human mode prints — verbatim plus exactly one trailing
+newline, whatever the message ends with (the printer's own append; an
+empty or whitespace-only message keeps its bytes and gains the newline)
+— so `run`'s stdout contract holds while
+[the call ledger](#the-call-ledger) still gets the usage. The opencode and
+codex streams carry the same volume — every event with all tool output — so
+neither stdout is ever captured whole: the launcher feeds the event stream
+through a fold that keeps only the reply text and the folded usage — on
+codex the served model too; opencode's wire names no model, so its fold
+reports none — tool output is dropped as it arrives — and the output bound
+measures that residue, so tool volume spread over lines under the cap
+cannot kill the run, and the same stream
+read in different chunkings always earns the same verdict. One rule for
+a line past the bound itself (round al37): the run fails at the capture
+limit — exit 125, the diagnostic on stderr, the output that preceded
+the line, never a silent truncation — whatever the stream's regime (the
+pass-through below still open, the wire proven, a stream that never
+decided) and whatever the line's opening bytes identify, for the wire is
+committed only by a line read whole as the announcement, and a dropped
+line proves nothing; the check runs while the line accumulates and
+again when it completes, so a final line that never got its newline
+fails the run the moment it crosses. Rounds al8–al36 classified the
+dropped head instead — a tool part or a warning item dropping with a
+note alone (the warning's carve reaching before the first
+`turn.started`), any other wire shape failing as drift, the open
+pass-through arming a provisional overflow that a later wire line freed
+(a giant tool part before any text succeeding) — and al37 deleted them
+all: the retained-bytes check counts bytes retained, nothing more, and
+no oversized line is dropped silently. The
+codex fold's verdict is the envelope path's, stream-reduced, with one arm
+of its own: a turn that never completed, or one whose completion a
+failure outlives — a failed turn, a top-level error event after the
+closing turn.completed, a broken or truncated stream, a kill — prints
+nothing, exactly what human mode printed, and reports no usage; a turn
+that ends with only a Plan answers
+through the recorded final message (`--output-last-message`) with a note;
+when the stream completed the turn but codex itself exited non-zero, the
+final message stays on stdout — human mode printed it before exiting —
+while the run fails and records no usage; and a turn that completed with
+no message anywhere succeeds with empty stdout and keeps the usage, human
+mode's own exit-0 verdict for that turn. The fallback file is the one
+bounded exception: a plain run names `--output-last-message`, and the
+verdict consults it only for the turn the wire cannot carry — one that
+completed with no agent_message (the Plan-only shape) — so the file can
+never contradict a stream that carried the reply or failed its own way
+(readable, the recorded message is the answer with a note; an empty
+readable file is upstream's messageless-turn record — an empty answer
+with no note; missing, the run fails
+naming the unwritten file — upstream writes an empty file for a
+genuinely messageless turn, so a named file that is not there is a write
+codex only logged; unreadable, the run fails
+with the read error), while a `--result-json` run that names a fallback
+file carries the same split: a named file that is missing fails the
+turn naming the absent file, and one that cannot be read fails the run
+with `could not read codex's --output-last-message file: <error>` — the
+read error alone, no file named — for the read failed, which is not a
+verdict about the file's contents. A
+structured stream that arrives
+broken never passes through as
 the reply: for opencode one unparseable or cut-off line among wire lines (a
 timeout can cut the last write) keeps the text and usage folded so far with
-the break on stderr, and for the claude family and agy a stdout that is
+the break on stderr; for codex a line that is not the event grammar — not
+JSON, or JSON that is not an object (an array or a scalar), or any drift
+the envelope path's
+parser refuses — fails the run with nothing on stdout (the turn never
+completed, and human mode printed nothing for it); and for the claude
+family and agy a stdout that is
 JSON but not a parseable envelope (any JSON value — an array or a scalar
 included — or an object a kill cut mid-write; the envelope is one write a
 kill can halve)
 fails the run with nothing on stdout. Stdout that is not the structured
 output the launch asked for at all — an older binary, a wrapper that strips
 the flag, not one line of the wire — passes through verbatim with the run
-unchanged and nothing recorded. The same verdict rules as the envelope path
-apply to the unwrap: an error result or a result with no text fails the run.
+unchanged and nothing recorded; a codex binary that ignored `--json` and
+printed human mode anyway leaves its blended `tokens used` stderr figure as
+the one usage there is (`total_tokens` alone; the figure mixes input and
+output and cannot be split back apart). The same verdict rules as the
+envelope path apply to the unwrap: an error result or a result with no text
+fails the run.
 
 ```json
 "codemux": {
@@ -620,7 +741,11 @@ when the harness's last stderr line was unterminated. An empty result is a
 failed run on every path, plain or structured: a Claude-family envelope whose
 `result` is empty or whitespace only, or a codex turn whose final
 `agent_message` carried text that is empty or whitespace only, fails instead
-of passing a run with no reply. In a codex-built envelope `result`
+of passing a run with no reply — the one exception is the codex plain run,
+where a completed turn with no message or an empty one keeps the exit-0
+verdict human mode gave it: no message at all prints nothing, and an empty or
+whitespace-only message prints its bytes plus exactly one trailing newline
+(`println!`'s own spelling, never an emptied string). In a codex-built envelope `result`
 is null too (a partial message from an earlier completed item never poses as
 the final one); a Claude-family envelope keeps the harness's own `result`
 field verbatim, since it re-emits the harness's record rather than building
@@ -628,9 +753,19 @@ one. A codex
 stream whose last turn never ended with `turn.completed` fails the same way:
 a completed message item is not a completed turn upstream, so a zero-exit
 wrapper that drops the final event cannot pass a truncated result off as
-done — and an item event after the last `turn.completed` (`item.started`,
-`item.updated`, or a completed item of any type) with
-no turn reopened, a `thread.started` that is not the stream's first event
+done — and an item event outside a turn (`item.started`,
+`item.updated`, or a completed item of any type): before the first
+`turn.started` as well as after the last `turn.completed` with
+no turn reopened — a pre-turn item could otherwise overwrite the served
+model with a reroute notice no turn of this run served — with the one
+exception round al35 carved: a completed `error` item before the first
+`turn.started`, its message a plain string that is not the reroute
+notice's own, is a startup warning — codex reports initialization
+warnings in exactly that shape between the thread announcement and the
+first turn, and the run it annotates succeeds (never past a turn
+completion: after the last `turn.completed` an item is the
+concatenated-stream shape again, wherever its message would have come
+from) — a `thread.started` that is not the stream's first event
 (a second announcement included), or a `turn.started` inside a turn still
 open or after a turn already completed (one `codex exec` run is one turn),
 is format
@@ -656,7 +791,8 @@ bytes the harness printed.
 One codex nuance the other direction: a turn that ends with only a
 `Plan` item is a success, because codex itself treats that Plan as the
 turn's final message even though the JSONL stream drops the item — the
-launch also passes `--output-last-message`, and the message codex recorded
+`--result-json` launch also passes `--output-last-message`, and the
+message codex recorded
 is the `result`, with a stderr note saying the stream carried no
 `agent_message`. `--sandbox-trust untrusted` is the one exception: on a
 non-hermetic run it denies the child write access to the harness state
@@ -776,17 +912,21 @@ harness:
 | Harness | Usage | Cost | Effective model |
 |---------|-------|------|-----------------|
 | claude, zai | Full (input, output, cached; total computed) | Yes (`total_cost_usd`, per run) | Yes (`modelUsage`, single-model runs) |
-| codex | Full on `--result-json` runs (input, output, cached incl. cache writes); plain runs carry the blended `tokens used` figure from stderr (total only — the figure mixes input and output) | No | Only on a mid-run reroute (`--result-json` runs) |
+| codex | Full, plain and `--result-json` runs alike (input, output, cached incl. cache writes): every run launches `--json`, and a plain run's stream is folded down to the reply and the usage snapshot as it arrives — the 16 MiB output bound measures the residue, never the stream. The plain-unwrap escape hatch (a binary that ignored `--json`) keeps the blended `tokens used` stderr figure alone (total only — the figure mixes input and output) | No | Yes, on a mid-run reroute |
 | agy | Full (input, output, cache reads; total computed) | No | No |
 | opencode | Per-run sums (input, output, cache read+write, total, cost when the provider reports one). The plain-run path streams the `--format json` events through a fold that keeps the reply text and folded usage alone — tool parts are dropped as they arrive, so the run cannot outgrow the 16 MiB output bound, and what the tool events carried (their inputs, their outputs) is not kept anywhere | When reported | No |
 | aider | None — its headless wire reports no usage | No | No |
+| kimi | None — the stream-json wire carries no usage | No | No |
 | everything else | None — plain text stdout, no structured mode | No | No |
 
 For opencode sessions the numbers come from the per-turn wire the session
 driver already parses; for claude, zai, codex, and agy sessions, from the
 same envelope or event stream the `--result-json` path reads. A run whose
 stdout is not the structured output the launch asked for (the plain-unwrap
-escape hatch) records null usage honestly rather than a guess. What an
+escape hatch) records null usage honestly rather than a guess — codex
+excepted (the table row above): its hatch run parses the blended `tokens
+used` figure human mode prints on stderr, so the hatch records a real
+total even from a binary that ignored `--json`. What an
 endpoint reports is its own choice: the local vLLM override gateway this
 release's live check ran against reported real token counts (24709 in,
 2 out, 0 cached) and a zero cost — a reported zero, not a missing figure —
@@ -804,42 +944,62 @@ session writes a second closing record under the same session id, and each
 closing carries session-lifetime usage (the writer cannot subtract the
 pre-resume share: the wire reports only the new total), so `--sum` folds
 the closings of one session to the newest — the older closing is
-superseded and named in the note, never added. Aider sessions
-report no usage on their headless wire, so their records carry nulls.
+superseded and named in the note, never added. Aider and kimi sessions
+report no usage on their wires, so their records carry nulls.
 
 ## Live sessions
 
 `codemux session` is one protocol over every session-capable harness:
 JSONL input lines on stdin, JSONL event envelopes on stdout, one harness
 process per session with its whole process tree killed at the end —
-except the two turn-per-process harnesses: `opencode` spawns one
-`opencode run` per turn over the harness's own native session store, and
+except the three turn-per-process harnesses: `opencode` spawns one
+`opencode run` per turn over the harness's own native session store,
 `aider` spawns one headless `aider --message` per turn over a chat
 history file codemux owns, whose ownership, regular-file shape, and
 0600 mode are re-checked before every turn — a symlink planted between
-turns fails the turn instead of being followed. A turn whose process
+turns fails the turn instead of being followed, and `kimi` spawns one
+headless `kimi --prompt --output-format stream-json` per turn over
+kimi's own on-disk session store, resuming the id the first turn's
+`session.resume_hint` line named (`--session <id>`); the prompt rides
+argv, so the run path's 32 KiB argv bound is the per-turn cap. A turn
+whose process
 has not landed yet when a graceful end begins (stdin close,
 `shutdown`) still runs: the end path delivers the turn's payload
 itself — the prompt on opencode's stdin, the canned negatives on
-aider's — and drains the turn to completion, so `printf one user line
+aider's — and drains the turn to completion (kimi's late child needs
+nothing delivered: its prompt already rides its argv), so `printf one
+user line
 | codemux session -a <agent>` answers its one prompt; only a signal,
-timeout, or crash end stops a late child on arrival. A prompt whose first
-non-whitespace character is `/` or `!` is refused outright, on the run
-path (exit 64) and the session path (`input_rejected`, `unsupported`)
-alike: aider runs those as its own commands before any model turn — `!`
-is the `/run` alias and executes the shell immediately, ungated by
-`--dry-run` — so relaying one would execute a line the autonomy never
-authorized. The history read-back
+timeout, or crash end stops a late child on arrival. Aider runs a
+prompt whose first non-whitespace character is `/` or `!` as its own
+command before any model turn — `!` is the `/run` alias and executes
+the shell immediately, ungated by `--dry-run` — so such a prompt is
+refused outright, on the run path (exit 64) and the session path
+(`input_rejected`, `unsupported`) alike: relaying one would execute a
+line the autonomy never
+authorized. Kimi's refusal is narrower (round al17): 0.31.1's headless
+path parses only goal-creates before the model turn (`/goal
+<objective>` and `/goal replace …` run the goal flow with their own
+exit codes and never reach the model), and every other prompt — any
+other slash command, a `/`-leading path like `/tmp/notes.md please
+summarize`, even `! …` — reaches the model unchanged, the last verified
+live through `codemux run -a kimi`. codemux refuses the word-bounded
+`/goal` name, all spellings, and the `!` shell-escape shape: the
+subcommand spellings and `!` are model text today, but they are kimi's
+command grammar and interactive shell escape, and one name-and-shape
+boundary is stable where per-spelling dispatch has already changed
+once. The history read-back
 is bounded per turn, never per file: a session's history grows without
 limit, and codemux reads only each turn's delta past a byte offset. A
 turn killed partway leaves the history half-written (aider writes the
 user block at the turn's start, the reply only at its end), so that
 session's end is not resumable: a resume would replay the unanswered
 prompt. Supported: `claude`, `zai`, `codex`, `agy`,
-`opencode`, `aider`; any other agent refuses with
+`opencode`, `aider`, `kimi`; any other agent refuses with
 exit 64 rather than falling back to another harness. Each harness runs
 behind its own session-only version floor (claude and zai 2.1.280, codex
-0.159.3, agy 1.2.14, opencode 1.18.18, aider 0.86.2) because the resume
+0.159.3, agy 1.2.14, opencode 1.18.18, aider 0.86.2, kimi 0.31.1)
+because the resume
 and permission contracts are
 only audited down to those builds — a harness whose version the probe
 cannot read is refused like a below-floor build, not waved through.
@@ -907,17 +1067,17 @@ the line's bytes) instead of the line itself.
 `file_change`, `turn_completed`, `session_ended` follow. What each
 harness honestly supports:
 
-| Capability | claude | zai | codex | agy | opencode | aider |
-|------------|--------|-----|-------|-----|----------|-------|
-| `live_input` | true | true | true | true | true | true |
-| `user_during_turn` | false (rejected `busy`) | false (same) | `queue` | false (rejected `busy`) | false (rejected `busy`) | false (rejected `busy`) |
-| `steer` | false (rejected `unsupported`) | false (same) | true | false | false (rejected `unsupported`) | false (rejected `unsupported`) |
-| `interrupt` | true | true | true | false | false | false |
-| `permissions` | true | true | true (native server requests) | false | false | false |
-| `deltas` | true | true | true | false | false | false |
-| `file_changes` | derived from tool calls | derived | `native` item | false | false | false |
-| `usage_stream` | false (usage only in the turn's `result`) | false (same) | true | false (usage only in the result) | false (usage only in each turn's `step_finish`, folded into `turn_completed`) | false (aider reports no usage headlessly) |
-| `resume` | true | true | true | true | true (native `--session <id>`) | true (the history file) |
+| Capability | claude | zai | codex | agy | opencode | aider | kimi |
+|------------|--------|-----|-------|-----|----------|-------|------|
+| `live_input` | true | true | true | true | true | true | true |
+| `user_during_turn` | false (rejected `busy`) | false (same) | `queue` | false (rejected `busy`) | false (rejected `busy`) | false (rejected `busy`) | false (rejected `busy`) |
+| `steer` | false (rejected `unsupported`) | false (same) | true | false | false (rejected `unsupported`) | false (rejected `unsupported`) | false (rejected `unsupported`) |
+| `interrupt` | true | true | true | false | false | false | false |
+| `permissions` | true | true | true (native server requests) | false | false | false | false (headless kimi auto-approves) |
+| `deltas` | true | true | true | false | false | false | false |
+| `file_changes` | derived from tool calls | derived | `native` item | false | false | false | false |
+| `usage_stream` | false (usage only in the turn's `result`) | false (same) | true | false (usage only in the result) | false (usage only in each turn's `step_finish`, folded into `turn_completed`) | false (aider reports no usage headlessly) | false (the stream-json wire carries no usage) |
+| `resume` | true | true | true | true | true (native `--session <id>`) | true (the history file) | true (kimi's own store, via `--session <id>`) |
 
 A `false` is honest: the unsupported input is rejected by name, never
 accepted and ignored. On claude and zai, `user_during_turn` is false
@@ -981,9 +1141,10 @@ releases it and reports `resumable: false`. A registry that cannot be written en
 before it runs: an untracked live session must not run. A fresh claude,
 zai, or aider session is recorded before its harness starts (codemux
 chooses its session id — for aider a UUID whose chat history file it
-creates under `~/.aider/.codemux/sessions/<id>/`), and a fresh agy or
-opencode session, whose id only its first
-result names, checks that the registry can be written before it starts;
+creates under `~/.aider/.codemux/sessions/<id>/`), and a fresh agy,
+opencode, or kimi session, whose id only its first
+result names (kimi's: the closing `session.resume_hint` of its first
+turn), checks that the registry can be written before it starts;
 either failure exits 1 with nothing spawned. A fresh claude or zai
 session that ends before its harness confirmed it leaves no record, so
 a later `--resume` of its id exits 66. Killing codemux
@@ -992,35 +1153,29 @@ session: the harness persists its own state, and the registry's
 owner-liveness check refuses resume only while the recorded owner is
 still alive — a stale record (owner gone, `ended` never set) resumes.
 
-Clean lifecycle on both ends: stdin closing ends the session cleanly
-(mid-turn included — the turn is interrupted (agy, which has no
-interrupt, gets its stdin closed instead), the harness gets one shutdown
-grace to answer before any signal, then SIGTERM and a second grace
-before the tree is killed, and whatever the harness emits inside those
-windows — the interrupted turn's completion and its usage included —
-reaches the caller before the process tree dies — while a failure
-arriving inside the window still costs success: the session ends 1, not
-0, and a harness that exits nonzero during the shutdown — a failure
-while persisting, whether a turn was open or not and whether or not
-its completion arrived first — ends 1 as well, with two exceptions:
-exit 1 after an interrupted claude or zai turn the drain delivered
-(claude's convention after an interrupt), and 143, a wrapper answering
-the shutdown signal with 128+SIGTERM, which is the signal death's coded
-spelling and is read as one); a read error on stdin is not a clean
-close: it ends the session with a fatal error and exit 1. A turn nothing
-can answer — a harness that ignores the end-interrupt or the stdin close
-and dies on the signal, a 143 wrapper, a harness crash mid-turn, a
-harness exiting nonzero during the drain with its turn still open — has
-its `turn_completed` synthesized (`finish: "interrupted"` with a reason
-naming the session end, `finish: "failed"` with the fatal that ended the
-session or the drain failure as the reason, and the usage the turn
-reported before the end — a codex turn's streamed usage; all-null on
-the claude family and agy, which report usage only in the result the
-end cut off),
+Shutdown first uses the harness's protocol: an interrupt followed by stdin
+close for claude, zai, and codex; stdin close for agy; and the end of the
+per-turn process for kimi, aider, and opencode. The harness gets a grace
+period to exit before SIGTERM, then another before tree SIGKILL. A child
+that requires a signal has not shut down orderly: every nonzero code or
+signal exit fails the session with reason `harness_failed`. There are
+no exceptions for code 1, 137, or 143, and no signal attribution.
+Code 0 can succeed; an idle session with no child can also succeed.
+Other failures, including a caller stdin read error, still fail the session.
+
+Every `session_ended` carries `harness_exit`, the last observed child's
+raw `{code, signal}` outcome, or null when no outcome was observed.
+Its `exit_code` summarizes the session's exit. Its `shutdown_requested`
+boolean records whether stdin close, a `shutdown` input, or a signal to
+codemux requested the end, independently of the child outcome.
+An unanswered turn receives a synthesized `turn_completed`: `failed`
+for a child failure or fatal error, otherwise `interrupted`, with
+the usage the turn reported before the end — a codex turn's streamed
+usage; all-null on the claude family and agy, which report it in the
+result. A fresh Kimi resume hint is emitted after `session_started`,
+only after registry recording succeeds,
 so every turn is answered even where the harness cannot answer it
-itself; a harness crash ends
-the session through the crash path with the exit code reported, one
-fatal error — not two. Exit
+itself. A harness crash reports `harness_failed` and a fatal error. Exit
 codes: 0 clean end, 1 crash, codemux failure, a registry codemux
 could not reach (a lock held past its budget or an I/O error; a retry
 may pass), or `--timeout` expiry
@@ -1030,7 +1185,8 @@ guard, including an untrusted registry), 143 signal.
 
 Contract details per harness — the codex `app-server` method table, the
 claude stream-json control round-trips, the agy NDJSON loop, the
-opencode `run` wire, the aider history-file loop — are in
+opencode `run` wire, the aider history-file loop, the kimi stream-json
+prompt wire — are in
 [the compatibility ledger](docs/HARNESS-COMPATIBILITY.md).
 
 ## Optional Usage Integration

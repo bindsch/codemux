@@ -7,6 +7,415 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-12
+
+- Recovered Codex top-level errors remain stderr notes after a successful
+  turn. Recovery clears failure status without discarding the diagnostic.
+- A fresh Kimi resume hint follows `session_started`. Registry failure
+  suppresses the hint and leaves every emitted session ID empty.
+
+
+### Upgrade notes
+
+- Plain codex runs now launch `--json` and stream-fold the event wire —
+  the treatment claude/zai/agy/opencode got in 0.11.0, delayed for codex
+  because its stream carries every event with all tool output. The
+  stdout contract is unchanged and holds byte for byte wherever the wire
+  can carry the bytes, failed runs included: the final assistant message
+  whenever the stream completed the turn with no failure standing after
+  it — kept on stdout even when codex itself then exits non-zero, which
+  human mode also printed — and nothing when the turn never completed or
+  a failure outlived its completion (a failed turn, a top-level error
+  event after the closing turn.completed, a broken or truncated stream,
+  a kill after an intermediate message; human mode printed nothing for
+  those either). The one turn whose human-mode bytes
+  the wire cannot carry — a completed turn with no message anywhere, the
+  Plan-only turn of an `--sandbox-trust untrusted` run (the event wire
+  carries no Plan item) — succeeds with empty stdout and keeps the usage,
+  human mode's own exit-0 verdict for that turn (round al10). Round al29
+  scopes the `--output-last-message` file to the ONE turn whose bytes the
+  wire cannot carry: the file rides every launch's argv again — every
+  launch that can name one, for non-hermetic `--sandbox-trust untrusted` is the one
+  that cannot: its preset denies the child write access to the harness
+  state directory the file lives in, so codemux passes no file there.
+  Hermetic runs still name a fallback file under every trust level
+  (a Plan-only
+  turn's recorded final message is the reply's only carrier), but the
+  plain verdict consults it only when the stream completed a turn with
+  no agent_message and nothing else failed — readable, the recorded
+  message is the reply with a note saying so; an empty readable file is
+  upstream's messageless-turn record and succeeds with empty stdout and
+  no note; missing, the run fails
+  naming the unwritten file — upstream writes an empty file for a
+  genuinely messageless turn, so a named file that is not there is a
+  write codex only logged (aligned with `--result-json` in round al34);
+  unreadable, the run fails with the read error — so the file can
+  never contradict a stream that carried the reply or failed its own
+  way. The output-limit verdict no longer depends on how the stream's
+  bytes happened to be grouped into reads: a line counts toward the
+  bound only when it completes — and a final line that never got its
+  newline is counted at the end, when the fold closes the stream, so a
+  last event whose value crosses the bound fails the run at the capture
+  limit (exit 125) instead of succeeding over it (round al30). `--result-json` runs read the file for
+  the same blind spot, and there a named fallback file that is missing
+  fails the turn naming the absent file, for upstream writes an empty
+  file for a genuinely messageless turn and a missing one is a write
+  codex only logged. The reply's spelling is
+  the pinned human processor's own `println!` (rust-v0.160.1): the
+  message verbatim plus exactly one trailing newline, always — an
+  empty-text or whitespace-only agent_message prints its bytes and the
+  newline, and a message already ending in one prints two (round al11).
+  The stream is never captured whole —
+  tool events are dropped as they arrive and the 16 MiB output bound
+  measures the residue — so no amount of tool output can kill the run.
+  The one line larger than the bound itself fails the run at the
+  capture limit (round al37): exit 125, the capture-limit stderr, and
+  the output that preceded the line — never a silent truncation —
+  whatever the stream's regime and whatever the line's opening bytes
+  identify, for the wire is committed only by a line read whole as the
+  announcement and a dropped line proves nothing. The check runs while
+  the line accumulates and again when it completes, so a final line
+  that never got its newline fails the run the moment it crosses.
+  Rounds al8 through al36 classified the dropped head instead — a tool
+  part or a warning item dropping harmlessly with a note inside an
+  open turn (the warning's carve reaching before the first
+  `turn.started`, round al35, matching the reducer's startup-warning
+  carve-out), any other wire-shaped line failing as drift because what
+  it carried could have been the turn's final message, the undecided
+  regime's oversized first line committing human mode with a bounded
+  prefix kept — and al37 deleted them all: the retained-bytes check
+  counts bytes retained, nothing more, and no oversized line is
+  dropped silently.
+  Plain runs now record the full usage block (input, output, cached
+  including cache writes, computed total) instead of the blended
+  `tokens used` stderr figure; a binary that ignored `--json` and
+  printed human mode anyway (the escape hatch) passes through verbatim
+  and keeps the blended figure alone — a JSON-only reply included: an
+  object line with no string `type` is not a codex event, so a stdout
+  of exactly `{"answer":42}` passes through with exit 0 rather than
+  failing as the wire's shape without its announcement (round al11).
+  The hatch is decided once per stream, by the first non-empty line
+  (round al30): a first line that is the `thread.started` announcement
+  opens the wire for the whole stream, and any other first line — an
+  error event, a plain reply, a wrapper's banner — keeps the whole
+  output human mode's verbatim bytes at the child's own exit code.
+  An oversized first line never reaches that rule (round al37): it
+  fails the run at the capture limit like any other line past the
+  bound, so a wrapper's giant JSON document is a failed run, not a
+  wire commitment whose drift would fail the run at exit 1.
+  Nothing later can flip the regime, so a
+  reply containing a fenced example of the event grammar stays what
+  it is: text the model wrote, never a `turn.failed` to fail the run
+  with.
+  Wrapper scripts that parse the
+  child's argv will see `--json` on every codex run.
+- `--effort` now applies to `zai` runs and sessions. zai runs the same
+  Claude Code binary as claude with the same `--effort` flag; verified
+  live against the Z.AI endpoint (glm-5.3 answering under
+  `--effort low`). Previously the flag was refused for zai. The accepted
+  levels include `none` — the mapper's "no flag" spelling, which sends
+  nothing (round al11: the capabilities list had carried the binary's
+  own levels only, refusing the one level 0.11 accepted).
+- The `gemini-flash` alias resolves to `gemini-3.6-flash` for droid
+  (previously `gemini-3.5-flash`), matching the rest of the table;
+  droid's installed catalog serves 3.6.
+- Under `--sandbox-scrub-env`, a `run` with a provider override now
+  requires a scode whose `--help` documents `--keep-env` (0.6.0 does;
+  0.5.0 does not). codemux passes the environment it injected
+  for the run through the exemption, and an override run refuses before
+  the spawn on a scode without the flag — the override's key is the
+  run's only credential, so a launch that might run stripped is not
+  launched. The same refusal covers `zai` with no override at all
+  (round al12): zai injects its Z.AI gateway token
+  (`ANTHROPIC_AUTH_TOKEN`, from `ZAI_API_KEY` or `~/.zai`) on every
+  launch, so a scrubbed zai run's only credential is also one codemux
+  injected, and it refuses on a scode without the flag with the same
+  message — which names scode 0.6.0 and `--keep-env`. Every other
+  non-override scrubbed run keeps its previous behavior on a scode
+  without the flag (the exemption is dropped, never rendered as an
+  unknown flag). `session` applies the same rule at every spawn (the
+  long-lived child once, each per-turn process of the turn-per-process
+  agents per turn), and a session whose turns carry an injected
+  credential (an override's key, zai's gateway token) refuses to start
+  on a scode without the flag, with the run path's message.
+  `tui` carries the same exemption and the same refusal (round al7):
+  the names the launch injected ride `--keep-env`, and a tui carrying
+  an injected credential refuses to start on a scode without the flag,
+  with the run path's message.
+- The `--keep-env` exemption now rides whenever the scrub may be on
+  through codemux's own flags, not only under `--sandbox-scrub-env`:
+  scode 0.6.0's `untrusted` preset implies the scrub, so a sandboxed
+  `run` (and `tui`) under `--sandbox-trust untrusted` passes the
+  environment codemux injected through the exemption too, and a run whose
+  injected environment carries its only credential (a provider override's
+  key, zai's Z.AI gateway token) refuses before the spawn on a scode
+  whose `--help` lacks `--keep-env` — the refusal naming the untrusted
+  spelling, since that is the flag the operator passed. Sessions keep
+  their existing rule: `untrusted` is refused for sessions up front (a
+  persistent session must write harness state), so a session's scrub
+  still arrives only through `--sandbox-scrub-env`. The exemption is not
+  passed anywhere the scrub is off — scode 0.6.0 warns that `--keep-env`
+  has no effect on every non-scrubbed run carrying it — and a scode
+  config file that sets `scrub_env: true` is invisible to codemux, so the
+  exemption does not ride there either; that case is the operator's
+  (pass the credential names to scode's `--keep-env` yourself, or request
+  the scrub through `--sandbox-scrub-env`, where codemux's exemption
+  covers it).
+- A claude provider override now adds `--settings` (inline JSON with one
+  `modelPicker` row) beside `--model` on every launch — `run`, `tui`,
+  and `session`. Claude Code >= 2.1.280 validates `--model` against its
+  own model catalog before any request leaves the client, and a
+  provider-format id fails that check client-side with zero requests
+  reaching the endpoint; the row maps the override's model onto the
+  `claude-sonnet-5` tier without changing the model id sent. Wrapper
+  scripts that parse the child's argv will see the new flag under an
+  override. Verified live against Claude Code 2.1.280 (round al7): the
+  row is honored under `--safe-mode` too — a hermetic override run
+  against a canned Messages fixture reached the endpoint with the
+  override's model, so `--hermetic` and the mapping compose.
+  `CODEMUX_CODEX_PROVIDER_STORE` is refused for any value that is
+  non-empty after trimming (an empty or whitespace-only value counts as
+  unset, like `MULTI_AGENT` — both knobs trim before they test):
+  no supported Codex release has a response-storage config key, and
+  codex already sends `store: false` on every Responses request.
+
+### Added
+
+- `codemux session -a kimi`: turn-per-process over kimi's own session
+  store (kimi 0.31.1 audited; session floor 0.31.1). Each turn spawns
+  one headless `kimi --prompt --output-format stream-json`; a fresh
+  session learns its id from the first turn's closing
+  `session.resume_hint` line and every later turn resumes it with
+  `--session <id>`, kimi's own store replaying the transcript (and
+  refusing an id recorded under a different working directory). The
+  prompt rides argv — kimi 0.31.1 has no stdin transport — so the run
+  path's 32 KiB argv bound is the per-turn cap. The `/goal` command
+  (word-bounded, all spellings) and the `!` shell-escape shape are
+  refused before the ack like aider's rule, and the run path refuses
+  them with exit 64 before anything launches (round al11: the refusal
+  existed in the session driver alone; round al17 narrowed it — 0.31.1's
+  headless path dispatches only goal-creates, so every other prompt, a
+  `/`-leading path included, is model text and passes; `!` is model text
+  too today, verified live, and refused anyway as the interactive
+  shell-escape shape). Headless
+  kimi auto-approves every tool call, so the capability matrix reports
+  no permissions and the autonomy ceiling rides the scode boundary. The
+  stream-json wire carries no usage, so session records are honestly
+  null. `KIMI_CODE_HOME` (reached only via `--pass-env`) is recorded
+  exactly as the child receives it, never trimmed: kimi reads the
+  variable without trimming, so a padded value names a different store
+  directory to the child, and the record and the resume guard both
+  carry the raw bytes (round al11). Two end-path guarantees: a turn
+  spawn that fails while the session is ending — a stdin close that
+  kills a failing scode version probe — surfaces as a fatal error with
+  a nonzero exit, never a clean "interrupted" turn, and an emission
+  that ends the session (an outbound-queue overrun inside the
+  `turn_started` emit) can no longer abort the effect list it
+  interrupted (round al29): the fatal parks behind the list and
+  dispatches after it, so the spawn it once stopped still starts and
+  the end's hold owns its late child — while the session's end events
+  (`session_ended` and the fatal that ends the session) ride a lane
+  of fixed reserved capacity the queue's event and byte caps do not
+  close (rounds al30 through al35: al30 carved the lane; al31 gave it
+  a fixed capacity; al32 narrowed its membership to the session's end
+  events alone and admitted them to the ordinary capacity first, the
+  lane only as fallback — so completions and acks are ordinary
+  entries, dropped with the overflow policy like everything else once
+  a bound trips, and no run of pending turn answers can occupy the
+  reservation the end needs; al35 split the lane's capacity by class,
+  a fatal-class entry capped one slot short of it, so the last slot
+  is `session_ended`'s alone and a crash end that owes the caller a
+  flood of fatals can never starve the end event of the very slot
+  the lane exists to keep).
+  A native event-protocol driver was investigated first
+  (`kimi acp`, the editor-facing Agent Client Protocol server) and
+  refused: it authenticates through its own device-code login and has
+  no documented permission or cancel contract — see
+  docs/HARNESS-COMPATIBILITY.md, 2026-10-10 addendum.
+  Round al28 rewrote the driver around one state machine
+  (src/session/kimi-machine.ts): a pure transition over six states —
+  idle, spawning, running, draining, ending, ended — where every
+  interleaving decision (which cause ends the session, whether an
+  in-flight spawn is awaited or abandoned, whether a late child runs
+  or is stopped, a turn's verdict, the exit code) is a table entry, not
+  a per-interleaving flag. The end code summarizes every failure.
+  In al41, a nonzero child code or signal exit supersedes the initiating
+  reason with `harness_failed`; `shutdown_requested` independently records
+  caller intent. A killing end (signal, timeout, crash) abandons an
+  in-flight spawn — the spawn closure's probes must not stretch the
+  session's deadline — and the registry record stays held until the
+  abandoned spawn can no longer produce a child; a graceful end
+  (stdin close, shutdown) awaits the spawn and runs the turn it owes.
+  The outbound queue's overflow policy applies to ordinary events,
+  the input acks, `turn_started`, and `turn_completed` among them
+  (round al32, narrowing al31's carve-out): the session's end events
+  — `session_ended` and the fatal that ends the session — alone ride
+  a lane of fixed reserved capacity (8 entries) that the event and
+  byte caps never close, and they take the ordinary capacity first,
+  the lane only when the ordinary queue is full (the reservation is
+  one lane, not one slot: a crash end can owe several fatal-class
+  events before `session_ended` — and round al35 split the lane's
+  capacity by class, capping the fatal class one slot short of it, so
+  that flood can never take the very slot `session_ended` needs). So a caller whose sink stalls while
+  1,024 events sit queued — eight pending turn answers among them —
+  still learns the session ended and why, for the end waits out the
+  flush's documented give-up before resolving, and a stalled sink fed
+  repeated input cannot grow the queue without bound, for the acks
+  drop with everything else once a bound trips.
+  The exhaustive pairwise interleaving matrix (every ordering of the
+  end events, the spawn's settlement, and the child's exits, from both
+  live phases) is held as a suite
+  (tests/session-kimi-interleavings.test.ts), so an ordering regression
+  fails a named scenario instead of a flag combination. Signal attribution
+  is removed (al41). Every nonzero child code and every signal exit fails
+  the session with reason `harness_failed`, including during shutdown.
+  Every harness's `session_ended` carries the raw `harness_exit`,
+  the session's summary `exit_code`, and `shutdown_requested`.
+  Shutdown first uses the harness protocol, then signals a child that
+  does not exit within its grace period. Final Kimi turn emissions use the
+  reserved terminal lane; failure to queue one is fatal, never success.
+  The closing ledger waits for the final flush and records the driver's
+  returned exit code, including a failed final output write (al39).
+  And a synchronous throw from a turn's spawn completes the hold
+  instead of leaving the end waiting on a hold nothing releases (round
+  al37; the repro shape: a blocked sink, 1,023 queued rejections, a
+  spawn validation failure).
+- scode `--keep-env` support on scrubbed `run` launches: codemux's
+  injected environment (the adapter's standing and per-run variables, a
+  provider override's credential above all) rides the exemption under
+  `--sandbox-scrub-env`; capability is probed from `scode --help` at
+  launch, never guessed from a version. Session spawns resolve the same
+  exemption through the same probe (one probe per resolved scode binary,
+  probe environment, and working directory per process), so the two
+  paths share one verdict — and no environment-sensitive wrapper can
+  poison another environment's cached answer.
+- The claude provider override maps its model into Claude Code's model
+  catalog: `--settings` carries a `modelPicker` row with
+  `behavesAs: "claude-sonnet-5"` (the id must be what the endpoint
+  serves; the tier is only what the client assumes). Verified against
+  the installed 2.1.280 binary's own rejection text, settings schema,
+  and catalog, and live: a three-turn session against a local vLLM
+  gateway recalled a code word planted in turn 1 through the mapping,
+  where the same launch without it dies client-side
+  (`unrecognized_model`) with zero requests.
+- `CODEMUX_CODEX_PROVIDER_STORE` is refused loudly for any value that
+  is non-empty after trimming, on every path (run, tui, session; an
+  empty or whitespace-only value counts as unset, like `MULTI_AGENT` —
+  both knobs trim before they test) — the same doctrine as the refused
+  codex output cap: the knob names a config key no supported release
+  has (verified against the generated config schema shipped in codex-cli
+  0.159.3 and the 0.160.1 binary), and the behavior it would request is
+  already hardcoded (`store: false` on every Responses request;
+  `previous_response_id` absent from the HTTP wire). The empirical
+  turn-2+ failure against vLLM 0.12 is a different one: its
+  `/v1/responses` input validator rejects codex's replayed conversation
+  history, which no codex config key can change — recorded in
+  docs/HARNESS-COMPATIBILITY.md.
+
+### Changed
+
+- Cursor launches resolve the standalone `cursor-agent` entry first,
+  then the `agent` alias (round al7; 0.7.0 had the order reversed).
+  scode 0.6.0 dropped the bare `agent` name from its known-harness
+  list — the surface was too generic to keep — while `cursor-agent`
+  stays on it, and `agent` is a name other tools install too, so it is
+  the fallback, not the first choice. The opt-in desktop `cursor
+  agent` entry is unchanged. Machines where both names resolve see no
+  behavior change beyond which one codemux probes and reports; machines
+  where only `agent` resolves keep working.
+- A plain codex run whose stdout carries only top-level error events,
+  with no `thread.started`, is human mode's own output end to end
+  (round al30): the first non-empty line is not the wire's
+  announcement, so the whole stream passes through verbatim and the
+  child's own exit code is the verdict — a codex that exited 0 succeeds,
+  one that exited 2 keeps its 2. Nothing of the events is interpreted
+  (no codemux diagnostic quotes them), for the regime never opened the
+  wire; a `--result-json` run still answers the same bytes with its
+  generic unparseable-stream diagnostic, its own stricter grammar.
+- The call ledger's codex rows carry the full usage block on plain runs
+  (input, output, cached including cache writes, computed total);
+  previously `total_tokens` alone, from the blended stderr figure.
+- Timeout and signal termination keep 0.11.0's tree-scoped order
+  (round al31 restores it): a tree-scoped stop walks the process table
+  for the target's descendants first, signals the ones the walk
+  remembers, then signals the whole group (`kill(-pgid)`) and the
+  target itself — the order the 0.11.0 mechanism held through eleven
+  review rounds, and the one a pid-tree walk needs to reach a
+  descendant the group cannot. Signal attribution is removed (al41):
+  neither callback timing nor signal delivery changes the child verdict.
+  Process-table reads serve tree cleanup alone. Every `session_ended`
+  carries `harness_exit` and `shutdown_requested` separately. The
+  child is signaled through its subprocess handle, which cannot target
+  a reused pid even before the exit continuation runs (al39). A
+  second SIGINT/SIGTERM while a session's hold settles an abandoned
+  spawn escalates to an immediate tree SIGKILL instead of being
+  absorbed, and the escalation latches (round al31): a second signal
+  that arrives while the abandoned spawn is still in flight — before
+  any child exists — carries the escalation to the child the moment it
+  lands. The signal handlers stay installed until the last abandoned
+  spawn is settled, where they came down at `session_ended` before and
+  the default disposition would kill codemux mid-hold.
+- A plain opencode run's fold fails a wire line over the 16 MiB output
+  bound at the capture limit (round al37): exit 125, the
+  capture-limit stderr, and the output that preceded the line,
+  whatever the line's shape — the same verdict the same line read
+  whole earns, under every chunking of the pipe. Rounds al19 through
+  al36 had classified the dropped head instead (a `tool_use` head
+  dropping harmlessly with a note, every other wire shape failing as
+  drift, the undecided regime's provisional overflow that a later
+  wire line freed), and al37 deleted the classifier and its
+  carve-outs: the retained-bytes check counts bytes retained, nothing
+  more. The 0.11.0 fold's opposite defect — oversized wire lines
+  dropped as harmless noise, letting an oversized final reply or
+  error event pass a failed run off as a success — stays fixed by
+  the same rule, for no oversized line is dropped silently. Tool
+  parts dropped as they arrive never reach the bound, so tool volume
+  spread over lines under the cap still succeeds.
+- The codex session-home sweep tests inject their registry consult
+  instead of defaulting to the machine's real session registry: a
+  process tree denied `~/Library` (macOS TCC — agent hosts included)
+  reads that registry as `unknown`, which spares every home by design
+  (review D5), so the suite's outcome no longer depends on the host's
+  access to the operator's registry file. Test-only; no behavior
+  change.
+- A kimi session whose open turn is cut by the session end — a shutdown
+  or a stdin close — with the drain expired now reports that turn
+  faithfully: `interrupted` with the real cause and the child's exit
+  code when the harness exited cleanly, `failed` on a crash, never a
+  synthesized success. A turn cut before its closing resume hint also
+  marks the session not resumable, the same way an exited unconfirmed
+  turn does, so a retrying caller is not sent back into a store whose
+  last turn never closed.
+- `--pass-env KIMI_CODE_HOME` on a kimi run is now read exactly as the
+  child reads it, matching the session boundary: a padded absolute value
+  places the generated agent file under the padded spelling (kimi does
+  not trim the variable), and the two shapes that silently fell back to
+  the default brand home before — an empty value and a whitespace-only
+  one — are refused at validation, as a relative value already was.
+  Round al29 widened the refusals from `--tools none` to every run that
+  passes the variable through — the child reads that directory whatever
+  the run kind — and added a third: the value must name an existing
+  directory, for a typo would otherwise hand the child a fresh, empty
+  store while the operator meant their real brand home. Round al30
+  applied the same validation to the TUI launch
+  (`codemux tui -a kimi`): the interactive child reads config.toml,
+  skills, and the store from that directory for its whole session, so
+  the same three refusals fire on `validateTuiRequest`, the same
+  `UsageRefusalError` class (exit 64) both paths. The default
+  home (no passthrough) stays exempt.
+- codex sessions: a `--turn-timeout` whose interrupt queued behind the
+  turn/start response, and whose delivery was then refused (a harness
+  that stopped reading), no longer labels the turn's completion
+  `turn-timeout`. The refused write ends the session on the crash path,
+  whose own interrupt answers the turn — a completion that interrupt
+  produced, not the timeout's, so the stale timeout label must not ride
+  it (the label names only an interrupt the timeout itself produced).
+- codex: the `CODEMUX_CODEX_PROVIDER_STORE` refusal now fires before the
+  multi-agent knob's validation, so a malformed `MULTI_AGENT` value no
+  longer masks it, and the warning for an unreadable
+  `--output-last-message` fallback prints once — on the run's stderr —
+  where it printed there and on the console before.
+
 ## [0.11.0] - 2026-10-08
 
 ### Upgrade notes

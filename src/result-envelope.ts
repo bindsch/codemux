@@ -528,6 +528,8 @@ export interface CodexEventStream {
    * An `error` codex retried is superseded when its turn later completes.
    */
   failure: string | null;
+  /** Retained diagnostics, including errors followed by successful recovery. */
+  warnings: string[];
 }
 
 /**
@@ -581,13 +583,20 @@ export interface CodexEventStream {
  * no thread, a second one, or one that is not the stream's first event,
  * when a `turn.completed` or `turn.failed` closes a turn no `turn.started`
  * opened, when a `turn.started` opens inside a turn still open or after a
- * turn already completed, or when an item event -- `item.started`,
- * `item.updated`, or `item.completed`, whatever the item's type -- follows
- * the last `turn.completed` with no turn reopened: all are format drift,
+ * turn already completed, or when an item event that needs a turn arrives
+ * outside one (round al34, edges major 3: the event grammar nests items
+ * inside turns, and a pre-turn item could overwrite servedModel — a
+ * reroute notice — onto a run whose turns that model never served; round
+ * al35, correctness major 1, carved out the one item that does not need
+ * a turn: a startup warning — a completed `error` item whose message is
+ * retained as a warning — may arrive between `thread.started` and
+ * `turn.started`, for codex reports initialization warnings there — an
+ * empty key under `[otel.span_attributes]`, a deprecation notice — and
+ * the run they annotate still succeeds): all are format drift,
  * and the caller says so rather than reporting a partial stream as fact.
  */
 export function parseCodexEventStream(stdout: string): CodexEventStream | null {
-  const events: unknown[] = [];
+  const reducer = new CodexEventReducer();
   for (const line of stdout.split("\n")) {
     if (line.trim() === "") continue;
     let parsed: unknown;
@@ -599,28 +608,145 @@ export function parseCodexEventStream(stdout: string): CodexEventStream | null {
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       return null;
     }
-    events.push(parsed);
+    // The first violation is enough: a stream with any drift is not the
+    // event stream this reduction is documented to read.
+    if (reducer.drift !== null) return null;
+    reducer.takeEvent(parsed as Record<string, unknown>);
   }
+  if (reducer.drift !== null || reducer.sawThreadStarted === false) return null;
+  return reducer.toStream();
+}
 
-  let threadId = "";
-  let sawThreadStarted = false;
-  let finalMessage: string | null = null;
-  let servedModel: string | null = null;
-  let usage = emptyUsage();
-  let usageReported = false;
+/**
+ * The one spelling of the stderr note a retained warning prints (the plain
+ * fold's verdict, plain-unwrap.ts), stated here because the dependency runs
+ * the other way: the plain fold's capture-bound accounting books the
+ * rendered note's size (codexWarningNoteBytes below, round al29) — exactly
+ * the line the verdict emits — so the two must agree by construction.
+ * Defined beside the reducer, not in plain-unwrap.ts, because the
+ * dependency runs the other way.
+ */
+export function codexWarningNote(message: string): string {
+  return `codemux: codex warning: ${message}`;
+}
+
+/** A reroute notice's shape: `model rerouted: <from> -> <to> (<reason>)`,
+ * the message codex formats for a rerouted model (ModelRerouted in
+ * exec_events.rs; the reason is Debug-formatted upstream), matched as one
+ * unit so a reason containing parentheses still parses. The one spelling
+ * that separates a reroute notice from the warnings it shares an item
+ * shape with — both arrive as completed `error` items, and only the
+ * notice attributes a model, so only it needs a turn to attribute onto
+ * (round al35, correctness major 1). */
+function parseRerouteNotice(message: string): RegExpExecArray | null {
+  return /^model rerouted: (.+) -> (.+) \((.*)\)$/.exec(message);
+}
+
+/** The rendered note's UTF-8 size, newline included — the plain fold's
+ * capture-bound accounting books one of these per retained warning (the
+ * verdict prints exactly this line), so an empty message still costs its
+ * prefix and a flood of them cannot retain an unbounded list the bound
+ * never sees (round al23's finding, restated on values in al29). Defined
+ * beside the note for the same reason: the dependency runs the other
+ * way. */
+export function codexWarningNoteBytes(message: string): number {
+  return Buffer.byteLength(`${codexWarningNote(message)}\n`);
+}
+
+/**
+ * The per-event core of parseCodexEventStream, shared with the plain-run
+ * streaming fold (plain-unwrap.ts), which cannot hold the whole stream and
+ * so reduces event by event as the lines arrive. Every grammar violation
+ * the whole-capture shape answers with null is recorded here as `drift`
+ * instead: a streaming caller cannot rewind and re-answer, so it freezes on
+ * the first violation and the verdict says what broke. A caller that has
+ * fed every event and seen no drift calls toStream() for the same
+ * CodexEventStream the whole-capture parse returned.
+ */
+export class CodexEventReducer {
+  threadId = "";
+  sawThreadStarted = false;
+  finalMessage: string | null = null;
+  servedModel: string | null = null;
+  usage: ResultUsageBlock = emptyUsage();
+  usageReported = false;
+  /** The first grammar violation, null while the stream is intact. */
+  drift: string | null = null;
   // `turn.failed` is terminal: nothing later in the stream clears it. A
   // top-level `error` is softer -- codex retries those, and a later matched
-  // `turn.completed` proves the retry recovered.
-  let turnFailure: string | null = null;
-  let errorFailure: string | null = null;
+  // `turn.completed` proves the retry recovered. `errorFailure` was public
+  // for the plain fold's no-announcement verdict (round al7), which round
+  // al30 retired -- the first non-empty line decides the regime now -- so
+  // nothing outside this file reads it and the field is private again:
+  // failureText() folds it into every verdict that needs it.
+  private turnFailure: string | null = null;
+  private errorFailure: string | null = null;
+  // Round al28 removed the per-field byte counters this class kept
+  // (threadIdBytes, finalMessageBytes, servedModelBytes, failureBytes,
+  // warningBytes): the plain fold's capture-bound accounting measures the
+  // retained values themselves through before/after snapshots
+  // (plain-unwrap.ts, codexRetainedOf), so a superseded value — a newer
+  // assistant message replacing an older one — gives its bytes back when
+  // it is replaced (round al29; the al28 rule it replaces counted each
+  // retained line whole and never returned superseded bytes).
+  /** Every completed `error` item whose message is not a reroute notice,
+   * in arrival order: the wire's warning channel (round al22, correctness
+   * minor) -- codex reports configuration and runtime warnings as
+   * completed error items the turn survives, and human mode printed them
+   * on stderr, so a plain run that reduced them away exited 0 with
+   * warnings nowhere. Public because the plain fold's verdict prints each
+   * one on stderr beside the reply (plain-unwrap.ts); the envelope path
+   * does not read it -- its contract is the structured block, and a
+   * warning is not a failure field. */
+  warnings: string[] = [];
   // Turns open at `turn.started` and close at `turn.completed` or
   // `turn.failed`; the stream is complete only when every turn closed and at
   // least one did so by completing. A terminal event with no open turn is
   // drift (a prefix-truncated or concatenated stream), not a count to clamp.
-  let openTurns = 0;
-  let sawTurnCompletion = false;
-  for (let index = 0; index < events.length; index++) {
-    const event = events[index] as Record<string, unknown>;
+  // Public because the plain fold's oversized-line drop asks whether a turn
+  // is still open (plain-unwrap.ts, round al8): a wire line dropped unread
+  // there could have been the turn's final `agent_message`, so while a turn
+  // is open the drop is drift, never a silently superseded reply.
+  openTurns = 0;
+  /** Whether any `turn.completed` landed (round al35 made it public): the
+   * plain fold's oversized-line drop scopes its startup-warning carve-out
+   * to the same head position the reducer's accepts — before the FIRST
+   * turn.started — and past a completion the reducer refuses outside-turn
+   * items again, so the drop drifts there like its small spelling. */
+  sawTurnCompletion = false;
+  /** Events consumed so far: the thread.started rules are position-sensitive.
+   * (Round al30 made this private again: the plain fold no longer reads it
+   * — the hatch's objects-only verdict is gone, the first non-empty line
+   * decides the regime now — so the counter is the reducer's own state.) */
+  private eventCount = 0;
+
+  private setFinalMessage(text: string | null): void {
+    this.finalMessage = text;
+  }
+
+  /** The failure the reduced stream would report — the terminal
+   * `turn.failed` message, else the last `error` message no
+   * `turn.completed` recovered — read WITHOUT the mutation toStream()
+   * applies when it materializes the same verdict (it clears the final
+   * message and usage). Public because the plain fold's retained-bytes
+   * accounting snapshots it (plain-unwrap.ts, round al29): the bytes the
+   * failure text retains belong in the measure the capture bound checks. */
+  failureText(): string | null {
+    return this.turnFailure ?? this.errorFailure;
+  }
+
+  private takeWarning(message: string): void {
+    // Retained whole (the verdict prints each warning as its own prefixed
+    // stderr line, codexWarningNote below), so the plain fold's
+    // capture-bound accounting books the rendered note's size —
+    // codexWarningNoteBytes, one per retained warning (round al29).
+    this.warnings.push(message);
+  }
+
+  takeEvent(event: Record<string, unknown>): void {
+    if (this.drift !== null) return;
+    const index = this.eventCount;
+    this.eventCount++;
     switch (event.type) {
       case "thread.started":
         // Exactly one announcement names the thread this run runs on, the
@@ -632,12 +758,16 @@ export function parseCodexEventStream(stdout: string): CodexEventStream | null {
         // exactly this shape -- and accepting a late one paired the
         // earlier stream's completed response with the second run's
         // thread. All refused.
-        if (index > 0) return null;
-        if (typeof event.thread_id !== "string" || event.thread_id === "") {
-          return null;
+        if (index > 0) {
+          this.drift = "a thread.started event after the stream's first event";
+          return;
         }
-        sawThreadStarted = true;
-        threadId = event.thread_id;
+        if (typeof event.thread_id !== "string" || event.thread_id === "") {
+          this.drift = "a thread.started event that named no thread id";
+          return;
+        }
+        this.sawThreadStarted = true;
+        this.threadId = event.thread_id;
         break;
       case "turn.started":
         // Turns run one at a time -- the grammar nests items inside a turn
@@ -650,35 +780,81 @@ export function parseCodexEventStream(stdout: string): CodexEventStream | null {
         // conversation glued on (round19) -- accepting it returned the
         // second run's result while the thread the one announcement named
         // stayed the first run's.
-        if (openTurns > 0 || sawTurnCompletion) return null;
-        openTurns++;
+        if (this.openTurns > 0) {
+          this.drift = "a turn.started event inside a turn still open";
+          return;
+        }
+        if (this.sawTurnCompletion) {
+          this.drift = "a turn.started event after a turn already completed";
+          return;
+        }
+        this.openTurns++;
         // A new turn supersedes the previous one's message: only the last
         // turn's may be the result, so an earlier turn's reply must not
         // survive into a turn that ends without one and pose as its result.
-        finalMessage = null;
+        this.setFinalMessage(null);
         break;
       case "item.started":
       case "item.updated":
         // Items belong inside turns -- the event grammar nests them there
-        // -- so an item event after the last `turn.completed`, with no
-        // `turn.started` reopening a turn, is drift (a wrapper concatenating
-        // or truncating streams produces exactly this shape). Round23: only
-        // a trailing `item.completed` agent message was refused before, so
-        // a trailing `item.started` or `item.updated` was silently accepted
-        // and the completed turn's response returned successfully over a
-        // stream whose tail belonged to no turn of this run.
-        if (openTurns === 0 && sawTurnCompletion) return null;
+        // -- so an item event outside a turn is drift (a wrapper
+        // concatenating or truncating streams produces exactly this shape).
+        // Round23: only a trailing `item.completed` agent message was
+        // refused before, so a trailing `item.started` or `item.updated`
+        // was silently accepted and the completed turn's response returned
+        // successfully over a stream whose tail belonged to no turn of this
+        // run. Round al34 (edges major 3) extended the same refusal to the
+        // stream's head: an item before the first `turn.started` was
+        // accepted there, and a pre-turn item.completed error -- a reroute
+        // notice -- overwrote servedModel onto a run whose turns that
+        // model never served.
+        if (this.openTurns === 0) {
+          this.drift = "an item event outside a turn: before the first turn.started or after the last turn.completed with no turn reopened";
+          return;
+        }
         break;
       case "item.completed": {
         // The same ordering rule for the third item event, whatever the
         // item's type: an agent message (round6), a reasoning or tool item
-        // (round23) -- any item completing after the last `turn.completed`
-        // is drift. Letting a trailing message item replace the completed
-        // turn's message would return an uncompleted message as a
-        // successful result, and accepting a trailing non-message item
-        // would pass a concatenated stream off as this run's.
-        if (openTurns === 0 && sawTurnCompletion) return null;
+        // (round23) -- any item completing outside a turn is drift (round
+        // al34 widened the head of the rule to match), with the one
+        // exception round al35 carved out below. Letting a trailing
+        // message item replace the completed turn's message would return an
+        // uncompleted message as a successful result, and accepting a
+        // trailing non-message item would pass a concatenated stream off as
+        // this run's.
         const item = event.item;
+        if (this.openTurns === 0) {
+          // Round al35, correctness major 1: a startup warning is the one
+          // item that does not need a turn. Codex reports initialization
+          // warnings as completed `error` items BETWEEN thread.started and
+          // turn.started (in_process.rs emits them before the first turn;
+          // the JSONL processor maps Warning, ConfigWarning, and
+          // DeprecationNotice onto exactly this item shape), and the run
+          // they annotate succeeds -- freezing the reduction on one turned
+          // every warned run into a drift failure. Allowed only in the
+          // head position and only in the warning's own shape: a reroute
+          // notice still needs the turn it attributes a model onto (the
+          // al34 finding), an agent_message would pose as a turn's reply,
+          // and past the last turn.completed an item is the
+          // concatenated-stream shape again, wherever its message would
+          // have come from.
+          const message =
+            typeof item === "object" && item !== null &&
+            (item as Record<string, unknown>).type === "error"
+              ? (item as Record<string, unknown>).message
+              : undefined;
+          if (
+            this.sawTurnCompletion ||
+            typeof message !== "string" ||
+            parseRerouteNotice(message) !== null
+          ) {
+            this.drift = "an item event outside a turn: before the first turn.started or after the last turn.completed with no turn reopened";
+            return;
+          }
+          this.takeWarning(message);
+          break;
+        }
         if (
           typeof item === "object" && item !== null &&
           (item as Record<string, unknown>).type === "agent_message"
@@ -691,8 +867,11 @@ export function parseCodexEventStream(stdout: string): CodexEventStream | null {
           // (round10). The stream is the documented source for agent
           // messages, and one it cannot carry fails closed like any other
           // drift.
-          if (typeof text !== "string") return null;
-          finalMessage = text;
+          if (typeof text !== "string") {
+            this.drift = "an agent_message item whose text is not a string";
+            return;
+          }
+          this.setFinalMessage(text);
         } else if (
           typeof item === "object" && item !== null &&
           (item as Record<string, unknown>).type === "error"
@@ -702,18 +881,26 @@ export function parseCodexEventStream(stdout: string): CodexEventStream | null {
           // (ModelRerouted in exec_events.rs), with the message formatted
           // `model rerouted: <from> -> <to> (<reason>)` -- the reason is
           // Debug-formatted upstream, so the parenthetical is matched as a
-          // unit and a reason containing parentheses still parses. The last
+          // unit and a reason containing parentheses still parses
+          // (parseRerouteNotice above, shared with the outside-a-turn
+          // guard, which needs the same spelling to tell a warning from a
+          // notice). The last
           // reroute wins: a later one supersedes the model an earlier one
-          // named. Any other error item is left alone -- the stream's
+          // named. Any other error item is KEPT, not read -- the stream's
           // failure channels are `turn.failed` and the top-level `error`
-          // event, not items, so nothing this reduction reports depends on
-          // an unrecognized one (unlike an agent_message whose text is not
-          // a string, which is drift because the stream is the documented
-          // source for messages).
+          // event, not items, so an unrecognized one is not drift and no
+          // verdict field reads it (unlike an agent_message whose text is
+          // not a string, which is drift because the stream is the
+          // documented source for messages) -- but human mode printed its
+          // message on stderr, and the plain fold's verdict reports it
+          // from `warnings` so a surviving warning cannot vanish from a
+          // successful run (round al22).
           const message = (item as Record<string, unknown>).message;
           if (typeof message === "string") {
-            const reroute = /^model rerouted: (.+) -> (.+) \((.*)\)$/.exec(message);
-            if (reroute !== null) servedModel = reroute[2]!;
+            const reroute = parseRerouteNotice(message);
+            if (reroute !== null) {
+              this.servedModel = reroute[2]!;
+            } else this.takeWarning(message);
           }
         }
         break;
@@ -723,15 +910,18 @@ export function parseCodexEventStream(stdout: string): CodexEventStream | null {
         // the shape of a prefix-truncated stream (only the tail of a longer
         // conversation), and clamping it to zero let that tail pose as a
         // complete result.
-        if (openTurns === 0) return null;
-        openTurns--;
-        sawTurnCompletion = true;
+        if (this.openTurns === 0) {
+          this.drift = "a turn.completed event closed a turn none opened";
+          return;
+        }
+        this.openTurns--;
+        this.sawTurnCompletion = true;
         // A completed turn supersedes an earlier `error`: codex retried the
         // error and the turn recovered, so the run did not fail. A
         // `turn.failed` is never superseded -- upstream discards the final
         // message of a failed turn, and a later completed turn cannot
         // un-fail the run that reported it.
-        errorFailure = null;
+        this.errorFailure = null;
         const reported = event.usage;
         // A completed turn that reports no usage figure -- the field absent,
         // or an object carrying no counts -- leaves the run with no last
@@ -740,8 +930,8 @@ export function parseCodexEventStream(stdout: string): CodexEventStream | null {
         // turn omits usage reports null fields, not the earlier turn's
         // stale counts.
         if (typeof reported !== "object" || reported === null) {
-          usage = emptyUsage();
-          usageReported = false;
+          this.usage = emptyUsage();
+          this.usageReported = false;
           break;
         }
         const u = reported as Record<string, unknown>;
@@ -750,8 +940,8 @@ export function parseCodexEventStream(stdout: string): CodexEventStream | null {
         const cacheWrite = reportedCount(u.cache_write_input_tokens);
         const output = reportedCount(u.output_tokens);
         if (input === null && cached === null && cacheWrite === null && output === null) {
-          usage = emptyUsage();
-          usageReported = false;
+          this.usage = emptyUsage();
+          this.usageReported = false;
           break;
         }
         // Every count zero is the same non-report in another shape: codex
@@ -762,8 +952,8 @@ export function parseCodexEventStream(stdout: string): CodexEventStream | null {
         // Publishing `total_tokens: 0` for a nonempty completed run would
         // report a number nothing reported (round23).
         if (input === 0 && cached === 0 && cacheWrite === 0 && output === 0) {
-          usage = emptyUsage();
-          usageReported = false;
+          this.usage = emptyUsage();
+          this.usageReported = false;
           break;
         }
         // Each normalized field is computed exactly from the raw fields it
@@ -772,7 +962,7 @@ export function parseCodexEventStream(stdout: string): CodexEventStream | null {
         // traffic keeps cached_input_tokens 0), while a missing field stays
         // missing. The snapshot replaces, not joins, the previous one: each
         // is the same cumulative thread counter at a later point.
-        usage = {
+        this.usage = {
           // The uncached input: codex counts BOTH cache reads and cache
           // writes inside input_tokens (each is a breakdown of that total,
           // responses.rs), so both are subtracted. Subtracting only the
@@ -802,32 +992,47 @@ export function parseCodexEventStream(stdout: string): CodexEventStream | null {
               : null,
           cost_usd: null,
         };
-        usageReported = true;
+        this.usageReported = true;
         break;
       }
       case "turn.failed": {
         // Same matching rule as turn.completed, for the same reason. The
         // error sits one level down (TurnFailedEvent { error }); the
         // fallback literal is upstream's own.
-        if (openTurns === 0) return null;
-        openTurns--;
+        if (this.openTurns === 0) {
+          this.drift = "a turn.failed event closed a turn none opened";
+          return;
+        }
+        this.openTurns--;
         const error = event.error;
         const message =
           typeof error === "object" && error !== null
             ? (error as Record<string, unknown>).message
             : undefined;
-        turnFailure =
+        this.turnFailure =
           typeof message === "string" && message !== ""
             ? message
             : "turn failed";
+        // Cleared at the event, not only in toStream() (round al31,
+        // correctness major): the plain fold's retained-bytes accounting
+        // snapshots the reducer's values per event, and a failed turn
+        // owes the caller the failure text, not the earlier turn's
+        // superseded assistant message — releasing it here lets the
+        // snapshot at this event see the give-back, so a stream whose
+        // last turn failed is measured with the bytes it actually
+        // retains. toStream's clearing stays for the soft `error` path,
+        // whose recovery window keeps the message alive until the stream
+        // ends.
+        this.setFinalMessage(null);
         break;
       }
       case "error": {
         const message = event.message;
-        errorFailure =
+        this.errorFailure =
           typeof message === "string" && message !== ""
             ? message
             : "codex reported an error";
+        this.takeWarning(this.errorFailure);
         break;
       }
       default:
@@ -835,30 +1040,32 @@ export function parseCodexEventStream(stdout: string): CodexEventStream | null {
     }
   }
 
-  // The grammar opens every stream with its one `thread.started`
-  // announcement; a stream without one (an empty stream included) is not
-  // the event stream this reduction is documented to read.
-  if (!sawThreadStarted) return null;
-  const failure = turnFailure ?? errorFailure;
-  if (failure !== null) {
-    finalMessage = null;
-    // A failed run reports no usage totals either (round17): the last
-    // snapshot is an earlier turn's (a failed turn closes with no usage
-    // event), so the run's true total is that figure or more -- an
-    // exact-looking number that understates a failed run is worse than
-    // none.
-    usage = emptyUsage();
-    usageReported = false;
+  /** The reduced stream. Call after the last event; assumes no drift and a
+   * thread announcement (the whole-capture parse and the fold both check
+   * before calling). */
+  toStream(): CodexEventStream {
+    const failure = this.failureText();
+    if (failure !== null) {
+      this.setFinalMessage(null);
+      // A failed run reports no usage totals either (round17): the last
+      // snapshot is an earlier turn's (a failed turn closes with no usage
+      // event), so the run's true total is that figure or more -- an
+      // exact-looking number that understates a failed run is worse than
+      // none.
+      this.usage = emptyUsage();
+      this.usageReported = false;
+    }
+    return {
+      threadId: this.threadId,
+      finalMessage: this.finalMessage,
+      servedModel: this.servedModel,
+      usage: this.usage,
+      usageReported: this.usageReported,
+      turnCompleted: this.sawTurnCompletion && this.openTurns === 0,
+      failure,
+      warnings: this.warnings,
+    };
   }
-  return {
-    threadId,
-    finalMessage,
-    servedModel,
-    usage,
-    usageReported,
-    turnCompleted: sawTurnCompletion && openTurns === 0,
-    failure,
-  };
 }
 
 /**
@@ -896,6 +1103,20 @@ export function applyCodexFinalMessageFallback(
   return true;
 }
 
+/** The verdict's one caller-specific arm, for the plain-run caller
+ * (plain-unwrap.ts): a COMPLETED turn whose message is missing everywhere
+ * -- no agent_message in the stream, no --output-last-message file (an
+ * untrusted sandbox launch passes none) -- succeeds with empty stdout,
+ * because human mode exits 0 for that turn (verified against 0.160.1's
+ * event_processor_with_human_output.rs: a TurnStatus::Completed turn
+ * shuts the process down normally whatever it holds, and
+ * print_final_output prints a final message only when one exists). The
+ * envelope path keeps the default arm: its promise is a result envelope,
+ * and an empty result is a failed run. */
+export interface CodexStreamVerdictOptions {
+  messagelessCompletedTurnSucceeds?: boolean;
+}
+
 /**
  * The one success verdict every codex event-stream run shares. A run is
  * successful only when the stream carried a complete result: any
@@ -907,11 +1128,15 @@ export function applyCodexFinalMessageFallback(
  * truncated stream pass), or codex's own non-zero exit is a failure. The
  * diagnostic is the stderr line for the failure; it is null when codex
  * itself already exited non-zero, because its own stderr is the
- * diagnostic.
+ * diagnostic. The no-message arm is the one a caller may lift:
+ * `messagelessCompletedTurnSucceeds` (CodexStreamVerdictOptions above)
+ * drops it, so a completed messageless turn falls through to success --
+ * the plain run's rule, not the envelope's.
  */
 export function codexStreamVerdict(
   stream: CodexEventStream,
-  result: RunResult
+  result: RunResult,
+  options: CodexStreamVerdictOptions = {}
 ): { failed: boolean; diagnostic: string | null } {
   if (stream.failure !== null) {
     return {
@@ -924,7 +1149,10 @@ export function codexStreamVerdict(
     // codemux line is added, but the verdict still fails the run.
     return { failed: true, diagnostic: null };
   }
-  if (stream.finalMessage === null || stream.finalMessage.trim() === "") {
+  if (
+    !options.messagelessCompletedTurnSucceeds &&
+    (stream.finalMessage === null || stream.finalMessage.trim() === "")
+  ) {
     // An empty or whitespace-only final message is no message (round10 for
     // "", round17 for whitespace-only): a completed codex turn whose one
     // agent_message carried empty text passed as a successful run with an
@@ -948,6 +1176,16 @@ export function codexStreamVerdict(
   return { failed: false, diagnostic: null };
 }
 
+/** The fallback argument `codexResult` takes: the recorded final message
+ * as text; `{ missing }` for a named `--output-last-message` file that is
+ * not there (the path, so the failure names the absent file — round al29,
+ * the README's documented rule — for upstream writes something for every
+ * completed turn and a missing file is a write codex only logged); or
+ * null when no fallback applies. Only a messageless stream consults it —
+ * a stream that carried its own message answers from the stream alone,
+ * whatever the file did. */
+export type CodexFinalMessageFallback = string | { missing: string } | null;
+
 /**
  * Finishes a `--result-json` run for codex: codemux builds the envelope
  * itself, because the harness's own stdout is an event stream rather than
@@ -958,10 +1196,12 @@ export function codexStreamVerdict(
  * complete but messageless is different: when codex itself recorded a final
  * message (a Plan-only turn; see `CODEX_FINAL_MESSAGE_FALLBACK_NOTE`), that
  * message -- passed in as `finalMessageFallback` from the
- * `--output-last-message` file the launch named -- is the result, and a
- * turn with no message anywhere still fails. A failed turn surfaces on
- * every channel: the exit is non-zero even if codex's own was not, and the
- * diagnostic rides on stderr after codex's own output.
+ * `--output-last-message` file the launch named -- is the result; a named
+ * file that is missing fails that turn naming the absent file
+ * (`CodexFinalMessageFallback`'s `{ missing }` shape, round al29); and a
+ * turn with no message anywhere still fails on the generic arm. A failed
+ * turn surfaces on every channel: the exit is non-zero even if codex's own
+ * was not, and the diagnostic rides on stderr after codex's own output.
  *
  * Usage is this run's. `turn.completed.usage` is the thread's cumulative
  * total (see parseCodexEventStream); a run launched with `--ephemeral`
@@ -975,7 +1215,7 @@ export function codexStreamVerdict(
 export function codexResult(
   result: RunResult,
   request: RunRequest,
-  finalMessageFallback: string | null = null
+  finalMessageFallback: CodexFinalMessageFallback = null
 ): RunResult {
   const stream = parseCodexEventStream(result.stdout);
   if (stream === null) {
@@ -990,7 +1230,10 @@ export function codexResult(
       success: false,
     };
   }
-  const usedFallback = applyCodexFinalMessageFallback(stream, finalMessageFallback);
+  const usedFallback = applyCodexFinalMessageFallback(
+    stream,
+    typeof finalMessageFallback === "string" ? finalMessageFallback : null
+  );
   const verdict = codexStreamVerdict(stream, result);
   const block: CodemuxResultBlock = {
     agent: "codex",
@@ -1012,8 +1255,40 @@ export function codexResult(
     // live-sessions release; see types.ts).
     session_id: null,
   };
-  const notes: string[] = [];
-  if (verdict.diagnostic !== null) {
+  const notes: string[] = stream.warnings.map((message) => `codemux: codex warning: ${message}`);
+  // Round al29 (contracts minor): a named fallback file that is missing,
+  // on the messageless stream that needed it, fails the turn NAMING THE
+  // ABSENT FILE — the README's documented rule — instead of the generic
+  // no-message diagnostic the verdict just computed: upstream writes
+  // something for every completed turn (a message, or the empty file that
+  // is its messageless record), so a named file that is not there is a
+  // write codex only logged, and the caller should learn that, not a
+  // generic "no result". Scoped by construction to the turn that needed
+  // the file: a stream that failed its own way, or one whose exit already
+  // failed, keeps its own diagnostic (the check below requires the run
+  // and stream clean), and a stream that carried a message never reaches
+  // this state at all — applyCodexFinalMessageFallback is what leaves
+  // finalMessage null here. Round al30 (rule 4, edges minor) added the
+  // turnCompleted gate: a truncated stream (thread.started and
+  // turn.started, no completion) never reached the turn whose file this
+  // arm blames — the turn never finished, and that is the verdict the
+  // generic diagnostic reports, not a missing file.
+  if (
+    typeof finalMessageFallback === "object" &&
+    finalMessageFallback !== null &&
+    result.success &&
+    stream.failure === null &&
+    stream.finalMessage === null &&
+    stream.turnCompleted
+  ) {
+    notes.push(
+      `codemux: the --output-last-message file this run named ` +
+        `(${finalMessageFallback.missing}) is missing — upstream writes one ` +
+        "for every completed turn, so the write codex logged never happened " +
+        "— and the stream carried no agent_message, so this run has no " +
+        "result to report"
+    );
+  } else if (verdict.diagnostic !== null) {
     notes.push(verdict.diagnostic);
   }
   if (!verdict.failed && usedFallback) {

@@ -123,6 +123,48 @@ export function readCodexMultiAgent(
   );
 }
 
+/**
+ * The environment name of the response-storage knob that does not exist.
+ * Nothing writes it into the config — see assertNoCodexStoreKnob.
+ */
+export const CODEX_PROVIDER_STORE_ENV = "CODEMUX_CODEX_PROVIDER_STORE";
+
+/**
+ * Refuses CODEMUX_CODEX_PROVIDER_STORE outright: no supported codex
+ * release has a response-storage config key to write, so there is no
+ * `on`/`off` to validate. Verified against the installed binary's own
+ * config documentation, not guessed: the generated config.schema.json
+ * shipped in codex-cli 0.159.3 (the session floor) and the 0.160.1
+ * binary's strings and upstream config reference both enumerate every
+ * ModelProviderInfo and ConfigToml key, and `disable_response_storage`
+ * (or any storage key) appears in none of them. The knob's goal is
+ * already hardcoded behavior: codex sends `store: false` on every
+ * Responses request unconditionally, and its HTTP request shape has no
+ * `previous_response_id` field at all (only the experimental websocket
+ * shape carries one) — so turn 2+ never relies on server-side response
+ * storage, and any non-empty value, `on` included, names a key that never
+ * shipped. An EMPTY or whitespace-only value counts as unset — the same
+ * convention as CODEMUX_CODEX_PROVIDER_MULTI_AGENT (round al18, made
+ * explicit): an empty export expresses no preference, so an operator can
+ * neutralize an inherited value without unsetting the variable, and the
+ * refusal stays for a knob someone actually set. Refused before the
+ * spawn, on every path, so the operator learns the launch never needed
+ * it.
+ */
+export function assertNoCodexStoreKnob(
+  environment: NodeJS.ProcessEnv = process.env
+): void {
+  const raw = environment[CODEX_PROVIDER_STORE_ENV]?.trim();
+  if (raw === undefined || raw === "") return;
+  throw new Error(
+    `${CODEX_PROVIDER_STORE_ENV} is refused: no supported Codex release has ` +
+      "a response-storage config key (codex-cli 0.159.3's generated config " +
+      "schema and the 0.160.1 binary both lack it, and both already send " +
+      "store: false on every Responses request — the HTTP wire never carries " +
+      "previous_response_id). Unset it: there is nothing to turn on or off."
+  );
+}
+
 /** TOML basic string: JSON escaping is a valid TOML basic string. */
 const tomlString = (value: string): string => JSON.stringify(value);
 

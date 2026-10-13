@@ -10,6 +10,7 @@ import {
   MAX_HARNESS_LINE_BYTES,
   MAX_INPUT_LINE_BYTES,
   SessionProcess,
+  TERMINAL_LANE_CAPACITY,
   type SessionFatal,
 } from "../src/session/process.js";
 
@@ -558,6 +559,75 @@ describe("bounded outbound queue", () => {
     expect(queue.enqueue("bbb")).toBe(false);
     expect(overflows).toHaveLength(1);
     expect((overflows[0] as { bytes: number }).bytes).toBe(11);
+  });
+
+  test("the terminal lane splits its classes: fatals cap one short, and session_ended's slot survives a fatal flood (al35)", async () => {
+    // Round al35 (edges major 4): fatal-class entries and session_ended
+    // shared one undifferentiated lane count, so eight queued fatals
+    // refused the end event behind them — the lane exists to keep that
+    // one slot reachable. A fatal may occupy at most
+    // TERMINAL_LANE_CAPACITY - 1 slots; the end event's cap is the full
+    // lane. The overflow callback still fires exactly once for the
+    // refusal class.
+    const overflows: unknown[] = [];
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    const delivered: string[] = [];
+    const queue = new BoundedOutboundQueue(
+      async (line) => {
+        await gate;
+        delivered.push(line);
+      },
+      (overflow) => overflows.push(overflow),
+      { events: 3 }
+    );
+    // Ordinary entries fill the ordinary bound first.
+    for (const word of ["e1", "e2", "e3"]) {
+      expect(queue.enqueue(word)).toBe(true);
+    }
+    // Seven fatal-class entries ride the lane past the full ordinary
+    // bound; the eighth is refused — the last slot is not a fatal's.
+    for (let index = 1; index <= TERMINAL_LANE_CAPACITY - 1; index++) {
+      expect(queue.enqueue(`fatal ${index}`, { terminal: "fatal" })).toBe(true);
+    }
+    expect(queue.enqueue("fatal 8", { terminal: "fatal" })).toBe(false);
+    expect(overflows).toHaveLength(1);
+    expect((overflows[0] as { kind: string }).kind).toBe("overflow");
+    // The end event still takes its slot behind the fatal flood, and an
+    // ordinary entry behind the full bounds is still refused.
+    expect(queue.enqueue("session_ended", { terminal: true })).toBe(true);
+    expect(queue.enqueue("late ordinary")).toBe(false);
+    expect(overflows).toHaveLength(1);
+    // Delivery is in arrival order with the end event last.
+    openGate();
+    await queue.flush();
+    expect(delivered).toEqual([
+      "e1",
+      "e2",
+      "e3",
+      "fatal 1",
+      "fatal 2",
+      "fatal 3",
+      "fatal 4",
+      "fatal 5",
+      "fatal 6",
+      "fatal 7",
+      "session_ended",
+    ]);
+    expect(queue.pending.events).toBe(0);
+    // A terminal entry with ordinary room left takes the ordinary
+    // capacity first (its bytes count, and it cannot be starved by other
+    // ordinary entries any more than they can starve the end event's
+    // lane fallback).
+    const roomy = new BoundedOutboundQueue(
+      () => {},
+      () => {}
+    );
+    expect(roomy.enqueue("session_ended", { terminal: true })).toBe(true);
+    expect(roomy.pending.events).toBe(1);
+    expect(roomy.pending.bytes).toBe("session_ended".length + 1);
   });
 
   test("a failing sink poisons the queue: the failure is reported once, enqueue refuses, flush rejects", async () => {

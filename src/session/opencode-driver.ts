@@ -40,6 +40,9 @@ import {
 import { SessionFsm } from "./fsm.js";
 import {
   awaitFinalFlush,
+  buildSessionEnded,
+  harnessFailed,
+  shutdownRequested,
   BoundedOutboundQueue,
   callerStdinFailure,
   codemuxFatalMessage,
@@ -165,6 +168,8 @@ export class OpenCodeSessionDriver {
   /** The end path's exit code, updatable while cleanup drains (review
    * live7). Monotone: only a higher code ever wins. */
   private endExitCode = 0;
+  private lastChildOutcome: SessionChildOutcome | null = null;
+  private sawHarnessFailure = false;
   /** True only once the end path has settled every child: run-output
    * lines keep being parsed and emitted through the whole shutdown drain
    * (review live5). */
@@ -464,8 +469,7 @@ export class OpenCodeSessionDriver {
 
   /** The turn process exited: after its tree settles (stdout drained),
    * its outcome completes the turn — unless the end path's synthesis won
-   * the race (settled) or a signal death inside an end path belongs to
-   * that end's story. */
+   * the race (settled). */
   private async onTurnExited(
     proc: SessionProcess,
     outcome: SessionChildOutcome
@@ -481,18 +485,12 @@ export class OpenCodeSessionDriver {
    * its report. A fresh session still without an id after its first turn
    * is untrackable and ends the session (§4.8, the agy authfail rule). */
   private completeTurn(outcome: SessionChildOutcome): void {
+    this.lastChildOutcome = outcome;
+    this.sawHarnessFailure ||= harnessFailed(outcome);
     // The synthesis in finish may have answered the turn already (the
     // settled guard above missed nothing; this is the second line of
     // defense for the FSM race).
     if (this.fsm.state !== "turn_active") return;
-    const signaled = outcome.code === null || outcome.signal !== null;
-    if (this.finished && (signaled || outcome.code === SESSION_SIGNAL_EXIT_CODE)) {
-      // A death the end path itself caused (the drain's SIGTERM, or the
-      // 143 a wrapper re-exits it as) or watched happen (a crash drain):
-      // the synthesis pairs the turn with the end's own story instead of
-      // a misleading "code null"/"code 143" verdict.
-      return;
-    }
     this.turnProc = null;
     const turnId = this.fsm.activeTurn;
     if (turnId === null) return;
@@ -734,7 +732,10 @@ export class OpenCodeSessionDriver {
    * late-landing child is delivered the prompt and run through the same
    * drain (review D11, correctness 2 1); a signal, timeout, or crash end
    * kills the late child on arrival (review D5, correctness 2). */
+  private shutdownWasRequested = false;
+
   private async finish(reason: SessionEndReason, exitCode: number): Promise<void> {
+    this.shutdownWasRequested ||= shutdownRequested(reason);
     if (this.finished) {
       // Idempotent cleanup, honest verdict (review live7).
       this.endExitCode = Math.max(this.endExitCode, exitCode);
@@ -747,7 +748,6 @@ export class OpenCodeSessionDriver {
     this.clearTimers();
     const proc = this.turnProc;
     const spawn = this.turnSpawn;
-    let childCode: number | null = null;
     // The turn's process to drain, once landed: the one already running,
     // or — on a graceful end — the one that lands while this path waits.
     let drain: SessionProcess | null = proc;
@@ -768,7 +768,7 @@ export class OpenCodeSessionDriver {
       // resolves, or the drain's grace expiry stops it. A signal,
       // timeout, or crash end keeps the D5 rule: stop on arrival; the
       // exit is codemux's own kill, not a turn verdict, and session_ended
-      // reports exit_code null, exactly as an idle session does.
+      // reports a failure for every nonzero or signal exit.
       let late: SessionProcess | null = null;
       try {
         late = await spawn;
@@ -808,6 +808,8 @@ export class OpenCodeSessionDriver {
         if (drain === null) {
           late.requestStop();
           await late.settled;
+          this.lastChildOutcome = await late.exited;
+
         }
       }
     }
@@ -817,33 +819,28 @@ export class OpenCodeSessionDriver {
       // for the turn's own completion (the FSM leaving turn_active
       // through completeTurn), a raised verdict, or the child's exit —
       // then the stop signal, then the settle.
-      const startCode = this.endExitCode;
-      await drain.awaitEndAnswer(
-        () => this.fsm.state !== "turn_active" || this.endExitCode > startCode
-      );
+      await drain.awaitEndAnswer(() => false);
       drain.requestStop();
       await drain.settled;
-      childCode = (await drain.exited).code;
+      this.lastChildOutcome = await drain.exited;
+
       this.turnProc = null;
     }
-    // Non-null exactly when the child's exit is itself a failure the
-    // verdict reports (review live9): nonzero, not the 143 coded signal
-    // death, not a crash end (which emitted its own fatal). A turn that
-    // completed through completeTurn already carried the exit as its
-    // finish; this is the session-level verdict on top (review live18).
-    const drainFailureCode =
-      childCode !== null &&
-      childCode !== 0 &&
-      childCode !== SESSION_SIGNAL_EXIT_CODE &&
-      reason !== "crash"
-        ? childCode
-        : null;
-    if (drainFailureCode !== null) {
+    if (this.sawHarnessFailure) {
       this.endExitCode = Math.max(this.endExitCode, 1);
-      this.emitError(
+      reason = "harness_failed";
+    }
+    // Every nonzero code and signal exit fails, including during shutdown.
+    const drainFailureCode = harnessFailed(this.lastChildOutcome)
+      ? this.lastChildOutcome!.code ?? 1
+      : null;
+    if (drainFailureCode !== null) {
+      reason = "harness_failed";
+      this.endExitCode = Math.max(this.endExitCode, 1);
+      if (this.firstFatal === null) this.emitError(
         true,
         "harness",
-        drainFailureMessage("opencode", drainFailureCode, this.fsm.state === "turn_active")
+        drainFailureMessage("opencode", this.lastChildOutcome!, this.fsm.state === "turn_active")
       );
     }
     if (turnOpenAtFinish && this.fsm.state === "turn_active") {
@@ -876,12 +873,13 @@ export class OpenCodeSessionDriver {
               reason === "crash"
                 ? crashSynthesisReason(this.firstFatal)
                 : drainFailureCode !== null
-                  ? drainFailureMessage("opencode", drainFailureCode, true)
+                  ? drainFailureMessage("opencode", this.lastChildOutcome!, true)
                   : this.firstFatal !== null
                     ? crashSynthesisReason(this.firstFatal)
                     : `the session ended (${reason}) before the turn completed`,
             usage,
-          })
+          }),
+          { terminal: "fatal" }
         );
         // The synthesized completion is a turn the caller saw complete, so
         // it gets its ledger line like any other (call-log.ts).
@@ -916,12 +914,14 @@ export class OpenCodeSessionDriver {
       ownsRecord &&
       (this.harnessConfirmed || this.endExitCode === 0);
     const sent = this.out.enqueue(
-      buildEvent(++this.seq, this.sessionIdOrEmpty(), "session_ended", null, {
+      buildSessionEnded(++this.seq, this.sessionIdOrEmpty(), this.lastChildOutcome, {
         reason,
-        exit_code: childCode,
+        shutdown_requested: this.shutdownWasRequested,
+        exit_code: this.endExitCode,
         usage: this.cumulative,
         resumable,
-      })
+      }),
+      { terminal: true }
     );
     // The closing ledger line: the same cumulative usage and end verdict
     // the caller just received (call-log.ts).
@@ -930,7 +930,7 @@ export class OpenCodeSessionDriver {
       this.ledgerSessionId(),
       this.sessionStartedAt,
       reason,
-      childCode,
+      this.endExitCode,
       this.cumulative
     );
     const delivered = sent ? await awaitFinalFlush(this.out) : false;
@@ -1000,8 +1000,20 @@ export class OpenCodeSessionDriver {
     return this.sessionId || this.codemuxSessionId;
   }
 
-  private emit(line: string): void {
-    this.out.enqueue(line);
+  /** Queue one event line. The session's end events (the option) ride
+   * the queue's terminal lane (round al32): session_ended and the fatals
+   * that end the session reach the caller even when the ordinary bounds
+   * refuse everything else, while turn_completed and the input acks are
+   * ordinary entries that drop with the rest. Two terminal classes
+   * (round al35, edges major 4): `terminal: true` is session_ended
+   * alone, and `terminal: "fatal"` is a fatal, so the lane reserves its
+   * last slot for the end event and a flood of fatals cannot take it.
+   * The enqueue's boolean is deliberately ignored — a refused line has
+   * already fired the queue's own failure callback, which starts the
+   * crash end; a terminal line is refused only when its lane class is
+   * full, and the overflow that reports starts the same end. */
+  private emit(line: string, options?: { terminal?: boolean | "fatal" }): void {
+    this.out.enqueue(line, options);
   }
 
   private ack(inputSeq: number, accepted: boolean, reason?: InputRejectionReason): void {
@@ -1021,7 +1033,11 @@ export class OpenCodeSessionDriver {
         fatal,
         source,
         message,
-      })
+      }),
+      // A fatal rides the lane's fatal class (capped one slot short of
+      // the lane), so the slot the end event needs survives a flood of
+      // them (round al35, edges major 4).
+      { terminal: fatal ? "fatal" : undefined }
     );
   }
 

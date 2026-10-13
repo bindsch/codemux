@@ -51,6 +51,9 @@ function workRoot(): string {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+// Positive late-spawn checks allow interpreter startup under full-suite load.
+const STARTUP_GRACE_MS = 5_000;
+
 /** One driver whose spawnTurn spawns the fake per turn, exactly the way
  * the CLI's closure spawns one headless aider per caller input. A nonzero
  * spawnDelayMs holds the spawn in flight first — the review D5 late-child
@@ -60,7 +63,8 @@ async function startSession(
   overrides: Partial<AiderDriverOptions> = {},
   extraEnv: Record<string, string> = {},
   beforeRun?: (historyPath: string) => void,
-  spawnDelayMs = 0
+  spawnDelayMs = 0,
+  graceMs = 500
 ): Promise<Session> {
   const dir = mkdtempSync(join(workRoot(), "s-"));
   const workDir = join(dir, "work");
@@ -108,7 +112,7 @@ async function startSession(
         },
         onLine: (line) => driver.handleHarnessLine(line),
         onFatal: (fatal) => driver.handleFatal(fatal),
-        graceMs: 500,
+        graceMs,
       });
       procs.push(proc);
       order.push("spawned");
@@ -461,7 +465,8 @@ describe("aider session e2e - turn verdicts", () => {
     expect(second.finish).toBe("end");
     expect(second.turn_id).toBe("t2");
     send(session.driver, { type: "shutdown" });
-    expect(await session.code).toBe(0);
+    expect(await session.code).toBe(1);
+    expect(of("session_ended")(session.events)?.reason).toBe("harness_failed");
   });
 
   test("a clean exit that records no exchange fails the turn; the session survives", async () => {
@@ -584,7 +589,7 @@ describe("aider session e2e - honest false capabilities", () => {
     expect(rejection.reason).toBe("busy");
     expect(rejection.input_seq).toBe(2);
     session.driver.handleCallerEnd();
-    expect(await session.code).toBe(0);
+    expect(await session.code).toBe(1);
   });
 
   test("a line aider would run as a slash command is refused before the ack, never spawned (review D10, security)", async () => {
@@ -633,7 +638,7 @@ describe("aider session e2e - honest false capabilities", () => {
 });
 
 describe("aider session e2e - end paths", () => {
-  test("stdin close mid-turn ends cleanly, with the open turn answered interrupted", async () => {
+  test("stdin close mid-turn reports a non-complying child's signal exit as failed", async () => {
     const session = await startSession();
     send(session.driver, { type: "user", text: "scenario:wait hold" });
     await waitFor(session.events, of("turn_started"), "turn_started");
@@ -644,8 +649,8 @@ describe("aider session e2e - end paths", () => {
       "the synthesized turn_completed"
     );
     expect(completed.turn_id).toBe("t1");
-    expect(completed.finish).toBe("interrupted");
-    expect(completed.reason).toBe("the session ended (stdin-close) before the turn completed");
+    expect(completed.finish).toBe("failed");
+    expect(completed.reason).toContain("the aider process exited with signal SIGTERM");
     expect(completed.usage).toEqual({
       input_tokens: null,
       output_tokens: null,
@@ -653,16 +658,18 @@ describe("aider session e2e - end paths", () => {
       total_tokens: null,
       cost_usd: null,
     });
-    expect(await session.code).toBe(0);
+    expect(await session.code).toBe(1);
     const ended = session.events[session.events.length - 1] as Event;
     expect(ended.type).toBe("session_ended");
-    expect(ended.reason).toBe("stdin-close");
-    // The signal death is the normal kill path — but the turn it killed
+    expect(ended.reason).toBe("harness_failed");
+    // The signal death fails the session. The turn it killed
     // left the history half-written (aider wrote the `#### ` user block at
     // the turn's start; the reply never landed), so the end is NOT
     // resumable: a resume would replay the unanswered prompt (review D10,
     // correctness-2 1).
-    expect(ended.exit_code).toBeNull();
+    expect(ended.exit_code).toBe(1);
+    expect(ended.harness_exit).toEqual({ code: null, signal: "SIGTERM" });
+    expect(ended.shutdown_requested).toBe(true);
     expect(ended.resumable).toBe(false);
     expect(session.events.filter((event) => event.type === "turn_started")).toHaveLength(1);
   });
@@ -715,8 +722,8 @@ describe("aider session e2e - end paths", () => {
     send(session.driver, { type: "shutdown" });
 
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.reason).toBe("shutdown");
-    expect(ended.exit_code).toBe(42);
+    expect(ended.reason).toBe("harness_failed");
+    expect(ended.exit_code).toBe(1);
     const fatal = session.events.find((event) => event.type === "error" && event.fatal === true);
     expect(fatal).toBeDefined();
     expect(fatal!.message).toContain("exited with code 42 during the shutdown drain");
@@ -728,7 +735,7 @@ describe("aider session e2e - end paths", () => {
     expect(await session.code).toBe(1);
   });
 
-  test("a wrapper exiting 143 during the drain is the signal's coded spelling, not a failure", async () => {
+  test("a wrapper exiting 143 during the drain fails the session", async () => {
     const session = await startSession({}, { FAKE_SIGTERM_PERSIST: "exit143" });
     send(session.driver, { type: "user", text: "scenario:basic one" });
     await waitFor(session.events, of("turn_completed"), "first turn_completed");
@@ -741,19 +748,14 @@ describe("aider session e2e - end paths", () => {
     send(session.driver, { type: "shutdown" });
 
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.reason).toBe("shutdown");
-    expect(ended.exit_code).toBe(143);
-    // No drain fatal: 143 is how a wrapper spells the SIGTERM codemux sent
-    // — and it is not a drain failure, so endExitCode stays 0; the
-    // not-resumable verdict rests on the interrupted open turn, which
-    // left the history with turn 2's unanswered prompt (review D10,
-    // correctness-2 1).
-    expect(of("error")(session.events)).toBeUndefined();
+    expect(ended.reason).toBe("harness_failed");
+    expect(ended.exit_code).toBe(1);
+    expect(of("error")(session.events)?.fatal).toBe(true);
     expect(ended.resumable).toBe(false);
     const second = session.events.filter((event) => event.type === "turn_completed")[1] as Event;
-    expect(second.finish).toBe("interrupted");
-    expect(second.reason).toBe("the session ended (shutdown) before the turn completed");
-    expect(await session.code).toBe(0);
+    expect(second.finish).toBe("failed");
+    expect(second.reason).toContain("exited with code 143");
+    expect(await session.code).toBe(1);
     // The half-written state the verdict answers for: turn 2's user block
     // is in the history, its reply never landed (the `wait` scenario
     // writes the block at the turn's start — io.user_input parity).
@@ -780,12 +782,12 @@ describe("aider session e2e - end paths", () => {
       of("turn_completed"),
       "the interrupted turn_completed"
     );
-    expect(completed.finish).toBe("interrupted");
+    expect(completed.finish).toBe("failed");
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.reason).toBe("shutdown");
-    expect(ended.exit_code).toBe(143);
+    expect(ended.reason).toBe("harness_failed");
+    expect(ended.exit_code).toBe(1);
     expect(ended.resumable).toBe(false);
-    expect(await session.code).toBe(0);
+    expect(await session.code).toBe(1);
     // The half-written history: the user block landed at the turn's
     // start, the reply never did.
     const history = readFileSync(session.historyPath, "utf8");
@@ -842,12 +844,12 @@ describe("aider session e2e - end paths", () => {
       "the synthesized turn_completed"
     );
     expect(completed.turn_id).toBe("t1");
-    expect(completed.finish).toBe("interrupted");
-    expect(completed.reason).toBe("the session ended (timeout) before the turn completed");
+    expect(completed.finish).toBe("failed");
+    expect(completed.reason).toContain("the aider process exited with signal SIGTERM during the shutdown drain before completing its open turn");
     const ended = session.events[session.events.length - 1] as Event;
     expect(ended.type).toBe("session_ended");
-    expect(ended.reason).toBe("timeout");
-    expect(ended.exit_code).toBeNull();
+    expect(ended.reason).toBe("harness_failed");
+    expect(ended.exit_code).toBe(1);
     expect(await session.code).toBe(1);
     // The ordering the finding named, and exactly one child for the
     // turn: the late child settled before the session's done resolved.
@@ -865,7 +867,7 @@ describe("aider session e2e - end paths", () => {
     // graceful end stays resumable — pre-D11 the child was killed on
     // arrival, the prompt never ran, and the turn was reported
     // interrupted.
-    const session = await startSession({}, {}, undefined, 250);
+    const session = await startSession({}, {}, undefined, 250, STARTUP_GRACE_MS);
     send(session.driver, { type: "user", text: "scenario:basic one" });
     await waitFor(session.events, of("turn_started"), "turn_started");
     session.driver.handleCallerEnd();
@@ -897,7 +899,7 @@ describe("aider session e2e - end paths", () => {
     expect(history).toContain("#### scenario:basic one");
     expect(history).toContain("Done: scenario:basic one");
     expect(session.order).toEqual(["spawned", "settled", "done"]);
-  });
+  }, 10_000);
 
   test("a history file the start record cannot record into ends the session before any turn", async () => {
     // The registry write fails (the registry path's parent is a file):

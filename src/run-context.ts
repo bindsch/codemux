@@ -23,7 +23,18 @@ import type { PiProviderAgentDir } from "./pi-provider.js";
  * state.
  */
 export interface RunContext {
-  /** Codex: this run's `--output-last-message` file, when it launched with --json. */
+  /**
+   * Codex: this run's `--output-last-message` file, on every launch that can
+   * have one (every `--json` launch — which is all of them — except an
+   * untrusted sandbox's, which passes none). Read and removed in
+   * processRunResult before either verdict runs. The plain verdict consults
+   * it only for a completed messageless turn (round al29, plain-unwrap.ts's
+   * CodexPlanFallbackRead); the envelope verdict reads it the same way and
+   * fails a clean, completed, messageless turn whose named file is missing —
+   * gated on `stream.turnCompleted` (round al30, result-envelope.ts), so a
+   * truncated stream keeps its truncation verdict instead of blaming a file
+   * for a turn that never finished.
+   */
   lastMessagePath?: string;
   /**
    * Codex: the per-run scratch directory holding that file on a non-hermetic

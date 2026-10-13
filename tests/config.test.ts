@@ -191,6 +191,12 @@ describe("resolveModel", () => {
       .toBe("gemini-3.1-pro");
     expect(resolveModel("gemini-flash", "copilot", config))
       .toBe("gemini-3.6-flash");
+    // One flash model per alias: droid pinned 3.5 through 0.11 while the
+    // rest of the table said 3.6, though droid's own catalog serves 3.6.
+    expect(resolveModel("gemini-flash", "droid", config))
+      .toBe("gemini-3.6-flash");
+    expect(resolveModel("gemini-flash", "gemini", config))
+      .toBe("gemini-3.6-flash");
   });
 
   test("returns raw model name if alias not found", () => {

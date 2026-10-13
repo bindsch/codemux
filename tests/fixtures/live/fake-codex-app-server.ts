@@ -895,7 +895,9 @@ process.stdin.on("data", (chunk: string) => {
   }
 });
 process.stdin.on("end", () => {
-  process.exit(0);
+  // The persistence scenarios also run on a protocol shutdown.
+  if (process.listenerCount("SIGTERM") > 0) process.emit("SIGTERM");
+  else process.exit(0);
 });
 
 // FAKE_SIGTERM_PERSIST=1: survive the shutdown SIGTERM for a moment the

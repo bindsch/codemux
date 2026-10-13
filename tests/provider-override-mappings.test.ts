@@ -7,6 +7,7 @@ import type { RunContext } from "../src/adapters/base.js";
 import { AiderAdapter } from "../src/adapters/aider.js";
 import { ClaudeAdapter } from "../src/adapters/claude.js";
 import { CodexAdapter } from "../src/adapters/codex.js";
+import { assertNoCodexStoreKnob } from "../src/codex-provider.js";
 import { DroidAdapter } from "../src/adapters/droid.js";
 import { GooseAdapter, gooseOpenAiEndpoint } from "../src/adapters/goose.js";
 import { KimiAdapter } from "../src/adapters/kimi.js";
@@ -890,8 +891,11 @@ describe("claude provider override", () => {
     const adapter = adapterOf();
     expect(adapter.getEnv()).toEqual({ CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1" });
     expect(adapter.getEnvOmissions()).toEqual([]);
-    expect(adapter.buildRunCommand({ agent: "claude", prompt: "p" } as RunRequest))
-      .not.toContain("--model");
+    const cmd = adapter.buildRunCommand({ agent: "claude", prompt: "p" } as RunRequest);
+    expect(cmd).not.toContain("--model");
+    // The picker mapping is the override's remedy for the client catalog
+    // check; a plain run never carries it.
+    expect(cmd).not.toContain("--settings");
   });
 
   test("the override rides the gateway env; the operator login stays out", () => {
@@ -925,6 +929,75 @@ describe("claude provider override", () => {
       model: "other-model",
     } as RunRequest);
     expect(cmd[cmd.indexOf("--model") + 1]).toBe("other-model");
+  });
+
+  test("an override model carries the modelPicker mapping on --settings", () => {
+    // Claude Code 2.1.280 validates --model against its own model catalog
+    // before any request leaves the client, and a provider-format id is
+    // not in it: the run dies client-side with zero requests reaching the
+    // endpoint. The mapping row names the catalog tier the model behaves
+    // as, which changes neither the row's label nor the model id sent —
+    // the id stays exactly what the endpoint serves.
+    const adapter = adapterOf(VLLM_CLAUDE);
+    const cmd = adapter.buildRunCommand({ agent: "claude", prompt: "p" } as RunRequest);
+    expect(cmd[cmd.indexOf("--model") + 1]).toBe("clawvm-qwen32b-coder");
+    const settings = cmd[cmd.indexOf("--settings") + 1] ?? "";
+    expect(JSON.parse(settings)).toEqual({
+      modelPicker: {
+        options: [{ model: "clawvm-qwen32b-coder", behavesAs: "claude-sonnet-5" }],
+      },
+    });
+    // The tui carries the same pair, same as its model fallback.
+    const tui = adapter.buildTuiCommand(undefined);
+    expect(tui[tui.indexOf("--model") + 1]).toBe("clawvm-qwen32b-coder");
+    expect(tui[tui.indexOf("--settings") + 1]).toBe(settings);
+    // A request model maps onto itself, not the override's.
+    const explicit = adapterOf(VLLM_CLAUDE);
+    const other = explicit.buildRunCommand({
+      agent: "claude",
+      prompt: "p",
+      model: "other-model",
+    } as RunRequest);
+    expect(other[other.indexOf("--settings") + 1]).toBe(
+      JSON.stringify({
+        modelPicker: { options: [{ model: "other-model", behavesAs: "claude-sonnet-5" }] },
+      })
+    );
+    // No override: no --settings even with an explicit model.
+    const plain = adapterOf().buildRunCommand({
+      agent: "claude",
+      prompt: "p",
+      model: "other-model",
+    } as RunRequest);
+    expect(plain).not.toContain("--settings");
+  });
+
+  test("--safe-mode keeps the modelPicker mapping: a hermetic override run carries both (al7)", () => {
+    // Verified live against Claude Code 2.1.280 (round al7): a --hermetic
+    // run under the override launches --safe-mode AND the inline
+    // --settings picker row together, and the client honors the row under
+    // --safe-mode — the request left the client for the override's
+    // endpoint carrying the override's model, with no client-side catalog
+    // rejection. This pins the argv pair so a refactor that drops
+    // --settings under hermetic fails here instead of launching runs the
+    // client would reject.
+    const adapter = adapterOf(VLLM_CLAUDE);
+    const cmd = adapter.buildRunCommand({
+      agent: "claude",
+      prompt: "p",
+      hermetic: true,
+    } as RunRequest);
+    expect(cmd).toContain("--safe-mode");
+    expect(cmd[cmd.indexOf("--model") + 1]).toBe("clawvm-qwen32b-coder");
+    expect(cmd[cmd.indexOf("--settings") + 1]).toBe(
+      JSON.stringify({
+        modelPicker: {
+          options: [{ model: "clawvm-qwen32b-coder", behavesAs: "claude-sonnet-5" }],
+        },
+      })
+    );
+    // The tui carries the same pair on every plain launch (--safe-mode is
+    // its default); its row is pinned in the test above.
   });
 
   test("an override without any model fails validation; a keyless override names it", () => {
@@ -1219,6 +1292,57 @@ describe("codex provider override", () => {
     expect(() => adapter.validateTuiRequest(undefined, cwdOf())).toThrow(
       "CODEMUX_CODEX_PROVIDER_MULTI_AGENT is set but no provider override is"
     );
+  });
+
+  test("the STORE knob is refused outright: no supported release has the key", () => {
+    // The knob names a config key that does not exist in any supported
+    // codex release (verified against the 0.159.3 generated config schema
+    // and the 0.160.1 binary), and the behavior it would request — no
+    // reliance on server-side response storage — is already hardcoded:
+    // every Responses request sends store: false and the HTTP wire never
+    // carries previous_response_id. So every value is refused, "on"
+    // included, on every path, with and without an override.
+    for (const value of ["on", "off", "maybe"]) {
+      const adapter = adapterOf({
+        ...VLLM_CODEX,
+        CODEMUX_CODEX_PROVIDER_STORE: value,
+      });
+      expect(() =>
+        adapter.validateRunRequest({ agent: "codex", prompt: "p", cwd: cwdOf() } as RunRequest)
+      ).toThrow("CODEMUX_CODEX_PROVIDER_STORE is refused");
+    }
+    const bare = adapterOf({ CODEMUX_CODEX_PROVIDER_STORE: "on" });
+    expect(() =>
+      bare.validateRunRequest({ agent: "codex", prompt: "p", cwd: cwdOf() } as RunRequest)
+    ).toThrow("CODEMUX_CODEX_PROVIDER_STORE is refused");
+    expect(() => bare.validateTuiRequest(undefined, cwdOf())).toThrow(
+      "CODEMUX_CODEX_PROVIDER_STORE is refused"
+    );
+    // Unset and blank pass: blank counts as unset everywhere else, and the
+    // refusal is for a knob someone actually set. Round al18 pins the
+    // empty-value semantics both ways — the README, CHANGELOG, and
+    // compatibility ledger now say "any non-empty value" (an empty value
+    // counts as unset, the MULTI_AGENT convention), and this is the code
+    // agreeing with them: truly empty and whitespace-only both pass, every
+    // other value refused.
+    expect(() => assertNoCodexStoreKnob({})).not.toThrow();
+    expect(() => assertNoCodexStoreKnob({ CODEMUX_CODEX_PROVIDER_STORE: "" })).not.toThrow();
+    expect(() => assertNoCodexStoreKnob({ CODEMUX_CODEX_PROVIDER_STORE: "  " })).not.toThrow();
+    expect(() =>
+      assertNoCodexStoreKnob({ CODEMUX_CODEX_PROVIDER_STORE: " on " })
+    ).toThrow("CODEMUX_CODEX_PROVIDER_STORE is refused");
+    // Round al21 (contracts-2 minor 2): the refusal fires before every
+    // override check — a malformed MULTI_AGENT value once masked it
+    // (assertMultiAgentKnob ran first in validatedProvider), so the
+    // "with or without an override" guarantee above did not hold.
+    const masked = adapterOf({
+      ...VLLM_CODEX,
+      CODEMUX_CODEX_PROVIDER_MULTI_AGENT: "banana",
+      CODEMUX_CODEX_PROVIDER_STORE: "on",
+    });
+    expect(() =>
+      masked.validateRunRequest({ agent: "codex", prompt: "p", cwd: cwdOf() } as RunRequest)
+    ).toThrow("CODEMUX_CODEX_PROVIDER_STORE is refused");
   });
 
   test("an explicit --model wins inside the config", () => {

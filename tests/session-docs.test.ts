@@ -13,6 +13,40 @@ const README = read("README.md");
 const DESIGN = read("docs/LIVE-SESSIONS-DESIGN.md");
 const HERMETIC = read("docs/HERMETIC.md");
 
+describe("al38 contract corrections", () => {
+  test("the fallback argv claim scopes the untrusted exception to non-hermetic runs", () => {
+    const changelog = read("CHANGELOG.md");
+    expect(changelog).toContain("non-hermetic `--sandbox-trust untrusted`");
+    expect(changelog).toContain("Hermetic runs still name a fallback file under every trust level");
+  });
+
+  test("shutdown requests never excuse a failed child outcome", () => {
+    for (const text of [README, DESIGN, read("CHANGELOG.md")]) {
+      expect(text).toContain("harness_failed");
+      expect(text).toContain("shutdown_requested");
+      expect(text).toContain("harness_exit");
+    }
+    expect(README).not.toContain("counts as cleanup's exit");
+  });
+
+  test("the report labels superseded rules and includes both added test suites", () => {
+    const report = read("docs/align-0.12-report.md");
+    expect(report).toContain("session-docs,session-process,session-spawn");
+    expect(report).toContain("current at that round");
+    expect(report).toContain("Al34 superseded it: a plain run whose named fallback file is missing fails the run");
+    expect(report).toContain("24 + 52 + 94 = 170");
+    expect(report).toContain("113 tests; count refreshed in al38");
+  });
+
+  test("comments name three launch paths, environment-sensitive probes, and seven reserved fatals", () => {
+    expect(read("src/sandbox.ts")).toContain("run (launch.ts),");
+    expect(read("src/sandbox.ts")).toContain("tui (index.ts), and session spawns (session/cli.ts)");
+    expect(read("src/cli-runtime.ts")).toContain("each turn probes again");
+    expect(read("src/cli-runtime.ts")).not.toContain("a fact that cannot change underneath");
+    expect(read("src/session/process.ts")).toContain("seven // queued fatals still leave room");
+  });
+});
+
 describe("live-session doc claims (review live23)", () => {
   test("the README mirrors a driver-caught violation before its fatal", () => {
     expect(README).not.toContain("the raw line is not mirrored on those paths");
@@ -536,14 +570,17 @@ describe("live-session doc claims (review D9)", () => {
     // CHANGELOG entry under [Unreleased] while the tree shipped 0.10.0 —
     // accurate when written, false once release prep landed a day
     // later. The header now names the tree's version and the CHANGELOG
-    // section holding the entry, both pinned against the files
+    // section holding the usage-ledger entry (round al31's correction:
+    // that entry shipped under [0.11.0], not [0.12.0] — the sessions
+    // work itself under [0.10.0]), both pinned against the files
     // themselves so the claim cannot drift again.
     const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as {
       version: string;
     };
     expect(REPORT).not.toContain("the version is unchanged");
     expect(REPORT).toContain(`carries version ${pkg.version}`);
-    expect(REPORT).toContain(`the CHANGELOG entry sits under \`[${pkg.version}]\``);
+    expect(REPORT).toContain("the usage-ledger CHANGELOG entry sits under `[0.11.0]`");
+    expect(REPORT).not.toContain("the CHANGELOG entry sits under `[0.12.0]`");
   });
 });
 

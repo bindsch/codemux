@@ -119,26 +119,24 @@ describe("hermetic runs: codex", () => {
     for (const feature of ["apps", "plugins", "hooks", "memories", "shell_snapshot"]) {
       expect(cmd[cmd.indexOf(feature) - 1]).toBe("--disable");
     }
-    // A plain hermetic run keeps human mode (ul3): no --json event
-    // stream and no final-message fallback, just the hermetic config
-    // closer and the stdin marker.
-    expect(cmd.slice(-6)).toEqual([
-      "exec",
-      "--skip-git-repo-check",
-      "--ephemeral",
-      "--ignore-rules",
-      "--ignore-user-config",
-      "-",
-    ]);
-    expect(cmd).not.toContain("--json");
-    expect(cmd).not.toContain("--output-last-message");
+    // Every run asks for the event stream, then names its fallback file
+    // (round al29: a plain run names it too, its verdict scoped to the
+    // Plan-only turn's messageless stream — the prepared hermetic path
+    // sits at the private HOME's root), then the hermetic config closer
+    // and the stdin marker; a plain run streams the events through a
+    // fold (0.12.0) instead of capturing them.
     expect(cmd[cmd.length - 1]).toBe("-");
+    expect(cmd[cmd.length - 2]).toBe("--ignore-user-config");
+    expect(cmd[cmd.length - 3]).toBe(`${cmd[1]!.slice("HOME=".length)}/last-message`);
+    expect(cmd[cmd.length - 4]).toBe("--output-last-message");
+    expect(cmd[cmd.length - 5]).toBe("--json");
     // No tools flag unless asked.
     expect(cmd).not.toContain("shell_tool");
   });
 
   test("--tools none disables every tool that reaches the machine or network", () => {
-    const cmd = codexAdapter({}, fakeHome()).buildRunCommand({ agent: "codex", prompt: "p", tools: "none" });
+    const home = fakeHome();
+    const cmd = codexAdapter({}, home).buildRunCommand({ agent: "codex", prompt: "p", tools: "none" });
     expect(cmd[0]).toBe("codex");
     for (const feature of ["shell_tool", "unified_exec", "view_image", "multi_agent", "browser_use", "computer_use"]) {
       expect(cmd[cmd.indexOf(feature) - 1]).toBe("--disable");
@@ -147,11 +145,20 @@ describe("hermetic runs: codex", () => {
     expect(cmd).toContain('web_search="disabled"');
     expect(cmd).not.toContain("tools.web_search=false");
     expect(cmd).not.toContain("--ignore-user-config");
-    // A plain run keeps human mode (ul3): the stream and fallback file
-    // belong to --result-json runs only.
-    expect(cmd.slice(-5)).toEqual(["exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", "-"]);
-    expect(cmd).not.toContain("--json");
-    expect(cmd).not.toContain("--output-last-message");
+    // The stream flag rides every run, and the fallback file with it
+    // (round al29): a plain run names the file, its verdict scoped to
+    // the Plan-only turn. Without a prepared context the static shape is
+    // the fail-closed placeholder.
+    expect(cmd.slice(-7)).toEqual([
+      "--skip-git-repo-check",
+      "--ephemeral",
+      "--ignore-rules",
+      "--json",
+      "--output-last-message",
+      join(home, ".codex", ".codemux-scratch", "unprepared", "last-message"),
+      "-",
+    ]);
+    expect(cmd[cmd.length - 1]).toBe("-");
   });
 
   test("--tools none is accepted only at read-only autonomy (apply_patch cannot be removed)", () => {
@@ -174,9 +181,11 @@ describe("hermetic runs: codex", () => {
   });
 
   test("plain commands are unchanged by the hermetic machinery", () => {
-    // No env(1) prefix and no hermetic home — and no event stream either:
-    // a plain run keeps human mode (ul3), its usage the stderr figure the
-    // unwrap reads, so nothing here varies with the ledger machinery.
+    // No env(1) prefix and no hermetic home. The event stream flag and
+    // the bounded fallback file ride the run anyway (0.12.0, round al29):
+    // a plain run streams the events through a fold and names the file
+    // its verdict consults only for the Plan-only turn, so nothing
+    // hermetic varies with the machinery.
     const home = fakeHome();
     expect(codexAdapter({}, home).buildRunCommand({ agent: "codex", prompt: "p" }))
       .toEqual([
@@ -185,6 +194,9 @@ describe("hermetic runs: codex", () => {
         "--skip-git-repo-check",
         "--ephemeral",
         "--ignore-rules",
+        "--json",
+        "--output-last-message",
+        join(home, ".codex", ".codemux-scratch", "unprepared", "last-message"),
         "-",
       ]);
   });

@@ -799,7 +799,7 @@ describe("claude session driver e2e", () => {
     );
     expect(error.source).toBe("harness");
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.reason).toBe("crash");
+    expect(ended.reason).toBe("harness_failed");
     expect(ended.resumable).toBe(true);
     expect(await session.code).toBe(1);
   });
@@ -1318,12 +1318,8 @@ describe("claude session driver e2e", () => {
       cost_usd: null, // no per-turn cost (review live10)
     });
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.reason).toBe("shutdown");
-    // The fake now exits 1 — the real claude convention for an
-    // interrupted turn (step-0 probe 4). Review live9: the child's
-    // nonzero exit does NOT cost success here, because the turn's
-    // completion was delivered during the drain — this test is the
-    // companion regression for that exemption.
+    expect(ended.reason).toBe("harness_failed");
+    // Exit 1 fails the session even after a drained turn completion.
     expect(ended.exit_code).toBe(1);
     // The drained result's usage folded into the session cumulative; the
     // cost adopted there (the per-turn event carries none — live10).
@@ -1335,7 +1331,7 @@ describe("claude session driver e2e", () => {
       cost_usd: 0.001,
     });
     expect(session.events[session.events.length - 1]).toBe(ended);
-    expect(await session.code).toBe(0);
+    expect(await session.code).toBe(1);
     // The interrupt the end path sent was the one the fake answered.
     const interrupts = fakeRecord(session, "interrupts.jsonl") as Event[];
     expect(interrupts.map((entry) => entry.request_id)).toEqual(["interrupt-end-1"]);
@@ -1348,18 +1344,16 @@ describe("claude session driver e2e", () => {
     // session_ended.exit_code said 42. The verdict now reads the child:
     // a turn still open at the drain's end (no completion delivered)
     // plus a nonzero exit is a failure, with the error on the stream
-    // ahead of session_ended. The exempt cases are pinned beside it: a
-    // delivered completion (the drain test above, exit 1 by convention)
-    // and a signal death (code null — the normal kill path when the
-    // harness ignores the interrupt).
+    // ahead of session_ended. A delivered completion cannot excuse a
+    // nonzero exit, and a signal death fails by the same rule.
     const session = await startSession({}, { FAKE_SIGTERM_PERSIST: "exit42" });
     send(session.driver, { type: "user", text: "scenario:wait held" });
     await waitFor(session.events, of("turn_started"), "turn_started");
     send(session.driver, { type: "shutdown" });
 
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.reason).toBe("shutdown");
-    expect(ended.exit_code).toBe(42);
+    expect(ended.reason).toBe("harness_failed");
+    expect(ended.exit_code).toBe(1);
     const fatal = session.events.find((event) => event.type === "error" && event.fatal === true);
     expect(fatal).toBeDefined();
     expect(fatal!.source).toBe("harness");
@@ -1402,7 +1396,7 @@ describe("claude session driver e2e", () => {
     send(session.driver, { type: "shutdown" });
 
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.reason).toBe("shutdown");
+    expect(ended.reason).toBe("harness_failed");
     const fatal = session.events.find(
       (event) => event.type === "error" && event.fatal === true
     );
@@ -1503,9 +1497,9 @@ describe("claude session driver e2e", () => {
     );
     expect(completed.finish).toBe("interrupted");
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.reason).toBe("shutdown");
+    expect(ended.reason).toBe("harness_failed");
     expect(session.events[session.events.length - 1]).toBe(ended);
-    expect(await session.code).toBe(0);
+    expect(await session.code).toBe(1);
   });
 
   test("caller input during the shutdown drain is rejected shutting_down, never dropped", async () => {
@@ -1541,30 +1535,21 @@ describe("claude session driver e2e", () => {
     expect(await session.code).toBe(0);
   });
 
-  test("a wrapper exiting 143 during the drain is the signal's coded spelling, not a failure", async () => {
-    // Review live11: the live9 verdict read any nonzero exit as failure,
-    // so a wrapper that answers the shutdown SIGTERM with exit code 143
-    // (the scode spelling, 128+SIGTERM) cost success while the signal
-    // death it encodes (code null) did not. 143 now exempts itself like
-    // the signal, and the still-open turn is synthesized interrupted —
-    // the harness never answered the end-interrupt.
+  test("a wrapper exiting 143 during shutdown fails the session (al41)", async () => {
     const session = await startSession({}, { FAKE_SIGTERM_PERSIST: "exit143" });
     send(session.driver, { type: "user", text: "scenario:wait held" });
     await waitFor(session.events, of("turn_started"), "turn_started");
     send(session.driver, { type: "shutdown" });
 
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.reason).toBe("shutdown");
-    expect(ended.exit_code).toBe(143);
-    // No false "during the shutdown drain" fatal.
-    expect(of("error")(session.events)).toBeUndefined();
-    // The open turn is still answered — synthesized interrupted,
-    // codemux-originated, usage never guessed.
+    expect(ended.reason).toBe("harness_failed");
+    expect(ended.exit_code).toBe(1);
+    expect(of("error")(session.events)?.fatal).toBe(true);
     const completed = of("turn_completed")(session.events) as Event;
     expect(completed).toBeDefined();
     expect(completed.turn_id).toBe("t1");
-    expect(completed.finish).toBe("interrupted");
-    expect(completed.reason).toBe("the session ended (shutdown) before the turn completed");
+    expect(completed.finish).toBe("failed");
+    expect(completed.reason).toContain("exited with code 143");
     expect(completed.usage).toEqual({
       input_tokens: null,
       output_tokens: null,
@@ -1572,8 +1557,7 @@ describe("claude session driver e2e", () => {
       total_tokens: null,
       cost_usd: null,
     });
-    expect(await session.code).toBe(0);
-    // The end-interrupt was delivered but died unanswered.
+    expect(await session.code).toBe(1);
     const interrupts = fakeRecord(session, "interrupts.jsonl") as Event[];
     expect(interrupts.map((entry) => entry.request_id)).toEqual(["interrupt-end-1"]);
   });
@@ -1582,14 +1566,13 @@ describe("claude session driver e2e", () => {
     // Review live11, minor 5 (the claude sibling): the crash path already
     // told the failure story, but the live9 verdict then added a second,
     // false "during the shutdown drain" fatal for the same exit — and the
-    // open turn's turn_started was never answered. The crash end now
-    // exempts itself from the drain verdict and the turn is synthesized
-    // failed with the crash as its reason.
+    // open turn's turn_started was never answered. The crash now emits
+    // one fatal and the turn receives a failed completion.
     const session = await startSession();
     send(session.driver, { type: "user", text: "scenario:crash boom" });
     await waitFor(session.events, of("session_started"), "session_started");
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.reason).toBe("crash");
+    expect(ended.reason).toBe("harness_failed");
     // Exactly one fatal — the crash itself — and no drain fatal behind it.
     const fatals = session.events.filter(
       (event) => event.type === "error" && event.fatal === true
@@ -1606,7 +1589,7 @@ describe("claude session driver e2e", () => {
     expect(completed.turn_id).toBe("t1");
     expect(completed.finish).toBe("failed");
     // Review live17: the reason is the fatal that ended the session.
-    expect(completed.reason).toContain("the claude process exited unexpectedly (code");
+    expect(completed.reason).toContain("the claude process exited with code 1 during the shutdown drain before completing its open turn");
     expect(completed.usage).toEqual({
       input_tokens: null,
       output_tokens: null,
@@ -1813,12 +1796,12 @@ describe("claude session driver e2e", () => {
     send(session.driver, { type: "shutdown" });
 
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.reason).toBe("shutdown");
-    expect(await session.code).toBe(0);
+    expect(ended.reason).toBe("harness_failed");
+    expect(await session.code).toBe(1);
     const errors = session.events.filter((event) => event.type === "error");
-    expect(errors.filter((event) => event.fatal === true)).toHaveLength(0);
+    expect(errors.filter((event) => event.fatal === true)).toHaveLength(1);
     // The notice says the harness may still run it, never that it dropped.
-    expect(errors).toHaveLength(1);
+    expect(errors).toHaveLength(2);
     expect(String(errors[0]?.message)).toContain("may still run it");
     // No turn opened during the drain; the line's result is mirrored.
     expect(session.events.filter((event) => event.type === "turn_started")).toHaveLength(0);
@@ -1867,7 +1850,7 @@ describe("claude session driver e2e - review live17", () => {
     await waitFor(session.events, of("turn_completed"), "turn_completed");
     send(session.driver, { type: "shutdown" });
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.exit_code).toBe(42);
+    expect(ended.exit_code).toBe(1);
     expect(await session.code).toBe(1);
     const fatal = session.events.find((event) => event.type === "error" && event.fatal === true);
     expect(fatal?.message).toBe(
@@ -1930,7 +1913,7 @@ describe("claude session driver e2e - review live17", () => {
     session.proc.writeLine = () => ({ ok: false, reason: "backlog" });
     send(session.driver, { type: "interrupt" });
     const ended = await waitFor(session.events, of("session_ended"), "session_ended", 8_000);
-    expect(ended.reason).toBe("crash");
+    expect(ended.reason).toBe("harness_failed");
     expect(await session.code).toBe(1);
     const fatal = session.events.find((event) => event.type === "error" && event.fatal === true);
     expect(fatal?.message).toContain("could not deliver a line to the harness (backlog)");
@@ -2018,7 +2001,7 @@ describe("claude session driver e2e - review live17", () => {
     await waitFor(two.events, of("assistant_message"), "assistant_message");
     send(two.driver, { type: "shutdown" });
     const twoEnded = await waitFor(two.events, of("session_ended"), "session_ended");
-    expect(twoEnded.exit_code).toBe(2);
+    expect(twoEnded.exit_code).toBe(1);
     expect(of("turn_completed")(two.events)?.finish).toBe("interrupted");
     expect(await two.code).toBe(1);
   });
@@ -2194,7 +2177,7 @@ describe("claude session driver e2e - review live22", () => {
     await waitFor(session.events, of("assistant_message"), "assistant_message");
     session.proc.writeLine = () => ({ ok: false, reason: "backlog" });
     const ended = await waitFor(session.events, of("session_ended"), "session_ended", 8_000);
-    expect(ended.reason).toBe("crash");
+    expect(ended.reason).toBe("harness_failed");
     expect(await session.code).toBe(1);
     const fatals = session.events.filter((event) => event.type === "error" && event.fatal === true);
     expect(fatals).toHaveLength(1);
@@ -2226,7 +2209,7 @@ describe("claude session driver e2e - review live22 audit siblings", () => {
     expect(await session.code).toBe(0);
   });
 
-  test("a caller-stdin read error during the drain does not fail an orderly end", async () => {
+  test("a caller-stdin read error during the drain stays nonfatal while the child failure is reported", async () => {
     // handleCallerEnd guarded on `settled`, not `finished`: an error on
     // stdin after an acked shutdown added a fatal and turned exit 0 into
     // exit 1, though the session no longer reads stdin.
@@ -2236,10 +2219,11 @@ describe("claude session driver e2e - review live22 audit siblings", () => {
     send(session.driver, { type: "shutdown" });
     session.driver.handleCallerEnd(new Error("EIO: i/o error, read"));
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.reason).toBe("shutdown");
-    expect(await session.code).toBe(0);
+    expect(ended.reason).toBe("harness_failed");
+    expect(await session.code).toBe(1);
     const errors = session.events.filter((event) => event.type === "error");
-    expect(errors.filter((event) => event.fatal === true)).toHaveLength(0);
+    expect(errors.filter((event) => event.fatal === true)).toHaveLength(1);
+    expect(errors.find((event) => event.fatal === true)?.source).toBe("harness");
     expect(errors.some((event) => String(event.message).includes("EIO"))).toBe(true);
   });
 });
@@ -2261,7 +2245,7 @@ describe("claude session driver e2e - review live23", () => {
       (event) => event.type === "error" && String(event.message).includes("rejected the interrupt")
     );
     expect(notice?.fatal).toBe(false);
-    expect(ended.reason).toBe("shutdown");
+    expect(ended.reason).toBe("harness_failed");
     expect(await session.code).toBe(1);
   }, 30_000);
 });

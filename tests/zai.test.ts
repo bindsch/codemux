@@ -21,6 +21,24 @@ function withHome<T>(fn: (home: string) => T): T {
 }
 
 describe("Z.AI credential handling", () => {
+  test("run and TUI validate the injected config directory with ambient unset (al40)", () => {
+    const saved = process.env.CLAUDE_CONFIG_DIR;
+    delete process.env.CLAUDE_CONFIG_DIR;
+    try {
+      for (const configured of ["relative-profile", "/absolute-profile "]) {
+        const adapter = new ZaiAdapter({ ZAI_API_KEY: "test-key", CLAUDE_CONFIG_DIR: configured });
+        const passthroughEnv = ["CLAUDE_CONFIG_DIR"];
+        expect(() => adapter.validateRunRequest({ agent: "zai", prompt: "hello", autonomy: "high", passthroughEnv }))
+          .toThrow("CLAUDE_CONFIG_DIR must");
+        expect(() => adapter.validateTuiRequest(undefined, undefined, "high", undefined, passthroughEnv))
+          .toThrow("CLAUDE_CONFIG_DIR must");
+      }
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = saved;
+    }
+  });
+
   test("reads a private regular key file", () => {
     withHome((home) => {
       const keyPath = join(home, ".zai");
@@ -170,7 +188,7 @@ describe("Z.AI shares the Claude Code home", () => {
     // somewhere --cwd decides, so validation refuses it before launch.
     const prev = process.env.CLAUDE_CONFIG_DIR;
     process.env.CLAUDE_CONFIG_DIR = "relative-profile";
-    const adapter = new ZaiAdapter({ ZAI_API_KEY: "key" });
+    const adapter = new ZaiAdapter({ ZAI_API_KEY: "key", CLAUDE_CONFIG_DIR: "relative-profile" });
     try {
       expect(() =>
         adapter.validateRunRequest({
@@ -200,10 +218,10 @@ describe("Z.AI shares the Claude Code home", () => {
     // trimming, so a padded value passed validation and still resolved
     // relative against the run's working directory.
     const prev = process.env.CLAUDE_CONFIG_DIR;
-    const adapter = new ZaiAdapter({ ZAI_API_KEY: "key" });
     try {
       for (const padded of [" /var/zai-profile", "zai-profile "]) {
         process.env.CLAUDE_CONFIG_DIR = padded;
+        const adapter = new ZaiAdapter({ ZAI_API_KEY: "key", CLAUDE_CONFIG_DIR: padded });
         expect(() =>
           adapter.validateRunRequest({
             agent: "zai",

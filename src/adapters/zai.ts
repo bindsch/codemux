@@ -51,13 +51,33 @@ export class ZaiAdapter extends BaseAdapter {
       supportsModel: true,
       supportsAutonomy: true,
       autonomyLevels: ["read-only", "low", "medium", "high"],
-      supportsEffort: false,
-      effortLevels: [],
+      // Same binary as claude, so the same --effort flag (verified live
+      // against the Z.AI endpoint 2026-10-10, glm-5.3 replying under
+      // --effort low): the levels the binary's own help lists, plus
+      // `none` — the adapter's "no flag" spelling mapEffort maps to
+      // nothing. The list must carry it or every CLI path refuses
+      // (`resolveEffortForAdapter`) what the mapper accepts: before
+      // 0.12.0 a non-supporting zai dropped `none` silently, so the
+      // enabled flag alone regressed `--effort none` (review al11).
+      // Divergence from the claude adapter, on purpose (round al21,
+      // contracts-2 minor 4): claude's own effortLevels omits `none`, so
+      // `-a claude --effort none` refuses at the CLI gate while the same
+      // spelling on this same binary through `-a zai` is accepted. Each
+      // adapter keeps the surface its callers had — claude never took
+      // `none`, zai always did.
+      supportsEffort: true,
+      effortLevels: ["none", "low", "medium", "high", "xhigh", "max"],
       supportsHermetic: true,
       supportsToolSelection: true,
       // Same binary as claude, so the same --output-format json envelope.
       supportsResultJson: true,
     };
+  }
+
+  override mapEffort(level: ReasoningEffort): string[] {
+    // Claude's mapping verbatim: `none` is the adapter's "no flag", not a
+    // value the binary accepts.
+    return level === "none" ? [] : ["--effort", level];
   }
 
   /** The user home a run sees: the seam, else $HOME, else the account home. */
@@ -185,7 +205,7 @@ export class ZaiAdapter extends BaseAdapter {
     // The adapter pins no CLAUDE_CONFIG_DIR, so a passed-through one is the
     // only redirect -- and a relative one would resolve against the child's
     // working directory, landing the config store somewhere --cwd decides.
-    assertAbsoluteClaudeConfigDir(request.passthroughEnv);
+    assertAbsoluteClaudeConfigDir(request.passthroughEnv, this.environment);
   }
 
   override validateTuiRequest(
@@ -197,7 +217,7 @@ export class ZaiAdapter extends BaseAdapter {
     enablePlaywrightMcp = false
   ): void {
     super.validateTuiRequest(model, cwd, autonomy, _effort, passthroughEnv, enablePlaywrightMcp);
-    assertAbsoluteClaudeConfigDir(passthroughEnv);
+    assertAbsoluteClaudeConfigDir(passthroughEnv, this.environment);
   }
 
   buildRunCommand(request: RunRequest): string[] {
@@ -257,6 +277,10 @@ export class ZaiAdapter extends BaseAdapter {
       cmd.push(...claudeAutonomyFlags(request.autonomy, request.cwd ?? process.cwd()));
     }
 
+    if (request.effort) {
+      cmd.push(...this.mapEffort(request.effort));
+    }
+
     return cmd;
   }
 
@@ -290,7 +314,7 @@ export class ZaiAdapter extends BaseAdapter {
   buildTuiCommand(
     model?: string,
     autonomy?: AutonomyLevel,
-    _effort?: ReasoningEffort,
+    effort?: ReasoningEffort,
     sandboxed?: boolean,
     enablePlaywrightMcp?: boolean,
     cwd?: string
@@ -307,6 +331,9 @@ export class ZaiAdapter extends BaseAdapter {
       // The TUI has a human to approve; write grants ride only on
       // headless runs.
       cmd.push(...this.mapAutonomy(autonomy));
+    }
+    if (effort) {
+      cmd.push(...this.mapEffort(effort));
     }
     return cmd;
   }

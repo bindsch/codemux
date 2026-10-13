@@ -41,6 +41,9 @@ import {
 import { SessionFsm } from "./fsm.js";
 import {
   awaitFinalFlush,
+  buildSessionEnded,
+  harnessFailed,
+  shutdownRequested,
   BoundedOutboundQueue,
   callerStdinFailure,
   codemuxFatalMessage,
@@ -50,6 +53,7 @@ import {
   harnessLineDeliverable,
   installSessionSignalHandlers,
   type SessionFatal,
+  type SessionChildOutcome,
   type SessionProcess,
   type SessionSignalGate,
 } from "./process.js";
@@ -116,7 +120,8 @@ export type SessionEndReason =
   | "stdin-close"
   | "signal"
   | "timeout"
-  | "crash";
+  | "crash"
+  | "harness_failed";
 
 import { addTurnUsage } from "./usage.js";
 
@@ -206,13 +211,6 @@ export class ClaudeSessionDriver {
    * (review live5). `finished` alone is the end path's re-entry guard
    * and flips at its start. */
   private settled = false;
-  /** An INTERRUPTED completion delivered inside the drain. Only this
-   * exempts a nonzero child exit, and only exit code 1: claude-family
-   * exits 1 after an interrupted turn by convention (step-0 probe 4).
-   * Any other nonzero exit, or exit 1 with no interrupted turn answered,
-   * is a failure while persisting (review live18 — every nonzero exit
-   * after any drained completion used to read as success). */
-  private drainedInterrupted = false;
   /** An `interrupt` the caller sent while the forwarded first input's
    * turn could not open yet (the FSM still `starting`, waiting for the
    * init frame). It is delivered the moment that turn opens, so the ack
@@ -868,13 +866,6 @@ export class ClaudeSessionDriver {
     // turn runs next — the same supersede every other turn-closing path
     // applies (review live11, the codex sibling's finding).
     this.supersedePendingDeny("codemux: denied: the turn completed before the decision");
-    if (this.finished) {
-      // This completion landed inside the shutdown drain: the harness
-      // answered the end-interrupt (or delivered its own final result)
-      // before dying. Only an interrupted one carries the exit-1
-      // convention (review live9, narrowed in live18).
-      if (finish === "interrupted") this.drainedInterrupted = true;
-    }
     // Cost rides outside the token sums: the result's `total_cost_usd`
     // is the harness's own session-lifetime figure (each turn's already
     // includes the earlier ones), so the cumulative adopts it rather
@@ -1148,7 +1139,10 @@ export class ClaudeSessionDriver {
    * harness can persist, the tree is killed after the grace, harness
    * output is drained until the child settles, and `session_ended` is
    * the last event on the stream. */
+  private shutdownWasRequested = false;
+
   private async finish(reason: SessionEndReason, exitCode: number): Promise<void> {
+    this.shutdownWasRequested ||= shutdownRequested(reason);
     if (this.finished) {
       // Idempotent cleanup, honest verdict: a failure calling in during
       // the drain (a fatal harness line, a handler exception) arrives
@@ -1221,7 +1215,9 @@ export class ClaudeSessionDriver {
     // fire-once latch, not the default disposition, or codemux dies
     // mid-drain and the tree it was about to kill survives it.
     const proc = this.proc;
-    let childCode: number | null = null;
+    // The closing event carries both the child code and its full outcome,
+    // preserving the signal when the child code is null.
+    let childOutcome: SessionChildOutcome | null = null;
     if (proc !== null) {
       if (interruptWritten) {
         // The interrupt gets its own grace window before any signal
@@ -1235,50 +1231,26 @@ export class ClaudeSessionDriver {
             !this.interruptPending
         );
       }
+      proc.endInput();
+      await proc.awaitEndAnswer(() => false);
       proc.requestStop();
       await proc.settled;
-      childCode = (await proc.exited).code;
+      childOutcome = await proc.exited;
+
     }
-    // Non-null exactly when the child's exit is itself a failure the
-    // verdict below reports (review live9): nonzero, not the 143 coded
-    // signal death, not a crash end (which emitted its own fatal), and not
-    // the exit-1 convention after an interrupted turn the drain answered
-    // (review live18: the exemption covered every nonzero code after any
-    // drained completion).
-    const drainFailureCode =
-      childCode !== null &&
-      childCode !== 0 &&
-      childCode !== SESSION_SIGNAL_EXIT_CODE &&
-      reason !== "crash" &&
-      !(childCode === 1 && this.drainedInterrupted)
-        ? childCode
-        : null;
+    // Every nonzero code and signal exit fails, including during shutdown.
+    const drainFailureCode = harnessFailed(childOutcome)
+      ? childOutcome!.code ?? 1
+      : null;
     if (drainFailureCode !== null) {
-      // The child exited nonzero — its turn still open, no turn open at
-      // all (review live17: an idle failure used to exit 0), or after a
-      // drained completion that does not carry the convention (review
-      // live18): a failure while persisting during the shutdown,
-      // reported as one (review live9 — the end used to resolve with the
-      // initiating success code whatever the child did). Exempt: exit 1
-      // after an interrupted turn the drain answered (claude-family's
-      // convention, step-0 probe 4), a signal death (code null, the
-      // normal kill path for a harness that ignored the interrupt), 143
-      // (a wrapper answering the SIGTERM with an exit code — scode
-      // parity), and a crash end (the crash path already emitted its
-      // own fatal; a second one blaming the drain would be false,
-      // review live11). The error event precedes `session_ended` on the
-      // stream, so the caller sees the failure and the end that
-      // carried it — and the synthesis below pairs the turn this
-      // verdict belongs to (review live12: the fatal used to be the
-      // turn's only answer, leaving its `turn_started` unpaired exactly
-      // when this fired).
+      reason = "harness_failed";
       this.endExitCode = Math.max(this.endExitCode, 1);
-      this.emitError(
+      if (this.firstFatal === null) this.emitError(
         true,
         "harness",
         drainFailureMessage(
           this.options.agent,
-          drainFailureCode,
+          childOutcome!,
           this.fsm.state === "turn_active"
         )
       );
@@ -1287,8 +1259,7 @@ export class ClaudeSessionDriver {
       // The turn is still open and nothing else will ever answer it: the
       // crash path's fatal already told the failure story (a crash
       // mid-turn, review live11 — the agy precedent from live10), the
-      // child exited without a result on a non-failure exit (a signal
-      // death or its coded spellings), or the drain-failure verdict
+      // child exited zero without a result, or the drain-failure verdict
       // above just fired (review live12 — the two blocks used to be
       // mutually exclusive, so the one exit class the verdict reported
       // was the one class the synthesis refused to answer). §4.1's
@@ -1318,7 +1289,7 @@ export class ClaudeSessionDriver {
               reason === "crash"
                 ? crashSynthesisReason(this.firstFatal)
                 : drainFailureCode !== null
-                  ? drainFailureMessage(this.options.agent, drainFailureCode, true)
+                  ? drainFailureMessage(this.options.agent, childOutcome!, true)
                   : this.firstFatal !== null
                     // A fatal raised during an orderly end's drain (an
                     // overlong line, an unknown response id) is a failure too
@@ -1326,7 +1297,8 @@ export class ClaudeSessionDriver {
                     ? crashSynthesisReason(this.firstFatal)
                     : `the session ended (${reason}) before the turn completed`,
             usage: emptyUsage(),
-          })
+          }),
+          { terminal: "fatal" }
         );
         // The synthesized completion is a turn the caller saw complete, so
         // it gets its ledger line like any other (all-null usage: nothing
@@ -1375,12 +1347,14 @@ export class ClaudeSessionDriver {
       (this.registryRecorded ||
         (this.resumeClaimed && this.endExitCode === 0));
     const sent = this.out.enqueue(
-      buildEvent(++this.seq, this.options.sessionId, "session_ended", null, {
+      buildSessionEnded(++this.seq, this.options.sessionId, childOutcome, {
         reason,
-        exit_code: childCode,
+        shutdown_requested: this.shutdownWasRequested,
+        exit_code: this.endExitCode,
         usage: this.cumulative,
         resumable,
-      })
+      }),
+      { terminal: true }
     );
     // The closing ledger line: the same cumulative usage and end verdict
     // the caller just received.
@@ -1389,7 +1363,7 @@ export class ClaudeSessionDriver {
       this.options.sessionId,
       this.sessionStartedAt,
       reason,
-      childCode,
+      this.endExitCode,
       this.cumulative
     );
     // Exit-code honesty: `session_ended` is the one event the caller
@@ -1455,8 +1429,20 @@ export class ClaudeSessionDriver {
     });
   }
 
-  private emit(line: string): void {
-    this.out.enqueue(line);
+  /** Queue one event line. The session's end events (the option) ride
+   * the queue's terminal lane (round al32): session_ended and the fatals
+   * that end the session reach the caller even when the ordinary bounds
+   * refuse everything else, while turn_completed and the input acks are
+   * ordinary entries that drop with the rest. Two terminal classes
+   * (round al35, edges major 4): `terminal: true` is session_ended
+   * alone, and `terminal: "fatal"` is a fatal, so the lane reserves its
+   * last slot for the end event and a flood of fatals cannot take it.
+   * The enqueue's boolean is deliberately ignored — a refused line has
+   * already fired the queue's own failure callback, which starts the
+   * crash end; a terminal line is refused only when its lane class is
+   * full, and the overflow that reports starts the same end. */
+  private emit(line: string, options?: { terminal?: boolean | "fatal" }): void {
+    this.out.enqueue(line, options);
   }
 
   private ack(inputSeq: number, accepted: boolean, reason?: InputRejectionReason): void {
@@ -1481,7 +1467,11 @@ export class ClaudeSessionDriver {
         fatal,
         source,
         message,
-      })
+      }),
+      // A fatal rides the lane's fatal class (capped one slot short of
+      // the lane), so the slot the end event needs survives a flood of
+      // them (round al35, edges major 4).
+      { terminal: fatal ? "fatal" : undefined }
     );
   }
 

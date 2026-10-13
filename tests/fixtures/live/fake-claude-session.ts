@@ -716,7 +716,9 @@ process.stdin.on("data", (chunk: string) => {
   }
 });
 process.stdin.on("end", () => {
-  process.exit(0);
+  // The persistence scenarios also run on a protocol shutdown.
+  if (process.listenerCount("SIGTERM") > 0) process.emit("SIGTERM");
+  else process.exit(0);
 });
 
 // FAKE_SIGTERM_PERSIST=1: survive the shutdown SIGTERM for a moment the
@@ -727,8 +729,8 @@ process.stdin.on("end", () => {
 // still open, and only then does the process exit — with code 1, the
 // real claude convention for a turn interrupted at shutdown (step-0
 // probe 4: the interrupt round-trip ends in result
-// error_during_execution, is_error true, exit 1). The live9 rule reads
-// that as success, because the completion was delivered.
+// error_during_execution, is_error true, exit 1). The nonzero exit
+// fails the session even when the completion was delivered.
 // =garbage additionally writes one non-JSON line before dying — a
 // harness emitting unusable output inside the grace window, which the
 // live7 regression pins as costing success rather than being absorbed by
@@ -743,8 +745,7 @@ process.stdin.on("end", () => {
 // — a harness failing while persisting during the shutdown, the live9
 // shape whose cost the driver must report (exit 1, not 0). =exit143 is
 // the same silence with exit code 143 — a wrapper answering the SIGTERM
-// with an exit code instead of dying by signal (the scode spelling),
-// which must NOT be read as the live9 failure (review live11). Without
+// with an exit code instead of dying by signal. This also fails. Without
 // the env the default SIGTERM disposition applies (die at once), the
 // pre-fix behavior every other test relies on.
 const persistMode = process.env.FAKE_SIGTERM_PERSIST;

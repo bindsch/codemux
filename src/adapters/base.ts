@@ -54,7 +54,7 @@ export abstract class BaseAdapter {
    * The environment view this adapter reads operator opt-ins and provider
    * overrides from. The launch path hands it the operator's shell
    * (process.env, the default here and in getAdapter); static diagnostics
-   * (`verify`) hand it an explicitly empty view, so an exported variable
+   * (`verify`) hand it only PATH, so exported opt-ins and overrides
    * cannot change a static wiring result — the contract adapters/index.ts
    * states. Every check in this class that reads an override reads this
    * view, so an adapter constructed against a view must forward it here.
@@ -92,7 +92,7 @@ export abstract class BaseAdapter {
   ): string[];
 
   isAvailable(): boolean {
-    return Bun.which(this.binaryName, { PATH: process.env.PATH }) !== null;
+    return Bun.which(this.binaryName, { PATH: this.environment.PATH ?? "" }) !== null;
   }
 
   mapAutonomy(_level: AutonomyLevel): string[] {
@@ -160,7 +160,7 @@ export abstract class BaseAdapter {
       ...extraEnv,
     };
     const env = {
-      ...process.env,
+      ...this.environment,
       ...adapterProvided,
     } as Record<string, string>;
     for (const name of this.getEnvOmissions()) delete env[name];
@@ -185,7 +185,7 @@ export abstract class BaseAdapter {
     ) {
       throw new Error(`${this.id} produced an invalid command`);
     }
-    return resolveTrustedCommand(command, this.id, cwd);
+    return resolveTrustedCommand(command, this.id, cwd, this.environment.PATH ?? "");
   }
 
   /**
@@ -289,6 +289,16 @@ export abstract class BaseAdapter {
     return [];
   }
 
+  /** Whether a provider override is active in THIS adapter's environment
+   * view. The launch path's keep-env gate asks this (launch.ts) so a
+   * custom-environment launch decides on the same view the adapter
+   * validated against — never the ambient process.env, where an unrelated
+   * malformed CODEMUX_<AGENT>_PROVIDER_* value would fail a launch whose
+   * own view has no override at all (round al12). */
+  providerOverrideActive(): boolean {
+    return readProviderOverride(this.id, this.environment) !== null;
+  }
+
   /**
    * Refuses a provider override this harness cannot carry. A set
    * CODEMUX_<AGENT>_PROVIDER_* name on an unsupported harness must fail the
@@ -297,7 +307,7 @@ export abstract class BaseAdapter {
    * that refuses an uncarryable token cap). Base validators call this;
    * supporting adapters read the override themselves past it. The override
    * is read from this adapter's environment view, not process.env, so
-   * `verify` (empty view) never reports an exported override as broken
+   * `verify` (PATH-only view) never reports an exported override as broken
    * wiring while a real launch still refuses it.
    */
   protected assertNoUnsupportedProviderOverride(): void {

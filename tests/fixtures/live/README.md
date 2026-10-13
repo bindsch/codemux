@@ -1,10 +1,13 @@
 # Live session fixtures
 
 Recorded in step 0 of the live-sessions implementation (2026-10-04/05) on
-macOS 27.0. Each file is NDJSON with one record per exchange frame:
-`dir` is `in` (a line the probe wrote to the harness's stdin), `out` (a line
-the harness wrote to stdout), `unparsable` (a non-JSON stdout line), or
-`meta` (probe-side outcome: child exit code, timeouts, resolved ids).
+macOS 27.0. Each `.ndjson` file is a recording, NDJSON with one record per
+exchange frame: `dir` is `in` (a line the probe wrote to the harness's
+stdin), `out` (a line the harness wrote to stdout), `unparsable` (a
+non-JSON stdout line), or `meta` (probe-side outcome: child exit code,
+timeouts, resolved ids). The `.ts` files are executable fixtures, not
+recordings — live-check endpoints and fake harnesses — and carry no such
+records; their entries below say what each one is.
 
 Claude-family frames were recorded with `claude` 2.1.280 through the zai
 endpoint (the codemux `zai` adapter's endpoint, same binary and same
@@ -78,6 +81,80 @@ result.
   announce-before-input identity (a codemux UUID), aider's transcript
   lines as tier-1 `unknown` passthrough, and the all-null usage (aider
   reports none headlessly).
+- `kimi-session.ndjson` — recorded 2026-10-10 with `kimi` 0.31.1 through
+  the operator's own login (no override): the same plant/recall shape
+  (`juniper-compass-86`) across three turn-per-process exchanges over
+  kimi's own session store. Shows the deferred identity
+  (`session_started` only after turn 1's closing `session.resume_hint`
+  names the `session_<uuid>` id), the hint's tier-1 raw passthrough after
+  every turn, and the all-null usage (kimi's stream-json wire carries
+  none). Recorded `--no-sandbox --auto high` with a relocated HOME for
+  the registry: this host's scode 0.5.0 refuses to apply a profile under
+  any other HOME (sandbox_apply EPERM, exit 71) while the real HOME's
+  registry path is TCC-denied, so the sandboxed shape was not reachable;
+  the scode-boundary wiring is covered by the fake-scode tests instead.
+- `fake-agy-session.ts` — not a recording but a fake harness (2026-10-07,
+  the live-sessions item): a scenario-driven fake of the agy stream-json
+  harness built from the shapes the step-0 fixture (agy-session.ndjson)
+  and the 1.2.14 help text pin. No init frame — a fresh agy session
+  names its conversation only in the first result envelope, the identity
+  model the driver implements; the scenario list (authfail, wrongid,
+  noevent, …) and the recording protocol are documented in the script's
+  own header.
+- `fake-aider-run.ts` — not a recording but a fake harness (2026-10-08,
+  the aider sessions item): a scenario-driven fake of headless aider,
+  the per-turn process behind the aider session driver, built from the
+  shapes the adapter pins (0.86.2: `--message=<text>` on argv, the
+  canned "n" negatives on stdin, a human transcript on stdout, the
+  Markdown chat history file as the one machine-usable record). The
+  history writes are the fixture's own rendering of io.py's, never an
+  import of codemux's builder, so the two stay independent witnesses of
+  the pinned source.
+- `fake-anthropic-messages.ts` — not a recording but a live-check
+  fixture (2026-10-10, the claude model-catalog alignment): a logging
+  fake Messages endpoint for driving `codemux run`/`session -a claude`
+  under the provider override. Canned mode answers `POST /v1/messages`
+  itself (plain JSON or SSE as requested) with a plant/recall protocol
+  read out of the replayed history; `FAKE_UPSTREAM=<url>` mode forwards
+  every request verbatim and relays the upstream's answer back, so the
+  request log (`messages.jsonl` under `$FAKE_STATE_DIR`) names the
+  model, path, and credential presence of every request that left the
+  client while the real endpoint's own answers — its rejections included
+  — come through untouched. Credentials are logged as a boolean only.
+- `fake-claude-session.ts` — not a recording but a fake harness
+  (2026-10-07, the live-sessions item): a scenario-driven fake of the
+  claude-family stream-json harness built from the shapes the step-0
+  fixtures pin (NDJSON user and control frames on stdin, stream-json on
+  stdout). Its scenarios carry the whole control surface — tool calls,
+  `can_use_tool` round-trips and their failure shapes, interrupts
+  refused, ignored, or racing the turn's own end — and are documented in
+  the script's own header.
+- `fake-codex-app-server.ts` — not a recording but a fake harness
+  (2026-10-07, the live-sessions item): a scenario-driven fake of the
+  codex app-server built from the shapes the step-0 fixture pins
+  (codex-app-server.ndjson, 0.159.3): JSON-RPC 2.0 NDJSON on both stdio
+  ends, requests carrying `jsonrpc` and responses omitting it exactly as
+  recorded. Its scenarios cover steers, interrupts, approvals under
+  string and numeric ids, and the late/straggler usage deliveries; the
+  list is documented in the script's own header.
+- `fake-kimi-run.ts` — not a recording but a fake harness (2026-10-10,
+  the kimi sessions item): a scenario-driven fake of headless kimi
+  (`--prompt … --output-format stream-json`) built from the line shapes
+  the installed 0.31.1 binary's writer prints, so the e2e suite can
+  drive the real session driver against every wire tier, the deferred
+  session id, and the exit-code verdicts without the provider. Its
+  scenario list and recording protocol are documented in the script's
+  own header; it records what it received (argv, prompts, override env
+  presence) as JSONL under `$FAKE_STATE_DIR`.
+- `fake-opencode-run.ts` — not a recording but a fake harness
+  (2026-10-08, the opencode sessions item): a scenario-driven fake of
+  `opencode run --format json`, the per-turn process behind the opencode
+  session driver, built from the shapes the installed 1.18.18 binary's
+  run command prints (opencode-session.ts pins them). The prompt is the
+  whole stdin read to EOF; a fresh session mints its id in its first
+  line, the driver's deferred-identity model. The scenario list and the
+  `FAKE_SIGTERM_PERSIST` drain modes are documented in the script's own
+  header.
 
 ## Sanitization
 

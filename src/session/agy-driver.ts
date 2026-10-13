@@ -47,6 +47,9 @@ import {
 import { SessionFsm } from "./fsm.js";
 import {
   awaitFinalFlush,
+  buildSessionEnded,
+  harnessFailed,
+  shutdownRequested,
   BoundedOutboundQueue,
   callerStdinFailure,
   codemuxFatalMessage,
@@ -56,6 +59,7 @@ import {
   harnessLineDeliverable,
   installSessionSignalHandlers,
   type SessionFatal,
+  type SessionChildOutcome,
   type SessionProcess,
   type SessionSignalGate,
 } from "./process.js";
@@ -116,7 +120,8 @@ export type SessionEndReason =
   | "stdin-close"
   | "signal"
   | "timeout"
-  | "crash";
+  | "crash"
+  | "harness_failed";
 
 type Timer = ReturnType<typeof setTimeout>;
 
@@ -649,7 +654,10 @@ export class AgySessionDriver {
    * signal; then the tree is killed after a second grace, the pipe
    * drains until the child settles, and `session_ended` is the last
    * event on the stream. */
+  private shutdownWasRequested = false;
+
   private async finish(reason: SessionEndReason, exitCode: number): Promise<void> {
+    this.shutdownWasRequested ||= shutdownRequested(reason);
     if (this.finished) {
       // Idempotent cleanup, honest verdict: a failure calling in during
       // the drain (a fatal harness line, a handler exception) arrives
@@ -670,7 +678,7 @@ export class AgySessionDriver {
     // fire-once latch, not the default disposition, or codemux dies
     // mid-drain and the tree it was about to kill survives it.
     const proc = this.proc;
-    let childCode: number | null = null;
+    let childOutcome: SessionChildOutcome | null = null;
     if (proc !== null) {
       // agy has no interrupt; the stdin close is its only end carrier.
       // The input loop finishes the line it is running and exits, so the
@@ -683,37 +691,20 @@ export class AgySessionDriver {
       await proc.awaitEndAnswer(() => this.endExitCode > startCode);
       proc.requestStop();
       await proc.settled;
-      childCode = (await proc.exited).code;
+      childOutcome = await proc.exited;
+
     }
-    // Non-null exactly when the child's exit is itself a failure the
-    // verdict below reports (review live9): nonzero, not the 143 coded
-    // signal death, not a crash end (which emitted its own fatal). A
-    // delivered result excuses nothing: no exit convention was ever
-    // recorded for agy (review live18 — it used to excuse every code).
-    const drainFailureCode =
-      childCode !== null &&
-      childCode !== 0 &&
-      childCode !== SESSION_SIGNAL_EXIT_CODE &&
-      reason !== "crash"
-        ? childCode
-        : null;
+    // Every nonzero code and signal exit fails, including during shutdown.
+    const drainFailureCode = harnessFailed(childOutcome)
+      ? childOutcome!.code ?? 1
+      : null;
     if (drainFailureCode !== null) {
-      // The agy process exited nonzero — its turn still open, no turn
-      // open at all (review live17), or after its result (review
-      // live18): a failure while persisting during the shutdown,
-      // reported as one (review live9). Exempt: a signal death (code null, or
-      // 143 — a wrapper answering the SIGTERM with an exit code), and a
-      // crash end (the crash path already emitted its own fatal; a
-      // second one blaming the drain would be false, review live11).
-      // The error event precedes `session_ended` on the stream — and
-      // the synthesis below pairs the turn this verdict belongs to
-      // (review live12: the fatal used to be the turn's only answer,
-      // leaving its `turn_started` unpaired exactly when this fired).
+      reason = "harness_failed";
       this.endExitCode = Math.max(this.endExitCode, 1);
-      this.emitError(
+      if (this.firstFatal === null) this.emitError(
         true,
         "harness",
-        drainFailureMessage("agy", drainFailureCode, this.fsm.state === "turn_active")
+        drainFailureMessage("agy", childOutcome!, this.fsm.state === "turn_active")
       );
     }
     if (turnOpenAtFinish && this.fsm.state === "turn_active") {
@@ -722,8 +713,7 @@ export class AgySessionDriver {
       // other driver closes the pairing (claude and codex through the
       // end-interrupt's drained result). Synthesize the completion the
       // harness cannot: codemux-originated (raw null), the usage it
-      // never reported all-null. Interrupted on the non-failure exits
-      // (a signal death or its coded spellings, the session-end story);
+      // never reported all-null. Interrupted when the child exited zero;
       // failed on a crash end, whose fatal already reported the exit —
       // the crash used to skip the synthesis entirely, leaving the
       // `turn_started` unpaired (review live11) — and on a drain-failure
@@ -755,7 +745,7 @@ export class AgySessionDriver {
               reason === "crash"
                 ? crashSynthesisReason(this.firstFatal)
                 : drainFailureCode !== null
-                  ? drainFailureMessage("agy", drainFailureCode, true)
+                  ? drainFailureMessage("agy", childOutcome!, true)
                   : this.firstFatal !== null
                     // A fatal raised during an orderly end's drain (an
                     // overlong line, an unknown response id) is a failure too
@@ -763,7 +753,8 @@ export class AgySessionDriver {
                     ? crashSynthesisReason(this.firstFatal)
                     : `the session ended (${reason}) before the turn completed`,
             usage: emptyUsage(),
-          })
+          }),
+          { terminal: "fatal" }
         );
         // The synthesized completion is a turn the caller saw complete, so
         // it gets its ledger line like any other (all-null usage: the
@@ -812,12 +803,14 @@ export class AgySessionDriver {
       ownsRecord &&
       (this.harnessConfirmed || this.endExitCode === 0);
     const sent = this.out.enqueue(
-      buildEvent(++this.seq, this.sessionIdOrEmpty(), "session_ended", null, {
+      buildSessionEnded(++this.seq, this.sessionIdOrEmpty(), childOutcome, {
         reason,
-        exit_code: childCode,
+        shutdown_requested: this.shutdownWasRequested,
+        exit_code: this.endExitCode,
         usage: this.cumulative,
         resumable,
-      })
+      }),
+      { terminal: true }
     );
     // The closing ledger line: the same cumulative usage and end verdict
     // the caller just received (call-log.ts).
@@ -826,7 +819,7 @@ export class AgySessionDriver {
       this.ledgerSessionId(),
       this.sessionStartedAt,
       reason,
-      childCode,
+      this.endExitCode,
       this.cumulative
     );
     // Exit-code honesty: `session_ended` is the one event the caller
@@ -897,8 +890,20 @@ export class AgySessionDriver {
     return this.conversationId || this.codemuxSessionId;
   }
 
-  private emit(line: string): void {
-    this.out.enqueue(line);
+  /** Queue one event line. The session's end events (the option) ride
+   * the queue's terminal lane (round al32): session_ended and the fatals
+   * that end the session reach the caller even when the ordinary bounds
+   * refuse everything else, while turn_completed and the input acks are
+   * ordinary entries that drop with the rest. Two terminal classes
+   * (round al35, edges major 4): `terminal: true` is session_ended
+   * alone, and `terminal: "fatal"` is a fatal, so the lane reserves its
+   * last slot for the end event and a flood of fatals cannot take it.
+   * The enqueue's boolean is deliberately ignored — a refused line has
+   * already fired the queue's own failure callback, which starts the
+   * crash end; a terminal line is refused only when its lane class is
+   * full, and the overflow that reports starts the same end. */
+  private emit(line: string, options?: { terminal?: boolean | "fatal" }): void {
+    this.out.enqueue(line, options);
   }
 
   private ack(inputSeq: number, accepted: boolean, reason?: InputRejectionReason): void {
@@ -918,7 +923,11 @@ export class AgySessionDriver {
         fatal,
         source,
         message,
-      })
+      }),
+      // A fatal rides the lane's fatal class (capped one slot short of
+      // the lane), so the slot the end event needs survives a flood of
+      // them (round al35, edges major 4).
+      { terminal: fatal ? "fatal" : undefined }
     );
   }
 

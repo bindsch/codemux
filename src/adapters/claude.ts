@@ -21,6 +21,7 @@ import {
   assertAbsoluteClaudeConfigDir,
   claudeGatewayEnv,
   claudeGatewayOmissions,
+  claudeProviderPickerSettings,
 } from "../claude-family.js";
 import {
   assertProviderCap,
@@ -277,6 +278,11 @@ export class ClaudeAdapter extends BaseAdapter {
       supportsAutonomy: true,
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
+      // `none` is deliberately absent (round al21, contracts-2 minor 4):
+      // claude never accepted the spelling at this gate, and zai — the
+      // same binary — diverges on purpose by carrying it (its comment
+      // says why). mapEffort below still maps `none` for the paths that
+      // resolve effort below the CLI gate.
       effortLevels: ["low", "medium", "high", "xhigh", "max"],
       supportsHermetic: true,
       supportsToolSelection: true,
@@ -376,10 +382,9 @@ export class ClaudeAdapter extends BaseAdapter {
     // With an override the model is always explicit — the request's or the
     // override's — because the binary's default model is a subscription
     // name the operator's endpoint may not serve (the same rule as zai).
-    const model = this.modelFor(request.model);
-    if (model !== undefined) {
-      cmd.push("--model", model);
-    }
+    // The picker mapping rides with it (modelFlags) so the binary's own
+    // catalog check accepts the id before the first request.
+    cmd.push(...this.modelFlags(request.model));
 
     if (request.autonomy) {
       cmd.push(...claudeAutonomyFlags(request.autonomy, request.cwd ?? process.cwd()));
@@ -389,6 +394,25 @@ export class ClaudeAdapter extends BaseAdapter {
     }
 
     return cmd;
+  }
+
+  /**
+   * The model flags every launch shares: `--model` (always explicit under
+   * an override — modelFor's rule), plus the modelPicker `--settings`
+   * payload when an override is active, without which 2.1.280's client
+   * catalog check rejects a provider-format id before any request leaves
+   * the binary (claude-family.ts). No model resolved: no flags.
+   */
+  private modelFlags(model: string | undefined): string[] {
+    const resolved = this.modelFor(model);
+    if (resolved === undefined) return [];
+    if (this.validatedProvider() === null) return ["--model", resolved];
+    return [
+      "--model",
+      resolved,
+      "--settings",
+      claudeProviderPickerSettings(resolved),
+    ];
   }
 
   override getStdinInput(request: RunRequest): string | null {
@@ -438,11 +462,11 @@ export class ClaudeAdapter extends BaseAdapter {
       forbiddenRoot: cwd ?? process.cwd(),
     }));
     // The override's model fallback, same as buildRunCommand: an override
-    // session never runs the binary's default model.
-    const resolved = this.modelFor(model);
-    if (resolved !== undefined) {
-      cmd.push("--model", resolved);
-    }
+    // launch never runs the binary's default model, and the picker
+    // mapping rides with it (modelFlags) for the same catalog reason.
+    // (The tui launch this command builds; the session path wires its
+    // override through the providerSettings seam instead, session/cli.ts.)
+    cmd.push(...this.modelFlags(model));
     if (autonomy) {
       // The TUI has a human to approve; write grants ride only on
       // headless runs.

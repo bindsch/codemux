@@ -496,31 +496,36 @@ describe("the launched call ledger", () => {
     }
   });
 
-  test("a long plain codex run succeeds and receipts the stderr figure, not a 16 MiB stream (ul3)", async () => {
+  test("a long plain codex run folds the event stream, so the reply, the full usage block, and the byte-for-byte stdout contract all survive (ul3)", async () => {
     // The regression: forcing --json onto plain runs made codex stream
     // every event — tool output included — into the 16 MiB capture bound,
     // so an agentic run died at exit 125 with the reply lost and no
-    // receipt. The fake emits exactly that stream when it sees --json and
-    // answers the way human mode does without it, so the test fails if
-    // the flag ever comes back unconditionally.
-    const fake = createFakeBinaryEnv({
-      codex: [
-        'pad=$(head -c 16384 /dev/zero | tr "\\0" x)',
-        'case " $* " in',
-        '  *" --json "*)',
-        "    i=0",
-        "    while [ $i -lt 1100 ]; do",
-        '      printf \'{"type":"item.updated","item":{"id":"i%d","type":"other","data":"%s"}}\\n\' "$i" "$pad"',
-        "      i=$((i+1))",
-        "    done",
-        "    ;;",
-        "  *)",
-        '    printf \'the reply\\n\'',
-        '    printf \'tokens used\\n2,048\\n\' >&2',
-        "    ;;",
-        "esac",
-      ].join("\n"),
-    });
+    // receipt. Since 0.12.0 the flag rides every run and the plain run
+    // streams the events through a fold that keeps only the final message,
+    // the usage snapshot, and the served model, so no volume of tool
+    // output can reach the bound. The fake emits exactly that volume —
+    // 1100 events of ~16 KiB, past 16 MiB — plus the blended "tokens used"
+    // figure human mode prints on stderr, proving the receipt carries the
+    // stream's full block, never the figure. The stdout contract is human
+    // mode's byte for byte, and a failed run is held to it too: a failed
+    // turn's message is discarded upstream, so its stdout is empty.
+    const giantStream = (ending: string): string => [
+      'pad=$(head -c 16384 /dev/zero | tr "\\0" x)',
+      'printf \'{"type":"thread.started","thread_id":"0192b8d4-4d4f-7c4a-9d0e-6f5a4b3c2d1e"}\\n\'',
+      'printf \'{"type":"turn.started"}\\n\'',
+      "i=0",
+      "while [ $i -lt 1100 ]; do",
+      '  printf \'{"type":"item.updated","item":{"id":"i%d","type":"other","data":"%s"}}\\n\' "$i" "$pad"',
+      "  i=$((i+1))",
+      "done",
+      'printf \'{"type":"item.completed","item":{"id":"final","type":"agent_message","text":"the reply"}}\\n\'',
+      ending,
+      'printf \'tokens used\\n2,048\\n\' >&2',
+    ].join("\n");
+    const completed = giantStream(
+      'printf \'{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":4,"cache_write_input_tokens":0,"output_tokens":6,"reasoning_output_tokens":0}}\\n\''
+    );
+    const fake = createFakeBinaryEnv({ codex: completed });
     const ledger = ledgerFile();
     try {
       const { stdout, exitCode } = await runCli(
@@ -532,18 +537,51 @@ describe("the launched call ledger", () => {
       const record = readCallLog(ledger.path).entries[0]!.record as CallRecord;
       expect(record.kind).toBe("run");
       expect(record.agent).toBe("codex");
-      // The blended figure lands in total_tokens alone; the parts cannot
-      // be recovered from it.
+      // The stream's snapshot, every field: the uncached input (10 − 4
+      // reads − 0 writes), the joined cached count, the output, and the
+      // total computed from all of them — not the blended 2,048 figure.
       expect(record.usage).toEqual({
-        input_tokens: null,
-        output_tokens: null,
-        cached_input_tokens: null,
-        total_tokens: 2048,
+        input_tokens: 6,
+        output_tokens: 6,
+        cached_input_tokens: 4,
+        total_tokens: 16,
         cost_usd: null,
       });
     } finally {
       fake.cleanup();
       ledger.cleanup();
+    }
+
+    // The same volume ending in a failed turn: human mode prints nothing
+    // for one, so the run fails with empty stdout — never the wire, never
+    // the message the failed turn had completed — and reports no usage,
+    // because a figure from a run the harness itself called failed is at
+    // best incomplete.
+    const failedTurn = giantStream(
+      'printf \'{"type":"turn.failed","error":{"message":"Usage limit reached"}}\\n\''
+    );
+    const failing = createFakeBinaryEnv({ codex: failedTurn });
+    const failedLedger = ledgerFile();
+    try {
+      const { stdout, stderr, exitCode } = await runCli(
+        ["run", "--no-sandbox", "--auto", "high", "-a", "codex", "-p", "test"],
+        { ...failing.env, [CALL_LOG_ENV]: failedLedger.path }
+      );
+      expect(exitCode).toBe(1);
+      expect(stdout).toBe("");
+      expect(stderr).toContain("Usage limit reached");
+      const record = readCallLog(failedLedger.path).entries[0]!.record as CallRecord;
+      expect(record.exit_code).toBe(1);
+      expect(record.usage).toEqual({
+        input_tokens: null,
+        output_tokens: null,
+        cached_input_tokens: null,
+        total_tokens: null,
+        cost_usd: null,
+      });
+    } finally {
+      failing.cleanup();
+      failedLedger.cleanup();
     }
   });
 
@@ -629,13 +667,17 @@ describe("the launched call ledger", () => {
     }
   });
 
-  test("a 40 MiB opencode tool line still succeeds: dropped unread, reply and usage kept (ul5)", async () => {
-    // The ul5 defect end to end: one wire-shaped line of ~2.5x the capture
-    // bound. The first 16 MiB tripped the drop as designed, but every
-    // later chunk of the same line piled back into the buffer keptBytes
-    // counted, so the runner threw the output-limit error and the run
-    // died at exit 125 with the reply lost. The tail is dropped chunk by
-    // chunk now: exit 0, the reply, the usage — never the capture failure.
+  test("a 40 MiB opencode tool line fails the run at the capture limit: one rule, no classifier (ul5, al37)", async () => {
+    // The ul5 shape under round al37's one rule: one wire-shaped line of
+    // ~2.5x the capture bound is the first thing on the stream. The al19
+    // classifier once dropped a tool_use head harmlessly with a note; al37
+    // deleted it — the retained-bytes check counts bytes retained, nothing
+    // more — so the latch fires the moment the line crosses and the run
+    // fails at the capture limit: exit 125, the capture-limit stderr, the
+    // output that preceded the line (nothing did — the reply lines that
+    // follow never fold), never a silent truncation. Tool volume spread
+    // over LINES under the cap still cannot kill the run; one line past
+    // the bound itself does.
     const text = JSON.stringify({ type: "text", sessionID: "ses_0123456789abcdef", part: { text: "the reply" } });
     const finish = JSON.stringify({
       type: "step_finish",
@@ -658,21 +700,21 @@ describe("the launched call ledger", () => {
         ["run", "--no-sandbox", "--auto", "high", "-a", "opencode", "-p", "test"],
         { ...fake.env, [CALL_LOG_ENV]: ledger.path }
       );
-      expect(exitCode).toBe(0); // 125 would be the output-limit kill
-      expect(stdout).toBe("the reply\n");
-      expect(stdout).not.toContain('"type"');
-      // The process-runner never threw the output-limit error.
-      expect(stderr).not.toContain("capture limit");
-      expect(stderr).toContain("dropped unread");
+      expect(exitCode).toBe(125); // the capture-limit failure, al37's one rule
+      expect(stdout).toBe(""); // nothing preceded the line
+      expect(stderr).toContain("capture limit");
       const record = readCallLog(ledger.path).entries[0]!.record as CallRecord;
       expect(record.kind).toBe("run");
       expect(record.agent).toBe("opencode");
+      expect(record.exit_code).toBe(125);
+      // Nothing folded before the latch: the receipt's usage is nulls,
+      // never a guess.
       expect(record.usage).toEqual({
-        input_tokens: 8,
-        output_tokens: 3,
+        input_tokens: null,
+        output_tokens: null,
         cached_input_tokens: null,
-        total_tokens: 11,
-        cost_usd: 0,
+        total_tokens: null,
+        cost_usd: null,
       });
     } finally {
       fake.cleanup();
@@ -680,10 +722,13 @@ describe("the launched call ledger", () => {
     }
   });
 
-  test("an oversized opencode line as the last output, unterminated, still succeeds (ul5)", async () => {
-    // The partial-line path: the oversized line is the LAST thing printed,
-    // with no trailing newline before the process exits, so the stream
-    // ends inside the discarded line.
+  test("an oversized opencode line as the last output, unterminated, fails the run at the capture limit (ul5, al37)", async () => {
+    // The partial-line path under the one rule: the oversized line is the
+    // LAST thing printed, with no trailing newline before the process
+    // exits, so the stream ends inside the discarded line. The check runs
+    // mid-accumulation (round al16): the run fails the moment the buffered
+    // tail crosses, not at close — exit 125, the capture-limit stderr, and
+    // the output that preceded the line kept.
     const text = JSON.stringify({ type: "text", sessionID: "ses_0123456789abcdef", part: { text: "the reply" } });
     const finish = JSON.stringify({
       type: "step_finish",
@@ -706,12 +751,16 @@ describe("the launched call ledger", () => {
         ["run", "--no-sandbox", "--auto", "high", "-a", "opencode", "-p", "test"],
         { ...fake.env, [CALL_LOG_ENV]: ledger.path }
       );
-      expect(exitCode).toBe(0);
+      expect(exitCode).toBe(125);
+      // The reply folded before the line is the partial output the
+      // capture-limit result owes the caller.
       expect(stdout).toBe("the reply\n");
       expect(stdout).not.toContain('"type"');
-      expect(stderr).not.toContain("capture limit");
-      expect(stderr).toContain("dropped unread");
+      expect(stderr).toContain("capture limit");
       const record = readCallLog(ledger.path).entries[0]!.record as CallRecord;
+      expect(record.exit_code).toBe(125);
+      // The receipt keeps the usage folded before the line, like a signal
+      // interrupt's receipt does.
       expect(record.usage).toEqual({
         input_tokens: 8,
         output_tokens: 3,

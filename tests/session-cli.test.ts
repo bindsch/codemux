@@ -9,7 +9,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,7 +27,7 @@ const FAKE_AGY = fileURLToPath(new URL("./fixtures/live/fake-agy-session.ts", im
  * itself — the version probe's environment is allowlisted, so a
  * FAKE_VERSION variable would never reach it. */
 function fakeHarnessEnv(
-  binary: "claude" | "codex" | "agy" | "opencode" | "aider",
+  binary: "claude" | "codex" | "agy" | "opencode" | "aider" | "kimi",
   script: string,
   extra: { version?: string; env?: Record<string, string> } = {}
 ): {
@@ -91,6 +91,37 @@ describe("CLI - session refusals", () => {
     );
     expect(exitCode).toBe(64);
     expect(stderr).toContain("untrusted");
+  });
+
+  test("--sandbox-trust untrusted is refused for sessions before the keep-env gate (al21)", async () => {
+    // The untrusted preset scrubs, so an override session under it would
+    // need the keep-env exemption — but untrusted trust is refused
+    // outright for sessions (a session must write harness state), and
+    // that refusal fires before the keep-env probe: an operator on a
+    // scode without --keep-env reads the trust refusal, never the
+    // capability one.
+    const fake = fakeClaudeEnv({
+      env: {
+        CODEMUX_CLAUDE_PROVIDER_BASE_URL: "https://override.example/v1",
+        CODEMUX_CLAUDE_PROVIDER_API_KEY: "e2e-untrusted-key",
+        CODEMUX_CLAUDE_PROVIDER_MODEL: "claw-32b",
+      },
+    });
+    try {
+      const { stderr, exitCode } = await runCli(
+        [
+          "session", "-a", "claude", "--sandbox",
+          "--sandbox-trust", "untrusted", "--sandbox-scrub-env",
+        ],
+        fake.env
+      );
+      expect(exitCode).toBe(64);
+      expect(stderr).toContain("untrusted");
+      expect(stderr).not.toContain("--keep-env");
+      expect(stderr).not.toContain("e2e-untrusted-key");
+    } finally {
+      fake.cleanup();
+    }
   });
 
   test("a --resume id that is not a UUID refuses with 64", async () => {
@@ -326,6 +357,15 @@ describe("CLI - session refusals", () => {
     expect(knobStderr).toContain(
       "CODEMUX_CODEX_PROVIDER_MULTI_AGENT is set but no provider override is"
     );
+    // The STORE knob names a config key no supported codex release has
+    // (codemux already sends store: false on every Responses request), so
+    // the session path refuses it too — every value, "on" included.
+    const { stderr: storeStderr, exitCode: storeCode } = await runCli(
+      ["session", "-a", "codex", "--no-sandbox", "--auto", "high"],
+      { PATH: minimalPath(), CODEMUX_CODEX_PROVIDER_STORE: "on" }
+    );
+    expect(storeCode).toBe(1);
+    expect(storeStderr).toContain("CODEMUX_CODEX_PROVIDER_STORE is refused");
     // A blank value counts as unset, the override module's own rule.
     const fake = fakeClaudeEnv({ version: "2.1.100" });
     try {
@@ -757,6 +797,45 @@ describe("CLI - zai sessions", () => {
     }
   });
 
+  test("a keyless zai resume under --sandbox --sandbox-scrub-env gets the resume refusal, not the key error (al16)", async () => {
+    // Round al15's start gate computed the injected-credential question
+    // eagerly, before the resume guards — and adapter.getEnv() resolves
+    // the agent's credentials, with zai's throwing outright when no key
+    // exists. A keyless zai --resume of a claude-recorded session
+    // answered the key error (exit 1) where the round-17 guard above
+    // exists to answer the policy refusal (78); the guard's own test was
+    // the gate failure. The question is computed lazily now, after every
+    // earlier refusal, so under scrub — the one spelling that would
+    // reach it on this resume — the guard still speaks first.
+    const home = mkdtempSync(join(tmpdir(), "codemux-zai-keyless-"));
+    const fake = createFakeBinaryEnv({
+      claude: `exec bun '${FAKE}' "$@"`,
+      // Exists for the sandbox gate's availability check; never run —
+      // the refusal precedes every probe and spawn this test could make.
+      scode: "exit 0",
+    });
+    try {
+      seededClaudeRegistry(home);
+      const { stderr, exitCode } = await runCli(
+        [
+          "session", "-a", "zai", "--sandbox", "--sandbox-scrub-env",
+          "--auto", "high",
+          "--resume", "11111111-2222-3333-4444-555555555555",
+        ],
+        { ...fake.env, HOME: home }
+      );
+      expect(exitCode).toBe(78);
+      expect(stderr).toContain("belongs to agent claude, not zai");
+      // The key error never fired, and neither did the keep-env gate
+      // that a resume surviving this one would have run into.
+      expect(stderr).not.toContain("Z.AI API key");
+      expect(stderr).not.toContain("--keep-env");
+    } finally {
+      fake.cleanup();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test("a session recorded under an override refuses a resume on another provider or the operator login (review D3, security)", async () => {
     // The recorded harness home (~/.claude) does not move with the
     // endpoint, so without the provider identity in the record every
@@ -846,6 +925,82 @@ describe("CLI - zai sessions", () => {
       expect(login.stderr).toContain("cannot resume against the operator's own login");
     } finally {
       fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("a session under the claude override carries the modelPicker mapping on --settings", async () => {
+    // Claude Code 2.1.280 (the session floor) validates --model against
+    // its own model catalog before any request leaves the client, and a
+    // provider-format id is not in it: an override session would die on
+    // its first turn with zero requests reaching the endpoint. The
+    // session's argv carries the same mapping the run path carries —
+    // --model names what the endpoint serves, --settings tells the
+    // binary which catalog tier to assume for it, and the wire id is
+    // unchanged. Without an override nothing is added (the regression:
+    // the plain session's argv never grows a --settings).
+    const fake = fakeClaudeEnv();
+    const plain = fakeClaudeEnv();
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-picker-"));
+    const workdir = join(isolatedHome, "work");
+    mkdirSync(workdir);
+    const overrideEnv = {
+      CODEMUX_CLAUDE_PROVIDER_BASE_URL: "http://127.0.0.1:9/v1",
+      CODEMUX_CLAUDE_PROVIDER_API_KEY: "e2e-key-do-not-print",
+      CODEMUX_CLAUDE_PROVIDER_MODEL: "clawvm-qwen32b-coder",
+    };
+    const firstSpawnArgs = (dir: string): string[] => {
+      const lines = readFileSync(join(dir, "argv.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line.trim() !== "");
+      expect(lines.length).toBeGreaterThan(0);
+      return (JSON.parse(lines[0] ?? "") as { args: string[] }).args;
+    };
+    try {
+      for (const [harnessFake, env] of [
+        [fake, overrideEnv] as const,
+        [plain, {}] as const,
+      ]) {
+        const session = await driveSession(
+          [
+            "session", "-a", "claude", "--no-sandbox", "--auto", "high",
+            "--cwd", workdir, "--shutdown-grace", "2",
+            "--pass-env", "FAKE_STATE_DIR,FAKE_CWD",
+          ],
+          {
+            HOME: isolatedHome,
+            XDG_CONFIG_HOME: join(isolatedHome, ".config"),
+            FAKE_STATE_DIR: harnessFake.stateDir,
+            FAKE_CWD: workdir,
+            ...harnessFake.env,
+            ...env,
+          }
+        );
+        try {
+          session.send({ type: "user", text: "scenario:basic hello" });
+          await session.waitFor(
+            "turn_completed",
+            (event) => event.type === "turn_completed"
+          );
+          session.send({ type: "shutdown" });
+          const [exitCode] = await session.exit;
+          expect(exitCode).toBe(0);
+        } finally {
+          await session.proc.kill();
+        }
+      }
+      const args = firstSpawnArgs(fake.stateDir);
+      expect(args[args.indexOf("--model") + 1]).toBe("clawvm-qwen32b-coder");
+      const settings = args[args.indexOf("--settings") + 1] ?? "";
+      expect(JSON.parse(settings)).toEqual({
+        modelPicker: {
+          options: [{ model: "clawvm-qwen32b-coder", behavesAs: "claude-sonnet-5" }],
+        },
+      });
+      expect(firstSpawnArgs(plain.stateDir)).not.toContain("--settings");
+    } finally {
+      fake.cleanup();
+      plain.cleanup();
       rmSync(isolatedHome, { recursive: true, force: true });
     }
   }, 30_000);
@@ -2183,6 +2338,7 @@ describe("CLI - a claude resume records before the spawn (review live22 audit)",
 
 const FAKE_OPENCODE = fileURLToPath(new URL("./fixtures/live/fake-opencode-run.ts", import.meta.url));
 const FAKE_AIDER = fileURLToPath(new URL("./fixtures/live/fake-aider-run.ts", import.meta.url));
+const FAKE_KIMI = fileURLToPath(new URL("./fixtures/live/fake-kimi-run.ts", import.meta.url));
 
 function fakeOpenCodeEnv(extra: { version?: string; env?: Record<string, string> } = {}) {
   return fakeHarnessEnv("opencode", FAKE_OPENCODE, { version: "1.18.18", ...extra });
@@ -2190,6 +2346,10 @@ function fakeOpenCodeEnv(extra: { version?: string; env?: Record<string, string>
 
 function fakeAiderEnv(extra: { version?: string; env?: Record<string, string> } = {}) {
   return fakeHarnessEnv("aider", FAKE_AIDER, { version: "aider 0.86.2", ...extra });
+}
+
+function fakeKimiEnv(extra: { version?: string; env?: Record<string, string> } = {}) {
+  return fakeHarnessEnv("kimi", FAKE_KIMI, { version: "0.31.1", ...extra });
 }
 
 /** One `codemux session` child driven over stdio, with the parsed event
@@ -2253,6 +2413,44 @@ async function driveSession(
     proc,
   };
 }
+
+test("all seven harnesses report harness_exit on session_ended (al38)", async () => {
+  const cases = [
+    ["claude", fakeClaudeEnv], ["zai", fakeClaudeEnv], ["codex", fakeCodexEnv],
+    ["agy", fakeAgyEnv], ["opencode", fakeOpenCodeEnv],
+    ["aider", fakeAiderEnv], ["kimi", fakeKimiEnv],
+  ] as const;
+  for (const [agent, makeFake] of cases) {
+    const fake = agent === "codex" ? fakeCodexEnv({ version: "codex-cli 0.159.3" }) : makeFake();
+    const home = mkdtempSync(join(tmpdir(), "session-ended-al38-"));
+    const workdir = join(home, "work");
+    mkdirSync(workdir);
+    try {
+      const session = await driveSession([
+        "session", "-a", agent, "--no-sandbox", "--auto", "high",
+        "--cwd", workdir, "--shutdown-grace", "1", "--pass-env", "FAKE_STATE_DIR",
+      ], { ...fake.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"),
+        XDG_DATA_HOME: join(home, ".local", "share"), ZAI_API_KEY: "fake-key" });
+      try {
+        session.send({ type: "user", text: "scenario:basic one" });
+        await session.waitFor(`${agent} completion`, (event) => event.type === "turn_completed");
+        session.send({ type: "shutdown" });
+        await session.exit;
+        const endings = session.events.filter((event) => event.type === "session_ended");
+        expect(endings, agent).toHaveLength(1);
+        expect(endings[0]!.harness_exit, agent).toEqual({ code: 0, signal: null });
+        expect(endings[0]!.shutdown_requested, agent).toBe(true);
+        expect(endings[0]!.exit_code, agent).toBe(0);
+        expect(session.proc.exitCode, agent).toBe(0);
+      } finally {
+        session.proc.kill();
+      }
+    } finally {
+      fake.cleanup();
+      rmSync(home, { recursive: true, force: true });
+    }
+  }
+}, 30_000);
 
 describe("CLI - opencode sessions", () => {
   test("drives a session over the native run wire, records the real data dir, and carries the override", async () => {
@@ -2842,6 +3040,69 @@ describe("CLI - codex sessions under a provider override", () => {
     }
   }, 30_000);
 
+  test("the settled config.toml is pinned whole — the MULTI_AGENT=off variant carries no storage key", async () => {
+    // Ask 5's premise was a response-storage knob; no supported codex
+    // release has one (verified against the 0.159.3 generated config
+    // schema and the 0.160.1 binary), and codex already sends store:
+    // false on every Responses request, so the config carries no storage
+    // key at all. Pinning the entire settled file — not just substrings —
+    // means a future edit cannot add one, or drop the key exclusion,
+    // unnoticed.
+    const fake = fakeCodexEnv({ version: "codex-cli 0.159.3" });
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-config-"));
+    const workdir = join(isolatedHome, "work");
+    mkdirSync(workdir);
+    const baseUrl = "http://127.0.0.1:9/v1";
+    const hash = createHash("sha256").update(baseUrl).digest("hex").slice(0, 12);
+    const keyed = join(
+      isolatedHome, ".codex", ".codemux-provider", `session-home-${hash}-${THREAD_ID}`
+    );
+    try {
+      const session = await driveSession(
+        [
+          "session", "-a", "codex", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--shutdown-grace", "2",
+          "--pass-env", "FAKE_STATE_DIR,FAKE_CWD",
+        ],
+        {
+          ...overrideEnv(fake, isolatedHome, workdir),
+          CODEMUX_CODEX_PROVIDER_MULTI_AGENT: "off",
+        }
+      );
+      try {
+        session.send({ type: "user", text: "scenario:basic hello" });
+        await session.waitFor(
+          "turn_completed",
+          (event) => event.type === "turn_completed"
+        );
+        session.send({ type: "shutdown" });
+        const [exitCode] = await session.exit;
+        expect(exitCode).toBe(0);
+      } finally {
+        await session.proc.kill();
+      }
+      expect(readFileSync(join(keyed, "config.toml"), "utf8")).toBe(
+        [
+          "# Written by codemux for one launch; removed when the run ends.",
+          'model_provider = "codemux"',
+          'model = "clawvm-qwen32b-coder"',
+          "features.multi_agent = false",
+          "[shell_environment_policy]",
+          'exclude = ["CODEMUX_CODEX_PROVIDER_API_KEY"]',
+          "[model_providers.codemux]",
+          'name = "codemux provider override"',
+          `base_url = "${baseUrl}"`,
+          'env_key = "CODEMUX_CODEX_PROVIDER_API_KEY"',
+          'wire_api = "responses"',
+          "",
+        ].join("\n")
+      );
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   test("a resume reopens the session-keyed home, rewrites the config, and keeps it at its end", async () => {
     const fake = fakeCodexEnv({ version: "codex-cli 0.159.3" });
     const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-home-"));
@@ -3064,9 +3325,14 @@ describe("CLI - codex sessions under a provider override", () => {
         { ...overrideEnv(fake, isolatedHome, workdir), FAKE_STALL_INIT: "1" }
       );
       try {
-        // Give the spawn a moment to make its home, then end the session
-        // before any session_started can exist.
-        await Bun.sleep(500);
+        // Wait for the spawn to make its home (the fake records it on
+        // start), then end the session before any session_started can
+        // exist. A fixed 500 ms sleep failed under a host load average of
+        // 40, before the fake had written its record.
+        const deadline = Date.now() + 10_000;
+        while (!existsSync(join(fake.stateDir, "env.jsonl")) && Date.now() < deadline) {
+          await Bun.sleep(25);
+        }
         const homes = recordedHomes(fake);
         expect(homes).toHaveLength(1);
         expect(homes[0]?.split("/").pop()).toMatch(/^run-\d+-/);
@@ -3083,6 +3349,754 @@ describe("CLI - codex sessions under a provider override", () => {
     } finally {
       fake.cleanup();
       rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe("CLI - kimi sessions", () => {
+  test("drives a two-turn session over kimi's own store, carries the override, and records ~/.kimi-code as the home", async () => {
+    // The CLI seams the driver e2e cannot reach: the SESSION_AGENTS
+    // entry (floor probe, id pattern, --turn-timeout refusal), the
+    // kimi harness home, the spawnTurn env cache under a provider
+    // override (KIMI_MODEL_* riding the environment, never argv or a
+    // `-m` alias), and the per-turn --session resume of the id the
+    // first hint named.
+    const fake = fakeKimiEnv();
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-kimi-"));
+    const workdir = join(isolatedHome, "work");
+    mkdirSync(workdir);
+    const ID = "session_11111111-2222-3333-4444-555555555555";
+    try {
+      const session = await driveSession(
+        [
+          "session", "-a", "kimi", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--shutdown-grace", "2",
+          "--pass-env", "FAKE_STATE_DIR",
+        ],
+        {
+          HOME: isolatedHome,
+          FAKE_STATE_DIR: fake.stateDir,
+          ...fake.env,
+          CODEMUX_KIMI_PROVIDER_BASE_URL: "http://127.0.0.1:9/v1",
+          CODEMUX_KIMI_PROVIDER_API_KEY: "e2e-key-do-not-print",
+          CODEMUX_KIMI_PROVIDER_MODEL: "clawvm-qwen32b-coder",
+        }
+      );
+      try {
+        session.send({ type: "user", text: "scenario:basic one" });
+        const started = await session.waitFor(
+          "session_started",
+          (event) => event.type === "session_started"
+        );
+        expect(started.agent).toBe("kimi");
+        expect(started.session_id).toBe(ID);
+        // The override's model is what the session reports; the spawn
+        // carries none of it as a `-m` alias.
+        expect(started.model).toBe("clawvm-qwen32b-coder");
+        const completed = await session.waitFor(
+          "turn_completed",
+          (event) => event.type === "turn_completed"
+        );
+        expect(completed.finish).toBe("end");
+
+        session.send({ type: "user", text: "scenario:basic two" });
+        await session.waitFor(
+          "the second turn",
+          (event) =>
+            event.type === "turn_completed" &&
+            session.events.filter((done) => done.type === "turn_completed").length >= 2
+        );
+
+        session.send({ type: "shutdown" });
+        const [exitCode] = await session.exit;
+        expect(exitCode).toBe(0);
+        const ended = session.events[session.events.length - 1] as Record<string, any>;
+        expect(ended.resumable).toBe(true);
+
+        // The turn spawns: no --model under the override, the prompt on
+        // argv with the author prefix ahead of it, and the second turn
+        // resuming the id the first hint named.
+        const argvs = readFileSync(join(fake.stateDir, "argv.jsonl"), "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as { args: string[] });
+        expect(argvs).toHaveLength(2);
+        expect(argvs[0]!.args).not.toContain("--model");
+        // No author field on the message, so no prefix rides the prompt
+        // (applyAuthorPrefix prefixes only authored messages).
+        expect(argvs[0]!.args[argvs[0]!.args.indexOf("--prompt") + 1]).toBe(
+          "scenario:basic one"
+        );
+        expect(argvs[1]!.args[argvs[1]!.args.indexOf("--session") + 1]).toBe(ID);
+        // The override rode the environment (the key's presence, never
+        // its value).
+        const envRecord = JSON.parse(
+          readFileSync(join(fake.stateDir, "env.jsonl"), "utf8").split("\n")[0] as string
+        ) as { hasOverride: boolean; kimiCodeHome: string | null };
+        expect(envRecord.hasOverride).toBe(true);
+
+        // The harness home is the brand home, and the registry holds the
+        // record under the native id with the override's identity.
+        const registry = readRegistry(sessionRegistryPath(isolatedHome));
+        expect(registry.outcome).toBe("ok");
+        const entry =
+          registry.outcome === "ok"
+            ? registry.file.sessions.find((r) => r.id === ID)
+            : undefined;
+        expect(entry?.agent).toBe("kimi");
+        expect(entry?.harness_home).toBe(join(isolatedHome, ".kimi-code"));
+        expect(entry?.model).toBe("clawvm-qwen32b-coder");
+        expect(entry?.provider_base_url).toBe("http://127.0.0.1:9/v1");
+      } finally {
+        await session.proc.kill();
+      }
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("--turn-timeout is refused: kimi sessions cannot interrupt a turn", async () => {
+    const fake = fakeKimiEnv();
+    try {
+      const { stderr, exitCode } = await runCli(
+        ["session", "-a", "kimi", "--turn-timeout", "30"],
+        fake.env
+      );
+      expect(exitCode).toBe(64);
+      expect(stderr).toContain("--turn-timeout requires an agent whose sessions support interrupt");
+    } finally {
+      fake.cleanup();
+    }
+  });
+
+  test("a spawn failure inside the shutdown drain is a fatal error, never a clean interrupted turn (al11)", async () => {
+    // The reviewer's trigger, exactly: stdin closes while the turn's
+    // spawn is still in flight, and the spawn fails — a scode whose
+    // --version probe stalls past the close and then dies. The end path
+    // awaits the in-flight spawn, and before al11 its catch swallowed the
+    // rejection: the session exited 0 with the turn synthesized
+    // "interrupted" and no error anywhere the caller reads, as though the
+    // accepted turn had run. The failure is codemux's own — the turn
+    // never ran — so it surfaces as a fatal and the exit is nonzero.
+    // The bin pair is hand-written (not createFakeBinaryEnv, whose scode
+    // entry answers --version): the kimi wrapper passes the floor probe
+    // and execs the scenario fake; the scode stub delays its --version
+    // answer so the stdin close lands first, then fails it.
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-kimi-"));
+    const workdir = join(isolatedHome, "work");
+    const stateDir = mkdtempSync(join(tmpdir(), "session-cli-state-"));
+    const binDir = mkdtempSync(join(tmpdir(), "codemux-cli-bin-"));
+    mkdirSync(workdir);
+    writeFileSync(
+      join(binDir, "kimi"),
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf '0.31.1\\n'; exit 0; fi\nexec bun '${FAKE_KIMI}' "$@"\n`
+    );
+    writeFileSync(
+      join(binDir, "scode"),
+      "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then sleep 0.3; exit 1; fi\nexit 1\n"
+    );
+    chmodSync(join(binDir, "kimi"), 0o755);
+    chmodSync(join(binDir, "scode"), 0o755);
+    try {
+      const session = await driveSession(
+        [
+          "session", "-a", "kimi", "--sandbox", "--auto", "high",
+          "--cwd", workdir, "--shutdown-grace", "2",
+          "--pass-env", "FAKE_STATE_DIR",
+        ],
+        {
+          HOME: isolatedHome,
+          XDG_CONFIG_HOME: join(isolatedHome, ".config"),
+          FAKE_STATE_DIR: stateDir,
+          PATH: `${binDir}:${minimalPath()}`,
+        }
+      );
+      try {
+        session.send({ type: "user", text: "scenario:basic one" });
+        // The close must land while the turn's spawn is in flight —
+        // inside the scode probe's 0.3s window. turn_started is emitted
+        // before the echo and the spawn (kimi-machine.ts), so waiting for
+        // it orders the close after the spawn began; ending stdin on send
+        // alone raced the turn's acceptance, and a close that arrived
+        // first was the clean idle-exit 0 the fatal here must never look
+        // like.
+        await session.waitFor("turn_started", (event) => event.type === "turn_started");
+        (session.proc.stdin as import("bun").FileSink).end();
+        const [exitCode] = await session.exit;
+        expect(exitCode).toBe(1);
+        const fatal = session.events.find(
+          (event) => event.type === "error" && event.fatal === true
+        );
+        expect(fatal?.source).toBe("codemux");
+        expect(fatal?.message).toContain("could not spawn the kimi turn process");
+        expect(fatal?.message).toContain("could not verify scode version");
+        const completed = session.events.find(
+          (event) => event.type === "turn_completed"
+        );
+        expect(completed?.finish).toBe("failed");
+        expect(completed?.reason).toContain("could not spawn the kimi turn process");
+        const ended = session.events[session.events.length - 1] as Record<string, any>;
+        expect(ended.type).toBe("session_ended");
+        expect(ended.reason).toBe("stdin-close");
+        // The accepted turn never reached kimi: the fake recorded no
+        // prompt.
+        expect(existsSync(join(stateDir, "prompts.jsonl"))).toBe(false);
+      } finally {
+        await session.proc.kill();
+      }
+    } finally {
+      rmSync(binDir, { recursive: true, force: true });
+      rmSync(isolatedHome, { recursive: true, force: true });
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("a padded KIMI_CODE_HOME is recorded exactly as the child receives it, and resumes (al11)", async () => {
+    // kimi reads KIMI_CODE_HOME without trimming, so a padded value names
+    // a real (differently spelled) store directory to the child. Before
+    // al11 the session CLI trimmed its own copy before recording, so the
+    // registry named a store the child never used — and a resume with
+    // the same padded value still passed the guard, because the guard
+    // compared two trimmed strings. The record is the raw bytes now
+    // (src/session/cli.ts, kimiHarnessHome), and the resume guard
+    // compares padded against padded.
+    const fake = fakeKimiEnv();
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-kimi-"));
+    const workdir = join(isolatedHome, "work");
+    mkdirSync(workdir);
+    const paddedHome = `${join(isolatedHome, "store")}  `;
+    // The padded spelling must be a directory that exists: round al29's
+    // adapter rule (now inherited verbatim by the session's run-like gate)
+    // refuses a passed-through KIMI_CODE_HOME that names no directory, so
+    // the fixture creates the padded spelling itself — exactly what the
+    // child would otherwise receive and read.
+    mkdirSync(paddedHome);
+    const ID = "session_11111111-2222-3333-4444-555555555555";
+    const baseEnv = {
+      HOME: isolatedHome,
+      XDG_CONFIG_HOME: join(isolatedHome, ".config"),
+      FAKE_STATE_DIR: fake.stateDir,
+      ...fake.env,
+      KIMI_CODE_HOME: paddedHome,
+    };
+    const baseArgs = [
+      "session", "-a", "kimi", "--no-sandbox", "--auto", "high",
+      "--cwd", workdir, "--shutdown-grace", "2",
+      "--pass-env", "FAKE_STATE_DIR,KIMI_CODE_HOME",
+    ] as const;
+    try {
+      const session = await driveSession([...baseArgs], baseEnv);
+      try {
+        session.send({ type: "user", text: "scenario:basic one" });
+        await session.waitFor(
+          "turn_completed",
+          (event) => event.type === "turn_completed"
+        );
+        session.send({ type: "shutdown" });
+        const [exitCode] = await session.exit;
+        expect(exitCode).toBe(0);
+      } finally {
+        await session.proc.kill();
+      }
+
+      // The record and the child's own environment both carry the padded
+      // bytes — one spelling, never a trimmed normalization of it.
+      const registry = readRegistry(sessionRegistryPath(isolatedHome));
+      expect(registry.outcome).toBe("ok");
+      const entry =
+        registry.outcome === "ok"
+          ? registry.file.sessions.find((r) => r.id === ID)
+          : undefined;
+      expect(entry?.harness_home).toBe(paddedHome);
+      const envRecord = JSON.parse(
+        readFileSync(join(fake.stateDir, "env.jsonl"), "utf8").split("\n")[0] as string
+      ) as { kimiCodeHome: string | null };
+      expect(envRecord.kimiCodeHome).toBe(paddedHome);
+
+      // The resume with the same padded value passes the harness-home
+      // guard (a mismatch is refused with 78): the identity is announced
+      // at run start, and the session ends clean.
+      const resumed = await driveSession([...baseArgs, "--resume", ID], baseEnv);
+      try {
+        await resumed.waitFor(
+          "session_started",
+          (event) => event.type === "session_started"
+        );
+        resumed.send({ type: "shutdown" });
+        const [exitCode] = await resumed.exit;
+        expect(exitCode).toBe(0);
+      } finally {
+        await resumed.proc.kill();
+      }
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("an empty KIMI_CODE_HOME is refused at start and resume, never recorded as the default home (al16)", async () => {
+    // The finding: sanitizeEnvironment forwards a set-but-EMPTY passthrough
+    // value verbatim, and kimi's own resolver preserves it — the store
+    // lands under the working directory — while kimiHarnessHome treated
+    // empty as unset and recorded the DEFAULT home. The record and the
+    // child disagreed, and a later resume retaining the passthrough name
+    // but unsetting its value could pass the home guard against a
+    // different store. The value is refused as usage now (exit 64, like
+    // the relative-path refusal beside it): unset the variable or give it
+    // an absolute path.
+    const fake = fakeKimiEnv();
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-kimi-"));
+    const workdir = join(isolatedHome, "work");
+    mkdirSync(workdir);
+    const ID = "session_11111111-2222-3333-4444-555555555555";
+    const cleanEnv = {
+      HOME: isolatedHome,
+      XDG_CONFIG_HOME: join(isolatedHome, ".config"),
+      FAKE_STATE_DIR: fake.stateDir,
+      ...fake.env,
+    };
+    try {
+      // Session A runs clean — no KIMI_CODE_HOME anywhere — and records
+      // the default brand home.
+      const session = await driveSession(
+        [
+          "session", "-a", "kimi", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--shutdown-grace", "2",
+          "--pass-env", "FAKE_STATE_DIR",
+        ],
+        cleanEnv
+      );
+      try {
+        session.send({ type: "user", text: "scenario:basic one" });
+        await session.waitFor(
+          "turn_completed",
+          (event) => event.type === "turn_completed"
+        );
+        session.send({ type: "shutdown" });
+        const [exitCode] = await session.exit;
+        expect(exitCode).toBe(0);
+      } finally {
+        await session.proc.kill();
+      }
+      const registry = readRegistry(sessionRegistryPath(isolatedHome));
+      expect(registry.outcome).toBe("ok");
+      const entry =
+        registry.outcome === "ok"
+          ? registry.file.sessions.find((r) => r.id === ID)
+          : undefined;
+      expect(entry?.harness_home).toBe(join(isolatedHome, ".kimi-code"));
+
+      // The resume round trip the finding turned on: retain the
+      // passthrough name, unset the value. Refused as usage before any
+      // registry read or spawn — the fake's records do not move.
+      const envBefore = existsSync(join(fake.stateDir, "env.jsonl"))
+        ? readFileSync(join(fake.stateDir, "env.jsonl"), "utf8")
+        : "";
+      const emptyEnv = {
+        ...cleanEnv,
+        KIMI_CODE_HOME: "",
+      };
+      const resume = await runCli(
+        [
+          "session", "-a", "kimi", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--resume", ID,
+          "--pass-env", "FAKE_STATE_DIR,KIMI_CODE_HOME",
+        ],
+        emptyEnv
+      );
+      expect(resume.exitCode).toBe(64);
+      expect(resume.stderr).toContain("KIMI_CODE_HOME must not be empty");
+      expect(readFileSync(join(fake.stateDir, "env.jsonl"), "utf8")).toBe(envBefore);
+
+      // The fresh start with the empty value refuses identically: no
+      // session ever spawns against a store its record cannot name.
+      const fresh = await runCli(
+        [
+          "session", "-a", "kimi", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir,
+          "--pass-env", "FAKE_STATE_DIR,KIMI_CODE_HOME",
+        ],
+        emptyEnv
+      );
+      expect(fresh.exitCode).toBe(64);
+      expect(fresh.stderr).toContain("KIMI_CODE_HOME must not be empty");
+      expect(readFileSync(join(fake.stateDir, "env.jsonl"), "utf8")).toBe(envBefore);
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe("CLI - session keep-env under --sandbox-scrub-env (review al2, correctness 1)", () => {
+  // The run path's --keep-env exemption (0.12.0) was wired only into
+  // launchRunRequest; session spawns went through spawnSessionChild with
+  // no keepEnv at all, so an override session under --sandbox-scrub-env
+  // would run every turn with its only credential scrubbed. Both outcomes
+  // now, run-path parity: the kept-name set on a supporting scode, the
+  // pre-start refusal (the run path's message verbatim, key never echoed)
+  // on one without — kimi (turn-per-process, env rebuilt per turn) and
+  // claude (long-lived child, env built once) alike.
+
+  /** The fake scode + harness pair: the scode stub answers the version
+   * gate (createFakeBinaryEnv's preamble), serves either --help shape, and
+   * execs the command unchanged after recording its argv; the harness
+   * wrapper is the scenario fake (kimi's version probe answered by the
+   * wrapper; fake-claude-session answers --version itself). */
+  function fakeScodeSessionEnv(
+    harness: "kimi" | "claude" | "zai",
+    harnessScript: string,
+    keepEnvHelp: boolean,
+    argvFile: string
+  ): { env: Record<string, string>; cleanup: () => void } {
+    const help = keepEnvHelp
+      ? "printf 'Usage: scode [options] command\\n  --keep-env NAME[,NAME...]  keep named variables under --scrub-env\\n'; exit 0"
+      : "printf 'Usage: scode [options] command\\n'; exit 0";
+    const preamble =
+      harness === "kimi"
+        ? `if [ "$1" = "--version" ]; then printf '0.31.1\\n'; exit 0; fi\n`
+        : "";
+    return createFakeBinaryEnv({
+      // Appends: a session spawns through scode once per turn (kimi) or
+      // once for the long-lived child, and the whole history is what the
+      // assertions read.
+      scode: `if [ "$1" = "--help" ]; then ${help}; fi\nprintf '%s\\n' "$@" >> '${argvFile}'\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"`,
+      // zai runs the claude binary.
+      [harness === "zai" ? "claude" : harness]: `${preamble}exec bun '${harnessScript}' "$@"`,
+    });
+  }
+
+  /** The recorded scode argv as a flat line list (the --keep-env value is
+   * its own argv element, so its own line). */
+  const scodeArgvLines = (argvFile: string): string[] =>
+    readFileSync(argvFile, "utf8").split("\n").filter((line) => line !== "");
+
+  test("the override session's start preflight probes scode with the launch environment, never an empty one (al14)", async () => {
+    // The blocker, reproduced exactly: the installed scode refuses to run
+    // without HOME, so a probe whose environment is empty answers
+    // "unprobeable" — and before al14 the session start gate probed
+    // exactly that way (buildSandboxEnv of nothing), refusing valid
+    // override sessions before anything launched with "could not probe
+    // the installed scode". The probe now runs with the environment the
+    // session's children spawn with — the adapter's standing environment
+    // through buildExecutionEnv, HOME and PATH included — and the scode
+    // resolves through that environment's PATH, the same resolver the
+    // run runner and every session spawn use, so the preflight judges
+    // the binary the launches will run.
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-keepenv-"));
+    const workdir = join(isolatedHome, "work");
+    const stateDir = mkdtempSync(join(tmpdir(), "session-cli-state-"));
+    const argvFile = join(stateDir, "scode-argv.txt");
+    mkdirSync(workdir);
+    // The fake scode's --help fails without HOME — the installed scode's
+    // own empty-env failure shape — and documents --keep-env with it.
+    const fake = createFakeBinaryEnv({
+      scode:
+        `if [ "$1" = "--help" ]; then if [ -z "$HOME" ]; then exit 1; fi; ` +
+        `printf 'Usage: scode [options] command\\n  --keep-env NAME[,NAME...]  keep named variables under --scrub-env\\n'; exit 0; fi\n` +
+        `printf '%s\\n' "$@" >> '${argvFile}'\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"`,
+      kimi: `if [ "$1" = "--version" ]; then printf '0.31.1\\n'; exit 0; fi\nexec bun '${FAKE_KIMI}' "$@"`,
+    });
+    try {
+      const session = await driveSession(
+        [
+          "session", "-a", "kimi", "--sandbox", "--sandbox-scrub-env",
+          "--auto", "high", "--cwd", workdir, "--shutdown-grace", "2",
+          "--pass-env", "FAKE_STATE_DIR",
+        ],
+        {
+          HOME: isolatedHome,
+          XDG_CONFIG_HOME: join(isolatedHome, ".config"),
+          FAKE_STATE_DIR: stateDir,
+          ...fake.env,
+          CODEMUX_KIMI_PROVIDER_BASE_URL: "http://127.0.0.1:9/v1",
+          CODEMUX_KIMI_PROVIDER_API_KEY: "e2e-key-do-not-print",
+          CODEMUX_KIMI_PROVIDER_MODEL: "clawvm-qwen32b-coder",
+        }
+      );
+      try {
+        // Before al14 this spawn exited 1 before any event: the preflight
+        // probed with an empty environment, the HOME-dependent scode
+        // refused to answer, and the session was refused as unprobeable.
+        // The deferred-identity model: the first turn's closing hint is
+        // what announces session_started.
+        session.send({ type: "user", text: "scenario:basic one" });
+        const started = await session.waitFor(
+          "session_started",
+          (event) => event.type === "session_started"
+        );
+        expect(started.agent).toBe("kimi");
+        const completed = await session.waitFor(
+          "turn_completed",
+          (event) => event.type === "turn_completed"
+        );
+        expect(completed.finish).toBe("end");
+        session.send({ type: "shutdown" });
+        const [exitCode] = await session.exit;
+        expect(exitCode).toBe(0);
+        // No probe refusal on stderr, and the override's key never there.
+        const stderrText = await new Response(
+          session.proc.stderr as ReadableStream<Uint8Array>
+        ).text();
+        expect(stderrText).not.toContain("could not probe");
+        expect(stderrText).not.toContain("e2e-key-do-not-print");
+        // The turn's spawn went through scode with the scrub and the
+        // exemption — the probe's --help exits before the record.
+        const lines = scodeArgvLines(argvFile);
+        expect(lines).toContain("--scrub-env");
+        expect(lines).toContain("--keep-env");
+      } finally {
+        await session.proc.kill();
+      }
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("preflight and turn probes include provider credentials from getRunEnv (al39)", async () => {
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-preflight-"));
+    const workdir = join(isolatedHome, "work");
+    const stateDir = join(isolatedHome, "state");
+    mkdirSync(workdir);
+    mkdirSync(stateDir);
+    const probeFile = join(stateDir, "probes.txt");
+    const fake = createFakeBinaryEnv({
+      scode:
+        `if [ "$1" = "--help" ]; then\n` +
+        `  [ "$KIMI_MODEL_API_KEY" = "preflight-test-key" ] || exit 1\n` +
+        `  printf 'credential-present\\n' >> '${probeFile}'\n` +
+        `  printf 'Usage: scode [options] command\\n  --keep-env NAME[,NAME...]\\n'; exit 0\nfi\n` +
+        `[ "$KIMI_MODEL_API_KEY" = "preflight-test-key" ] || exit 1\n` +
+        `while [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"`,
+      kimi: `if [ "$1" = "--version" ]; then printf '0.31.1\\n'; exit 0; fi\nexec bun '${FAKE_KIMI}' "$@"`,
+    });
+    try {
+      const session = await driveSession([
+        "session", "-a", "kimi", "--sandbox", "--sandbox-scrub-env",
+        "--auto", "high", "--cwd", workdir, "--shutdown-grace", "2",
+        "--pass-env", "FAKE_STATE_DIR",
+      ], {
+        ...fake.env, HOME: isolatedHome, XDG_CONFIG_HOME: join(isolatedHome, ".config"),
+        FAKE_STATE_DIR: stateDir,
+        CODEMUX_KIMI_PROVIDER_BASE_URL: "http://127.0.0.1:9/v1",
+        CODEMUX_KIMI_PROVIDER_API_KEY: "preflight-test-key",
+        CODEMUX_KIMI_PROVIDER_MODEL: "test-model",
+      });
+      try {
+        session.send({ type: "user", text: "scenario:basic one" });
+        const completed = await session.waitFor("turn_completed", (event) => event.type === "turn_completed");
+        expect(completed.finish).toBe("end");
+        session.send({ type: "shutdown" });
+        expect((await session.exit)[0]).toBe(0);
+        // Identical environments let the turn reuse the successful preflight.
+        expect(readFileSync(probeFile, "utf8").trim().split("\n")).toEqual(["credential-present"]);
+        const stderr = await new Response(session.proc.stderr as ReadableStream<Uint8Array>).text();
+        expect(stderr).not.toContain("could not probe");
+        expect(stderr).not.toContain("preflight-test-key");
+      } finally {
+        session.proc.kill();
+      }
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("a kimi override session under scrub keeps its injected names on every turn spawn", async () => {
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-keepenv-"));
+    const workdir = join(isolatedHome, "work");
+    const stateDir = mkdtempSync(join(tmpdir(), "session-cli-state-"));
+    const argvFile = join(stateDir, "scode-argv.txt");
+    mkdirSync(workdir);
+    const fake = fakeScodeSessionEnv("kimi", FAKE_KIMI, true, argvFile);
+    try {
+      const session = await driveSession(
+        [
+          "session", "-a", "kimi", "--sandbox", "--sandbox-scrub-env",
+          "--auto", "high", "--cwd", workdir, "--shutdown-grace", "2",
+          "--pass-env", "FAKE_STATE_DIR",
+        ],
+        {
+          HOME: isolatedHome,
+          XDG_CONFIG_HOME: join(isolatedHome, ".config"),
+          FAKE_STATE_DIR: stateDir,
+          ...fake.env,
+          CODEMUX_KIMI_PROVIDER_BASE_URL: "http://127.0.0.1:9/v1",
+          CODEMUX_KIMI_PROVIDER_API_KEY: "e2e-key-do-not-print",
+          CODEMUX_KIMI_PROVIDER_MODEL: "clawvm-qwen32b-coder",
+        }
+      );
+      try {
+        session.send({ type: "user", text: "scenario:basic one" });
+        await session.waitFor("turn_completed", (event) => event.type === "turn_completed");
+        session.send({ type: "user", text: "scenario:basic two" });
+        await session.waitFor(
+          "the second turn",
+          (event) =>
+            event.type === "turn_completed" &&
+            session.events.filter((done) => done.type === "turn_completed").length >= 2
+        );
+        session.send({ type: "shutdown" });
+        const [exitCode] = await session.exit;
+        expect(exitCode).toBe(0);
+        // The override's key is never on the session's own stderr.
+        const stderrText = await new Response(session.proc.stderr as ReadableStream<Uint8Array>).text();
+        expect(stderrText).not.toContain("e2e-key-do-not-print");
+      } finally {
+        await session.proc.kill();
+      }
+
+      // Every turn spawn went through scode with the scrub AND the
+      // exemption: exactly the adapter's injected name set, on both turns
+      // (the probe's --help exits before the record, so the two recorded
+      // argvs are the two turn spawns).
+      const lines = scodeArgvLines(argvFile);
+      expect(lines).toContain("--scrub-env");
+      const keepAt = lines.indexOf("--keep-env");
+      expect(keepAt).toBeGreaterThan(-1);
+      expect(lines[keepAt + 1]!.split(",").sort()).toEqual([
+        "KIMI_MODEL_API_KEY",
+        "KIMI_MODEL_BASE_URL",
+        "KIMI_MODEL_NAME",
+        "KIMI_MODEL_PROVIDER_TYPE",
+      ]);
+      expect(lines.filter((line) => line === "--keep-env")).toHaveLength(2);
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("a claude override session under scrub keeps its injected names on the long-lived child", async () => {
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-keepenv-"));
+    const workdir = join(isolatedHome, "work");
+    const stateDir = mkdtempSync(join(tmpdir(), "session-cli-state-"));
+    const argvFile = join(stateDir, "scode-argv.txt");
+    mkdirSync(workdir);
+    const fake = fakeScodeSessionEnv("claude", FAKE, true, argvFile);
+    try {
+      const session = await driveSession(
+        [
+          "session", "-a", "claude", "--sandbox", "--sandbox-scrub-env",
+          "--auto", "high", "--cwd", workdir, "--shutdown-grace", "2",
+          "--pass-env", "FAKE_STATE_DIR,FAKE_CWD",
+        ],
+        {
+          HOME: isolatedHome,
+          XDG_CONFIG_HOME: join(isolatedHome, ".config"),
+          FAKE_STATE_DIR: stateDir,
+          FAKE_CWD: workdir,
+          ...fake.env,
+          CODEMUX_CLAUDE_PROVIDER_BASE_URL: "http://127.0.0.1:9/v1",
+          CODEMUX_CLAUDE_PROVIDER_API_KEY: "e2e-key-do-not-print",
+          CODEMUX_CLAUDE_PROVIDER_MODEL: "clawvm-qwen32b-coder",
+        }
+      );
+      try {
+        session.send({ type: "user", text: "scenario:basic hello" });
+        await session.waitFor("turn_completed", (event) => event.type === "turn_completed");
+        session.send({ type: "shutdown" });
+        const [exitCode] = await session.exit;
+        expect(exitCode).toBe(0);
+        const stderrText = await new Response(session.proc.stderr as ReadableStream<Uint8Array>).text();
+        expect(stderrText).not.toContain("e2e-key-do-not-print");
+      } finally {
+        await session.proc.kill();
+      }
+
+      // One long-lived child through scode, carrying the adapter's whole
+      // override env — the getEnv() name set the run path exempts.
+      const lines = scodeArgvLines(argvFile);
+      expect(lines).toContain("--scrub-env");
+      const keepAt = lines.indexOf("--keep-env");
+      expect(keepAt).toBeGreaterThan(-1);
+      expect(lines[keepAt + 1]!.split(",").sort()).toEqual([
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_SMALL_FAST_MODEL",
+        "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB",
+      ]);
+      expect(lines.filter((line) => line === "--keep-env")).toHaveLength(1);
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("a session carrying an injected credential refuses to start under scrub on a scode without --keep-env (kimi, claude, zai)", async () => {
+    // Turn-per-process and long-lived alike: the refusal is at START, with
+    // the run path's message verbatim — the run path's own rule (the
+    // override's key is the session's only credential), not a per-turn
+    // death after the first input was acked. No child ever spawns, and
+    // the key never appears on stderr.
+    const cases: Array<{ agent: "kimi" | "claude" | "zai"; script: string; env: Record<string, string> }> = [
+      {
+        agent: "kimi",
+        script: FAKE_KIMI,
+        env: {
+          CODEMUX_KIMI_PROVIDER_BASE_URL: "http://127.0.0.1:9/v1",
+          CODEMUX_KIMI_PROVIDER_API_KEY: "e2e-key-do-not-print",
+          CODEMUX_KIMI_PROVIDER_MODEL: "clawvm-qwen32b-coder",
+        },
+      },
+      {
+        // No override: zai injects its gateway token on its own, and the
+        // start gate applies the run path's credential rule to it
+        // (review 7b209e37, contracts-2), not only to overrides.
+        agent: "zai",
+        script: FAKE,
+        env: { ZAI_API_KEY: "e2e-key-do-not-print" },
+      },
+      {
+        agent: "claude",
+        script: FAKE,
+        env: {
+          CODEMUX_CLAUDE_PROVIDER_BASE_URL: "http://127.0.0.1:9/v1",
+          CODEMUX_CLAUDE_PROVIDER_API_KEY: "e2e-key-do-not-print",
+          CODEMUX_CLAUDE_PROVIDER_MODEL: "clawvm-qwen32b-coder",
+        },
+      },
+    ];
+    for (const { agent, script, env } of cases) {
+      const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-keepenv-ref-"));
+      const workdir = join(isolatedHome, "work");
+      const stateDir = mkdtempSync(join(tmpdir(), "session-cli-state-"));
+      const argvFile = join(stateDir, "scode-argv.txt");
+      mkdirSync(workdir);
+      const fake = fakeScodeSessionEnv(agent, script, false, argvFile);
+      try {
+        const { stderr, exitCode } = await runCli(
+          [
+            "session", "-a", agent, "--sandbox", "--sandbox-scrub-env",
+            "--auto", "high", "--cwd", workdir,
+          ],
+          { ...fake.env, ...env }
+        );
+        expect(exitCode, `${agent}: ${stderr}`).toBe(1);
+        expect(stderr).toContain("no --keep-env");
+        expect(stderr).toContain("--sandbox-scrub-env");
+        expect(stderr).not.toContain("e2e-key-do-not-print");
+        // Nothing ever spawned: no scode invocation reached the command
+        // record — under --sandbox every session spawn rides scode, so
+        // the empty record is the proof no harness turn ran. (The fake
+        // harness's own argv.jsonl is no proof here: this test never
+        // sets FAKE_STATE_DIR, so the fake would record under its /tmp
+        // default, never in stateDir — asserting on stateDir's copy
+        // would be inert.)
+        expect(existsSync(argvFile)).toBe(false);
+      } finally {
+        fake.cleanup();
+        rmSync(isolatedHome, { recursive: true, force: true });
+        rmSync(stateDir, { recursive: true, force: true });
+      }
     }
   }, 30_000);
 });

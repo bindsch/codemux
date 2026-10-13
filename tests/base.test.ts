@@ -1,12 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import {
-  chmodSync,
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { describe, expect, spyOn, test } from "bun:test";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -14,6 +7,10 @@ import {
   type RunContext,
 } from "../src/adapters/base.js";
 import { launchRunRequest } from "../src/launch.js";
+import { getAdapter } from "../src/adapters/index.js";
+import { assertHarnessSupported, resolveScodeExecutableForEnv } from "../src/cli-runtime.js";
+import { spawnSessionChild } from "../src/session/spawn.js";
+import { verifyAgentWiring } from "../src/verify.js";
 import {
   MAX_ARGV_PROMPT_BYTES,
   MAX_CAPTURE_BYTES,
@@ -43,6 +40,46 @@ import type {
 } from "../src/types.js";
 
 const bun = process.execPath;
+
+test("adapter executable lookup uses only the injected PATH (al40)", async () => {
+  const savedPath = process.env.PATH;
+  const ambient = mkdtempSync(join(tmpdir(), "codemux-ambient-path-"));
+  const injected = realpathSync(mkdtempSync(join(tmpdir(), "codemux-injected-path-")));
+  try {
+    for (const name of ["codex", "cursor-agent", "qwen", "scode"]) {
+      writeFileSync(join(ambient, name), "#!/bin/sh\necho codex-cli 0.0.1\n", { mode: 0o700 });
+    }
+    process.env.PATH = ambient;
+    // Diagnostics explicitly supply PATH while excluding operator opt-ins.
+    expect(verifyAgentWiring("codex").installed).toBe(true);
+    for (const environment of [{ PATH: injected }, {}, { PATH: "" }]) {
+      const executionEnv = getAdapter("codex", environment).buildExecutionEnv();
+      expect(resolveScodeExecutableForEnv(executionEnv)).toBeNull();
+      // The version probe must not inspect the ambient fake's old version.
+      await assertHarnessSupported("codex", "codex", process.cwd(), executionEnv);
+      await expect(spawnSessionChild(["codex", "--version"], executionEnv, {
+        cwd: process.cwd(), sandboxed: false, autonomy: "high",
+      }, { onLine: () => {}, onFatal: () => {} })).rejects.toThrow("was not found");
+      for (const agent of ["codex", "cursor", "qwen"] as const) {
+        const adapter = getAdapter(agent, environment);
+        expect(adapter.isAvailable(), agent).toBe(false);
+        expect(() => adapter.resolveExecutionCommand([adapter.binaryName, "--version"], injected))
+          .toThrow("was not found");
+      }
+    }
+    // A different injected installation must win over the ambient one.
+    writeFileSync(join(injected, "codex"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const codex = getAdapter("codex", { PATH: injected });
+    expect(codex.isAvailable()).toBe(true);
+    expect(codex.resolveExecutionCommand(["codex", "--version"], process.cwd())[0])
+      .toBe(join(injected, "codex"));
+  } finally {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+    rmSync(ambient, { recursive: true, force: true });
+    rmSync(injected, { recursive: true, force: true });
+  }
+});
 
 function capabilities(): AdapterCapabilities {
   return {
@@ -410,6 +447,9 @@ describe("captured process execution", () => {
     // long before the timeout. No snapshot ever saw that grandchild under
     // the child, and it is in its own process group, so no signal can reach
     // it: the documented limitation. The run must still come back.
+    // Establish the orphan before starting the timeout. Otherwise slow
+    // interpreter startup can leave the parent alive when the timeout
+    // fires, testing a different process tree and losing the note.
     if (process.platform === "win32") return;
     const cwd = mkdtempSync(join(tmpdir(), "codemux-orphan-"));
     const pidFile = join(cwd, "pid");
@@ -419,16 +459,25 @@ describe("captured process execution", () => {
     ].join("\n");
     const parentScript = [
       `Bun.spawn([${JSON.stringify(bun)}, "-e", ${JSON.stringify(grandchildScript)}], { detached: true, stdin: "ignore", stdout: "inherit", stderr: "ignore" });`,
-      "await Bun.sleep(50);",
+      `while (!(await Bun.file(${JSON.stringify(pidFile)}).exists())) await Bun.sleep(10);`,
       "process.exit(0);",
     ].join("\n");
-    const started = performance.now();
+    const command = [bun, "-e", parentScript];
+    const child = Bun.spawn(command, {
+      cwd, env: {}, stdin: "pipe", stdout: "pipe", stderr: "pipe", detached: true,
+    });
     try {
-      const result = await runCapturedCommand([bun, "-e", parentScript], {
-        cwd,
-        env: {},
-        timeoutMs: 100,
-      });
+      expect(await child.exited).toBe(0);
+      const started = performance.now();
+      // Supply the already-exited parent with its still-open stdout pipe.
+      const spawn = spyOn(Bun, "spawn").mockReturnValueOnce(child);
+      let pending: ReturnType<typeof runCapturedCommand>;
+      try {
+        pending = runCapturedCommand(command, { cwd, env: {}, timeoutMs: 500 });
+      } finally {
+        spawn.mockRestore();
+      }
+      const result = await pending;
       expect(result.exitCode).toBe(124);
       expect(result.stderr).toContain("kept the output open");
       expect(performance.now() - started).toBeLessThan(6_000);
@@ -437,6 +486,90 @@ describe("captured process execution", () => {
         process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL");
       } catch {
         // Already gone.
+      }
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  test("a timed-out run whose sink folds past the capture bound fails at 125, not 124", async () => {
+    // Round al32, edges major 1: the check after sink.finish() runs on
+    // every exit branch, the give-up abandonment a timeout ends on
+    // included. The unreachable orphan of the test above holds stdout
+    // open past every signal and writes complete 64 KiB lines totaling
+    // just under the capture bound, then one unterminated chunk over it;
+    // the sink counts only complete lines while the stream runs, so no
+    // per-push check trips, and exactly the fold inside finish() — the
+    // wire-regime rule that does not count the buffered partial line
+    // until close() folds it — carries the kept total past the bound.
+    // Before al32 the give-up branch returned that fold unexamined and
+    // the run exited 124 over the bound; it must fail at 125 with the
+    // capture-limit error instead.
+    if (process.platform === "win32") return;
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-fold-limit-"));
+    const pidFile = join(cwd, "pid");
+    // 242 complete 64 KiB lines (15.13 MiB, under the bound alone),
+    // then a 1 MiB unterminated chunk (16.13 MiB once folded).
+    const lineCount = Math.ceil((MAX_CAPTURE_BYTES * 0.945) / 65_536);
+    const grandchildScript = [
+      `const line = "x".repeat(65_535) + "\\n";`,
+      `for (let i = 0; i < ${lineCount}; i++) await Bun.write(Bun.stdout, line);`,
+      `await Bun.write(Bun.stdout, "y".repeat(1_048_576));`,
+      `await Bun.write(${JSON.stringify(pidFile)}, String(process.pid));`,
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    const parentScript = [
+      `Bun.spawn([${JSON.stringify(bun)}, "-e", ${JSON.stringify(grandchildScript)}], { detached: true, stdin: "ignore", stdout: "inherit", stderr: "ignore" });`,
+      // Idle only once the grandchild has written everything, then exit —
+      // so the timeout's tree walk finds nobody and the orphan survives
+      // to hold stdout open, exactly the abandonment shape.
+      `while (!(await Bun.file(${JSON.stringify(pidFile)}).exists())) await Bun.sleep(5);`,
+      "await Bun.sleep(50);",
+      "process.exit(0);",
+    ].join("\n");
+    // The line-buffered sink: kept bytes are the complete lines alone
+    // while pushes arrive; finish() folds the trailing partial in, and
+    // keptBytes() answers for the fold too.
+    let lines = "";
+    let partial = "";
+    let folded: string | null = null;
+    const sink = {
+      push(chunk: string): void {
+        if (folded !== null) return;
+        const text = partial + chunk;
+        const cut = text.lastIndexOf("\n");
+        if (cut === -1) {
+          partial = text;
+          return;
+        }
+        lines += text.slice(0, cut + 1);
+        partial = text.slice(cut + 1);
+      },
+      finish(): string {
+        if (folded === null) folded = lines + partial;
+        return folded;
+      },
+      keptBytes(): number {
+        return Buffer.byteLength(folded ?? lines);
+      },
+    };
+    try {
+      const result = await runCapturedCommand([bun, "-e", parentScript], {
+        cwd,
+        env: {},
+        timeoutMs: 1_000,
+        stdoutSink: sink,
+      });
+      expect(result.exitCode).toBe(OUTPUT_LIMIT_EXIT_CODE);
+      expect(result.stderr).toContain("exceeded the");
+      expect(result.stderr).toContain("capture limit");
+      expect(result.success).toBe(false);
+    } finally {
+      if (existsSync(pidFile)) {
+        try {
+          process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL");
+        } catch {
+          // Already gone.
+        }
       }
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -813,51 +946,72 @@ describe("BaseAdapter", () => {
   });
 
   test("guardedWait escalates SIGHUP through the bounded termination path", async () => {
-    let resolveExit!: (code: number) => void;
-    const signals: string[] = [];
-    const proc = {
-      exited: new Promise<number>((resolve) => { resolveExit = resolve; }),
-      kill: (signal: string) => {
-        signals.push(signal);
-        if (signal === "SIGTERM") resolveExit(143);
-      },
-    } as unknown as ReturnType<typeof Bun.spawn>;
-
-    const waiting = guardedWait(proc);
-    process.emit("SIGHUP");
-    expect(await waiting).toBe(143);
-    expect(signals).toContain("SIGTERM");
+    // Round al32 moved the child-directed stop onto process.kill — the
+    // honest ESRCH on a pid that no longer exists — so the fake kill()
+    // seam this test rode is gone: the child is real now, and its exit
+    // 143 (the code a SIGTERM handler exits with) is the proof the
+    // escalation sent the signal.
+    const proc = Bun.spawn(
+      [
+        bun,
+        "-e",
+        "process.on('SIGTERM', () => process.exit(143)); setInterval(() => {}, 1000);",
+      ],
+      { stdin: "ignore", stdout: "ignore", stderr: "ignore" }
+    );
+    try {
+      await Bun.sleep(150); // the handler is installed
+      const waiting = guardedWait(proc);
+      process.emit("SIGHUP");
+      expect(await waiting).toBe(143);
+    } finally {
+      try {
+        process.kill(proc.pid, "SIGKILL");
+      } catch {
+        // The expected path already ended it.
+      }
+    }
   });
 
   test("guardedWait handles triple interrupt and interactive deadlines", async () => {
-    let resolveInterruptExit!: (code: number) => void;
-    const interruptSignals: string[] = [];
-    const interruptProc = {
-      exited: new Promise<number>((resolve) => {
-        resolveInterruptExit = resolve;
-      }),
-      kill: (signal: string) => {
-        interruptSignals.push(signal);
-        if (signal === "SIGTERM") resolveInterruptExit(143);
-      },
-    } as unknown as ReturnType<typeof Bun.spawn>;
-
-    const interrupted = guardedWait(interruptProc);
-    process.emit("SIGINT");
-    process.emit("SIGINT");
-    process.emit("SIGINT");
-    expect(await interrupted).toBe(143);
-    expect(interruptSignals).toContain("SIGTERM");
-
-    let resolveTimeoutExit!: (code: number) => void;
-    const timeoutProc = {
-      exited: new Promise<number>((resolve) => {
-        resolveTimeoutExit = resolve;
-      }),
-      kill: (signal: string) => {
-        if (signal === "SIGTERM") resolveTimeoutExit(143);
-      },
-    } as unknown as ReturnType<typeof Bun.spawn>;
-    expect(await guardedWait(timeoutProc, 10)).toBe(124);
+    // The same al32 seam change: both halves run real children — the
+    // burst's third SIGINT escalates to SIGTERM and the child's handler
+    // answers 143, while the deadline's SIGTERM kills a plain child and
+    // the wait reports the timeout's 124.
+    const interruptProc = Bun.spawn(
+      [
+        bun,
+        "-e",
+        "process.on('SIGTERM', () => process.exit(143)); setInterval(() => {}, 1000);",
+      ],
+      { stdin: "ignore", stdout: "ignore", stderr: "ignore" }
+    );
+    try {
+      await Bun.sleep(150); // the handler is installed
+      const interrupted = guardedWait(interruptProc);
+      process.emit("SIGINT");
+      process.emit("SIGINT");
+      process.emit("SIGINT");
+      expect(await interrupted).toBe(143);
+    } finally {
+      try {
+        process.kill(interruptProc.pid, "SIGKILL");
+      } catch {
+        // The expected path already ended it.
+      }
+    }
+    const timeoutProc = Bun.spawn(
+      [bun, "-e", "setInterval(() => {}, 1000);"],
+      { stdin: "ignore", stdout: "ignore", stderr: "ignore" }
+    );
+    try {
+      expect(await guardedWait(timeoutProc, 10)).toBe(124);
+    } finally {
+      try {
+        process.kill(timeoutProc.pid, "SIGKILL");
+      } catch {
+        // The expected path already ended it.
+      }
+    }
   });
 });

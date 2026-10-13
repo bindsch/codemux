@@ -1,7 +1,7 @@
 import type { BaseAdapter, RunContext } from "./adapters/base.js";
 import { appendCallRecord, providerHost } from "./call-log.js";
 import { runSandboxedWithStdin, unexpectedErrorExitCode } from "./cli-runtime.js";
-import { OpenCodePlainFold } from "./plain-unwrap.js";
+import { foldedSinkUsage } from "./plain-unwrap.js";
 import { readProviderOverride } from "./provider-override.js";
 import {
   CapturedRunFailure,
@@ -14,6 +14,7 @@ import {
   resolveSandboxOptionsForAgent,
   type SandboxPolicyOverrides,
 } from "./sandbox-policy.js";
+import { withKeepEnvExemption } from "./sandbox.js";
 import type { AgentId, AutonomyLevel, RunRequest, RunResult } from "./types.js";
 import { validateWorkingDirectory } from "./validation.js";
 
@@ -134,7 +135,7 @@ export async function launchRunRequest(
       releaseExitCleanup();
       return processed;
     }
-    const sandboxOptions = resolveSandboxOptionsForAgent(
+    let sandboxOptions = resolveSandboxOptionsForAgent(
       request.agent,
       options.requestedAutonomy,
       options.sandboxPolicyOverrides
@@ -155,9 +156,30 @@ export async function launchRunRequest(
       sandboxTrust: sandboxOptions.trust,
       passthroughEnv: request.passthroughEnv,
     });
-    const envArg = adapter.buildExecutionEnv(
-      adapter.getRunEnv(request, context),
-      request.passthroughEnv
+    // The environment codemux itself chose for this child: the adapter's
+    // standing variables plus the per-run ones — exactly the two maps
+    // buildExecutionEnv merges — captured here for their names. Under
+    // --sandbox-scrub-env those names ride scode's --keep-env exemption,
+    // so the scrub strips the ambient environment without stripping the
+    // configuration codemux deliberately injected. A provider override
+    // makes that mandatory: its key is the run's only credential (the
+    // operator's own was omitted on purpose), so a scode that cannot
+    // exempt it refuses the launch rather than running it stripped. The
+    // same rule the session spawns apply (withKeepEnvExemption).
+    const injectedEnv = {
+      ...adapter.getEnv(),
+      ...adapter.getRunEnv(request, context),
+    };
+    const envArg = adapter.buildExecutionEnv(injectedEnv, request.passthroughEnv);
+    // The override question reads the ADAPTER's environment view, not
+    // process.env: a custom-environment launch (an adapter built against
+    // its own view) must decide on the same environment it validated
+    // against, or an unrelated ambient CODEMUX_<AGENT>_PROVIDER_* value
+    // would refuse a launch whose view carries no override (round al12).
+    sandboxOptions = withKeepEnvExemption(
+      sandboxOptions,
+      injectedEnv,
+      adapter.providerOverrideActive()
     );
     // The direct path's `captured` rule, mirrored: a capture failure of a
     // run that spawned (scode included — the harness ran under it) or a
@@ -304,10 +326,7 @@ function appendInterruptedLaunchReceipt(
   startedAt: number
 ): void {
   try {
-    const folded =
-      context.stdoutSink instanceof OpenCodePlainFold
-        ? context.stdoutSink.foldedUsage()
-        : null;
+    const folded = foldedSinkUsage(context.stdoutSink);
     appendCallRecord({
       ts: new Date(startedAt).toISOString(),
       kind: options.kind ?? "run",
@@ -355,10 +374,7 @@ function appendFailedLaunchReceipt(
 ): void {
   if (!captured && !(error instanceof CapturedRunFailure)) return;
   try {
-    const folded =
-      context.stdoutSink instanceof OpenCodePlainFold
-        ? context.stdoutSink.foldedUsage()
-        : null;
+    const folded = foldedSinkUsage(context.stdoutSink);
     appendCallRecord({
       ts: new Date(startedAt).toISOString(),
       kind: options.kind ?? "run",

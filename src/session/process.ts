@@ -6,6 +6,7 @@ import {
 } from "../process-tree.js";
 import { readProcessTable } from "../process-table.js";
 import { signalProcess } from "../process-runner.js";
+import { buildEvent } from "./protocol.js";
 
 /**
  * The streaming session process runner (design §4.6/§4.7): one harness
@@ -85,6 +86,29 @@ export function codemuxFatalMessage(fatal: Extract<SessionFatal, { error: unknow
 export interface SessionChildOutcome {
   code: number | null;
   signal: string | null;
+}
+
+/** Exit classification never depends on who sent a signal or when. */
+export function harnessFailed(outcome: SessionChildOutcome | null): boolean {
+  return outcome !== null && (outcome.signal !== null || outcome.code !== 0);
+}
+
+export function shutdownRequested(reason: string): boolean {
+  return reason === "stdin-close" || reason === "shutdown" || reason === "signal";
+}
+
+/** The shared closing event preserves the raw child outcome for every harness. */
+export function buildSessionEnded(
+  seq: number,
+  sessionId: string,
+  outcome: SessionChildOutcome | null,
+  fields: Record<string, unknown>
+): string {
+  return buildEvent(seq, sessionId, "session_ended", null, {
+    ...fields,
+    harness_exit: outcome,
+    reason: harnessFailed(outcome) ? "harness_failed" : fields.reason,
+  });
 }
 
 export type WriteLineRejectReason = "oversize" | "framing" | "closed" | "backlog";
@@ -182,6 +206,10 @@ export class SessionProcess {
 
   private fatal: SessionFatal | null = null;
   private stopArmed = false;
+  /** `escalateStop` has run (round al33, edges major 3): the escalation
+   * fires once however many paths reach it — the driver's aliasing and
+   * repeated second signals among them. */
+  private escalatedChild = false;
   private killDeadline = 0;
   private killTimer: ReturnType<typeof setTimeout> | null = null;
   private captureTimer: ReturnType<typeof setInterval> | null = null;
@@ -401,16 +429,28 @@ export class SessionProcess {
     // timer now would hold the event loop for the grace and then signal a
     // reaped process group (review live18).
     if (this.childExited) return;
-    // SIGTERM to the child alone: the harness keeps the grace period to
-    // persist the session and shut down its own children. The tree-scoped
-    // SIGKILL below (and the unconditional one in the end path) covers
-    // whatever ignores it.
+    // The driver first allows the protocol shutdown to finish.
     signalProcess(this.target, "SIGTERM", "process");
     this.killDeadline = performance.now() + this.graceMs;
-    this.killTimer = setTimeout(
-      () => signalProcess(this.target, "SIGKILL", "tree"),
-      this.graceMs
-    );
+    this.killTimer = setTimeout(() => {
+      signalProcess(this.target, "SIGKILL", "tree");
+    }, this.graceMs);
+  }
+
+  /** A second SIGINT/SIGTERM while the first signal's shutdown still runs
+   * (round al30, rule 2, edges major 3): SIGKILL the child's whole tree
+   * NOW — no grace, no timer — so an operator who presses Ctrl-C again
+   * while the session's hold (an abandoned spawn still settling past
+   * `session_ended`) is running takes the tree down at once instead of
+   * waiting out a stop that already outlived the session. The
+   * escalation is latched: it runs once per child however many times it
+   * is reached (round al33, edges major 3 — the driver holds one child
+   * under several aliases, and a second signal re-fires them all). */
+  escalateStop(): void {
+    if (this.escalatedChild) return;
+    this.escalatedChild = true;
+    this.stopCapture();
+    signalProcess(this.target, "SIGKILL", "tree");
   }
 
   /**
@@ -613,6 +653,19 @@ export type OutboundFailure =
   | ({ kind: "overflow" } & OutboundOverflow)
   | { kind: "sink"; error: unknown };
 
+/** The terminal lane's fixed reserved capacity (round al31, narrowed by
+ * round al32 to the session's end events alone, split by round al35 into
+ * two classes): terminal entries skip the event and byte bounds but never
+ * the lane, so a stalled sink cannot grow the queue without limit through
+ * terminal entries either. Each queued line is itself bounded by the line
+ * cap that produced it, so the lane's memory is at most this constant
+ * times that cap — a small fixed reservation, not an unbounded one. One
+ * slot of the lane is `session_ended`'s alone: fatal-class entries are
+ * capped at one short of this capacity, so a flood of fatals can never
+ * fill the lane and starve the end event of its slot (round al35, edges
+ * major 4). */
+export const TERMINAL_LANE_CAPACITY = 8;
+
 /**
  * The bounded queue of event lines to the caller (design §4.2): 1024
  * events / 64 MiB pending, and a caller that stops reading breaches a bound
@@ -623,13 +676,47 @@ export type OutboundFailure =
  * just as reported: `onFailure` fires for both classes, exactly once each
  * — both classes latch, so a stream of further enqueues after the first
  * failure cannot re-fire the callback.
+ *
+ * The terminal lane is reserved for the events that end the session's
+ * contract — `session_ended`, fatals, and final turn emissions. Live
+ * `turn_completed` events and the
+ * input acks (`input_accepted`, `input_rejected`) are ordinary entries
+ * subject to both bounds, so a stalled sink fed repeated input drops them
+ * once a bound trips, exactly as it drops any other event. A terminal
+ * entry uses the ordinary capacity FIRST and falls back to the lane only
+ * when the ordinary bounds are full, so eight pending `turn_completed`
+ * events — ordinary entries, all eight — can never take the slot the end
+ * event needs, whatever their number. Within the lane the two terminal
+ * classes split the capacity: final turn emissions share the fatal class.
+ * A fatal-class
+ * entry may occupy at most TERMINAL_LANE_CAPACITY - 1 slots, so the last
+ * slot is `session_ended`'s alone and a crash end that owes the caller a
+ * flood of fatal-class events — each its own queued line — cannot fill
+ * the lane and starve the end event of the very slot the lane exists to
+ * keep; before the split both classes shared one undifferentiated count,
+ * so eight queued fatals refused the `session_ended` behind them. The
+ * lane keeps the end reachable when the ordinary bounds are exhausted —
+ * 1,024 queued events and then stdin close still delivers exactly one
+ * `session_ended` — while capping the memory the lane itself can hold at
+ * TERMINAL_LANE_CAPACITY entries (a crash end can owe the caller more
+ * than one fatal-class event before `session_ended`, so the reservation
+ * is one lane, not one slot; their bytes are not counted against the
+ * ordinary byte bound; see the constant's note). Ordering is preserved: a
+ * terminal entry sits in the same list as the rest and the flush loop
+ * hands them to the sink in arrival order; only the bound checks and the
+ * `pending` accounting pass them by.
  */
 export class BoundedOutboundQueue {
   private readonly sink: (line: string) => Promise<void> | void;
   private readonly onFailure: (failure: OutboundFailure) => void;
   private readonly maxEvents: number;
   private readonly maxBytes: number;
-  private entries: string[] = [];
+  private entries: { line: string; bytes: number; lane: "end" | "fatal" | null }[] =
+    [];
+  /** Lane entries of BOTH classes (an end or fatal entry each add one);
+   * `queuedFatal` below counts the fatal share of those. */
+  private queuedTerminal = 0;
+  private queuedFatal = 0;
   private pendingBytes = 0;
   private flushing = false;
   private sinkError: unknown = null;
@@ -650,14 +737,38 @@ export class BoundedOutboundQueue {
   /** Queue one line. Returns false when a bound is breached (the failure
    * callback has already fired, once), after the sink has failed, or
    * after the queue was abandoned — either way the caller treats the
-   * queue as a fatal end. */
-  enqueue(line: string): boolean {
+   * queue as a fatal end. Ordinary entries are refused at the event or
+   * byte bound. A terminal entry — `session_ended` (`terminal: true`) or
+   * a fatal that ends the session (`terminal: "fatal"`) — takes the
+   * ordinary capacity first and is refused only when the ordinary bounds
+   * are full AND its lane class is full too: the end event at
+   * TERMINAL_LANE_CAPACITY lane entries, a fatal at one short of that,
+   * so the lane's last slot is `session_ended`'s alone and a flood of
+   * fatals cannot starve the end event (round al35, edges major 4). A
+   * live `turn_completed` is ordinary; a final synthesized completion
+   * uses the fatal class, preserving the end event's last slot. */
+  enqueue(line: string, options?: { terminal?: boolean | "fatal" }): boolean {
     if (this.sinkError !== null || this.abandoned) return false;
     const bytes = utf8ByteLength(line) + 1;
-    if (
-      this.entries.length >= this.maxEvents ||
-      this.pendingBytes + bytes > this.maxBytes
-    ) {
+    const laneClass: "end" | "fatal" | null =
+      options?.terminal === true
+        ? "end"
+        : options?.terminal === "fatal"
+          ? "fatal"
+          : null;
+    const ordinary = this.entries.length - this.queuedTerminal;
+    const ordinaryFull =
+      ordinary >= this.maxEvents || this.pendingBytes + bytes > this.maxBytes;
+    // A fatal cannot take the lane's last slot — that one is the end
+    // event's — so the fatal cap is one short of the lane's and seven
+    // queued fatals still leave room for exactly one `session_ended`
+    // behind them (round al35, edges major 4).
+    const laneFull =
+      laneClass === "fatal"
+        ? this.queuedFatal >= TERMINAL_LANE_CAPACITY - 1
+        : this.queuedTerminal >= TERMINAL_LANE_CAPACITY;
+    const breach = laneClass === null ? ordinaryFull : ordinaryFull && laneFull;
+    if (breach) {
       // The overflow class keeps the queued entries (a drain may still
       // reach the caller); the sink class, below, clears them. The
       // callback fires on the first breach only: harness lines keep
@@ -672,8 +783,17 @@ export class BoundedOutboundQueue {
       }
       return false;
     }
-    this.entries.push(line);
-    this.pendingBytes += bytes;
+    // Ordinary capacity first; the lane only when those bounds are full
+    // — the entry's class records which accounting it joined, and the
+    // flush loop returns it on delivery.
+    const viaLane = laneClass !== null && ordinaryFull;
+    this.entries.push({ line, bytes, lane: viaLane ? laneClass : null });
+    if (viaLane) {
+      this.queuedTerminal++;
+      if (laneClass === "fatal") this.queuedFatal++;
+    } else {
+      this.pendingBytes += bytes;
+    }
     if (!this.flushing) void this.flushLoop();
     return true;
   }
@@ -699,6 +819,8 @@ export class BoundedOutboundQueue {
     if (this.abandoned) return;
     this.abandoned = true;
     this.entries = [];
+    this.queuedTerminal = 0;
+    this.queuedFatal = 0;
     this.pendingBytes = 0;
   }
 
@@ -712,6 +834,8 @@ export class BoundedOutboundQueue {
     if (this.sinkError !== null) return;
     this.sinkError = error;
     this.entries = [];
+    this.queuedTerminal = 0;
+    this.queuedFatal = 0;
     this.pendingBytes = 0;
     this.onFailure({ kind: "sink", error });
   }
@@ -720,18 +844,30 @@ export class BoundedOutboundQueue {
     this.flushing = true;
     try {
       while (this.entries.length > 0) {
-        const line = this.entries[0] as string;
+        const entry = this.entries[0] as {
+          line: string;
+          bytes: number;
+          lane: "end" | "fatal" | null;
+        };
         // An entry stays counted until the sink completes its write: a
         // stopped reader is exactly a sink that never resolves, so pending
-        // grows until a bound trips. Only then is it dropped.
+        // grows until a bound trips. Only then is it dropped. Lane
+        // entries never count against the byte bound, so they subtract
+        // nothing here — only the lane's own tallies, which their shift
+        // returns (both the shared lane count and the fatal share).
         try {
-          await this.sink(line);
+          await this.sink(entry.line);
         } catch (error) {
           this.fail(error);
           return;
         }
         this.entries.shift();
-        this.pendingBytes -= utf8ByteLength(line) + 1;
+        if (entry.lane === null) {
+          this.pendingBytes -= entry.bytes;
+        } else {
+          this.queuedTerminal--;
+          if (entry.lane === "fatal") this.queuedFatal--;
+        }
       }
     } finally {
       this.flushing = false;
@@ -777,7 +913,14 @@ export async function awaitFinalFlush(
  * The session's signal wiring (design §4.6): the first SIGINT/SIGTERM/
  * SIGHUP starts the shutdown path; it runs to completion before codemux
  * exits 143 — never `process.exit` inside the handler. Later signals are
- * absorbed while the first one runs.
+ * absorbed while the first one runs, except through `onLater`: round
+ * al30 (edges major 3) keeps the handlers installed until the last
+ * abandoned spawn is settled — past `session_ended`, where an earlier
+ * round disposed them — and a second signal in that window escalates
+ * (the driver kills every owned child at once) instead of being
+ * absorbed while a stop that outlived the session still runs.
+ * `trigger` re-enters the same rule, so a scripted delivery follows
+ * the live one.
  */
 export interface SessionSignalGate {
   trigger(signal: NodeJS.Signals): void;
@@ -785,11 +928,15 @@ export interface SessionSignalGate {
 }
 
 export function installSessionSignalHandlers(
-  onFirst: (signal: NodeJS.Signals) => void
+  onFirst: (signal: NodeJS.Signals) => void,
+  onLater?: (signal: NodeJS.Signals) => void
 ): SessionSignalGate {
   let fired = false;
   const handler = (signal: NodeJS.Signals): void => {
-    if (fired) return;
+    if (fired) {
+      onLater?.(signal);
+      return;
+    }
     fired = true;
     onFirst(signal);
   };
@@ -823,12 +970,13 @@ export function callerStdinFailure(error: unknown): string {
  * turn was open (review live17). */
 export function drainFailureMessage(
   agent: string,
-  code: number,
+  outcome: SessionChildOutcome,
   turnOpen: boolean
 ): string {
+  const detail = outcome.signal !== null ? `signal ${outcome.signal}` : `code ${outcome.code}`;
   return turnOpen
-    ? `the ${agent} process exited with code ${code} during the shutdown drain before completing its open turn`
-    : `the ${agent} process exited with code ${code} during the shutdown drain`;
+    ? `the ${agent} process exited with ${detail} during the shutdown drain before completing its open turn`
+    : `the ${agent} process exited with ${detail} during the shutdown drain`;
 }
 
 /** The reason a crash end's synthesized turn completion carries: the

@@ -37,13 +37,13 @@ export class QwenAdapter extends BaseAdapter {
   }
 
   constructor(
-    private readonly findBinary: (name: string) => string | null = (name) =>
-      Bun.which(name, { PATH: process.env.PATH }),
+    findBinary: ((name: string) => string | null) | undefined = undefined,
     environment: NodeJS.ProcessEnv = process.env
   ) {
     super(environment);
-    const currentBinary = this.findBinary("qwen");
-    const legacyBinary = currentBinary ? null : this.findBinary("qwen-coder");
+    findBinary ??= (name) => Bun.which(name, { PATH: environment.PATH ?? "" });
+    const currentBinary = findBinary("qwen");
+    const legacyBinary = currentBinary ? null : findBinary("qwen-coder");
     this.resolvedBinary = currentBinary ?? legacyBinary;
     this.isLegacyBinary = currentBinary === null && legacyBinary !== null;
   }

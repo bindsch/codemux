@@ -573,14 +573,20 @@ describe("CursorAdapter", () => {
     expect(adapter.requiresSandboxForAutonomy("high")).toBe(false);
   });
 
-  test("prefers agent and falls back to the legacy cursor-agent alias", () => {
-    const fallback = new CursorAdapter(
-      (name) => name === "cursor-agent" ? "/fake/cursor-agent" : null,
+  test("prefers cursor-agent and falls back to the generic agent name", () => {
+    // scode 0.6.0 dropped the bare `agent` name from its known-harness
+    // list (the surface was too generic to keep), so a sandboxed launch
+    // of `agent` warns that its sandbox behavior is untested;
+    // `cursor-agent` -- the name Cursor's installer lays down and scode
+    // knows -- is the primary, and `agent` stays a fallback for machines
+    // where only it resolves.
+    const both = new CursorAdapter(
+      (name) => (name === "cursor-agent" || name === "agent" ? `/fake/${name}` : null),
       {}
     );
-    expect(fallback.binaryName).toBe("cursor-agent");
-    expect(fallback.isAvailable()).toBe(true);
-    expect(fallback.buildRunCommand({
+    expect(both.binaryName).toBe("cursor-agent");
+    expect(both.isAvailable()).toBe(true);
+    expect(both.buildRunCommand({
       agent: "cursor",
       prompt: "test",
       autonomy: "read-only",
@@ -596,12 +602,37 @@ describe("CursorAdapter", () => {
       "--mode",
       "plan",
     ]);
+    expect(both.buildTuiCommand()).toEqual(["cursor-agent"]);
+    // The alias still answers when it is the only one that resolves: the
+    // describe-level adapter above is exactly that machine.
+    const aliasOnly = new CursorAdapter(
+      (name) => name === "agent" ? "/fake/agent" : null,
+      {}
+    );
+    expect(aliasOnly.binaryName).toBe("agent");
+    expect(aliasOnly.isAvailable()).toBe(true);
+    expect(aliasOnly.buildRunCommand({
+      agent: "cursor",
+      prompt: "test",
+      autonomy: "read-only",
+      sandboxed: true,
+    })).toEqual([
+      "agent",
+      "--print",
+      "--output-format",
+      "text",
+      "--trust",
+      "--sandbox",
+      "disabled",
+      "--mode",
+      "plan",
+    ]);
   });
 
   test("the desktop entry is ignored without the opt-in", () => {
-    // The round-3 redesign restores 0.6.0's default exactly: resolve
-    // `agent`, then `cursor-agent`; neither found means "not installed" --
-    // and a desktop `cursor` on PATH is not one of the things looked for.
+    // Resolve `cursor-agent`, then `agent`; neither found means "not
+    // installed" -- and a desktop `cursor` on PATH is not one of the
+    // things looked for.
     // The wrapper behind `cursor agent` may install or update the agent on
     // first use, so it must never run on codemux's own initiative.
     // The empty explicit environment is the point (round 4): without it
@@ -613,19 +644,19 @@ describe("CursorAdapter", () => {
       {}
     );
     expect(desktopOnly.isAvailable()).toBe(false);
-    expect(desktopOnly.binaryName).toBe("agent");
-    expect(desktopOnly.displayName).toBe("agent");
+    expect(desktopOnly.binaryName).toBe("cursor-agent");
+    expect(desktopOnly.displayName).toBe("cursor-agent");
     // A value other than `cursor` opts into nothing.
     const wrongValue = new CursorAdapter(
       (name) => (name === "cursor" ? "/fake/cursor" : null),
       { [CURSOR_ENTRY_ENV]: "desktop" }
     );
     expect(wrongValue.isAvailable()).toBe(false);
-    expect(wrongValue.binaryName).toBe("agent");
+    expect(wrongValue.binaryName).toBe("cursor-agent");
     // Nothing resolved: the "harness not found" error names the standalone.
     const none = new CursorAdapter(() => null, {});
     expect(none.isAvailable()).toBe(false);
-    expect(none.binaryName).toBe("agent");
+    expect(none.binaryName).toBe("cursor-agent");
   });
 
   test("an exported CODEMUX_CURSOR_ENTRY cannot flip the opt-out tests", () => {
@@ -644,8 +675,8 @@ describe("CursorAdapter", () => {
         {}
       );
       expect(desktopOnly.isAvailable()).toBe(false);
-      expect(desktopOnly.binaryName).toBe("agent");
-      expect(desktopOnly.displayName).toBe("agent");
+      expect(desktopOnly.binaryName).toBe("cursor-agent");
+      expect(desktopOnly.displayName).toBe("cursor-agent");
     } finally {
       if (saved === undefined) {
         delete process.env[CURSOR_ENTRY_ENV];
@@ -694,9 +725,11 @@ describe("CursorAdapter", () => {
       "gpt-5",
       "--auto-review",
     ]);
-    // The opt-in outranks a resolved standalone `agent`.
+    // The opt-in outranks a resolved standalone `cursor-agent` (and the
+    // `agent` alias).
     const both = new CursorAdapter(
-      (name) => (name === "cursor" || name === "agent" ? `/fake/${name}` : null),
+      (name) =>
+        (name === "cursor" || name === "cursor-agent" ? `/fake/${name}` : null),
       { [CURSOR_ENTRY_ENV]: "cursor" }
     );
     expect(both.isAvailable()).toBe(true);

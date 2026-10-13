@@ -114,7 +114,19 @@ or why nothing did. Severity is the highest any panel assigned.
   over the cap is tier-3 fatal with a 4 KiB excerpt; accepted events are
   never truncated), caller input lines capped at 17 MiB, `text` 16 MiB,
   `author` 64 code points, outbound queue bounded (1024 events / 64 MiB
-  pending; overflow ends the session with a fatal `error`), fatal UTF-8
+  pending; overflow ends the session with a fatal `error` — round al32:
+  the caps apply to ordinary events — `turn_completed` and the input
+  acks among them, so a caller fed repeated input against a stalled sink
+  drops the acks once a bound trips — while the session's end events
+  (`session_ended` and the fatal that ends the session) ride a lane of
+  fixed reserved capacity the ordinary bounds never close, taking the
+  ordinary capacity first and the lane only when those bounds are full,
+  so a caller whose sink stalls still learns the session ended and why —
+  round al35: the lane's two classes split its capacity, fatal-class
+  entries capped one slot short of it, so the last slot is
+  `session_ended`'s alone and a crash end that owes the caller a flood
+  of fatals cannot starve the end event of the very slot the lane keeps),
+  fatal UTF-8
   decoding everywhere.
 - **F3 (major; codex C16-plan, claude CL-plan, zai Z3/Z5): probe and record
   fixtures before parsers.** Adopted — plan step 0 records sanitized fixtures

@@ -270,7 +270,7 @@ describe("agy session e2e - lifecycle", () => {
     expect(await session.code).toBe(1);
     const ended = session.events.at(-1) as Event;
     expect(ended.type).toBe("session_ended");
-    expect(ended.reason).toBe("crash");
+    expect(ended.reason).toBe("harness_failed");
     expect(ended.resumable).toBe(false);
   });
 
@@ -368,8 +368,8 @@ describe("agy session e2e - lifecycle", () => {
       "the synthesized turn_completed"
     );
     expect(completed.turn_id).toBe("t1");
-    expect(completed.finish).toBe("interrupted");
-    expect(completed.reason).toContain("stdin-close");
+    expect(completed.finish).toBe("failed");
+    expect(completed.reason).toContain("the agy process exited with signal SIGTERM during the shutdown drain before completing its open turn");
     expect(completed.raw).toBeNull();
     expect(completed.usage).toEqual({
       input_tokens: null,
@@ -378,10 +378,10 @@ describe("agy session e2e - lifecycle", () => {
       total_tokens: null,
       cost_usd: null,
     });
-    expect(await session.code).toBe(0);
+    expect(await session.code).toBe(1);
     const ended = session.events[session.events.length - 1] as Event;
     expect(ended.type).toBe("session_ended");
-    expect(ended.reason).toBe("stdin-close");
+    expect(ended.reason).toBe("harness_failed");
     // The completion precedes the end on the stream, and the pairing is
     // exactly one-to-one: one turn_started, one turn_completed.
     expect(session.events.indexOf(completed)).toBeLessThan(session.events.indexOf(ended));
@@ -638,7 +638,7 @@ describe("agy session e2e - stream tiers", () => {
     expect(error.message).toContain("exited unexpectedly");
     expect(await session.code).toBe(1);
     const ended = session.events[session.events.length - 1] as Event;
-    expect(ended.reason).toBe("crash");
+    expect(ended.reason).toBe("harness_failed");
   });
 
   test("a signal that fires before attach stops the child instead of stranding it", async () => {
@@ -831,9 +831,8 @@ describe("agy session e2e - stream tiers", () => {
     // exit — driver exit 0 while session_ended.exit_code said 42. The
     // verdict now reads the child: a turn still open at the drain's end
     // (no result envelope delivered) plus a nonzero exit is a failure,
-    // with the error on the stream ahead of session_ended. A delivered
-    // result exempts (the drain test above, exit 0) and a signal death
-    // exempts itself (code null). Turn 1 must complete first: a fresh
+    // with the error on the stream ahead of session_ended. Signal deaths
+    // fail too. Turn 1 must complete first: a fresh
     // agy session has no identity until its first result.
     const session = await startSession({}, { FAKE_SIGTERM_PERSIST: "exit42" });
     send(session.driver, { type: "user", text: "scenario:basic one" });
@@ -847,8 +846,8 @@ describe("agy session e2e - stream tiers", () => {
     send(session.driver, { type: "shutdown" });
 
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.reason).toBe("shutdown");
-    expect(ended.exit_code).toBe(42);
+    expect(ended.reason).toBe("harness_failed");
+    expect(ended.exit_code).toBe(1);
     const fatal = session.events.find((event) => event.type === "error" && event.fatal === true);
     expect(fatal).toBeDefined();
     expect(fatal!.source).toBe("harness");
@@ -874,15 +873,10 @@ describe("agy session e2e - stream tiers", () => {
     expect(await session.code).toBe(1);
   });
 
-  test("a wrapper exiting 143 during the drain is the signal's coded spelling, not a failure", async () => {
-    // Review live11: the live9 verdict read any nonzero exit as failure,
-    // so a wrapper that answers the shutdown SIGTERM with exit code 143
-    // (the scode spelling, 128+SIGTERM) cost success while the signal
-    // death it encodes (code null) did not. 143 now exempts itself like
-    // the signal, and the still-open turn is synthesized interrupted —
-    // agy has no interrupt carrier, so nothing else can answer it. Turn
-    // 1 must complete first: a fresh agy session has no identity until
-    // its first result.
+  test("a wrapper exiting 143 during the drain fails the session", async () => {
+    // Code 143 fails like every other nonzero or signal exit. The open
+    // turn must also receive a failed completion. The first turn gives
+    // the fresh session its identity before this shutdown.
     const session = await startSession({}, { FAKE_SIGTERM_PERSIST: "exit143" });
     send(session.driver, { type: "user", text: "scenario:basic one" });
     await waitFor(session.events, of("turn_completed"), "first turn_completed");
@@ -895,17 +889,16 @@ describe("agy session e2e - stream tiers", () => {
     send(session.driver, { type: "shutdown" });
 
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.reason).toBe("shutdown");
-    expect(ended.exit_code).toBe(143);
-    // No false "during the shutdown drain" fatal.
-    expect(of("error")(session.events)).toBeUndefined();
-    // The open turn is still answered — synthesized interrupted,
+    expect(ended.reason).toBe("harness_failed");
+    expect(ended.exit_code).toBe(1);
+    expect(of("error")(session.events)?.fatal).toBe(true);
+    // The open turn is still answered — synthesized failed,
     // codemux-originated, usage never guessed.
     const second = session.events.filter((event) => event.type === "turn_completed")[1] as Event;
     expect(second).toBeDefined();
     expect(second.turn_id).toBe("t2");
-    expect(second.finish).toBe("interrupted");
-    expect(second.reason).toBe("the session ended (shutdown) before the turn completed");
+    expect(second.finish).toBe("failed");
+    expect(second.reason).toContain("exited with code 143");
     expect(second.usage).toEqual({
       input_tokens: null,
       output_tokens: null,
@@ -914,7 +907,7 @@ describe("agy session e2e - stream tiers", () => {
       cost_usd: null,
     });
     expect(session.events[session.events.length - 1]).toBe(ended);
-    expect(await session.code).toBe(0);
+    expect(await session.code).toBe(1);
   });
 
   test("a crash mid-turn reports one fatal and still answers the open turn", async () => {
@@ -922,13 +915,12 @@ describe("agy session e2e - stream tiers", () => {
     // story ("exited unexpectedly"), but the live9 verdict then added a
     // second, false "during the shutdown drain" fatal for the same exit,
     // and the open turn's turn_started was never answered — the synthesis
-    // only covered exit codes null and 0. The crash end now exempts
-    // itself from the drain verdict and the turn is synthesized failed
-    // with the crash as its reason.
+    // only covered exit codes null and 0. The crash now emits one fatal
+    // and the turn receives a failed completion.
     const session = await startSession();
     send(session.driver, { type: "user", text: "scenario:crash boom" });
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.reason).toBe("crash");
+    expect(ended.reason).toBe("harness_failed");
     // Exactly one fatal — the crash itself — and no drain fatal behind it.
     const fatals = session.events.filter(
       (event) => event.type === "error" && event.fatal === true
@@ -946,7 +938,7 @@ describe("agy session e2e - stream tiers", () => {
     expect(completed.turn_id).toBe("t1");
     expect(completed.finish).toBe("failed");
     // Review live17: the reason is the fatal that ended the session.
-    expect(completed.reason).toContain("the agy process exited unexpectedly (code 1");
+    expect(completed.reason).toContain("the agy process exited with code 1 during the shutdown drain before completing its open turn");
     expect(completed.usage).toEqual({
       input_tokens: null,
       output_tokens: null,
@@ -968,7 +960,7 @@ describe("agy session e2e - review live17", () => {
     await waitFor(session.events, of("turn_completed"), "turn_completed");
     send(session.driver, { type: "shutdown" });
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.exit_code).toBe(42);
+    expect(ended.exit_code).toBe(1);
     expect(await session.code).toBe(1);
     const fatal = session.events.find((event) => event.type === "error" && event.fatal === true);
     expect(fatal?.message).toBe("the agy process exited with code 42 during the shutdown drain");

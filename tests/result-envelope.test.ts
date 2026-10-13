@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   CODEX_FINAL_MESSAGE_FALLBACK_NOTE,
+  CodexEventReducer,
   agyResult,
   claudeFamilyResult,
   codexResult,
@@ -932,6 +933,7 @@ describe("parseCodexEventStream", () => {
     ]))!;
     expect(stream.failure).toBeNull();
     expect(stream.finalMessage).toBe("the reply");
+    expect(stream.warnings).toContain("stream disconnected; retrying");
     expect(stream.usage.output_tokens).toBe(5);
   });
 
@@ -1123,6 +1125,122 @@ describe("parseCodexEventStream", () => {
     // like any other drift and codexResult fails it with the raw stdout
     // kept (see the codexResult test below).
     expect(parseCodexEventStream("")).toBeNull();
+  });
+
+  test("an item event before the first turn.started is drift, and a pre-turn reroute attributes nothing", () => {
+    // Round al34 (edges major 3): the outside-a-turn refusal covered only
+    // the stream's tail. An item between thread.started and turn.started
+    // was accepted there, so a pre-turn item.completed error -- a reroute
+    // notice -- overwrote servedModel onto a run whose turns that model
+    // never served. The grammar nests items inside turns, so the head is
+    // drift like the tail.
+    const preTurn = (eventType: string, item: object): string =>
+      codexStream([
+        { type: "thread.started", thread_id: "t" },
+        { type: eventType, item },
+        { type: "turn.started" },
+        { type: "item.completed", item: { id: "item_1", type: "agent_message", text: "the reply" } },
+        { type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 5 } },
+      ]);
+    expect(parseCodexEventStream(preTurn("item.completed", { id: "item_0", type: "error", message: "model rerouted: gpt-5.3 -> gpt-5.3-mini (Unavailable)" }))).toBeNull();
+    expect(parseCodexEventStream(preTurn("item.completed", { id: "item_0", type: "reasoning", text: "thinking" }))).toBeNull();
+    expect(parseCodexEventStream(preTurn("item.started", { id: "item_0", type: "reasoning", text: "thinking" }))).toBeNull();
+    expect(parseCodexEventStream(preTurn("item.updated", { id: "item_0", type: "reasoning", text: "thinking" }))).toBeNull();
+    // The reducer's own state pins the attribution half of the finding:
+    // the drift freezes the reroute arm before it runs, so servedModel
+    // stays null -- the model no turn served reports nothing.
+    const reducer = new CodexEventReducer();
+    reducer.takeEvent({ type: "thread.started", thread_id: "t" });
+    reducer.takeEvent({ type: "item.completed", item: { id: "item_0", type: "error", message: "model rerouted: gpt-5.3 -> gpt-5.3-mini (Unavailable)" } });
+    expect(reducer.drift).toContain("outside a turn");
+    expect(reducer.drift).toContain("before the first turn.started");
+    expect(reducer.servedModel).toBeNull();
+    // The same reroute inside the turn is the documented attribution and
+    // still parses: the refusal is about position, not the item.
+    const inTurn = parseCodexEventStream(codexStream([
+      { type: "thread.started", thread_id: "t" },
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "item_0", type: "error", message: "model rerouted: gpt-5.3 -> gpt-5.3-mini (Unavailable)" } },
+      { type: "item.completed", item: { id: "item_1", type: "agent_message", text: "the reply" } },
+      { type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 5 } },
+    ]))!;
+    expect(inTurn.servedModel).toBe("gpt-5.3-mini");
+    expect(inTurn.finalMessage).toBe("the reply");
+  });
+
+  test("a pre-turn completed error item with a plain message is a startup warning, and only that (al35)", () => {
+    // Round al35 (correctness major 1): codex reports non-fatal startup
+    // warnings as completed `error` items between thread.started and
+    // turn.started, and a stream that carries one is a successful run
+    // with the warning retained — the al34 head refusal (the test above)
+    // dropped the whole stream for it. The carve-out is scoped to the
+    // head position AND the warning's own shape: a warning-shaped item
+    // after the last turn.completed still drifts (the tail rule the
+    // outside-a-turn refusal always was), a non-string message still
+    // drifts (nothing to retain), and the reroute notice keeps its own
+    // al34 refusal — it is an attribution item, not a warning.
+    const stream = parseCodexEventStream(codexStream([
+      { type: "thread.started", thread_id: "t" },
+      { type: "item.completed", item: { id: "item_0", type: "error", message: "mcp server telemetry failed to start" } },
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "item_1", type: "agent_message", text: "the reply" } },
+      { type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 5 } },
+    ]))!;
+    expect(stream).not.toBeNull();
+    expect(stream.turnCompleted).toBe(true);
+    expect(stream.finalMessage).toBe("the reply");
+    // The warnings the reduction retained (toStream does not carry them;
+    // the reducer's own state is where the al34 test reads its halves
+    // too).
+    const warningsOf = (events: Record<string, unknown>[]): string[] => {
+      const reducer = new CodexEventReducer();
+      for (const event of events) reducer.takeEvent(event);
+      expect(reducer.drift).toBeNull();
+      return reducer.warnings;
+    };
+    expect(warningsOf([
+      { type: "thread.started", thread_id: "t" },
+      { type: "item.completed", item: { id: "item_0", type: "error", message: "mcp server telemetry failed to start" } },
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "item_1", type: "agent_message", text: "the reply" } },
+      { type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 5 } },
+    ])).toEqual(["mcp server telemetry failed to start"]);
+    // Two warnings both retain, in arrival order.
+    expect(warningsOf([
+      { type: "thread.started", thread_id: "t" },
+      { type: "item.completed", item: { id: "item_0", type: "error", message: "first warning" } },
+      { type: "item.completed", item: { id: "item_1", type: "error", message: "second warning" } },
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "item_2", type: "agent_message", text: "the reply" } },
+      { type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 5 } },
+    ])).toEqual(["first warning", "second warning"]);
+    // The tail: the same item after the last turn.completed drifts — the
+    // carve-out ends where the turns do.
+    expect(parseCodexEventStream(codexStream([
+      { type: "thread.started", thread_id: "t" },
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "item_0", type: "agent_message", text: "the reply" } },
+      { type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 5 } },
+      { type: "item.completed", item: { id: "item_1", type: "error", message: "a late warning" } },
+    ]))).toBeNull();
+    // A non-string message is not a warning shape and keeps the refusal.
+    expect(parseCodexEventStream(codexStream([
+      { type: "thread.started", thread_id: "t" },
+      { type: "item.completed", item: { id: "item_0", type: "error", message: { code: 7 } } },
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "item_1", type: "agent_message", text: "the reply" } },
+      { type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 5 } },
+    ]))).toBeNull();
+    // The reroute notice stays refused at the head (al34's own finding:
+    // it attributes, so accepting it would vouch a model no turn
+    // served).
+    expect(parseCodexEventStream(codexStream([
+      { type: "thread.started", thread_id: "t" },
+      { type: "item.completed", item: { id: "item_0", type: "error", message: "model rerouted: gpt-5.3 -> gpt-5.3-mini (Unavailable)" } },
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "item_1", type: "agent_message", text: "the reply" } },
+      { type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 5 } },
+    ]))).toBeNull();
   });
 
   test("a reroute item names the model that served the run, the last one winning", () => {
@@ -1552,5 +1670,56 @@ describe("codexResult", () => {
     expect(out.exitCode).toBe(1);
     expect(out.success).toBe(false);
     expect(out.stderr).toContain("without a final assistant message");
+  });
+
+  test("a completed turn whose named fallback file is missing fails naming the file (al29)", () => {
+    // The al29 contracts minor's own arm, pinned here so the al30 gate
+    // below has its contrast: a messageless stream whose turn completed,
+    // a run clean, and the --output-last-message file the launch named
+    // not there — upstream writes one for every completed turn, so the
+    // write codex only logged never happened, and the caller learns
+    // that, not a generic "no result".
+    const out = codexResult(
+      finished(codexStream([
+        { type: "thread.started", thread_id: "t" },
+        { type: "turn.started" },
+        { type: "item.completed", item: { id: "item_0", type: "reasoning", text: "thinking" } },
+        { type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 5 } },
+      ])),
+      request,
+      { missing: "/tmp/codemux-last-message-al29" }
+    );
+    expect(JSON.parse(out.stdout).result).toBeNull();
+    expect(out.exitCode).toBe(1);
+    expect(out.success).toBe(false);
+    expect(out.stderr).toContain("--output-last-message");
+    expect(out.stderr).toContain("/tmp/codemux-last-message-al29");
+    expect(out.stderr).toContain("is missing");
+  });
+
+  test("a truncated stream never reaches the missing-file arm: the turn never finished (al30)", () => {
+    // Round al30, rule 4 (edges minor): the missing-fallback override
+    // required only a clean run and a messageless stream, so a stream
+    // cut after turn.started — no turn.completed, nothing upstream could
+    // have written — blamed the absent file for a turn that never
+    // reached its end. The override now requires stream.turnCompleted:
+    // the truncated stream keeps the truncation verdict, and the
+    // missing-file note never fires.
+    const out = codexResult(
+      finished(codexStream([
+        { type: "thread.started", thread_id: "t" },
+        { type: "turn.started" },
+        { type: "item.completed", item: { id: "item_0", type: "agent_message", text: "partial" } },
+      ])),
+      request,
+      { missing: "/tmp/codemux-last-message-al30" }
+    );
+    expect(JSON.parse(out.stdout).result).toBeNull();
+    expect(out.exitCode).toBe(1);
+    expect(out.success).toBe(false);
+    expect(out.stderr).toContain("turn.completed");
+    expect(out.stderr).toContain("the turn never finished");
+    expect(out.stderr).not.toContain("--output-last-message");
+    expect(out.stderr).not.toContain("/tmp/codemux-last-message-al30");
   });
 });

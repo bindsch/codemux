@@ -15,8 +15,9 @@ export const MAX_PASSTHROUGH_ENV_NAMES = 64;
  * failure (EX_USAGE): the CLI exits 64 rather than 1, so a script can
  * tell a request only the caller can fix from a run that failed. Thrown
  * by the adapters' validateRunRequest for exactly those refusals (the
- * aider slash-command rule, review D10, security); every other
- * validation keeps the plain throw and exit 1. */
+ * aider and kimi slash-command rules, review D10, security; the kimi
+ * KIMI_CODE_HOME passthrough rules, round al29); every other validation
+ * keeps the plain throw and exit 1. */
 export class UsageRefusalError extends Error {
   constructor(message: string) {
     super(message);

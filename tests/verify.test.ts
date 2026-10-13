@@ -70,8 +70,8 @@ describe("Verifier", () => {
     // passthrough could not authorize it, and the wiring check recorded
     // the refusal as "run command generation failed" and reported FAIL.
     // Verify is static, so its result must not depend on the operator's
-    // shell: it builds against an explicitly empty environment view
-    // (STATIC_WIRING_ENV in src/verify.ts), never the exported one.
+    // opt-ins: it builds against a PATH-only environment view
+    // (staticWiringEnv in src/verify.ts).
     const saved = process.env[CURSOR_ENTRY_ENV];
     process.env[CURSOR_ENTRY_ENV] = "cursor";
     try {
@@ -116,7 +116,7 @@ describe("Verifier", () => {
     const vars: Record<string, string> = {};
     // Supporting and non-supporting harnesses alike: a non-supporting one
     // (gemini, qwen) must not turn FAIL because the operator exported an
-    // override for it — verify reads the empty view, not the shell.
+    // override for it — verify keeps only PATH from the shell.
     for (const agent of ["claude", "codex", "openhands", "zai", "gemini", "qwen", "agy"]) {
       vars[`CODEMUX_${agent.toUpperCase()}_PROVIDER_BASE_URL`] = "https://override.example";
       vars[`CODEMUX_${agent.toUpperCase()}_PROVIDER_API_KEY`] = "k";

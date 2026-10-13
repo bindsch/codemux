@@ -18,8 +18,12 @@ import { getAdapter, AGENT_IDS } from "../adapters/index.js";
 import type { RunContext } from "../adapters/base.js";
 import { AiderAdapter } from "../adapters/aider.js";
 import { OpencodeAdapter, opencodeRealDataDir } from "../adapters/opencode.js";
-import { assertAbsoluteClaudeConfigDir } from "../claude-family.js";
 import {
+  assertAbsoluteClaudeConfigDir,
+  claudeProviderPickerSettings,
+} from "../claude-family.js";
+import {
+  assertScodeKeepEnvSupport,
   handleUnexpectedError,
   isScodeAvailable,
   parseAutonomyOption,
@@ -30,6 +34,7 @@ import {
   parseToolsOption,
   resolveAutonomyForAdapter,
   resolveEffortForAdapter,
+  resolveScodeExecutableForEnv,
   assertHarnessSupported,
 } from "../cli-runtime.js";
 import { resolveModel } from "../config.js";
@@ -48,6 +53,7 @@ import {
   type ProviderOverride,
 } from "../provider-override.js";
 import { resolveSandboxOptionsForAgent } from "../sandbox-policy.js";
+import { withKeepEnvExemption, type SandboxOptions, isCredentialEnvName } from "../sandbox.js";
 import type { AgentId, CodemuxConfig, RunRequest } from "../types.js";
 import { validateWorkingDirectory } from "../validation.js";
 import {
@@ -74,6 +80,11 @@ import {
 } from "./aider-session.js";
 import { AiderSessionDriver } from "./aider-driver.js";
 import {
+  KIMI_SESSION_FLOOR,
+  KIMI_SESSION_ID_PATTERN,
+} from "./kimi-session.js";
+import { KimiSessionDriver } from "./kimi-driver.js";
+import {
   OPENCODE_SESSION_FLOOR,
   OPENCODE_SESSION_ID_PATTERN,
 } from "./opencode-session.js";
@@ -99,8 +110,8 @@ import { spawnSessionChild } from "./spawn.js";
  * error when the stream failed rather than ended. */
 interface SessionDriver {
   /** Attaches the long-lived session child. Turn-per-process agents
-   * (opencode, aider) have none — they spawn per caller input through
-   * their spawnTurn closure instead. */
+   * (opencode, aider, kimi) have none — they spawn per caller input
+   * through their spawnTurn closure instead. */
   attach?(proc: SessionProcess): void;
   run(): Promise<number>;
   handleHarnessLine(line: string): void;
@@ -192,6 +203,17 @@ const SESSION_AGENTS: Readonly<Record<string, SessionAgentSupport>> = {
     interrupt: false,
     resumePattern: AIDER_SESSION_ID_PATTERN,
     resumeLabel: "UUID",
+    tools: false,
+  },
+  kimi: {
+    floor: KIMI_SESSION_FLOOR,
+    // Same shape as opencode's and aider's: one process per turn whose
+    // prompt rides argv, and kimi's own signal handlers self-exit
+    // (130/129/143) without answering — no verified channel interrupts a
+    // turn mid-flight (§3.4).
+    interrupt: false,
+    resumePattern: KIMI_SESSION_ID_PATTERN,
+    resumeLabel: "kimi session id",
     tools: false,
   },
 };
@@ -298,6 +320,41 @@ function opencodeHarnessHome(): string {
  * the default one — override or not. */
 function aiderHarnessHome(): string {
   return join(homedir(), ".aider");
+}
+
+/** The kimi harness home (§4.5): the brand home kimi's own session store
+ * lives under (~/.kimi-code/sessions). KIMI_CODE_HOME reaches the child
+ * only via --pass-env; the redirect is honored here only when it is
+ * being passed through. The value is read and recorded raw — exactly the
+ * bytes the child receives, never a trimmed normalization (round al11):
+ * kimi reads the variable without trimming, so a padded value names a
+ * real (differently spelled) directory to the child, and recording a
+ * trimmed copy made the registry name a store the child never used while
+ * a resume with the same padded value still passed the guard. An EMPTY
+ * value is refused rather than treated as unset (round al16): kimi's own
+ * resolver preserves an empty KIMI_CODE_HOME and places its store under
+ * the working directory, while the registry would record the default
+ * home — the recorded home and the child's store must be the same thing
+ * or the resume guard compares fiction. A provider override does not
+ * move it: the KIMI_MODEL_* synthesis is in-memory and the store stays
+ * where it is. */
+function kimiHarnessHome(passthroughEnv: string[]): string {
+  const configured = process.env.KIMI_CODE_HOME;
+  if (!passthroughEnv.includes("KIMI_CODE_HOME") || configured === undefined) {
+    return join(homedir(), ".kimi-code");
+  }
+  if (configured === "") {
+    usageError(
+      "KIMI_CODE_HOME must not be empty when passed through; kimi's own " +
+        "resolver preserves an empty value and places its session store " +
+        "under the working directory, while codemux records the default " +
+        "home — unset the variable or give it an absolute path"
+    );
+  }
+  if (!isAbsolute(configured)) {
+    usageError("KIMI_CODE_HOME must be an absolute path");
+  }
+  return configured;
 }
 
 /** The codex harness home (§4.5): CODEX_HOME reaches the child only via
@@ -654,7 +711,8 @@ export function registerSessionCommand(
         // autonomy, effort, cwd, or the environment holds for sessions
         // with zero drift from `run` — the provider-override contract
         // (the model requirement, the cap refusals, zai/agy's refusal)
-        // and the project-execution guards (agy, codex, aider, opencode).
+        // and the project-execution guards (kimi, agy, codex, aider,
+        // opencode).
         // The argv prompt bound is the one rule the placeholder cannot
         // carry: its prompt is a constant, never a turn's text, so the
         // session enforces that bound per turn at the driver instead —
@@ -697,8 +755,9 @@ export function registerSessionCommand(
         const registryPath = sessionRegistryPath();
         // CODEX_HOME reaches only a codex session's child, so only codex
         // validates it: codexHarnessHome's refusals (a relative or padded
-        // value) must not end a claude/zai/agy/opencode/aider session over
-        // a variable its harness never reads (review D8, correctness 2).
+        // value) must not end a claude/zai/agy/kimi/opencode/aider session
+        // over a variable its harness never reads (review D8,
+        // correctness 2).
         // Computed at the first codex arm below, at most once.
         let realCodexHome: string | null = null;
         const codexHome = (): string =>
@@ -752,7 +811,9 @@ export function registerSessionCommand(
                 ? opencodeHarnessHome()
                 : agentId === "aider"
                   ? aiderHarnessHome()
-                  : claudeFamilyHarnessHome(passthroughEnv);
+                  : agentId === "kimi"
+                    ? kimiHarnessHome(passthroughEnv)
+                    : claudeFamilyHarnessHome(passthroughEnv);
         // The provider identity every record carries and the resume guard
         // pins (review D3, security): the override's base URL, or null for
         // the operator's own login — recorded and compared in the
@@ -805,6 +866,56 @@ export function registerSessionCommand(
           );
         }
 
+        // An override session under --sandbox-scrub-env cannot run on a
+        // scode without --keep-env: the scrub would strip the override's
+        // key, the session's only credential. Refused HERE, before
+        // anything spawns or records — the run path's refusal
+        // (resolveKeepEnvSandboxOptions in cli-runtime.ts, thrown when a
+        // required exemption meets an unsupported scode) with its message
+        // verbatim through assertScodeKeepEnvSupport — because
+        // a turn-per-process session would otherwise ack its first caller
+        // input and only then die at the turn spawn. The names ride the
+        // per-spawn options below; the NEED is known now.
+        //
+        // The probe runs scode under the environment the session's
+        // children spawn with — the adapter's standing environment through
+        // buildExecutionEnv, HOME and PATH included — never an empty one
+        // (round al14's blocker: the installed scode refuses to run
+        // without HOME, so an empty-env probe answered "unprobeable" and
+        // refused valid sessions before launch). The scode resolves
+        // through that environment's PATH, the same resolver the run
+        // runner and every session spawn use
+        // (resolveScodeExecutableForEnv), so the preflight judges the
+        // binary the launches will run. Both probes use the shared
+        // session environment builder, including getRunEnv credentials.
+        // The probe is memoized by executable, environment, and cwd.
+        //
+        // The need is the run path's rule (withKeepEnvExemption): an
+        // override's key, or a credential-shaped name the adapter injects
+        // on its own (zai's gateway token). That question is computed
+        // lazily, HERE — after every earlier refusal, the resume guards
+        // included (round al16): adapter.getEnv() resolves the agent's
+        // credentials, and zai's throws outright when no key exists, so
+        // the round-al15 spelling ran that resolution before the resume
+        // guards and a keyless zai --resume of another agent's session
+        // answered the key error (exit 1) where the resume guard exists
+        // to answer the policy refusal (78). A keyless zai still refuses
+        // before the spawn once the guards have spoken — under a scrubbed
+        // launch here, at the probe's own getEnv call below, and otherwise
+        // at beforeLaunch.
+        // Either spelling of a scrubbed launch needs the probe (round
+        // al32, security minor): the explicit scrub flag, or an untrusted
+        // trust level — refused for sessions at the gate above, so that
+        // arm is defense in depth, but the cause it states is the truth
+        // either way, never a hard-coded scrub-only one.
+        const needsKeepEnvPreflight = Boolean(options.sandbox) &&
+          (sandboxOptions?.scrubEnv === true || sandboxOptions?.trust === "untrusted") &&
+          (override !== null || Object.keys(adapter.getEnv()).some(isCredentialEnvName));
+        const buildSessionEnvironment = (context: RunContext | undefined) => {
+          const runEnv = adapter.getRunEnv(runLike, context);
+          return { runEnv, env: adapter.buildExecutionEnv(runEnv, passthroughEnv) };
+        };
+
         // The claude-family identity for this session: zai rides the same
         // driver, parser, and argv, differing only in the registry and
         // session_started agent the driver records.
@@ -822,12 +933,28 @@ export function registerSessionCommand(
               // sandbox-scoped carrier, in run's argv position.
               sandboxed: Boolean(options.sandbox),
               enablePlaywrightMcp,
+              // The override's picker mapping, same as the run path's
+              // modelFlags: without it 2.1.280 rejects a provider-format
+              // model id client-side before any request. `model` above
+              // resolves exactly the way modelFlags does — the request's
+              // -m, else the override's CODEMUX_CLAUDE_PROVIDER_MODEL —
+              // so an env-model-only launch (no -m) carries --model and
+              // --settings here too, pinned by the picker e2e; an
+              // override naming no model never reaches this wiring (the
+              // run-like validation above refuses it first, run's own
+              // message). Zai never rides an override (its models are
+              // catalog aliases).
+              providerSettings:
+                agentId === "claude" && override !== null && model !== undefined
+                  ? claudeProviderPickerSettings(model)
+                  : undefined,
             })
           : null;
-        // Turn-per-process agents (opencode, aider) have no session-long
-        // child: their driver spawns one process per caller input, so
-        // there is no argv to build here.
-        const turnPerProcess = agentId === "opencode" || agentId === "aider";
+        // Turn-per-process agents (opencode, aider, kimi) have no
+        // session-long child: their driver spawns one process per caller
+        // input, so there is no argv to build here.
+        const turnPerProcess =
+          agentId === "opencode" || agentId === "aider" || agentId === "kimi";
 
         // The session floor, above the run contract (§4.3): the resume
         // ladder's reasoning and the permission carrier are only audited
@@ -924,14 +1051,47 @@ export function registerSessionCommand(
                 },
               }
             : undefined;
-        // The long-lived children spawn below, so their env is assembled
-        // now; the turn-per-process agents assemble each turn's env at its
-        // own turn (spawnTurn), after every startup refusal — a session
-        // that never starts writes nothing, opencode's provider config in
-        // particular.
-        const env = turnPerProcess
+        // Long-lived children reuse this environment. Turn children use
+        // the same builder with their own context at each launch.
+        const sessionEnvironment = turnPerProcess
           ? null
-          : adapter.buildExecutionEnv(adapter.getRunEnv(runLike, runContext), passthroughEnv);
+          : buildSessionEnvironment(runContext);
+        const sessionRunEnv = sessionEnvironment?.runEnv ?? null;
+        const env = sessionEnvironment?.env ?? null;
+        if (needsKeepEnvPreflight) {
+          // OpenCode needs a prepared config to build its run environment.
+          // This probe-only context is cleaned on success and failure;
+          // every actual turn still prepares a fresh, private config.
+          const probeContext = agentId === "opencode" ? adapter.prepareRun(runLike) : undefined;
+          try {
+            const probeEnv = env ?? buildSessionEnvironment(probeContext).env;
+            const scode = resolveScodeExecutableForEnv(probeEnv, workdir);
+            if (scode !== null) {
+              await assertScodeKeepEnvSupport(scode, workdir, probeEnv, {
+                scrubEnv: sandboxOptions?.scrubEnv === true,
+                untrusted: sandboxOptions?.trust === "untrusted",
+              });
+            }
+          } finally {
+            if (probeContext !== undefined) adapter.cleanupRun(probeContext);
+          }
+        }
+        // The keep-env rule the run path applies (launch.ts): under
+        // --sandbox-scrub-env the names codemux injected ride scode's
+        // exemption, mandatory under an override. spawnSessionChild probes
+        // the scode and keeps, drops, or refuses the exemption exactly as
+        // the run runner does (resolveKeepEnvSandboxOptions); this
+        // attaches the names for the probe to judge. The turn-per-process
+        // agents compute their own per turn below (their env is per turn,
+        // opencode's provider config above all).
+        const longLivedSandboxOptions =
+          sessionRunEnv === null || sandboxOptions === undefined
+            ? sandboxOptions
+            : withKeepEnvExemption(
+                sandboxOptions,
+                { ...adapter.getEnv(), ...sessionRunEnv },
+                override !== null
+              );
 
         // The wire models for the turn-per-process agents, through the
         // adapters' public seam (wireModelFor): exactly what
@@ -946,6 +1106,13 @@ export function registerSessionCommand(
           agentId === "aider" && adapter instanceof AiderAdapter
             ? adapter.wireModelFor(model)
             : undefined;
+        // The `--model` value kimi's per-turn commands carry (the session
+        // re-carries it on every per-turn argv): none under a provider
+        // override — the synthesized KIMI_MODEL_* provider is the default
+        // model and `--model` names a config alias that outranks it (the
+        // run adapter's buildRunCommand rule) — else the resolved model.
+        const kimiWireModel =
+          agentId === "kimi" ? (override !== null ? undefined : model) : undefined;
 
         let driver: SessionDriver;
         let claudeDriver: ClaudeSessionDriver | null = null;
@@ -958,12 +1125,31 @@ export function registerSessionCommand(
           launch: {
             env: Record<string, string>;
             context: RunContext | undefined;
+            /** The turn spawn's sandbox options: the session's resolved
+             * options plus the keep-env exemption for THIS turn's injected
+             * names (the long-lived child computes its own once, above). */
+            sandboxOptions: SandboxOptions | undefined;
           } | null;
         } = { launch: null };
+        /** The keep-env exemption for one turn's spawn — the run path's
+         * rule through the same helper (withKeepEnvExemption): the names
+         * that turn's env assembly injected, required under an override.
+         * Computed per turn because the env is per turn (opencode's
+         * provider config directory is minted fresh each turn). */
+        const turnSandboxOptions = (
+          runEnv: Record<string, string>
+        ): SandboxOptions | undefined =>
+          sandboxOptions === undefined
+            ? undefined
+            : withKeepEnvExemption(
+                sandboxOptions,
+                { ...adapter.getEnv(), ...runEnv },
+                override !== null
+              );
         const spawnTurn = (turnArgv: string[]): Promise<SessionProcess> => {
           // Re-run the adapter's validation gate before EVERY turn
           // (review D2, security 1): the turn-per-process agents (opencode,
-          // aider) reload project config in each fresh process, and turn N
+          // aider, kimi) reload project config in each fresh process, and turn N
           // may have written `opencode.json` or `.aider.model.settings.yml`
           // granting reach the recorded autonomy does not. `run` checks the
           // tree right before the only process it launches; this is that
@@ -992,24 +1178,23 @@ export function registerSessionCommand(
             const previous = turnState.launch?.context;
             if (previous !== undefined) adapter.cleanupRun(previous);
             const context = adapter.prepareRun(runLike);
+            const { runEnv, env } = buildSessionEnvironment(context);
             turnState.launch = {
-              env: adapter.buildExecutionEnv(
-                adapter.getRunEnv(runLike, context),
-                passthroughEnv
-              ),
+              env,
+              sandboxOptions: turnSandboxOptions(runEnv),
               context,
             };
           } else if (turnState.launch === null) {
             // Run's launch order in miniature (launch.ts): prepareRun,
-            // then getRunEnv, then the built environment. Aider's override
-            // rides environment variables alone (OPENAI_API_BASE /
-            // OPENAI_API_KEY) — nothing on disk to refresh — so its env is
-            // built once and cached.
+            // then getRunEnv, then the built environment. Aider's and
+            // kimi's overrides ride environment variables alone
+            // (OPENAI_API_BASE / OPENAI_API_KEY; KIMI_MODEL_*) — nothing
+            // on disk to refresh — so the env is built once and cached,
+            // keep-env exemption included.
+            const { runEnv, env } = buildSessionEnvironment(undefined);
             turnState.launch = {
-              env: adapter.buildExecutionEnv(
-                adapter.getRunEnv(runLike, undefined),
-                passthroughEnv
-              ),
+              env,
+              sandboxOptions: turnSandboxOptions(runEnv),
               context: undefined,
             };
           }
@@ -1017,7 +1202,7 @@ export function registerSessionCommand(
             cwd: workdir,
             sandboxed: Boolean(options.sandbox),
             autonomy: requestedAutonomy,
-            sandboxOptions,
+            sandboxOptions: turnState.launch.sandboxOptions,
             graceMs: shutdownGraceMs,
             envOmissions: adapter.getEnvOmissions(),
           }, {
@@ -1086,6 +1271,30 @@ export function registerSessionCommand(
             autonomy,
             model: opencodeWireModel,
             effort,
+            cwd: workdir,
+            hermetic: false,
+            sandboxed: Boolean(options.sandbox),
+            sandboxTrust,
+            sandboxNoNet,
+            sandboxScrubEnv,
+            passEnv: passthroughEnv,
+            authorPrefix: Boolean(options.authorPrefix),
+            sessionTimeoutMs,
+            registryPath,
+            harnessHome,
+            providerBaseUrl,
+            spawnTurn,
+          });
+        } else if (agentId === "kimi") {
+          driver = new KimiSessionDriver({
+            resumeSessionId: resumeId ?? null,
+            autonomy,
+            model,
+            // Under an override the KIMI_MODEL_* synthesis owns model
+            // selection (the run path's never-`-m` rule), so the
+            // per-turn commands carry none; `model` stays the reported
+            // one.
+            wireModel: kimiWireModel,
             cwd: workdir,
             hermetic: false,
             sandboxed: Boolean(options.sandbox),
@@ -1179,10 +1388,11 @@ export function registerSessionCommand(
           exitOnResumeRefusal(resumeId, registryPath, claimed);
           driver.adoptResumeClaim();
           ownedRecordId = resumeId;
-        } else if (agentId === "agy" || agentId === "opencode") {
-          // agy and opencode name a fresh conversation only in their
-          // first turn's output, so that turn runs before the record can
-          // exist; the registry is proven writable first (review live22).
+        } else if (agentId === "agy" || agentId === "opencode" || agentId === "kimi") {
+          // agy, opencode, and kimi name a fresh conversation only in
+          // their first turn's output (kimi's resume hint is that turn's
+          // last line), so that turn runs before the record can exist;
+          // the registry is proven writable first (review live22).
           const probe = probeRegistryForStart(registryPath);
           if (!probe.ok) {
             exitWithCode(1, `cannot record the session in the registry: ${probe.error} (registry: ${registryPath})`);
@@ -1240,7 +1450,7 @@ export function registerSessionCommand(
               cwd: workdir,
               sandboxed: Boolean(options.sandbox),
               autonomy: requestedAutonomy,
-              sandboxOptions,
+              sandboxOptions: longLivedSandboxOptions,
               graceMs: shutdownGraceMs,
               envOmissions: adapter.getEnvOmissions(),
             }, {

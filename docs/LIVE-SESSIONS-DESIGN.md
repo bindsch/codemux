@@ -611,8 +611,18 @@ archive. Accepted events are never truncated; the bounds are below.
   mirroring it beside per-turn token counts invited callers to sum
   overlapping figures — the real figure rides `session_ended.usage`.
 - `error` — `fatal`, `source: codemux|harness`, `message`.
-- `session_ended` — `reason: shutdown|stdin-close|signal|timeout|crash`,
-  `exit_code`, cumulative `usage`, `resumable`.
+- `session_ended` — `reason: shutdown|stdin-close|signal|timeout|crash|harness_failed`,
+  `exit_code`, `harness_exit`, `shutdown_requested`, cumulative `usage`, `resumable`.
+  Every harness reports the session's summary exit code. Every nonzero
+  child code and signal exit makes it nonzero with reason `harness_failed`.
+  `harness_exit` preserves the last observed child's raw `{code, signal}`,
+  or null when no outcome was observed. `shutdown_requested` is true
+  when stdin close, shutdown input, or a signal to codemux requested the
+  end. This request does not excuse a child failure. Signal attribution
+  is removed; neither signal delivery nor callback timing affects the verdict.
+  A fresh Kimi resume hint waits for registry recording and
+  `session_started`. If recording fails, the hint is never emitted and
+  events carry an empty session ID.
 
 **Unknown and malformed events — three tiers** (Prompt B's passthrough and
 the repo's fail-closed invariant, reconciled):
@@ -647,10 +657,24 @@ approval event must reference the known thread (and turn, once opened) —
 this closes the wrong-session defect where it starts.
 
 **Bounds.** A harness output line over 16 MiB is tier-3 fatal. The
-outbound queue to the caller is bounded (1024 events / 64 MiB pending); a
+outbound queue to the caller is bounded (1024 events / 64 MiB pending; a
 caller that stops reading ends the session (exit 1, `session_ended`
 reason `crash` if the queue still drains) rather than growing codemux
-without limit. The diagnostic goes to stderr, not to an `error` event:
+without limit) — with one carve-out (round al32): the caps apply to
+ordinary events — `turn_completed` and the input acks among them, so a
+caller fed repeated input against a stalled sink drops the acks once a
+bound trips — while the session's end events (`session_ended` and the
+fatal that ends the session) ride a lane of fixed reserved capacity the
+ordinary bounds never close. An end event takes the ordinary capacity
+first and the lane only when those bounds are full, so pending
+completions can never take the slot the end event needs; the lane keeps
+its fixed capacity for the several fatal-class events a crash end can
+owe before `session_ended` — with the two classes split (round al35):
+a fatal-class entry may occupy at most one slot short of the lane's
+capacity, so its last slot is `session_ended`'s alone and a flood of
+fatals can never starve the end event of the very slot the lane exists
+to keep; the end waits out the final
+flush's documented give-up either way. The diagnostic goes to stderr, not to an `error` event:
 the event stream is the channel that failed (review live18). The
 harness's stdin is bounded too (review live19): Bun's pipe sink buffers
 every write the harness has not read, without limit, so a write that
@@ -876,7 +900,7 @@ authentication: codemux does not check identities.
 - `--shutdown-grace <s>`: how long the harness gets to answer the end
   (the end-interrupt, or agy's stdin close) before SIGTERM, and again to
   persist and exit after it before codemux kills the tree, default 10;
-  the worst case is twice the value (review live17). One knob for every shutdown path — stdin
+  an active-turn interrupt can require a separate answer window. One knob for every shutdown path — stdin
   close, `shutdown` input, signal, `--timeout` expiry (§4.6). The
   `shutdown` input carries no grace field of its own.
 
@@ -893,54 +917,23 @@ only in the emitted flags (§4.7) — bounded by creation in reach: the
 registry (§4.8) records the level and refuses a resume above it in the
 reach order defined there.
 
-- **stdin close (EOF):** graceful shutdown — interrupt the active turn, allow
-  `--shutdown-grace` (default 10 s) for the harness to answer it before
-  any signal, then SIGTERM and a second `--shutdown-grace` for the harness
-  to persist and exit before the tree is killed; emit `session_ended`
-  with `reason: stdin-close`, exit 0. agy has no interrupt: its stdin is
-  closed instead (its input loop finishes the running line and exits),
-  on every end path, and the first window waits for that exit (review
-  live17 — the interrupt and the SIGTERM used to go out in one step, so a
-  harness that dies on SIGTERM never answered, and agy never saw EOF). A
-  read error on the caller's stdin runs the same path but is a failure:
-  a fatal `codemux` error and exit 1 (review live17). A dead broker must not
-  orphan a running agent; the session stays resumable. The grace window is
-  also a drain: harness output arriving inside it — the end-interrupt's
-  answer, the interrupted turn's completion, its usage — is parsed and
-  emitted to the caller before `session_ended`, which stays the last event
-  on the stream. A failure arriving inside the window is not absorbed by
-  the end already in flight: cleanup stays idempotent, but the fatal (a
-  tier-3 line, a codemux failure) surfaces its event and the exit code
-  rises to 1 (review live7). The child's own exit is part of the verdict
-  (review live9): a child that exits nonzero inside the window — a
-  failure while persisting, whether or not a turn was open (review
-  live17), and whether or not its turn's completion arrived first
-  (review live18) — costs success (exit 1, a fatal `error` ahead of
-  `session_ended`).
-  Three cases keep the honest zero: exit code 1 after an `interrupted`
-  completion the drain delivered, claude family only (it exits 1 after
-  an interrupted turn by convention, step-0 probe 4; before review live18
-  any delivered completion excused any code on every driver), a
-  signal death (exit code null), the normal kill path for a harness that
-  ignored the interrupt, and a wrapper answering the shutdown signal
-  with exit code 143 — the coded spelling (128+SIGTERM) of the same
-  signal death, which a scode-wrapped harness produces — which exempts
-  itself exactly like the null (review live11); in every such shape —
-  both signal spellings and the nonzero drain failure — the open turn is
-  answered by synthesis, not left dangling (review live12).
-- **`shutdown` input:** same path, `reason: shutdown`.
-- **SIGTERM/SIGINT:** same path, then exit 143 (the process runner's
-  convention).
-- **Harness crash:** `error` (fatal) + `session_ended` with `reason: crash`
-  and the child's exit code; codemux exits 1. The crash is the one story
-  told: the verdict above does not add a second, false "during the
-  shutdown drain" fatal for the same exit, and a turn the crash left open
-  is answered by synthesis — `finish: failed`, the crash as the reason —
-  instead of dangling (review live11). Since review live17 that reason
-  is the fatal that ended the session, which is not always the harness
-  dying (an outbound overflow, a registry failure). Whatever the harness
-  managed to persist remains resumable, reported best-effort in
-  `resumable`.
+- **stdin close (EOF):** ask the harness to end through its protocol.
+  Claude, Zai, and Codex get an active-turn interrupt and then stdin
+  close; agy gets stdin close; per-turn processes get time to finish.
+  After the protocol grace expires, signal a child that remains alive
+  with SIGTERM, then tree SIGKILL after another grace. Drain output and
+  emit `session_ended` last. Only child exit 0, or no child running, can
+  yield success. Every nonzero code or signal exit reports
+  `harness_failed`, including code 1 after an interrupted Claude turn
+  and wrapper codes 137 or 143. A signal exit means orderly shutdown did
+  not happen. A caller stdin read error also fails the session.
+- **`shutdown` input:** same path, with `shutdown_requested: true`.
+- **SIGTERM/SIGINT:** same protocol-first path, with
+  `shutdown_requested: true`; the codemux process exits nonzero.
+- **Harness crash:** report a fatal error and `harness_failed`, preserving
+  the raw child outcome in `harness_exit`. A prior fatal is not duplicated.
+  Any still-open turn completes as `failed`. Other codemux failures use
+  `crash` unless a failing child outcome supersedes that reason.
 - **Pending requests on every end path:** `interrupt`, `--turn-timeout`
   expiry, stdin close, `shutdown`, signal, and `--timeout` all answer every
   pending `permission_request` deny first (`permission_resolved:
