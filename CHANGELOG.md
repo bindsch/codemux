@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.13.3] - 2026-10-13
+
+### Fixed
+
+- Report canonicalization errors for owned Antigravity Keychain mirrors and templates during recovery and cleanup. Preserve inaccessible unrelated search-list entries.
+- Support symlinked Gemini configuration directories in ordinary and sandboxed Antigravity runs, including before any probe root exists. Continue rejecting symlinked or foreign-owned probe roots.
+
 ## [0.13.2] - 2026-10-13
 
 ### Fixed

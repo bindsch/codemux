@@ -2241,3 +2241,76 @@ checks also exited 0. `git add -A` exited 0; all 14 changed files are staged.
 
 No code-review, commit, push, or live Agy request ran. Installed contracts use
 help and version commands only. No literal home path was added.
+
+## 0.13.3
+
+This release starts from `6ae1da4` on `release-0.13.3` in worktree
+`codemux-0133`. Both findings from the final 0.13.2 review are fixed.
+
+| Finding | Root correction and regression |
+|---|---|
+| Owned mirror errors were silently accepted | `src/agy-keychain.ts:28` retains the resolved prefix when canonicalization fails. The ownership check at `:84` propagates errors for exact private mirrors, including aliases, while preserving inaccessible unrelated entries. Template canonicalization also propagates errors. `tests/release-0133.test.ts:27` replaces a private home's `Library` directory with a regular file and requires recovery, verification, and repeated cleanup to fail with the path and ENOTDIR. It also checks an aliased mirror and an EACCES template failure. |
+| Symlinked Gemini configuration blocked every run | `src/agy-keychain.ts:65` canonicalizes the configuration parent before validating the probe root itself. Direct probe-root symlinks and foreign-owned roots remain refused. `tests/release-0133.test.ts:64` exercises symlinked configuration in both login and injected homes, absent roots, ordinary unsandboxed runs, plain and hermetic private runs, cleanup, and stale-home recovery from both roots. |
+
+For example, a search-list entry naming a private mirror whose `Library`
+has become a file previously survived recovery without an error. Cleanup
+now reports ENOTDIR and names that path. Cleanup still removes owned
+credentials when possible and retains the error for subsequent calls.
+
+Version metadata and the dated changelog identify 0.13.3, with one entry
+per fix. The session report's version header follows the package version,
+as required by its existing documentation regression.
+
+### Verification
+
+- `bun run test tests/release-0133.test.ts`: exit 1 before the fixes,
+  **0 pass / 2 fail**. Both new regressions reproduced their findings.
+- The first broader run lacked installed dependencies: **68 pass / 4 fail**,
+  one module-loading error, 72 tests. `make install` then exited 0 and
+  installed nine dependencies.
+- `bun run test tests/release-0133.test.ts tests/release-0132.test.ts tests/release-0131.test.ts tests/agy-keychain.test.ts tests/agy-isolation.test.ts`:
+  exit 0, **100 pass / 0 fail**, 499 assertions across five files.
+  Log: `scratch/0133-focused.log`.
+
+- `env -u NODE_OPTIONS COPILOT_PKG_CACHE_HOME="$PWD/scratch/copilot-cache-0133" make release-gate`:
+  exit 0. Log: `scratch/0133-release-gate.log`.
+
+```text
+2322 pass
+6 skip
+0 fail
+17979 expect() calls
+Ran 2328 tests across 86 files. [242.99s]
+3 pass
+0 fail
+148 expect() calls
+Ran 3 tests across 1 file. [14.62s]
+Release gate passed. Review docs/RELEASE-GATE.md before tagging.
+```
+
+Compared with the supplied 0.13.2 baseline of **2324/2/0**, the suite adds
+two regression tests, growing from 2326 to 2328. Four existing process-table
+tests skip because this host denies the required operations. The other two
+skips run in the separate installed-contract stage, which passed 3/0.
+No tests were removed or filtered. Runtime compatibility, type checking,
+shell syntax, coverage, installed contracts, scode compatibility, CLI smoke
+checks, dependency audit, and frozen-lockfile validation passed. There is no
+separate lint target. Conservative coverage is **87.87% lines / 93.08% functions**.
+
+`uv run --no-project ~/.agents/skills/humanizer/scripts/check_american.py`
+on all six changed files exited 0: `American English: CLEAN`, zero British
+spellings. Final prose, staged whitespace, and added-line home-path checks
+also exited 0. `git add -A` exited 0; all six changed files are staged.
+
+| Requested item | Status |
+|---|---|
+| Both findings fixed at their root causes | Done |
+| One regression test per finding | Done; both reproduced before fixes and pass afterward |
+| Version 0.13.3, dated changelog with two entries, and release report | Done |
+| Full release gate | Done; exit 0, 2322/6/0 |
+| Four existing process-table tests | Host-blocked; skipped |
+| American English, whitespace, and added-line home-path checks | Done; exit 0 |
+| Stage all changes with `git add -A` | Done; no commit |
+
+No code-review, commit, push, or live Agy request ran. Installed contracts
+used help and version commands only. No literal home path was added.

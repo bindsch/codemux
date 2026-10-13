@@ -25,17 +25,26 @@ export function agyKeychainStateDir(): string {
   return dirname(callLogPath({ HOME: agyKeychainHost.home() })!);
 }
 
+class CanonicalPathError extends Error {
+  constructor(path: string, readonly unresolvedPath: string, cause: unknown) {
+    super(`cannot canonicalize ${path}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+  }
+}
+
 // Dangling search-list entries still need recovery. Resolve the existing
 // ancestor so symlink escapes and canonical aliases obey the same boundary.
 function canonicalPath(path: string): string {
   let canonical = parse(path).root;
-  for (const part of path.slice(canonical.length).split(sep)) {
+  const parts = path.slice(canonical.length).split(sep);
+  for (const [index, part] of parts.entries()) {
     if (!part || part === ".") continue;
     if (part === "..") { canonical = dirname(canonical); continue; }
     const candidate = join(canonical, part);
     try { canonical = realpathSync(candidate); }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new CanonicalPathError(path, join(candidate, ...parts.slice(index + 1)), error);
+      }
       canonical = candidate;
     }
   }
@@ -52,7 +61,8 @@ export function agyProbeRoots(environment: NodeJS.ProcessEnv): string[] {
     if (!homeStat.isDirectory() || homeStat.uid !== process.getuid?.()) {
       throw new Error("agy probe HOME must be a user-owned directory");
     }
-    const root = join(canonicalHome, ".gemini", ".codemux-isolation-probes");
+    // Dotfile managers may link .gemini; the probe root itself must not be a link.
+    const root = join(canonicalPath(join(canonicalHome, ".gemini")), ".codemux-isolation-probes");
     const stat = lstatSync(root, { throwIfNoEntry: false });
     if (stat && !stat.isDirectory()) throw new Error("agy probe home root must be a directory, not a symlink");
     if ((stat && stat.uid !== process.getuid?.()) || canonicalPath(root) !== root) {
@@ -67,7 +77,18 @@ function isPrivateKeychain(path: string, roots: readonly string[], template: str
   if (!isAbsolute(path)) return false;
   let canonical: string;
   try { canonical = canonicalPath(path); }
-  catch { return false; } // An inaccessible unrelated entry must be preserved.
+  catch (error) {
+    // Keep the resolved prefix so aliases of owned mirrors cannot hide errors.
+    if (hasPrivateKeychainLayout(path, roots, template) ||
+        (error instanceof CanonicalPathError && hasPrivateKeychainLayout(error.unresolvedPath, roots, template))) {
+      throw error;
+    }
+    return false; // An inaccessible unrelated entry must be preserved.
+  }
+  return hasPrivateKeychainLayout(canonical, roots, template);
+}
+
+function hasPrivateKeychainLayout(canonical: string, roots: readonly string[], template: string): boolean {
   if (canonical === template) return true;
   return roots.some((root) => {
     if (!canonical.startsWith(root + sep)) return false;
