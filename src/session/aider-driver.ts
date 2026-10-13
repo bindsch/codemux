@@ -800,10 +800,9 @@ export class AiderSessionDriver {
     if (drain !== null) {
       // The turn process's stdin is already at EOF (the negatives write
       // half-closed it), so there is no end carrier to send: the wait is
-      // for the turn's own completion (the FSM leaving turn_active
-      // through completeTurn), a raised verdict, or the child's exit —
+      // for a fatal verdict or the child's raw exit —
       // then the stop signal, then the settle.
-      await drain.awaitEndAnswer(() => false);
+      await drain.awaitEndAnswer(() => this.firstFatal !== null || this.endExitCode !== 0);
       drain.requestStop();
       await drain.settled;
       this.lastChildOutcome = await drain.exited;
@@ -893,9 +892,8 @@ export class AiderSessionDriver {
     // state — aider writes the `#### ` user block when the turn starts
     // and the reply only at its end, so a killed turn leaves an
     // unanswered prompt that `--restore-chat-history` would replay —
-    // even though the kill itself is the normal end path (exit 143 is
-    // not a drain failure, so endExitCode can be 0 here; review D10,
-    // correctness-2 1).
+    // even when termination is requested during normal shutdown. A
+    // nonzero or signal exit still fails the session.
     const resumable =
       this.capabilities.resume &&
       ownsRecord &&

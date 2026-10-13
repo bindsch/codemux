@@ -119,6 +119,7 @@ export class ExperimentBridge implements StdoutSink {
       this.buffer = this.buffer.slice(newline + 1);
       if (Buffer.byteLength(line) + 1 > MAX_EXPERIMENT_MESSAGE_BYTES) throw new Error("experiment control frame exceeds 1 MiB");
       if (line.trim()) this.frame(JSON.parse(line));
+      if (this.failure) return;
     }
     if (Buffer.byteLength(this.buffer) >= MAX_EXPERIMENT_MESSAGE_BYTES) throw new Error("experiment control frame exceeds 1 MiB");
   }
@@ -152,6 +153,9 @@ export class ExperimentBridge implements StdoutSink {
         throw new Error(`Claude's exposed tools must equal the experiment server's advertised set (server: ${advertised.join(", ") || "none"}; claude: ${JSON.stringify(frame.tools)})`);
       }
       this.inventoryValidated = true;
+    } else if (frame.type === "system" && frame.subtype === "status") {
+      // Claude status notifications carry no inventory or result evidence.
+      return;
     } else if (frame.type === "assistant" || frame.type === "user") {
       if (!this.inventoryValidated) throw new Error("Claude conversation frame before validated Claude inventory");
       const content = frame.message?.content;
@@ -174,7 +178,10 @@ export class ExperimentBridge implements StdoutSink {
           const actual = block.content;
           const equal = isDeepStrictEqual(expected, actual) ||
             (Array.isArray(expected) && expected.length === 1 && expected[0].type === "text" && expected[0].text === actual);
-          const isErrorEqual = Boolean(call.result.isError) === Boolean(block.is_error);
+          if (block.is_error !== undefined && typeof block.is_error !== "boolean") {
+            throw new Error("Claude tool_result is_error must be a boolean");
+          }
+          const isErrorEqual = (call.result.isError ?? false) === (block.is_error ?? false);
           this.record("result_comparison", { tool_use_id: block.tool_use_id, equal: equal && isErrorEqual });
           if (!equal || !isErrorEqual) throw new Error("Claude changed the experiment tool result before model delivery");
           call.received = true;
@@ -187,14 +194,18 @@ export class ExperimentBridge implements StdoutSink {
       }
       this.result = JSON.stringify(frame);
       this.end?.();
+    } else {
+      throw new Error("unknown or invalid experiment control frame type");
     }
   }
 
   private async control(frame: JsonObject): Promise<void> {
     const id = frame.request_id;
-    if (typeof id !== "string" || this.activeControls.has(id)) throw new Error("invalid or duplicate Claude control id");
-    this.activeControls.add(id);
+    let registered = false;
     try {
+      if (typeof id !== "string" || this.activeControls.has(id)) throw new Error("invalid or duplicate Claude control id");
+      this.activeControls.add(id);
+      registered = true;
       const request = frame.request;
       let response: JsonObject;
       if (request?.subtype === "mcp_message" && request.server_name === this.spec.name) {
@@ -264,6 +275,9 @@ export class ExperimentBridge implements StdoutSink {
         }
         if (callId) {
           if (!Array.isArray(reply.result?.content)) throw new Error("experiment tools/call must return an MCP content result");
+          if (reply.result.isError !== undefined && typeof reply.result.isError !== "boolean") {
+            throw new Error("MCP tools/call isError must be a boolean");
+          }
           this.calls.get(callId)!.result = reply.result;
           this.record("server_tool_result", { tool_use_id: callId, rpc_id: message.id, result: reply.result });
         }
@@ -277,7 +291,11 @@ export class ExperimentBridge implements StdoutSink {
         throw new Error(`unsupported Claude control request: ${String(request?.subtype)}`);
       }
       this.send({ type: "control_response", response: { subtype: "success", request_id: id, response } });
-    } finally { this.activeControls.delete(id); }
+    } catch (error) {
+      // Latch validation errors before the async function yields, so the
+      // rest of this stdout chunk cannot forward another request.
+      this.fail(error instanceof Error ? error : new Error(String(error)));
+    } finally { if (registered) this.activeControls.delete(id); }
   }
 
   private fail(error: Error): void {
@@ -314,6 +332,13 @@ export class ExperimentBridge implements StdoutSink {
   scanSurface(): string { return this.trace; }
   terminateProtocol(): void { this.server.terminate(); }
 
+  /** Unexpected exit cannot drain readers. Record that loss and close now. */
+  closeSync(): void {
+    if (this.closed) return;
+    try { this.terminateProtocol(); }
+    finally { this.closeRecording(this.failure?.message ?? "process exited before asynchronous experiment cleanup completed"); }
+  }
+
   async closeProtocol(): Promise<void> {
     await this.close();
     // The run's single decision point: after every failure source (protocol,
@@ -338,21 +363,28 @@ export class ExperimentBridge implements StdoutSink {
 
   private async finalize(): Promise<void> {
     try {
-      try {
-        try { await this.server.close(); }
-        catch (error) {
-          this.fail(error instanceof Error ? error : new Error(String(error)));
-          throw error;
-        }
-        if (this.buffer.length) {
-          this.record("control_stdout_partial", { bytes_base64: Buffer.from(this.buffer).toString("base64") });
-          this.buffer = "";
-          this.fail(new Error("incomplete Claude control frame"));
-        }
-      } finally { this.record("run_end", { result_received: Boolean(this.result), tool_calls: this.calls.size,
-      model_results: [...this.calls.values()].filter((call) => call.received).length, error: this.failure?.message ?? null });
-        fsyncSync(this.fd);
+      try { await this.server.close(); }
+      catch (error) {
+        // An operational cleanup error is evidence to retain, not a new
+        // protocol abort that can replace the completed child's result.
+        this.closeFailure = error instanceof Error ? error : new Error(String(error));
+        this.record("failure", { message: this.closeFailure.message });
+        throw error;
       }
+      if (this.buffer.length) {
+        this.record("control_stdout_partial", { bytes_base64: Buffer.from(this.buffer).toString("base64") });
+        this.buffer = "";
+        this.fail(new Error("incomplete Claude control frame"));
+      }
+    } finally { this.closeRecording(this.failure?.message ?? this.closeFailure?.message ?? null); }
+  }
+
+  private closeRecording(error: string | null): void {
+    if (this.closed) return;
+    try {
+      this.record("run_end", { result_received: Boolean(this.result), tool_calls: this.calls.size,
+        model_results: [...this.calls.values()].filter((call) => call.received).length, error });
+      fsyncSync(this.fd);
     } finally {
       this.closed = true;
       closeSync(this.fd);

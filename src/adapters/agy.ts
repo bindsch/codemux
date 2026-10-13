@@ -36,12 +36,18 @@ function sweepStaleHomes(realHome: string): void {
   const rootStat = lstatSync(root, { throwIfNoEntry: false });
   if (!rootStat) return;
   if (!rootStat.isDirectory()) throw new Error("agy probe home root must be a directory, not a symlink");
+  if (rootStat.uid !== process.getuid?.() || realpathSync(root) !== root) {
+    throw new Error("agy probe sweep root must be canonical and user-owned");
+  }
   for (const name of readdirSync(root)) {
     if (!name.startsWith("run-")) continue;
     try {
       const home = join(root, name);
       const identity = lstatSync(home, { throwIfNoEntry: false });
-      if (!identity?.isDirectory()) continue;
+      if (!identity?.isDirectory() || identity.uid !== rootStat.uid) continue;
+      const marker = join(home, PROBE_MARKER);
+      if (!lstatSync(marker, { throwIfNoEntry: false })?.isFile() ||
+          !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(readFileSync(marker, "utf8"))) continue;
       const pidPath = join(home, PROBE_PID);
       if (!lstatSync(pidPath, { throwIfNoEntry: false })?.isFile()) continue;
       const owner = readFileSync(pidPath, "utf8");
@@ -154,8 +160,16 @@ export class AgyAdapter extends BaseAdapter {
     const probe = isolationProbes.get(request);
     const mode = probe?.mode ?? (request.tools === "none" ? "tools" : request.hermetic ? "hermetic" : undefined);
     const operatorHome = probe?.operatorHome ?? this.environment.HOME ?? homedir();
+    const realHome = agyKeychainHost.home();
+    for (const home of new Set([realHome, operatorHome])) {
+      if (!isAbsolute(home)) throw new Error("agy probe HOME must be absolute");
+      const stat = lstatSync(realpathSync(home));
+      if (!stat.isDirectory() || stat.uid !== process.getuid?.()) {
+        throw new Error("agy probe HOME must be a user-owned directory");
+      }
+    }
     recoverAgyKeychainSearchList(this.environment, request.cwd);
-    for (const home of new Set([agyKeychainHost.home(), operatorHome])) sweepStaleHomes(home);
+    sweepStaleHomes(realpathSync(realHome));
     if (!request.sandboxed) return {};
     const context: RunContext = { agyProbe: { mode: mode ?? "plain", diagnostic: Boolean(probe),
       operatorHome: probe?.operatorHome } };
@@ -187,14 +201,14 @@ export class AgyAdapter extends BaseAdapter {
         homeDev: homeStat.dev, homeIno: homeStat.ino, marker, parentFd, homeFd });
       context.agyProbe!.home = home;
       const token = join(agyKeychainHost.home(), PROBE_TOKEN);
-      const fileToken = lstatSync(token, { throwIfNoEntry: false });
-      if (fileToken && !fileToken.isFile()) throw new Error("agy probe token must be a regular file");
       const injectedEnv = { ...this.getEnv(), ...this.getRunEnv(request, context) };
       const environment = this.buildExecutionEnv(injectedEnv, request.passthroughEnv);
       const policy = withKeepEnvExemption(sandboxOptions, injectedEnv, this.providerOverrideActive());
       const scrubbing = policy.scrubEnv === true || policy.trust === "untrusted";
       const hasApiKey = ["GEMINI_API_KEY", "GOOGLE_API_KEY"].some((name) =>
         environment[name] && (!scrubbing || policy.keepEnv?.includes(name)));
+      const fileToken = hasApiKey ? undefined : lstatSync(token, { throwIfNoEntry: false });
+      if (fileToken && !fileToken.isFile()) throw new Error("agy probe token must be a regular file");
       if (!hasApiKey && !fileToken) {
         buildAgyKeychainMirror(home, this.environment, request.cwd);
       }
@@ -253,7 +267,7 @@ export class AgyAdapter extends BaseAdapter {
     }
   }
 
-  override cleanupRun(context?: RunContext): void {
+  override cleanupRunSync(context?: RunContext): void {
     const probe = context?.agyProbe;
     if (!probe?.home) return;
     const owned = ownedProbeHomes.get(context!);
@@ -266,7 +280,10 @@ export class AgyAdapter extends BaseAdapter {
     }
     let homePath = owned.home;
     let searchError: unknown;
-    try { verifyAgyKeychainSearchList(this.environment); }
+    try {
+      recoverAgyKeychainSearchList(this.environment);
+      verifyAgyKeychainSearchList(this.environment);
+    }
     catch (error) { searchError = error; }
     try {
       const parent = fstatSync(owned.parentFd);

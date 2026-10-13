@@ -152,7 +152,7 @@ test.each(["cached", "incomplete"])("launch repairs only owned %s keychain paths
     cleanup.push(() => adapter.cleanupRun(next));
     expect(warning).toHaveBeenCalledWith(expect.stringContaining("left an unrelated keychain"));
   } finally { warning.mockRestore(); }
-  expect(JSON.parse(readFileSync(`${calls}.list`, "utf8"))).toEqual([originalList[0], unrelated, escaped, originalList[1]]);
+  expect(JSON.parse(readFileSync(`${calls}.list`, "utf8"))).toEqual([originalList[0], privateTemplate, unrelated, escaped, originalList[1]]);
   expect(records().slice(before).every((r) => r.input[0] === "list-keychains")).toBe(true);
 });
 
@@ -451,11 +451,12 @@ test.each(["restore-list", "restore-noop"])("restoration failure %s refuses laun
   expect(readdirSync(join(home, ".gemini/.codemux-isolation-probes"))).toEqual([]);
 });
 
-test("cleanup reports a mirror reintroduced into the search list and still removes the home", () => {
+test("synchronous exit cleanup restores the search list and removes the home", () => {
   const { adapter, request, calls } = setup();
   const context = adapter.prepareRun(request);
   writeFileSync(`${calls}.list`, JSON.stringify([join(context.agyProbe!.home!, AGY_MIRROR_PATH)]));
-  expect(() => adapter.cleanupRun(context)).toThrow("mirror remains in the user's Keychain search list");
+  adapter.cleanupRunSync(context);
+  expect(JSON.parse(readFileSync(`${calls}.list`, "utf8"))).toEqual([]);
   expect(existsSync(context.agyProbe!.home!)).toBe(false);
 });
 

@@ -68,6 +68,11 @@ export async function launchRunRequest(
     if (context === undefined || cleanupStarted) return;
     cleanupStarted = true;
     try { await adapter.cleanupRun(context); }
+    catch (error) {
+      if (!processed) throw error;
+      const separator = processed.stderr && !processed.stderr.endsWith("\n") ? "\n" : "";
+      processed.stderr += `${separator}Note: cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`;
+    }
     finally { releaseExitCleanup?.(); }
   };
   try {
@@ -140,7 +145,10 @@ export async function launchRunRequest(
         adapter,
         effective,
         runContext,
-        () => appendInterruptedLaunchReceipt(effective, options, runContext, startedAt)
+        async () => {
+          try { await cleanup(); }
+          finally { appendInterruptedLaunchReceipt(effective, options, runContext, startedAt); }
+        }
       );
       captured = true;
       processed = adapter.processRunResult(raw, effective, context);
@@ -228,7 +236,10 @@ export async function launchRunRequest(
       options.timeoutMs,
       adapter.getEnvOmissions(),
       context.stdoutSink,
-      () => appendInterruptedLaunchReceipt(request, options, runContext, startedAt)
+      async () => {
+        try { await cleanup(); }
+        finally { appendInterruptedLaunchReceipt(request, options, runContext, startedAt); }
+      }
     );
     captured = true;
     processed = adapter.processRunResult(raw, request, context);
@@ -265,7 +276,7 @@ async function runDirect(
   adapter: BaseAdapter,
   request: RunRequest,
   context: RunContext,
-  onSignaled: () => void
+  onSignaled: () => void | Promise<void>
 ): Promise<RunResult> {
   const cwd = validateWorkingDirectory(request.cwd) ?? process.cwd();
   const command = adapter.resolveExecutionCommand(

@@ -409,7 +409,10 @@ Two requests. Use `--help` for the full option list.
 
 With `--experiment-mcp`, Claude's canary also plants a skill, hook, and MCP
 configuration. Both probes retain the same experiment server and tool
-selection. The control intentionally omits safe mode. Canary fixtures are
+selection. Unknown or malformed frame types fail the bridge. A rejected control
+request stops the chunk before later requests can reach the server. Error flags
+must be booleans when present; omitted flags mean false.
+The control intentionally omits safe mode. Canary fixtures are
 planted under `.codemux-experiment-check-<random>/` in the system temp
 root and removed when the check ends — on success, failure, or
 interruption. Recordings go to the state directory like any run.
@@ -428,7 +431,9 @@ owned by the run and refuse `GEMINI.md`, `AGENTS.md`, or `.agents/`, naming
 the path. Every sandboxed agy run gets a private HOME. Authentication precedence
 is an API key in the adapter environment (`GEMINI_API_KEY` or `GOOGLE_API_KEY`),
 then a file token from the real login home, then the Keychain item. API-key and
-file-token runs do not build a mirror or look up a Keychain credential. Only a
+file-token runs do not build a mirror or look up a Keychain credential. An API
+key must survive sandbox environment filtering; when it does, codemux never
+inspects, reads, or copies the file token. Only a
 Keychain login needs a parent-built `Library/Keychains/login.keychain-db`
 containing the Antigravity item. With none of these credentials, launch refuses
 with "agy is not logged in; run `agy` to log in".
@@ -445,13 +450,20 @@ the template or its lock, so runs with different logs share both.
 Template creation runs once under an exclusive lock with stale detection;
 that step snapshots and restores the user's search list. Every launch first
 repairs leftover template or mirror entries under the same lock, including
-when a cached template exists or an API key supplies authentication. Per-run
+when a cached template exists or an API key supplies authentication. Recovery
+matches only the canonical template path and entries under the real user's
+`~/.gemini/.codemux-isolation-probes/` root. Unrelated lookalikes remain listed
+and produce a diagnostic. Per-run
 copies leave the list untouched. Failed insertion rebuilds and retries once.
 Each private home records its owner's PID before credentials are copied.
-Every launch sweeps stale `run-*` homes when `kill(pid, 0)` reports that the
-owner is gone. This removes mirrors left by SIGKILL or a crash on the next
+After validating HOME as absolute and user-owned, every launch sweeps marked,
+user-owned `run-*` homes only under the real user's probe root when
+`kill(pid, 0)` reports that the owner is gone. This removes mirrors left by SIGKILL or a crash on the next
 launch. Live owners and uncertain process states are retained.
-Cleanup verifies that no mirror entry remains. File-token copies read
+Synchronous exit cleanup restores the search list and removes the private home.
+Known exit paths await asynchronous cleanup first. A cleanup failure is appended
+to stderr without replacing a completed child's output, exit code, or success
+status. File-token copies read
 from `os.homedir()`, independently of the instruction/config home.
 Tools-none runs use plan mode, deny all seven documented action classes,
 and fail on native attempts, including tool-step refusals and
@@ -670,6 +682,8 @@ without `--keep-env`, with the run path's message verbatim.
 Codemux builds child environments from a small operational allowlist and the
 selected harness's credentials. Aider receives its documented common provider
 keys; other multi-provider harnesses primarily use their own credential stores.
+Claude credential preparation uses the HOME supplied by the adapter, matching
+the child environment even when it differs from the invoking process's HOME.
 If a task needs another variable, grant its exact name with
 `--pass-env NAME` (comma-separated). Runtime loader variables such as
 `BASH_ENV`, `NODE_OPTIONS`, `PYTHONPATH`, `LD_*`, and `DYLD_*` are always blocked.
@@ -796,7 +810,8 @@ mode's own exit-0 verdict for that turn. The fallback file is the one
 bounded exception: a plain run names `--output-last-message`, and the
 verdict consults it only for the turn the wire cannot carry — one that
 completed with no agent_message (the Plan-only shape) — so the file can
-never contradict a stream that carried the reply or failed its own way
+never contradict a stream that carried the reply or never completed its turn.
+The recorded Plan reply also survives a later nonzero child exit
 (readable, the recorded message is the answer with a note; an empty
 readable file is upstream's messageless-turn record — an empty answer
 with no note; missing, the run fails
@@ -1293,6 +1308,8 @@ signal exit fails the session with reason `harness_failed`. There are
 no exceptions for code 1, 137, or 143, and no signal attribution.
 Code 0 can succeed; an idle session with no child can also succeed.
 Other failures, including a caller stdin read error, still fail the session.
+A fatal error cancels Aider and OpenCode's shutdown wait immediately. Normal
+turn completion still waits for the child's raw exit.
 
 Every `session_ended` carries `harness_exit`, the last observed child's
 raw `{code, signal}` outcome, or null when no outcome was observed.

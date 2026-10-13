@@ -793,7 +793,7 @@ export async function runSandboxedWithStdin(
   // The launch's receipt hook for a signal interrupt (runCapturedCommand's
   // onSignaled): the sandboxed run stops the same way, and the receipt
   // must be written before the runner's exit 143 (review ul6).
-  onSignaled?: () => void
+  onSignaled?: () => void | Promise<void>
 ): Promise<RunResult> {
   const workdir = validateWorkingDirectory(cwd) ?? process.cwd();
   assertNoProjectScodePolicy(workdir);

@@ -1101,15 +1101,14 @@ function codexFoldVerdict(
       : "";
   // The ONE bounded fallback (round al29): a completed messageless turn —
   // the Plan-only shape, the one item the JSONL wire cannot carry — and
-  // only that, with the verdict otherwise clean, consults the
+  // only that, even when the child subsequently exits nonzero, consults the
   // --output-last-message file the launch named. The thunk reads nothing
   // itself (the launch read and removed the file before the verdict ran,
   // so it cannot outlive the run), and no other arm invokes it: a stream
-  // that carried the reply, failed, or never completed answers from the
+  // that carried the reply or never completed answers from the
   // stream alone, exactly as it did before the file existed.
   if (
     planFallback !== undefined &&
-    !verdict.failed &&
     stream.turnCompleted &&
     stream.finalMessage === null
   ) {
@@ -1420,8 +1419,13 @@ export class CodexPlainFold implements UsageFoldingSink {
       // Undecided (blank lines so far) or human mode: the bytes are kept
       // verbatim, the tail byte-for-byte (no newline the stream never
       // sent).
-      this.raw += terminated ? `${line}\n` : line;
-      this.rawBytes += byteLength(line) + (terminated ? 1 : 0);
+      const incoming = terminated ? `${line}\n` : line;
+      const room = Math.max(0, MAX_CAPTURE_BYTES - this.rawBytes - this.state.brokenBytes);
+      const bytes = byteLength(incoming);
+      const retained = bytes > room ? utf8BytePrefix(incoming, room) : incoming;
+      this.raw += retained;
+      this.rawBytes += byteLength(retained);
+      if (bytes > room) this.overflowed = true;
       this.boundCheck();
       return;
     }

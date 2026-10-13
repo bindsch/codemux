@@ -263,18 +263,21 @@ export abstract class BaseAdapter {
    * could there (codex reads and removes its `--output-last-message` file),
    * and cleanupRun disposes whatever remains (the per-run temp directory,
    * the private hermetic home) -- after a rejected launch, where
-   * processRunResult never ran, and at process exit for a run the lifecycle
-   * cannot finish (the process runner's exit 143 on a signal;
-   * run-exit-cleanup registers that call). Whatever the run may already
+   * processRunResult never ran, and before the runner's signal exit.
+   * Unexpected exits use the separate synchronous cleanupRunSync backstop.
+   * Whatever the run may already
    * have written on disk (codex's `--output-last-message` file holds model
    * output) must not outlive the run. May throw or reject when cleanup fails;
-   * callers await completion and retain both the launch and cleanup errors.
+   * callers await completion and append cleanup errors to a completed result.
    * Exit handlers can only perform synchronous termination and report errors.
    * Only receives the context the same launch created, never another run's.
    */
-  cleanupRun(_context?: RunContext): void | Promise<void> {
-    // Default: no-op
+  cleanupRun(context?: RunContext): void | Promise<void> {
+    this.cleanupRunSync(context);
   }
+
+  /** Exit backstop: implementations must use synchronous operations only. */
+  cleanupRunSync(_context?: RunContext): void {}
 
   /**
    * Called before a SANDBOXED launch only, after beforeLaunch. Use for

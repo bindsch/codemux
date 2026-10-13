@@ -2055,3 +2055,96 @@ src/process-runner.ts, tests/agy-canary.test.ts, tests/agy-isolation.test.ts,
 tests/agy-keychain.test.ts, tests/experiment-protocol.test.ts,
 tests/launch-environment.test.ts, tests/process-protocol.test.ts, and
 tests/process-termination.test.ts. Branch remains `release-0.13`.
+
+## 0.13.1
+
+This fix release starts from `a5af184` on branch `release-0.13.1` in
+worktree `codemux-0131`. It addresses every supplied finding after the
+Round 14 and al41 budgets. Repeated findings share their root fix and
+regression. Historical rounds above retain their original decisions;
+the rules in this section supersede their conflicting cleanup behavior.
+
+### Findings and regression evidence
+
+| Finding | Disposition and evidence |
+|---|---|
+| API-key launch reads an unused fallback | Fixed. `src/adapters/agy.ts:208` selects a surviving API key before even inspecting the token file. `tests/release-0131.test.ts:15` makes token inspection throw and checks both keys with an unreadable fallback and no private token copy. Existing scrubbed-key tests still require the fallback or Keychain. |
+| Cleanup replaces a child's result, reported twice | Fixed. `src/process-runner.ts:553` appends cleanup failures to every completed result. `src/launch.ts:68` applies the same rule to adapter cleanup before recording the receipt. `tests/release-0131.test.ts:107` preserves exits 0 and 2, stdout, and an authentication diagnostic. The server/fsync matrix in `tests/process-protocol.test.ts:253` covers timeout, capture limit, success, and nonzero exit through the launcher, including repeated cleanup and exactly one diagnostic. |
+| Sweep precedes HOME validation and lacks ownership evidence | Fixed. `src/adapters/agy.ts:162` validates absolute, user-owned directories first. The sweep at `:34` visits only the real user's canonical probe root and requires a user-owned directory, UUID ownership marker, and dead PID. `tests/release-0131.test.ts:40` rejects relative and foreign-owned HOME before deleting anything, then preserves an unmarked home and a supplied profile's probe directory. |
+| Recovery deletes unrelated Keychain entries | Fixed. `src/agy-keychain.ts:30` resolves path components before prefix comparison, including symlink parents and missing suffixes. Only the canonical template or real user's probe-root descendants qualify. `tests/release-0131.test.ts:78` preserves the reported volume-path lookalike, a symlink escape, a symlink followed by `..`, and an ordinary entry in order; owned entries are removed and lookalikes are reported. |
+| A rejected control forwards a later call in the same chunk | Fixed. `src/experiment-bridge.ts:295` latches validation failure synchronously; `:122` stops chunk parsing. The first new test in `tests/experiment-protocol.test.ts` puts a rejected control before a valid native tool call and proves that no later server request occurs. It covers invalid IDs as well as unsupported requests. |
+| Error flags use truthiness | Fixed. `src/experiment-bridge.ts:182` and `:279` require booleans for present Claude and MCP flags. Omitted optional flags mean false. The error-flag regression in `tests/experiment-protocol.test.ts` rejects strings, numbers, null, arrays, and objects on each boundary. |
+| Unknown or malformed frame types disappear | Fixed. `src/experiment-bridge.ts:198` rejects missing, non-string, and unknown types. The corresponding regression covers `{}`, null, a number, and an unknown string. Known `system/status` notifications remain accepted and retain the existing frame-size boundary tests. |
+| Exit cleanup starts promises it cannot await | Fixed. `src/run-exit-cleanup.ts` calls only synchronous termination and `cleanupRunSync`. All adapters with file cleanup implement that hook. Agy restores and verifies the search list through synchronous spawns before removing its home. Claude's `src/experiment-bridge.ts:336` records an incomplete-cleanup error, writes `run_end`, syncs, and closes the descriptor synchronously. `tests/release-0131.test.ts:173` proves that the exit listener never starts async cleanup and finalizes only once; the Agy Keychain regression restores a reintroduced mirror entry synchronously. The real SIGTERM drainage regression now awaits an asynchronous pre-exit callback before writing its receipt. |
+| Fatal errors no longer cancel Aider/OpenCode shutdown waits, reported twice | Fixed. Both drivers' `awaitEndAnswer` predicates observe fatal errors and raised exit codes. `tests/session-shutdown-fatal.test.ts:7` drives a fatal into each pending drain, checks immediate predicate cancellation, and preserves raw exit 143 as `harness_failed`. |
+| Turn completion should cancel the same shutdown wait | No longer applicable as an independent completion shortcut after al41. A completed turn must still wait for the child's raw exit; stopping on the turn event would introduce a signal exit before learning whether the child exits cleanly. Signal attribution remains removed. The fatal-error part is fixed above. |
+| Kimi rejects spawn with null | Fixed. `src/session/kimi-driver.ts` distinguishes success by the returned child, not the rejection value. `tests/session-kimi-e2e.test.ts:676` rejects with null and requires a fatal error, exit 1, one completed shutdown, and no child outcome. |
+| Custom HOME prepares another Claude mirror | Fixed. `src/adapters/claude.ts` resolves the mirror and profile redirects from its injected environment. `src/credentials.ts` accepts the selected HOME. `tests/release-0131.test.ts:155` refreshes a synthetic mirror under the same HOME returned by `buildExecutionEnv`. |
+| A nonzero Codex exit discards a completed Plan reply | Fixed. `src/plain-unwrap.ts:1111` consults the fallback for a completed messageless turn even after nonzero exit. `tests/release-0131.test.ts:120` retains the Plan text and stderr with exit 2 and failure status. |
+| Human output exceeds the cumulative capture limit | Fixed. `src/plain-unwrap.ts:1422` computes remaining space before each append and retains only a UTF-8-safe prefix. `tests/release-0131.test.ts:130` sends two 10 MiB lines whole and separately, requires overflow, and caps retained output at 16 MiB. The existing chunking property test now expects the bounded prefix for whitespace, complete lines, and an unfinished multibyte tail. |
+| A warning after turn.failed passes as a startup warning | Fixed. `src/result-envelope.ts:715` tracks whether any turn started. `:850` allows outside-turn warnings only before that first start. `tests/release-0131.test.ts:144` requires trailing drift after a failed turn and excludes the warning from retained startup warnings. |
+
+For example, a child that writes an authentication diagnostic and exits 2
+still returns that diagnostic, its stdout, and exit 2 when recording sync
+fails. The extra stderr line names the cleanup failure. A malformed
+protocol remains a protocol failure; an operational server-cleanup error
+does not create a new protocol abort.
+
+### Verification
+
+- `make install`: exit 0; the worktree initially had no installed dependencies.
+- First focused command: 141 pass / 6 fail across 147 tests. Six old token-copy
+  fixtures also supplied API keys; they now select file authentication explicitly.
+- Second focused command: 94 pass / 0 fail across 94 tests, including the new
+  Kimi and shutdown-wait regressions. `make typecheck`: exit 0.
+- First full gate: exit 2, 2304 pass / 6 skip / 3 fail; 2313 tests across 84
+  files. The corrections preserve known status notifications, update bounded
+  prefix expectations, and refresh the release-version header in the session
+  report. The boundary rerun passed 3/0 across 3 tests.
+- A strengthened canonical-path regression exposed a symlink-plus-parent path
+  being normalized before resolution. Component-wise resolution fixes it.
+  The second full gate had already loaded that code: exit 2, 2306 pass /
+  6 skip / 1 fail across the same 2313 tests.
+  The cleanup matrix was also expanded to ordinary success and nonzero exit.
+  `bun run test tests/process-protocol.test.ts tests/release-0131.test.ts`:
+  exit 0, 39 pass / 0 fail across 39 tests.
+- Final command:
+  `env -u NODE_OPTIONS COPILOT_PKG_CACHE_HOME="$PWD/scratch/copilot-cache-0131" make release-gate`
+  — **exit 0**, log `scratch/0131-release-gate-verified.log`.
+  The full, unfiltered suite reported **2311 pass / 6 skip / 0 fail**:
+  `Ran 2317 tests across 84 files. [243.42s]`.
+  Installed contracts reported **3 pass / 0 fail**:
+  `Ran 3 tests across 1 file. [14.49s]`.
+  Compared with the supplied **2286/2/0** baseline, this adds 29 tests,
+  25 passes, and four skips. Nine tests came from Round 14 and twenty
+  from this fix release. Compared with the preceding full run, four
+  added cleanup-matrix cases and the recovery fix add five passes;
+  the test count rises from 2313 to 2317 and the last failure is gone.
+- Four existing process-table checks skip because this host denies the
+  required operations: two descendant-cleanup tests, the remembered-descendant
+  test, and the live process-table test. The other two skips run in the
+  separate installed-contract stage. No workaround or test filter was used.
+- Runtime validation, type checking, shell syntax, coverage, installed
+  contracts, scode compatibility, smoke checks, dependency audit, and
+  frozen-lockfile validation passed. There is no separate lint target;
+  documentation assertions run in the full suite. Conservative coverage:
+  **87.81% lines / 93.11% functions**. Exact gate summary:
+  `Release gate passed. Review docs/RELEASE-GATE.md before tagging.`
+- `uv run --no-project ~/.claude/skills/humanizer/scripts/check_american.py`
+  on all 35 touched files: **exit 0**, zero British spellings,
+  `American English: CLEAN`. The added-line home-path check and
+  `git diff --check`: **exit 0**. Final prose and staged whitespace checks
+  are repeated after recording these results.
+
+| Requested work | Final status |
+|---|---|
+| Fourteen distinct root fixes and regression coverage | Done; full suite passes |
+| Findings superseded by al41 | Done; completion shortcut disposition above, no signal attribution restored |
+| Version 0.13.1, dated changelog, README, HERMETIC, release report | Done |
+| Full release gate, American English, whitespace, and home-path checks | Done; exit 0 |
+| Existing process-table-dependent checks | Environment-blocked; four skips, unchanged tests |
+| Stage all changes with `git add -A` | Done; no commit |
+
+No code-review, commit, push, or live Agy request ran. Installed contracts use
+help and version commands only. No literal home path was added. Branch remains
+`release-0.13.1` at `a5af184`.

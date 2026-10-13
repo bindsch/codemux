@@ -710,16 +710,10 @@ export class CodexEventReducer {
   // `turn.failed`; the stream is complete only when every turn closed and at
   // least one did so by completing. A terminal event with no open turn is
   // drift (a prefix-truncated or concatenated stream), not a count to clamp.
-  // Public because the plain fold's oversized-line drop asks whether a turn
-  // is still open (plain-unwrap.ts, round al8): a wire line dropped unread
-  // there could have been the turn's final `agent_message`, so while a turn
-  // is open the drop is drift, never a silently superseded reply.
+  // The stream verdict requires every opened turn to have closed.
   openTurns = 0;
-  /** Whether any `turn.completed` landed (round al35 made it public): the
-   * plain fold's oversized-line drop scopes its startup-warning carve-out
-   * to the same head position the reducer's accepts — before the FIRST
-   * turn.started — and past a completion the reducer refuses outside-turn
-   * items again, so the drop drifts there like its small spelling. */
+  private sawTurnStart = false;
+  /** Whether any turn completed; failed turns never set this flag. */
   sawTurnCompletion = false;
   /** Events consumed so far: the thread.started rules are position-sensitive.
    * (Round al30 made this private again: the plain fold no longer reads it
@@ -796,6 +790,7 @@ export class CodexEventReducer {
           return;
         }
         this.openTurns++;
+        this.sawTurnStart = true;
         // A new turn supersedes the previous one's message: only the last
         // turn's may be the result, so an earlier turn's reply must not
         // survive into a turn that ends without one and pose as its result.
@@ -852,7 +847,7 @@ export class CodexEventReducer {
               ? (item as Record<string, unknown>).message
               : undefined;
           if (
-            this.sawTurnCompletion ||
+            this.sawTurnStart ||
             typeof message !== "string" ||
             parseRerouteNotice(message) !== null
           ) {

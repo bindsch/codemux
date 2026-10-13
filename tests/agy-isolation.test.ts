@@ -24,14 +24,14 @@ test("an array init is malformed even with a valid result", () => {
 
 let homeMock: ReturnType<typeof spyOn> | undefined;
 afterEach(() => { homeMock?.mockRestore(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
-function setup() {
+function setup(apiKey = true) {
   const home = mkdtempSync(join(tmpdir(), "codemux-agy-probe-test-"));
   dirs.push(home);
   homeMock = spyOn(agyKeychainHost, "home").mockReturnValue(home);
   const cwd = join(home, "workspace");
   mkdirSync(join(cwd, ".git"), { recursive: true });
   const request: RunRequest = { agent: "agy", prompt: "probe", cwd, autonomy: "read-only", sandboxed: true };
-  return { home, request, adapter: new AgyAdapter({ HOME: home, GEMINI_API_KEY: "synthetic-api-key" }) };
+  return { home, request, adapter: new AgyAdapter({ HOME: home, ...(apiKey ? { GEMINI_API_KEY: "synthetic-api-key" } : {}) }) };
 }
 
 test.each(["exit", "SIGTERM"])("canary adapter cleanup precedes scratch removal on %s", (event) => {
@@ -39,7 +39,7 @@ test.each(["exit", "SIGTERM"])("canary adapter cleanup precedes scratch removal 
   const before = new Set(process.listeners("exit"));
   trackScratchRemoval(home);
   const context = adapter.prepareRun(request);
-  const clean = spyOn(adapter, "cleanupRun");
+  const clean = spyOn(adapter, "cleanupRunSync");
   const report = spyOn(console, "error").mockImplementation(() => {});
   const release = registerRunExitCleanup(adapter, context);
   const exitCallbacks = () => {
@@ -111,6 +111,7 @@ test("a concurrent stale-home removal does not refuse the next launch", () => {
   const stale = join(home, ".gemini/.codemux-isolation-probes/run-stale");
   mkdirSync(stale, { recursive: true });
   const pid = join(stale, ".codemux-probe-pid");
+  writeFileSync(join(stale, ".codemux-probe-owner"), crypto.randomUUID());
   writeFileSync(pid, "2147483647");
   const read = fs.readFileSync;
   const concurrent = spyOn(fs, "readFileSync").mockImplementation(((path, ...args) => {
@@ -134,7 +135,7 @@ test("agy session environment lookup still accepts an absent run context", () =>
 });
 
 test("private HOME carries only login material and codemux deny settings", () => {
-  const { adapter, request, home } = setup();
+  const { adapter, request, home } = setup(false);
   const realState = join(home, ".gemini/antigravity-cli");
   mkdirSync(realState, { recursive: true });
   writeFileSync(join(realState, "antigravity-oauth-token"), "fake-login");
@@ -199,7 +200,7 @@ test("project executable configuration remains refused, including on a probe", (
 });
 
 test("symlinked token files are refused without leaving a private home", () => {
-  const { adapter, request, home } = setup();
+  const { adapter, request, home } = setup(false);
   const state = join(home, ".gemini/antigravity-cli");
   mkdirSync(state, { recursive: true });
   writeFileSync(join(home, "target"), "fake-login");
@@ -254,7 +255,7 @@ test("cleanup requires the run's ownership marker and original directory", () =>
 });
 
 test.each(["home", "parent"])("cleanup finds a renamed probe %s by inode when the original path is absent", (renamed) => {
-  const { adapter, request, home } = setup();
+  const { adapter, request, home } = setup(false);
   const state = join(home, ".gemini/antigravity-cli");
   mkdirSync(state, { recursive: true });
   writeFileSync(join(state, "antigravity-oauth-token"), "synthetic-token");
@@ -274,7 +275,7 @@ test.each(["home", "parent"])("cleanup finds a renamed probe %s by inode when th
 });
 
 test("a credential copy lasts for the probe and any cleanup refusal names it", () => {
-  const { adapter, request, home } = setup();
+  const { adapter, request, home } = setup(false);
   const state = join(home, ".gemini/antigravity-cli");
   mkdirSync(state, { recursive: true });
   const token = join(state, "antigravity-oauth-token");
@@ -314,7 +315,7 @@ printf '%s\\n' '{"event":"result","result":{"status":"OK","response":"OK"}}'`,
 });
 
 test("file token copies isolate in-place and replacement rotations from the real login", () => {
-  const { adapter, request, home } = setup();
+  const { adapter, request, home } = setup(false);
   const state = join(home, ".gemini/antigravity-cli");
   mkdirSync(state, { recursive: true });
   const token = join(state, "antigravity-oauth-token");

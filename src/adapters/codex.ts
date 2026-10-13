@@ -596,7 +596,7 @@ export class CodexAdapter extends BaseAdapter {
     return context;
   }
 
-  override cleanupRun(context?: RunContext): void {
+  override cleanupRunSync(context?: RunContext): void {
     // A launch that rejects (a captured stdout that is not UTF-8, say) can
     // reject after codex already wrote its --output-last-message file, and
     // processRunResult's read-and-remove never runs: without this path the

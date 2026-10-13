@@ -416,7 +416,7 @@ export class OpencodeAdapter extends BaseAdapter {
     return context;
   }
 
-  override cleanupRun(context?: RunContext): void {
+  override cleanupRunSync(context?: RunContext): void {
     // The launcher calls this exactly once per context it created, after a
     // finished run and after a rejected one alike; each artifact dies with
     // its own launch only.

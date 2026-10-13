@@ -2578,7 +2578,7 @@ describe("CodexPlainFold", () => {
           expect(w.over).toBe(true);
           expect(w.kept).toBe(MAX_CAPTURE_BYTES + 1);
           expect(w.usage).toBeNull();
-          expect(w.out).toEqual(captureLimitResult(" \n".repeat(MAX_CAPTURE_BYTES / 2) + "\n"));
+          expect(w.out).toEqual(captureLimitResult(" \n".repeat(MAX_CAPTURE_BYTES / 2)));
         },
       ],
       [
@@ -2589,7 +2589,7 @@ describe("CodexPlainFold", () => {
         (w) => {
           expect(w.over).toBe(true);
           expect(w.kept).toBe(MAX_CAPTURE_BYTES + 1);
-          expect(w.out).toEqual(captureLimitResult("human\n" + "x\n".repeat((MAX_CAPTURE_BYTES - 6) / 2) + "ab\n"));
+          expect(w.out).toEqual(captureLimitResult("human\n" + "x\n".repeat((MAX_CAPTURE_BYTES - 6) / 2)));
         },
       ],
       [
@@ -2600,7 +2600,7 @@ describe("CodexPlainFold", () => {
         (w) => {
           expect(w.over).toBe(true);
           expect(w.kept).toBe(MAX_CAPTURE_BYTES + 1);
-          expect(w.out).toEqual(captureLimitResult("human\n" + "x\n".repeat((MAX_CAPTURE_BYTES - 6) / 2) + "あ"));
+          expect(w.out).toEqual(captureLimitResult("human\n" + "x\n".repeat((MAX_CAPTURE_BYTES - 6) / 2)));
         },
       ],
       [

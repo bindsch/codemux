@@ -207,7 +207,7 @@ export class KimiAdapter extends BaseAdapter {
     };
   }
 
-  override cleanupRun(context?: RunContext): void {
+  override cleanupRunSync(context?: RunContext): void {
     context?.kimiNoToolsFile?.finalize();
   }
 

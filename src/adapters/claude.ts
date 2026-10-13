@@ -136,7 +136,7 @@ export class ClaudeAdapter extends BaseAdapter {
   // end-to-end CLI tests cannot inject these; they disable the sync outright
   // via CODEMUX_NO_KEYCHAIN_SYNC.)
   protected credentialReader: SecretReader = readKeychainSecret;
-  protected credentialTarget: () => string = claudeCredentialTarget;
+  protected credentialTarget: () => string = () => claudeCredentialTarget(this.environment.HOME);
   protected credentialBackupDir: () => string = defaultCredentialBackupDir;
 
   // Env vars that repoint Claude's credential mirror off the default path.
@@ -162,7 +162,7 @@ export class ClaudeAdapter extends BaseAdapter {
     if (context.sandboxTrust === "untrusted") return;
     const passthrough = context.passthroughEnv ?? [];
     const redirects = ClaudeAdapter.PROFILE_REDIRECTS.filter(
-      (name) => passthrough.includes(name) && name in process.env
+      (name) => passthrough.includes(name) && name in this.environment
     );
     for (const redirect of redirects) {
       // That profile owns its own credential story: codemux does not know
@@ -172,7 +172,7 @@ export class ClaudeAdapter extends BaseAdapter {
       // Only an absolute directory names a file worth reporting on
       // (`CLAUDE_CONFIG_DIR` is validated absolute before launch; the
       // secure-storage variable is simply not reported on when relative).
-      const dir = process.env[redirect] as string;
+      const dir = this.environment[redirect] as string;
       const profileFile = isAbsolute(dir) ? join(dir, ".credentials.json") : null;
       console.error(
         `claude: ${redirect} points the child at a non-default credential ` +
@@ -341,6 +341,10 @@ export class ClaudeAdapter extends BaseAdapter {
 
   override cleanupRun(context?: RunContext): void | Promise<void> {
     return context?.experimentBridge?.close();
+  }
+
+  override cleanupRunSync(context?: RunContext): void {
+    context?.experimentBridge?.closeSync();
   }
 
   buildRunCommand(request: RunRequest, context?: RunContext): string[] {

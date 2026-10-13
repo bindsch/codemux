@@ -7,6 +7,25 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-10-13
+
+### Fixed
+
+- Skip all file-token inspection and copying when an Antigravity API key survives sandbox environment filtering.
+- Preserve completed child results, including exit codes and captured output, when protocol or adapter cleanup fails. Append the cleanup diagnostic to stderr.
+- Validate absolute, user-owned HOME directories before stale-home sweeping. Sweep only marked, user-owned entries under the real user's probe root.
+- Restrict Keychain recovery to the canonical template path and real user's probe root. Preserve and report unrelated lookalikes.
+- Stop parsing a Claude control chunk synchronously after a rejected request, before a later tool call can reach the experiment server.
+- Require boolean experiment error flags when present on both server and model results.
+- Reject unknown, missing, and non-string experiment frame types.
+- Use synchronous exit cleanup for private homes, Keychain restoration, and experiment recording finalization. Await asynchronous cleanup before known exits.
+- Cancel Aider and OpenCode shutdown waits on fatal errors while retaining al41's raw child exit contract.
+- Treat a Kimi spawn rejection with a null value as a fatal spawn failure.
+- Prepare Claude's credential mirror under the same HOME supplied to the child.
+- Retain a completed Codex Plan reply when the child subsequently exits nonzero.
+- Bound cumulative human-mode Codex output before appending each line.
+- Reject Codex warning items after a failed turn as trailing stream drift.
+
 ## [0.13.0] - 2026-10-13
 
 ### Changed

@@ -129,7 +129,7 @@ export class AiderAdapter extends BaseAdapter {
     return { aiderHistoryFile: createAiderHistoryFile(this.effectiveHome()) };
   }
 
-  override cleanupRun(context?: RunContext): void {
+  override cleanupRunSync(context?: RunContext): void {
     context?.aiderHistoryFile?.finalize();
   }
 

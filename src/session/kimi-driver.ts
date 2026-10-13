@@ -653,7 +653,7 @@ export class KimiSessionDriver {
       else this.completeHold();
       return;
     }
-    if (error !== null) this.deliver({ kind: "spawn_failed", error });
+    if (child === null) this.deliver({ kind: "spawn_failed", error });
     else this.deliver({ kind: "spawn_settled", child: child! });
   }
 

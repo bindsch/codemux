@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, closeSync, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, normalize } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, sep } from "node:path";
 import { resolveTrustedExecutable } from "./executable-security.js";
 import { callLogPath } from "./call-log.js";
 
@@ -25,9 +25,29 @@ export function agyKeychainStateDir(): string {
   return dirname(callLogPath({ HOME: agyKeychainHost.home() })!);
 }
 
+// Dangling search-list entries still need recovery. Resolve the existing
+// ancestor so symlink escapes and canonical aliases obey the same boundary.
+function canonicalPath(path: string): string {
+  let canonical = parse(path).root;
+  for (const part of path.slice(canonical.length).split(sep)) {
+    if (!part || part === ".") continue;
+    if (part === "..") { canonical = dirname(canonical); continue; }
+    const candidate = join(canonical, part);
+    try { canonical = realpathSync(candidate); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      canonical = candidate;
+    }
+  }
+  return canonical;
+}
+
 function isPrivateKeychain(path: string): boolean {
-  return path === join(agyKeychainStateDir(), AGY_TEMPLATE_NAME) ||
-    /\/\.codemux-isolation-probes\/run-[^/]+\//.test(normalize(path));
+  if (!isAbsolute(path)) return false;
+  const canonical = canonicalPath(path);
+  const root = canonicalPath(join(agyKeychainHost.home(), ".gemini", ".codemux-isolation-probes"));
+  return canonical === canonicalPath(join(agyKeychainStateDir(), AGY_TEMPLATE_NAME)) ||
+    canonical.startsWith(root + sep);
 }
 
 function client(environment: NodeJS.ProcessEnv, cwd?: string) {
@@ -70,8 +90,7 @@ function interactiveCommand(args: string[]): string {
 
 export function verifyAgyKeychainSearchList(environment: NodeJS.ProcessEnv): void {
   const invoke = client(environment);
-  if (invoke && searchList(invoke).some((path) =>
-    path.includes("/.codemux-isolation-probes/") && path.endsWith(AGY_MIRROR_PATH))) {
+  if (invoke && searchList(invoke).some(isPrivateKeychain)) {
     throw new Error("agy keychain cleanup failed: mirror remains in the user's Keychain search list");
   }
 }
@@ -87,8 +106,8 @@ function recoverSearchList(invoke: NonNullable<ReturnType<typeof client>>): void
   const current = searchList(invoke);
   const restored = current.filter((path) => !isPrivateKeychain(path));
   if (restored.length !== current.length) restoreSearchList(invoke, restored);
-  if (restored.some((path) => basename(path) === AGY_TEMPLATE_NAME)) {
-    console.error("codemux: left an unrelated keychain named agy-mirror-template.keychain-db in the user search list");
+  if (restored.some((path) => basename(path) === AGY_TEMPLATE_NAME || path.includes("/.codemux-isolation-probes/"))) {
+    console.error("codemux: left an unrelated keychain with a codemux-like path in the user search list");
   }
 }
 

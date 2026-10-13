@@ -315,11 +315,10 @@ export interface CapturedCommandOptions {
    * captured normally either way. */
   stdoutSink?: StdoutSink;
   /** Called when a signal to codemux stops the run, right before the
-   * runner exits 143 — the launch's one chance to finish what only it
-   * can: the call ledger's receipt, because the runner's exit means the
-   * launch path never resumes. Runs inside the never-resume window and
-   * must not throw (a throw here would only mask the exit). */
-  onSignaled?: () => void;
+   * runner exits 143. Await adapter cleanup and write the call receipt,
+   * since the launch path never resumes. Rejections are reported without
+   * replacing the signal exit. */
+  onSignaled?: () => void | Promise<void>;
 }
 
 // Captured commands in flight. While one runs, its own signal handlers own
@@ -430,6 +429,7 @@ export async function runCapturedCommand(
   let firstError: CapturedRunFailure | undefined;
   let firstCaptureError: unknown;
   let failureResult: RunResult | undefined;
+  let completedResult: RunResult | undefined;
   const capture = async (
     stream: ReadableStream<Uint8Array>,
     streamName: "stdout" | "stderr"
@@ -521,6 +521,7 @@ export async function runCapturedCommand(
       firstError = new CapturedRunFailure(`agent timed out after ${timeoutMs}ms`);
       failureResult = result;
     }
+    completedResult = result;
     return result;
   } catch (error) {
     firstError = error instanceof CapturedRunFailure ? error : new CapturedRunFailure(error);
@@ -549,10 +550,15 @@ export async function runCapturedCommand(
     catch (error) {
       const note = `cleanup failed: ${error instanceof Error ? error.message : String(error)}`;
       cleanupNote = note;
-      if (failureResult) failureResult.stderr += `Note: ${note}\n`;
+      const retained = failureResult ?? completedResult;
+      if (retained) retained.stderr += `${retained.stderr && !retained.stderr.endsWith("\n") ? "\n" : ""}Note: ${note}\n`;
       if (firstError) firstError.message += `; ${note}`;
-      else firstError = new CapturedRunFailure(error);
+      else if (!retained) firstError = new CapturedRunFailure(error);
     } finally {
+      if (signaled) {
+        try { await options.onSignaled?.(); }
+        catch (error) { console.error(`Note: cleanup failed: ${error instanceof Error ? error.message : String(error)}`); }
+      }
       // Signals must remain handled through asynchronous recording finalization.
       process.off("SIGINT", onSignal);
       process.off("SIGTERM", onSignal);
@@ -571,7 +577,6 @@ export async function runCapturedCommand(
       // run against a finished run. The launch's own receipt is written
       // first: the tokens were spent, and this exit means the launch's
       // recordCompletedLaunch never runs (review ul6).
-      options.onSignaled?.();
       if (cleanupNote) console.error(`Note: ${cleanupNote}`);
       console.error("codemux: interrupted; the agent's process tree was terminated");
       process.exit(SIGNAL_EXIT_CODE);

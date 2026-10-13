@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CapturedRunFailure, MAX_CAPTURE_BYTES, runCapturedCommand, type StdoutSink } from "../src/process-runner.js";
+import { MAX_CAPTURE_BYTES, runCapturedCommand, type StdoutSink } from "../src/process-runner.js";
 import { ClaudeAdapter } from "../src/adapters/claude.js";
 import { ExperimentBridge } from "../src/experiment-bridge.js";
 import { ExperimentServer } from "../src/experiment-server.js";
@@ -29,8 +29,9 @@ test("SIGTERM during protocol drainage finalizes the recording and interruption 
     await runCapturedCommand([process.execPath, "-e", "console.log('OK')"], {
       cwd, env: {}, stdoutSink: { push() {}, finish() { return "OK"; }, keptBytes() { return 0; },
         terminateProtocol() { bridge.terminateProtocol(); }, closeProtocol() { return bridge.closeProtocol(); } },
-      onSignaled() {
+      async onSignaled() {
         if (!readFileSync(bridge.recordingPath, "utf8").includes('"kind":"run_end"')) throw new Error("receipt before finalization");
+        await Bun.sleep(25);
         writeFileSync(cwd + "/receipt", "143");
       }
     });`;
@@ -47,7 +48,7 @@ test("SIGTERM during protocol drainage finalizes the recording and interruption 
   } finally { rmSync(cwd, { recursive: true, force: true }); }
 });
 
-test.each([false, true])("adapter cleanup precedes the failure ledger with actual exit; sandbox=%s", async (sandbox) => {
+test.each([false, true])("adapter cleanup retains the completed result in the ledger; sandbox=%s", async (sandbox) => {
   const cwd = mkdtempSync(join(tmpdir(), "codemux-adapter-cleanup-"));
   const ledger = join(cwd, "calls.jsonl");
   const previous = process.env[CALL_LOG_ENV];
@@ -66,13 +67,15 @@ test.each([false, true])("adapter cleanup precedes the failure ledger with actua
     }
   }
   try {
-    await expect(launchRunRequest(new CleanupFailureAdapter(fake.env),
+    const result = await launchRunRequest(new CleanupFailureAdapter(fake.env),
       { agent: "claude", prompt: "probe", cwd, autonomy: "high", sandboxed: sandbox },
-      { sandbox, requestedAutonomy: "high", cwd })).rejects.toThrow("private home cleanup refused");
+      { sandbox, requestedAutonomy: "high", cwd });
+    expect(result).toMatchObject({ exitCode: 0, success: true, stdout: "OK\n" });
+    expect(result.stderr).toContain("cleanup failed: private home cleanup refused");
     expect(cleanups).toBe(1);
     const records = readCallLog(ledger).entries;
     expect(records).toHaveLength(1);
-    expect(records[0]!.record!.exit_code).toBe(1);
+    expect(records[0]!.record!.exit_code).toBe(0);
   } finally {
     if (previous === undefined) delete process.env[CALL_LOG_ENV]; else process.env[CALL_LOG_ENV] = previous;
     fake.cleanup();
@@ -207,15 +210,20 @@ test.each(["start", "push", "abort"])("the first %s failure survives a protocol 
 
 // These cases test retained output and finalization, so output must already
 // exist when the timeout starts. Real child reaping has separate coverage.
-function bufferedChild() {
+function bufferedChild(completedCode?: number) {
   let output!: ReadableStreamDefaultController<Uint8Array>;
   let open = true;
   let exit!: (code: number) => void;
   const exited = new Promise<number>((resolve) => { exit = resolve; });
+  if (completedCode !== undefined) exit(completedCode);
   return spyOn(Bun, "spawn").mockReturnValue({
     pid: 2147483647, stdin: { write() {}, end() {} }, exited,
     stdout: new ReadableStream<Uint8Array>({
-      start(controller) { output = controller; controller.enqueue(new TextEncoder().encode("partial output")); },
+      start(controller) {
+        output = controller;
+        controller.enqueue(new TextEncoder().encode("partial output"));
+        if (completedCode !== undefined) { open = false; controller.close(); }
+      },
       cancel() { open = false; },
     }),
     stderr: new ReadableStream({ start(controller) { controller.close(); } }),
@@ -242,7 +250,7 @@ test.each(["timeout", "limit"])("%s retains its exit, partial output, and diagno
   } finally { spawn.mockRestore(); }
 }, 6000);
 
-test.each(["timeout", "limit"].flatMap((kind) => ["server", "fsync"].map((failure) => ({ kind, failure }))))(
+test.each(["timeout", "limit", "success", "failure"].flatMap((kind) => ["server", "fsync"].map((failure) => ({ kind, failure }))))(
   "launcher preserves its result when bridge finalization fails and cleanup repeats: %j", async ({ kind, failure }) => {
   const cwd = mkdtempSync(join(tmpdir(), "codemux-close-once-"));
   const bridge = new ExperimentBridge({ name: "experiment", command: process.execPath, args: [], env: [], recording: cwd }, cwd, "probe");
@@ -262,12 +270,13 @@ test.each(["timeout", "limit"].flatMap((kind) => ["server", "fsync"].map((failur
       return [process.execPath, "-e", 'process.stdout.write("partial output"); setInterval(() => {}, 1000);'];
     }
   }
-  const spawn = bufferedChild();
+  const spawn = bufferedChild(kind === "success" ? 0 : kind === "failure" ? 2 : undefined);
   try {
     const result = await launchRunRequest(new BridgeAdapter({}),
       { agent: "claude", prompt: "probe", cwd, autonomy: "high", sandboxed: false, timeoutMs: kind === "timeout" ? 150 : 5000 },
       { sandbox: false, requestedAutonomy: "high", cwd });
-    expect(result.exitCode).toBe(kind === "timeout" ? 124 : 125);
+    expect(result.exitCode).toBe(kind === "timeout" ? 124 : kind === "limit" ? 125 : kind === "success" ? 0 : 2);
+    expect(result.success).toBe(kind === "success");
     expect(result.stdout).toBe("partial output");
     expect(result.stderr.match(/cleanup failed: recording finalization failed/g)).toHaveLength(1);
     await expect(bridge.close()).resolves.toBeUndefined();
@@ -317,10 +326,12 @@ test("protocol cleanup failure still writes the completed launch's receipt", asy
     const operation = launchRunRequest(new CleanupFailureAdapter({}),
       { agent: "claude", prompt: "probe", cwd, autonomy: "high", sandboxed: false },
       { sandbox: false, requestedAutonomy: "high", cwd });
-    await expect(operation).rejects.toBeInstanceOf(CapturedRunFailure);
+    const result = await operation;
+    expect(result).toMatchObject({ exitCode: 0, success: true, stdout: "completed" });
+    expect(result.stderr).toContain("cleanup failed: run_end write failed");
     const records = readCallLog(process.env[CALL_LOG_ENV]!).entries;
     expect(records).toHaveLength(1);
-    expect(records[0]!.record).toMatchObject({ agent: "claude", exit_code: 1 });
+    expect(records[0]!.record).toMatchObject({ agent: "claude", exit_code: 0 });
   } finally {
     if (previous === undefined) delete process.env[CALL_LOG_ENV]; else process.env[CALL_LOG_ENV] = previous;
     rmSync(cwd, { recursive: true, force: true });

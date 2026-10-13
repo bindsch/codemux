@@ -77,6 +77,10 @@ names. It fetches all inventory pages, including an empty-string cursor,
 before exposing the combined list. Assistant and user frames and tool calls
 are refused until `system/init` validates that inventory.
 The result frame ends the protocol; every later frame fails the bridge.
+Unknown, missing, or non-string frame types also fail. A rejected control
+request stops parsing its stdout chunk before another request can be forwarded.
+MCP `isError` and Claude `is_error` must be booleans when present; omission
+means false. Strings, numbers, and null fail before result comparison.
 A timeout returns exit 124 even with an incomplete control frame, which is
 recorded as `control_stdout_partial`.
 Server-initiated requests or notifications are refused. JSON-RPC
@@ -117,7 +121,9 @@ The login store is the macOS Keychain through `go-keyring`. Every sandboxed
 run gets a private HOME. Authentication precedence is an API key in the adapter's
 environment (`GEMINI_API_KEY` or `GOOGLE_API_KEY`), then a file token from the
 real login home, then a Keychain item. API-key and file-token runs skip mirror
-creation and credential lookup. If neither is available, the parent reads
+creation and credential lookup. API-key precedence applies only to keys that
+survive sandbox environment filtering. A selected key skips all file-token
+inspection, reading, and copying. If neither is available, the parent reads
 only service `gemini`, account `antigravity`, and builds
 `Library/Keychains/login.keychain-db` with that one item before launch.
 Once per real user's fixed codemux state root, it creates an empty
@@ -127,15 +133,17 @@ mode 0600. `CODEMUX_CALL_LOG` and the adapter's relocated HOME cannot move the
 template or lock. Creation snapshots and restores the real search list inside
 the lock. Every launch also removes leftover template or private-mirror entries
 from the search list under that lock, even with a cached template or API-key
-authentication. Other entries keep their original order.
+authentication. Recovery compares canonical paths and removes only the template
+or entries under the real user's `~/.gemini/.codemux-isolation-probes/` root.
+Unrelated lookalikes are reported and left in their original order.
 Each Keychain-authenticated run copies the template, unlocks the copy, disables
 auto-lock, and inserts the item with trust for `/usr/bin/security` and the
 resolved agy executable. Creation and those commands use interactive stdin.
 No passphrase appears on argv. A fresh copy
 can report an incorrect passphrase while remaining usable; insertion must
 succeed. An insertion failure rebuilds the template and retries once.
-Per-run copies leave the search list untouched. Cleanup verifies that no mirror
-entry remains and fails loudly if one does.
+Per-run copies leave the search list untouched. Synchronous cleanup restores
+the search list and verifies that no owned entry remains.
 Every sandboxed agy run requires scode 0.6.0 or newer, including API-key and
 file-token runs without a mirror; the real `~/Library` stays blocked.
 The parent uses only trust-checked `/usr/bin/security`, with the real login HOME
@@ -160,13 +168,17 @@ that home at cleanup. The copy is never written back, and the real file
 store is never modified. The copy exists only for the run's lifetime.
 Cleanup holds open descriptors for the home and its parent, verifies their
 identities with `fstat`, and finds a renamed home by inode among the parent's
-entries. If cleanup cannot locate or safely remove it, the diagnostic exits
-nonzero and names the token copy or mirror that may remain. An uncatchable SIGKILL or
+entries. If cleanup cannot locate or safely remove it, stderr names the token
+copy or mirror that may remain. Cleanup failures never replace a completed
+child's result, including a successful result. Known exit paths await cleanup;
+the exit listener uses only synchronous operations. An uncatchable SIGKILL or
 host crash prevents cleanup from running and can leave the copy behind until
 the next launch. Each private home records the owner's PID before receiving
-credentials. Every agy launch sweeps `run-*` homes under the probe root when
-`kill(pid, 0)` reports the owner no longer exists. Live owners, permission errors,
-and homes without a valid PID are retained. Recovery removes the whole stale
+credentials. Every agy launch validates HOME as absolute and user-owned before
+sweeping the real user's probe root. Only user-owned `run-*` homes with a valid
+ownership marker and PID are eligible when `kill(pid, 0)` reports the owner no
+longer exists. Live owners, permission errors, and unmarked homes are retained.
+Recovery removes the whole stale
 home, including its mirror; it never follows a symlinked home.
 
 ### Antigravity rule

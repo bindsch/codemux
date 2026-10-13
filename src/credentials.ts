@@ -719,6 +719,6 @@ export const CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials";
  * same way Claude Code resolves it (`$HOME`-based), so codemux refreshes the
  * exact file the sandboxed child will read. There is no caller-supplied
  * target; the only path ever written is Claude's own existing mirror. */
-export function claudeCredentialTarget(): string {
-  return join(homedir(), ".claude", ".credentials.json");
+export function claudeCredentialTarget(home = homedir()): string {
+  return join(home, ".claude", ".credentials.json");
 }

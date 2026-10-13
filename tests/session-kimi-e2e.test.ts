@@ -673,6 +673,15 @@ describe("kimi session e2e - lifecycle", () => {
     expect(ended.reason).toBe("crash");
   });
 
+  test("a null spawn rejection fails the session without attaching a child", async () => {
+    const session = await startSession({ spawnTurn: () => Promise.reject(null) });
+    send(session.driver, { type: "user", text: "hello" });
+    expect(await session.code).toBe(1);
+    expect(session.events.some((event) => event.type === "error" && event.fatal &&
+      event.message.includes("could not spawn the kimi turn process"))).toBe(true);
+    expect(session.events.at(-1)).toMatchObject({ type: "session_ended", reason: "crash", harness_exit: null });
+  });
+
   test("an overflow raised mid-effect-list queues behind it: the spawn runs, the crash ends, the child is reaped (al11, al29)", async () => {
     // The reviewer's trigger, one level down: 1,023 rejected inputs under
     // a blocked sink park the outbound queue one short of its event bound,

@@ -767,8 +767,7 @@ export class OpenCodeSessionDriver {
       // path's drain below — the turn finishes and settles before done
       // resolves, or the drain's grace expiry stops it. A signal,
       // timeout, or crash end keeps the D5 rule: stop on arrival; the
-      // exit is codemux's own kill, not a turn verdict, and session_ended
-      // reports a failure for every nonzero or signal exit.
+      // session_ended reports a failure for every nonzero or signal exit.
       let late: SessionProcess | null = null;
       try {
         late = await spawn;
@@ -816,10 +815,9 @@ export class OpenCodeSessionDriver {
     if (drain !== null) {
       // The turn process's stdin is already at EOF (the prompt write
       // half-closed it), so there is no end carrier to send: the wait is
-      // for the turn's own completion (the FSM leaving turn_active
-      // through completeTurn), a raised verdict, or the child's exit —
+      // for a fatal verdict or the child's raw exit —
       // then the stop signal, then the settle.
-      await drain.awaitEndAnswer(() => false);
+      await drain.awaitEndAnswer(() => this.firstFatal !== null || this.endExitCode !== 0);
       drain.requestStop();
       await drain.settled;
       this.lastChildOutcome = await drain.exited;

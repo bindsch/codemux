@@ -48,6 +48,52 @@ function peer() {
   return { bridge, sent, end, request, push, ack, mcp, ready, result, call, invoke, delivered };
 }
 
+test("a rejected control stops later tool calls in the same chunk synchronously", async () => {
+  for (const invalid of [{ request_id: "bad", request: { subtype: "unsupported" } }, { request_id: null }]) {
+    const p = peer();
+    await p.ready();
+    p.call("first");
+    const before = p.request.mock.calls.length;
+    p.bridge.push([
+      { type: "control_request", ...invalid },
+      { type: "control_request", request_id: "later", request: { subtype: "mcp_message", server_name: "experiment",
+        message: { jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "bash", arguments: {},
+          _meta: { "claudecode/toolUseId": "first" } } } } },
+    ].map((frame) => JSON.stringify(frame) + "\n").join(""));
+    expect(p.request.mock.calls.length).toBe(before);
+    expect(() => p.bridge.finish()).toThrow();
+  }
+});
+
+test("tool error flags reject non-booleans on both protocol boundaries", async () => {
+  for (const side of ["server", "model"]) {
+    for (const invalid of ["false", "true", 0, 1, null, {}, []]) {
+      const p = peer();
+      await p.ready();
+      p.request.mockResolvedValue({ jsonrpc: "2.0", id: 10,
+        result: { content: [], isError: side === "server" ? invalid : true } });
+      p.call("first");
+      p.invoke("first", 10);
+      await Promise.resolve();
+      if (side === "model") {
+        expect(() => p.push({ type: "user", message: { role: "user", content: [
+          { type: "tool_result", tool_use_id: "first", content: [], is_error: invalid },
+        ] } })).toThrow("must be a boolean");
+      }
+      expect(() => p.bridge.finish()).toThrow("must be a boolean");
+    }
+  }
+});
+
+test("unknown, missing, and non-string frame types fail closed", async () => {
+  for (const frame of [{}, { type: null }, { type: 7 }, { type: "unknown" }]) {
+    const p = peer();
+    await p.ready();
+    expect(() => p.push(frame)).toThrow("frame type");
+    await expect(p.bridge.closeProtocol()).rejects.toThrow("frame type");
+  }
+});
+
 test("identical parallel calls retain native IDs when requests and replies reverse order", async () => {
   const p = peer();
   await p.ready();
