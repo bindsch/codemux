@@ -30,8 +30,18 @@ export function claudeGatewayEnv(apiKey: string, baseUrl: string): Record<string
  * as a gateway's `/api/anthropic`, is kept as given.
  */
 export function normalizeAnthropicBaseUrl(baseUrl: string): string {
-  const trimmed = baseUrl.replace(/\/+$/, "");
-  return trimmed.endsWith("/v1") ? trimmed.slice(0, -"/v1".length) : trimmed;
+  // Only the pathname is examined: a host literally named `v1`
+  // (`http://v1`) and a query or fragment are left alone, and an URL the
+  // parser refuses is passed through for the override validation to
+  // report (review 0.13.5).
+  let url: URL;
+  try { url = new URL(baseUrl); } catch { return baseUrl; }
+  const path = url.pathname.replace(/\/+$/, "");
+  url.pathname = path.endsWith("/v1") ? path.slice(0, -"/v1".length) : path;
+  const text = url.toString();
+  // `new URL("http://host/").toString()` keeps a root slash; the host root
+  // is returned bare, so the binary's own `/v1/messages` follows it.
+  return url.pathname === "/" && !url.search && !url.hash ? text.replace(/\/$/, "") : text;
 }
 
 /**

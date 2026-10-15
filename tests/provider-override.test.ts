@@ -252,6 +252,15 @@ describe("provider override: claude base URL normalization", () => {
       .toBe("http://localhost:8011");
   });
 
+  test("only the pathname is examined: a host named v1, a query, and a deeper /v1 path", () => {
+    expect(new ClaudeAdapter(overrideEnv("http://v1")).getEnv().ANTHROPIC_BASE_URL).toBe("http://v1");
+    expect(new ClaudeAdapter(overrideEnv("http://v1:8011/v1")).getEnv().ANTHROPIC_BASE_URL).toBe("http://v1:8011");
+    expect(new ClaudeAdapter(overrideEnv("http://localhost:8011/v1?team=a")).getEnv().ANTHROPIC_BASE_URL)
+      .toBe("http://localhost:8011/?team=a");
+    expect(new ClaudeAdapter(overrideEnv("http://localhost:8011/gw/v1/")).getEnv().ANTHROPIC_BASE_URL)
+      .toBe("http://localhost:8011/gw");
+  });
+
   test("a host root and a gateway path are kept as given", () => {
     expect(new ClaudeAdapter(overrideEnv("http://localhost:8011")).getEnv().ANTHROPIC_BASE_URL)
       .toBe("http://localhost:8011");

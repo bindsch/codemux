@@ -13,6 +13,15 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
+## [0.13.6] - 2026-10-15
+
+### Fixed
+
+- The claude override's base URL normalization examines only the pathname:
+  a host named `v1`, a query string, and a deeper `/gw/v1` path are handled
+  as given, and an unparseable URL passes through to the override's own
+  validation (0.13.5 review).
+
 ## [0.13.5] - 2026-10-15
 
 ### Fixed
