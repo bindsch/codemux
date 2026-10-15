@@ -234,6 +234,44 @@ describe("provider override: unsupported harnesses", () => {
   });
 });
 
+describe("provider override: claude base URL normalization", () => {
+  // Observed live against vLLM with Claude Code 2.1.280: the binary appends
+  // `/v1/messages` to ANTHROPIC_BASE_URL, so the OpenAI-style `.../v1` form
+  // every other override takes produced `/v1/v1/messages`, a 404 the binary
+  // reported as `model_not_found` before any operator-visible request.
+  const overrideEnv = (baseUrl: string) => ({
+    CODEMUX_CLAUDE_PROVIDER_BASE_URL: baseUrl,
+    CODEMUX_CLAUDE_PROVIDER_API_KEY: "k",
+    CODEMUX_CLAUDE_PROVIDER_MODEL: "clawvm-qwen3coder",
+  });
+
+  test("a trailing /v1 is stripped, with or without a trailing slash", () => {
+    expect(new ClaudeAdapter(overrideEnv("http://localhost:8011/v1")).getEnv().ANTHROPIC_BASE_URL)
+      .toBe("http://localhost:8011");
+    expect(new ClaudeAdapter(overrideEnv("http://localhost:8011/v1/")).getEnv().ANTHROPIC_BASE_URL)
+      .toBe("http://localhost:8011");
+  });
+
+  test("a host root and a gateway path are kept as given", () => {
+    expect(new ClaudeAdapter(overrideEnv("http://localhost:8011")).getEnv().ANTHROPIC_BASE_URL)
+      .toBe("http://localhost:8011");
+    expect(new ClaudeAdapter(overrideEnv("https://gw.example/api/anthropic/")).getEnv().ANTHROPIC_BASE_URL)
+      .toBe("https://gw.example/api/anthropic");
+  });
+
+  test("the run argv carries --model and the modelPicker --settings for the override model", () => {
+    const adapter = new ClaudeAdapter(overrideEnv("http://localhost:8011/v1"));
+    const argv = adapter.buildRunCommand({ agent: "claude", prompt: "p", model: "clawvm-qwen3coder" } as RunRequest);
+    const modelAt = argv.indexOf("--model");
+    expect(argv[modelAt + 1]).toBe("clawvm-qwen3coder");
+    const settingsAt = argv.indexOf("--settings");
+    expect(settingsAt).toBeGreaterThan(modelAt);
+    expect(JSON.parse(argv[settingsAt + 1]!)).toEqual({
+      modelPicker: { options: [{ model: "clawvm-qwen3coder", behavesAs: "claude-sonnet-5" }] },
+    });
+  });
+});
+
 describe("provider override: validation", () => {
   const cases: [string, Record<string, string>, string][] = [
     [

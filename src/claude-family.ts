@@ -17,7 +17,21 @@ import { isAbsolute } from "node:path";
  * operator's endpoint; the token wins over the on-disk login in both.
  */
 export function claudeGatewayEnv(apiKey: string, baseUrl: string): Record<string, string> {
-  return { ANTHROPIC_AUTH_TOKEN: apiKey, ANTHROPIC_BASE_URL: baseUrl };
+  return { ANTHROPIC_AUTH_TOKEN: apiKey, ANTHROPIC_BASE_URL: normalizeAnthropicBaseUrl(baseUrl) };
+}
+
+/**
+ * The claude binary appends `/v1/messages` to `ANTHROPIC_BASE_URL` itself,
+ * so a base URL in the OpenAI-style `.../v1` form every other override
+ * takes produces `/v1/v1/messages`, which the endpoint answers 404 and the
+ * binary reports as `model_not_found` before the operator sees a request
+ * (observed live against vLLM with 2.1.280). One trailing `/v1` (with or
+ * without a trailing slash) is therefore stripped; every other path, such
+ * as a gateway's `/api/anthropic`, is kept as given.
+ */
+export function normalizeAnthropicBaseUrl(baseUrl: string): string {
+  const trimmed = baseUrl.replace(/\/+$/, "");
+  return trimmed.endsWith("/v1") ? trimmed.slice(0, -"/v1".length) : trimmed;
 }
 
 /**

@@ -13,6 +13,23 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
+## [0.13.5] - 2026-10-15
+
+### Fixed
+
+- The claude provider override accepts a base URL ending in `/v1`: Claude
+  Code appends `/v1/messages` itself, so that form produced
+  `/v1/v1/messages`, a 404 the binary reported as `model_not_found` before
+  any operator-visible request. One trailing `/v1` is now stripped; host
+  roots and gateway paths are kept as given (`docs/provider-overrides.md`).
+- Documented the output-token cap a small-context endpoint needs under the
+  claude override (`CODEMUX_CLAUDE_PROVIDER_MAX_OUTPUT_TOKENS`), with the
+  vLLM error that signals it.
+- Documented that Claude Code 2.1.280's full-tools prompt is at least
+  31,745 input tokens, so a 32k endpoint needs `--hermetic --tools none`
+  or a larger window; the symptom is a timeout, because Claude Code retries
+  the endpoint's 500 until the run's deadline.
+
 ## [0.13.4] - 2026-10-13
 
 ### Documentation and verification
