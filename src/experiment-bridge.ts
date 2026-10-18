@@ -7,7 +7,18 @@ import type { StdoutSink } from "./process-runner.js";
 import type { ExperimentSpec } from "./experiment-mcp.js";
 import { ExperimentServer, MAX_EXPERIMENT_MESSAGE_BYTES, type JsonObject } from "./experiment-server.js";
 
-const EXPERIMENT_TOOLS = new Set(["bash", "bash_bg", "poll", "kill", "read", "write"]);
+// An experiment server names its own tools. Claude Code 2.1.300's SDK bridge
+// rejects an injected tools[] entry whose `name` fails /^[a-zA-Z0-9_-]{1,64}$/
+// (its "[bridge:meta-mcp] injected tools[] entry is malformed" check, read
+// from the binary); whether that entry carries the raw or the namespaced
+// name is not visible there, so the namespaced form mcp__<server>__<tool> is
+// held to 64 characters, which satisfies both readings (the MCP name parser
+// allows 128). The inventory checks below keep the exposed set equal to the
+// advertised one, so a name cannot reach a built-in tool. Tool definitions,
+// inputSchema included, pass through unchanged; a large inventory is bounded
+// only by the control frame limit (MAX_EXPERIMENT_MESSAGE_BYTES).
+const EXPERIMENT_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+const MAX_NAMESPACED_TOOL_NAME = 64;
 const MAX_RECORDING_BYTES = 256 * 1024 * 1024;
 // SDKMessage discriminants and the SDK control transport envelopes.
 // https://code.claude.com/docs/en/agent-sdk/typescript#sdkmessage
@@ -256,7 +267,10 @@ export class ExperimentBridge implements StdoutSink {
           for (;;) {
             if (!Array.isArray(page.result?.tools)) throw new Error("experiment server requires one complete nonempty tools/list");
             for (const tool of page.result.tools) {
-              if (!tool || !EXPERIMENT_TOOLS.has(tool.name) || names.has(tool.name)) throw new Error("experiment server exposes an unsupported or duplicate tool name");
+              if (!tool || typeof tool.name !== "string" || !EXPERIMENT_TOOL_NAME.test(tool.name) || names.has(tool.name) ||
+                `mcp__${this.spec.name}__${tool.name}`.length > MAX_NAMESPACED_TOOL_NAME) {
+                throw new Error("experiment server exposes an unsupported or duplicate tool name");
+              }
               names.add(tool.name);
               tools.push(tool);
             }

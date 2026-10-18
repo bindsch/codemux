@@ -69,8 +69,9 @@ including sampling and elicitation, are unsupported. JSON-RPC errors are fatal,
 including errors on `ping`.
 
 `tools/list` must produce a complete nonempty inventory, following pagination
-without repeated cursors. Tool names are unique members of `bash`, `bash_bg`,
-`poll`, `kill`, `read`, and `write`. Definitions must remain unchanged.
+without repeated cursors. Tool names are unique, match `[A-Za-z0-9_-]{1,64}`,
+and keep the namespaced name `mcp__<name>__<tool>` within 64 characters, the
+bound Claude Code 2.1.300's SDK bridge applies to tool names. Definitions, `inputSchema` included, pass through unchanged and must not change during the run; a large inventory (a hundred tools with schemas) is bounded only by the 1 MiB control frame.
 Claude's exposed inventory must equal the advertised namespaced set before
 conversation frames or tool calls are accepted.
 

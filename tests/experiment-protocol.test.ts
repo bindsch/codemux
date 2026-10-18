@@ -189,6 +189,46 @@ test.each(["assistant", "user"])("malformed %s message content fails closed and 
   }
 });
 
+test("a large inventory passes through with every inputSchema unchanged (Gaia2-sized, 98 tools)", async () => {
+  const p = peer();
+  const tools = Array.from({ length: 98 }, (_, i) => ({
+    name: `App${i % 7}__function_${i}`,
+    description: `function ${i}`,
+    inputSchema: { type: "object", properties: { arg: { type: "string", description: `arg ${i}` } }, required: ["arg"] },
+  }));
+  p.request.mockImplementation(async (message) => ({ jsonrpc: "2.0", id: message.id, result: { tools } }));
+  p.mcp("list", { id: 1, method: "tools/list" });
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(p.sent.at(-1)!.response.response.mcp_response.result).toEqual({ tools });
+  p.ack();
+  p.push({ type: "system", subtype: "init", tools: tools.map((tool) => `mcp__experiment__${tool.name}`) });
+  p.result();
+  expect(JSON.parse(p.bridge.finish()).result).toBe("OK");
+});
+
+test.each([
+  ["Calendar__add_calendar_event", true],                 // Gaia2/ARE app functions
+  ["browser_navigate", true],                             // Playwright MCP
+  ["x".repeat(47), true],                                 // "mcp__experiment__" (17) + 47 = 64 characters
+  ["x".repeat(48), false],                                // 65 characters namespaced
+  ["two words", false],
+  ["", false],
+])("experiment tool names are checked by format and namespaced length: %s", async (name, accepted) => {
+  const p = peer();
+  p.request.mockImplementation(async (message) => ({ jsonrpc: "2.0", id: message.id, result: { tools: [{ name }] } }));
+  p.mcp("list", { id: 1, method: "tools/list" });
+  await new Promise((resolve) => setImmediate(resolve));
+  if (!accepted) {
+    expect(() => p.bridge.finish()).toThrow("unsupported or duplicate tool name");
+    return;
+  }
+  expect(p.sent.at(-1)!.response.response.mcp_response.result).toEqual({ tools: [{ name }] });
+  p.ack();
+  p.push({ type: "system", subtype: "init", tools: [`mcp__experiment__${name}`] });
+  p.result();
+  expect(JSON.parse(p.bridge.finish()).result).toBe("OK");
+});
+
 test("text-only conversation frames with inconsistent roles fail and record the failure", async () => {
   for (const role of ["assistant", "user"]) {
     const p = peer();
@@ -208,7 +248,7 @@ test.each([false, true])("empty cursors fetch every inventory page, including fo
   const p = peer();
   p.request.mockImplementation(async (message) => ({ jsonrpc: "2.0", id: message.id,
     result: message.params?.cursor === undefined ? { tools: [{ name: "bash" }], nextCursor: "" } :
-      message.params.cursor === "" ? { tools: [], nextCursor: "last" } : { tools: [{ name: forbidden ? "forbidden" : "read" }] },
+      message.params.cursor === "" ? { tools: [], nextCursor: "last" } : { tools: [{ name: forbidden ? "not a tool name" : "read" }] },
   }));
   p.mcp("list", { id: 1, method: "tools/list" });
   await new Promise((resolve) => setImmediate(resolve));

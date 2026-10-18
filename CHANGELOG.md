@@ -13,6 +13,14 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
+### Changed
+
+- `--experiment-mcp` accepts any tool names the experiment server advertises,
+  not only `bash`, `bash_bg`, `poll`, `kill`, `read` and `write`. A name must
+  match `[A-Za-z0-9_-]{1,64}` and its namespaced form `mcp__<name>__<tool>`
+  must fit in 64 characters, the bound Claude Code's SDK bridge applies. This lets a hermetic run expose a
+  benchmark's own tools, such as Playwright MCP's `browser_navigate`.
+
 ## [0.13.6] - 2026-10-15
 
 ### Fixed
