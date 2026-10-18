@@ -13,6 +13,8 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-18
+
 ### Changed
 
 - `--experiment-mcp` accepts any tool names the experiment server advertises,
