@@ -2026,7 +2026,7 @@ describe("kimi session e2e - end paths", () => {
     expect(ended.reason).toBe("stdin-close");
     expect(ended.resumable).toBe(false);
     expect(await session.code).toBe(1);
-  }, 20_000); // the armed-fake wait above is bounded at 10 s; the default 5 s test timeout cut it short under load
+  }, 20_000); // the armed-fake wait above is bounded at 5 s (200 x 25 ms); with the default 5 s test timeout it was cut short under load
 
   test("the session timeout ends an idle session", async () => {
     const session = await startSession({ sessionTimeoutMs: 150 });
