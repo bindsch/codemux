@@ -64,9 +64,17 @@ The recording directory above resolves to `scratch/recordings/`.
 The server speaks newline-delimited JSON-RPC 2.0. Responses must match pending
 request IDs (strings or safe integers) and contain exactly one of result/error.
 The transport permits at most 64 pending requests. Request/response and Claude
-control frames are limited to 1 MiB. Server-initiated requests/notifications,
-including sampling and elicitation, are unsupported. JSON-RPC errors are fatal,
-including errors on `ping`.
+control frames are limited to 1 MiB. A server notification with method
+`notifications/tools/list_changed` and no `id` is recorded as
+`server_notification`. The bridge rechecks the full paginated `tools/list`
+against the validated inventory and records `tool_inventory_recheck` with
+`equal` and both definition sets (`previous` and `current`). Recheck requests
+have their own `mcp_request` records. Deep-equal definitions allow the run to
+continue; changed definitions fail the run. The notification never reaches
+Claude, and call responses still resolve by their pending request IDs.
+Every other server-initiated message, including `notifications/progress`,
+sampling, elicitation, and requests with an `id`, is refused. JSON-RPC errors
+are fatal, including errors on `ping`.
 
 `tools/list` must produce a complete nonempty inventory, following pagination
 without repeated cursors. Tool names are unique, match `[A-Za-z0-9_-]{1,64}`,

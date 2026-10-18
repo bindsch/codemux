@@ -13,6 +13,14 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
+### Fixed
+
+- `--experiment-mcp` tolerates `notifications/tools/list_changed` when a full
+  paginated inventory recheck confirms unchanged tool definitions. Notifications
+  and rechecks are recorded without forwarding them to Claude or disturbing
+  pending tool responses. Changed definitions and all other server-initiated
+  messages still fail the run.
+
 ## [0.14.0] - 2026-10-18
 
 ### Changed

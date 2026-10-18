@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { codemuxStateDir } from "./call-log.js";
-import type { StdoutSink } from "./process-runner.js";
+import { PIPE_GIVE_UP_MS, type StdoutSink } from "./process-runner.js";
 import type { ExperimentSpec } from "./experiment-mcp.js";
 import { ExperimentServer, MAX_EXPERIMENT_MESSAGE_BYTES, type JsonObject } from "./experiment-server.js";
 
@@ -67,6 +67,8 @@ export class ExperimentBridge implements StdoutSink {
   private activeControls = new Set<string>();
   private toolNames = new Set<string>();
   private toolDefinitions?: unknown[];
+  private inventoryChanges = 0;
+  private inventoryRecheck?: Promise<void>;
 
   constructor(readonly spec: ExperimentSpec, cwd: string, private prompt: string,
     environment: NodeJS.ProcessEnv = process.env) {
@@ -79,7 +81,10 @@ export class ExperimentBridge implements StdoutSink {
     this.fd = openSync(this.recordingPath, "wx", 0o600);
     try {
       this.server = new ExperimentServer(spec, cwd, environment,
-        (kind, fields) => this.record(kind, fields), (error) => this.fail(error));
+        (kind, fields) => this.record(kind, fields), (error) => this.fail(error), () => {
+          this.inventoryChanges++;
+          this.recheckInventory();
+        });
       this.record("run_start", { server: spec.name, cwd, env_names: spec.env,
         server_sandbox: "outside scode; experiment-owned", harness_sandbox: "scode read-only" });
       console.error(`codemux: experiment MCP recording: ${this.recordingPath}`);
@@ -102,7 +107,7 @@ export class ExperimentBridge implements StdoutSink {
 
   start(write: (line: string) => void, end: () => void, abort: () => void): void {
     this.write = write;
-    this.end = end;
+    this.end = () => { this.end = undefined; end(); };
     this.abort = abort;
     try {
       this.server.start();
@@ -211,7 +216,7 @@ export class ExperimentBridge implements StdoutSink {
         throw new Error("Claude returned a result before experiment inventory and control completion");
       }
       this.result = JSON.stringify(frame);
-      this.end?.();
+      if (!this.inventoryRecheck) this.end?.();
     }
     // Other documented notifications remain in control_stdout and the trace.
   }
@@ -260,36 +265,12 @@ export class ExperimentBridge implements StdoutSink {
         }
         if (message.method === "tools/list") {
           if (message.params?.cursor !== undefined) throw new Error("experiment tools/list must start at the first page");
-          const tools: JsonObject[] = [];
-          const names = new Set<string>();
-          const cursors = new Set<string>();
-          let page = reply;
-          for (;;) {
-            if (!Array.isArray(page.result?.tools)) throw new Error("experiment server requires one complete nonempty tools/list");
-            for (const tool of page.result.tools) {
-              if (!tool || typeof tool.name !== "string" || !EXPERIMENT_TOOL_NAME.test(tool.name) || names.has(tool.name) ||
-                `mcp__${this.spec.name}__${tool.name}`.length > MAX_NAMESPACED_TOOL_NAME) {
-                throw new Error("experiment server exposes an unsupported or duplicate tool name");
-              }
-              names.add(tool.name);
-              tools.push(tool);
-            }
-            const cursor = page.result.nextCursor;
-            if (cursor === undefined) break;
-            if (typeof cursor !== "string" || cursors.has(cursor)) throw new Error("invalid or repeated experiment tools/list cursor");
-            cursors.add(cursor);
-            const next = { jsonrpc: "2.0", id: crypto.randomUUID(), method: "tools/list", params: { cursor } };
-            this.record("mcp_request", { control_id: id, rpc_id: next.id, tool_use_id: null, message: next });
-            const nextPage = await this.server.request(next);
-            if (this.closed || this.failure) return;
-            if (!nextPage || nextPage.id !== next.id) throw new Error("experiment MCP response id mismatch");
-            if (nextPage.error !== undefined) throw new Error("experiment MCP tools/list returned a JSON-RPC error");
-            page = nextPage;
-          }
-          if (tools.length === 0) throw new Error("experiment server requires one complete nonempty tools/list");
+          const tools = await this.collectInventory(reply, id);
+          if (this.closed || this.failure) return;
           if (this.toolDefinitions && !isDeepStrictEqual(this.toolDefinitions, tools)) throw new Error("experiment tool definitions changed during the run");
-          for (const name of names) this.toolNames.add(`mcp__${this.spec.name}__${name}`);
+          for (const tool of tools) this.toolNames.add(`mcp__${this.spec.name}__${tool.name}`);
           this.toolDefinitions = tools;
+          this.recheckInventory();
           reply.result = { ...reply.result, tools };
           delete reply.result.nextCursor;
         }
@@ -316,6 +297,60 @@ export class ExperimentBridge implements StdoutSink {
       // rest of this stdout chunk cannot forward another request.
       this.fail(error instanceof Error ? error : new Error(String(error)));
     } finally { if (registered) this.activeControls.delete(id); }
+  }
+
+  private async inventoryPage(controlId: string | null, cursor?: string): Promise<JsonObject> {
+    const message = { jsonrpc: "2.0", id: randomUUID(), method: "tools/list",
+      ...(cursor === undefined ? {} : { params: { cursor } }) };
+    this.record("mcp_request", { control_id: controlId, rpc_id: message.id, tool_use_id: null, message });
+    const reply = await this.server.request(message);
+    if (this.failure) throw this.failure;
+    if (!reply || reply.id !== message.id) throw new Error("experiment MCP response id mismatch");
+    if (reply.error !== undefined) throw new Error("experiment MCP tools/list returned a JSON-RPC error");
+    return reply;
+  }
+
+  private async collectInventory(page: JsonObject, controlId: string | null): Promise<JsonObject[]> {
+    const tools: JsonObject[] = [];
+    const names = new Set<string>();
+    const cursors = new Set<string>();
+    for (;;) {
+      if (!Array.isArray(page.result?.tools)) throw new Error("experiment server requires one complete nonempty tools/list");
+      for (const tool of page.result.tools) {
+        if (!tool || typeof tool.name !== "string" || !EXPERIMENT_TOOL_NAME.test(tool.name) || names.has(tool.name) ||
+          `mcp__${this.spec.name}__${tool.name}`.length > MAX_NAMESPACED_TOOL_NAME) {
+          throw new Error("experiment server exposes an unsupported or duplicate tool name");
+        }
+        names.add(tool.name);
+        tools.push(tool);
+      }
+      const cursor = page.result.nextCursor;
+      if (cursor === undefined) break;
+      if (typeof cursor !== "string" || cursors.has(cursor)) throw new Error("invalid or repeated experiment tools/list cursor");
+      cursors.add(cursor);
+      page = await this.inventoryPage(controlId, cursor);
+    }
+    if (tools.length === 0) throw new Error("experiment server requires one complete nonempty tools/list");
+    return tools;
+  }
+
+  private recheckInventory(): void {
+    // Notifications during the first inventory wait for its validated baseline.
+    // Serialize rechecks so a burst cannot exhaust the transport's pending IDs.
+    if (!this.toolDefinitions || !this.inventoryChanges || this.inventoryRecheck || this.failure || this.closed) return;
+    this.inventoryRecheck = (async () => {
+      while (this.inventoryChanges && !this.failure) {
+        this.inventoryChanges--;
+        const tools = await this.collectInventory(await this.inventoryPage(null), null);
+        const equal = isDeepStrictEqual(this.toolDefinitions, tools);
+        this.record("tool_inventory_recheck", { equal, previous: this.toolDefinitions, current: tools });
+        if (!equal) throw new Error("experiment tool definitions changed during the run");
+      }
+    })().catch((error) => this.fail(error instanceof Error ? error : new Error(String(error)))).finally(() => {
+      this.inventoryRecheck = undefined;
+      this.recheckInventory();
+      if (this.result && !this.inventoryRecheck && !this.failure && !this.closed) this.end?.();
+    });
   }
 
   private fail(error: Error): void {
@@ -383,7 +418,24 @@ export class ExperimentBridge implements StdoutSink {
 
   private async finalize(): Promise<void> {
     try {
-      try { await this.server.close(); }
+      try {
+        // A peer can exit without waiting for stdin to close. Give rechecks a
+        // bounded chance to finish before terminating their server.
+        if (this.inventoryRecheck && !this.failure) {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            const settled = async () => { while (this.inventoryRecheck) await this.inventoryRecheck; };
+            await Promise.race([settled(), new Promise<void>((resolve) => {
+              timer = setTimeout(() => {
+                this.fail(new Error("experiment tool inventory recheck did not complete before shutdown"));
+                resolve();
+              }, PIPE_GIVE_UP_MS);
+            })]);
+          } finally { if (timer) clearTimeout(timer); }
+        }
+        await this.server.close();
+        await this.inventoryRecheck;
+      }
       catch (error) {
         // An operational cleanup error is evidence to retain, not a new
         // protocol abort that can replace the completed child's result.

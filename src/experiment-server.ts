@@ -27,7 +27,7 @@ export class ExperimentServer {
 
   constructor(private spec: ExperimentSpec, private cwd: string,
     private environment: NodeJS.ProcessEnv, private record: ExperimentRecord,
-    private fail: (error: Error) => void) {}
+    private fail: (error: Error) => void, private inventoryChanged: () => void = () => {}) {}
 
   start(): void {
     const env: Record<string, string> = {};
@@ -97,6 +97,12 @@ export class ExperimentServer {
           if (line.length === 0) continue;
           const message = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(line));
           if (!message || message.jsonrpc !== "2.0") throw new Error("invalid experiment MCP JSON-RPC response");
+          if (message.method === "notifications/tools/list_changed" && !("id" in message)) {
+            this.record("server_notification", { method: message.method });
+            // Do not await the recheck: its replies use this same reader.
+            this.inventoryChanged();
+            continue;
+          }
           // The experiment is a tool server, not an additional model client.
           if (message.method !== undefined) throw new Error("experiment MCP server-initiated requests and notifications are unsupported");
           const key = this.key(message.id);

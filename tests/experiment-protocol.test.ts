@@ -34,7 +34,7 @@ function peer() {
     request: { subtype: "mcp_message", server_name: "experiment", message: { jsonrpc: "2.0", ...message } } });
   const ready = async () => {
     mcp("list", { id: 1, method: "tools/list" });
-    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
     ack();
     push({ type: "system", subtype: "init", tools: ["mcp__experiment__bash"] });
   };
@@ -162,7 +162,7 @@ test("result cannot bypass tools/list or system/init", async () => {
 test("tools/list alone does not validate the harness inventory", async () => {
   const p = peer();
   p.mcp("list", { id: 1, method: "tools/list" });
-  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
   p.ack();
   expect(p.result).toThrow("inventory and control completion");
 });
@@ -340,7 +340,7 @@ test("Claude's exposed tools must equal the server's advertised set", async () =
   p.request.mockImplementation(async (message: JsonObject) =>
     ({ jsonrpc: "2.0", id: message.id, result: { tools: [{ name: "bash" }, { name: "read" }] } }));
   p.mcp("list", { id: 1, method: "tools/list" });
-  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
   p.ack();
   // The server advertised bash and read; exposing only bash is a failure
   // before the first turn, with both sets in the recording.
@@ -436,7 +436,7 @@ test.each([
   p.request.mockImplementation(async (message: JsonObject) =>
     ({ jsonrpc: "2.0", id: message.id, result: { tools: [{ name: "bash" }, { name: "read" }] } }));
   p.mcp("list", { id: 1, method: "tools/list" });
-  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
   p.ack();
   expect(() => p.push({ type: "system", subtype: "init", tools })).toThrow("advertised set");
   const records = readFileSync(p.bridge.recordingPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
@@ -448,7 +448,7 @@ test.each([
 test("tools/call before system/init validation never reaches the experiment server", async () => {
   const p = peer();
   p.mcp("list", { id: 1, method: "tools/list" });
-  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
   p.ack();
   p.invoke("early", 2);
   await Promise.resolve();
