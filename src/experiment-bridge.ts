@@ -42,6 +42,21 @@ export function experimentUserFrameBytes(prompt: string): number {
 /** Claude's SDK control transport. Raw stdio and the harness's emitted
  * model-bound tool_result blocks are different evidence and remain separate.
  */
+// Claude Code 2.1.300 delivers a server result whose content is one text
+// block as that block's text, a plain string, with trailing whitespace removed
+// (seen on an `isError` Playwright result: "...\n" arrived without the newline).
+// That canonical form is accepted in either error state; any other difference
+// (another block type, more than one block, a changed character, leading
+// whitespace) still fails the run.
+export function modelResultMatches(expected: unknown, actual: unknown): boolean {
+  if (isDeepStrictEqual(expected, actual)) return true;
+  if (!Array.isArray(expected) || expected.length !== 1) return false;
+  const block = expected[0];
+  if (!block || typeof block !== "object" || (block as JsonObject).type !== "text") return false;
+  const text = (block as JsonObject).text;
+  return typeof text === "string" && typeof actual === "string" && text.trimEnd() === actual.trimEnd();
+}
+
 export class ExperimentBridge implements StdoutSink {
   readonly runId = randomUUID();
   readonly recordingPath: string;
@@ -197,10 +212,7 @@ export class ExperimentBridge implements StdoutSink {
           const call = this.calls.get(block.tool_use_id);
           this.record("model_tool_result", { tool_use_id: block.tool_use_id, block });
           if (!call?.result || call.received) throw new Error("unmatched model-bound experiment tool result");
-          const expected = call.result.content;
-          const actual = block.content;
-          const equal = isDeepStrictEqual(expected, actual) ||
-            (Array.isArray(expected) && expected.length === 1 && expected[0].type === "text" && expected[0].text === actual);
+          const equal = modelResultMatches(call.result.content, block.content);
           if (block.is_error !== undefined && typeof block.is_error !== "boolean") {
             throw new Error("Claude tool_result is_error must be a boolean");
           }

@@ -45,7 +45,8 @@ function peer() {
     params: { name: "bash", arguments: {}, _meta: { "claudecode/toolUseId": nativeId } } });
   const delivered = (id: string, text: string, role = "user") => push({ type: role, message: { role,
     content: [{ type: "tool_result", tool_use_id: id, content: [{ type: "text", text }] }] } });
-  return { bridge, sent, end, request, push, ack, mcp, ready, result, call, invoke, delivered };
+  const records = () => readFileSync(bridge.recordingPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  return { bridge, sent, end, request, push, ack, mcp, ready, result, call, invoke, delivered, records };
 }
 
 test("a rejected control stops later tool calls in the same chunk synchronously", async () => {
@@ -472,4 +473,49 @@ test("a result ends stdin once before any subsequent buffered frame can execute"
   expect(p.request).toHaveBeenCalledTimes(1);
   expect(p.result).toThrow("after its result");
   expect(p.end).toHaveBeenCalledTimes(1);
+});
+
+test("a single text block delivered as its text without trailing whitespace matches in either error state", async () => {
+  // Recorded on Claude Code 2.1.300 with a Playwright MCP server: the server
+  // returned one text block ending in "\n" with isError: true; Claude Code
+  // delivered the text as a plain string without the newline and is_error: true.
+  const text = '### Error\nTimeoutError: page.goto: Timeout 60000ms exceeded.\nwaiting until "load"\n';
+  for (const isError of [true, false]) {
+    const p = peer();
+    await p.ready();
+    p.request.mockResolvedValue({ jsonrpc: "2.0", id: 10,
+      result: { content: [{ type: "text", text }], isError } });
+    p.call("first");
+    p.invoke("first", 10);
+    await Promise.resolve();
+    p.push({ type: "user", message: { role: "user", content: [
+      { type: "tool_result", tool_use_id: "first", content: text.trimEnd(), is_error: isError },
+    ] } });
+    p.result();
+    expect(JSON.parse(p.bridge.finish()).result).toBe("OK");
+    expect(p.records().find((r) => r.kind === "result_comparison")).toMatchObject({ tool_use_id: "first", equal: true });
+  }
+});
+
+test("a changed character, a dropped error flag, leading whitespace, or a second block still fails the comparison", async () => {
+  const text = '### Error\nwaiting until "load"\n';
+  const cases: Array<[unknown, boolean]> = [
+    ['### Error\nwaiting until "idle"', true], // one word changed
+    [text.trimEnd(), false],                   // is_error dropped
+    [" " + text.trimEnd(), true],              // leading whitespace
+    [[{ type: "text", text: text.trimEnd() }, { type: "text", text: "" }], true], // a second block
+  ];
+  for (const [content, isError] of cases) {
+    const p = peer();
+    await p.ready();
+    p.request.mockResolvedValue({ jsonrpc: "2.0", id: 10,
+      result: { content: [{ type: "text", text }], isError: true } });
+    p.call("first");
+    p.invoke("first", 10);
+    await Promise.resolve();
+    expect(() => p.push({ type: "user", message: { role: "user", content: [
+      { type: "tool_result", tool_use_id: "first", content, is_error: isError },
+    ] } })).toThrow("Claude changed the experiment tool result before model delivery");
+    expect(p.records().find((r) => r.kind === "result_comparison")).toMatchObject({ equal: false });
+  }
 });

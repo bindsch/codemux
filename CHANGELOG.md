@@ -20,6 +20,11 @@ immutable notes and engineering evidence.
   and rechecks are recorded without forwarding them to Claude or disturbing
   pending tool responses. Changed definitions and all other server-initiated
   messages still fail the run.
+- `--experiment-mcp` no longer fails a run when Claude Code delivers a
+  single-text-block server result as a plain string without its trailing
+  whitespace, which it does for `isError` results; a tool call that errors
+  (a click on a missing element, a failed navigation) is ordinary agent
+  behavior. Any other difference still fails the run.
 
 ## [0.14.0] - 2026-10-18
 
