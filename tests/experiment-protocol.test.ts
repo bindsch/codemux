@@ -503,6 +503,8 @@ test("a changed character, a dropped error flag, leading whitespace, or a second
     ['### Error\nwaiting until "idle"', true], // one word changed
     [text.trimEnd(), false],                   // is_error dropped
     [" " + text.trimEnd(), true],              // leading whitespace
+    [text + "\n", true],                       // added trailing whitespace
+    [text.trimEnd() + " ", true],              // replaced trailing whitespace
     [[{ type: "text", text: text.trimEnd() }, { type: "text", text: "" }], true], // a second block
   ];
   for (const [content, isError] of cases) {

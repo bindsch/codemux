@@ -54,7 +54,9 @@ export function modelResultMatches(expected: unknown, actual: unknown): boolean 
   const block = expected[0];
   if (!block || typeof block !== "object" || (block as JsonObject).type !== "text") return false;
   const text = (block as JsonObject).text;
-  return typeof text === "string" && typeof actual === "string" && text.trimEnd() === actual.trimEnd();
+  // Claude removes trailing whitespace; it never adds any, so only the
+  // removed form is accepted, never an actual with whitespace the server did not send.
+  return typeof text === "string" && typeof actual === "string" && (actual === text || actual === text.trimEnd());
 }
 
 export class ExperimentBridge implements StdoutSink {

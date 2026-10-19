@@ -86,9 +86,9 @@ conversation frames or tool calls are accepted.
 `tools/call` returns an MCP content array. If present, `isError` must be
 boolean. Codemux compares it with the emitted model-bound `tool_result`,
 including boolean `is_error`. A single text block may be represented as its
-text, a plain string, with trailing whitespace removed (Claude Code 2.1.300
-delivers error results this way); other content must be deeply equal. Any
-other difference, unmatched IDs,
+text, a plain string, with its trailing whitespace removed (Claude Code
+2.1.300 delivers error results this way); whitespace Claude adds is a
+change. Other content must be deeply equal. Any other difference, unmatched IDs,
 duplicate calls/results, or unknown Claude frame types fail the run.
 Documented Claude notifications are recorded without becoming tool calls.
 
