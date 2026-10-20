@@ -1,6 +1,7 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { ExperimentServer, MAX_EXPERIMENT_MESSAGE_BYTES, type JsonObject } from "../src/experiment-server.js";
+import { claudeContentBlocks } from "../src/experiment-bridge.js";
 import { claudeFamilyResult, parseClaudeResultEnvelope } from "../src/result-envelope.js";
 import { cleanupPeers, peer, restores } from "./helpers/experiment-peer.js";
 
@@ -452,4 +453,42 @@ test("a single text block delivered as its text without trailing whitespace matc
     expect(p.records().find((r) => r.kind === "result_comparison")).toMatchObject({ tool_use_id: "first", equal: true });
     expect(p.records().find((r) => r.kind === "result_comparison")).not.toHaveProperty("spilled");
   }
+});
+
+// A Playwright screenshot in the WebArena pilot: one text block and one PNG block. Claude Code
+// delivers the image as the API's base64 source with the same bytes; the comparison must see
+// the server's block through that mapping.
+test.each([
+  ["png", "image/png", "image/png", true], ["jpg read as jpeg", "image/jpg", "image/jpeg", true],
+  ["parameters dropped", "image/png; charset=binary", "image/png", true],
+  ["a type Claude does not inline", "image/tiff", "image/tiff", false],
+])("an image block is compared as Claude Code maps it: %s", async (_name, mimeType, mediaType, accepted) => {
+  const text = "### Ran Playwright code\n```js\nawait page.screenshot();\n```\n".repeat(5);
+  const data = Buffer.from("png bytes ".repeat(10000)).toString("base64");
+  const p = peer();
+  await p.ready();
+  p.request.mockResolvedValue({ jsonrpc: "2.0", id: 10, result: { content: [{ type: "text", text }, { type: "image", data, mimeType }] } });
+  p.call("first");
+  p.invoke("first", 10);
+  await Promise.resolve();
+  const delivered = [{ type: "text", text }, { type: "image", source: { type: "base64", media_type: mediaType, data } }];
+  const deliver = () => p.push({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "first", content: delivered }] } });
+  if (!accepted) {
+    expect(deliver).toThrow("Claude changed the experiment tool result before model delivery");
+    return;
+  }
+  deliver();
+  p.result();
+  expect(JSON.parse(p.bridge.finish()).result).toBe("OK");
+  const comparison = p.records().find((r) => r.kind === "result_comparison");
+  expect(comparison).toMatchObject({ equal: true });
+  expect(comparison).not.toHaveProperty("spilled");
+});
+
+test("Claude's block mapping keeps a truthy _meta, drops annotations, and leaves other blocks as they are", () => {
+  expect(claudeContentBlocks([{ type: "text", text: "a", annotations: { audience: ["user"] }, _meta: { k: 1 } }, { type: "text", text: "b", _meta: null }]))
+    .toEqual([{ type: "text", text: "a", _meta: { k: 1 } }, { type: "text", text: "b" }]);
+  const link = { type: "resource_link", uri: "file:///x", name: "x" };
+  expect(claudeContentBlocks([link])).toEqual([link]);
+  expect(claudeContentBlocks("plain")).toBe("plain");
 });

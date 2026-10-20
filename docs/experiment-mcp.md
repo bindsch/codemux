@@ -85,10 +85,17 @@ conversation frames or tool calls are accepted.
 
 `tools/call` returns an MCP content array. If present, `isError` must be
 boolean. Codemux compares it with the emitted model-bound `tool_result`,
-including boolean `is_error`. A single text block may be represented as its
-text, a plain string, with its trailing whitespace removed (Claude Code
-2.1.300 delivers error results this way); whitespace Claude adds is a
-change. Other content must be deeply equal. Any unaccepted difference, unmatched IDs,
+including boolean `is_error`. The server's blocks are compared as Claude
+Code 2.1.300 rebuilds them before delivery: a text block as `{type, text}`
+plus a truthy `_meta` (annotations dropped); an image block whose media
+type Claude inlines (PNG, JPEG, GIF, WebP) as the API's base64 image source
+with the same bytes, which holds for an image within Claude's size and
+dimension budgets (a larger one is resized, and its changed bytes fail the
+run); audio, resource, and resource link blocks become Claude's own text
+and fail the run. A single text block may be represented as its text, a
+plain string, with its trailing whitespace removed (Claude Code 2.1.300
+delivers error results this way); whitespace Claude adds is a change.
+Other content must be deeply equal. Any unaccepted difference, unmatched IDs,
 duplicate calls/results, or unknown Claude frame types fail the run.
 Documented Claude notifications are recorded without becoming tool calls.
 
@@ -117,8 +124,10 @@ count, both formatted with Claude's unpinned `toLocaleString()`: the
 message's counts must all be what one locale prints, which codemux reads
 from its own runtime's locale data once per process as a set of locale
 signatures (grouping mark, grouping style of groups of three or the Indian
-shape, the longest integer left ungrouped, and the numeral set), never
-with a leading zero; a count past 1e21 is matched as the full digits
+shape, the longest integer left ungrouped, and the numeral set; the
+apostrophe and the right single quotation mark, and the no-break space and
+its narrow form, stand for each other because Claude's bundled runtime may
+carry another CLDR release), never with a leading zero; a count past 1e21 is matched as the full digits
 `toLocaleString()` prints, and a read limit that overflows the span to
 Infinity as the infinity sign and `Infinity`, as Claude prints them), one of its two
 guidance templates (the default one, or the subagent one behind a remote

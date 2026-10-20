@@ -94,6 +94,17 @@ export function localeSignatures(): LocaleSignature[] {
     const key = `${mark}|${style}|${ungroupedMax}|${zero}`;
     if (!seen.has(key)) { seen.add(key); found.push({ mark, style, ungroupedMax, zero }); }
   }
+  // Claude's bundled runtime may carry another CLDR release than this one:
+  // Swiss German moved from the apostrophe to the right single quotation
+  // mark, and French from the no-break space to the narrow one, so each
+  // signature with one of those marks also stands with its counterpart.
+  const twins: Record<string, string> = { "'": "\u2019", "\u2019": "'", "\u00A0": "\u202F", "\u202F": "\u00A0" };
+  for (const locale of [...found]) {
+    const twin = twins[locale.mark];
+    if (twin === undefined) continue;
+    const key = `${twin}|${locale.style}|${locale.ungroupedMax}|${locale.zero}`;
+    if (!seen.has(key)) { seen.add(key); found.push({ ...locale, mark: twin }); }
+  }
   return (signatures = found);
 }
 /** The grouping marks the runtime's locales print, as a regular-expression class. */

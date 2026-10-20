@@ -69,7 +69,8 @@ async function spillPeer(options: PeerOptions = {}, content: JsonObject[] = [{ t
   return { ...p, path, project, deliver };
 }
 
-test.each(["exact", "subagent guidance", "capped", "capped at the label's upper edge", "locale separators", "ungrouped digits", "Swiss apostrophe", "Arabic-Indic digits", "Devanagari digits",
+test.each(["exact", "subagent guidance", "capped", "capped at the label's upper edge", "locale separators", "ungrouped digits", "Swiss apostrophe", "Swiss right quotation mark",
+  "French no-break space", "Arabic-Indic digits", "Devanagari digits",
   "long cwd", "config directory", "Arabic comma", "Adlam digits", "slicing guidance from a small read limit",
   "chunked guidance with another chunk size", "chunked guidance with a 21-digit chunk", "chunked guidance with an exponent chunk",
   "sanitized server name", "a block with _meta"])(
@@ -87,7 +88,8 @@ test.each(["exact", "subagent guidance", "capped", "capped at the label's upper 
       : variant.endsWith("exponent chunk") ? String(1.5e21) : undefined; // "1.5e+21", as String() prints it
     const message = spillMessage(path, { guidance, cap: truncated ? "1KB" : undefined, chunk,
       localize: variant === "Arabic-Indic digits" ? localize("٠", "٬") : variant === "Devanagari digits" ? localize("०", ",")
-        : variant === "locale separators" ? (n) => n.toLocaleString("fr-FR") : variant === "Swiss apostrophe" ? localize("0", "'")
+        : variant === "locale separators" ? (n) => n.toLocaleString("fr-FR") : variant === "Swiss apostrophe" ? localize("0", "'") // de-CH before and after CLDR's change of mark
+        : variant === "Swiss right quotation mark" ? localize("0", "\u2019") : variant === "French no-break space" ? localize("0", "\u00A0")
         : variant === "ungrouped digits" ? (n) => n.toLocaleString("es-ES") // es-ES leaves 3000 ungrouped
         : variant === "Arabic comma" ? localize("\u07C0", "\u060C") // N'Ko digits, as the runtime's locale prints them
         : variant === "Adlam digits" ? localize("\u{1E950}", "\u2E41") : enUS }); // ff-Adlm: Adlam digits and comma

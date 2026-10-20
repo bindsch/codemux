@@ -17,13 +17,19 @@ immutable notes and engineering evidence.
 
 ### Fixed
 
+- `--experiment-mcp` compares an MCP image block as Claude Code delivers it
+  (the API's base64 image source with the same bytes), so a screenshot
+  returned by a Playwright tool no longer ends the run; a text block is
+  compared as Claude rebuilds it (`{type, text}` plus a truthy `_meta`).
 - `--experiment-mcp` accepts Claude Code 2.1.300's oversize-result spills of
   text results: the token form for one text block (`Error: result (N
   characters ...) exceeds maximum allowed tokens. Output has been saved to
   <path>.` plus one of Claude's guidance templates) and the persisted form
   for any text blocks (`<persisted-output>` from the 50,000 character result
   cap, with a size label and a 2 KB preview). The token form's JSON variant
-  for several blocks still fails the run. The delivered
+  for several blocks still fails the run. Counts are checked against the
+  runtime's locale data, with the grouping marks that differ between CLDR
+  releases standing for each other. The delivered
   string must equal Claude's message exactly, the file must lie in the
   child's project directory, and its content must equal the server text or
   the JSON of the server's text blocks (a capped prefix only when the message
