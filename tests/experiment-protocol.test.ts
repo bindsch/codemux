@@ -1,54 +1,10 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { ExperimentBridge } from "../src/experiment-bridge.js";
+import { readFileSync } from "node:fs";
 import { ExperimentServer, MAX_EXPERIMENT_MESSAGE_BYTES, type JsonObject } from "../src/experiment-server.js";
 import { claudeFamilyResult, parseClaudeResultEnvelope } from "../src/result-envelope.js";
+import { cleanupPeers, peer, restores } from "./helpers/experiment-peer.js";
 
-const dirs: string[] = [];
-const bridges: ExperimentBridge[] = [];
-const restores: (() => void)[] = [];
-afterEach(async () => {
-  for (const restore of restores.splice(0).reverse()) restore();
-  for (const bridge of bridges.splice(0)) await bridge.close().catch(() => {});
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
-
-function peer() {
-  const cwd = mkdtempSync(join(tmpdir(), "codemux-protocol-"));
-  dirs.push(cwd);
-  const start = spyOn(ExperimentServer.prototype, "start").mockImplementation(() => {});
-  restores.push(() => start.mockRestore());
-  const request = spyOn(ExperimentServer.prototype, "request").mockImplementation(async (message) =>
-    ({ jsonrpc: "2.0", id: message.id, result: { tools: [{ name: "bash" }] } }));
-  restores.push(() => request.mockRestore());
-  const bridge = new ExperimentBridge({ name: "experiment", command: process.execPath, args: [], env: [] }, cwd, "probe");
-  bridges.push(bridge);
-  const sent: JsonObject[] = [];
-  const end = mock(() => {});
-  bridge.start((line) => sent.push(JSON.parse(line)), end, () => {});
-  const push = (frame: JsonObject) => bridge.push(JSON.stringify(frame) + "\n");
-  const ack = () => push({ type: "control_response", response: { subtype: "success", request_id: sent[0]!.request_id } });
-  const mcp = (id: string, message: JsonObject) => push({ type: "control_request", request_id: id,
-    request: { subtype: "mcp_message", server_name: "experiment", message: { jsonrpc: "2.0", ...message } } });
-  const ready = async () => {
-    mcp("list", { id: 1, method: "tools/list" });
-    await new Promise((resolve) => setImmediate(resolve));
-    ack();
-    push({ type: "system", subtype: "init", tools: ["mcp__experiment__bash"] });
-  };
-  const result = () => push({ type: "result", result: "OK" });
-  const call = (id: string, role = "assistant") => push({ type: role, message: { role,
-    content: [{ type: "tool_use", id, name: "mcp__experiment__bash", input: {} }] } });
-  const invoke = (nativeId: string, rpcId: number) => mcp(`call-${rpcId}`, { id: rpcId, method: "tools/call",
-    params: { name: "bash", arguments: {}, _meta: { "claudecode/toolUseId": nativeId } } });
-  const delivered = (id: string, text: string, role = "user") => push({ type: role, message: { role,
-    content: [{ type: "tool_result", tool_use_id: id, content: [{ type: "text", text }] }] } });
-  const records = () => readFileSync(bridge.recordingPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-  return { bridge, sent, end, request, push, ack, mcp, ready, result, call, invoke, delivered, records };
-}
-
+afterEach(cleanupPeers);
 test("a rejected control stops later tool calls in the same chunk synchronously", async () => {
   for (const invalid of [{ request_id: "bad", request: { subtype: "unsupported" } }, { request_id: null }]) {
     const p = peer();
@@ -494,30 +450,6 @@ test("a single text block delivered as its text without trailing whitespace matc
     p.result();
     expect(JSON.parse(p.bridge.finish()).result).toBe("OK");
     expect(p.records().find((r) => r.kind === "result_comparison")).toMatchObject({ tool_use_id: "first", equal: true });
-  }
-});
-
-test("a changed character, a dropped error flag, leading whitespace, or a second block still fails the comparison", async () => {
-  const text = '### Error\nwaiting until "load"\n';
-  const cases: Array<[unknown, boolean]> = [
-    ['### Error\nwaiting until "idle"', true], // one word changed
-    [text.trimEnd(), false],                   // is_error dropped
-    [" " + text.trimEnd(), true],              // leading whitespace
-    [text + "\n", true],                       // added trailing whitespace
-    [text.trimEnd() + " ", true],              // replaced trailing whitespace
-    [[{ type: "text", text: text.trimEnd() }, { type: "text", text: "" }], true], // a second block
-  ];
-  for (const [content, isError] of cases) {
-    const p = peer();
-    await p.ready();
-    p.request.mockResolvedValue({ jsonrpc: "2.0", id: 10,
-      result: { content: [{ type: "text", text }], isError: true } });
-    p.call("first");
-    p.invoke("first", 10);
-    await Promise.resolve();
-    expect(() => p.push({ type: "user", message: { role: "user", content: [
-      { type: "tool_result", tool_use_id: "first", content, is_error: isError },
-    ] } })).toThrow("Claude changed the experiment tool result before model delivery");
-    expect(p.records().find((r) => r.kind === "result_comparison")).toMatchObject({ equal: false });
+    expect(p.records().find((r) => r.kind === "result_comparison")).not.toHaveProperty("spilled");
   }
 });

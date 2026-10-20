@@ -15,6 +15,18 @@ immutable notes and engineering evidence.
 
 ### Fixed
 
+- `--experiment-mcp` accepts Claude Code 2.1.300's oversize-result spills of
+  text results: the token form for one text block (`Error: result (N
+  characters ...) exceeds maximum allowed tokens. Output has been saved to
+  <path>.` plus one of Claude's guidance templates) and the persisted form
+  for any text blocks (`<persisted-output>` from the 50,000 character result
+  cap, with a size label and a 2 KB preview). The token form's JSON variant
+  for several blocks still fails the run. The delivered
+  string must equal Claude's message exactly, the file must lie in the
+  child's project directory, and its content must equal the server text or
+  the JSON of the server's text blocks (a capped prefix only when the message
+  names the cap and the prefix matches it). Comparisons record accepted spills
+  with `spill_kind` and the failed check for rejected ones.
 - `--experiment-mcp` tolerates `notifications/tools/list_changed` when a full
   paginated inventory recheck confirms unchanged tool definitions. Notifications
   and rechecks are recorded without forwarding them to Claude or disturbing

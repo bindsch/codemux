@@ -40,6 +40,67 @@ import type {
   AdapterCapabilities,
 } from "../types.js";
 
+/**
+ * What the CHILD Claude sees that shapes an oversize-result spill, for the
+ * experiment bridge's check: its config directory, a project-directory
+ * override, its MCP output token limit, and its MCP truncation prompt
+ * choice. HOME is inherited by every child (environment.ts INERT_ENV),
+ * while an ambient CLAUDE_CONFIG_DIR, CLAUDE_CODE_PROJECT_DIR_NAME,
+ * MAX_MCP_OUTPUT_TOKENS, or MCP_TRUNCATION_PROMPT_OVERRIDE reaches it only
+ * under --pass-env. The binary parses the token limit as its environment
+ * integers (trimmed; an exponent form, a grouped form such as 4,000, else
+ * parseInt; positive). The
+ * 2.1.300 binary honors the project-directory override, only alongside a
+ * CLAUDE_CONFIG_DIR, when it matches /^[A-Za-z0-9_-]{1,64}$/ and is not a
+ * reserved Windows device name, and trims the prompt override. configDir
+ * is undefined when nothing names one, or when a passed-through
+ * CLAUDE_CONFIG_DIR is empty (the binary keeps the empty root and places
+ * projects relative to its cwd); the bridge then rejects spills.
+ */
+export interface ClaudeChildProject { configDir?: string; projectDirName?: string; tokenLimit?: number; truncationPrompt?: string }
+export function claudeChildProject(environment: NodeJS.ProcessEnv, passthroughEnv: readonly string[] = []): ClaudeChildProject {
+  const passed = (name: string) => (passthroughEnv.includes(name) ? environment[name] : undefined);
+  const passedConfigDir = passed("CLAUDE_CONFIG_DIR");
+  const configDir = passedConfigDir === undefined ? (environment.HOME ? join(environment.HOME, ".claude") : undefined) : passedConfigDir || undefined;
+  // The binary applies the override only together with CLAUDE_CONFIG_DIR;
+  // with the default config directory it keeps the cwd slug.
+  const override = passed("CLAUDE_CONFIG_DIR") ? passed("CLAUDE_CODE_PROJECT_DIR_NAME") : undefined;
+  const projectDirName = override && /^[A-Za-z0-9_-]{1,64}$/.test(override) &&
+    !/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(override) ? override : undefined;
+  const limit = claudeEnvironmentInteger(passed("MAX_MCP_OUTPUT_TOKENS"));
+  const tokenLimit = limit !== undefined && limit > 0 ? limit : undefined;
+  const truncationPrompt = passed("MCP_TRUNCATION_PROMPT_OVERRIDE")?.trim() || undefined;
+  return { configDir, projectDirName, tokenLimit, truncationPrompt };
+}
+
+/** Claude Code's oversize-result messages end the spill path at a line break,
+ * so an experiment run needs its config root without one: a passed-through
+ * CLAUDE_CONFIG_DIR (the binary keeps even an empty one as its root), or
+ * else HOME, under which .claude lies. */
+export function assertExperimentConfigRootSingleLine(environment: NodeJS.ProcessEnv, passthroughEnv: readonly string[] = []): void {
+  const configured = passthroughEnv.includes("CLAUDE_CONFIG_DIR") ? environment.CLAUDE_CONFIG_DIR : undefined;
+  const [name, value] = configured !== undefined ? ["CLAUDE_CONFIG_DIR", configured] : ["HOME", environment.HOME];
+  if (value?.includes("\n")) {
+    throw new Error(`--experiment-mcp needs a ${name} without a line break: Claude Code's oversize-result ` +
+      "messages end the spill path at a line break, so such a path could not be verified");
+  }
+}
+
+/** Claude Code 2.1.300's environment integer: trimmed, then an exponent form,
+ * a grouped form (one separator kind: _ , NBSP NNBSP space), or parseInt. */
+export function claudeEnvironmentInteger(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const text = value.trim();
+  let parsed: number;
+  if (text.length <= 32 && /^[+-]?(\d+(\.\d*)?|\.\d+)[eE][+-]?\d+$/.test(text)) {
+    const exponent = Number(text);
+    parsed = Number.isInteger(exponent) ? exponent : NaN;
+  } else if (text.length <= 32 && /^[+-]?\d{1,3}([_,\u00A0\u202F ])\d{3}(?:\1\d{3})*$/.test(text)) {
+    parsed = parseInt(text.replace(/[_,\u00A0\u202F ]/g, ""), 10);
+  } else parsed = parseInt(text, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 export class ClaudeAdapter extends BaseAdapter {
   readonly id: AgentId = "claude";
   readonly binaryName = "claude";
@@ -309,6 +370,7 @@ export class ClaudeAdapter extends BaseAdapter {
     // only redirect -- and a relative one would resolve against the child's
     // working directory, landing the config store somewhere --cwd decides.
     assertAbsoluteClaudeConfigDir(request.passthroughEnv, this.environment);
+    if (request.experimentMcp) assertExperimentConfigRootSingleLine(this.environment, request.passthroughEnv);
     // Fail before launch on a half-configured override, and surface the
     // model requirement early: the binary's default model would hit the
     // operator's endpoint with a name it may not serve. The context-cap
@@ -335,7 +397,8 @@ export class ClaudeAdapter extends BaseAdapter {
   override prepareRun(request: RunRequest): RunContext {
     if (!request.experimentMcp) return {};
     const experimentBridge = new ExperimentBridge(readExperimentRunSpec(request),
-      request.cwd ?? process.cwd(), request.prompt, this.environment);
+      request.cwd ?? process.cwd(), request.prompt, this.environment,
+      claudeChildProject(this.environment, request.passthroughEnv));
     return { experimentBridge, stdoutSink: experimentBridge };
   }
 

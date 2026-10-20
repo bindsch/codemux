@@ -6,6 +6,8 @@ import { codemuxStateDir } from "./call-log.js";
 import { PIPE_GIVE_UP_MS, type StdoutSink } from "./process-runner.js";
 import type { ExperimentSpec } from "./experiment-mcp.js";
 import { ExperimentServer, MAX_EXPERIMENT_MESSAGE_BYTES, type JsonObject } from "./experiment-server.js";
+import { canonicalWorkingDirectory, compareSpill } from "./experiment-spill.js";
+import type { ClaudeChildProject } from "./adapters/claude.js";
 
 // An experiment server names its own tools. Claude Code 2.1.300's SDK bridge
 // rejects an injected tools[] entry whose `name` fails /^[a-zA-Z0-9_-]{1,64}$/
@@ -45,9 +47,10 @@ export function experimentUserFrameBytes(prompt: string): number {
 // Claude Code 2.1.300 delivers a server result whose content is one text
 // block as that block's text, a plain string, with trailing whitespace removed
 // (seen on an `isError` Playwright result: "...\n" arrived without the newline).
-// That canonical form is accepted in either error state; any other difference
-// (another block type, more than one block, a changed character, leading
-// whitespace) still fails the run.
+// That canonical form is accepted in either error state. The only other
+// accepted difference is an oversize-result spill verified by compareSpill;
+// anything else (another block type, more than one block, a changed
+// character, leading whitespace) still fails the run.
 export function modelResultMatches(expected: unknown, actual: unknown): boolean {
   if (isDeepStrictEqual(expected, actual)) return true;
   if (!Array.isArray(expected) || expected.length !== 1) return false;
@@ -62,6 +65,7 @@ export function modelResultMatches(expected: unknown, actual: unknown): boolean 
 export class ExperimentBridge implements StdoutSink {
   readonly runId = randomUUID();
   readonly recordingPath: string;
+  private canonicalCwd: string;
   private fd: number;
   private sequence = 0;
   private recordedBytes = 0;
@@ -87,11 +91,20 @@ export class ExperimentBridge implements StdoutSink {
   private inventoryChanges = 0;
   private inventoryRecheck?: Promise<void>;
 
-  constructor(readonly spec: ExperimentSpec, cwd: string, private prompt: string,
-    environment: NodeJS.ProcessEnv = process.env) {
+  // `claudeProject` is where the CHILD Claude keeps this project's files:
+  // the adapter resolves it (claudeChildProject), because CLAUDE_CONFIG_DIR
+  // and CLAUDE_CODE_PROJECT_DIR_NAME reach the child only when passed
+  // through while HOME always does. The default covers callers without an
+  // adapter.
+  constructor(readonly spec: ExperimentSpec, private readonly cwd: string, private prompt: string,
+    environment: NodeJS.ProcessEnv = process.env,
+    private claudeProject: ClaudeChildProject = { configDir: environment.HOME ? join(environment.HOME, ".claude") : undefined }) {
     // Recordings are codemux state, not run-directory output: the run
     // directory belongs to the experiment, and a recording landing there is
     // visible to the harness's own tools. A spec may relocate the directory.
+    // Claude Code resolves its working directory once at startup; start()
+    // replaces this with the directory the runner spawned the child in.
+    this.canonicalCwd = canonicalWorkingDirectory(cwd);
     const directory = spec.recording ?? join(codemuxStateDir(environment), "experiments");
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     this.recordingPath = join(directory, `${this.runId}${spec.control ? ".control" : ""}.jsonl`);
@@ -122,7 +135,13 @@ export class ExperimentBridge implements StdoutSink {
     while (offset < bytes.length) offset += writeSync(this.fd, bytes, offset);
   }
 
-  start(write: (line: string) => void, end: () => void, abort: () => void): void {
+  start(write: (line: string) => void, end: () => void, abort: () => void, cwd?: string): void {
+    // The launch helper resolves the working directory once and spawns the
+    // child in it; the runner hands that directory here as the child's own,
+    // so a cwd symlink retargeted between that resolution and the spawn, or
+    // during the run, cannot name a project the child never used. Without a
+    // runner, the bridge's own cwd stands.
+    this.canonicalCwd = canonicalWorkingDirectory(cwd ?? this.cwd);
     this.write = write;
     this.end = () => { this.end = undefined; end(); };
     this.abort = abort;
@@ -131,6 +150,14 @@ export class ExperimentBridge implements StdoutSink {
       this.send({ type: "control_request", request_id: this.initRequest,
         request: { subtype: "initialize", sdkMcpServers: [this.spec.name] } });
     } catch (error) { this.fail(error instanceof Error ? error : new Error(String(error))); }
+  }
+
+  /** The tool's own result cap, when its definition carries Claude's `anthropic/maxResultSizeChars`. */
+  private resultCap(toolName: string): number {
+    const tool = (this.toolDefinitions ?? []).find((definition) => (definition as JsonObject).name === toolName) as JsonObject | undefined;
+    const meta = tool?._meta as JsonObject | undefined;
+    const cap = meta?.["anthropic/maxResultSizeChars"];
+    return typeof cap === "number" && Number.isFinite(cap) && cap > 0 ? cap : Number.POSITIVE_INFINITY;
   }
 
   private send(message: JsonObject): void {
@@ -214,13 +241,20 @@ export class ExperimentBridge implements StdoutSink {
           const call = this.calls.get(block.tool_use_id);
           this.record("model_tool_result", { tool_use_id: block.tool_use_id, block });
           if (!call?.result || call.received) throw new Error("unmatched model-bound experiment tool result");
-          const equal = modelResultMatches(call.result.content, block.content);
           if (block.is_error !== undefined && typeof block.is_error !== "boolean") {
             throw new Error("Claude tool_result is_error must be a boolean");
           }
           const isErrorEqual = (call.result.isError ?? false) === (block.is_error ?? false);
-          this.record("result_comparison", { tool_use_id: block.tool_use_id, equal: equal && isErrorEqual });
-          if (!equal || !isErrorEqual) throw new Error("Claude changed the experiment tool result before model delivery");
+          const plainMatch = modelResultMatches(call.result.content, block.content);
+          const toolName = call.name.slice(`mcp__${this.spec.name}__`.length);
+          let comparison = plainMatch ? { equal: isErrorEqual } : compareSpill(call.result.content, block.content,
+            this.canonicalCwd, this.claudeProject, this.spec.name, toolName, block.tool_use_id, this.resultCap(toolName));
+          if (!plainMatch && comparison.equal && !isErrorEqual) {
+            const spill_kind = "spill_kind" in comparison ? comparison.spill_kind : undefined;
+            comparison = { equal: false, spilled: false, spill_kind, spill_rejected: "error flag" };
+          }
+          this.record("result_comparison", { tool_use_id: block.tool_use_id, ...comparison });
+          if (!comparison.equal) throw new Error("Claude changed the experiment tool result before model delivery");
           call.received = true;
         }
       }

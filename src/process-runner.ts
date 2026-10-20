@@ -58,8 +58,9 @@ export class CapturedRunFailure extends Error {
  * run fails at the capture limit exactly as a whole-stream capture would,
  * with `finish()` as the partial output. */
 export interface StdoutSink {
-  /** Optional duplex protocol. The runner retains timeout and signal ownership. */
-  start?(write: (line: string) => void, end: () => void, abort: () => void): void;
+  /** Optional duplex protocol. The runner retains timeout and signal ownership.
+   * `cwd` is the directory the child was spawned in, as the caller resolved it. */
+  start?(write: (line: string) => void, end: () => void, abort: () => void, cwd?: string): void;
   closeProtocol?(): void | Promise<void>;
   /** Stop an external protocol process immediately on timeout or signal. */
   terminateProtocol?(): void;
@@ -456,7 +457,8 @@ export async function runCapturedCommand(
       options.stdoutSink?.start?.(
         (line) => { proc.stdin.write(line); },
         () => { proc.stdin.end(); },
-        () => { protocolAborted = true; abortCapture(); }
+        () => { protocolAborted = true; abortCapture(); },
+        options.cwd
       );
     } catch (error) {
       // start() ran after the spawn, so the child is live: a throw must not
