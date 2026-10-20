@@ -13,6 +13,8 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-10-19
+
 ### Fixed
 
 - `--experiment-mcp` accepts Claude Code 2.1.300's oversize-result spills of
