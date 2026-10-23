@@ -37,7 +37,8 @@ import type { AutonomyLevel } from "./types.js";
  * provider, so it is no remedy for these adapters; the grant is the
  * documented trade-off for headless research runs. Persistent sessions do
  * not take the grant: their ceiling answers each tool call and denies the
- * web tools below low, and an allow rule would bypass that answer.
+ * web tools at every level but low, and an allow rule would bypass that
+ * answer.
  */
 /** Claude permission rules need a double leading slash for an absolute
  * path: a single slash anchors at the working directory, and a relative

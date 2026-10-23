@@ -57,7 +57,8 @@ export interface ClaudeSessionCommand {
  * low, and read-only reuse the run mapping without its web grants (medium
  * already carries the scoped Edit grant; low and read-only carry no
  * grants): the ceiling answers each tool call, denies WebSearch and
- * WebFetch below low, and an allow rule would bypass that answer. */
+ * WebFetch at every level but low, and an allow rule would bypass that
+ * answer. */
 export function claudeSessionAutonomyFlags(
   level: AutonomyLevel,
   launchDir: string
