@@ -54,8 +54,10 @@ export interface ClaudeSessionCommand {
  * list — never `--dangerously-skip-permissions`. High's reach is set by
  * codemux's grants, not a harness side effect, so the resume ladder's
  * low→high move narrows reach on every build the floor admits. Medium,
- * low, and read-only reuse the run mapping verbatim (medium already
- * carries the scoped Edit grant; low and read-only carry no grants). */
+ * low, and read-only reuse the run mapping without its web grants (medium
+ * already carries the scoped Edit grant; low and read-only carry no
+ * grants): the ceiling answers each tool call, denies WebSearch and
+ * WebFetch below low, and an allow rule would bypass that answer. */
 export function claudeSessionAutonomyFlags(
   level: AutonomyLevel,
   launchDir: string
@@ -71,7 +73,7 @@ export function claudeSessionAutonomyFlags(
       "Bash",
     ];
   }
-  return claudeAutonomyFlags(level, launchDir);
+  return claudeAutonomyFlags(level, launchDir, { web: false });
 }
 
 /**

@@ -13,6 +13,17 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
+### Fixed
+
+- Headless `claude` and `zai` runs can search and fetch the web again at
+  every autonomy level: Claude Code's subprocess environment hardening
+  forces its permission mode to default, which denies `WebSearch` and
+  `WebFetch` headless, so the two web tools are now granted with
+  `--allowedTools` alongside the existing write grants. Neither writes
+  locally; the trade-off, that a run reads pages nobody approved and the
+  model picks the URLs it fetches, is documented in autonomy and
+  sandboxing. Persistent sessions keep their ceiling and take no web grant.
+
 ## [0.14.1] - 2026-10-19
 
 ### Fixed

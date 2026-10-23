@@ -14,6 +14,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { ClaudeAdapter } from "../src/adapters/claude.js";
+import { claudeAutonomyFlags } from "../src/claude-autonomy.js";
 import { AgyAdapter } from "../src/adapters/agy.js";
 import { CodexAdapter } from "../src/adapters/codex.js";
 import { DroidAdapter } from "../src/adapters/droid.js";
@@ -377,20 +378,20 @@ describe("ClaudeAdapter", () => {
 
   test("buildRunCommand with autonomy levels", () => {
     expect(adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: "read-only" }))
-      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--permission-mode", "plan"]);
+      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--permission-mode", "plan", "--allowedTools", "WebSearch", "WebFetch"]);
     expect(adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: "low" }))
-      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--permission-mode", "manual"]);
+      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--permission-mode", "manual", "--allowedTools", "WebSearch", "WebFetch"]);
     // A real directory, so the grant's canonicalization is exercised and
     // the expectation stays stable regardless of /tmp symlinking.
     const grantWksp = realpathSync(mkdtempSync(join(tmpdir(), "codemux-grant-")));
     try {
       expect(adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: "medium", cwd: grantWksp }))
-        .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--permission-mode", "acceptEdits", "--allowedTools", `Edit(//${grantWksp.replace(/^\/+/, "")}/**)`]);
+        .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--permission-mode", "acceptEdits", "--allowedTools", `Edit(//${grantWksp.replace(/^\/+/, "")}/**)`, "WebSearch", "WebFetch"]);
     } finally {
       rmSync(grantWksp, { recursive: true, force: true });
     }
     expect(adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: "high" }))
-      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--dangerously-skip-permissions", "--allowedTools", "Edit", "Write", "NotebookEdit", "Bash"]);
+      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--dangerously-skip-permissions", "--allowedTools", "Edit", "Write", "NotebookEdit", "Bash", "WebSearch", "WebFetch"]);
   });
 
   test("buildRunCommand does not inject an MCP server by default", () => {
@@ -504,11 +505,16 @@ describe("ClaudeAdapter", () => {
     expect(adapter.mapAutonomy("high")).toEqual(["--dangerously-skip-permissions"]);
   });
 
-  test("read-only and low grant no tools", () => {
-    // Allow rules bypass mode checks, so they must ride only on
-    // write-capable levels.
+  test("the TUI mapping grants no tools; headless read-only and low grant only the web tools", () => {
+    // Allow rules bypass mode checks: in the TUI a human approves, so no
+    // rule rides there; headless, every level grants the two read-only web
+    // tools the hardening would otherwise deny, and nothing that writes.
     expect(adapter.mapAutonomy("read-only")).not.toContain("--allowedTools");
     expect(adapter.mapAutonomy("low")).not.toContain("--allowedTools");
+    for (const level of ["read-only", "low"] as const) {
+      const flags = claudeAutonomyFlags(level, "/tmp/launch");
+      expect(flags.slice(flags.indexOf("--allowedTools") + 1)).toEqual(["WebSearch", "WebFetch"]);
+    }
   });
 });
 

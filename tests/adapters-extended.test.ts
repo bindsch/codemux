@@ -348,18 +348,18 @@ describe("ZaiAdapter", () => {
 
   test("buildRunCommand with autonomy levels", () => {
     expect(adapter.buildRunCommand({ agent: "zai", prompt: "t", autonomy: "read-only" }))
-      .toEqual([...safeHeadlessArgs, "--model", "opus", "--permission-mode", "plan"]);
+      .toEqual([...safeHeadlessArgs, "--model", "opus", "--permission-mode", "plan", "--allowedTools", "WebSearch", "WebFetch"]);
     expect(adapter.buildRunCommand({ agent: "zai", prompt: "t", autonomy: "low" }))
-      .toEqual([...safeHeadlessArgs, "--model", "opus", "--permission-mode", "manual"]);
+      .toEqual([...safeHeadlessArgs, "--model", "opus", "--permission-mode", "manual", "--allowedTools", "WebSearch", "WebFetch"]);
     const grantWksp = realpathSync(mkdtempSync(join(tmpdir(), "codemux-grant-")));
     try {
       expect(adapter.buildRunCommand({ agent: "zai", prompt: "t", autonomy: "medium", cwd: grantWksp }))
-        .toEqual([...safeHeadlessArgs, "--model", "opus", "--permission-mode", "acceptEdits", "--allowedTools", `Edit(//${grantWksp.replace(/^\/+/, "")}/**)`]);
+        .toEqual([...safeHeadlessArgs, "--model", "opus", "--permission-mode", "acceptEdits", "--allowedTools", `Edit(//${grantWksp.replace(/^\/+/, "")}/**)`, "WebSearch", "WebFetch"]);
     } finally {
       rmSync(grantWksp, { recursive: true, force: true });
     }
     expect(adapter.buildRunCommand({ agent: "zai", prompt: "t", autonomy: "high" }))
-      .toEqual([...safeHeadlessArgs, "--model", "opus", "--dangerously-skip-permissions", "--allowedTools", "Edit", "Write", "NotebookEdit", "Bash"]);
+      .toEqual([...safeHeadlessArgs, "--model", "opus", "--dangerously-skip-permissions", "--allowedTools", "Edit", "Write", "NotebookEdit", "Bash", "WebSearch", "WebFetch"]);
   });
 
   test("a launch directory with spaces still emits its grant", () => {
@@ -373,6 +373,8 @@ describe("ZaiAdapter", () => {
       "acceptEdits",
       "--allowedTools",
       "Edit(//tmp/my stuff/**)",
+      "WebSearch",
+      "WebFetch",
     ]);
   });
 
@@ -484,12 +486,16 @@ describe("ZaiAdapter", () => {
       "acceptEdits",
       "--allowedTools",
       "Edit(//tmp/x,Bash,y/**)",
+      "WebSearch",
+      "WebFetch",
     ]);
     expect(claudeAutonomyFlags("medium", "/tmp/a b c")).toEqual([
       "--permission-mode",
       "acceptEdits",
       "--allowedTools",
       "Edit(//tmp/a b c/**)",
+      "WebSearch",
+      "WebFetch",
     ]);
     expect(() => claudeAutonomyFlags("medium", "/tmp/[wip]-app")).toThrow(
       /glob metacharacter/
@@ -502,6 +508,8 @@ describe("ZaiAdapter", () => {
       "acceptEdits",
       "--allowedTools",
       "Edit(//tmp/plain/**)",
+      "WebSearch",
+      "WebFetch",
     ]);
     // Trailing whitespace cannot be represented: the matcher trims it (an
     // escaped tab even decodes back to a space), which would retarget the

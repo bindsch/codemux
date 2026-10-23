@@ -22,8 +22,22 @@ import type { AutonomyLevel } from "./types.js";
  * 2.1.223) and any future upstream that decouples the variable behave
  * exactly as before. Under the hardening the grants do the work, and they
  * cannot fully reproduce --dangerously-skip-permissions: managed deny
- * rules, safety checks, and ungranted tools (WebFetch, MCP, ...) still
- * gate. The scode boundary remains the enforced limit below high.
+ * rules, safety checks, and ungranted tools (MCP, ...) still gate. The
+ * scode boundary remains the enforced limit below high.
+ *
+ * Why every headless run level also grants WebSearch and WebFetch: under
+ * the hardening, "default" mode denies them too, so a headless read-only
+ * or low run could not search or fetch at all (seen 2026-10-23: a
+ * four-model panel whose claude and zai panelists had every web call
+ * refused). Neither tool writes locally, so read-only keeps its meaning
+ * for the tree. What the grant does change: a run reads pages nobody
+ * approved, and the model picks the URLs it fetches, so content it reads
+ * (a prompt injection in an untrusted repository) can carry local data out
+ * in a URL. --sandbox-no-net would deny that, but it also denies the model
+ * provider, so it is no remedy for these adapters; the grant is the
+ * documented trade-off for headless research runs. Persistent sessions do
+ * not take the grant: their ceiling answers each tool call and denies the
+ * web tools below low, and an allow rule would bypass that answer.
  */
 /** Claude permission rules need a double leading slash for an absolute
  * path: a single slash anchors at the working directory, and a relative
@@ -94,26 +108,28 @@ export function claudeNativeAutonomyFlags(level: AutonomyLevel): string[] {
   }
 }
 
+/** The web tools every headless run level grants (see the trade-off above). */
+export const WEB_TOOL_GRANTS = ["WebSearch", "WebFetch"] as const;
+
 /** The headless mapping: the native flags plus explicit allow rules, the
  * hardening's documented escape hatch (see grantRule). Write and
  * NotebookEdit follow Edit rules, so the medium rule covers the three
  * editing tools; Bash stays gated there. At high the grants are a subset
- * of the bypass high always requested. Grants ride only on headless runs;
- * the TUI keeps the native flags so a human approves. */
+ * of the bypass high always requested. The web tools are granted at every
+ * level. Grants ride only on headless runs; the TUI keeps the native flags
+ * so a human approves. */
 export function claudeAutonomyFlags(
   level: AutonomyLevel,
-  launchDir: string
+  launchDir: string,
+  { web = true }: { web?: boolean } = {}
 ): string[] {
   const flags = claudeNativeAutonomyFlags(level);
+  const webGrants = web ? WEB_TOOL_GRANTS : [];
   if (level === "medium") {
-    return [
-      ...flags,
-      "--allowedTools",
-      grantRule(launchDir),
-    ];
+    return [...flags, "--allowedTools", grantRule(launchDir), ...webGrants];
   }
   if (level === "high") {
-    return [...flags, "--allowedTools", "Edit", "Write", "NotebookEdit", "Bash"];
+    return [...flags, "--allowedTools", "Edit", "Write", "NotebookEdit", "Bash", ...webGrants];
   }
-  return flags;
+  return web ? [...flags, "--allowedTools", ...webGrants] : flags;
 }
