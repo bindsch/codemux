@@ -13,6 +13,8 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-10-25
+
 ### Added
 
 - `--experiment-mcp` accepts the `zai` agent: it runs the same Claude Code
