@@ -7,6 +7,7 @@ import { ExperimentBridge, experimentUserFrameBytes, MAX_EXPERIMENT_MESSAGE_BYTE
 import { readExperimentSpec, validateExperimentRequest, experimentCanaryControl } from "../src/experiment-mcp.js";
 import { runCapturedCommand } from "../src/process-runner.js";
 import { ClaudeAdapter } from "../src/adapters/claude.js";
+import { ZaiAdapter } from "../src/adapters/zai.js";
 import { plantCanary } from "../src/hermetic-canary.js";
 import { MARKER } from "./fixtures/experiment-mcp.js";
 import type { RunRequest } from "../src/types.js";
@@ -69,6 +70,33 @@ describe("experiment validation and isolation", () => {
     expect(cmd[cmd.indexOf("--permission-mode") + 1]).toBe("default");
     expect(cmd).toContain("stream-json");
     expect(JSON.parse(cmd[cmd.indexOf("--mcp-config") + 1]!)).toEqual({ mcpServers: { experiment: { type: "sdk", name: "experiment" } } });
+  });
+  test("zai takes the claude experiment path unchanged: same bridge, flags, safe mode, and envelope", () => {
+    // Regression: zai was refused with "no verified experiment MCP mechanism" although it
+    // runs the same Claude Code binary and SDK control bridge against the Z.AI endpoint.
+    const { request: claudeRequest, spec } = setup();
+    const request: RunRequest = { ...claudeRequest, agent: "zai", model: "glm-5.3" };
+    // prepareRun opens a recording, so the adapter carries the test ledger redirect (bridgeEnv).
+    const adapter = new ZaiAdapter(bridgeEnv());
+    expect(() => adapter.validateRunRequest(request)).not.toThrow();
+    const context = adapter.prepareRun(request);
+    try {
+      expect(context.experimentBridge).toBeDefined();
+      expect(context.stdoutSink).toBe(context.experimentBridge);
+      const cmd = adapter.buildRunCommand(request, context);
+      const claudeCmd = new ClaudeAdapter(bridgeEnv()).buildRunCommand(claudeRequest);
+      expect(cmd).toContain("--safe-mode");
+      expect(cmd[cmd.indexOf("--tools") + 1]).toBe("");
+      expect(cmd[cmd.indexOf("--permission-mode") + 1]).toBe("default");
+      expect(cmd).toContain("stream-json");
+      expect(cmd).toContain("--permission-prompt-tool");
+      expect(JSON.parse(cmd[cmd.indexOf("--mcp-config") + 1]!)).toEqual({ mcpServers: { [spec.name]: { type: "sdk", name: spec.name } } });
+      // The experiment flags are claude's, in claude's order; only the model pair differs.
+      const withoutModel = (argv: string[]) => { const at = argv.indexOf("--model"); return at === -1 ? argv : [...argv.slice(0, at), ...argv.slice(at + 2)]; };
+      expect(withoutModel(cmd)).toEqual(withoutModel(claudeCmd));
+    } finally {
+      adapter.cleanupRunSync(context);
+    }
   });
   test("refuses every attempt to loosen the launch constraints", () => {
     const { request } = setup();

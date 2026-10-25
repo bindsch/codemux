@@ -55,7 +55,7 @@ printf 'Reply with OK.\n' | codemux run -a claude -f -
 | `--hermetic` | Off; suppress supported automatic customization loading |
 | `--tools <selection>` | `default`; `none` has harness-specific residual capabilities |
 | `--no-web` | Off; deny the Claude-family web tools (`WebSearch`, `WebFetch`) with a deny rule, which holds at `--auto high` and over approvals saved in the operator's settings; headless `claude` and `zai` otherwise grant them at every autonomy level, and other agents refuse the flag |
-| `--experiment-mcp <spec.json>` | Unset; Claude-only experiment bridge with required isolation policy |
+| `--experiment-mcp <spec.json>` | Unset; experiment bridge for `claude` and `zai` (the same Claude Code binary) with required isolation policy |
 | `--result-json` | Off; structured result with harness-specific normalization |
 
 Timeouts must be finite and greater than zero, at most 86400 seconds.

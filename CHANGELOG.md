@@ -13,6 +13,13 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
+### Added
+
+- `--experiment-mcp` accepts the `zai` agent: it runs the same Claude Code
+  binary and SDK control bridge as `claude` against the Z.AI endpoint, so
+  the experiment server, safe mode, recordings, and result envelope are the
+  claude path unchanged. Every other adapter still refuses.
+
 ### Fixed
 
 - Headless `claude` and `zai` runs can search and fetch the web again at

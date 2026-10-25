@@ -1,9 +1,11 @@
 # Experiment MCP
 
 `run --experiment-mcp <spec.json>` connects one experiment-owned stdio MCP
-server through Claude's SDK control bridge. It requires `-a claude --hermetic
---tools none --auto read-only`, scode, and no Playwright MCP. Other adapters
-refuse it before reading the spec or starting a model. Codex's MCP output adds
+server through Claude's SDK control bridge. It requires `-a claude` or
+`-a zai` (the same Claude Code binary against the Z.AI endpoint; the bridge,
+recordings, and result envelope are identical) with `--hermetic --tools none
+--auto read-only`, scode, and no Playwright MCP. Other adapters refuse it
+before reading the spec or starting a model. Codex's MCP output adds
 a `Wall time:` header, so its result bytes do not satisfy this contract.
 
 The server runs **outside scode** with only the environment names in the spec.

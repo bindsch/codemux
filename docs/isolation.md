@@ -52,11 +52,11 @@ Antigravity uses paired instruction/MCP and command-denial probes in scratch ope
 
 ### Experiment MCP exception
 
-Claude alone accepts an explicitly supplied experiment MCP server under `--hermetic --tools none --auto read-only`, starting at Claude 2.1.280. Safe mode remains enabled, the built-in tool list stays empty, and the explicit server is delivered through the SDK control protocol. This is an intentional exception to suppression of operator MCP configuration.
+Claude and Z.AI (the same Claude Code binary) alone accept an explicitly supplied experiment MCP server under `--hermetic --tools none --auto read-only`, starting at Claude 2.1.280. Safe mode remains enabled, the built-in tool list stays empty, and the explicit server is delivered through the SDK control protocol. This is an intentional exception to suppression of operator MCP configuration.
 
 The experiment server runs **outside scode**, with the run directory as cwd and only named environment variables. Its cwd is not containment. The command must pass the executable trust check and sit outside the run directory. The host permits requests only for that server and checks inventory and returned content. Persistent raw recordings may contain sensitive data.
 
-Codex and all other adapters refuse experiment injection. Codex 0.160.1 was observed adding wrapper text to MCP results; codemux does not strip it. See [experiment MCP](experiment-mcp.md) for the specification and recording contract.
+Codex and every other adapter refuse experiment injection. Codex 0.160.1 was observed adding wrapper text to MCP results; codemux does not strip it. See [experiment MCP](experiment-mcp.md) for the specification and recording contract.
 
 ## Residual inputs and enforcement
 

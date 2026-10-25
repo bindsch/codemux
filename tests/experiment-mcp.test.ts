@@ -16,7 +16,7 @@ describe("experiment MCP refuses an unverified result contract", () => {
     }
   });
 
-  for (const agent of AGENT_IDS.filter((agent) => agent !== "claude")) {
+  for (const agent of AGENT_IDS.filter((agent) => agent !== "claude" && agent !== "zai")) {
     test(`${agent} refuses before preparing or spawning a harness`, () => {
       const request = { agent, prompt: "probe", hermetic: true, tools: "none" as const,
         autonomy: "read-only" as const, sandboxed: true, experimentMcp: "/does/not/exist.json" };

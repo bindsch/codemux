@@ -13,7 +13,9 @@ export function assertExperimentMcpUnavailable(agent: AgentId, spec: unknown): v
   if (typeof spec !== "string" || spec.trim().length === 0 || spec.includes("\0")) {
     throw new Error("--experiment-mcp requires a nonempty specification path without NUL bytes");
   }
-  if (agent === "claude") return;
+  // zai runs the same Claude Code binary and SDK control bridge against the
+  // Z.AI endpoint, so the claude mechanism applies unchanged.
+  if (agent === "claude" || agent === "zai") return;
   const reason = agent === "codex"
       ? "Codex adds its own Wall time: header to MCP results; the experiment cannot control every result byte"
       : `${agent} has no verified experiment MCP mechanism`;

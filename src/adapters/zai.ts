@@ -1,13 +1,16 @@
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { BaseAdapter } from "./base.js";
+import { BaseAdapter, type RunContext } from "./base.js";
+import { assertExperimentConfigRootSingleLine, claudeChildProject } from "./claude.js";
+import { ExperimentBridge } from "../experiment-bridge.js";
+import { readExperimentRunSpec } from "../experiment-mcp.js";
 import { getPlaywrightSandboxMcpArgs } from "../mcp.js";
 import {
   claudeAutonomyFlags,
   claudeNativeAutonomyFlags,
 } from "../claude-autonomy.js";
 import { readUtf8FileBounded } from "../file-io.js";
-import { claudeFamilyResult } from "../result-envelope.js";
+import { appendDiagnostic, claudeFamilyResult } from "../result-envelope.js";
 import { claudeFamilyPlainResult } from "../plain-unwrap.js";
 import {
   assertAbsoluteClaudeConfigDir,
@@ -206,6 +209,25 @@ export class ZaiAdapter extends BaseAdapter {
     // only redirect -- and a relative one would resolve against the child's
     // working directory, landing the config store somewhere --cwd decides.
     assertAbsoluteClaudeConfigDir(request.passthroughEnv, this.environment);
+    if (request.experimentMcp) assertExperimentConfigRootSingleLine(this.environment, request.passthroughEnv);
+  }
+
+  // The experiment bridge as claude's: same binary, same SDK control
+  // protocol, same recordings and result envelope.
+  override prepareRun(request: RunRequest): RunContext {
+    if (!request.experimentMcp) return {};
+    const experimentBridge = new ExperimentBridge(readExperimentRunSpec(request),
+      request.cwd ?? process.cwd(), request.prompt, this.environment,
+      claudeChildProject(this.environment, request.passthroughEnv));
+    return { experimentBridge, stdoutSink: experimentBridge };
+  }
+
+  override cleanupRun(context?: RunContext): void | Promise<void> {
+    return context?.experimentBridge?.close();
+  }
+
+  override cleanupRunSync(context?: RunContext): void {
+    context?.experimentBridge?.closeSync();
   }
 
   override validateTuiRequest(
@@ -220,7 +242,7 @@ export class ZaiAdapter extends BaseAdapter {
     assertAbsoluteClaudeConfigDir(passthroughEnv, this.environment);
   }
 
-  buildRunCommand(request: RunRequest): string[] {
+  buildRunCommand(request: RunRequest, context?: RunContext): string[] {
     const cmd = ["claude", "-p"];
     if (request.hermetic) {
       // --safe-mode starts with every customization disabled: CLAUDE.md
@@ -259,7 +281,14 @@ export class ZaiAdapter extends BaseAdapter {
     // block appended; a plain run unwraps it back to the reply text
     // (plain-unwrap.ts) so stdout keeps its contract while the call ledger
     // gets the usage.
-    cmd.push("--output-format", "json");
+    // The experiment bridge drives the SDK control protocol over stream-json
+    // and registers the one experiment server, exactly as claude's run does.
+    cmd.push("--output-format", request.experimentMcp ? "stream-json" : "json");
+    if (request.experimentMcp) {
+      const spec = context?.experimentBridge?.spec ?? readExperimentRunSpec(request);
+      cmd.push("--input-format", "stream-json", "--verbose", "--permission-prompt-tool", "stdio",
+        "--mcp-config", JSON.stringify({ mcpServers: { [spec.name]: { type: "sdk", name: spec.name } } }));
+    }
     if (request.tools === "none") {
       // An empty --tools list removes every built-in tool definition.
       cmd.push("--tools", "");
@@ -274,7 +303,11 @@ export class ZaiAdapter extends BaseAdapter {
     cmd.push("--model", request.model || ZAI_DEFAULT_MODEL);
 
     if (request.autonomy) {
-      cmd.push(...claudeAutonomyFlags(request.autonomy, request.cwd ?? process.cwd(), { web: request.web === false ? "deny" : "grant" }));
+      // scode enforces read-only for the harness; the host authorizes only
+      // experiment tools, whose separate process owns its writes, so plan
+      // mode must not suppress those before they reach the control callback.
+      cmd.push(...(request.experimentMcp ? ["--permission-mode", "default"] :
+        claudeAutonomyFlags(request.autonomy, request.cwd ?? process.cwd(), { web: request.web === false ? "deny" : "grant" })));
     }
 
     if (request.effort) {
@@ -288,7 +321,11 @@ export class ZaiAdapter extends BaseAdapter {
     return request.prompt;
   }
 
-  override processRunResult(result: RunResult, request: RunRequest): RunResult {
+  override processRunResult(result: RunResult, request: RunRequest, context?: RunContext): RunResult {
+    if (context?.experimentBridge) {
+      if (result.exitCode === 0 && !result.stdout) throw new Error("Claude returned no experiment result envelope");
+      result = { ...result, scanSurface: context.experimentBridge.scanSurface() };
+    }
     // Same envelope as claude (same binary): with --result-json the harness's
     // envelope is re-emitted with the codemux block appended, and anything
     // that is not the envelope fails loudly there, as in claude's adapter.
@@ -299,7 +336,8 @@ export class ZaiAdapter extends BaseAdapter {
       return claudeFamilyResult(
         result,
         { ...request, model: request.model || ZAI_DEFAULT_MODEL },
-        this.id
+        this.id,
+        context?.experimentBridge?.recordingPath ?? null
       );
     }
     // A plain run: the same envelope, unwrapped back to the reply text.
@@ -308,7 +346,13 @@ export class ZaiAdapter extends BaseAdapter {
     // the output for; JSON that is not the envelope (an array or scalar
     // included, or an object cut mid-write) fails with nothing on stdout
     // (plain-unwrap.ts).
-    return claudeFamilyPlainResult(result, this.id);
+    const plain = claudeFamilyPlainResult(result, this.id);
+    // A plain run has no codemux block to carry the recording path, so the
+    // run's stderr summary names it instead.
+    return context?.experimentBridge
+      ? { ...plain, stderr: appendDiagnostic(plain.stderr,
+          `codemux: experiment MCP recording: ${context.experimentBridge.recordingPath}`) }
+      : plain;
   }
 
   buildTuiCommand(
