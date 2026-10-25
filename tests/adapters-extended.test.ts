@@ -362,6 +362,11 @@ describe("ZaiAdapter", () => {
       .toEqual([...safeHeadlessArgs, "--model", "opus", "--dangerously-skip-permissions", "--allowedTools", "Edit", "Write", "NotebookEdit", "Bash", "WebSearch", "WebFetch"]);
   });
 
+  test("--no-web denies zai's web tools", () => {
+    expect(adapter.buildRunCommand({ agent: "zai", prompt: "t", autonomy: "low", web: false }))
+      .toEqual([...safeHeadlessArgs, "--model", "opus", "--permission-mode", "manual", "--disallowedTools", "WebSearch", "WebFetch"]);
+  });
+
   test("a launch directory with spaces still emits its grant", () => {
     expect(
       adapter.buildRunCommand({ agent: "zai", prompt: "t", autonomy: "medium", cwd: "/tmp/my stuff" })

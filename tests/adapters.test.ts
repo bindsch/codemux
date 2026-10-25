@@ -505,6 +505,20 @@ describe("ClaudeAdapter", () => {
     expect(adapter.mapAutonomy("high")).toEqual(["--dangerously-skip-permissions"]);
   });
 
+  test("--no-web denies the web tools at every level, which holds under bypass and over saved approvals", () => {
+    expect(adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: "read-only", web: false }))
+      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json",
+        "--permission-mode", "plan", "--disallowedTools", "WebSearch", "WebFetch"]);
+    const high = adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: "high", web: false });
+    expect(high.slice(high.indexOf("--allowedTools") + 1)).toEqual(["Edit", "Write", "NotebookEdit", "Bash", "--disallowedTools", "WebSearch", "WebFetch"]);
+    expect(high).toContain("--dangerously-skip-permissions");
+    for (const level of ["low", "medium"] as const) {
+      const flags = adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: level, cwd: "/tmp/plain", web: false });
+      expect(flags.slice(flags.indexOf("--disallowedTools"))).toEqual(["--disallowedTools", "WebSearch", "WebFetch"]);
+      expect(flags.filter((flag) => flag === "WebFetch")).toHaveLength(1);
+    }
+  });
+
   test("the TUI mapping grants no tools; headless read-only and low grant only the web tools", () => {
     // Allow rules bypass mode checks: in the TUI a human approves, so no
     // rule rides there; headless, every level grants the two read-only web

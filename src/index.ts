@@ -162,6 +162,7 @@ program
     "Suppress supported automatic customization loading; exceptions and harness requirements: docs/isolation.md"
   )
   .option("--tools <selection>", "Built-in tools the harness exposes: default, none")
+  .option("--no-web", "Keep the Claude-family web tools (WebSearch, WebFetch) gated in a headless run")
   .option("--experiment-mcp <spec.json>", "One experiment stdio MCP server through Claude's SDK bridge; requires hermetic, tools none, read-only")
   .option(
     "--result-json",
@@ -221,6 +222,12 @@ program
         hermetic, tools, autonomy: requestedAutonomy, sandboxed: Boolean(options.sandbox), enablePlaywrightMcp });
       if ((hermetic || tools === "none") && enablePlaywrightMcp) {
         throw new Error("--hermetic and --tools none cannot be combined with --enable-playwright-mcp");
+      }
+      // The flag denies Claude Code's own web tools; another harness's web
+      // tools are untouched, so accepting it there would promise a gate
+      // that does not exist.
+      if (options.web === false && agentId !== "claude" && agentId !== "zai") {
+        throw new Error(`--no-web applies to the claude and zai agents only; ${agentId} keeps its own web tools`);
       }
       const sandboxPolicyOverrides = parseSandboxPolicyOverrides({
         sandbox: Boolean(options.sandbox),
@@ -341,6 +348,7 @@ program
         hermetic,
         experimentMcp: options.experimentMcp,
         tools,
+        web: options.web !== false,
         resultJson: Boolean(options.resultJson),
       };
       // Preflight: refuse an unsupported hermetic, tools, or result-json

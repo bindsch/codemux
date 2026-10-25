@@ -74,7 +74,7 @@ export function claudeSessionAutonomyFlags(
       "Bash",
     ];
   }
-  return claudeAutonomyFlags(level, launchDir, { web: false });
+  return claudeAutonomyFlags(level, launchDir, { web: "callback" });
 }
 
 /**

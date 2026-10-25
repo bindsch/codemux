@@ -22,7 +22,10 @@ immutable notes and engineering evidence.
   `--allowedTools` alongside the existing write grants. Neither writes
   locally; the trade-off, that a run reads pages nobody approved and the
   model picks the URLs it fetches, is documented in autonomy and
-  sandboxing. Persistent sessions keep their ceiling and take no web grant.
+  sandboxing, and `codemux run --no-web` denies the two tools for a review
+  of an untrusted tree (a deny rule, so it holds at `--auto high` and over
+  saved approvals; other agents refuse the flag). Persistent sessions keep their ceiling and
+  take no web grant.
 
 ## [0.14.1] - 2026-10-19
 

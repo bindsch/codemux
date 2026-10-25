@@ -109,7 +109,12 @@ export function claudeNativeAutonomyFlags(level: AutonomyLevel): string[] {
   }
 }
 
-/** The web tools every headless run level grants (see the trade-off above). */
+/** The web tools every headless run level grants (see the trade-off above).
+ * With `web: false` they are denied instead: a deny rule holds under
+ * --dangerously-skip-permissions, where leaving a tool out of the allow list
+ * gates nothing (Claude Code builds without the hardening still honor that
+ * bypass at high), and it outranks an allow rule saved in the operator's
+ * settings, which would otherwise keep the tools approved. */
 export const WEB_TOOL_GRANTS = ["WebSearch", "WebFetch"] as const;
 
 /** The headless mapping: the native flags plus explicit allow rules, the
@@ -119,18 +124,22 @@ export const WEB_TOOL_GRANTS = ["WebSearch", "WebFetch"] as const;
  * of the bypass high always requested. The web tools are granted at every
  * level. Grants ride only on headless runs; the TUI keeps the native flags
  * so a human approves. */
+/** What a mapping says about the web tools: grant them (headless runs), deny
+ * them (`--no-web`), or leave them to the permission callback (sessions). */
+export type WebToolRule = "grant" | "deny" | "callback";
 export function claudeAutonomyFlags(
   level: AutonomyLevel,
   launchDir: string,
-  { web = true }: { web?: boolean } = {}
+  { web = "grant" }: { web?: WebToolRule } = {}
 ): string[] {
   const flags = claudeNativeAutonomyFlags(level);
-  const webGrants = web ? WEB_TOOL_GRANTS : [];
+  const webGrants = web === "grant" ? WEB_TOOL_GRANTS : [];
+  const webDenies = web === "deny" ? ["--disallowedTools", ...WEB_TOOL_GRANTS] : [];
   if (level === "medium") {
-    return [...flags, "--allowedTools", grantRule(launchDir), ...webGrants];
+    return [...flags, "--allowedTools", grantRule(launchDir), ...webGrants, ...webDenies];
   }
   if (level === "high") {
-    return [...flags, "--allowedTools", "Edit", "Write", "NotebookEdit", "Bash", ...webGrants];
+    return [...flags, "--allowedTools", "Edit", "Write", "NotebookEdit", "Bash", ...webGrants, ...webDenies];
   }
-  return web ? [...flags, "--allowedTools", ...webGrants] : flags;
+  return web === "grant" ? [...flags, "--allowedTools", ...webGrants] : [...flags, ...webDenies];
 }

@@ -73,6 +73,10 @@ export interface RunRequest {
   hermetic?: boolean;
   // One stdio experiment server through Claude's SDK bridge; every other adapter refuses.
   experimentMcp?: string;
+  // Headless Claude-family runs grant WebSearch and WebFetch at every autonomy level
+  // (see claude-autonomy.ts); `--no-web` sets this false to keep them gated, for a
+  // review of an untrusted tree whose content must not pick the URLs the model fetches.
+  web?: boolean;
   // Ask the harness for a machine-readable result envelope on stdout instead of plain text,
   // so a caller can read what the run actually consumed. Headless runs only: there is no
   // envelope to parse in an interactive session. The envelope's shape is the harness's, not

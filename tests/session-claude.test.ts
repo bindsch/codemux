@@ -52,10 +52,10 @@ describe("claudeSessionAutonomyFlags", () => {
   test("medium, low, and read-only reuse the run mapping without its web grants", () => {
     for (const level of ["medium", "low", "read-only"] as const) {
       const flags = claudeSessionAutonomyFlags(level, "/tmp/launch");
-      expect(flags).toEqual(claudeAutonomyFlags(level, "/tmp/launch", { web: false }));
-      // The ceiling answers each tool call; an allow rule for the web tools would bypass it.
+      expect(flags).toEqual(claudeAutonomyFlags(level, "/tmp/launch", { web: "callback" }));
+      // The ceiling answers each tool call; an allow or deny rule for the web tools would bypass it.
       expect(flags).not.toContain("WebSearch");
-      expect(flags).not.toContain("WebFetch");
+      expect(flags).not.toContain("--disallowedTools");
     }
     expect(claudeAutonomyFlags("read-only", "/tmp/launch")).toContain("WebFetch");
   });

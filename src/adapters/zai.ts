@@ -274,7 +274,7 @@ export class ZaiAdapter extends BaseAdapter {
     cmd.push("--model", request.model || ZAI_DEFAULT_MODEL);
 
     if (request.autonomy) {
-      cmd.push(...claudeAutonomyFlags(request.autonomy, request.cwd ?? process.cwd()));
+      cmd.push(...claudeAutonomyFlags(request.autonomy, request.cwd ?? process.cwd(), { web: request.web === false ? "deny" : "grant" }));
     }
 
     if (request.effort) {

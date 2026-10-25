@@ -476,7 +476,7 @@ export class ClaudeAdapter extends BaseAdapter {
       // experiment tools, whose separate process owns its writes; plan mode
       // must not suppress those before they reach the control callback.
       cmd.push(...(request.experimentMcp ? ["--permission-mode", "default"] :
-        claudeAutonomyFlags(request.autonomy, request.cwd ?? process.cwd())));
+        claudeAutonomyFlags(request.autonomy, request.cwd ?? process.cwd(), { web: request.web === false ? "deny" : "grant" })));
     }
     if (request.effort) {
       cmd.push(...this.mapEffort(request.effort));

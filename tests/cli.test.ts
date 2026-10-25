@@ -83,6 +83,7 @@ describe("CLI - Help", () => {
     expect(stdout).toContain("--sandbox-scrub-env");
     expect(stdout).not.toContain("--sandbox-allow-net");
     expect(stdout).not.toContain("--sandbox-keep-env");
+    expect(stdout).toContain("--no-web");
     expect(stdout).toContain("--auto");
     expect(stdout).toContain("--effort");
     expect(stdout).toContain("--cwd");
