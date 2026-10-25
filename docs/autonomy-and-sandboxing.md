@@ -31,6 +31,8 @@ Kimi's headless `--prompt` rejects its interactive autonomy flags. OpenHands hea
 
 Claude's subprocess environment hardening can reset its requested native mode to default, which headless denies every tool that would prompt. Codemux's scoped headless tool grants preserve the intended write behavior, and every headless `run` level also grants `WebSearch` and `WebFetch`; without that grant a read-only or low run could not search or fetch. Neither tool writes locally, but the grant is a trade-off: the run reads pages nobody approved, and the model picks the URLs it fetches, so content it reads (a prompt injection in an untrusted repository) can carry local data out in a URL. `--sandbox-no-net` would deny that but also denies the model provider, so it is no remedy here; a review of an untrusted tree passes `--no-web`, which denies the two tools with a deny rule (so it holds at high, where the bypass flag would ignore an absent allow rule, and over an allow rule saved in the operator's settings) and changes nothing else. Persistent sessions do not take the grant: their ceiling answers each tool call and denies the web tools at every level but low. This is a version-sensitive adapter mapping, not a property scode can enforce for Claude.
 
+For programmatic Claude and Z.AI requests, `web: false` denies both tools even when `autonomy` is omitted. A defined `web` value must be a boolean.
+
 ## Scode policy
 
 Codemux maps read-only to scode `--ro` and other levels to `--rw`. Standard trust is the default at every autonomy level. Codex/OpenCode read-only filesystem mode is enforced explicitly. Harness state can remain writable in read-only mode.

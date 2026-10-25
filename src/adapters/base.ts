@@ -370,6 +370,9 @@ export abstract class BaseAdapter {
     }
     validateWorkingDirectory(request.cwd);
     validateEnvironmentNames(request.passthroughEnv);
+    if (request.web !== undefined && typeof request.web !== "boolean") {
+      throw new Error("web must be a boolean");
+    }
     if (
       request.sandboxed !== undefined &&
       typeof request.sandboxed !== "boolean"

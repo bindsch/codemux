@@ -18,6 +18,7 @@ import { claudeFamilyPlainResult } from "../plain-unwrap.js";
 import {
   claudeAutonomyFlags,
   claudeNativeAutonomyFlags,
+  WEB_TOOL_GRANTS,
 } from "../claude-autonomy.js";
 import {
   assertAbsoluteClaudeConfigDir,
@@ -477,6 +478,9 @@ export class ClaudeAdapter extends BaseAdapter {
       // must not suppress those before they reach the control callback.
       cmd.push(...(request.experimentMcp ? ["--permission-mode", "default"] :
         claudeAutonomyFlags(request.autonomy, request.cwd ?? process.cwd(), { web: request.web === false ? "deny" : "grant" })));
+    }
+    if (request.web === false && !cmd.includes("--disallowedTools")) {
+      cmd.push("--disallowedTools", ...WEB_TOOL_GRANTS);
     }
     if (request.effort) {
       cmd.push(...this.mapEffort(request.effort));

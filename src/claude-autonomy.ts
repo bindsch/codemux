@@ -110,11 +110,8 @@ export function claudeNativeAutonomyFlags(level: AutonomyLevel): string[] {
 }
 
 /** The web tools every headless run level grants (see the trade-off above).
- * With `web: false` they are denied instead: a deny rule holds under
- * --dangerously-skip-permissions, where leaving a tool out of the allow list
- * gates nothing (Claude Code builds without the hardening still honor that
- * bypass at high), and it outranks an allow rule saved in the operator's
- * settings, which would otherwise keep the tools approved. */
+ * With `web: "deny"`, they are denied instead. Deny rules apply under
+ * --dangerously-skip-permissions and override saved allow rules. */
 export const WEB_TOOL_GRANTS = ["WebSearch", "WebFetch"] as const;
 
 /** The headless mapping: the native flags plus explicit allow rules, the

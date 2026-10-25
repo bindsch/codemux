@@ -1,0 +1,6 @@
+{
+  "name": "test",
+  "command": "/usr/bin/true",
+  "args": [],
+  "env": []
+}

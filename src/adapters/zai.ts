@@ -8,6 +8,7 @@ import { getPlaywrightSandboxMcpArgs } from "../mcp.js";
 import {
   claudeAutonomyFlags,
   claudeNativeAutonomyFlags,
+  WEB_TOOL_GRANTS,
 } from "../claude-autonomy.js";
 import { readUtf8FileBounded } from "../file-io.js";
 import { appendDiagnostic, claudeFamilyResult } from "../result-envelope.js";
@@ -308,6 +309,9 @@ export class ZaiAdapter extends BaseAdapter {
       // mode must not suppress those before they reach the control callback.
       cmd.push(...(request.experimentMcp ? ["--permission-mode", "default"] :
         claudeAutonomyFlags(request.autonomy, request.cwd ?? process.cwd(), { web: request.web === false ? "deny" : "grant" })));
+    }
+    if (request.web === false && !cmd.includes("--disallowedTools")) {
+      cmd.push("--disallowedTools", ...WEB_TOOL_GRANTS);
     }
 
     if (request.effort) {
