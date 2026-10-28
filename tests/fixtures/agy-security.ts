@@ -1,5 +1,6 @@
 // Synthetic credentials only: record raw argv and stdin to prove the boundary.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const args = process.argv.slice(2);
 const stdin = args[0] === "-i" ? readFileSync(0, "utf8") : "";
@@ -31,6 +32,11 @@ if (process.env.AGY_TEST_FAIL === step || failOnce) {
   process.exit(1);
 }
 if (command === "find-generic-password") process.stdout.write(secret + "\n");
+else if (command === "default-keychain") {
+  const defaultFile = join(process.env.HOME!, ".agy-test-default");
+  if (args.includes("-s")) writeFileSync(defaultFile, args.at(-1)!);
+  else process.stdout.write(`    "${existsSync(defaultFile) ? readFileSync(defaultFile, "utf8") : join(process.env.HOME!, "Library/Keychains/login.keychain-db")}"\n`);
+}
 else if (command === "list-keychains") {
   if (args.includes("-s")) {
     if (process.env.AGY_TEST_FAIL !== "restore-noop") writeFileSync(listFile, JSON.stringify(args.slice(4)));

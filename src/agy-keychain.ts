@@ -97,12 +97,12 @@ function hasPrivateKeychainLayout(canonical: string, roots: readonly string[], t
   });
 }
 
-function client(environment: NodeJS.ProcessEnv, cwd?: string) {
+function client(environment: NodeJS.ProcessEnv, cwd?: string, home = agyKeychainHost.home()) {
   const path = agyKeychainHost.securityPath(environment);
   if (!path) return;
   const security = resolveTrustedExecutable(path, "security", cwd);
-  // HOME selects the real login store, independently of instruction/config HOME.
-  const env = { HOME: agyKeychainHost.home(), PATH: "/usr/bin:/bin" };
+  // Use the real login HOME unless explicitly selecting a private default.
+  const env = { HOME: home, PATH: "/usr/bin:/bin" };
   return (args: string[], failure: string, stdin?: string): Buffer => {
     try {
       const result = agyKeychainHost.spawnSync([security, ...args], {
@@ -124,6 +124,54 @@ function searchList(invoke: NonNullable<ReturnType<typeof client>>): string[] {
   });
 }
 
+function defaultKeychain(invoke: NonNullable<ReturnType<typeof client>>): string {
+  const output = invoke(["default-keychain", "-d", "user"], "cannot read user default keychain").toString("utf8");
+  const match = /^\s*"([^\r\n]+)"\s*$/.exec(output);
+  if (!match || !isAbsolute(match[1]!)) throw new Error("cannot parse user default keychain");
+  return match[1]!;
+}
+
+function restoreDefault(invoke: NonNullable<ReturnType<typeof client>>, original: string): void {
+  invoke(["default-keychain", "-d", "user", "-s", original], "cannot restore user default keychain");
+  if (defaultKeychain(invoke) !== original) throw new Error("user default keychain was not restored");
+}
+
+function setMirrorDefault(invoke: NonNullable<ReturnType<typeof client>>, home: string, keychain: string,
+  environment: NodeJS.ProcessEnv, cwd?: string): void {
+  let original: string;
+  try { original = defaultKeychain(invoke); }
+  catch {
+    try { original = defaultKeychain(invoke); }
+    catch {
+      console.error("codemux: no readable default keychain; agy may prompt to store its token");
+      return;
+    }
+  }
+  const privateInvoke = client(environment, cwd, home);
+  if (!privateInvoke) throw new Error("cannot select agy private keychain client");
+  try {
+    privateInvoke(["default-keychain", "-d", "user", "-s", keychain],
+      "cannot set agy keychain mirror as the private HOME's default keychain");
+  } finally {
+    let current: string | undefined;
+    try { current = defaultKeychain(invoke); }
+    catch {
+      try { current = defaultKeychain(invoke); }
+      catch {
+        throw new Error("real default keychain could not be verified after the private selection");
+      }
+    }
+    // Another process may have selected an unrelated default while we ran.
+    if (current === keychain) {
+      restoreDefault(invoke, original);
+      throw new Error("agy keychain mirror changed the user's default keychain; restored");
+    }
+  }
+  if (defaultKeychain(privateInvoke) !== keychain) {
+    throw new Error("agy keychain mirror is not the private HOME's default keychain");
+  }
+}
+
 function interactiveCommand(args: string[]): string {
   if (args.some((arg) => /[\0\r\n]/.test(arg))) {
     throw new Error("cannot populate agy keychain mirror: unsupported interactive input");
@@ -139,7 +187,8 @@ export function verifyAgyKeychainSearchList(environment: NodeJS.ProcessEnv): voi
   const roots = agyProbeRoots(environment);
   const template = canonicalPath(join(agyKeychainStateDir(), AGY_TEMPLATE_NAME));
   const invoke = client(environment);
-  if (invoke && searchList(invoke).some((path) => isPrivateKeychain(path, roots, template))) {
+  if (!invoke) return;
+  if (searchList(invoke).some((path) => isPrivateKeychain(path, roots, template))) {
     throw new Error("agy keychain cleanup failed: mirror remains in the user's Keychain search list");
   }
 }
@@ -280,10 +329,12 @@ export function buildAgyKeychainMirror(home: string, environment: NodeJS.Process
     invoke(["-i"], "cannot configure agy keychain mirror", interactiveCommand(["set-keychain-settings", keychain]));
     try {
       invoke(["-i"], "cannot populate agy keychain mirror", input);
-      return;
     } catch (error) {
       if (attempt === 1) throw error;
       failedPassword = password;
+      continue;
     }
+    setMirrorDefault(invoke, home, keychain, environment, cwd);
+    return;
   }
 }

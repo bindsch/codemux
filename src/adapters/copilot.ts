@@ -1,4 +1,5 @@
-import { BaseAdapter } from "./base.js";
+import { join } from "node:path";
+import { BaseAdapter, type RunContext } from "./base.js";
 import { assertNoCopilotProjectExecutionConfig } from "../project-safety.js";
 import { validateWorkingDirectory } from "../validation.js";
 import type {
@@ -8,6 +9,9 @@ import type {
   ReasoningEffort,
   RunRequest,
 } from "../types.js";
+
+const PKG_CACHE_ENV = "COPILOT_PKG_CACHE_HOME";
+const CACHE_ENV = "COPILOT_CACHE_HOME";
 
 // `--hermetic` has no claimable mechanism: no switch closes every operator
 // channel, and the check's control probe can never leak the planted code
@@ -87,9 +91,7 @@ export class CopilotAdapter extends BaseAdapter {
     // Verified 2026-09-21 against copilot 1.0.85's own `--help`: it lists
     // `--reasoning-effort <level>` with `[possible values: none, minimal, low, medium, high,
     // xhigh, max]` and no `--effort`. The values are unchanged, so the level passes through raw --
-    // unlike Droid, which maps `none` to `off` for the same flag name. An end-to-end run was not
-    // possible here: copilot needs a writable cache under ~/Library/Caches that the sandbox
-    // denies, which is a pre-existing environment limit unrelated to this flag.
+    // unlike Droid, which maps `none` to `off` for the same flag name.
     return ["--reasoning-effort", level];
   }
 
@@ -122,6 +124,35 @@ export class CopilotAdapter extends BaseAdapter {
 
   override getStdinInput(_request: RunRequest): string | null {
     return null;
+  }
+
+  override getRunEnv(request: RunRequest, _context?: RunContext): Record<string, string> {
+    return this.getPackageCacheEnv(request.sandboxed, request.passthroughEnv);
+  }
+
+  override getTuiEnv(
+    _model?: string,
+    _autonomy?: AutonomyLevel,
+    _effort?: ReasoningEffort,
+    sandboxed?: boolean,
+    passthroughEnv?: readonly string[]
+  ): Record<string, string> {
+    return this.getPackageCacheEnv(sandboxed, passthroughEnv);
+  }
+
+  private getPackageCacheEnv(
+    sandboxed?: boolean,
+    passthroughEnv?: readonly string[]
+  ): Record<string, string> {
+    if (
+      !sandboxed || process.platform !== "darwin" ||
+      this.environment.HOME === undefined ||
+      (passthroughEnv?.includes(PKG_CACHE_ENV) && this.environment[PKG_CACHE_ENV]) ||
+      (passthroughEnv?.includes(CACHE_ENV) && this.environment[CACHE_ENV])
+    ) return {};
+    // Copilot appends pkg/<platform> to this root. Scode permits this cache,
+    // while macOS's default ~/Library/Caches/copilot is blocked.
+    return { [PKG_CACHE_ENV]: join(this.environment.HOME, ".cache", "copilot") };
   }
 
   override validateRunRequest(request: RunRequest): void {

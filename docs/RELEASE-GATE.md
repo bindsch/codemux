@@ -34,6 +34,96 @@ Record those gaps. No model prompt is part of the gate.
 - [ ] CI passes on both macOS and Linux for the exact candidate commit.
 - [ ] No selected test run is presented as the full suite.
 
+## Live harness gate
+
+The owner must run this gate on the release machine before tagging:
+
+```sh
+make live-gate
+```
+
+This opt-in gate sends real prompts and spends quota. It is separate from
+the automated gate. It tests every installed harness with two probes under
+the default sandbox:
+
+| Probe | Autonomy | Required behavior |
+| --- | --- | --- |
+| A | `read-only` | Reply with exactly `OK`. |
+| B | `medium` | In a fresh `--cwd`, execute `sh probe.sh` and return only its exact stdout. |
+
+For Probe B, the gate writes a fresh random 12-hex nonce to `.nonce` with
+mode `0600` and writes `probe.sh` with mode `0700`. The script runs
+`printf %s "$(cat .nonce)" | shasum -a 256 | cut -c1-16`.
+It uses `sha256sum` when `shasum` is absent.
+The prompt asks the harness to run `sh probe.sh`; it does not contain the
+nonce or its hash. The gate computes the expected SHA-256 with `node:crypto`.
+Trimmed stdout must equal the first 16 hex characters of that hash.
+The hash is never written to a probe file. Reading or copying the nonce with
+file tools cannot produce the required output. Matching stdout proves a
+command ran in the working directory and returned its output.
+
+Both probes must exit 0 and return the required output after trimming
+surrounding whitespace. An exit of 0 alone does not pass a probe. Each probe
+defaults to a 180-second harness timeout. The gate's outer deadline adds
+30 seconds to that timeout. At most four probes run concurrently. Use the
+script's `--timeout` (seconds) and `--jobs` (1–4) options to change those
+limits:
+
+```sh
+bun run scripts/live-gate.ts --timeout 240 --jobs 2
+```
+
+A terminal `SIGHUP` stops active probe process groups and makes the gate
+exit 129. Use `--pass-env <names>` to forward a comma-separated environment
+list verbatim as `--pass-env <names>` to every probe. The operator must name
+each pass-through explicitly. An ambient `CODEMUX_CURSOR_ENTRY` never adds
+one automatically. To select Cursor's alternate entry, set
+`CODEMUX_CURSOR_ENTRY=cursor` in the environment and run:
+
+```sh
+make live-gate LIVE_GATE_ARGS="--pass-env CODEMUX_CURSOR_ENTRY"
+```
+
+The Makefile forwards `LIVE_GATE_ARGS` to the script. It also accepts the
+option directly:
+
+```sh
+bun run scripts/live-gate.ts --pass-env CODEMUX_CURSOR_ENTRY
+```
+
+Only installed harnesses appear in the table. For harnesses without
+credentials, request an explicit skip with a comma-separated list:
+
+```sh
+LIVE_GATE_SKIP=gemini,qwen,goose make live-gate
+bun run scripts/live-gate.ts --skip gemini,qwen,goose
+```
+
+Explicit skips report `SKIP (no credentials; operator requested)`. A skip is
+not a passing probe. Do not skip an installed harness that has credentials
+to hide a failure. The gate exits 1 when no probes run, including when no
+harnesses are installed or `--only` selects none of the installed harnesses.
+It prints `live-gate: nothing was probed` after the table and totals. If every
+listed harness was explicitly skipped, the message is
+`live-gate: nothing was probed (all skipped)` and the exit code is still 1.
+
+Refuse the release if any installed, credentialed harness fails either
+probe, or if a feature behaves differently across harnesses without a
+documented unsupported entry. `MEDIUM_UNSUPPORTED` records documented
+exceptions to Probe B. It is empty under the current
+[autonomy matrix](autonomy-and-sandboxing.md#native-mappings): every harness
+must run Probe B. Kimi's headless reliance on scode does not justify a skip.
+
+| MEDIUM_UNSUPPORTED harness | Unsupported behavior and evidence |
+| --- | --- |
+
+- [ ] Owner ran `make live-gate` on the release machine for the candidate.
+- [ ] Every installed, credentialed harness passed both probes with exit 0
+  and the exact required output.
+- [ ] Record the result table, timeout and job limits, and every skip reason.
+- [ ] No feature differs across harnesses without a documented unsupported
+  entry; `MEDIUM_UNSUPPORTED` still matches the autonomy matrix.
+
 ## CLI and contract coverage
 
 - [ ] Help renders for the root and every command: `run`, `tui`,

@@ -3,6 +3,7 @@ import { runAgyCanaryChecks, runAgyIsolationProbe } from "./agy-isolation-probe.
 import { assertExperimentMcpUnavailable, experimentCanaryControl, validateExperimentRequest } from "./experiment-mcp.js";
 import { getAdapter } from "./adapters/index.js";
 import {
+  assertHarnessSupported,
   handleUnexpectedError,
   isScodeAvailable,
   parseAutonomyOption,
@@ -101,8 +102,6 @@ export function registerCheckCommand(
               options.sandboxTrust || options.sandboxNoNet || options.sandboxScrubEnv || requestedEffort) {
             throw new Error("--agy-isolation-probe requires -a agy --auto read-only with default scode and no other isolation flags");
           }
-          process.exitCode = await runAgyIsolationProbe(options.agyIsolationProbe, timeoutMs, model);
-          return;
         }
         const sandboxPolicyOverrides = parseSandboxPolicyOverrides({
           sandbox: Boolean(options.sandbox),
@@ -116,8 +115,6 @@ export function registerCheckCommand(
               options.sandboxTrust || options.sandboxNoNet || options.sandboxScrubEnv || requestedEffort) {
             throw new Error("agy canary checks require default read-only scode and manage their own scratch cwd and HOME");
           }
-          process.exitCode = await runAgyCanaryChecks(hermetic, tools === "none", timeoutMs, model);
-          return;
         }
 
         const adapter = getAdapter(agentId);
@@ -166,6 +163,19 @@ export function registerCheckCommand(
           process.exit(1);
         }
 
+        const harnessVersion = await assertHarnessSupported(
+          agentId, adapter.binaryName, options.cwd, undefined,
+          autonomy, Boolean(options.sandbox), passthroughEnv
+        );
+        if (options.agyIsolationProbe !== undefined) {
+          process.exitCode = await runAgyIsolationProbe(options.agyIsolationProbe, timeoutMs, model, harnessVersion);
+          return;
+        }
+        if (agentId === "agy" && (hermetic || tools === "none")) {
+          process.exitCode = await runAgyCanaryChecks(hermetic, tools === "none", timeoutMs, model, harnessVersion);
+          return;
+        }
+
         const baseRequest: RunRequest = {
           agent: agentId,
           prompt: "Reply with: OK",
@@ -186,6 +196,7 @@ export function registerCheckCommand(
           timeoutMs,
           cwd: options.cwd,
           kind: "check",
+          harnessVersion,
         };
         const label = `${agentId}${model ? ` (model: ${model})` : ""}${options.sandbox ? " (sandboxed)" : ""}`;
 

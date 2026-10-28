@@ -25,6 +25,8 @@ export interface LaunchOptions {
   requestedAutonomy: AutonomyLevel;
   timeoutMs?: number;
   cwd?: string;
+  /** Version already obtained by the CLI compatibility gate. */
+  harnessVersion?: string | null;
   /** Which command asked for this launch: the call ledger's `kind` field.
    * Absent means "run" — the default caller. */
   kind?: "run" | "check";
@@ -131,6 +133,7 @@ export async function launchRunRequest(
       // preparation may depend on initialization performed there.
       adapter.beforeLaunch();
       context = adapter.prepareRun(effective);
+      if (options.harnessVersion !== undefined) context.harnessVersion = options.harnessVersion;
       releaseExitCleanup = registerRunExitCleanup(adapter, context);
       // A const for the receipt closures below: `context` is assigned by
       // now, but its `let` type follows the variable, not this point.
@@ -167,6 +170,7 @@ export async function launchRunRequest(
     // shaped for the sandbox the child will actually run in (an untrusted
     // sandbox denies harness state, where codex's fallback file lives).
     context = adapter.prepareRun(request, sandboxOptions.trust, sandboxOptions);
+    if (options.harnessVersion !== undefined) context.harnessVersion = options.harnessVersion;
     releaseExitCleanup = registerRunExitCleanup(adapter, context);
     if (context.agyProbe?.diagnostic && context.agyProbe.operatorHome) {
       // Shared temp storage is hidden. Expose only this check's HOME,
@@ -208,7 +212,7 @@ export async function launchRunRequest(
       }
     }
     if (request.experimentMcp) {
-      await assertHarnessSupported(adapter.id, adapter.binaryName, options.cwd, envArg,
+      context.harnessVersion = await assertHarnessSupported(adapter.id, adapter.binaryName, options.cwd, envArg,
         request.autonomy, true, request.passthroughEnv, "2.1.280");
     }
     // The override question reads the ADAPTER's environment view, not

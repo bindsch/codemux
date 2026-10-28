@@ -28,8 +28,9 @@ function searchList(security: ReturnType<typeof homes>["security"], initial: str
   security.mockReturnValue(process.execPath);
   let list = initial;
   const spawn = spyOn(agyKeychainHost, "spawnSync").mockImplementation(((args: string[]) => {
-    if (args[4] === "-s") list = args.slice(5);
-    return { exitCode: 0, stdout: Buffer.from(list.map((path) => `"${path}"`).join("\n")), stderr: Buffer.alloc(0) };
+    if (args[1] === "list-keychains" && args[4] === "-s") list = args.slice(5);
+    const output = args[1] === "default-keychain" ? `"${join(agyKeychainHost.home(), AGY_MIRROR_PATH)}"` : list.map((path) => `"${path}"`).join("\n");
+    return { exitCode: 0, stdout: Buffer.from(output), stderr: Buffer.alloc(0) };
   }) as typeof Bun.spawnSync);
   cleanup.push(() => spawn.mockRestore());
   return { list: () => list, spawn };

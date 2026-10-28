@@ -17,8 +17,9 @@ function fixture() {
   const security = spyOn(agyKeychainHost, "securityPath").mockReturnValue(process.execPath);
   let list: string[] = [];
   const spawn = spyOn(agyKeychainHost, "spawnSync").mockImplementation(((args: string[]) => {
-    if (args[4] === "-s") list = args.slice(5);
-    return { exitCode: 0, stdout: Buffer.from(list.map((path) => `"${path}"`).join("\n")), stderr: Buffer.alloc(0) };
+    if (args[1] === "list-keychains" && args[4] === "-s") list = args.slice(5);
+    const output = args[1] === "default-keychain" ? `"${join(home, AGY_MIRROR_PATH)}"` : list.map((path) => `"${path}"`).join("\n");
+    return { exitCode: 0, stdout: Buffer.from(output), stderr: Buffer.alloc(0) };
   }) as typeof Bun.spawnSync);
   cleanup.push(() => host.mockRestore(), () => security.mockRestore(), () => spawn.mockRestore());
   return { home, list: () => list, setList: (paths: string[]) => { list = paths; } };

@@ -346,7 +346,7 @@ export function registerRunCommand(
 
         // Refuse or warn before launch: a flag can survive an upstream release
         // while the enforcement behind it does not.
-        await assertHarnessSupported(
+        const harnessVersion = await assertHarnessSupported(
           agentId,
           adapter.binaryName,
           options.cwd,
@@ -365,6 +365,7 @@ export function registerRunCommand(
           requestedAutonomy: sandboxAutonomy,
           timeoutMs,
           cwd: options.cwd,
+          harnessVersion,
         });
 
         process.stdout.write(result.stdout);

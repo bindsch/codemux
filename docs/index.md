@@ -23,7 +23,7 @@ Run `codemux --version` to identify an installed release.
 
 - [Architecture](architecture.md): adapters, launch paths, drivers, trusted state.
 - [Testing](TESTING.md): unit tests, installed contracts, paid probes.
-- [Full release gate](RELEASE-GATE.md): canonical verification command.
+- [Full release gate](RELEASE-GATE.md): automated verification and required live harness probes.
 - [Releasing](RELEASING.md): notes, tags, source and Homebrew artifacts.
 - [Contributing](../CONTRIBUTING.md), [security](../SECURITY.md), [license](https://github.com/bindsch/codemux/blob/main/LICENSE).
 - [Changelog](https://github.com/bindsch/codemux/blob/main/CHANGELOG.md): user-visible release history.

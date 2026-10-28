@@ -6,6 +6,7 @@ import { assertNoKimiProjectExecutionConfig } from "../project-safety.js";
 import { kimiPromptIsCommand } from "../session/kimi-session.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import { writeKimiNoToolsFile } from "../kimi-no-tools.js";
+import { parseVersionParts } from "../harness-compatibility.js";
 import {
   readProviderOverride,
   requireProviderOverride,
@@ -15,11 +16,18 @@ import type {
   AgentId,
   AutonomyLevel,
   RunRequest,
+  RunResult,
   AdapterCapabilities,
 } from "../types.js";
 
+const REPLY_BULLET_PREFIX = "• ";
+const REPLY_CONTINUATION_INDENT = "  ";
+
 /**
- * Kimi Code CLI (`kimi`), audited against 0.31.1.
+ * Kimi Code CLI (`kimi`), installed 2.3.2; contract audited against 0.31.1.
+ * Headless bullet blocks with two-space continuations were observed on 2.3.2.
+ * processRunResult removes that formatting only for installed major versions
+ * 2 and higher when all stdout matches. Older and unknown versions stay unchanged.
  *
  * Autonomy maps onto three native switches in interactive sessions: the default
  * asks before acting, `--yolo` auto-approves tool calls while still asking
@@ -269,6 +277,29 @@ export class KimiAdapter extends BaseAdapter {
 
   override getStdinInput(_request: RunRequest): string | null {
     return null;
+  }
+
+  override processRunResult(result: RunResult, _request: RunRequest, context?: RunContext): RunResult {
+    const majorVersion = context?.harnessVersion
+      ? parseVersionParts(context.harnessVersion)?.[0]
+      : undefined;
+    if (majorVersion === undefined || majorVersion < 2) return result;
+    const blocks: string[] = [];
+    const stdout = result.stdout.replace(/\r\n/g, "\n");
+    for (const block of stdout.replace(/\n+$/, "").split(/\n+(?=• )/)) {
+      const [first, ...continuation] = block.split("\n");
+      if (
+        !first?.startsWith(REPLY_BULLET_PREFIX) ||
+        continuation.some((line) => line !== "" && !line.startsWith(REPLY_CONTINUATION_INDENT))
+      ) {
+        return result;
+      }
+      blocks.push([
+        first.slice(REPLY_BULLET_PREFIX.length),
+        ...continuation.map((line) => line.slice(REPLY_CONTINUATION_INDENT.length)),
+      ].join("\n").replace(/\n+$/, ""));
+    }
+    return { ...result, stdout: blocks.join("\n\n").replace(/\n+$/, "") + "\n" };
   }
 
   override validateRunRequest(request: RunRequest): void {

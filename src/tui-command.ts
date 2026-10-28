@@ -162,7 +162,7 @@ export function registerTuiCommand(
           // the run and session spawns apply (withKeepEnvExemption).
           const injectedEnv = {
             ...adapter.getEnv(),
-            ...adapter.getTuiEnv(model, autonomy, effort, true),
+            ...adapter.getTuiEnv(model, autonomy, effort, true, passthroughEnv),
           };
           const adapterEnv = adapter.buildExecutionEnv(injectedEnv, passthroughEnv);
           const command = adapter.buildTuiCommand(

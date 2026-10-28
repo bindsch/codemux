@@ -95,6 +95,7 @@ case "$1" in
   find-generic-password) printf 'synthetic-agy-token\\n' ;;
   create-keychain) for last do :; done; /usr/bin/touch "$last" ;;
   list-keychains) exit 0 ;;
+  default-keychain) printf '    "%s/Library/Keychains/login.keychain-db"\\n' "$HOME" ;;
   -i) /bin/cat >/dev/null ;;
   set-keychain-settings) exit 0 ;;
   *) exit 1 ;;

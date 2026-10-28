@@ -90,8 +90,9 @@ test("Keychain recovery preserves unrelated lookalikes and canonical symlink esc
   const template = join(agyKeychainStateDir(), AGY_TEMPLATE_NAME);
   let list = [foreign, owned, escape, parentEscape, template, join(home, "ordinary.keychain-db")];
   const spawn = spyOn(agyKeychainHost, "spawnSync").mockImplementation(((args: string[]) => {
-    if (args[4] === "-s") list = args.slice(5);
-    return { exitCode: 0, stdout: Buffer.from(list.map((path) => `"${path}"`).join("\n")), stderr: Buffer.alloc(0) };
+    if (args[1] === "list-keychains" && args[4] === "-s") list = args.slice(5);
+    const output = args[1] === "default-keychain" ? `"${join(home, AGY_MIRROR_PATH)}"` : list.map((path) => `"${path}"`).join("\n");
+    return { exitCode: 0, stdout: Buffer.from(output), stderr: Buffer.alloc(0) };
   }) as typeof Bun.spawnSync);
   const warning = spyOn(console, "error").mockImplementation(() => {});
   try {

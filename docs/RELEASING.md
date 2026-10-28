@@ -18,9 +18,14 @@ before pushing, publishing a release, or changing the shared Homebrew tap.
    report dates and release scopes.
 5. Run the [canonical full gate and checklist](RELEASE-GATE.md#automated-gate).
    Record exact outcomes, skips, and test-count changes.
-6. Prepare the release notes from that release's curated changelog section.
+6. Have the owner run `make live-gate` on the release machine before tagging.
+   This required step spends quota. Record both probes and all skips under the
+   [live harness gate](RELEASE-GATE.md#live-harness-gate). Refuse the release
+   if an installed, credentialed harness fails either probe or a feature
+   differs across harnesses without a documented unsupported entry.
+7. Prepare the release notes from that release's curated changelog section.
    Review the exact text before publication.
-7. Commit using the repository's conventional commit format. Follow the
+8. Commit using the repository's conventional commit format. Follow the
    authorized review and merge process. Wait for CI on the exact commit to tag.
 
 ## Publish the approved candidate

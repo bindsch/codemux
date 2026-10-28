@@ -15,6 +15,10 @@ immutable notes and engineering evidence.
 
 ### Added
 
+- Add `make live-gate` for release-owner checks of every installed harness
+  with read-only reply and medium shell-command probes under the default
+  sandbox. Require both probes before tagging; record credential skips and
+  refuse failures or undocumented differences across harnesses.
 - Add repeatable `run --label KEY=VALUE` metadata and `CODEMUX_LABELS`
   defaults for wrappers. Record labels in the call ledger and structured run
   results. Add `calls --label KEY=VALUE` filters and `calls --sum --by KEY`
@@ -22,6 +26,14 @@ immutable notes and engineering evidence.
 
 ### Fixed
 
+- Normalize Kimi 2.3.2 headless bullet blocks to reply text. Preserve plain
+  replies and stderr.
+- Sandboxed Copilot runs on macOS, both headless and TUI, extract bundled
+  packages under `~/.cache/copilot` instead of the blocked `~/Library`
+  directory. Unsandboxed runs, other platforms, adapters without HOME, and
+  non-empty `COPILOT_PKG_CACHE_HOME` or `COPILOT_CACHE_HOME` settings passed
+  through with `--pass-env` receive no cache override.
+- Stop the macOS "A keychain cannot be found to store Antigravity" dialog by making each private mirror the default keychain for its HOME while preserving the real user's default keychain.
 - Sandboxed headless Cursor runs on macOS automatically use the file credential store
   when `~/.cursor/auth.json` exists. A non-empty, passed-through store setting
   overrides this choice. An API key does not disable file-store selection.

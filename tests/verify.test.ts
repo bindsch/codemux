@@ -68,16 +68,24 @@ describe("Verifier", () => {
     const scratch = join(import.meta.dir, "../scratch");
     mkdirSync(scratch, { recursive: true });
     const home = mkdtempSync(join(scratch, "cursor-verify-home-"));
+    const bin = join(home, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "cursor-agent"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const savedPath = process.env.PATH;
+    process.env.PATH = bin;
     const homeOf = spyOn(os, "homedir").mockReturnValue(home);
     try {
       expect(existsSync(join(home, ".cursor", "auth.json"))).toBe(false);
       const row = verifyAgentWiring("cursor");
+      expect(row.installed).toBe(true);
       expect(row.runBuildOk).toBe(true);
       expect(row.tuiBuildOk).toBe(true);
       expect(row.status).toBe("PASS");
       expect(row.issues).toEqual([]);
     } finally {
       homeOf.mockRestore();
+      if (savedPath === undefined) delete process.env.PATH;
+      else process.env.PATH = savedPath;
       rmSync(home, { recursive: true, force: true });
     }
   });

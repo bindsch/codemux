@@ -66,7 +66,7 @@ export function evaluateAgyProbe(mode: AgyProbeMode, result: RunResult,
 }
 
 async function runProbe(mode: AgyProbeMode, timeoutMs: number, model: string | undefined,
-  canary: ReturnType<typeof plantAgyCanary>): Promise<boolean> {
+  canary: ReturnType<typeof plantAgyCanary>, harnessVersion?: string | null): Promise<boolean> {
   const { cwd } = canary;
   const operatorHome = mode === "hermetic" || mode === "control" ? canary.operatorHome : canary.cleanOperatorHome;
   const prompt = mode === "login" ? "Reply with exactly OK. Do not call any tools." :
@@ -77,7 +77,7 @@ async function runProbe(mode: AgyProbeMode, timeoutMs: number, model: string | u
   if (mode === "tools") request.tools = "none";
   console.error(`Candidate agy ${mode} probe; scratch removed when this check ends`);
   const result = await launchRunRequest(new AgyAdapter(), request,
-    { sandbox: true, requestedAutonomy: "read-only", timeoutMs, cwd, kind: "check" });
+    { sandbox: true, requestedAutonomy: "read-only", timeoutMs, cwd, kind: "check", harnessVersion });
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
   const passed = evaluateAgyProbe(mode, result, canary);
@@ -85,17 +85,19 @@ async function runProbe(mode: AgyProbeMode, timeoutMs: number, model: string | u
   return passed;
 }
 
-export async function runAgyIsolationProbe(mode: string, timeoutMs: number, model?: string): Promise<number> {
+export async function runAgyIsolationProbe(mode: string, timeoutMs: number, model?: string,
+  harnessVersion?: string | null): Promise<number> {
   if (!(AGY_PROBE_MODES as readonly string[]).includes(mode)) {
     throw new Error(`--agy-isolation-probe must be one of: ${AGY_PROBE_MODES.join(", ")}`);
   }
   const canary = plantAgyCanary();
-  try { return await runProbe(mode as AgyProbeMode, timeoutMs, model, canary) ? 0 : 1; }
+  try { return await runProbe(mode as AgyProbeMode, timeoutMs, model, canary, harnessVersion) ? 0 : 1; }
   finally { canary.cleanup(); }
 }
 
 /** Public checks use the same mechanism and require a working positive control. */
-export async function runAgyCanaryChecks(hermetic: boolean, toolsNone: boolean, timeoutMs: number, model?: string): Promise<number> {
+export async function runAgyCanaryChecks(hermetic: boolean, toolsNone: boolean, timeoutMs: number, model?: string,
+  harnessVersion?: string | null): Promise<number> {
   const canary = plantAgyCanary();
   try {
     for (const [enabled, probe, control, label] of [
@@ -103,8 +105,8 @@ export async function runAgyCanaryChecks(hermetic: boolean, toolsNone: boolean, 
       [toolsNone, "tools", "tools-control", "TOOLS"],
     ] as const) {
       if (!enabled) continue;
-      const passed = await runProbe(probe, timeoutMs, model, canary);
-      const controlPassed = await runProbe(control, timeoutMs, model, canary);
+      const passed = await runProbe(probe, timeoutMs, model, canary, harnessVersion);
+      const controlPassed = await runProbe(control, timeoutMs, model, canary, harnessVersion);
       if (!passed || !controlPassed) {
         console.error(`${label} agy: FAIL (probe ${passed ? "passed" : "failed"}, control ${controlPassed ? "passed" : "failed"})`);
         return 1;

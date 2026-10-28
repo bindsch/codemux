@@ -1,4 +1,4 @@
-.PHONY: install link unlink runtime typecheck shell test contracts sandbox-contract check smoke release-gate
+.PHONY: install link unlink runtime typecheck shell test contracts sandbox-contract check smoke release-gate live-gate
 
 install:
 	bun install
@@ -44,6 +44,9 @@ smoke:
 	./bin/codemux list --help >/dev/null
 	./bin/codemux doctor --help >/dev/null
 	./bin/codemux autonomy --help >/dev/null
+
+live-gate:
+	bun run scripts/live-gate.ts $(LIVE_GATE_ARGS)
 
 release-gate: runtime check contracts sandbox-contract smoke
 	bun audit

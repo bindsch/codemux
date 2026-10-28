@@ -24,6 +24,8 @@ import type { PiProviderAgentDir } from "./pi-provider.js";
  * state.
  */
 export interface RunContext {
+  /** Installed version from the compatibility probe; absent or null when unknown. */
+  harnessVersion?: string | null;
   /** Agy private HOME for every sandboxed run; mode also selects native stream handling. */
   agyProbe?: { mode: string; home?: string; operatorHome?: string; diagnostic?: boolean };
   experimentBridge?: ExperimentBridge;

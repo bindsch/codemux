@@ -648,6 +648,7 @@ function resolveRedirectedBinary(
  * harness can reach, but it cannot restore an autonomy level whose meaning
  * changed upstream. A harness that is not installed is left to the existing
  * "not found" handling rather than reported as a version problem.
+ * Returns the probed version, or null when it is unknown.
  */
 export async function assertHarnessSupported(
   agent: AgentId,
@@ -660,11 +661,11 @@ export async function assertHarnessSupported(
   /** Replaces the per-agent below-min refusal point (session floors,
    * design §4.3); `run` and `tui` never set it. */
   minimumOverride?: string
-): Promise<void> {
+): Promise<string | null> {
   const workdir = validateWorkingDirectory(cwd) ?? process.cwd();
   const environment = extraEnv ?? process.env as Record<string, string>;
   const binary = Bun.which(binaryName, { PATH: environment.PATH ?? "" });
-  if (!binary) return;
+  if (!binary) return null;
   // The one place that decides what the version probe runs with, chosen because it is the only
   // scope where the launch environment is also visible. Every regression in this path came from
   // the decision being made somewhere the launch could not be compared against: the probe runs
@@ -699,7 +700,7 @@ export async function assertHarnessSupported(
       );
     }
   }
-  await assertSupportedHarnessVersion({
+  return assertSupportedHarnessVersion({
     agent,
     binary: gateBinary,
     // The entry identity that resolved `gateBinary`, preserved for

@@ -65,6 +65,20 @@ Known exits remove one-shot homes. A later launch sweeps dead-owner one-shot hom
 
 Implementation: [private homes](../src/hermetic-home.ts), [Codex adapter](../src/adapters/codex.ts).
 
+## Copilot on macOS
+
+For sandboxed runs, both headless and TUI, codemux sets `COPILOT_PKG_CACHE_HOME` to
+`~/.cache/copilot` under the adapter's HOME. Copilot 1.0.85 appends
+`pkg/darwin-arm64` when extracting its bundled package. Scode permits this
+cache directory; the default `~/Library/Caches/copilot` is blocked.
+
+Passing through a non-empty `COPILOT_PKG_CACHE_HOME` or `COPILOT_CACHE_HOME` with
+`--pass-env` preserves the operator's choice and suppresses this default.
+Copilot gives `COPILOT_PKG_CACHE_HOME` precedence over `COPILOT_CACHE_HOME`.
+Unsandboxed runs, other platforms, adapters without HOME, and non-empty
+passed-through cache settings receive no cache override. The extracted
+package cache persists between runs.
+
 ## Cursor on macOS
 
 Cursor's default login lives in the macOS Keychain, which scode blocks.
@@ -106,13 +120,15 @@ For Keychain login, codemux keeps one empty template and a random password file,
 
 Each run copies and unlocks the template, disables auto-lock, and inserts only the selected item. The trusted `/usr/bin/security` receives commands, passphrases, and credentials on interactive stdin; credentials do not enter argv. Insertion grants access to security and the resolved agy executable. Failure rebuilds the template and retries once. The private mirror contains the full token, including refresh credentials, for that run.
 
+The mirror is the default keychain of the private HOME so agy's token refresh stores there without a prompt. Measurement confirmed that `security default-keychain -d user -s <mirror>` under the private HOME changes only that HOME's default; the real user's default is unchanged and the real preferences file does not mention the mirror. Restoration is a safeguard: if private selection unexpectedly changes the real default and the process is killed before restoration, the real default remains on the mirror.
+
 Plain runs share existing state entries individually from `.gemini` and its `antigravity-cli` subdirectory. They exclude `.codemux-isolation-probes` and `antigravity-oauth-token`; the whole directory is never linked. Conversations and project state can therefore remain shared while auth stays private. Medium runs use a private settings copy with the headless command grant; other levels can share settings. Hermetic, tools-none, and probe runs retain private state. Controls copy only planted instruction/settings files.
 
 ### Recovery
 
 Every launch validates **both** the OS login home and supplied HOME before recovery. Each must resolve to an absolute user-owned directory. Their canonical `.gemini/.codemux-isolation-probes` roots must be user-owned and free of a linked probe-root path.
 
-Search-list recovery removes only the fixed template or recognized private-mirror paths beneath those validated roots. Unrelated lookalikes remain in their original order and are reported. Template creation snapshots and restores the real user search list. Per-run copies do not need to join that list.
+Search-list recovery removes only the fixed template or recognized private-mirror paths beneath those validated roots. Unrelated lookalikes remain in their original order and are reported. Template creation snapshots and restores the real user search list. Restoration runs under the real login HOME and verifies the list afterward. Per-run copies do not need to join that list. Mirror creation snapshots the real default, sets the private default, and reads both defaults back. If the real default names this run's mirror, codemux restores the snapshot and refuses the run. A failed real-default read-back retries once; if the retry fails, codemux refuses the run without changing the real default. Other real-default changes are left alone. A mismatched private default refuses the run. Search-list recovery and cleanup do not read or restore default keychains.
 
 Stale-home recovery removes only user-owned `run-*` directories with valid ownership markers and a PID whose process no longer exists. Live owners, permission errors, unmarked homes, and linked homes are retained. Cleanup keeps directory descriptors, verifies identities, and can locate a renamed home by inode. Failures report the remaining token/mirror path without replacing a completed child's result.
 

@@ -257,8 +257,9 @@ test.each([false, true])("parent builds one private mirror; hermetic=%s", (herme
   expect(readFileSync(mirror, "utf8")).toBe("one synthetic Antigravity item");
   expect(lstatSync(join(privateHome, "Library/Keychains")).isSymbolicLink()).toBe(false);
   expect(records().map((r) => r.input[0])).toEqual([
-    "list-keychains", "find-generic-password", "list-keychains", "list-keychains", "create-keychain",
-    "list-keychains", "list-keychains", "unlock-keychain", "set-keychain-settings", "add-generic-password",
+    "list-keychains", "find-generic-password", "list-keychains", "list-keychains",
+    "create-keychain", "list-keychains", "list-keychains", "unlock-keychain", "set-keychain-settings", "add-generic-password",
+    "default-keychain", "default-keychain", "default-keychain", "default-keychain",
   ]);
   expect(records()[1].args).toEqual(["find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"]);
   const template = join(agyKeychainStateDir(), AGY_TEMPLATE_NAME);
@@ -278,7 +279,15 @@ test.each([false, true])("parent builds one private mirror; hermetic=%s", (herme
     "-w", secret, "-T", "/usr/bin/security", "-T", realpathSync(agy), mirror]);
   expect(records()[9].args).toEqual(["-i"]);
   expect(records()[9].stdin).toContain(secret.slice(0, 64));
-  expect(records().every((r) => r.home === home)).toBe(true);
+  expect(records().slice(10).map((r) => ({ args: r.args, home: r.home }))).toEqual([
+    { args: ["default-keychain", "-d", "user"], home },
+    { args: ["default-keychain", "-d", "user", "-s", mirror], home: privateHome },
+    { args: ["default-keychain", "-d", "user"], home },
+    { args: ["default-keychain", "-d", "user"], home: privateHome },
+  ]);
+  expect(records().filter((r) => r.args[0] === "list-keychains" && r.args.includes("-s")).map((r) => r.home)).toEqual([home]);
+  expect(records().every((r) => r.home === home ||
+    (r.home === privateHome && r.args[0] === "default-keychain"))).toBe(true);
   expect(JSON.stringify(records().map((r) => r.args))).not.toContain(secret.slice(0, 64));
   const state = join(privateHome, ".gemini");
   expect(lstatSync(state).isSymbolicLink()).toBe(false);
@@ -291,6 +300,7 @@ test.each([false, true])("parent builds one private mirror; hermetic=%s", (herme
   }
   adapter.cleanupRun(context);
   expect(existsSync(privateHome)).toBe(false);
+  expect(records().slice(14).every((r) => r.args[0] === "list-keychains")).toBe(true);
   expect(records().at(-1).args).toEqual(["list-keychains", "-d", "user"]);
   expect(readdirSync(join(home, ".gemini/.codemux-isolation-probes"))).toEqual([]);
   expect(readFileSync(join(home, ".gemini/GEMINI.md"), "utf8")).toBe("operator state");
@@ -306,7 +316,7 @@ test.each(["find-generic-password", "create-keychain", "set-keychain-settings", 
     expect(JSON.stringify(records().map((r) => r.args))).not.toContain(secret.slice(0, 64));
     if (step === "find-generic-password") {
       expect(String(error)).toContain("agy is not logged in; run `agy` to log in");
-      expect(records().filter((r) => r.args[0] !== "list-keychains")).toHaveLength(1);
+      expect(records().filter((r) => !["list-keychains", "default-keychain"].includes(r.args[0]))).toHaveLength(1);
     }
     expect(readdirSync(join(home, ".gemini/.codemux-isolation-probes"))).toEqual([]);
   });
@@ -321,7 +331,8 @@ test.each(["login", "hermetic", "control", "tools", "tools-control"] as const)("
   expect(context.agyProbe!.home).not.toBe(planted);
   expect(lstatSync(join(context.agyProbe!.home!, ".gemini")).isSymbolicLink()).toBe(false);
   expect(existsSync(join(context.agyProbe!.home!, AGY_MIRROR_PATH))).toBe(true);
-  expect(records().every((r) => r.home === home)).toBe(true);
+  expect(records().every((r) => r.home === home ||
+    (r.home === context.agyProbe!.home && r.args[0] === "default-keychain"))).toBe(true);
 });
 
 test("missing security refuses unauthenticated private HOME; an API key needs no mirror", () => {

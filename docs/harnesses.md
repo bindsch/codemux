@@ -44,7 +44,7 @@ For a headless adapter with no effort support, `--effort none` is accepted as no
 | Droid | droid | 0.186.0 | 0.186.0 | 0.221.0, 2026-09-17 | Tools-none read probe passed; ordinary shell probe blocked by nested sandbox. |
 | Goose | goose | none | none | 1.50.1, 2026-09-17 | Tools-none capability probes; instruction leak. |
 | Gemini CLI | gemini | none | none | 0.60.0, 2026-09-17 | Instruction leak; tool-removal claim later withdrawn. |
-| Kimi Code | kimi | 0.31.0 | 0.31.1 | 0.31.1, 2026-10-10 | Tools-none on 2026-09-17; session behavior recorded in October. |
+| Kimi Code | kimi | 0.31.0 | 0.31.1 | 2.3.2, 2026-10-28 | Tools-none on 2026-09-17; session behavior recorded in October; 2.3.2 headless bullet replies observed on 2026-10-28. |
 | OpenHands | openhands | 1.16.0 | 1.16.0 | 1.16.0, 2026-10-07 | Project instruction leak and provider routing. |
 | OpenCode | opencode | 1.18.10 | 1.18.18 | 1.18.18, 2026-09-17 | Hermetic/tools-none probes, with later remote-config refusal corrections. |
 | Pi | pi | none | none | 0.85.1, 2026-09-17 | Tools-none capability probes; instruction leak. |
@@ -77,6 +77,10 @@ Use `codemux list` for discovery, `codemux doctor` for local configuration diagn
 Cursor resolves the explicit `CODEMUX_CURSOR_ENTRY=cursor` opt-in first, then `cursor-agent`, then `agent`. Pass the opt-in with `--pass-env CODEMUX_CURSOR_ENTRY`. The desktop wrapper can install or update the standalone agent; codemux does not invoke it automatically. Its version probe is `cursor agent --version`, not the desktop app's version.
 
 Antigravity binds its prompt as `--print=<prompt>` and uses equals forms for enum flags. **The prompt reaches process argv even when codemux reads it from `-f` or stdin.** Kimi and OpenHands also use argv prompt transport. Codemux avoids printing those prompts, but input-file or stdin selection cannot hide them from process inspection when the upstream interface requires argv.
+
+## Headless reply output
+
+Kimi's headless bullet format was observed on 2.3.2: each reply block starts with a `• ` prefix, and continuation lines use two spaces. When the installed version probe reports major version 2 or higher and all stdout follows this format, codemux removes those prefixes and indents, joins blocks with one blank line, and ends the reply with one newline. For example, `• A\n  B\n\n` becomes `A\nB\n`. Versions 0.x and 1.x and unknown versions keep their output unchanged. Plain replies and other output stay unchanged. Stderr stays unchanged.
 
 ## TUI restrictions
 
