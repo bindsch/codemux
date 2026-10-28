@@ -232,6 +232,20 @@ describe("codemux calls labels", () => {
     expect(result.stdout).toContain("\\r\\t\\u001b[2K");
   });
 
+  test("JSON output preserves stored number spelling and key order around a raw tab", async () => {
+    const labels = { wf: "safe\u009b2K" };
+    const body = record({ model: "foreign", labels }).slice(1);
+    const stored = `{"2":1e400,\t"1":-0,${body}`;
+    const result = await callsWith([stored], ["--json"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(`{"2":1e400, "1":-0,${body.replace("\u009b", "\\u009b")}\n`);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed["2"]).toBe(Infinity);
+    expect(Object.is(parsed["1"], -0)).toBe(true);
+    expect(parsed.labels).toEqual(labels);
+    expect(result.stdout.trim()).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
+  });
+
   test("group totals retain session folding and missing usage accounting", async () => {
     const labels = { project: "alpha" };
     const result = await callsWith([

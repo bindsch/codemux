@@ -15,10 +15,9 @@ export function escapeLabelText(value: string): string {
     character === "\\" ? "\\\\" : unicodeEscape(character));
 }
 
-/** Re-encode raw JSON whitespace and escape DEL/C1 for terminal output. */
+/** Raw C0 in parsed JSON is whitespace; replace it without re-encoding tokens. */
 export function escapeJsonControls(json: string): string {
-  const encoded = /[\x00-\x1f]/.test(json) ? JSON.stringify(JSON.parse(json)) : json;
-  return encoded.replace(/[\x7f-\x9f]/g, unicodeEscape);
+  return json.replace(/[\x00-\x1f]/g, " ").replace(/[\x7f-\x9f]/g, unicodeEscape);
 }
 
 function invalidLabel(label: string, reason: string): never {

@@ -146,6 +146,23 @@ describe("call ledger labels", () => {
     expect(log.malformed).toBe(0);
     expect(log.entries[0]?.record?.labels).toEqual(valid);
   });
+
+  test("reader validates the last duplicate label value and retains both records", () => {
+    const path = ledgerPath();
+    const duplicateLabels = [
+      '{"a":"\\u001b[2K","a":"ok"}',
+      '{"a":"ok","a":"\\u001b[2K"}',
+    ];
+    writeFileSync(path, duplicateLabels.map((value) => JSON.stringify(BASE_RECORD).replace(
+      '"labels":null', `"labels":${value}`,
+    )).join("\n") + "\n");
+    const log = readCallLog(path);
+    expect(log.malformed).toBe(1);
+    expect(log.entries.map((entry) => entry.record)).toEqual([
+      { ...BASE_RECORD, labels: { a: "ok" } },
+      { ...BASE_RECORD, labels: null },
+    ]);
+  });
 });
 
 describe("result envelope labels", () => {

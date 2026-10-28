@@ -10,7 +10,7 @@ export const AUTONOMY_EQUIVALENCE: Record<AgentId, AutonomyMapping> = {
     byLevel: {
       "read-only": "--mode=plan + required scode",
       low: "default prompting (headless soft-denies tools it cannot ask about)",
-      medium: "--mode=accept-edits",
+      medium: "--mode=accept-edits + permissions.allow command(*) (headless)",
       high: "--dangerously-skip-permissions",
     },
     notes:

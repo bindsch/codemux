@@ -38,6 +38,7 @@ function isStringOrNull(value: unknown): boolean {
 }
 
 function isLabels(value: unknown): value is Record<string, string> | null | undefined {
+  // JSON parsing keeps the last duplicate key; validate only its surviving value.
   if (value === undefined || value === null) return true;
   if (typeof value !== "object" || Array.isArray(value) ||
     !Object.values(value).every((item) => typeof item === "string")) return false;

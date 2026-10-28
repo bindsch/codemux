@@ -81,6 +81,26 @@ export function markAgyIsolationProbe(request: RunRequest, mode: AgyProbeMode, o
 
 const AGY_DENIED_ACTIONS = ["read_file", "write_file", "read_url", "execute_url", "command", "unsandboxed", "mcp"];
 
+function headlessMediumSettings(path: string): string {
+  let settings: unknown = {};
+  try { if (existsSync(path)) settings = JSON.parse(readFileSync(path, "utf8")); }
+  catch { throw new Error(`cannot read agy settings: ${path}`); }
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    throw new Error(`invalid agy settings object: ${path}`);
+  }
+  const config = settings as Record<string, unknown>;
+  const permissions = config.permissions ?? {};
+  if (typeof permissions !== "object" || Array.isArray(permissions)) {
+    throw new Error(`invalid agy settings permissions: ${path}`);
+  }
+  const rules = permissions as Record<string, unknown>;
+  const allow = rules.allow ?? [];
+  if (!Array.isArray(allow) || allow.some((rule) => typeof rule !== "string")) {
+    throw new Error(`invalid agy settings permissions.allow: ${path}`);
+  }
+  return JSON.stringify({ ...config, permissions: { ...rules, allow: [...new Set([...allow, "command(*)"])] } });
+}
+
 /**
  * Google Antigravity CLI (`agy`), pinned against 1.2.14 -- the binary
  * installed while this adapter was written -- and the official docs
@@ -215,6 +235,7 @@ export class AgyAdapter extends BaseAdapter {
         writeFileSync(join(state, "antigravity-oauth-token"), readFileSync(token), { flag: "wx", mode: 0o600 });
       }
       if (shareState) {
+        const grantCommands = request.autonomy === "medium";
         // Share entries individually; an unused token must never become a link.
         for (const [relative, excluded] of [[".gemini", "antigravity-cli"],
           [".gemini/antigravity-cli", "antigravity-oauth-token"]] as const) {
@@ -222,9 +243,12 @@ export class AgyAdapter extends BaseAdapter {
           if (!existsSync(source)) continue;
           for (const name of readdirSync(source)) {
             if (name === excluded || name === ".codemux-isolation-probes") continue;
+            if (grantCommands && relative === ".gemini/antigravity-cli" && name === "settings.json") continue;
             symlinkSync(join(source, name), join(home, relative, name));
           }
         }
+        if (grantCommands) writeFileSync(join(state, "settings.json"),
+          headlessMediumSettings(join(realHome, ".gemini/antigravity-cli/settings.json")), { flag: "wx", mode: 0o600 });
         return context;
       }
       if (context.agyProbe!.mode === "tools") writeFileSync(join(state, "settings.json"), JSON.stringify({

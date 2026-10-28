@@ -65,6 +65,31 @@ Known exits remove one-shot homes. A later launch sweeps dead-owner one-shot hom
 
 Implementation: [private homes](../src/hermetic-home.ts), [Codex adapter](../src/adapters/codex.ts).
 
+## Cursor on macOS
+
+Cursor's default login lives in the macOS Keychain, which scode blocks.
+For sandboxed headless runs, codemux sets `AGENT_CLI_CREDENTIAL_STORE=file`
+when `~/.cursor/auth.json` exists under the adapter's HOME, unless a non-empty
+`AGENT_CLI_CREDENTIAL_STORE` setting is passed through with
+`--pass-env AGENT_CLI_CREDENTIAL_STORE`. The file-store selection also applies
+when an API key or auth token is set.
+
+Log in once outside the sandbox:
+
+```sh
+AGENT_CLI_CREDENTIAL_STORE=file cursor-agent login
+```
+
+A passed-through API key (`--pass-env CURSOR_API_KEY`) or auth token
+(`--pass-env CURSOR_AUTH_TOKEN`) also works.
+
+If a sandboxed run fails with `Authentication required` in stderr, codemux
+appends a Keychain explanation and login options to stderr. The hint preserves
+Cursor's exit code.
+
+`--no-sandbox` keeps Cursor's default Keychain login. Codemux does not copy
+Keychain credentials into the file store.
+
 ## Antigravity
 
 Every sandboxed Antigravity headless run uses a private HOME and requires scode 0.6.0 or newer. Scode keeps the real login user's Library blocked. Authentication selection is:
@@ -81,7 +106,7 @@ For Keychain login, codemux keeps one empty template and a random password file,
 
 Each run copies and unlocks the template, disables auto-lock, and inserts only the selected item. The trusted `/usr/bin/security` receives commands, passphrases, and credentials on interactive stdin; credentials do not enter argv. Insertion grants access to security and the resolved agy executable. Failure rebuilds the template and retries once. The private mirror contains the full token, including refresh credentials, for that run.
 
-Plain runs share existing state entries individually from `.gemini` and its `antigravity-cli` subdirectory. They exclude `.codemux-isolation-probes` and `antigravity-oauth-token`; the whole directory is never linked. Settings, conversations, and project state can therefore remain shared while auth stays private. Hermetic, tools-none, and probe runs retain private state. Controls copy only planted instruction/settings files.
+Plain runs share existing state entries individually from `.gemini` and its `antigravity-cli` subdirectory. They exclude `.codemux-isolation-probes` and `antigravity-oauth-token`; the whole directory is never linked. Conversations and project state can therefore remain shared while auth stays private. Medium runs use a private settings copy with the headless command grant; other levels can share settings. Hermetic, tools-none, and probe runs retain private state. Controls copy only planted instruction/settings files.
 
 ### Recovery
 

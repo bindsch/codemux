@@ -1,5 +1,8 @@
-import { BaseAdapter } from "./base.js";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { BaseAdapter, type RunContext } from "./base.js";
 import { assertNoCursorProjectExecutionConfig } from "../project-safety.js";
+import { appendDiagnostic } from "../result-envelope.js";
 import { validateWorkingDirectory } from "../validation.js";
 import type {
   AdapterCapabilities,
@@ -7,6 +10,7 @@ import type {
   AutonomyLevel,
   ReasoningEffort,
   RunRequest,
+  RunResult,
 } from "../types.js";
 
 /**
@@ -19,6 +23,10 @@ import type {
  * could execute anything -- even when the variable itself is set.
  */
 export const CURSOR_ENTRY_ENV = "CODEMUX_CURSOR_ENTRY";
+const CREDENTIAL_STORE_ENV = "AGENT_CLI_CREDENTIAL_STORE";
+const AUTHENTICATION_HINT = "codemux: cursor's default login lives in the macOS Keychain, which the sandbox blocks; " +
+  "log in once with the file store (AGENT_CLI_CREDENTIAL_STORE=file cursor-agent login), " +
+  "pass an API key or auth token, or run with --no-sandbox";
 
 /**
  * One of the entries a launch may run. By default the standalone
@@ -70,6 +78,7 @@ export class CursorAdapter extends BaseAdapter {
   private readonly agentBinary: string | null;
   private readonly standaloneBinary: string | null;
   private readonly desktopOptIn: boolean;
+  private readonly credentialFile: string | null;
 
   constructor(
     findBinary: ((name: string) => string | null) | undefined = undefined,
@@ -81,6 +90,8 @@ export class CursorAdapter extends BaseAdapter {
     this.agentBinary = findBinary("agent");
     this.standaloneBinary = findBinary("cursor-agent");
     this.desktopOptIn = env[CURSOR_ENTRY_ENV] === "cursor";
+    // Static checks omit HOME and skip file-store selection.
+    this.credentialFile = env.HOME === undefined ? null : join(env.HOME, ".cursor", "auth.json");
   }
 
   get binaryName(): string {
@@ -189,12 +200,31 @@ export class CursorAdapter extends BaseAdapter {
     return request.prompt;
   }
 
+  override getRunEnv(request: RunRequest, _context?: RunContext): Record<string, string> {
+    if (
+      !request.sandboxed || process.platform !== "darwin" ||
+      (request.passthroughEnv?.includes(CREDENTIAL_STORE_ENV) &&
+        this.environment[CREDENTIAL_STORE_ENV]) ||
+      this.credentialFile === null ||
+      !existsSync(this.credentialFile)
+    ) return {};
+    return { [CREDENTIAL_STORE_ENV]: "file" };
+  }
+
   override validateRunRequest(request: RunRequest): void {
     super.validateRunRequest(request);
     assertNoCursorProjectExecutionConfig(
       validateWorkingDirectory(request.cwd) ?? process.cwd()
     );
     this.assertDesktopEntryAuthorized(request.passthroughEnv);
+  }
+
+  override processRunResult(result: RunResult, request: RunRequest, _context?: RunContext): RunResult {
+    if (
+      !request.sandboxed || process.platform !== "darwin" ||
+      result.exitCode === 0 || !result.stderr.includes("Authentication required")
+    ) return result;
+    return { ...result, stderr: appendDiagnostic(result.stderr, AUTHENTICATION_HINT) };
   }
 
   override validateTuiRequest(

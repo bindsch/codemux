@@ -143,9 +143,11 @@ Each record contains:
 Every new record includes `labels`. A labeled run stores its key/value pairs;
 an unlabeled run, check, session turn, or closing session stores null.
 Older records without the field are treated as unlabeled.
-Labels are validated on read as on write. If a label map has an invalid key,
-value, or shape, the reader keeps the record, sets its labels to null, and
-counts the line as malformed. Such records cannot match a label filter.
+Labels are validated on read as on write. Standard JSON parsing keeps the last
+value for duplicate label keys; the reader validates the surviving value as on
+write and does not detect duplicates. If a label map has an invalid key, value,
+or shape, the reader keeps the record, sets its labels to null, and counts the
+line as malformed. Such records cannot match a label filter.
 
 Codemux does not automatically record prompt text, API keys, or environment
 values. Labels are caller-supplied plain text and are retained in the ledger.
@@ -193,9 +195,10 @@ of the `wf` label. Records without that label appear under
 as visible lowercase Unicode escapes such as `\u001b`. Literal backslashes
 are doubled so distinct values remain distinct. Other printable text stays
 unchanged. `--json` retains the stored record, including invalid labels, with
-DEL and C1 characters escaped as well as JSON's C0 escapes. Its decoded
-values stay unchanged. Raw carriage returns or tabs between JSON fields
-cause the line to be re-encoded before output.
+DEL and C1 characters escaped as `\uXXXX`, alongside JSON's existing C0
+escapes. Its decoded values stay unchanged. Raw C0 characters are replaced
+with spaces in place. The line is not re-encoded, so number spellings and
+key order stay unchanged.
 `--by` requires `--sum` and a valid label key; invalid use fails with exit 64.
 Each group uses the same session and missing-usage rules as the overall totals.
 

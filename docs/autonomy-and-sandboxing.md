@@ -13,7 +13,7 @@ Headless `run` and interactive `tui` default to read-only autonomy and scode. Ev
 | --- | --- | --- | --- | --- |
 | Claude, Z.AI | Plan, with headless web grants | Manual, with headless web grants | Accept edits, with headless edit grant scoped to launch directory and web grants | Skip permissions, with headless edit/write/notebook/shell and web grants |
 | Codex | read-only + never approve | workspace-write + untrusted approval | workspace-write + never approve | danger-full-access + never approve |
-| Antigravity | Plan + required scode | Native prompting | Accept edits | Skip permissions |
+| Antigravity | Plan + required scode | Native prompting | Accept edits, with headless command grant | Skip permissions |
 | Aider | dry-run | Decline headless confirmations | Auto-confirm | Auto-confirm |
 | Cline | Plan | Auto-approve false | Auto-approve true | Auto-approve true |
 | Copilot | Plan | Allow read | Allow all tools | Allow all tools, paths, and URLs |
@@ -28,6 +28,8 @@ Headless `run` and interactive `tui` default to read-only autonomy and scode. Ev
 | Qwen | plan | default | auto | yolo |
 
 Kimi's headless `--prompt` rejects its interactive autonomy flags. OpenHands headless mode auto-approves. Their headless boundaries therefore depend on scode, not the interactive rows. Antigravity can soft-deny a headless approval while still exiting 0; native success alone does not establish that a requested action ran.
+
+Antigravity medium headless runs add `command(*)` to `permissions.allow` in a private copy of the operator's settings. Existing allow, ask, and deny rules remain; deny rules take precedence. The command grant relies on scode for filesystem and network limits. Read-only, low, and interactive runs keep their native policies.
 
 Claude's subprocess environment hardening can reset its requested native mode to default, which headless denies every tool that would prompt. Codemux's scoped headless tool grants preserve the intended write behavior, and every headless `run` level also grants `WebSearch` and `WebFetch`; without that grant a read-only or low run could not search or fetch. Neither tool writes locally, but the grant is a trade-off: the run reads pages nobody approved, and the model picks the URLs it fetches, so content it reads (a prompt injection in an untrusted repository) can carry local data out in a URL. `--sandbox-no-net` would deny that but also denies the model provider, so it is no remedy here; a review of an untrusted tree passes `--no-web`, which denies the two tools with a deny rule (so it holds at high, where the bypass flag would ignore an absent allow rule, and over an allow rule saved in the operator's settings) and changes nothing else. Persistent sessions do not take the grant: their ceiling answers each tool call and denies the web tools at every level but low. This is a version-sensitive adapter mapping, not a property scode can enforce for Claude.
 

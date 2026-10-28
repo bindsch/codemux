@@ -558,6 +558,7 @@ describe("CursorAdapter", () => {
       prompt: "x".repeat(40_000),
       autonomy: "read-only",
       sandboxed: true,
+      passthroughEnv: ["CURSOR_API_KEY"],
     })).not.toThrow();
   });
 
@@ -767,7 +768,7 @@ describe("CursorAdapter", () => {
       prompt: "test",
       autonomy: "read-only",
       sandboxed: true,
-      passthroughEnv: [CURSOR_ENTRY_ENV],
+      passthroughEnv: [CURSOR_ENTRY_ENV, "CURSOR_API_KEY"],
     })).not.toThrow();
     expect(() => adapter.validateTuiRequest(undefined, undefined))
       .toThrow(`add --pass-env ${CURSOR_ENTRY_ENV}`);
@@ -788,6 +789,7 @@ describe("CursorAdapter", () => {
       prompt: "test",
       autonomy: "read-only",
       sandboxed: true,
+      passthroughEnv: ["CURSOR_API_KEY"],
     })).not.toThrow();
   });
 

@@ -78,7 +78,7 @@ Codex and every other adapter refuse experiment injection. Codex 0.160.1 was obs
 | Antigravity private home and file-token/Keychain copies | Removed on known exits. Recovery considers validated, marked, user-owned homes with dead owners; see authentication. |
 | Codex real auth.json | Linked into subscription hermetic homes; in-place refreshes persist in the real login. Provider-key runs do not link it. |
 | Claude access-token mirror and credential backups | Persistent shared credential state; backups are not temporary run data. |
-| Antigravity plain-run settings, conversations, and project state | Existing entries are individually linked from the operator's state. OAuth and probe-root entries are excluded. Hermetic/tools-none runs use private state. |
+| Antigravity plain-run settings, conversations, and project state | Existing entries are individually linked from the operator's state. OAuth and probe-root entries are excluded. Medium headless runs use a private settings copy with the command grant instead of the settings link. Hermetic/tools-none runs use private state. |
 | Other harness-owned state | May persist according to that harness. A one-shot codemux result does not promise zero disk writes or no native history for every adapter. |
 | Calls ledger | Persistent per-call metadata in codemux's state directory, unless explicitly disabled. |
 | Experiment recordings | Persistent raw protocol/byte recordings; cleanup of the run does not remove them. |

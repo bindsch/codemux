@@ -1,8 +1,9 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, spyOn } from "bun:test";
 import { AGENT_IDS } from "../src/adapters/index.js";
 import { CURSOR_ENTRY_ENV, CursorAdapter } from "../src/adapters/cursor.js";
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import * as os from "node:os";
 import { join } from "node:path";
 import {
   buildEffectiveScodeCommands,
@@ -61,6 +62,24 @@ describe("Verifier", () => {
     expect(row.mappingOk).toBe(true);
     expect(row.runBuildOk).toBe(true);
     expect(row.tuiBuildOk).toBe(true);
+  });
+
+  test("cursor wiring stays PASS without a credential file", () => {
+    const scratch = join(import.meta.dir, "../scratch");
+    mkdirSync(scratch, { recursive: true });
+    const home = mkdtempSync(join(scratch, "cursor-verify-home-"));
+    const homeOf = spyOn(os, "homedir").mockReturnValue(home);
+    try {
+      expect(existsSync(join(home, ".cursor", "auth.json"))).toBe(false);
+      const row = verifyAgentWiring("cursor");
+      expect(row.runBuildOk).toBe(true);
+      expect(row.tuiBuildOk).toBe(true);
+      expect(row.status).toBe("PASS");
+      expect(row.issues).toEqual([]);
+    } finally {
+      homeOf.mockRestore();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test("an exported CODEMUX_CURSOR_ENTRY never fails the static wiring check", () => {

@@ -20,6 +20,20 @@ immutable notes and engineering evidence.
   results. Add `calls --label KEY=VALUE` filters and `calls --sum --by KEY`
   totals grouped by label value.
 
+### Fixed
+
+- Sandboxed headless Cursor runs on macOS automatically use the file credential store
+  when `~/.cursor/auth.json` exists. A non-empty, passed-through store setting
+  overrides this choice. An API key does not disable file-store selection.
+  Log in once with `AGENT_CLI_CREDENTIAL_STORE=file cursor-agent login`.
+  A sandboxed run that fails with `Authentication required` in stderr gets
+  a Keychain explanation and login options without changing its exit code.
+  A passed-through API key or auth token also works. `--no-sandbox` keeps
+  the default Keychain login.
+- Ordinary sandboxed Antigravity `--auto medium` runs grant `command(*)` in
+  a private settings copy. This permits headless shell commands while
+  preserving the operator's settings and existing allow rules.
+
 ## [0.14.2] - 2026-10-25
 
 ### Added
