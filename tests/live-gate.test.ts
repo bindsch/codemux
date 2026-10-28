@@ -420,7 +420,9 @@ test("live gate forwards the explicit pass-env list verbatim to every probe", as
 test("make live-gate forwards LIVE_GATE_ARGS", async () => {
   const result = Bun.spawnSync(["make", "-n", "live-gate", "LIVE_GATE_ARGS=--pass-env CODEMUX_CURSOR_ENTRY"], { cwd: ROOT });
   expect(result.exitCode).toBe(0);
-  expect(result.stdout.toString().trim()).toBe("bun run scripts/live-gate.ts --pass-env CODEMUX_CURSOR_ENTRY");
+  // GNU make on CI prints "Entering directory" lines around the recipe.
+  expect(result.stdout.toString().split("\n").map((line) => line.trim()))
+    .toContain("bun run scripts/live-gate.ts --pass-env CODEMUX_CURSOR_ENTRY");
 });
 
 test("live gate registers and removes SIGHUP handling and exits 129", async () => {
