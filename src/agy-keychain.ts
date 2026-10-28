@@ -7,6 +7,7 @@ import { callLogPath } from "./call-log.js";
 
 export const AGY_MIRROR_PATH = "Library/Keychains/login.keychain-db";
 const SECURITY_TIMEOUT_MS = 10_000;
+const USABILITY_PROBE_SERVICE = "codemux-usability-probe";
 export const AGY_TEMPLATE_NAME = "agy-mirror-template.keychain-db";
 const LOCK_WAIT_MS = 60_000;
 const LOCK_POLL_MS = 25;
@@ -304,8 +305,45 @@ function copyTemplate(invoke: NonNullable<ReturnType<typeof client>>,
   } finally { unlock(); }
 }
 
-/** Build outside scode. Never attach argv, output, or a subprocess error to an error. */
-export function buildAgyKeychainMirror(home: string, environment: NodeJS.ProcessEnv, cwd?: string): void {
+function prepareKeychainCopy(invoke: NonNullable<ReturnType<typeof client>>, home: string,
+  roots: readonly string[], failedPassword?: string): string {
+  const keychain = join(home, AGY_MIRROR_PATH);
+  mkdirSync(dirname(keychain), { recursive: true, mode: 0o700 });
+  for (let attempt = 0; ; attempt++) {
+    const password = copyTemplate(invoke, keychain, roots, failedPassword);
+    try {
+      // The observed backend reports -25293 on a usable copy. Check it separately.
+      try { invoke(["-i"], "cannot unlock agy keychain mirror",
+        interactiveCommand(["unlock-keychain", "-p", password, keychain])); }
+      catch { /* A successful write below proves the copy is unlocked. */ }
+      invoke(["-i"], "cannot configure agy keychain mirror", interactiveCommand(["set-keychain-settings", keychain]));
+      invoke(["-i"], "cannot prepare agy private keychain", interactiveCommand([
+        "add-generic-password", "-s", USABILITY_PROBE_SERVICE, "-a", "probe", "-w", randomBytes(16).toString("hex"), keychain,
+      ]));
+    } catch {
+      if (attempt === 1) throw new Error("cannot prepare agy private keychain");
+      failedPassword = password;
+      continue;
+    }
+    invoke(["delete-generic-password", "-s", USABILITY_PROBE_SERVICE, "-a", "probe", keychain],
+      "cannot prepare agy private keychain");
+    return password;
+  }
+}
+
+/** Prepare outside scode so token refreshes have a private default Keychain. */
+export function prepareAgyPrivateKeychain(home: string, environment: NodeJS.ProcessEnv, cwd?: string): string | undefined {
+  const roots = agyProbeRoots(environment);
+  const invoke = client(environment, cwd);
+  if (!invoke) return;
+  const password = prepareKeychainCopy(invoke, home, roots);
+  setMirrorDefault(invoke, home, join(home, AGY_MIRROR_PATH), environment, cwd);
+  return password;
+}
+
+/** Never attach argv, output, or a subprocess error to an error. */
+export function insertAgyKeychainItem(home: string, environment: NodeJS.ProcessEnv,
+  password: string | undefined, cwd?: string): void {
   const roots = agyProbeRoots(environment);
   const invoke = client(environment, cwd);
   if (!invoke) throw new Error("agy is not logged in; run `agy` to log in");
@@ -314,27 +352,17 @@ export function buildAgyKeychainMirror(home: string, environment: NodeJS.Process
   const agy = Bun.which("agy", { PATH: environment.PATH ?? "" });
   if (!agy) throw new Error("cannot build agy keychain mirror: agy executable is unavailable");
   const executable = resolveTrustedExecutable(agy, "agy", cwd);
-  const directory = join(home, "Library/Keychains");
   const keychain = join(home, AGY_MIRROR_PATH);
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
   const input = interactiveCommand(["add-generic-password", "-s", "gemini", "-a", "antigravity", "-l", "gemini",
     "-w", secret, "-T", "/usr/bin/security", "-T", executable, keychain]);
-  let failedPassword: string | undefined;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const password = copyTemplate(invoke, keychain, roots, failedPassword);
-    // The observed backend reports -25293 on a usable copy. Insertion decides.
-    try { invoke(["-i"], "cannot unlock agy keychain mirror",
-      interactiveCommand(["unlock-keychain", "-p", password, keychain])); }
-    catch { /* A successful add below proves the copy is usable. */ }
-    invoke(["-i"], "cannot configure agy keychain mirror", interactiveCommand(["set-keychain-settings", keychain]));
     try {
       invoke(["-i"], "cannot populate agy keychain mirror", input);
     } catch (error) {
       if (attempt === 1) throw error;
-      failedPassword = password;
+      password = prepareKeychainCopy(invoke, home, roots, password);
       continue;
     }
-    setMirrorDefault(invoke, home, keychain, environment, cwd);
     return;
   }
 }

@@ -15,10 +15,13 @@ function fixture() {
   cleanup.push(() => fs.rmSync(home, { recursive: true, force: true }));
   const host = spyOn(agyKeychainHost, "home").mockReturnValue(home);
   const security = spyOn(agyKeychainHost, "securityPath").mockReturnValue(process.execPath);
+  fs.mkdirSync(agyKeychainStateDir(), { recursive: true });
+  fs.writeFileSync(join(agyKeychainStateDir(), AGY_TEMPLATE_NAME), "empty template");
+  fs.writeFileSync(join(agyKeychainStateDir(), `${AGY_TEMPLATE_NAME}.password`), "a".repeat(32));
   let list: string[] = [];
-  const spawn = spyOn(agyKeychainHost, "spawnSync").mockImplementation(((args: string[]) => {
+  const spawn = spyOn(agyKeychainHost, "spawnSync").mockImplementation(((args: string[], options: { env: NodeJS.ProcessEnv }) => {
     if (args[1] === "list-keychains" && args[4] === "-s") list = args.slice(5);
-    const output = args[1] === "default-keychain" ? `"${join(home, AGY_MIRROR_PATH)}"` : list.map((path) => `"${path}"`).join("\n");
+    const output = args[1] === "default-keychain" ? `"${join(options.env.HOME!, AGY_MIRROR_PATH)}"` : list.map((path) => `"${path}"`).join("\n");
     return { exitCode: 0, stdout: Buffer.from(output), stderr: Buffer.alloc(0) };
   }) as typeof Bun.spawnSync);
   cleanup.push(() => host.mockRestore(), () => security.mockRestore(), () => spawn.mockRestore());
@@ -32,7 +35,7 @@ test("owned mirror and template canonicalization errors fail recovery, verificat
   const context = adapter.prepareRun({ agent: "agy", prompt: "test", sandboxed: true });
   const home = context.agyProbe!.home!;
   const library = join(home, "Library");
-  fs.mkdirSync(library);
+  fs.mkdirSync(library, { recursive: true });
   fs.renameSync(library, join(home, "Library-original"));
   fs.writeFileSync(library, "a file replaced the directory");
   const mirror = join(home, AGY_MIRROR_PATH);

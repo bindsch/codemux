@@ -83,6 +83,95 @@ export function minimalPath(): string {
   return [isolatedBunDir, "/usr/bin", "/bin"].join(":");
 }
 
+function fakeSecurityScript(fixtureDir: string): string {
+  return String.raw`
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const home = process.env.HOME;
+const login = join(home, "Library/Keychains/login.keychain-db");
+const statePath = join(${JSON.stringify(fixtureDir)}, "security-" + createHash("sha256").update(home).digest("hex") + ".json");
+const state = existsSync(statePath)
+  ? JSON.parse(readFileSync(statePath, "utf8"))
+  : { defaultKeychain: login, keychains: [login] };
+const save = () => writeFileSync(statePath, JSON.stringify(state));
+const quoted = (paths) => process.stdout.write(paths.map((path) => '    "' + path + '"\n').join(""));
+
+function execute(args) {
+  const command = args.shift();
+  const last = args.at(-1);
+  switch (command) {
+    case "create-keychain":
+      writeFileSync(last, JSON.stringify({ password: args[args.indexOf("-p") + 1], unlocked: false, items: {} }));
+      if (!state.keychains.includes(last)) state.keychains.push(last);
+      save();
+      return true;
+    case "unlock-keychain": {
+      if (!existsSync(last)) return false;
+      const keychain = JSON.parse(readFileSync(last, "utf8"));
+      keychain.unlocked = args[args.indexOf("-p") + 1] === keychain.password;
+      writeFileSync(last, JSON.stringify(keychain));
+      return keychain.unlocked;
+    }
+    case "add-generic-password":
+    case "delete-generic-password": {
+      if (!existsSync(last)) return false;
+      const keychain = JSON.parse(readFileSync(last, "utf8"));
+      if (!keychain.unlocked) return false;
+      const item = JSON.stringify([args[args.indexOf("-s") + 1], args.includes("-a") ? args[args.indexOf("-a") + 1] : ""]);
+      if (command === "add-generic-password") {
+        if (Object.hasOwn(keychain.items, item)) return false;
+        keychain.items[item] = args[args.indexOf("-w") + 1];
+      } else {
+        if (!Object.hasOwn(keychain.items, item)) return false;
+        delete keychain.items[item];
+      }
+      writeFileSync(last, JSON.stringify(keychain));
+      return true;
+    }
+    case "set-keychain-settings":
+      return existsSync(last) && JSON.parse(readFileSync(last, "utf8")).unlocked === true;
+    case "show-keychain-info":
+      return existsSync(last);
+    case "delete-keychain":
+      if (existsSync(last)) unlinkSync(last);
+      state.keychains = state.keychains.filter((path) => path !== last);
+      if (state.defaultKeychain === last) state.defaultKeychain = login;
+      save();
+      return true;
+    case "default-keychain":
+      if (args.includes("-s")) {
+        state.defaultKeychain = last;
+        save();
+      } else quoted([state.defaultKeychain]);
+      return true;
+    case "list-keychains":
+      if (args.includes("-s")) {
+        state.keychains = args.slice(args.indexOf("-s") + 1);
+        save();
+      } else quoted(state.keychains);
+      return true;
+    case "find-generic-password":
+      if (!args.includes("-w")) return false;
+      process.stdout.write("synthetic-agy-token\n");
+      return true;
+    default:
+      return false;
+  }
+}
+
+const args = process.argv.slice(2);
+if (args[0] === "-i") {
+  for (const line of readFileSync(0, "utf8").split("\n").filter((line) => line.trim())) {
+    const tokens = Array.from(line.matchAll(/"((?:\\.|[^"\\])*)"|(\S+)/g),
+      ([, quoted, bare]) => quoted === undefined ? bare : quoted.replace(/\\(.)/g, "$1"));
+    if (!execute(tokens)) process.exit(1);
+  }
+} else if (!execute(args)) process.exit(1);
+`;
+}
+
 export function createFakeBinaryEnv(
   binaries: Record<string, string>,
   scodeVersion = "0.6.0"
@@ -90,22 +179,14 @@ export function createFakeBinaryEnv(
   const binDir = mkdtempSync(join(tmpdir(), "codemux-cli-bin-"));
   const apiKeyLogin = binaries.agy && !binaries.security;
   // Never consult the operator's real Keychain from a synthetic agy launch.
-  if (binaries.agy && !binaries.security) binaries = { ...binaries, security: `
-case "$1" in
-  find-generic-password) printf 'synthetic-agy-token\\n' ;;
-  create-keychain) for last do :; done; /usr/bin/touch "$last" ;;
-  list-keychains) exit 0 ;;
-  default-keychain) printf '    "%s/Library/Keychains/login.keychain-db"\\n' "$HOME" ;;
-  -i) /bin/cat >/dev/null ;;
-  set-keychain-settings) exit 0 ;;
-  *) exit 1 ;;
-esac` };
+  if (apiKeyLogin) binaries = { ...binaries, security: fakeSecurityScript(binDir) };
   for (const [name, body] of Object.entries(binaries)) {
     const scriptPath = join(binDir, name);
     const versionPreamble = name === "scode"
       ? `if [ "$1" = "--version" ]; then printf 'scode ${scodeVersion}\\n'; exit 0; fi\n`
       : "";
-    writeFileSync(scriptPath, `#!/bin/sh\n${versionPreamble}${body}\n`);
+    const interpreter = name === "security" && apiKeyLogin ? process.execPath : "/bin/sh";
+    writeFileSync(scriptPath, `#!${interpreter}\n${versionPreamble}${body}\n`);
     chmodSync(scriptPath, 0o755);
   }
 

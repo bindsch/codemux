@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import type { AgyProbeMode } from "../agy-isolation-probe.js";
 import { summarizeAgyStream } from "../agy-stream.js";
-import { AGY_MIRROR_PATH, agyKeychainHost, agyProbeRoots, buildAgyKeychainMirror, recoverAgyKeychainSearchList, verifyAgyKeychainSearchList } from "../agy-keychain.js";
+import { AGY_MIRROR_PATH, agyKeychainHost, agyProbeRoots, insertAgyKeychainItem, prepareAgyPrivateKeychain, recoverAgyKeychainSearchList, verifyAgyKeychainSearchList } from "../agy-keychain.js";
 import { assertNoAgyProjectExecutionConfig } from "../project-safety.js";
 import { validateWorkingDirectory } from "../validation.js";
 import { agyResult } from "../result-envelope.js";
@@ -191,7 +191,7 @@ export class AgyAdapter extends BaseAdapter {
       { ...sandboxOptions, trust: sandboxTrust ?? sandboxOptions.trust });
   }
 
-  /** Select API key, file token, then Keychain before constructing a mirror. */
+  /** Prepare a private Keychain, then select API key, file token, or Keychain login. */
   private preparePrivateHome(context: RunContext, realHome: string, shareState: boolean,
     request: RunRequest, sandboxOptions: SandboxOptions): RunContext {
     if (!isAbsolute(realHome)) throw new Error("agy probe HOME must be absolute");
@@ -213,6 +213,7 @@ export class AgyAdapter extends BaseAdapter {
       ownedProbeHomes.set(context, { home, parent: root, parentDev: parentStat.dev, parentIno: parentStat.ino,
         homeDev: homeStat.dev, homeIno: homeStat.ino, marker, parentFd, homeFd });
       context.agyProbe!.home = home;
+      const keychainPassword = prepareAgyPrivateKeychain(home, this.environment, request.cwd);
       const token = join(agyKeychainHost.home(), PROBE_TOKEN);
       const injectedEnv = { ...this.getEnv(), ...this.getRunEnv(request, context) };
       const environment = this.buildExecutionEnv(injectedEnv, request.passthroughEnv);
@@ -223,7 +224,7 @@ export class AgyAdapter extends BaseAdapter {
       const fileToken = hasApiKey ? undefined : lstatSync(token, { throwIfNoEntry: false });
       if (fileToken && !fileToken.isFile()) throw new Error("agy probe token must be a regular file");
       if (!hasApiKey && !fileToken) {
-        buildAgyKeychainMirror(home, this.environment, request.cwd);
+        insertAgyKeychainItem(home, this.environment, keychainPassword, request.cwd);
       }
       const state = join(home, ".gemini", "antigravity-cli");
       mkdirSync(state, { recursive: true, mode: 0o700 });

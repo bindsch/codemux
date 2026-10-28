@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Command } from "commander";
 import { AgyAdapter } from "../src/adapters/agy.js";
@@ -9,6 +9,66 @@ import { registerCheckCommand } from "../src/check-command.js";
 import { getDefaultConfig } from "../src/config.js";
 import type { RunRequest } from "../src/types.js";
 import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
+
+test("shared agy security fixture handles interactive commands and per-HOME defaults", () => {
+  const scratch = join(import.meta.dir, "../scratch");
+  mkdirSync(scratch, { recursive: true });
+  const home = mkdtempSync(join(scratch, "codemux-security-fixture-"));
+  const privateHome = join(home, "private");
+  mkdirSync(privateHome);
+  const template = join(home, "template.keychain-db");
+  const mirror = join(privateHome, 'mirror "quoted" \\$file.keychain-db');
+  const login = join(home, "Library/Keychains/login.keychain-db");
+  const fake = createFakeBinaryEnv({ agy: "exit 0" });
+  const invoke = (args: string[], commandHome = home, input?: string, exitCode = 0) => {
+    const result = Bun.spawnSync([fake.env.CODEMUX_TEST_AGY_SECURITY!, ...args], {
+      env: { ...fake.env, HOME: commandHome },
+      stdin: input === undefined ? "ignore" : Buffer.from(input),
+      stdout: "pipe", stderr: "pipe",
+    });
+    expect(result.exitCode).toBe(exitCode);
+    return result.stdout.toString("utf8");
+  };
+  const line = (args: string[]) => args.map((arg) =>
+    `"${arg.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`).join(" ");
+  try {
+    invoke(["create-keychain", "-p", "synthetic-password", template]);
+    expect(existsSync(template)).toBe(true);
+    copyFileSync(template, mirror);
+    const add = ["add-generic-password", "-s", "codemux-usability-probe", "-a", "probe", "-w", "synthetic-probe", mirror];
+    invoke(["show-keychain-info", mirror], privateHome);
+    invoke(["-i"], privateHome, line(add) + "\n", 1);
+    invoke(["-i"], home, line(["unlock-keychain", "-p", "wrong-password", mirror]) + "\n", 1);
+    invoke(["-i"], privateHome, line(add) + "\n", 1);
+    invoke(["-i"], home, line(["unlock-keychain", "-p", "synthetic-password", mirror]) + "\n");
+    invoke(["-i"], privateHome, line(add) + "\n");
+    invoke(["delete-generic-password", "-s", "codemux-usability-probe", "-a", "probe", mirror], privateHome);
+    copyFileSync(template, mirror);
+    invoke(["-i"], privateHome, line(add) + "\n", 1);
+    invoke(["-i"], privateHome, [
+      ["unlock-keychain", "-p", "synthetic-password", mirror],
+      ["set-keychain-settings", mirror],
+      ["add-generic-password", "-s", "fixture", "-w", 'synthetic "$token', mirror],
+    ].map(line).join("\n") + "\n");
+    expect(existsSync(mirror)).toBe(true);
+    invoke(["show-keychain-info", mirror], privateHome);
+    expect(invoke(["default-keychain", "-d", "user"]).trim()).toBe(`"${login}"`);
+    invoke(["default-keychain", "-d", "user", "-s", mirror], privateHome);
+    expect(invoke(["default-keychain", "-d", "user"], privateHome).trim()).toBe(`"${mirror}"`);
+    expect(invoke(["default-keychain", "-d", "user"]).trim()).toBe(`"${login}"`);
+    expect(invoke(["list-keychains", "-d", "user"]).trim().split("\n").map((path) => path.trim()))
+      .toEqual([`"${login}"`, `"${template}"`]);
+    invoke(["list-keychains", "-d", "user", "-s", template]);
+    expect(invoke(["list-keychains", "-d", "user"]).trim()).toBe(`"${template}"`);
+    expect(invoke(["find-generic-password", "-s", "fixture", "-w"]).trim())
+      .toBe("synthetic-agy-token");
+    invoke(["delete-keychain", mirror], privateHome);
+    expect(existsSync(mirror)).toBe(false);
+  } finally {
+    fake.cleanup();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
 
 test.each([
   { flags: ["--agy-isolation-probe", "login"] },

@@ -1,5 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { agyKeychainHost } from "../src/agy-keychain.js";
+import { AGY_MIRROR_PATH, AGY_TEMPLATE_NAME, agyKeychainHost, agyKeychainStateDir } from "../src/agy-keychain.js";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -23,15 +23,31 @@ test("an array init is malformed even with a valid result", () => {
 });
 
 let homeMock: ReturnType<typeof spyOn> | undefined;
-afterEach(() => { homeMock?.mockRestore(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+const keychainMocks: ReturnType<typeof spyOn>[] = [];
+afterEach(() => {
+  for (const mock of keychainMocks.splice(0).reverse()) mock.mockRestore();
+  homeMock?.mockRestore();
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 function setup(apiKey = true) {
   const home = mkdtempSync(join(tmpdir(), "codemux-agy-probe-test-"));
   dirs.push(home);
   homeMock = spyOn(agyKeychainHost, "home").mockReturnValue(home);
+  keychainMocks.push(spyOn(agyKeychainHost, "securityPath").mockReturnValue(process.execPath));
+  mkdirSync(agyKeychainStateDir(), { recursive: true });
+  writeFileSync(join(agyKeychainStateDir(), AGY_TEMPLATE_NAME), "empty template");
+  writeFileSync(join(agyKeychainStateDir(), `${AGY_TEMPLATE_NAME}.password`), "a".repeat(32));
+  const keychainCalls: { args: string[]; home: string; input: string }[] = [];
+  keychainMocks.push(spyOn(agyKeychainHost, "spawnSync").mockImplementation(((command: string[], options: { env: NodeJS.ProcessEnv; stdin: Buffer | "ignore" }) => {
+    const args = command.slice(1);
+    keychainCalls.push({ args, home: options.env.HOME!, input: Buffer.isBuffer(options.stdin) ? options.stdin.toString() : "" });
+    const output = args[0] === "default-keychain" ? `"${join(options.env.HOME!, AGY_MIRROR_PATH)}"\n` : "";
+    return { stdout: Buffer.from(output), stderr: Buffer.alloc(0), exitCode: 0, signalCode: null };
+  }) as unknown as typeof Bun.spawnSync));
   const cwd = join(home, "workspace");
   mkdirSync(join(cwd, ".git"), { recursive: true });
   const request: RunRequest = { agent: "agy", prompt: "probe", cwd, autonomy: "read-only", sandboxed: true };
-  return { home, request, adapter: new AgyAdapter({ HOME: home, ...(apiKey ? { GEMINI_API_KEY: "synthetic-api-key" } : {}) }) };
+  return { home, request, keychainCalls, adapter: new AgyAdapter({ HOME: home, ...(apiKey ? { GEMINI_API_KEY: "synthetic-api-key" } : {}) }) };
 }
 
 test.each(["exit", "SIGTERM"])("canary adapter cleanup precedes scratch removal on %s", (event) => {
@@ -135,7 +151,7 @@ test("agy session environment lookup still accepts an absent run context", () =>
 });
 
 test("private HOME carries only login material and codemux deny settings", () => {
-  const { adapter, request, home } = setup(false);
+  const { adapter, request, home, keychainCalls } = setup(false);
   const realState = join(home, ".gemini/antigravity-cli");
   mkdirSync(realState, { recursive: true });
   writeFileSync(join(realState, "antigravity-oauth-token"), "fake-login");
@@ -145,6 +161,10 @@ test("private HOME carries only login material and codemux deny settings", () =>
   adapter.validateRunRequest(request);
   const context = adapter.prepareRun(request);
   const privateHome = context.agyProbe!.home!;
+  expect(readFileSync(join(privateHome, AGY_MIRROR_PATH), "utf8")).toBe("empty template");
+  expect(keychainCalls).toContainEqual({ home: privateHome, input: "",
+    args: ["default-keychain", "-d", "user", "-s", join(privateHome, AGY_MIRROR_PATH)] });
+  expect(keychainCalls.some((call) => call.args[0] === "find-generic-password" || call.input.startsWith('"add-generic-password" "-s" "gemini"'))).toBe(false);
   const privateState = join(privateHome, ".gemini/antigravity-cli");
   expect(readdirSync(privateState).sort()).toEqual(["antigravity-oauth-token", "settings.json"]);
   expect(readFileSync(join(privateState, "antigravity-oauth-token"), "utf8")).toBe("fake-login");

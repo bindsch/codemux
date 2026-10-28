@@ -3,7 +3,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgyAdapter, markAgyIsolationProbe } from "../src/adapters/agy.js";
-import { AGY_MIRROR_PATH, AGY_TEMPLATE_NAME, agyKeychainHost, agyKeychainStateDir, buildAgyKeychainMirror } from "../src/agy-keychain.js";
+import { AGY_MIRROR_PATH, AGY_TEMPLATE_NAME, agyKeychainHost, agyKeychainStateDir, prepareAgyPrivateKeychain } from "../src/agy-keychain.js";
 import { productionSecurityPath } from "./fixtures/agy-host.js";
 import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
 import type { RunRequest } from "../src/types.js";
@@ -11,6 +11,9 @@ import { launchRunRequest } from "../src/launch.js";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
+const item = (path: string): string => JSON.parse(readFileSync(path, "utf8")).item;
+const loginItem = (record: { input: string[] }) => record.input[0] === "find-generic-password" ||
+  (record.input[0] === "add-generic-password" && record.input[2] === "gemini");
 function setup(fail = "") {
   const home = mkdtempSync(join(tmpdir(), "agy-mirror-test-"));
   cleanup.push(() => rmSync(home, { recursive: true, force: true }));
@@ -39,7 +42,7 @@ printf '%s\\n' '{"status":"SUCCESS","response":"OK"}'`,
   return { home, calls, secret, env, adapter, request, records, originalList };
 }
 
-test.each(["GEMINI_API_KEY", "GOOGLE_API_KEY", "file"])("%s authentication bypasses a missing Keychain item", (auth) => {
+test.each(["GEMINI_API_KEY", "GOOGLE_API_KEY", "file"])("%s authentication prepares an empty private Keychain without reading the login item", (auth) => {
   const { home, env, adapter, request, records } = setup("find-generic-password");
   if (auth === "file") {
     mkdirSync(join(home, ".gemini/antigravity-cli"), { recursive: true });
@@ -48,21 +51,22 @@ test.each(["GEMINI_API_KEY", "GOOGLE_API_KEY", "file"])("%s authentication bypas
   for (const hermetic of [false, true]) {
     const context = adapter.prepareRun({ ...request, hermetic });
     cleanup.push(() => adapter.cleanupRun(context));
-    expect(existsSync(join(context.agyProbe!.home!, AGY_MIRROR_PATH))).toBe(false);
-    if (auth === "file") expect(readFileSync(join(context.agyProbe!.home!, ".gemini/antigravity-cli/antigravity-oauth-token"), "utf8"))
-      .toBe("synthetic file token");
+    const mirror = join(context.agyProbe!.home!, AGY_MIRROR_PATH);
+    expect(item(mirror)).toBe("empty");
+    if (auth === "file") expect(readFileSync(join(context.agyProbe!.home!, ".gemini/antigravity-cli/antigravity-oauth-token"), "utf8")).toBe("synthetic file token");
   }
-  expect(records().every((r) => r.input[0] === "list-keychains")).toBe(true);
-  expect(existsSync(join(agyKeychainStateDir(), AGY_TEMPLATE_NAME))).toBe(false);
+  expect(records().filter(loginItem)).toHaveLength(0);
+  expect(records().filter((r) => r.input[0] === "default-keychain")).toHaveLength(8);
+  expect(existsSync(join(agyKeychainStateDir(), AGY_TEMPLATE_NAME))).toBe(true);
 });
-
 test("scrubbed ambient keys use the Keychain mirror, while exempt keys retain precedence", async () => {
   const { env, adapter, request } = setup();
   env.GEMINI_API_KEY = "synthetic-api-key";
   const run = { ...request, hermetic: true };
-  let mirror = false;
+  let mirror: string | undefined;
   const command = spyOn(adapter, "buildRunCommand").mockImplementation((_request, context) => {
-    mirror = existsSync(join(context!.agyProbe!.home!, AGY_MIRROR_PATH));
+    const path = join(context!.agyProbe!.home!, AGY_MIRROR_PATH);
+    mirror = existsSync(path) ? item(path) : undefined;
     throw new Error("stop before harness spawn");
   });
   cleanup.push(() => command.mockRestore());
@@ -70,16 +74,15 @@ test("scrubbed ambient keys use the Keychain mirror, while exempt keys retain pr
     await expect(launchRunRequest(adapter, run, {
       sandbox: true, requestedAutonomy: "read-only", cwd: request.cwd, sandboxPolicyOverrides,
     })).rejects.toThrow("stop before harness spawn");
-    expect(mirror).toBe(true);
+    expect(mirror).toBe("one synthetic Antigravity item");
   }
   const injected = spyOn(adapter, "getEnv").mockReturnValue({ GEMINI_API_KEY: env.GEMINI_API_KEY });
   cleanup.push(() => injected.mockRestore());
   await expect(launchRunRequest(adapter, run, {
     sandbox: true, requestedAutonomy: "read-only", cwd: request.cwd, sandboxPolicyOverrides: { scrubEnv: true },
   })).rejects.toThrow("stop before harness spawn");
-  expect(mirror).toBe(false);
+  expect(mirror).toBe("empty");
 });
-
 test("the template passphrase appears only on stdin, including creation and rebuild", () => {
   const { adapter, request, records } = setup("add-once");
   const context = adapter.prepareRun(request);
@@ -153,7 +156,7 @@ test.each(["cached", "incomplete"])("launch repairs only owned %s keychain paths
     expect(warning).toHaveBeenCalledWith(expect.stringContaining("left an unrelated keychain"));
   } finally { warning.mockRestore(); }
   expect(JSON.parse(readFileSync(`${calls}.list`, "utf8"))).toEqual([originalList[0], privateTemplate, unrelated, escaped, originalList[1]]);
-  expect(records().slice(before).every((r) => r.input[0] === "list-keychains")).toBe(true);
+  expect(records().slice(before).some(loginItem)).toBe(false);
 });
 
 test.each([false, true])("file tokens are copied before configuration links with a supplied HOME; hermetic=%s", (hermetic) => {
@@ -173,7 +176,7 @@ test.each([false, true])("file tokens are copied before configuration links with
   expect(readFileSync(copied, "utf8")).toBe("selected token");
   expect(lstatSync(copied).isFile()).toBe(true);
   expect(lstatSync(copied).mode & 0o777).toBe(0o600);
-  expect(existsSync(join(context.agyProbe!.home!, AGY_MIRROR_PATH))).toBe(false);
+  expect(item(join(context.agyProbe!.home!, AGY_MIRROR_PATH))).toBe("empty");
   if (!hermetic) {
     expect(readFileSync(join(context.agyProbe!.home!, ".gemini/GEMINI.md"), "utf8")).toBe("supplied instructions");
     expect(lstatSync(join(context.agyProbe!.home!, ".gemini/antigravity-cli/settings.json")).isSymbolicLink()).toBe(true);
@@ -182,7 +185,7 @@ test.each([false, true])("file tokens are copied before configuration links with
   adapter.cleanupRun(context);
   expect(readFileSync(join(home, tokenPath), "utf8")).toBe("selected token");
   expect(readFileSync(join(supplied, tokenPath), "utf8")).toBe("other token");
-  expect(records().every((r) => r.input[0] === "list-keychains")).toBe(true);
+  expect(records().some(loginItem)).toBe(false);
 });
 
 test.each(["add-once", "add-generic-password"])("insertion failure rebuilds the template exactly once: %s", (fail) => {
@@ -190,18 +193,18 @@ test.each(["add-once", "add-generic-password"])("insertion failure rebuilds the 
   if (fail === "add-once") {
     const context = adapter.prepareRun(request);
     cleanup.push(() => adapter.cleanupRun(context));
-    expect(readFileSync(join(context.agyProbe!.home!, AGY_MIRROR_PATH), "utf8")).toBe("one synthetic Antigravity item");
+    expect(item(join(context.agyProbe!.home!, AGY_MIRROR_PATH))).toBe("one synthetic Antigravity item");
   } else expect(() => adapter.prepareRun(request)).toThrow("cannot populate agy keychain mirror");
   expect(records().filter((r) => r.input[0] === "create-keychain")).toHaveLength(2);
-  expect(records().filter((r) => r.input[0] === "add-generic-password")).toHaveLength(2);
+  expect(records().filter((r) => r.input[0] === "add-generic-password" && loginItem(r))).toHaveLength(2);
   expect(JSON.parse(readFileSync(`${calls}.list`, "utf8"))).toEqual(originalList);
 });
-
 test("concurrent builders with different call logs share one lock and template", async () => {
   const { env, home, records, calls, originalList } = setup();
   env.AGY_TEST_CREATE_DELAY = "500";
-  const builder = `import { buildAgyKeychainMirror } from ${JSON.stringify(join(import.meta.dir, "../src/agy-keychain.ts"))};
-    buildAgyKeychainMirror(process.argv[1], process.env); console.log("copied");`;
+  const builder = `import { prepareAgyPrivateKeychain, insertAgyKeychainItem } from ${JSON.stringify(join(import.meta.dir, "../src/agy-keychain.ts"))};
+    const password = prepareAgyPrivateKeychain(process.argv[1], process.env);
+    insertAgyKeychainItem(process.argv[1], process.env, password); console.log("copied");`;
   const start = (name: string) => Bun.spawn([process.execPath, "--preload", join(import.meta.dir, "fixtures/agy-host.ts"),
     "-e", builder, join(home, name)], { env: { ...env, CODEMUX_CALL_LOG: join(home, name, "calls.jsonl") }, stdout: "pipe", stderr: "pipe" });
   const first = start("first");
@@ -220,7 +223,7 @@ test("concurrent builders with different call logs share one lock and template",
     expect(records().filter((r) => r.input[0] === "create-keychain")).toHaveLength(1);
     expect(records().filter((r) => r.args.includes("-s") && r.args[0] === "list-keychains")).toHaveLength(1);
     expect(records().find((r) => r.input[0] === "create-keychain").input.at(-1)).toBe(join(agyKeychainStateDir(), AGY_TEMPLATE_NAME));
-    for (const name of ["first", "second"]) expect(readFileSync(join(home, name, AGY_MIRROR_PATH), "utf8")).toBe("one synthetic Antigravity item");
+    for (const name of ["first", "second"]) expect(item(join(home, name, AGY_MIRROR_PATH))).toBe("one synthetic Antigravity item");
     expect(JSON.parse(readFileSync(`${calls}.list`, "utf8"))).toEqual(originalList);
   } finally {
     for (const child of [first, second]) if (child && child.exitCode === null) { child.kill("SIGKILL"); await child.exited; }
@@ -254,32 +257,34 @@ test.each([false, true])("parent builds one private mirror; hermetic=%s", (herme
   const mirror = join(privateHome, AGY_MIRROR_PATH);
   expect(lstatSync(privateHome).mode & 0o777).toBe(0o700);
   expect(lstatSync(mirror).mode & 0o777).toBe(0o600);
-  expect(readFileSync(mirror, "utf8")).toBe("one synthetic Antigravity item");
+  expect(item(mirror)).toBe("one synthetic Antigravity item");
   expect(lstatSync(join(privateHome, "Library/Keychains")).isSymbolicLink()).toBe(false);
   expect(records().map((r) => r.input[0])).toEqual([
-    "list-keychains", "find-generic-password", "list-keychains", "list-keychains",
-    "create-keychain", "list-keychains", "list-keychains", "unlock-keychain", "set-keychain-settings", "add-generic-password",
+    "list-keychains", "list-keychains", "list-keychains", "create-keychain",
+    "list-keychains", "list-keychains", "unlock-keychain", "set-keychain-settings", "add-generic-password", "delete-generic-password",
     "default-keychain", "default-keychain", "default-keychain", "default-keychain",
+    "find-generic-password", "add-generic-password",
   ]);
-  expect(records()[1].args).toEqual(["find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"]);
+  expect(records().find((r) => r.input[0] === "find-generic-password").args).toEqual(["find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"]);
   const template = join(agyKeychainStateDir(), AGY_TEMPLATE_NAME);
   const creation = records().find((r) => r.input[0] === "create-keychain");
   const password = creation.input[2];
   expect(creation.input).toEqual(["create-keychain", "-p", expect.stringMatching(/^[a-f0-9]{32}$/), template]);
   expect(creation.args).toEqual(["-i"]);
-  expect(readFileSync(template, "utf8")).toBe("empty");
+  expect(JSON.parse(readFileSync(template, "utf8"))).toEqual({ password, unlocked: false, item: "empty" });
   expect(lstatSync(template).mode & 0o777).toBe(0o600);
   expect(lstatSync(`${template}.password`).mode & 0o777).toBe(0o600);
   expect(readFileSync(`${template}.password`, "utf8")).toBe(password);
-  expect(records()[5].args).toEqual(["list-keychains", "-d", "user", "-s", ...originalList]);
+  expect(records().find((r) => r.args[0] === "list-keychains" && r.args.includes("-s")).args).toEqual(["list-keychains", "-d", "user", "-s", ...originalList]);
   expect(JSON.parse(readFileSync(`${calls}.list`, "utf8"))).toEqual(originalList);
-  expect(records()[7].input).toEqual(["unlock-keychain", "-p", password, mirror]);
-  expect(records()[8].input).toEqual(["set-keychain-settings", mirror]);
-  expect(records()[9].input).toEqual(["add-generic-password", "-s", "gemini", "-a", "antigravity", "-l", "gemini",
+  expect(records().find((r) => r.input[0] === "unlock-keychain").input).toEqual(["unlock-keychain", "-p", password, mirror]);
+  expect(records().find((r) => r.input[0] === "set-keychain-settings").input).toEqual(["set-keychain-settings", mirror]);
+  const insertion = records().find((r) => r.input[0] === "add-generic-password" && loginItem(r));
+  expect(insertion.input).toEqual(["add-generic-password", "-s", "gemini", "-a", "antigravity", "-l", "gemini",
     "-w", secret, "-T", "/usr/bin/security", "-T", realpathSync(agy), mirror]);
-  expect(records()[9].args).toEqual(["-i"]);
-  expect(records()[9].stdin).toContain(secret.slice(0, 64));
-  expect(records().slice(10).map((r) => ({ args: r.args, home: r.home }))).toEqual([
+  expect(insertion.args).toEqual(["-i"]);
+  expect(insertion.stdin).toContain(secret.slice(0, 64));
+  expect(records().filter((r) => r.args[0] === "default-keychain").map((r) => ({ args: r.args, home: r.home }))).toEqual([
     { args: ["default-keychain", "-d", "user"], home },
     { args: ["default-keychain", "-d", "user", "-s", mirror], home: privateHome },
     { args: ["default-keychain", "-d", "user"], home },
@@ -298,15 +303,15 @@ test.each([false, true])("parent builds one private mirror; hermetic=%s", (herme
     expect(adapter.buildRunCommand(run, context)).toContain("--output-format=json");
     expect(adapter.processRunResult({ stdout: '{"status":"SUCCESS","response":"OK"}', stderr: "", success: true, exitCode: 0 }, run, context).stdout).toBe("OK\n");
   }
+  const beforeCleanup = records().length;
   adapter.cleanupRun(context);
   expect(existsSync(privateHome)).toBe(false);
-  expect(records().slice(14).every((r) => r.args[0] === "list-keychains")).toBe(true);
+  expect(records().slice(beforeCleanup).every((r) => r.args[0] === "list-keychains")).toBe(true);
   expect(records().at(-1).args).toEqual(["list-keychains", "-d", "user"]);
   expect(readdirSync(join(home, ".gemini/.codemux-isolation-probes"))).toEqual([]);
   expect(readFileSync(join(home, ".gemini/GEMINI.md"), "utf8")).toBe("operator state");
 });
-
-test.each(["find-generic-password", "create-keychain", "set-keychain-settings", "add-generic-password"])(
+test.each(["find-generic-password", "create-keychain", "set-keychain-settings", "probe-add", "delete-generic-password", "add-generic-password"])(
   "security failure at %s is redacted and removes partial mirror", (step) => {
     const { home, adapter, request, secret, records } = setup(step);
     let error: unknown;
@@ -314,10 +319,7 @@ test.each(["find-generic-password", "create-keychain", "set-keychain-settings", 
     expect(error).toBeInstanceOf(Error);
     expect(String(error)).not.toContain(secret);
     expect(JSON.stringify(records().map((r) => r.args))).not.toContain(secret.slice(0, 64));
-    if (step === "find-generic-password") {
-      expect(String(error)).toContain("agy is not logged in; run `agy` to log in");
-      expect(records().filter((r) => !["list-keychains", "default-keychain"].includes(r.args[0]))).toHaveLength(1);
-    }
+    if (step === "find-generic-password") expect(String(error)).toContain("agy is not logged in; run `agy` to log in");
     expect(readdirSync(join(home, ".gemini/.codemux-isolation-probes"))).toEqual([]);
   });
 
@@ -390,7 +392,7 @@ test("mirror refresh stays private; a later run creates a fresh mirror", () => {
   cleanup.push(() => adapter.cleanupRun(first), () => adapter.cleanupRun(second));
   expect(first.agyProbe!.home).not.toBe(second.agyProbe!.home);
   writeFileSync(join(first.agyProbe!.home!, AGY_MIRROR_PATH), "synthetic refresh");
-  expect(readFileSync(join(second.agyProbe!.home!, AGY_MIRROR_PATH), "utf8")).toBe("one synthetic Antigravity item");
+  expect(item(join(second.agyProbe!.home!, AGY_MIRROR_PATH))).toBe("one synthetic Antigravity item");
   expect(records().filter((r) => r.args[0] === "find-generic-password")).toHaveLength(2);
   expect(records().filter((r) => r.input[0] === "create-keychain")).toHaveLength(1);
   expect(records().filter((r) => r.args[0] === "list-keychains" && r.args.includes("-s"))).toHaveLength(1);
@@ -423,8 +425,8 @@ test("the production security path ignores PATH and receives only the real login
   }) as typeof Bun.spawnSync);
   try {
     if (!existsSync("/usr/bin/security")) return;
-    expect(() => buildAgyKeychainMirror(home, { ...env, HOME: supplied, DYLD_INSERT_LIBRARIES: "hostile" }, request.cwd))
-      .toThrow("agy is not logged in");
+    expect(() => prepareAgyPrivateKeychain(home, { ...env, HOME: supplied, DYLD_INSERT_LIBRARIES: "hostile" }, request.cwd))
+      .toThrow("cannot read user Keychain search list");
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(spawn.mock.calls[0]![0][0]).toBe(realpathSync("/usr/bin/security"));
     expect(spawn.mock.calls[0]![1]!.env).toEqual({ HOME: home, PATH: "/usr/bin:/bin" });
@@ -460,7 +462,7 @@ test.each(["create-keychain", "set-keychain-settings", "add-generic-password"])(
 test.each(["restore-list", "restore-noop"])("restoration failure %s refuses launch and reports the lingering entry", (fail) => {
   const { adapter, request, records, home } = setup(fail);
   expect(() => adapter.prepareRun(request)).toThrow("search list");
-  expect(records().some((r) => r.input[0] === "add-generic-password")).toBe(false);
+  expect(records().some((r) => r.input[0] === "add-generic-password" && loginItem(r))).toBe(false);
   expect(readdirSync(join(home, ".gemini/.codemux-isolation-probes"))).toEqual([]);
 });
 
@@ -473,11 +475,12 @@ test("synchronous exit cleanup restores the search list and removes the home", (
   expect(existsSync(context.agyProbe!.home!)).toBe(false);
 });
 
-test.each(["\nextra-command", "\r", "x".repeat(4096)])("unsafe interactive input is refused before creation: %#", (suffix) => {
+test.each(["\nextra-command", "\r", "x".repeat(4096)])("unsafe login input is refused before insertion: %#", (suffix) => {
   const { adapter, request, env, records } = setup();
   env.AGY_TEST_SECRET = `synthetic${suffix}`;
   expect(() => adapter.prepareRun(request)).toThrow("interactive input");
-  expect(records().some((r) => r.input[0] === "create-keychain")).toBe(false);
+  expect(records().some((r) => r.input[0] === "create-keychain")).toBe(true);
+  expect(records().some((r) => r.input[0] === "add-generic-password" && loginItem(r))).toBe(false);
 });
 
 test.each(["login", "hermetic", "control", "tools", "tools-control"] as const)(

@@ -39,7 +39,7 @@ immutable notes and engineering evidence.
   directory. Unsandboxed runs, other platforms, adapters without HOME, and
   non-empty `COPILOT_PKG_CACHE_HOME` or `COPILOT_CACHE_HOME` settings passed
   through with `--pass-env` receive no cache override.
-- Stop the macOS "A keychain cannot be found to store Antigravity" dialog by making each private mirror the default keychain for its HOME while preserving the real user's default keychain. If the real default remains unreadable after a retry, skip private-default selection and warn; agy may still prompt to store its token.
+- Give every sandboxed macOS Antigravity run a private Keychain, including API-key and file-token runs. Make it the default for its private HOME so token refresh has a default and does not show the "A keychain cannot be found to store Antigravity" dialog when selection succeeds. Preserve the real user's default and verify both defaults after selection. If the real default remains unreadable after a retry, skip private-default selection and warn; agy may still prompt to store its token.
 - Sandboxed headless Cursor runs on macOS automatically use the file credential store
   when `~/.cursor/auth.json` exists. A non-empty, passed-through store setting
   overrides this choice. An API key does not disable file-store selection.
