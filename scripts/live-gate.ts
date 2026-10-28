@@ -20,10 +20,8 @@ const ROOT = resolve(import.meta.dir, "..");
 const DEFAULT_CODEMUX = join(ROOT, "bin/codemux");
 
 // Entries must quote the matrix note explaining why medium cannot run a shell command headless.
-// Kimi's scode fallback still supports headless execution and is required.
-const MEDIUM_UNSUPPORTED: Partial<Record<AgentId, string>> = {
-  gemini: "uses Gemini approval modes; medium shell commands require interactive approval and are denied headless",
-};
+// Every harness currently supports medium shell execution inside scode.
+const MEDIUM_UNSUPPORTED: Partial<Record<AgentId, string>> = {};
 
 interface GateOptions {
   codemux: string;
@@ -307,12 +305,12 @@ export async function runProbes(
           if (key === "medium") {
             const nonce = randomBytes(NONCE_BYTES).toString("hex");
             expected = createHash("sha256").update(nonce).digest("hex").slice(0, 16);
-            writeFileSync(join(directory, ".nonce"), nonce, { mode: 0o600 });
+            writeFileSync(join(directory, "nonce.txt"), nonce, { mode: 0o600 });
             writeFileSync(join(directory, "probe.sh"), [
               "if command -v shasum >/dev/null 2>&1; then",
-              '  printf %s "$(cat .nonce)" | shasum -a 256 | cut -c1-16',
+              '  printf %s "$(cat nonce.txt)" | shasum -a 256 | cut -c1-16',
               "else",
-              '  printf %s "$(cat .nonce)" | sha256sum | cut -c1-16',
+              '  printf %s "$(cat nonce.txt)" | sha256sum | cut -c1-16',
               "fi\n",
             ].join("\n"), { mode: 0o700 });
           }

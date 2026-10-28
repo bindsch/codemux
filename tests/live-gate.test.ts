@@ -4,7 +4,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { AGENT_IDS } from "../src/types.js";
-import { AUTONOMY_EQUIVALENCE } from "../src/autonomy.js";
 import {
   createReportDirectory,
   formatReport,
@@ -29,7 +28,7 @@ function completeProbe(command: string[], expected: string) {
     const child = Bun.spawnSync(["sh", "probe.sh"], { cwd });
     expect(child.exitCode).toBe(0);
     expect(child.stdout.toString().trim()).toBe(expected);
-    expect(readdirSync(cwd).sort()).toEqual([".nonce", "probe.sh"]);
+    expect(readdirSync(cwd).sort()).toEqual(["nonce.txt", "probe.sh"]);
   }
   return { status: "PASS" as const, seconds: 0, stderr: "" };
 }
@@ -264,15 +263,15 @@ test("live gate reports harness totals and escapes failure details", () => {
   expect(report).toContain("first &#124; failure");
 });
 
-test("live gate documents unsupported Gemini medium shell and still probes Qwen", async () => {
+test("live gate probes medium shell execution for every harness", async () => {
   const reportDirectory = fixtureDirectory();
   const calls: string[] = [];
   try {
-    const rows = await runProbes(["gemini", "qwen"], parseOptions([], ""), {
-      async run(command) { calls.push(`${command[3]}:${command[command.indexOf("--auto") + 1]}`); return { status: "PASS", seconds: 0, stderr: "" }; },
+    const rows = await runProbes(AGENT_IDS, parseOptions([], ""), {
+      async run(command, expected) { calls.push(`${command[3]}:${command[command.indexOf("--auto") + 1]}`); return completeProbe(command, expected); },
     }, reportDirectory);
-    expect(calls.sort()).toEqual(["gemini:read-only", "qwen:medium", "qwen:read-only"]);
-    expect(rows[0]!.medium).toEqual({ status: "UNSUPPORTED", seconds: 0, stderr: "", note: `src/autonomy.ts: ${AUTONOMY_EQUIVALENCE.gemini.notes}` });
+    expect(calls.sort()).toEqual(AGENT_IDS.flatMap((agent) => [`${agent}:read-only`, `${agent}:medium`]).sort());
+    expect(rows.every((row) => row.readOnly.status === "PASS" && row.medium.status === "PASS")).toBe(true);
   } finally { rmSync(reportDirectory, { recursive: true, force: true }); }
 });
 
@@ -299,11 +298,11 @@ test("live gate prepares private nonce files and gives the outer deadline 30 ext
       if (medium) {
         expect(expected).toMatch(/^[0-9a-f]{16}$/);
         expect(prompt).not.toContain(expected);
-        expect(readdirSync(cwd).sort()).toEqual([".nonce", "probe.sh"]);
-        const nonce = readFileSync(join(cwd, ".nonce"), "utf8");
+        expect(readdirSync(cwd).sort()).toEqual(["nonce.txt", "probe.sh"]);
+        const nonce = readFileSync(join(cwd, "nonce.txt"), "utf8");
         expect(nonce).toMatch(/^[0-9a-f]{12}$/);
         expect(expected).toBe(createHash("sha256").update(nonce).digest("hex").slice(0, 16));
-        expect(statSync(join(cwd, ".nonce")).mode & 0o777).toBe(0o600);
+        expect(statSync(join(cwd, "nonce.txt")).mode & 0o777).toBe(0o600);
         expect(readFileSync(join(cwd, "probe.sh"), "utf8")).not.toContain(expected);
         expect(statSync(join(cwd, "probe.sh")).mode & 0o777).toBe(0o700);
       } else {
@@ -356,7 +355,7 @@ test.each(["command", "sha256sum fallback", "echo nonce", "wrong stdout", "codem
             probe = [process.execPath, "-e", 'console.log("codemux-ok")'];
           } else {
             const source = `const fs = require("node:fs"); const dir = process.argv[1];
-              process.stdout.write(fs.readFileSync(dir + "/.nonce", "utf8"));`;
+              process.stdout.write(fs.readFileSync(dir + "/nonce.txt", "utf8"));`;
             probe = [process.execPath, "-e", source, cwd];
           }
         }

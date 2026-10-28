@@ -13,6 +13,14 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
+### Changed
+
+- Gemini medium now uses `--approval-mode yolo` with scode required, so headless runs can edit files and execute shell commands. Qwen medium keeps `--approval-mode auto`, which already supports shell commands after classifier review. The live gate probes medium shell execution for every harness without exceptions.
+
+### Fixed
+
+- The medium probe no longer reads a dotfile, which Cursor's Smart Auto classifier refuses.
+
 ## [0.15.0] - 2026-10-28
 
 ### Added

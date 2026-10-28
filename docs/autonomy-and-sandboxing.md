@@ -20,12 +20,12 @@ Headless `run` and interactive `tui` default to read-only autonomy and scode. Ev
 | Cursor | Plan + required scode | Default approvals | Auto-review | Force |
 | Droid | Default mode | Native low | Native medium | Native high |
 | Goose | chat | approve | smart_approve | auto |
-| Gemini | plan | default | auto_edit | yolo |
+| Gemini | plan | default | yolo | yolo |
 | Kimi | Interactive plan | Interactive prompting | Interactive yolo | Interactive auto |
 | OpenHands | Interactive always-ask | Interactive always-ask | Interactive always-ask | Always approve |
 | OpenCode | Plan + required scode | Build | Build | Build + auto |
 | Pi | No extensions; read/grep/find/ls | No extensions; add edit/write | Default tools | Default tools |
-| Qwen | plan | default | auto | yolo |
+| Qwen | plan | default | auto (classifier approves shell commands) | yolo |
 
 Kimi's headless `--prompt` rejects its interactive autonomy flags. OpenHands headless mode auto-approves. Their headless boundaries therefore depend on scode, not the interactive rows. Antigravity can soft-deny a headless approval while still exiting 0; native success alone does not establish that a requested action ran.
 
@@ -39,7 +39,7 @@ For programmatic Claude and Z.AI requests, `web: false` denies both tools even w
 
 Claude and Z.AI headless `--auto medium` runs add `Bash` alongside the launch-directory `Edit` grant and web grants. Shell commands run inside the required scode sandbox. Persistent sessions retain their per-tool ceiling callback and receive no medium `Bash` grant.
 
-Gemini's medium mode (`--approval-mode auto_edit`) requires interactive approval for shell commands and denies them headlessly in the audited 0.60.0 policy. The adapter adds no shell grant. The live gate reports this documented difference as `UNSUPPORTED`.
+For every harness, `--auto medium` runs edits and shell commands inside the required scode sandbox.
 
 ## Scode policy
 

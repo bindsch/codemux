@@ -46,6 +46,13 @@ describe("Autonomy equivalence matrix", () => {
     }
   });
 
+  test.each([
+    ["gemini", "yolo"],
+    ["qwen", "auto"],
+  ] as const)("%s medium lists its command approval mode", (agent, mode) => {
+    expect(AUTONOMY_EQUIVALENCE[agent].byLevel.medium).toBe(`--approval-mode ${mode}`);
+  });
+
   test("the cursor note names the 0.12.0 entry order: cursor-agent first, agent its alias (al25)", () => {
     // The contracts major: the note still described the 0.11.0 entry
     // (agent first, cursor-agent unnamed), but 0.12.0 resolves and runs

@@ -56,7 +56,8 @@ export class GeminiAdapter extends BaseAdapter {
       case "low":
         return ["--approval-mode", "default"];
       case "medium":
-        return ["--approval-mode", "auto_edit"];
+        // auto_edit denies shell commands headless; scode is the boundary.
+        return ["--approval-mode", "yolo"];
       case "high":
         return ["--approval-mode", "yolo"];
     }

@@ -63,9 +63,12 @@ printf 'Reply with OK.\n' | codemux run -a claude -f -
 Claude and Z.AI headless `--auto medium` runs use `--permission-mode acceptEdits`
 with `--allowedTools Edit(//<launch dir>/**) Bash WebSearch WebFetch`. Shell
 commands run inside the required scode sandbox. Persistent sessions retain
-their per-tool ceiling callback and receive no medium `Bash` grant. See
+their per-tool ceiling callback and receive no medium `Bash` grant. Gemini
+medium uses `--approval-mode yolo`. Qwen medium keeps `--approval-mode auto`,
+which can approve shell commands headless after classifier review. Every
+harness requires scode at medium. See
 [medium shell execution](autonomy-and-sandboxing.md#medium-shell-execution)
-for native mappings and harness differences.
+for native mappings.
 
 Timeouts must be finite and greater than zero, at most 86400 seconds.
 Fractional seconds are accepted and rounded up to milliseconds. The timeout

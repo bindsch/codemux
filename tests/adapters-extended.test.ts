@@ -282,4 +282,11 @@ describe("QwenAdapter", () => {
     expect(adapter.mapAutonomy("medium")).toEqual(["--approval-mode", "auto"]);
     expect(adapter.mapAutonomy("high")).toEqual(["--approval-mode", "yolo"]);
   });
+
+  test("medium requires scode while current high may run without it", () => {
+    expect(adapter.requiresSandboxForAutonomy("medium")).toBe(true);
+    expect(adapter.requiresSandboxForTuiAutonomy("medium")).toBe(true);
+    expect(adapter.requiresSandboxForAutonomy("high")).toBe(false);
+    expect(adapter.requiresSandboxForTuiAutonomy("high")).toBe(false);
+  });
 });

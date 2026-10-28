@@ -2293,7 +2293,7 @@ describe("GeminiAdapter", () => {
     expect(adapter.buildRunCommand({ agent: "gemini", prompt: "t", autonomy: "low" }))
       .toEqual(["gemini", "--sandbox=false", "--approval-mode", "default", "-p", "t"]);
     expect(adapter.buildRunCommand({ agent: "gemini", prompt: "t", autonomy: "medium" }))
-      .toEqual(["gemini", "--sandbox=false", "--approval-mode", "auto_edit", "-p", "t"]);
+      .toEqual(["gemini", "--sandbox=false", "--approval-mode", "yolo", "-p", "t"]);
     expect(adapter.buildRunCommand({ agent: "gemini", prompt: "t", autonomy: "high" }))
       .toEqual(["gemini", "--sandbox=false", "--approval-mode", "yolo", "-p", "t"]);
   });
@@ -2303,13 +2303,13 @@ describe("GeminiAdapter", () => {
   });
 
   test("buildTuiCommand with autonomy", () => {
-    expect(adapter.buildTuiCommand(undefined, "medium")).toEqual(["gemini", "--sandbox=false", "--approval-mode", "auto_edit"]);
+    expect(adapter.buildTuiCommand(undefined, "medium")).toEqual(["gemini", "--sandbox=false", "--approval-mode", "yolo"]);
   });
 
   test("mapAutonomy returns approval mode flags", () => {
     expect(adapter.mapAutonomy("read-only")).toEqual(["--approval-mode", "plan"]);
     expect(adapter.mapAutonomy("low")).toEqual(["--approval-mode", "default"]);
-    expect(adapter.mapAutonomy("medium")).toEqual(["--approval-mode", "auto_edit"]);
+    expect(adapter.mapAutonomy("medium")).toEqual(["--approval-mode", "yolo"]);
     expect(adapter.mapAutonomy("high")).toEqual(["--approval-mode", "yolo"]);
   });
 

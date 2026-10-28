@@ -56,9 +56,9 @@ the default sandbox:
 | A | `read-only` | Reply with exactly `OK`. |
 | B | `medium` | In a fresh `--cwd`, execute `sh probe.sh` and return only its exact stdout. |
 
-For Probe B, the gate writes a fresh random 12-hex nonce to `.nonce` with
+For Probe B, the gate writes a fresh random 12-hex nonce to `nonce.txt` with
 mode `0600` and writes `probe.sh` with mode `0700`. The script runs
-`printf %s "$(cat .nonce)" | shasum -a 256 | cut -c1-16`.
+`printf %s "$(cat nonce.txt)" | shasum -a 256 | cut -c1-16`.
 It uses `sha256sum` when `shasum` is absent.
 The prompt asks the harness to run `sh probe.sh`; it does not contain the
 nonce or its hash. The gate computes the expected SHA-256 with `node:crypto`.
@@ -113,26 +113,20 @@ listed harness was explicitly skipped, the message is
 `live-gate: nothing was probed (all skipped)` and the exit code is still 1.
 
 Refuse the release if any installed, credentialed harness fails either
-probe, or if a feature behaves differently across harnesses without a
-documented unsupported entry. `MEDIUM_UNSUPPORTED` records documented
-exceptions to Probe B. An entry still runs Probe A and is reported as
-`UNSUPPORTED (documented)` for Probe B; it must cite the
-[autonomy matrix](autonomy-and-sandboxing.md#native-mappings) note that
-explains why the harness cannot run a shell command headless at medium.
-Kimi's headless reliance on scode does not justify an entry.
+probe. `MEDIUM_UNSUPPORTED` is empty. Every harness must execute shell
+commands inside scode at medium, as defined by the
+[autonomy matrix](autonomy-and-sandboxing.md#native-mappings).
 
 | MEDIUM_UNSUPPORTED harness | Unsupported behavior and evidence |
 | --- | --- |
-| gemini | `--approval-mode auto_edit` auto-approves edits but needs interactive approval for shell commands, which a headless run denies; the adapter has no grant mechanism (matrix note, Gemini 0.60.0). |
 
 - [ ] Owner ran `make live-gate` on the release machine for the candidate.
 - [ ] After reinstalling the Homebrew bottle, run `make live-gate LIVE_GATE_ARGS="--codemux $(brew --prefix)/bin/codemux"` to test the installed binary.
 - [ ] Every installed, credentialed harness passed both probes with exit 0
-  and the exact required output, except a `MEDIUM_UNSUPPORTED` entry, which
-  passed Probe A and was reported as unsupported for Probe B.
+  and the exact required output.
 - [ ] Record the result table, timeout and job limits, and every skip reason.
 - [ ] No feature differs across harnesses without a documented unsupported
-  entry; `MEDIUM_UNSUPPORTED` still matches the autonomy matrix.
+  entry; `MEDIUM_UNSUPPORTED` remains empty.
 
 ## CLI and contract coverage
 

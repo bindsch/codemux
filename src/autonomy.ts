@@ -94,10 +94,10 @@ export const AUTONOMY_EQUIVALENCE: Record<AgentId, AutonomyMapping> = {
     byLevel: {
       "read-only": "--approval-mode plan",
       low: "--approval-mode default",
-      medium: "--approval-mode auto_edit",
+      medium: "--approval-mode yolo",
       high: "--approval-mode yolo",
     },
-    notes: "uses Gemini approval modes; medium shell commands require interactive approval and are denied headless",
+    notes: "medium/high share yolo; medium requires scode for edits and shell commands",
   },
   kimi: {
     byLevel: {
@@ -142,7 +142,7 @@ export const AUTONOMY_EQUIVALENCE: Record<AgentId, AutonomyMapping> = {
       medium: "--approval-mode auto",
       high: "--approval-mode yolo",
     },
-    notes: "qwen-coder fallback requires the outer sandbox",
+    notes: "auto can approve shell commands headless after classifier review; qwen-coder fallback requires the outer sandbox",
   },
   zai: {
     byLevel: {

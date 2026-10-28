@@ -63,6 +63,8 @@ export class QwenAdapter extends BaseAdapter {
       case "low":
         return ["--approval-mode", "default"];
       case "medium":
+        // Auto mode can approve shell commands headless after classifier review.
+        // https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/approval-mode.md
         return ["--approval-mode", "auto"];
       case "high":
         return ["--approval-mode", "yolo"];
