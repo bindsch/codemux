@@ -13,6 +13,8 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-10-28
+
 ### Changed
 
 - Gemini medium now uses `--approval-mode yolo` with scode required, so headless runs can edit files and execute shell commands. Qwen medium keeps `--approval-mode auto`, which already supports shell commands after classifier review. The live gate probes medium shell execution for every harness without exceptions.
