@@ -2,7 +2,8 @@
 
 Every command accepts `-h, --help`. Root `-V, --version` reads the package
 version. Options below are parsed by codemux; unknown options and missing
-option arguments are parser errors (exit 1). There is no generic pass-through
+option arguments are parser errors (exit 1, or 64 for a missing `--label` or `--by`
+argument). There is no generic pass-through
 for arbitrary harness flags.
 
 ## Shared launch options
@@ -56,6 +57,7 @@ printf 'Reply with OK.\n' | codemux run -a claude -f -
 | `--tools <selection>` | `default`; `none` has harness-specific residual capabilities |
 | `--no-web` | Off; deny the Claude-family web tools (`WebSearch`, `WebFetch`) with a deny rule, which holds at `--auto high` and over approvals saved in the operator's settings; headless `claude` and `zai` otherwise grant them at every autonomy level, and other agents refuse the flag |
 | `--experiment-mcp <spec.json>` | Unset; experiment bridge for `claude` and `zai` (the same Claude Code binary) with required isolation policy |
+| `--label <KEY=VALUE>` | Repeatable; metadata stored with the run; otherwise read `CODEMUX_LABELS` |
 | `--result-json` | Off; structured result with harness-specific normalization |
 
 Timeouts must be finite and greater than zero, at most 86400 seconds.
@@ -65,6 +67,30 @@ shutdown are distinct phases.
 
 See [isolation](isolation.md), [experiment MCP](experiment-mcp.md), and
 [results](results-and-usage.md) for these contracts.
+
+### Labels
+
+Use labels to identify a workflow or step in the call ledger and
+`--result-json` output:
+
+```sh
+codemux run -a codex -f prompt.md --label wf=review --label step=scan
+```
+
+Each key must match `^[a-z][a-z0-9_.-]{0,63}$`. A value may be empty or
+contain `=`, but must fit in 256 UTF-8 bytes and contain no characters in
+U+0000–U+001F or U+007F. Missing `=`, empty keys, duplicate keys, and other
+invalid labels fail with exit 64.
+
+With no `--label` flags, `run` reads comma-separated pairs from
+`CODEMUX_LABELS`, such as `CODEMUX_LABELS='wf=review,step=scan'`. Any
+`--label` flag ignores that variable entirely. A wrapper can set the variable
+to label nested `codemux run` calls. Use flags for values containing commas.
+`session`, `tui`, and `check` do not accept labels.
+
+Labels are stored as plain text under the state directory or the configured
+ledger path. Never put prompt text, secrets, or anything the ledger should
+not retain in a label. See [the ledger fields](results-and-usage.md#call-ledger).
 
 ### Prompt input
 
@@ -145,11 +171,15 @@ Hermetic mode and tool selection are refused for sessions.
 | `-n, --limit <count>` | 20; integer 1–100000 |
 | `-a, --agent <id>` | All agents |
 | `--since <when>` | No cutoff; integer duration with s/m/h/d/w, or a date accepted by JavaScript Date |
+| `--label <KEY=VALUE>` | Repeatable; retain records matching every supplied key and value |
 | `--json` | Raw stored JSONL instead of a table |
 | `--sum` | Append human-readable selected-record totals; with `--json`, output is mixed |
+| `--by <KEY>` | Group totals by this label's value; requires `--sum`; missing labels use `(none)` |
 
 Use ISO timestamps with a timezone for portable date interpretation.
 Records appear in reverse ledger append order, not start-timestamp order.
+Label filters use the [label syntax](#labels) above; `calls` does not read
+`CODEMUX_LABELS`. Invalid filters or grouping keys fail with exit 64.
 The [results and usage reference](results-and-usage.md#ledger-selection-and-totals)
 defines filtering, summary selection, and interval limitations.
 
@@ -185,7 +215,7 @@ commands may inspect local binaries or execute version/help paths.
 |---|---|
 | 0 | Command succeeded; does not imply every optional harness is installed |
 | 1 | Parser errors, many validation errors, configuration/I/O/launch or protocol failures |
-| 64 | Explicit usage refusals, including invalid calls cutoff and unsupported session agents; not all parser errors |
+| 64 | Explicit usage refusals, including invalid labels, calls cutoff/grouping, and unsupported session agents; not all parser errors |
 | 66 | Requested resume identity not found |
 | 69 | Optional usagemux unavailable |
 | 78 | Session policy/trust refusal; registry access failure can instead be 1 |

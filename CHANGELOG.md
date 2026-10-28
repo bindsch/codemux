@@ -13,6 +13,13 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
+### Added
+
+- Add repeatable `run --label KEY=VALUE` metadata and `CODEMUX_LABELS`
+  defaults for wrappers. Record labels in the call ledger and structured run
+  results. Add `calls --label KEY=VALUE` filters and `calls --sum --by KEY`
+  totals grouped by label value.
+
 ## [0.14.2] - 2026-10-25
 
 ### Added

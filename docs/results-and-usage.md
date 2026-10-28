@@ -15,6 +15,10 @@ The codemux-owned block contains:
 {
   "agent": "codex",
   "model": "gpt-5.3-codex",
+  "labels": {
+    "wf": "review",
+    "step": "scan"
+  },
   "usage": {
     "input_tokens": 200,
     "output_tokens": 50,
@@ -30,6 +34,8 @@ It appears under `codemux` in the envelope. Experiment runs also include
 `codemux.recording`. Model is the served model when reported, otherwise the
 selected model, otherwise null. A reported multi-model result has null model.
 Codex reroute events can identify the served model and produce a stderr note.
+`codemux.labels` contains the run's labels, or null when none are supplied.
+See [label syntax and environment defaults](cli.md#labels).
 Unsupported structured-result adapters refuse `--result-json`; capability
 support is listed in [harnesses](harnesses.md).
 
@@ -127,13 +133,22 @@ Each record contains:
 | `model`, `model_effective` | Requested and reported model, each string or null |
 | `session_id`, `turn_id` | Strings or null; turns identify their session |
 | `autonomy` | Autonomy string or null |
+| `labels` | String-keyed object of string values, or null |
 | `hermetic`, `sandboxed` | Booleans |
 | `exit_code` | Number or null (turns use finish instead) |
 | `finish` | End/turn reason string or null |
 | `duration_ms` | Nonnegative elapsed time from the record's start |
 | `usage` | The five-field object above |
 
-No prompt text, API keys, or environment values are recorded in the ledger.
+Every new record includes `labels`. A labeled run stores its key/value pairs;
+an unlabeled run, check, session turn, or closing session stores null.
+Older records without the field are treated as unlabeled.
+
+Codemux does not automatically record prompt text, API keys, or environment
+values. Labels are caller-supplied plain text and are retained in the ledger.
+Never put prompt text, secrets, or anything the ledger should not retain in
+a label. `CODEMUX_LABELS` supplies labels for runs only when no `--label`
+flag is present; explicit flags ignore that variable entirely.
 Harness-reported model/provider/finish strings have terminal controls stripped.
 Native identity may be deferred; a codemux-owned identity keeps closing ledger
 records from unrelated unconfirmed sessions separate.
@@ -156,6 +171,11 @@ test preload's explicit redirect; NODE_ENV does not redirect operator records.
 can parse. Prefer an ISO timestamp with timezone. Invalid dates or cutoffs
 outside the representable date range fail with exit 64.
 
+Repeat `--label KEY=VALUE` to require every supplied pair. For example,
+`codemux calls --label wf=review --label step=scan` selects only records with
+both labels. A missing label does not match, including a filter with an empty
+value. `calls` does not read `CODEMUX_LABELS`.
+
 A matching turn also selects closing summaries of that session even when
 their start timestamps precede the cutoff. `--sum` covers shown records:
 for each session and field, shown turn values take precedence over the closing
@@ -163,6 +183,11 @@ summary. With several closings, only the newest shown closing contributes.
 Closings without a nonempty session ID are excluded. Unknown fields are
 reported with missing-value counts. `--json --sum` emits raw JSONL followed
 by human-readable totals; it is not a pure JSONL stream.
+
+Use `codemux calls --sum --by wf` to group shown-record totals by the value
+of the `wf` label. Records without that label appear under `(none)`.
+`--by` requires `--sum` and a valid label key; invalid use fails with exit 64.
+Each group uses the same session and missing-usage rules as the overall totals.
 
 Example: a Claude session starts at 09:00, costs $1 before 10:00, then costs
 $0.20 afterward. A shown 10:05 turn can select a closing lifetime cost of

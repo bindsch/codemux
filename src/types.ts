@@ -54,6 +54,8 @@ export function isToolSelection(value: string): value is ToolSelection {
 export interface RunRequest {
   agent: AgentId;
   prompt: string;
+  // Operator metadata stored in the ledger and result envelope.
+  labels?: Record<string, string> | null;
   model?: string;
   autonomy?: AutonomyLevel;
   effort?: ReasoningEffort;
@@ -146,6 +148,7 @@ export interface ResultUsageBlock {
 export interface CodemuxResultBlock {
   agent: string;
   model: string | null;
+  labels: Record<string, string> | null;
   usage: ResultUsageBlock;
   session_id: string | null;
   recording: string | null;

@@ -323,6 +323,7 @@ function recordCompletedLaunch(
   appendCallRecord({
     ts: new Date(startedAt).toISOString(),
     kind: options.kind ?? "run",
+    labels: options.kind === "check" ? null : request.labels ?? null,
     agent: request.agent,
     model: request.model ?? null,
     model_effective: result.servedModel ?? null,
@@ -359,6 +360,7 @@ function appendInterruptedLaunchReceipt(
     appendCallRecord({
       ts: new Date(startedAt).toISOString(),
       kind: options.kind ?? "run",
+      labels: options.kind === "check" ? null : request.labels ?? null,
       agent: request.agent,
       model: request.model ?? null,
       model_effective: null,
@@ -408,6 +410,7 @@ function appendFailedLaunchReceipt(
     appendCallRecord({
       ts: new Date(startedAt).toISOString(),
       kind: options.kind ?? "run",
+      labels: options.kind === "check" ? null : request.labels ?? null,
       agent: request.agent,
       model: request.model ?? null,
       model_effective: processed?.servedModel ?? null,
