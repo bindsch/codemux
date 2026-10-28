@@ -13,6 +13,8 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-28
+
 ### Added
 
 - Add `make live-gate` for release-owner checks of every installed harness
