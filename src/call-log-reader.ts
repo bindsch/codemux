@@ -1,5 +1,6 @@
 import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import type { CallRecord } from "./call-log.js";
+import { parseLabels, validateLabelKey } from "./labels.js";
 
 /** Reads never look beyond the log's last 16 MiB. */
 export const MAX_CALL_LOG_BYTES = 16 * 1024 * 1024;
@@ -15,7 +16,7 @@ export interface CallLogEntry {
 export interface CallLogContents {
   /** Entries in file order (oldest first). */
   entries: CallLogEntry[];
-  /** Lines that did not parse as call records. */
+  /** Lines with malformed records or labels. Records with invalid labels are retained. */
   malformed: number;
   /** True when only the last 16 MiB was read because the file is larger. */
   truncated: boolean;
@@ -36,12 +37,19 @@ function isStringOrNull(value: unknown): boolean {
   return value === null || typeof value === "string";
 }
 
-function isLabels(value: unknown): boolean {
-  return value === undefined || value === null || (
-    typeof value === "object" && !Array.isArray(value) &&
-    Object.values(value).every((item) => typeof item === "string")
-  );
+function isLabels(value: unknown): value is Record<string, string> | null | undefined {
+  if (value === undefined || value === null) return true;
+  if (typeof value !== "object" || Array.isArray(value) ||
+    !Object.values(value).every((item) => typeof item === "string")) return false;
+  try {
+    parseLabels(Object.entries(value).map(([key, item]) => `${validateLabelKey(key)}=${item}`));
+    return true;
+  } catch {
+    return false;
+  }
 }
+
+type StoredCallRecord = Omit<CallRecord, "labels"> & { labels?: unknown };
 
 /** The full flat shape, not a lenient three-field check: a line that
  * parses as JSON and names `ts`/`agent`/`kind` but misses `usage` (or
@@ -49,7 +57,7 @@ function isLabels(value: unknown): boolean {
  * trusts the shape — the table's columns, the totals — would crash on
  * the missing half (review ul2). Wrong-shaped lines are malformed like
  * unparseable ones: skipped and counted, never fatal. */
-function isCallRecord(parsed: unknown): parsed is CallRecord {
+function isCallRecord(parsed: unknown): parsed is StoredCallRecord {
   if (typeof parsed !== "object" || parsed === null) return false;
   const record = parsed as Record<string, unknown>;
   if (typeof record["ts"] !== "string") return false;
@@ -78,7 +86,6 @@ function isCallRecord(parsed: unknown): parsed is CallRecord {
     return false;
   }
   if (typeof record["cwd"] !== "string") return false;
-  if (!isLabels(record["labels"])) return false;
   const usage = record["usage"];
   if (typeof usage !== "object" || usage === null) return false;
   const counts = usage as Record<string, unknown>;
@@ -100,7 +107,8 @@ function isCallRecord(parsed: unknown): parsed is CallRecord {
  * paired with their parsed record so a caller can show raw lines
  * (`calls --json`) and parsed fields from the same pass; a line that does
  * not parse, or parses to something without the record's shape, is
- * skipped and counted, never fatal. Throws on read errors
+ * skipped and counted, never fatal. Invalid labels are counted and replaced
+ * with null while retaining the rest of the record. Throws on read errors
  * (absent file, not a regular file); callers report those. Invalid UTF-8
  * is not one of them: the bytes decode with replacement characters, so
  * the affected lines simply land in `malformed`.
@@ -148,7 +156,13 @@ export function readCallLog(path: string): CallLogContents {
     let record: CallRecord | null = null;
     try {
       const parsed: unknown = JSON.parse(line);
-      if (isCallRecord(parsed)) record = { ...parsed, labels: parsed.labels ?? null };
+      if (isCallRecord(parsed)) {
+        if (isLabels(parsed.labels)) record = { ...parsed, labels: parsed.labels ?? null };
+        else {
+          record = { ...parsed, labels: null };
+          malformed++;
+        }
+      }
     } catch {
       // A hand-edited or truncated line; counted below.
     }

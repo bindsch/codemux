@@ -71,6 +71,23 @@ describe("label parsing", () => {
     }
   });
 
+  test("every C1 control is rejected in values and by the existing KEY pattern", () => {
+    for (let code = 0x80; code <= 0x9f; code++) {
+      const control = String.fromCharCode(code);
+      const escape = `\\u${code.toString(16).padStart(4, "0")}`;
+      for (const label of [`wf=a${control}b`, `w${control}f=ok`]) {
+        for (const parse of [() => parseLabels([label]), () => parseLabels(undefined, label)]) {
+          expect(parse).toThrow(UsageRefusalError);
+          expect(parse).toThrow(escape);
+          try { parse(); } catch (error) {
+            expect((error as Error).message).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
+          }
+        }
+      }
+      expect(() => validateLabelKey(`w${control}f`)).toThrow("KEY must match");
+    }
+  });
+
   test("printable Unicode, spaces, commas, and equals signs remain intact", () => {
     expect(parseLabels(["key=中文 😀, a=b"])?.key).toBe("中文 😀, a=b");
   });

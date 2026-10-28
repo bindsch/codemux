@@ -1,4 +1,5 @@
-import { sanitizeReportedString, type CallRecord } from "./call-log.js";
+import type { CallRecord } from "./call-log.js";
+import { escapeLabelText } from "./labels.js";
 import type { ResultUsageBlock } from "./types.js";
 
 interface FieldTotal {
@@ -171,8 +172,9 @@ export function printTotals(records: readonly CallRecord[], by?: string): void {
     group.push(record);
     groups.set(value, group);
   }
+  const key = escapeLabelText(by);
   for (const [value, group] of groups) {
-    const name = value === null ? "(none)" : sanitizeReportedString(value)!;
-    printTotal(group, `${by}=${name}`);
+    const name = value === null ? `records without label ${key}` : `${key}=${escapeLabelText(value)}`;
+    printTotal(group, name);
   }
 }

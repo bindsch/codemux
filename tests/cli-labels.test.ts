@@ -49,6 +49,21 @@ describe("CLI run labels", () => {
     expect(result.stderr).toContain('"broken"');
   });
 
+  test("C1 label values and keys exit 64 with escaped diagnostics", async () => {
+    for (const command of ["run", "calls"]) {
+      for (const label of ["wf=safe\u009b2K", "wf=safe\u009dtitle", "w\u009bf=safe"]) {
+        const result = await runCli([
+          command, "--label", label, ...(command === "run" ? ["-p", "test"] : []),
+        ], { PATH: minimalPath() });
+        expect(result.exitCode).toBe(64);
+        expect(result.stdout).toBe("");
+        expect(result.stderr).toContain("invalid label");
+        expect(result.stderr).toMatch(/\\u009[bd]/);
+        expect(result.stderr.trim()).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
+      }
+    }
+  });
+
   test("flags replace malformed environment labels in the result and ledger", async () => {
     const fake = createFakeBinaryEnv({
       claude: 'if [ "$1" = --version ]; then printf "2.1.280\\n"; exit 0; fi\n' +

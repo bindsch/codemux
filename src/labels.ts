@@ -3,10 +3,26 @@ import { UsageRefusalError } from "./validation.js";
 export const LABELS_ENV = "CODEMUX_LABELS";
 const MAX_LABEL_VALUE_BYTES = 256;
 const LABEL_KEY_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/;
-const LABEL_CONTROL_PATTERN = /[\x00-\x1f\x7f]/;
+const LABEL_CONTROL_PATTERN = /[\x00-\x1f\x7f-\x9f]/;
+
+function unicodeEscape(character: string): string {
+  return `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`;
+}
+
+/** Escape backslashes too, so literal escape text cannot look like a control. */
+export function escapeLabelText(value: string): string {
+  return value.replace(/[\\\x00-\x1f\x7f-\x9f]/g, (character) =>
+    character === "\\" ? "\\\\" : unicodeEscape(character));
+}
+
+/** Re-encode raw JSON whitespace and escape DEL/C1 for terminal output. */
+export function escapeJsonControls(json: string): string {
+  const encoded = /[\x00-\x1f]/.test(json) ? JSON.stringify(JSON.parse(json)) : json;
+  return encoded.replace(/[\x7f-\x9f]/g, unicodeEscape);
+}
 
 function invalidLabel(label: string, reason: string): never {
-  const quoted = JSON.stringify(label).replace(/\x7f/g, "\\u007f");
+  const quoted = escapeJsonControls(JSON.stringify(label));
   throw new UsageRefusalError(`invalid label ${quoted}: ${reason}`);
 }
 

@@ -18,7 +18,7 @@
  * never merged under one key (review ul6). Reads are bounded to the
  * ledger's last 16 MiB; a corrupt
  * or wrong-shaped line is skipped and counted, never fatal. Everything
- * informational goes to stderr; only the table, the raw lines (`--json`),
+ * informational goes to stderr; only the table, stored records (`--json`),
  * and the totals print on stdout. An unusable `--since` value — neither a
  * duration nor a timestamp, or a duration whose cutoff falls outside the
  * date range — is a usage error (exit 64 with a message), never a silently
@@ -36,7 +36,7 @@ import {
   type CallRecord,
 } from "./call-log.js";
 import { printTotals } from "./calls-totals.js";
-import { collectLabel, parseLabels, validateLabelKey } from "./labels.js";
+import { collectLabel, escapeJsonControls, parseLabels, validateLabelKey } from "./labels.js";
 import { AGENT_IDS, type AgentId } from "./types.js";
 import { UsageRefusalError } from "./validation.js";
 
@@ -103,7 +103,7 @@ interface Column {
 // only at the store's seam (call-log.ts): a ledger written before that
 // strip landed may still carry terminal controls in a model name or finish
 // reason, and the table is what reaches the operator's terminal. --json
-// keeps the stored bytes verbatim by contract.
+// keeps the stored JSON, with DEL and C1 characters escaped for the terminal.
 const COLUMNS: readonly Column[] = [
   { header: "TIMESTAMP", align: "left", value: (r) => formatTimestamp(r.ts) },
   { header: "KIND", align: "left", value: (r) => r.kind },
@@ -169,9 +169,9 @@ export function registerCallsCommand(
     .option("-a, --agent <id>", "Show only one agent's calls")
     .option("--label <KEY=VALUE>", "Filter by a label; repeat for AND matching", collectLabel, [])
     .option("--since <when>", "Cutoff as a duration (90m, 24h, 7d) or date accepted by JavaScript Date")
-    .option("--json", "Print raw JSONL records; --sum appends human-readable totals")
+    .option("--json", "Print stored JSONL with controls escaped; --sum appends human-readable totals")
     .option("--sum", "Append totals over selected records, not necessarily interval-attributable usage")
-    .option("--by <key>", "Group --sum totals by this label; missing values use (none)")
+    .option("--by <key>", "Group --sum totals by this label; records without it form a separate group")
     .action(async (options) => {
       const fail = (message: string): Promise<void> => {
         console.error(`Error: ${message}`);
@@ -248,7 +248,7 @@ export function registerCallsCommand(
       }
       if (log.malformed > 0) {
         console.error(
-          `codemux: skipped ${log.malformed} unparseable line(s) in ${path}`
+          `codemux: skipped ${log.malformed} unparseable line(s) or invalid label map(s) in ${path}`
         );
       }
       const matching = log.entries.filter(
@@ -310,7 +310,7 @@ export function registerCallsCommand(
       }
 
       if (options.json) {
-        for (const entry of shown) console.log(entry.line);
+        for (const entry of shown) console.log(escapeJsonControls(entry.line));
       } else {
         printTable(shown.map((entry) => entry.record!));
       }

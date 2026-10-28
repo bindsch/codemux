@@ -13,6 +13,7 @@ import {
 import { launchRunRequest } from "../src/launch.js";
 import { agyResult, claudeFamilyResult, codexResult, emptyUsage } from "../src/result-envelope.js";
 import type { AdapterCapabilities, RunRequest, RunResult } from "../src/types.js";
+import { BASE_RECORD } from "./helpers/call-log.js";
 
 const scratch = join(import.meta.dir, "..", "scratch", "labels-storage-tests");
 mkdirSync(scratch, { recursive: true });
@@ -97,7 +98,7 @@ describe("call ledger labels", () => {
     expect(records.map((record) => record.labels)).toEqual([null, null]);
   });
 
-  test("old records remain readable and malformed label fields are rejected", async () => {
+  test("old records remain readable and malformed label fields become null", async () => {
     const path = ledgerPath();
     process.env[CALL_LOG_ENV] = path;
     await launchRunRequest(new FakeAdapter(), request, { sandbox: false, requestedAutonomy: "high" });
@@ -110,6 +111,40 @@ describe("call ledger labels", () => {
     expect(log.entries[0]!.record!.labels).toBeNull();
     expect(log.entries[1]!.record!.labels).toEqual(labels);
     expect(log.malformed).toBe(3);
+    expect(log.entries.slice(2).map((entry) => entry.record?.labels)).toEqual([null, null, null]);
+  });
+
+  test("reader nulls invalid label maps, retains usage, and counts each record once", () => {
+    const controls = [...Array.from({ length: 32 }, (_, i) => i),
+      ...Array.from({ length: 33 }, (_, i) => i + 0x7f)];
+    const invalid = [
+      ...controls.map((code) => ({ wf: `safe${String.fromCharCode(code)}tail` })),
+      ...controls.map((code) => ({ [`w${String.fromCharCode(code)}f`]: "safe" })),
+      { Bad: "value" }, { "wf=task": "value" }, { ["a".repeat(65)]: "value" },
+      { wf: "x".repeat(257) }, { wf: "é".repeat(129) },
+      { wf: "safe\rFORGED\u001b[2K", task: "build" },
+    ];
+    const path = ledgerPath();
+    writeFileSync(path, invalid.map((value) => JSON.stringify({
+      ...BASE_RECORD, labels: value, usage: { ...BASE_RECORD.usage, input_tokens: 7 },
+    })).join("\n") + "\nnot json\n");
+    const log = readCallLog(path);
+    expect(log.malformed).toBe(invalid.length + 1);
+    expect(log.entries).toHaveLength(invalid.length + 1);
+    for (const entry of log.entries.slice(0, -1)) {
+      expect(entry.record?.labels).toBeNull();
+      expect(entry.record?.usage.input_tokens).toBe(7);
+    }
+    expect(log.entries.at(-1)?.record).toBeNull();
+  });
+
+  test("reader preserves valid label boundaries and printable Unicode", () => {
+    const valid = { ["a".repeat(64)]: "é".repeat(128), wf: "中文 😀, a=b", empty: "" };
+    const path = ledgerPath();
+    writeFileSync(path, JSON.stringify({ ...BASE_RECORD, labels: valid }) + "\n");
+    const log = readCallLog(path);
+    expect(log.malformed).toBe(0);
+    expect(log.entries[0]?.record?.labels).toEqual(valid);
   });
 });
 

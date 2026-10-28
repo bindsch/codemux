@@ -42,7 +42,7 @@ function record(spec: RecordSpec): string {
 }
 
 async function callsWith(
-  specs: RecordSpec[],
+  specs: Array<RecordSpec | string>,
   args: string[],
   environment: Record<string, string> = {}
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
@@ -51,7 +51,7 @@ async function callsWith(
   const dir = mkdtempSync(join(scratch, "calls-labels-"));
   try {
     const path = join(dir, "calls.jsonl");
-    writeFileSync(path, `${specs.map(record).join("\n")}\n`);
+    writeFileSync(path, `${specs.map((spec) => typeof spec === "string" ? spec : record(spec)).join("\n")}\n`);
     return await runCli(["calls", ...args], {
       CODEMUX_LABELS: "",
       ...environment,
@@ -145,7 +145,7 @@ describe("codemux calls labels", () => {
     expect(jsonRecords(result.stdout).map((entry) => entry.model)).toEqual(["empty"]);
   });
 
-  test("--sum --by groups totals by label and includes missing values under (none)", async () => {
+  test("--sum --by groups totals by label and identifies records without the label", async () => {
     const result = await callsWith([
       { model: "alpha-one", labels: { project: "alpha" }, input: 10, cost: 0.1 },
       { model: "beta", labels: { project: "beta" }, input: 20, cost: 0.2 },
@@ -160,7 +160,76 @@ describe("codemux calls labels", () => {
     expect(totals.find((line) => line.includes("project=alpha"))).toContain("over 2 record(s): input=15");
     expect(totals.find((line) => line.includes("project=alpha"))).toContain("cost=$0.1000");
     expect(totals.find((line) => line.includes("project=beta"))).toContain("over 1 record(s): input=20");
-    expect(totals.find((line) => line.includes("project=(none)"))).toContain("over 3 record(s): input=9");
+    expect(totals.find((line) => line.startsWith("Totals for records without label project ")))
+      .toContain("over 3 record(s): input=9");
+  });
+
+  for (const json of [false, true]) {
+    const format = json ? "JSON" : "table";
+
+    test(`${format} totals distinguish a missing label from the literal value (none)`, async () => {
+      const result = await callsWith([
+        { model: "literal", labels: { wf: "(none)" }, input: 10, cost: 0.1 },
+        { model: "missing", input: 20, cost: 0.2 },
+      ], ["--sum", "--by", "wf", ...(json ? ["--json"] : [])]);
+      expect(result.exitCode).toBe(0);
+      const totals = result.stdout.split("\n").filter((line) => line.startsWith("Totals"));
+      expect(totals.map((line) => line.split(" over ")[0])).toEqual([
+        "Totals for records without label wf",
+        "Totals for wf=(none)",
+      ]);
+      expect(totals[0]).toContain("over 1 record(s): input=20");
+      expect(totals[0]).toContain("cost=$0.2000");
+      expect(totals[1]).toContain("over 1 record(s): input=10");
+      expect(totals[1]).toContain("cost=$0.1000");
+    });
+
+    test(`${format} totals retain records with invalid labels in the missing-label group`, async () => {
+      const value = "build\u0085fast";
+      const result = await callsWith([
+        { model: "plain", labels: { wf: "buildfast" }, input: 20 },
+        { model: "c1", labels: { wf: value }, input: 7 },
+      ], ["--sum", "--by", "wf", ...(json ? ["--json"] : [])]);
+      expect(result.exitCode).toBe(0);
+      const totals = result.stdout.split("\n").filter((line) => line.startsWith("Totals"));
+      expect(totals.map((line) => line.split(" over ")[0])).toEqual([
+        "Totals for records without label wf",
+        "Totals for wf=buildfast",
+      ]);
+      expect(totals[0]).toContain("over 1 record(s): input=7");
+      expect(totals[1]).toContain("over 1 record(s): input=20");
+      expect(totals.join("\n")).not.toMatch(/[\x7f-\x9f]/);
+    });
+  }
+
+  test("a foreign control-bearing label map cannot match even its valid label", async () => {
+    const result = await callsWith([
+      { model: "foreign", labels: { wf: "safe\rFORGED\u001b[2K", task: "build" } },
+      { model: "valid", labels: { task: "build" } },
+    ], ["--label", "task=build", "--json"]);
+    expect(result.exitCode).toBe(0);
+    expect(jsonRecords(result.stdout).map((entry) => entry.model)).toEqual(["valid"]);
+    expect(result.stderr).toContain("invalid label");
+  });
+
+  test("foreign label controls remain JSON-encoded and round-trip without terminal controls", async () => {
+    const labels = { wf: "safe\rFORGED\u001b[2K\u007f\u009b2K\u009dtitle", "w\u009bf": "value" };
+    const result = await callsWith([{ model: "foreign", labels }], ["--json"]);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout).labels).toEqual(labels);
+    expect(result.stdout.trim()).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
+    expect(result.stdout).toContain("\\u001b[2K");
+    expect(result.stdout).toContain("\\u009b2K");
+  });
+
+  test("JSON output removes structural CR and TAB while preserving escaped label values", async () => {
+    const labels = { wf: "safe\r\t\u001b[2K" };
+    const stored = record({ model: "foreign", labels }).replace(',"labels":', ',\r\t"labels":');
+    const result = await callsWith([stored], ["--json"]);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout).labels).toEqual(labels);
+    expect(result.stdout.trim()).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
+    expect(result.stdout).toContain("\\r\\t\\u001b[2K");
   });
 
   test("group totals retain session folding and missing usage accounting", async () => {

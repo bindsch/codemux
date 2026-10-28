@@ -79,7 +79,7 @@ codemux run -a codex -f prompt.md --label wf=review --label step=scan
 
 Each key must match `^[a-z][a-z0-9_.-]{0,63}$`. A value may be empty or
 contain `=`, but must fit in 256 UTF-8 bytes and contain no characters in
-U+0000–U+001F or U+007F. Missing `=`, empty keys, duplicate keys, and other
+U+0000–U+001F or U+007F–U+009F. Missing `=`, empty keys, duplicate keys, and other
 invalid labels fail with exit 64.
 
 With no `--label` flags, `run` reads comma-separated pairs from
@@ -172,9 +172,9 @@ Hermetic mode and tool selection are refused for sessions.
 | `-a, --agent <id>` | All agents |
 | `--since <when>` | No cutoff; integer duration with s/m/h/d/w, or a date accepted by JavaScript Date |
 | `--label <KEY=VALUE>` | Repeatable; retain records matching every supplied key and value |
-| `--json` | Raw stored JSONL instead of a table |
+| `--json` | Stored JSONL instead of a table; DEL and C1 characters are escaped |
 | `--sum` | Append human-readable selected-record totals; with `--json`, output is mixed |
-| `--by <KEY>` | Group totals by this label's value; requires `--sum`; missing labels use `(none)` |
+| `--by <KEY>` | Group totals by this label's value; requires `--sum`; missing labels use `Totals for records without label KEY` |
 
 Use ISO timestamps with a timezone for portable date interpretation.
 Records appear in reverse ledger append order, not start-timestamp order.

@@ -143,6 +143,9 @@ Each record contains:
 Every new record includes `labels`. A labeled run stores its key/value pairs;
 an unlabeled run, check, session turn, or closing session stores null.
 Older records without the field are treated as unlabeled.
+Labels are validated on read as on write. If a label map has an invalid key,
+value, or shape, the reader keeps the record, sets its labels to null, and
+counts the line as malformed. Such records cannot match a label filter.
 
 Codemux does not automatically record prompt text, API keys, or environment
 values. Labels are caller-supplied plain text and are retained in the ledger.
@@ -181,11 +184,18 @@ their start timestamps precede the cutoff. `--sum` covers shown records:
 for each session and field, shown turn values take precedence over the closing
 summary. With several closings, only the newest shown closing contributes.
 Closings without a nonempty session ID are excluded. Unknown fields are
-reported with missing-value counts. `--json --sum` emits raw JSONL followed
+reported with missing-value counts. `--json --sum` emits stored JSONL followed
 by human-readable totals; it is not a pure JSONL stream.
 
 Use `codemux calls --sum --by wf` to group shown-record totals by the value
-of the `wf` label. Records without that label appear under `(none)`.
+of the `wf` label. Records without that label appear under
+`Totals for records without label wf`. Headings render C0, DEL, and C1 controls
+as visible lowercase Unicode escapes such as `\u001b`. Literal backslashes
+are doubled so distinct values remain distinct. Other printable text stays
+unchanged. `--json` retains the stored record, including invalid labels, with
+DEL and C1 characters escaped as well as JSON's C0 escapes. Its decoded
+values stay unchanged. Raw carriage returns or tabs between JSON fields
+cause the line to be re-encoded before output.
 `--by` requires `--sum` and a valid label key; invalid use fails with exit 64.
 Each group uses the same session and missing-usage rules as the overall totals.
 
