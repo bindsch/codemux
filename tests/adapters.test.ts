@@ -449,7 +449,7 @@ describe("ClaudeAdapter", () => {
     const grantWksp = realpathSync(mkdtempSync(join(tmpdir(), "codemux-grant-")));
     try {
       expect(adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: "medium", cwd: grantWksp }))
-        .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--permission-mode", "acceptEdits", "--allowedTools", `Edit(//${grantWksp.replace(/^\/+/, "")}/**)`, "WebSearch", "WebFetch"]);
+        .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--permission-mode", "acceptEdits", "--allowedTools", `Edit(//${grantWksp.replace(/^\/+/, "")}/**)`, "Bash", "WebSearch", "WebFetch"]);
     } finally {
       rmSync(grantWksp, { recursive: true, force: true });
     }

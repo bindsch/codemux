@@ -60,3 +60,15 @@ The installed guides belong under `libexec/docs`; README may be installed
 above `libexec`. Check links from that installed layout. Confirm the
 installed version, every help surface, and static verification. These checks
 do not authorize a paid model probe.
+
+After reinstalling the Homebrew bottle, have the owner run the live gate
+against the installed binary:
+
+```sh
+make live-gate LIVE_GATE_ARGS="--codemux $(brew --prefix)/bin/codemux"
+```
+
+`--codemux <path>` selects the executable to test. It defaults to
+`<repo>/bin/codemux`. The path must be an existing executable file; invalid
+paths exit 2 before probing. The report's first line and totals name the
+selected binary. This live gate sends real prompts and spends quota.

@@ -11,7 +11,7 @@ Headless `run` and interactive `tui` default to read-only autonomy and scode. Ev
 
 | Harness | Read-only | Low | Medium | High |
 | --- | --- | --- | --- | --- |
-| Claude, Z.AI | Plan, with headless web grants | Manual, with headless web grants | Accept edits, with headless edit grant scoped to launch directory and web grants | Skip permissions, with headless edit/write/notebook/shell and web grants |
+| Claude, Z.AI | Plan, with headless web grants | Manual, with headless web grants | Accept edits, with headless edit grant scoped to launch directory, shell grant, and web grants | Skip permissions, with headless edit/write/notebook/shell and web grants |
 | Codex | read-only + never approve | workspace-write + untrusted approval | workspace-write + never approve | danger-full-access + never approve |
 | Antigravity | Plan + required scode | Native prompting | Accept edits, with headless command grant | Skip permissions |
 | Aider | dry-run | Decline headless confirmations | Auto-confirm | Auto-confirm |
@@ -31,9 +31,15 @@ Kimi's headless `--prompt` rejects its interactive autonomy flags. OpenHands hea
 
 Antigravity medium headless runs add `command(*)` to `permissions.allow` in a private copy of the operator's settings. Existing allow, ask, and deny rules remain; deny rules take precedence. The command grant relies on scode for filesystem and network limits. Read-only, low, and interactive runs keep their native policies.
 
-Claude's subprocess environment hardening can reset its requested native mode to default, which headless denies every tool that would prompt. Codemux's scoped headless tool grants preserve the intended write behavior, and every headless `run` level also grants `WebSearch` and `WebFetch`; without that grant a read-only or low run could not search or fetch. Neither tool writes locally, but the grant is a trade-off: the run reads pages nobody approved, and the model picks the URLs it fetches, so content it reads (a prompt injection in an untrusted repository) can carry local data out in a URL. `--sandbox-no-net` would deny that but also denies the model provider, so it is no remedy here; a review of an untrusted tree passes `--no-web`, which denies the two tools with a deny rule (so it holds at high, where the bypass flag would ignore an absent allow rule, and over an allow rule saved in the operator's settings) and changes nothing else. Persistent sessions do not take the grant: their ceiling answers each tool call and denies the web tools at every level but low. This is a version-sensitive adapter mapping, not a property scode can enforce for Claude.
+Claude's subprocess environment hardening can reset its requested native mode to default, which headless denies every tool that would prompt. Codemux's scoped headless edit grant and shell grant preserve the intended write and command behavior, and every headless `run` level also grants `WebSearch` and `WebFetch`; without that grant a read-only or low run could not search or fetch. Neither web tool writes locally, but the web grant is a trade-off: the run reads pages nobody approved, and the model picks the URLs it fetches, so content it reads (a prompt injection in an untrusted repository) can carry local data out in a URL. `--sandbox-no-net` would deny that but also denies the model provider, so it is no remedy here; a review of an untrusted tree passes `--no-web`, which denies the two tools with a deny rule (so it holds at high, where the bypass flag would ignore an absent allow rule, and over an allow rule saved in the operator's settings) and changes nothing else. Persistent sessions do not take the web grant: their ceiling answers each tool call and denies the web tools at every level but low. This is a version-sensitive adapter mapping, not a property scode can enforce for Claude.
 
 For programmatic Claude and Z.AI requests, `web: false` denies both tools even when `autonomy` is omitted. A defined `web` value must be a boolean.
+
+### Medium shell execution
+
+Claude and Z.AI headless `--auto medium` runs add `Bash` alongside the launch-directory `Edit` grant and web grants. Shell commands run inside the required scode sandbox. Persistent sessions retain their per-tool ceiling callback and receive no medium `Bash` grant.
+
+Gemini's medium mode (`--approval-mode auto_edit`) requires interactive approval for shell commands and denies them headlessly in the audited 0.60.0 policy. The adapter adds no shell grant. The live gate reports this documented difference as `UNSUPPORTED`.
 
 ## Scode policy
 

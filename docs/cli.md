@@ -60,6 +60,13 @@ printf 'Reply with OK.\n' | codemux run -a claude -f -
 | `--label <KEY=VALUE>` | Repeatable; metadata stored with the run; otherwise read `CODEMUX_LABELS` |
 | `--result-json` | Off; structured result with harness-specific normalization |
 
+Claude and Z.AI headless `--auto medium` runs use `--permission-mode acceptEdits`
+with `--allowedTools Edit(//<launch dir>/**) Bash WebSearch WebFetch`. Shell
+commands run inside the required scode sandbox. Persistent sessions retain
+their per-tool ceiling callback and receive no medium `Bash` grant. See
+[medium shell execution](autonomy-and-sandboxing.md#medium-shell-execution)
+for native mappings and harness differences.
+
 Timeouts must be finite and greater than zero, at most 86400 seconds.
 Fractional seconds are accepted and rounded up to milliseconds. The timeout
 is not an end-to-end wall-clock cap: input collection, execution, setup, and

@@ -14,9 +14,9 @@ import type { AutonomyLevel } from "./types.js";
  * silently discards --permission-mode and --dangerously-skip-permissions
  * ("Permission mode forced to default ... (allowed_non_write_users
  * hardening)"). In headless runs, "default" denies every tool that would
- * prompt, so medium and high could no longer write files. Explicit allow
- * rules are the documented escape hatch ("Declare allowedTools
- * explicitly"), so they ride alongside the native flags.
+ * prompt, so medium and high could no longer edit files or run shell
+ * commands. Explicit allow rules are the documented escape hatch
+ * ("Declare allowedTools explicitly"), so they ride alongside the native flags.
  *
  * The native flags stay: versions without the hardening (<= the audited
  * 2.1.223) and any future upstream that decouples the variable behave
@@ -117,7 +117,8 @@ export const WEB_TOOL_GRANTS = ["WebSearch", "WebFetch"] as const;
 /** The headless mapping: the native flags plus explicit allow rules, the
  * hardening's documented escape hatch (see grantRule). Write and
  * NotebookEdit follow Edit rules, so the medium rule covers the three
- * editing tools; Bash stays gated there. At high the grants are a subset
+ * editing tools. Medium also grants Bash; scode enforces the sandbox
+ * boundary for shell commands. At high the grants are a subset
  * of the bypass high always requested. The web tools are granted at every
  * level. Grants ride only on headless runs; the TUI keeps the native flags
  * so a human approves. */
@@ -133,7 +134,7 @@ export function claudeAutonomyFlags(
   const webGrants = web === "grant" ? WEB_TOOL_GRANTS : [];
   const webDenies = web === "deny" ? ["--disallowedTools", ...WEB_TOOL_GRANTS] : [];
   if (level === "medium") {
-    return [...flags, "--allowedTools", grantRule(launchDir), ...webGrants, ...webDenies];
+    return [...flags, "--allowedTools", grantRule(launchDir), "Bash", ...webGrants, ...webDenies];
   }
   if (level === "high") {
     return [...flags, "--allowedTools", "Edit", "Write", "NotebookEdit", "Bash", ...webGrants, ...webDenies];

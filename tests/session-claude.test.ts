@@ -20,7 +20,7 @@ import {
   claudeSessionCapabilities,
   ClaudeStreamParser,
 } from "../src/session/claude-session.js";
-import { claudeAutonomyFlags } from "../src/claude-autonomy.js";
+import { claudeAutonomyFlags, grantRule } from "../src/claude-autonomy.js";
 import { claudeProviderPickerSettings } from "../src/claude-family.js";
 import { CodexStreamParser } from "../src/session/codex-session.js";
 import { parseAgySessionLine } from "../src/session/agy-session.js";
@@ -49,8 +49,15 @@ describe("claudeSessionAutonomyFlags", () => {
     expect(flags.join(" ")).not.toContain("dangerously");
   });
 
-  test("medium, low, and read-only reuse the run mapping without its web grants", () => {
-    for (const level of ["medium", "low", "read-only"] as const) {
+  test("medium keeps shell and web tools under the ceiling callback", () => {
+    expect(claudeSessionAutonomyFlags("medium", "/tmp/launch")).toEqual([
+      "--permission-mode", "acceptEdits", "--allowedTools", grantRule("/tmp/launch"),
+    ]);
+    expect(claudeAutonomyFlags("medium", "/tmp/launch")).toContain("Bash");
+  });
+
+  test("low and read-only reuse the run mapping without its web grants", () => {
+    for (const level of ["low", "read-only"] as const) {
       const flags = claudeSessionAutonomyFlags(level, "/tmp/launch");
       expect(flags).toEqual(claudeAutonomyFlags(level, "/tmp/launch", { web: "callback" }));
       // The ceiling answers each tool call; an allow or deny rule for the web tools would bypass it.

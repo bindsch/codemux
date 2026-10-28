@@ -1,6 +1,6 @@
-import { Command, InvalidArgumentError } from "commander";
+import { Command, CommanderError, InvalidArgumentError } from "commander";
 import { createHash, randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, appendFileSync, constants, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ReadableStreamDefaultReader } from "node:stream/web";
@@ -17,12 +17,16 @@ const MAX_JOBS = 4;
 const STDERR_LIMIT = 160;
 const STDOUT_LIMIT = 80;
 const ROOT = resolve(import.meta.dir, "..");
+const DEFAULT_CODEMUX = join(ROOT, "bin/codemux");
 
-// Entries must quote the matrix note that makes medium interactive-only.
+// Entries must quote the matrix note explaining why medium cannot run a shell command headless.
 // Kimi's scode fallback still supports headless execution and is required.
-const MEDIUM_UNSUPPORTED: Partial<Record<AgentId, string>> = {};
+const MEDIUM_UNSUPPORTED: Partial<Record<AgentId, string>> = {
+  gemini: "uses Gemini approval modes; medium shell commands require interactive approval and are denied headless",
+};
 
 interface GateOptions {
+  codemux: string;
   timeout: number;
   jobs: number;
   skip: Set<AgentId>;
@@ -68,6 +72,7 @@ export function parseOptions(args: string[], skipEnv = process.env.LIVE_GATE_SKI
   const command = new Command()
     .name("live-gate")
     .description("Spend quota to check every installed harness under the default sandbox.")
+    .option("--codemux <path>", "Codemux executable to test", DEFAULT_CODEMUX)
     .option("--timeout <seconds>", "Timeout per probe in seconds", positiveInteger(MAX_RUN_TIMEOUT_MS / 1000), DEFAULT_TIMEOUT_SECONDS)
     .option("--jobs <count>", "Concurrent probes (1 to 4)", positiveInteger(MAX_JOBS), MAX_JOBS)
     .option("--skip <agents>", "Comma-separated harnesses without credentials (adds to LIVE_GATE_SKIP)")
@@ -75,11 +80,18 @@ export function parseOptions(args: string[], skipEnv = process.env.LIVE_GATE_SKI
     .option("--pass-env <names>", "Forward this comma-separated environment list to every probe")
     .exitOverride();
   command.parse(args, { from: "user" });
-  const options = command.opts<{ timeout: number; jobs: number; skip?: string; only?: string; passEnv?: string }>();
+  const options = command.opts<{ codemux: string; timeout: number; jobs: number; skip?: string; only?: string; passEnv?: string }>();
+  const codemux = resolve(options.codemux);
+  try {
+    if (!statSync(codemux).isFile()) throw new Error("not a file");
+    accessSync(codemux, constants.X_OK);
+  } catch {
+    command.error(`--codemux must name an existing executable file: ${escapeControls(codemux)}`, { exitCode: 2 });
+  }
   const skip = agentList([skipEnv, options.skip], "Skip");
   const only = options.only === undefined ? undefined : agentList([options.only], "Only");
   if (only?.size === 0) throw new Error("Only list must contain at least one harness name.");
-  return { timeout: options.timeout, jobs: options.jobs, skip, only, passEnv: options.passEnv };
+  return { codemux, timeout: options.timeout, jobs: options.jobs, skip, only, passEnv: options.passEnv };
 }
 
 function escapeControls(value: string): string {
@@ -213,6 +225,7 @@ export class ProbeRunner {
       stop("could not capture probe output");
       void stdoutReader.cancel().catch(() => {});
       void stderrReader.cancel().catch(() => {});
+      await Promise.race([proc.exited, abandonedExit]).catch(() => {});
       finishLine();
       return failed(reason || stderr);
     } finally {
@@ -249,10 +262,10 @@ function hasProbes(rows: HarnessResult[]): boolean {
   return rows.some((row) => [row.readOnly, row.medium].some((result) => result.status === "PASS" || result.status === "FAIL"));
 }
 
-export function formatReport(rows: HarnessResult[], only?: ReadonlySet<AgentId>): string {
+export function formatReport(rows: HarnessResult[], only?: ReadonlySet<AgentId>, codemux = DEFAULT_CODEMUX): string {
   const totals = { pass: 0, fail: 0, skip: 0, unsupported: 0 };
   const scope = only ? `Scope: --only ${[...only].join(",")} (installed harnesses only).` : "Scope: all installed harnesses.";
-  const lines = [scope, "", "| Agent | Read-only | Medium | Seconds | First stderr line on failure |", "| --- | --- | --- | ---: | --- |"];
+  const lines = [`Codemux: ${escapeControls(codemux)}`, scope, "", "| Agent | Read-only | Medium | Seconds | First stderr line on failure |", "| --- | --- | --- | ---: | --- |"];
   for (const row of rows) {
     const results = [row.readOnly, row.medium];
     if (results.some((result) => result.status === "FAIL")) totals.fail++;
@@ -262,7 +275,7 @@ export function formatReport(rows: HarnessResult[], only?: ReadonlySet<AgentId>)
     const failure = results.find((result) => result.status === "FAIL");
     lines.push(`| ${row.agent} | ${resultCell(row.readOnly)} | ${resultCell(row.medium)} | ${(row.readOnly.seconds + row.medium.seconds).toFixed(1)} | ${cell(failure?.stderr ?? "")} |`);
   }
-  lines.push("", `live-gate: ${totals.pass} pass, ${totals.fail} fail, ${totals.skip} skip, ${totals.unsupported} unsupported`);
+  lines.push("", `live-gate (${escapeControls(codemux)}): ${totals.pass} pass, ${totals.fail} fail, ${totals.skip} skip, ${totals.unsupported} unsupported`);
   if (!hasProbes(rows)) {
     const allSkipped = rows.length > 0 && rows.every((row) => row.readOnly.status === "SKIP" && row.medium.status === "SKIP");
     lines.push(`live-gate: nothing was probed${allSkipped ? " (all skipped)" : ""}`);
@@ -281,7 +294,7 @@ export async function runProbes(
     rows.push(row);
     if (options.skip.has(agent)) continue;
     const command = (level: string, prompt: string): string[] => [
-      join(ROOT, "bin/codemux"), "run", "-a", agent,
+      options.codemux, "run", "-a", agent,
       ...(options.passEnv === undefined ? [] : ["--pass-env", options.passEnv]),
       "--auto", level, "--timeout", String(options.timeout), "-p", prompt,
     ];
@@ -352,7 +365,7 @@ export async function main(): Promise<void> {
   process.on("SIGHUP", onHangup);
   try {
     const rows = await runProbes(getAvailableAdapters().map((adapter) => adapter.id), options, runner, directory);
-    const report = formatReport(rows, options.only);
+    const report = formatReport(rows, options.only, options.codemux);
     console.log(report);
     const path = join(directory, "report.md");
     await Bun.write(path, `${report}\n`);
@@ -372,7 +385,7 @@ if (import.meta.main) {
   } catch (error) {
     if ((error as { code?: string }).code !== "commander.helpDisplayed") {
       console.error("live-gate: could not complete; check arguments, installation, and report directory");
-      process.exitCode = 1;
+      process.exitCode = error instanceof CommanderError ? error.exitCode : 1;
     }
   }
 }

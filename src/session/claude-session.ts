@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { claudeAutonomyFlags } from "../claude-autonomy.js";
+import { claudeAutonomyFlags, claudeNativeAutonomyFlags, grantRule } from "../claude-autonomy.js";
 import { getPlaywrightSandboxMcpArgs } from "../mcp.js";
 import { normalizeClaudeUsage } from "../result-envelope.js";
 import type {
@@ -53,10 +53,10 @@ export interface ClaudeSessionCommand {
 /** The session high mapping: `--permission-mode default` plus the grant
  * list — never `--dangerously-skip-permissions`. High's reach is set by
  * codemux's grants, not a harness side effect, so the resume ladder's
- * low→high move narrows reach on every build the floor admits. Medium,
- * low, and read-only reuse the run mapping without its web grants (medium
- * already carries the scoped Edit grant; low and read-only carry no
- * grants): the ceiling answers each tool call, denies WebSearch and
+ * low→high move narrows reach on every build the floor admits. Medium
+ * keeps only the scoped Edit grant; Bash stays under the ceiling callback.
+ * Low and read-only reuse the run mapping without its web grants. The
+ * ceiling answers each tool call, denies WebSearch and
  * WebFetch at every level but low, and an allow rule would bypass that
  * answer. */
 export function claudeSessionAutonomyFlags(
@@ -73,6 +73,9 @@ export function claudeSessionAutonomyFlags(
       "NotebookEdit",
       "Bash",
     ];
+  }
+  if (level === "medium") {
+    return [...claudeNativeAutonomyFlags(level), "--allowedTools", grantRule(launchDir)];
   }
   return claudeAutonomyFlags(level, launchDir, { web: "callback" });
 }

@@ -72,7 +72,7 @@ describe("ZaiAdapter", () => {
     const grantWksp = realpathSync(mkdtempSync(join(tmpdir(), "codemux-grant-")));
     try {
       expect(adapter.buildRunCommand({ agent: "zai", prompt: "t", autonomy: "medium", cwd: grantWksp }))
-        .toEqual([...safeHeadlessArgs, "--model", "opus", "--permission-mode", "acceptEdits", "--allowedTools", `Edit(//${grantWksp.replace(/^\/+/, "")}/**)`, "WebSearch", "WebFetch"]);
+        .toEqual([...safeHeadlessArgs, "--model", "opus", "--permission-mode", "acceptEdits", "--allowedTools", `Edit(//${grantWksp.replace(/^\/+/, "")}/**)`, "Bash", "WebSearch", "WebFetch"]);
     } finally {
       rmSync(grantWksp, { recursive: true, force: true });
     }
@@ -96,6 +96,7 @@ describe("ZaiAdapter", () => {
       "acceptEdits",
       "--allowedTools",
       "Edit(//tmp/my stuff/**)",
+      "Bash",
       "WebSearch",
       "WebFetch",
     ]);
@@ -210,6 +211,7 @@ describe("ZaiAdapter", () => {
       "acceptEdits",
       "--allowedTools",
       "Edit(//tmp/x,Bash,y/**)",
+      "Bash",
       "WebSearch",
       "WebFetch",
     ]);
@@ -218,6 +220,7 @@ describe("ZaiAdapter", () => {
       "acceptEdits",
       "--allowedTools",
       "Edit(//tmp/a b c/**)",
+      "Bash",
       "WebSearch",
       "WebFetch",
     ]);
@@ -232,6 +235,7 @@ describe("ZaiAdapter", () => {
       "acceptEdits",
       "--allowedTools",
       "Edit(//tmp/plain/**)",
+      "Bash",
       "WebSearch",
       "WebFetch",
     ]);

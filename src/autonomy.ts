@@ -30,10 +30,10 @@ export const AUTONOMY_EQUIVALENCE: Record<AgentId, AutonomyMapping> = {
     byLevel: {
       "read-only": "--permission-mode plan + --allowedTools WebSearch WebFetch (headless)",
       low: "--permission-mode manual + --allowedTools WebSearch WebFetch (headless)",
-      medium: "--permission-mode acceptEdits + --allowedTools Edit(//<launch dir>/**) WebSearch WebFetch (headless)",
+      medium: "--permission-mode acceptEdits + --allowedTools Edit(//<launch dir>/**) Bash WebSearch WebFetch (headless)",
       high: "--dangerously-skip-permissions + --allowedTools Edit Write NotebookEdit Bash WebSearch WebFetch (headless)",
     },
-    notes: "native 4-level mapping; grants restore writes and the web tools under the CLAUDE_CODE_SUBPROCESS_ENV_SCRUB hardening (claude >= 2.1.25x force-resets the requested mode to default, which denies every prompting tool headless)",
+    notes: "native 4-level mapping; grants restore edits, shell commands, and the web tools under the CLAUDE_CODE_SUBPROCESS_ENV_SCRUB hardening (claude >= 2.1.25x force-resets the requested mode to default, which denies every prompting tool headless)",
   },
   cline: {
     byLevel: {
@@ -97,7 +97,7 @@ export const AUTONOMY_EQUIVALENCE: Record<AgentId, AutonomyMapping> = {
       medium: "--approval-mode auto_edit",
       high: "--approval-mode yolo",
     },
-    notes: "uses Gemini approval modes",
+    notes: "uses Gemini approval modes; medium shell commands require interactive approval and are denied headless",
   },
   kimi: {
     byLevel: {
@@ -148,9 +148,9 @@ export const AUTONOMY_EQUIVALENCE: Record<AgentId, AutonomyMapping> = {
     byLevel: {
       "read-only": "--permission-mode plan + --allowedTools WebSearch WebFetch (headless)",
       low: "--permission-mode manual + --allowedTools WebSearch WebFetch (headless)",
-      medium: "--permission-mode acceptEdits + --allowedTools Edit(//<launch dir>/**) WebSearch WebFetch (headless)",
+      medium: "--permission-mode acceptEdits + --allowedTools Edit(//<launch dir>/**) Bash WebSearch WebFetch (headless)",
       high: "--dangerously-skip-permissions + --allowedTools Edit Write NotebookEdit Bash WebSearch WebFetch (headless)",
     },
-    notes: "claude-compatible mapping via z.ai endpoint; grants counter the scrub-var permission hardening (writes and the web tools)",
+    notes: "claude-compatible mapping via z.ai endpoint; grants counter the scrub-var permission hardening (edits, shell commands, and the web tools)",
   },
 };

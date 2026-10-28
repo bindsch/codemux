@@ -42,6 +42,11 @@ The owner must run this gate on the release machine before tagging:
 make live-gate
 ```
 
+By default, the gate runs `<repo>/bin/codemux`. Use `--codemux <path>` to
+test another binary. The path must be an existing executable file. Invalid
+paths exit 2 before any probes run. Relative paths resolve from the current
+working directory. The report's first line and totals name the binary used.
+
 This opt-in gate sends real prompts and spends quota. It is separate from
 the automated gate. It tests every installed harness with two probes under
 the default sandbox:
@@ -110,16 +115,21 @@ listed harness was explicitly skipped, the message is
 Refuse the release if any installed, credentialed harness fails either
 probe, or if a feature behaves differently across harnesses without a
 documented unsupported entry. `MEDIUM_UNSUPPORTED` records documented
-exceptions to Probe B. It is empty under the current
-[autonomy matrix](autonomy-and-sandboxing.md#native-mappings): every harness
-must run Probe B. Kimi's headless reliance on scode does not justify a skip.
+exceptions to Probe B. An entry still runs Probe A and is reported as
+`UNSUPPORTED (documented)` for Probe B; it must cite the
+[autonomy matrix](autonomy-and-sandboxing.md#native-mappings) note that
+explains why the harness cannot run a shell command headless at medium.
+Kimi's headless reliance on scode does not justify an entry.
 
 | MEDIUM_UNSUPPORTED harness | Unsupported behavior and evidence |
 | --- | --- |
+| gemini | `--approval-mode auto_edit` auto-approves edits but needs interactive approval for shell commands, which a headless run denies; the adapter has no grant mechanism (matrix note, Gemini 0.60.0). |
 
 - [ ] Owner ran `make live-gate` on the release machine for the candidate.
+- [ ] After reinstalling the Homebrew bottle, run `make live-gate LIVE_GATE_ARGS="--codemux $(brew --prefix)/bin/codemux"` to test the installed binary.
 - [ ] Every installed, credentialed harness passed both probes with exit 0
-  and the exact required output.
+  and the exact required output, except a `MEDIUM_UNSUPPORTED` entry, which
+  passed Probe A and was reported as unsupported for Probe B.
 - [ ] Record the result table, timeout and job limits, and every skip reason.
 - [ ] No feature differs across harnesses without a documented unsupported
   entry; `MEDIUM_UNSUPPORTED` still matches the autonomy matrix.
