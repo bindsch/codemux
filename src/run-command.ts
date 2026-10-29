@@ -15,6 +15,8 @@ import type { Command } from "commander";
 import type { AgentId, CodemuxConfig, RunRequest } from "./types.js";
 import { assertExperimentMcpUnavailable, validateExperimentRequest } from "./experiment-mcp.js";
 import { launchRunRequest } from "./launch.js";
+import { ExperimentFailure } from "./experiment-records.js";
+import { experimentFailedResult } from "./result-envelope/experiment.js";
 import { readUtf8FileBounded } from "./file-io.js";
 import { parseTimeoutOption, parseToolsOption } from "./cli-runtime.js";
 import { collectLabel, LABELS_ENV, parseLabels } from "./labels.js";
@@ -129,7 +131,7 @@ export function registerRunCommand(
     )
     .option("--tools <selection>", "Built-in tools the harness exposes: default, none")
     .option("--no-web", "Keep the Claude-family web tools (WebSearch, WebFetch) gated in a headless run")
-    .option("--experiment-mcp <spec.json>", "One experiment stdio MCP server through Claude's SDK bridge; requires hermetic, tools none, read-only")
+    .option("--experiment-mcp <spec.json>", "One experiment stdio MCP server for claude, zai, codex, or kimi; requires hermetic, tools none, read-only")
     .option(
       "--result-json",
       "Return a structured result with harness-specific normalization and reported token usage"
@@ -161,6 +163,7 @@ export function registerRunCommand(
     )
     .option("--cwd <path>", "Working directory")
     .action(async (options) => {
+      let failureRequest: RunRequest | undefined;
       try {
         requireValidConfig();
         const labels = parseLabels(options.label, process.env[LABELS_ENV]);
@@ -185,8 +188,17 @@ export function registerRunCommand(
         }
         const hermetic = Boolean(options.hermetic);
         const tools = parseToolsOption(options.tools);
+        const sandboxPolicyOverrides = parseSandboxPolicyOverrides({
+          sandbox: Boolean(options.sandbox),
+          sandboxTrust: options.sandboxTrust,
+          sandboxNoNet: Boolean(options.sandboxNoNet),
+          sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
+          sandboxAccount: options.sandboxAccount,
+          sandboxAccountId: options.sandboxAccountId,
+        });
         validateExperimentRequest({ agent: agentId, prompt: PREFLIGHT_PROMPT, experimentMcp: options.experimentMcp,
-          hermetic, tools, autonomy: requestedAutonomy, sandboxed: Boolean(options.sandbox), enablePlaywrightMcp });
+          hermetic, tools, autonomy: requestedAutonomy, sandboxed: Boolean(options.sandbox),
+          sandboxNoNet: Boolean(options.sandboxNoNet), sandboxTrust: sandboxPolicyOverrides?.trust, enablePlaywrightMcp });
         if ((hermetic || tools === "none") && enablePlaywrightMcp) {
           throw new Error("--hermetic and --tools none cannot be combined with --enable-playwright-mcp");
         }
@@ -196,15 +208,6 @@ export function registerRunCommand(
         if (options.web === false && agentId !== "claude" && agentId !== "zai") {
           throw new Error(`--no-web applies to the claude and zai agents only; ${agentId} keeps its own web tools`);
         }
-        const sandboxPolicyOverrides = parseSandboxPolicyOverrides({
-          sandbox: Boolean(options.sandbox),
-          sandboxTrust: options.sandboxTrust,
-          sandboxNoNet: Boolean(options.sandboxNoNet),
-          sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
-          sandboxAccount: options.sandboxAccount,
-          sandboxAccountId: options.sandboxAccountId,
-        });
-
         const adapter = getAdapter(agentId);
 
         // Parsed before the prompt is read: a `-f -` read is bounded by the
@@ -310,6 +313,8 @@ export function registerRunCommand(
           effort,
           cwd: options.cwd,
           sandboxed: Boolean(options.sandbox),
+          sandboxNoNet: Boolean(options.sandboxNoNet),
+          sandboxTrust: sandboxPolicyOverrides?.trust,
           timeoutMs,
           passthroughEnv,
           enablePlaywrightMcp,
@@ -319,6 +324,7 @@ export function registerRunCommand(
           web: options.web !== false,
           resultJson: Boolean(options.resultJson),
         };
+        failureRequest = request;
         // Preflight: refuse an unsupported hermetic, tools, or result-json
         // request before anything consumes stdin. When the
         // prompt is the stand-in, the content rules are re-applied to the
@@ -376,6 +382,15 @@ export function registerRunCommand(
         process.exitCode = result.exitCode;
         return;
       } catch (error) {
+        if (failureRequest?.experimentMcp && error instanceof ExperimentFailure) {
+          const normalized = failureRequest.agent === "kimi" ? getAdapter("kimi").processRunResult(
+            { stdout: "", stderr: "", exitCode: 1, success: false }, failureRequest, undefined, error) : undefined;
+          const result = experimentFailedResult(normalized, failureRequest, null, error);
+          process.stdout.write(result.stdout);
+          process.stderr.write(result.stderr);
+          process.exitCode = result.exitCode;
+          return;
+        }
         handleUnexpectedError(error);
       }
     });

@@ -1,14 +1,68 @@
 import { expect, spyOn, test } from "bun:test";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { Command } from "commander";
 import { AgyAdapter } from "../src/adapters/agy.js";
+import { KimiAdapter } from "../src/adapters/kimi.js";
 import type { RunContext } from "../src/adapters/base.js";
+import * as cliRuntime from "../src/cli-runtime.js";
+import * as experimentMcp from "../src/experiment-mcp.js";
+import * as launcher from "../src/launch.js";
 import { agyKeychainHost } from "../src/agy-keychain.js";
 import { registerCheckCommand } from "../src/check-command.js";
 import { getDefaultConfig } from "../src/config.js";
 import type { RunRequest } from "../src/types.js";
 import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
+
+test("Kimi experiment check marks its planted control without changing the spec or tools", async () => {
+  const scratch = join(import.meta.dir, "../scratch");
+  mkdirSync(scratch, { recursive: true });
+  const home = mkdtempSync(join(scratch, "codemux-check-kimi-experiment-"));
+  const spec = join(home, "spec.json");
+  writeFileSync(spec, JSON.stringify({ name: "experiment", command: process.execPath, args: [], env: [],
+    accept_harness_prefix: ["kimi-wall-time"] }));
+  const previousHome = process.env.HOME;
+  const previousExit = process.exitCode;
+  const requests: RunRequest[] = [];
+  const mocks = [
+    spyOn(cliRuntime, "isScodeAvailable").mockReturnValue(true),
+    spyOn(cliRuntime, "assertHarnessSupported").mockResolvedValue("2.3.2"),
+    spyOn(KimiAdapter.prototype, "isAvailable").mockReturnValue(true),
+    spyOn(KimiAdapter.prototype, "validateRunRequest").mockImplementation(() => {}),
+    spyOn(launcher, "launchRunRequest").mockImplementation(async (_adapter, request) => {
+      requests.push(request);
+      const instructions = join(dirname(request.cwd!), "operator", ".kimi-code", "AGENTS.md");
+      const marker = readFileSync(instructions, "utf8").match(/CODEMUX-CANARY-[A-Z0-9]+/)![0];
+      return { exitCode: 0, success: true, stdout: request.hermetic ? "OK\n" : `${marker}\n`, stderr: "" };
+    }),
+  ];
+  try {
+    process.env.HOME = home;
+    const program = new Command();
+    registerCheckCommand(program, getDefaultConfig(), () => {});
+    await program.parseAsync(["check", "-a", "kimi", "--hermetic", "--tools", "none",
+      "--experiment-mcp", spec], { from: "user" });
+    expect(process.exitCode).toBe(0);
+    expect(requests).toHaveLength(2);
+    const [probe, control] = requests as [RunRequest, RunRequest];
+    expect(probe.hermetic).toBe(true);
+    expect(control.hermetic).toBe(false);
+    expect(probe.experimentMcp).toBe(spec);
+    expect(control.experimentMcp).toBe(spec);
+    expect([probe.tools, control.tools]).toEqual(["none", "none"]);
+    expect(control.passthroughEnv).toContain("KIMI_CODE_HOME");
+    expect(experimentMcp.readExperimentRunSpec(probe).control).toBeUndefined();
+    expect(experimentMcp.readExperimentRunSpec(control).control).toBe(true);
+    expect(() => experimentMcp.validateExperimentRequest(control)).not.toThrow();
+    expect(existsSync(control.cwd!)).toBe(false);
+  } finally {
+    for (const mock of mocks) mock.mockRestore();
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    process.exitCode = previousExit;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
 
 test("shared agy security fixture handles interactive commands and per-HOME defaults", () => {
   const scratch = join(import.meta.dir, "../scratch");

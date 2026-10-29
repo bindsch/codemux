@@ -43,6 +43,7 @@ describe("CLI - result envelopes", () => {
         },
         session_id: null,
         recording: null,
+        failure_code: null,
         labels: null,
       });
     } finally {
@@ -80,6 +81,7 @@ describe("CLI - result envelopes", () => {
         // a session.
         session_id: null,
         recording: null,
+        failure_code: null,
         labels: null,
       });
     } finally {

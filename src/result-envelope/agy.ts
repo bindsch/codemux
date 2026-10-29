@@ -144,6 +144,7 @@ export function agyResult(result: RunResult, request: RunRequest): RunResult {
     usage: parsed.usage,
     session_id: null,
     recording: null,
+    failure_code: null,
   });
   if (parsed.isError) {
     const reason =

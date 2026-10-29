@@ -6,7 +6,13 @@ import { assertNoKimiProjectExecutionConfig } from "../project-safety.js";
 import { kimiPromptIsCommand } from "../session/kimi-session.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import { writeKimiNoToolsFile } from "../kimi-no-tools.js";
+import { createKimiHermeticHome, KIMI_HERMETIC_ENV_OMISSIONS } from "../kimi-hermetic.js";
+import { assertNoKimiHermeticProjectConfig } from "../kimi-project-safety.js";
+import { kimiResult } from "../result-envelope/kimi.js";
 import { parseVersionParts } from "../harness-compatibility.js";
+import { readExperimentRunSpec } from "../experiment-mcp.js";
+import { ExperimentKimiRun } from "../experiment-kimi-run.js";
+import type { ExperimentFailure } from "../experiment-records.js";
 import {
   readProviderOverride,
   requireProviderOverride,
@@ -79,6 +85,8 @@ export class KimiAdapter extends BaseAdapter {
       // via Z.AI): under --tools none the read and shell probes produced
       // neither secret, while a plain run produced both (docs/HERMETIC.md).
       supportsToolSelection: true,
+      supportsHermetic: true,
+      supportsResultJson: true,
       supportsProviderOverride: true,
     };
   }
@@ -206,6 +214,25 @@ export class KimiAdapter extends BaseAdapter {
   }
 
   override prepareRun(request: RunRequest): RunContext {
+    if (request.experimentMcp) {
+      const spec = readExperimentRunSpec(request);
+      if (!request.hermetic && !spec.control) throw new Error("Kimi experiment requires a private hermetic home");
+      const context: RunContext = request.hermetic
+        ? { kimiHermeticHome: createKimiHermeticHome(this.realBrandHome(), true) }
+        : { kimiNoToolsFile: writeKimiNoToolsFile(this.realBrandHome(request.passthroughEnv)) };
+      try {
+        const experiment = new ExperimentKimiRun(spec, request.cwd ?? process.cwd(),
+          context.kimiHermeticHome?.kimiHome ?? this.realBrandHome(request.passthroughEnv),
+          context.kimiHermeticHome?.agentFile ?? context.kimiNoToolsFile!.path, this.environment);
+        context.experimentKimi = experiment;
+        context.experimentRecording = experiment.recordingPath;
+        context.stdoutSink = experiment;
+        return context;
+      } catch (error) { this.cleanupRunSync(context); throw error; }
+    }
+    if (request.hermetic) {
+      return { kimiHermeticHome: createKimiHermeticHome(this.realBrandHome(), request.tools === "none") };
+    }
     // One generated agent file per --tools none run, never shared and never
     // recorded on the adapter: the launcher owns the returned context and
     // finalizes the file in cleanupRun when this launch ends.
@@ -216,7 +243,30 @@ export class KimiAdapter extends BaseAdapter {
   }
 
   override cleanupRunSync(context?: RunContext): void {
-    context?.kimiNoToolsFile?.finalize();
+    try { this.cleanupHome(context); }
+    finally {
+      const experiment = context?.experimentKimi;
+      if (experiment && !experiment.hasOutput) experiment.relay.fail(new Error("interrupted before harness evidence"));
+      experiment?.closeSync();
+    }
+  }
+
+  private cleanupHome(context?: RunContext): void {
+    const experiment = context?.experimentKimi;
+    try {
+      experiment?.preserveHarnessLog();
+      context?.kimiHermeticHome?.finalize();
+      context?.kimiNoToolsFile?.finalize();
+    } catch (error) { experiment?.relay.fail(error); throw error; }
+  }
+
+  override cleanupRun(context?: RunContext): void | Promise<void> {
+    const experiment = context?.experimentKimi;
+    if (experiment) {
+      const verified = experiment.hasOutput ? experiment.complete() : Promise.resolve();
+      return verified.finally(() => this.cleanupHome(context)).finally(() => experiment.close());
+    }
+    this.cleanupRunSync(context);
   }
 
   override mapAutonomy(level: AutonomyLevel): string[] {
@@ -233,7 +283,10 @@ export class KimiAdapter extends BaseAdapter {
     }
   }
 
-  override getRunEnv(request: RunRequest): Record<string, string> {
+  override getRunEnv(request: RunRequest, context?: RunContext): Record<string, string> {
+    if (request.hermetic && context?.kimiHermeticHome === undefined) {
+      throw new Error("kimi hermetic home was not prepared before launch");
+    }
     return this.providerEnv(request.model);
   }
 
@@ -242,7 +295,14 @@ export class KimiAdapter extends BaseAdapter {
   }
 
   buildRunCommand(request: RunRequest, context?: RunContext): string[] {
-    const cmd = ["kimi"];
+    const privateHome = context?.kimiHermeticHome;
+    const unpreparedHome = join(this.realBrandHome(), ".codemux-hermetic", "unprepared");
+    // Scode must keep the real HOME for policy and credential access. Redirect only its child.
+    const cmd = request.hermetic
+      ? ["env", ...KIMI_HERMETIC_ENV_OMISSIONS.flatMap((name) => ["-u", name]),
+        `HOME=${privateHome?.home ?? unpreparedHome}`,
+        `KIMI_CODE_HOME=${privateHome?.kimiHome ?? join(unpreparedHome, ".kimi-code")}`, "kimi"]
+      : ["kimi"];
 
     // With an override the synthesized provider is the default model, and
     // `-m` names a config alias that outranks it — one that does not exist
@@ -257,7 +317,11 @@ export class KimiAdapter extends BaseAdapter {
     // below `high` already requires. The flags below are interactive-only and
     // are applied in buildTuiCommand.
 
-    if (request.tools === "none") {
+    if (request.hermetic) {
+      const unprepared = join(this.realBrandHome(), ".codemux-hermetic", "unprepared");
+      cmd.push("--skills-dir", context?.kimiHermeticHome?.skillsDir ?? join(unprepared, "skills-dir"),
+        "--agent-file", context?.kimiHermeticHome?.agentFile ?? join(unprepared, "agent.md"));
+    } else if (request.tools === "none") {
       // A static preview (`verify`) has no prepared file; the placeholder
       // path does not exist, and kimi fails to read it, so a command built
       // without prepareRun fails closed.
@@ -271,6 +335,7 @@ export class KimiAdapter extends BaseAdapter {
 
     // 0.31.1 has no stdin transport: the prompt is an argv value. BaseAdapter
     // bounds its length, the same as the other argv-only harnesses.
+    if (request.resultJson || request.experimentMcp) cmd.push("--output-format", "stream-json");
     cmd.push("--prompt", request.prompt);
     return cmd;
   }
@@ -279,7 +344,26 @@ export class KimiAdapter extends BaseAdapter {
     return null;
   }
 
-  override processRunResult(result: RunResult, _request: RunRequest, context?: RunContext): RunResult {
+  override processRunResult(result: RunResult, request: RunRequest, context?: RunContext, failure?: ExperimentFailure): RunResult {
+    result = { ...result, scanSurface: result.stdout + result.stderr };
+    if (request.resultJson || request.experimentMcp) {
+      if (request.hermetic && !context?.kimiHermeticHome && !failure) {
+        throw new Error("kimi hermetic home was not prepared before reading results");
+      }
+      let model = request.model;
+      try { model = this.modelFor(model); } catch (error) { if (!failure) throw error; }
+      const brandHome = context?.kimiHermeticHome?.kimiHome ?? (failure
+        ? join(this.effectiveHome(), ".kimi-code") : this.realBrandHome(request.passthroughEnv));
+      const normalized = kimiResult(result, { ...request, model }, brandHome, context, failure);
+      if (request.experimentMcp && !request.resultJson) {
+        try {
+          const reply: unknown = JSON.parse(normalized.stdout).reply;
+          return typeof reply === "string" ? { ...normalized, stdout: reply } : normalized;
+        }
+        catch { return normalized; }
+      }
+      return normalized;
+    }
     const majorVersion = context?.harnessVersion
       ? parseVersionParts(context.harnessVersion)?.[0]
       : undefined;
@@ -304,9 +388,13 @@ export class KimiAdapter extends BaseAdapter {
 
   override validateRunRequest(request: RunRequest): void {
     super.validateRunRequest(request);
-    assertNoKimiProjectExecutionConfig(
-      validateWorkingDirectory(request.cwd) ?? process.cwd()
-    );
+    const cwd = validateWorkingDirectory(request.cwd) ?? process.cwd();
+    if (request.hermetic) {
+      if (request.passthroughEnv?.includes("KIMI_CODE_HOME")) {
+        throw new UsageRefusalError("kimi --hermetic owns KIMI_CODE_HOME; remove --pass-env KIMI_CODE_HOME");
+      }
+      assertNoKimiHermeticProjectConfig(cwd);
+    } else assertNoKimiProjectExecutionConfig(cwd);
     // The refusal class is usage (exit 64, UsageRefusalError), the aider
     // rule the session driver already applies before its ack (round al11;
     // the README's live-sessions sentence names the run path's refusal,

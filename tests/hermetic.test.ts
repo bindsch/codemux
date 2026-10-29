@@ -448,7 +448,7 @@ describe("hermetic home signal handling", () => {
 });
 
 describe("hermetic runs: the other harnesses refuse", () => {
-  const supportedHermetic = new Set(["claude", "zai", "codex", "opencode"]);
+  const supportedHermetic = new Set(["claude", "zai", "codex", "opencode", "kimi"]);
   const supportedTools = new Set(["claude", "zai", "codex", "opencode", "kimi", "droid", "pi", "goose"]);
   for (const agentId of AGENT_IDS) {
     if (supportedHermetic.has(agentId) && supportedTools.has(agentId)) continue;

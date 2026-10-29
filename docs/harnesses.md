@@ -21,14 +21,14 @@ This matrix describes `codemux run`. “Yes” means the adapter implements the 
 | droid | yes | all four | none, minimal, low, medium, high, xhigh, max | no | yes; ToolSearch remains | no | yes |
 | goose | yes | all four | unsupported | no | yes | no | yes |
 | gemini | yes | all four | unsupported | no | no | no | no |
-| kimi | yes | all four | unsupported | no | yes | no | yes |
+| kimi | yes | all four | unsupported | yes | yes | yes | yes |
 | openhands | yes | all four | unsupported | no | no | no | yes |
 | opencode | yes | all four | low, medium, high | yes | hermetic only | no | yes |
 | pi | yes | all four | none, minimal, low, medium, high, xhigh, max | no | yes | no | yes |
 | qwen | current binary only | all four | unsupported | no | no | no | no |
 | zai | yes | all four | none, low, medium, high, xhigh, max | yes | yes | yes | no |
 
-For a headless adapter with no effort support, `--effort none` is accepted as no request; other values are refused. Supported adapters reject values outside their row. Qwen's legacy `qwen-coder` fallback has no model selection and requires scode even at high autonomy. [Isolation](isolation.md) defines the tool exceptions and clean-directory requirements. [Result envelopes](results-and-usage.md) describe the four structured adapters. [Provider overrides](provider-overrides.md) cover endpoint and token-limit constraints.
+For a headless adapter with no effort support, `--effort none` is accepted as no request; other values are refused. Supported adapters reject values outside their row. Qwen's legacy `qwen-coder` fallback has no model selection and requires scode even at high autonomy. [Isolation](isolation.md) defines the tool exceptions and clean-directory requirements. [Result envelopes](results-and-usage.md) describe the five structured adapters. [Provider overrides](provider-overrides.md) cover endpoint and token-limit constraints.
 
 ## Version contracts
 
@@ -68,6 +68,8 @@ Before launch, codemux resolves and trust-checks the executable, probes its vers
 
 OpenCode 1.18.18 and later have a recorded permission change: `--agent build` alone no longer gates writes or execution. Low/medium unsandboxed launches are refused by the compatibility rule; scode mitigates that filesystem boundary. Session transports can require higher floors than one-shot runs; see [sessions](sessions.md).
 
+Experiment MCP has a separate version floor: Claude/Z.AI require Claude Code 2.1.280 or later, Codex requires CLI 0.165.0 or later, and Kimi requires Code 2.3.2 or later. Codex requires the spec's `codex-wall-time` opt-in, explicit `-m`, and a populated real model cache matching the detected client version. For cached `code_mode` or `code_mode_only` requests, a private catalog override removes only the requested model's `tool_mode`; backend acceptance is **not yet verified live**. Experiment flags still disable `code_mode` and `code_mode_host`, and custom `exec` calls fail with `code_mode`. Kimi requires `kimi-wall-time`; Codemux reconstructs its provider content from wire records using the 2.3.2 renderer. Codex and Kimi use an authenticated loopback MCP relay. Kimi's tools-none experiment profile permits only the experiment MCP namespace. Live probes on October 29, 2026 confirmed Kimi's projected header and Codex's `exec` code-mode call. These experiment floors do not change the ordinary-run declarations above. See [experiment MCP](experiment-mcp.md).
+
 Version checks matter beyond scode. Scode controls filesystem/network access, while native policies control tool exposure, approval, prompt discovery, transport framing, and result interpretation. A working sandbox does not verify those semantics.
 
 ## Harness selection and prompt transport
@@ -81,6 +83,8 @@ Antigravity binds its prompt as `--print=<prompt>` and uses equals forms for enu
 ## Headless reply output
 
 Kimi's headless bullet format was observed on 2.3.2: each reply block starts with a `• ` prefix, and continuation lines use two spaces. When the installed version probe reports major version 2 or higher and all stdout follows this format, codemux removes those prefixes and indents, joins blocks with one blank line, and ends the reply with one newline. For example, `• A\n  B\n\n` becomes `A\nB\n`. Versions 0.x and 1.x and unknown versions keep their output unchanged. Plain replies and other output stay unchanged. Stderr stays unchanged.
+
+Kimi hermetic runs use private HOME/KIMI_CODE_HOME directories, a filtered config, an empty skill directory, and an explicit agent file. Project customization paths are refused; see [isolation](isolation.md). Result-json runs use stream JSON plus the session wire log for usage; see [results](results-and-usage.md). These mechanisms are grounded in 2.3.2 source and verified with synthetic fixtures. No new live check is claimed.
 
 ## TUI restrictions
 

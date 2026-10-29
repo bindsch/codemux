@@ -85,7 +85,7 @@ test.each(["before", "after"])("list_changed %s the call response rechecks every
     p.emit(changed);
   }
   await tick();
-  expect(() => p.bridge.finish()).not.toThrow();
+  expect(p.bridge.failureCode).toBeNull();
   expect(p.transport.pending.size).toBe(0);
   expect(p.sent.filter((frame) => frame.type === "control_response")).toEqual([
     expect.objectContaining({ response: expect.objectContaining({ request_id: "list" }) }),
@@ -152,7 +152,7 @@ test("Claude's final result waits for an outstanding inventory recheck", async (
 
 test("a notification during the initial inventory waits for the complete baseline", async () => {
   const p = await peer(true);
-  expect(() => p.bridge.finish()).not.toThrow();
+  expect(p.bridge.failureCode).toBeNull();
   expect(p.records().filter((r) => r.kind === "tool_inventory_recheck"))
     .toEqual([expect.objectContaining({ equal: true, previous: definitions, current: definitions })]);
 });
@@ -161,7 +161,7 @@ test("each notification in a burst gets a complete serialized recheck", async ()
   const p = await peer();
   p.emit(changed, changed, changed);
   await tick();
-  expect(() => p.bridge.finish()).not.toThrow();
+  expect(p.bridge.failureCode).toBeNull();
   expect(p.records().filter((r) => r.kind === "tool_inventory_recheck")).toHaveLength(3);
   expect(p.requests.filter((m) => m.method === "tools/list").map((m) => m.params?.cursor))
     .toEqual([undefined, "", undefined, "", undefined, "", undefined, ""]);

@@ -13,6 +13,7 @@ import { isAbsolute } from "node:path";
 import { validateExperimentRequest } from "../experiment-mcp.js";
 import { readProviderOverride } from "../provider-override.js";
 import { launchRunRequest } from "../launch.js";
+import type { ExperimentFailure } from "../experiment-records.js";
 import { runInteractive } from "./interactive.js";
 import type { SandboxOptions, ScodeTrustLevel } from "../sandbox.js";
 import { resolveTrustedCommand } from "../executable-security.js";
@@ -224,6 +225,8 @@ export abstract class BaseAdapter {
     // Default: no-op
   }
 
+  resultModel(request: RunRequest): string | undefined { return request.model; }
+
   /**
    * Post-processes a finished run's captured result on every launch path
    * (sandboxed and direct). Adapters whose harness prints something other
@@ -231,14 +234,10 @@ export abstract class BaseAdapter {
    * stream) override this to hand the caller what they were promised; the
    * default returns the result unchanged. `context` is the same run context
    * the launch path built the command from, so the post-processor reads
-   * (and consumes) this run's own scratch. A harness that records the
-   * conversation somewhere stdout does not carry (aider's chat history)
-   * reads it HERE, while the context is alive, and sets the result's
-   * `reply` and `scanSurface` fields -- the only channel post-launch
-   * callers (the hermetic check above all) have to that record, because
-   * the launcher disposes the context before the result returns.
+   * (and consumes) this run's own scratch. It preserves reply text and
+   * scanSurface before cleanup. An experiment failure permits partial output.
    */
-  processRunResult(result: RunResult, _request: RunRequest, _context?: RunContext): RunResult {
+  processRunResult(result: RunResult, _request: RunRequest, _context?: RunContext, _failure?: ExperimentFailure): RunResult {
     return result;
   }
 

@@ -1,3 +1,5 @@
+import type { ScodeTrustLevel } from "./sandbox.js";
+
 export const AGENT_IDS = Object.freeze([
   "agy",
   "aider",
@@ -62,6 +64,9 @@ export interface RunRequest {
   cwd?: string;
   // True when codemux wraps execution in scode.
   sandboxed?: boolean;
+  // The requested network restriction, also checked against launch options.
+  sandboxNoNet?: boolean;
+  sandboxTrust?: ScodeTrustLevel;
   timeoutMs?: number;
   // Explicitly authorized names of otherwise-sensitive parent variables.
   passthroughEnv?: readonly string[];
@@ -73,7 +78,7 @@ export interface RunRequest {
   // Independent of `tools`: a hermetic run keeps the harness's built-in tools
   // unless `tools` removes them. See docs/HERMETIC.md.
   hermetic?: boolean;
-  // One stdio experiment server through Claude's SDK bridge; every other adapter refuses.
+  // One experiment-owned stdio MCP server, with harness-specific delivery evidence.
   experimentMcp?: string;
   // Headless Claude-family runs grant WebSearch and WebFetch at every autonomy level
   // (see claude-autonomy.ts); `--no-web` sets this false to keep them gated, for a
@@ -102,6 +107,8 @@ export interface RunResult {
   stderr: string;
   exitCode: number;
   success: boolean;
+  /** Set only when the runner exceeds its stdout or stderr capture bound. */
+  captureLimitExceeded?: true;
   // The model's answer when the harness's stdout is a transcript around it
   // (aider's banner, summaries and cost lines), extracted by
   // processRunResult from the run's own record while the run context is
@@ -143,8 +150,9 @@ export interface ResultUsageBlock {
 // codemux normalized across harnesses: which adapter ran, the model that
 // served the run when it is known, and token usage. `session_id` is always
 // null in this release -- reserved for the live-sessions design that will
-// add `--session` back. `recording` names the experiment bridge's per-run
+// add `--session` back. `recording` names the experiment's per-run
 // JSONL on an `--experiment-mcp` run and is null on every other run.
+// `failure_code` identifies an experiment verification failure; null otherwise.
 export interface CodemuxResultBlock {
   agent: string;
   model: string | null;
@@ -152,6 +160,7 @@ export interface CodemuxResultBlock {
   usage: ResultUsageBlock;
   session_id: string | null;
   recording: string | null;
+  failure_code: string | null;
 }
 
 export interface AdapterCapabilities {

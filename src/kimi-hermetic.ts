@@ -1,0 +1,128 @@
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { prepareRunDirParent } from "./hermetic-home.js";
+import { hasActiveCapturedCommand } from "./process-runner.js";
+import { readBoundedKimiFile } from "./kimi-wire-log.js";
+
+export interface KimiHermeticHome {
+  home: string;
+  kimiHome: string;
+  skillsDir: string;
+  agentFile: string;
+  finalize: () => void;
+}
+
+// Drop extra_skill_dirs, extra_agent_dirs, and merge_all_available_skills: discovery paths.
+// Drop builtin_product_skills: retain the harness's own default for bundled skills.
+// Drop hooks: lifecycle commands can execute operator code.
+// Drop permission, default_permission_mode, and default_plan_mode: operator policy.
+// Drop plugins, subagent, and secondary_model: operator agents and extensions.
+// Drop identity and every unlisted key: custom prompts and future configuration channels.
+export const KIMI_CONFIG_ALLOWLIST = [
+  "default_provider", "default_model", "providers", "models", "model_overrides", "thinking",
+  "loop_control", "context_token_counting", "token_counting", "background", "services", "mcp",
+  "telemetry", "disable_feedback_survey",
+] as const;
+export const KIMI_HERMETIC_ENV_OMISSIONS = [
+  "KIMI_CODE_TRUST_WORKSPACE", "KIMI_CODE_IDENTITY_NAME", "KIMI_CODE_IDENTITY_SLUG",
+  "KIMI_CODE_BUILTIN_PRODUCT_SKILLS",
+] as const;
+const MCP_TIMEOUT_KEYS = ["startup_timeout_ms", "tool_timeout_ms"] as const;
+const MAX_CONFIG_BYTES = 1024 * 1024;
+const liveHomes = new Set<() => void>();
+const signals = [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const;
+const handlers = new Map<NodeJS.Signals, () => void>();
+
+function track(finalize: () => void): void {
+  liveHomes.add(finalize);
+  process.once("exit", finalize);
+  if (handlers.size) return;
+  for (const [signal, code] of signals) {
+    const handler = () => {
+      if (hasActiveCapturedCommand()) return;
+      for (const dispose of [...liveHomes]) dispose();
+      process.exit(code);
+    };
+    handlers.set(signal, handler);
+    process.on(signal, handler);
+  }
+}
+
+function untrack(finalize: () => void): void {
+  liveHomes.delete(finalize);
+  process.off("exit", finalize);
+  if (liveHomes.size) return;
+  for (const [signal, handler] of handlers) process.off(signal, handler);
+  handlers.clear();
+}
+
+function tomlValue(value: unknown): string {
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) return String(value);
+  if (Array.isArray(value)) return `[${value.map(tomlValue).join(", ")}]`;
+  if (value !== null && typeof value === "object" && !(value instanceof Date)) {
+    return `{ ${Object.entries(value).map(([key, entry]) => `${JSON.stringify(key)} = ${tomlValue(entry)}`).join(", ")} }`;
+  }
+  throw new Error("kimi hermetic config contains an unsupported TOML value");
+}
+
+/** Retain model/login settings and MCP timeouts; never copy discovery or hooks. */
+export function kimiHermeticConfig(sourceBrandHome: string): string {
+  const path = join(sourceBrandHome, "config.toml");
+  let source = "";
+  try {
+    // The file descriptor reader also rejects files that grow past the bound.
+    source = readBoundedKimiFile(path, MAX_CONFIG_BYTES);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const parsed = Bun.TOML.parse(source) as Record<string, unknown>;
+  const filtered: Record<string, unknown> = {};
+  for (const key of KIMI_CONFIG_ALLOWLIST) {
+    if (!Object.hasOwn(parsed, key)) continue;
+    if (key === "mcp") {
+      const mcp = parsed.mcp;
+      if (mcp === null || typeof mcp !== "object" || Array.isArray(mcp)) {
+        throw new Error(`kimi hermetic config needs an MCP timeout table: ${path}`);
+      }
+      filtered.mcp = Object.fromEntries(MCP_TIMEOUT_KEYS
+        .filter((name) => Object.hasOwn(mcp, name))
+        .map((name) => [name, (mcp as Record<string, unknown>)[name]]));
+    } else filtered[key] = parsed[key];
+  }
+  filtered.auto_session_title = false;
+  return Object.entries(filtered).map(([key, value]) => `${JSON.stringify(key)} = ${tomlValue(value)}\n`).join("");
+}
+
+/** Each private brand home shares the credential directory, including atomic token renames. */
+export function createKimiHermeticHome(sourceBrandHome: string, toolsNone = false): KimiHermeticHome {
+  const config = kimiHermeticConfig(sourceBrandHome);
+  const parent = prepareRunDirParent(sourceBrandHome, ".codemux-hermetic");
+  const home = mkdtempSync(join(parent, `run-${process.pid}-`));
+  const kimiHome = join(home, ".kimi-code");
+  const skillsDir = join(home, "skills-dir");
+  const agentFile = join(home, "agent.md");
+  let finalized = false;
+  const finalize = () => {
+    if (finalized) return;
+    try { rmSync(home, { recursive: true, force: true }); }
+    finally { finalized = true; untrack(finalize); }
+  };
+  track(finalize);
+  try {
+    mkdirSync(kimiHome, { mode: 0o700 });
+    mkdirSync(skillsDir, { mode: 0o700 });
+    writeFileSync(join(kimiHome, "config.toml"), config, { mode: 0o600 });
+    symlinkSync(resolve(sourceBrandHome, "credentials"), join(kimiHome, "credentials"), "dir");
+    for (const name of ["region", "device_id"]) {
+      if (existsSync(join(sourceBrandHome, name))) {
+        copyFileSync(join(sourceBrandHome, name), join(kimiHome, name));
+      }
+    }
+    writeFileSync(agentFile, ["---", "name: codemux-hermetic",
+      "description: Private profile with the default prompt.",
+      ...(toolsNone ? ["tools: []"] : []), "---", "", "${base_prompt}", ""].join("\n"), { mode: 0o600 });
+    return { home, kimiHome, skillsDir, agentFile, finalize };
+  } catch (error) { finalize(); throw error; }
+}
+

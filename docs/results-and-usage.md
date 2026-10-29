@@ -8,6 +8,8 @@ normalization. Claude/Z.AI retain their JSON envelope. Agy normally uses
 `--output-format=json`; its isolation/probe paths use
 `--output-format=stream-json` and normalize the terminal result.
 Codex JSONL is reduced into a codemux-built envelope.
+Kimi selects `--output-format stream-json` for result-json runs and builds
+an envelope from the parsed events and session wire log.
 
 The codemux-owned block contains:
 
@@ -26,23 +28,106 @@ The codemux-owned block contains:
     "total_tokens": 1050,
     "cost_usd": null
   },
-  "session_id": null
+  "session_id": null,
+  "recording": null,
+  "failure_code": null
 }
 ```
 
-It appears under `codemux` in the envelope. Experiment runs also include
-`codemux.recording`. Model is the served model when reported, otherwise the
+It appears under `codemux` in the envelope. `codemux.recording` is the JSONL
+path for every experiment run on Claude, Z.AI, Codex, or Kimi, and null otherwise.
+The recording includes raw evidence and normalized `turn`, `turn_usage`,
+`turn_call`, and `tool_result_delivered` records; see [experiment MCP](experiment-mcp.md).
+`turn` has `{message_id, t, usage, tool_calls}`; `usage` is an object or null.
+`turn_usage` has exactly `{message_id, usage, t}` with a known usage object.
+`turn_call` has exactly `{message_id, call_id, name, t}`. All share `run_id`,
+`seq`, and `kind`; usage objects have `input`, `output`, `cache_read`, and `cache_write`.
+Every turn in a complete recording has exactly one usage record. Interrupted or
+timed-out recordings can omit usage records because final usage verification is
+skipped. Every call has a call record, including calls already listed in the
+initial turn. Later streaming frames can add calls.
+`codemux.failure_code` is `string | null`. It contains the experiment's
+stable failure code, or null for success and non-experiment runs. The same
+code appears in the recording's `failure` and `run_end` records. Experiment
+diagnostics use `codemux: experiment failure [<code>]: <message>` on stderr.
+Codex model preflight refusals use this envelope too, with `recording: null`
+and the applicable `model_required`, `model_unavailable`, or `code_mode` code.
+The [failure code table](experiment-mcp.md#failure-codes) defines every code.
+Model is the served model when reported, otherwise the
 selected model, otherwise null. A reported multi-model result has null model.
+Kimi's selected model includes `CODEMUX_KIMI_PROVIDER_MODEL` when `--model`
+is omitted. A later experiment cleanup failure preserves an already
+normalized model, including Z.AI's default `opus` selection. Codex normalizes its captured reply and reads `--output-last-message` before rollout verification, so a verification failure preserves that reply before private-home cleanup. Experiment failure diagnostics appear once on stderr.
 Codex reroute events can identify the served model and produce a stderr note.
 `codemux.labels` contains the run's labels, or null when none are supplied.
 See [label syntax and environment defaults](cli.md#labels).
 Unsupported structured-result adapters refuse `--result-json`; capability
 support is listed in [harnesses](harnesses.md).
 
-Run `session_id` is always null: codemux does not register a run for resume.
-Claude/Z.AI request `--no-session-persistence`; Codex requests `--ephemeral`.
+Run `codemux.session_id` is always null: codemux does not register a run for resume.
+Claude/Z.AI request `--no-session-persistence`; ordinary Codex runs request
+`--ephemeral`. Codex experiment runs read their private rollout before cleanup.
 Other harnesses can retain native state. A null field is not a promise that no
 upstream conversation state survives. See [persistence](isolation.md).
+
+Codex experiment recordings are written while the harness runs. Codemux polls
+the rollout every 250 ms. Native response items emit `turn` and `turn_call`
+without waiting for usage; `token_count` emits `turn_usage` with its own timestamp.
+Each delivery is written when its output line is observed. Final verification
+uses the same cursor and requires exactly one usage record per turn, otherwise
+`harness_log_missing`. A nonempty request `_meta.callId` is used immediately,
+copied to `params._meta["codemux/callId"]`, and recorded on `tool_call` with
+`native_call_id_source: "request_meta"`. Live and final rollout correlation
+then verifies the ID, name, and arguments regardless of parallel HTTP arrival
+order. Without request metadata,
+resolution waits up to five seconds for native call evidence, without waiting
+for usage. Unresolved calls fail before dispatch. Claude and Z.AI retain
+`claudecode/toolUseId` too. Their first assistant frame emits `turn` with null usage. Experiment launches include `--include-partial-messages`. Native `message_start` and `message_delta` events supply per-message counters; zero placeholders never replace real counts. `turn_usage` records the final values at `message_stop`, message ID change, or result. A completed turn without real counters fails with `harness_log_missing`. Later frames can add calls.
+Message IDs are native. A Codex response with neither a message item ID nor
+a function-call item ID fails with `message_id_missing`.
+
+Before private-home cleanup, successful and failed Codex/Kimi experiments
+attempt to copy the native log beside the recording as `<run-id>.codex-rollout.jsonl`
+or `<run-id>.kimi-wire.jsonl`, with mode 0600 and a 256 MiB cap.
+`harness_log_copy` contains `{harness, path, bytes}` or `{harness, path, error}`,
+besides the common record fields. `path` names the copy. Copy errors preserve
+the run's existing verdict.
+Private-home cleanup precedes recording closure. A cleanup failure is
+recorded in `failure` and `run_end` and changes the result to a failure. Kimi interruptions record `protocol` with `interrupted before harness evidence` before stdout, or `interrupted before verification` afterward.
+
+Every Codex experiment `run_start` records a `catalog_override` boolean. Codex
+override runs also record `catalog_override` with `slug`, `source_path`,
+`source_fetched_at`, `served_models`, `served_bytes`, `removed: ["tool_mode"]`,
+and `requested_only`. The last field is true when the 1 MiB response cap
+requires serving only the requested model. A successful fetch records
+`catalog_served` with `client_version` and `bytes`. Catalog `http_request`
+records contain only the method, `path: "/catalog"`, `client_version`,
+`authorization_present`, `body_complete: true`, and an empty body. They omit request headers,
+authorization values, and the nonce. See [Codex catalog details](experiment-codex-catalog.md).
+Missing explicit `-m` fails with `model_required`. The October 29, 2026, 01:58
+probe called the experiment tool directly and reached the relay, then failed
+while waiting for usage. The preserved `gpt-6-astra` probe completed direct delivery and now verifies by replay. No new live probe was run for these fixes.
+
+Kimi's envelope has `reply`, `events`, `session_id`, and `codemux` fields.
+`reply` is the assistant text with the same block spacing and final newline
+as the normalized plain reply. `events` retains each parsed assistant, tool,
+meta, or error line. The top-level `session_id` comes from the
+`session.resume_hint` meta event and identifies Kimi's native session;
+`codemux.session_id` stays null because the run is not registered for resume.
+The hint ends an experiment stream. A second hint or any later frame fails
+with `protocol`.
+Usage sums `usage.record` entries in
+`<brand home>/sessions/*/session_<id>/agents/main/wire.jsonl`: `inputOther`
+becomes uncached input, `inputCacheRead + inputCacheCreation` becomes cached
+input, and `output` becomes output tokens. Their sum is the total; cost is
+null. Missing counts remain null. The wire log is read before hermetic home
+cleanup, with a 16 MiB limit. A missing session ID, missing log, malformed
+stream/log, or error event fails the run and reports a diagnostic.
+An experiment provider attempt that fails without usage and without tool calls emits `harness_retry`
+with its step UUID and no `turn`, including attempts with partial content.
+An error step with tool calls emits a `turn` and fails later with `harness_log_missing` if usage is absent.
+Content-first turns wait for a call or successful end and retain their first-content timestamp. Inventory evidence checks descriptions and the unchanged
+`inputSchema` to `parameters` mapping as well as qualified names.
 
 Plain launches also select structured output for Claude/Z.AI, Agy, OpenCode,
 and Codex, then unwrap the reply. OpenCode trims each text part onto its own
@@ -58,6 +143,7 @@ reducers have separate limits for an individual input line and retained
 reply/output data. Stderr remains bounded too. A line is checked while it
 accumulates and when it completes, including an unterminated final line.
 Exceeding a capture limit fails with exit 125 and a stderr diagnostic.
+Codex and Kimi experiment sinks use the same limit and preserve partial output. On a Codex experiment output-limit failure, JSON `result` retains the last complete assistant message from the valid stream prefix; the run still fails with exit 125. Codex experiment parsing failures also retain the valid reply and parsed prefix in `events`; plain failures retain the reply text. Plain Claude and Z.AI experiment capture-limit failures extract the captured result envelope's reply and keep exit 125. Early Claude and Z.AI experiment failure envelopes retain the adapter's effective model, including its configured default. Kimi result JSON always returns an envelope on parsing, session-hint, or wire-log errors. It names the error, preserves complete events before a malformed or truncated line, and reports `failure_code: null` for non-experiment runs.
 
 Discarded tool events do not accumulate against retained-output capacity.
 They can still exceed the individual-line limit. For example, many 1 KiB
@@ -106,7 +192,8 @@ never zero. Reported zero remains zero.
 | Codex | Structured token snapshot, no cost; plain fallback total only | Reported turn tokens and driver-invocation accumulation; no cost |
 | Agy | Input/output/cache-read counts, computed total; no cost | Turn counts and driver-invocation accumulation; no cost |
 | OpenCode | Sum of step usage and reported step costs | Steps summed per turn, turns summed within the driver invocation |
-| Aider/Kimi | Unknown | Unknown |
+| Kimi | Result-json sums wire-log usage; no cost. Plain experiment runs also read wire-log usage for the call ledger. Other plain runs report unknown usage | Unknown |
+| Aider | Unknown | Unknown |
 | Other adapters | Unknown | Sessions unsupported |
 
 A resumed driver starts token counters empty. If the first invocation reports

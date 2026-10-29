@@ -1,5 +1,7 @@
 import type { Command } from "commander";
+import { existsSync } from "node:fs";
 import { runAgyCanaryChecks, runAgyIsolationProbe } from "./agy-isolation-probe.js";
+import { plantKimiCanary } from "./kimi-isolation-probe.js";
 import { assertExperimentMcpUnavailable, experimentCanaryControl, validateExperimentRequest } from "./experiment-mcp.js";
 import { getAdapter } from "./adapters/index.js";
 import {
@@ -57,7 +59,7 @@ export function registerCheckCommand(
       "Test specified customization channels against a positive control in a managed directory; incompatible with --cwd"
     )
     .option("--tools <selection>", "Built-in tools for the probe: default, none")
-    .option("--experiment-mcp <spec.json>", "Extend Claude's hermetic canary with the experiment MCP bridge")
+    .option("--experiment-mcp <spec.json>", "Extend the Claude, Z.AI, or Kimi hermetic canary with an experiment MCP server")
     .option("--agy-isolation-probe <mode>", "Unverified agy diagnostic: login, hermetic, control, tools, tools-control")
     .option("-s, --sandbox", "Run probe in sandbox (default; requires scode)", true)
     .option("--no-sandbox", "Probe without the scode boundary (autonomy below high is unavailable)")
@@ -87,8 +89,18 @@ export function registerCheckCommand(
         const tools = parseToolsOption(options.tools);
         assertExperimentMcpUnavailable(agentId, options.experimentMcp);
         const hermetic = Boolean(options.hermetic);
+        const sandboxPolicyOverrides = parseSandboxPolicyOverrides({
+          sandbox: Boolean(options.sandbox),
+          sandboxTrust: options.sandboxTrust,
+          sandboxNoNet: Boolean(options.sandboxNoNet),
+          sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
+        });
         validateExperimentRequest({ agent: agentId, prompt: "probe", experimentMcp: options.experimentMcp,
-          hermetic, tools, autonomy: requestedAutonomy, sandboxed: Boolean(options.sandbox) });
+          hermetic, tools, autonomy: requestedAutonomy, sandboxed: Boolean(options.sandbox),
+          sandboxNoNet: Boolean(options.sandboxNoNet), sandboxTrust: sandboxPolicyOverrides?.trust });
+        if (options.experimentMcp && agentId === "codex") {
+          throw new Error("Codex --experiment-mcp supports run only; the paired check requires a non-hermetic control and is supported only by claude, zai, and kimi");
+        }
         if (hermetic && options.cwd !== undefined) {
           throw new Error("--hermetic plants its own working directory; drop --cwd");
         }
@@ -103,13 +115,6 @@ export function registerCheckCommand(
             throw new Error("--agy-isolation-probe requires -a agy --auto read-only with default scode and no other isolation flags");
           }
         }
-        const sandboxPolicyOverrides = parseSandboxPolicyOverrides({
-          sandbox: Boolean(options.sandbox),
-          sandboxTrust: options.sandboxTrust,
-          sandboxNoNet: Boolean(options.sandboxNoNet),
-          sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
-        });
-
         if (agentId === "agy" && (hermetic || tools === "none")) {
           if (!options.sandbox || requestedAutonomy !== "read-only" || options.cwd || passthroughEnv.length ||
               options.sandboxTrust || options.sandboxNoNet || options.sandboxScrubEnv || requestedEffort) {
@@ -184,6 +189,8 @@ export function registerCheckCommand(
           effort,
           cwd: options.cwd,
           sandboxed: Boolean(options.sandbox),
+          sandboxNoNet: Boolean(options.sandboxNoNet),
+          sandboxTrust: sandboxPolicyOverrides?.trust,
           passthroughEnv,
           timeoutMs,
           tools,
@@ -219,8 +226,10 @@ export function registerCheckCommand(
           return;
         }
 
-        const canary = plantCanary(Boolean(options.experimentMcp));
+        const kimiCanary = agentId === "kimi" ? plantKimiCanary() : null;
+        const canary = kimiCanary ?? plantCanary(Boolean(options.experimentMcp));
         try {
+          const canaryAdapter = kimiCanary?.adapter ?? adapter;
           const canaryLaunch = { ...launch, cwd: canary.cwd };
           const probe: RunRequest = {
             ...baseRequest,
@@ -228,13 +237,18 @@ export function registerCheckCommand(
             cwd: canary.cwd,
             instructionDirs: [canary.cwd],
           };
+          const plantedControl = agentId === "kimi" && !passthroughEnv.includes("KIMI_CODE_HOME")
+            ? { ...probe, passthroughEnv: [...passthroughEnv, "KIMI_CODE_HOME"] }
+            : probe;
+          const controlProbe = options.experimentMcp ? experimentCanaryControl(plantedControl) : plantedControl;
           // Fail before spending a request when the adapter cannot claim it;
-          // validated against the planted directory, the only one probed.
-          adapter.validateRunRequest({ ...probe, hermetic: true });
+          // validate both requests against the planted directory before either launch.
+          canaryAdapter.validateRunRequest({ ...probe, hermetic: true });
+          canaryAdapter.validateRunRequest(controlProbe);
 
           console.error(`Checking ${label} hermetically (planted code word ${canary.marker})...`);
           const hermeticResult = await launchRunRequest(
-            adapter,
+            canaryAdapter,
             { ...probe, hermetic: true },
             canaryLaunch
           );
@@ -263,8 +277,7 @@ export function registerCheckCommand(
           // isolation, not tool removal. A harness whose --tools none is
           // hermetic-only was refused before any probe ran.
           console.error("Control probe without --hermetic...");
-          const controlResult = await launchRunRequest(adapter,
-            options.experimentMcp ? experimentCanaryControl(probe) : probe, canaryLaunch);
+          const controlResult = await launchRunRequest(canaryAdapter, controlProbe, canaryLaunch);
           const control = controlResult.exitCode === 0
             ? evaluateCanary(controlResult.scanSurface ?? controlResult.stdout, canary.marker)
             : null;
@@ -300,12 +313,15 @@ export function registerCheckCommand(
             process.exitCode = 1;
             return;
           }
-          process.stdout.write(`HERMETIC ${agentId}: OK\n`);
           console.error(controlLine);
-          process.exitCode = 0;
         } finally {
           canary.cleanup();
+          if (kimiCanary && existsSync(kimiCanary.brandHome)) {
+            throw new Error("Kimi planted brand home still exists after cleanup");
+          }
         }
+        process.stdout.write(`HERMETIC ${agentId}: OK\n`);
+        process.exitCode = 0;
       } catch (error) {
         handleUnexpectedError(error);
       }

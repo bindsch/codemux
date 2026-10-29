@@ -2,6 +2,8 @@ import type { BaseAdapter, RunContext } from "./adapters/base.js";
 import { appendCallRecord, providerHost } from "./call-log.js";
 import { assertCompatibleScode, assertHarnessSupported, resolveScodeExecutableForEnv, runSandboxedWithStdin, unexpectedErrorExitCode } from "./cli-runtime.js";
 import { foldedSinkUsage } from "./plain-unwrap.js";
+import { ExperimentFailure, experimentFailure } from "./experiment-records.js";
+import { experimentFailedResult } from "./result-envelope/experiment.js";
 import { readProviderOverride } from "./provider-override.js";
 import {
   CapturedRunFailure,
@@ -65,13 +67,27 @@ export async function launchRunRequest(
   let captured = false;
   let receiptRequest = request;
   let processed: RunResult | undefined;
+  let capturedResult: RunResult | undefined;
   let cleanupStarted = false;
+  const retainedExperimentFailure = () => context?.experimentBridge?.failureError ??
+    context?.experimentCodex?.failureError ?? context?.experimentKimi?.relay.failureError ?? null;
+  const recordInterruption = () => {
+    context?.experimentCodex?.interruptBeforeEvidence();
+    const kimi = context?.experimentKimi;
+    if (kimi) kimi.relay.fail(new Error(kimi.hasOutput ? "interrupted before verification" : "interrupted before harness evidence"));
+  };
   const cleanup = async () => {
     if (context === undefined || cleanupStarted) return;
     cleanupStarted = true;
-    try { await adapter.cleanupRun(context); }
+    try {
+      await adapter.cleanupRun(context);
+      const failure = retainedExperimentFailure();
+      // Explicit experiments must fail on retained verification errors. Other
+      // runs already received protocol cleanup errors from the capture layer.
+      if (request.experimentMcp && failure) throw failure;
+    }
     catch (error) {
-      if (!processed) throw error;
+      if (!processed || context.experimentRecording) throw error;
       const separator = processed.stderr && !processed.stderr.endsWith("\n") ? "\n" : "";
       processed.stderr += `${separator}Note: cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`;
     }
@@ -86,6 +102,14 @@ export async function launchRunRequest(
     if (request.experimentMcp && (!options.sandbox || options.requestedAutonomy !== "read-only" ||
         effectiveWorkingDirectory(options.cwd) !== effectiveWorkingDirectory(request.cwd))) {
       throw new Error("experiment MCP launch must use read-only scode and the request's working directory");
+    }
+    if (request.experimentMcp && (request.agent === "codex" || request.agent === "kimi") &&
+        (request.sandboxNoNet || options.sandboxPolicyOverrides?.noNet)) {
+      throw new Error(`--experiment-mcp with ${request.agent} refuses --sandbox-no-net because the relay requires loopback`);
+    }
+    if (request.experimentMcp && (request.agent === "codex" || request.agent === "kimi") &&
+        (request.sandboxTrust === "untrusted" || options.sandboxPolicyOverrides?.trust === "untrusted")) {
+      throw new Error(`--experiment-mcp with ${request.agent} refuses --sandbox-trust untrusted because the relay requires loopback`);
     }
     if (request.agent === "agy" && (request.hermetic || request.tools === "none") &&
         (!options.sandbox || options.requestedAutonomy !== "read-only" ||
@@ -149,11 +173,13 @@ export async function launchRunRequest(
         effective,
         runContext,
         async () => {
+          recordInterruption();
           try { await cleanup(); }
           finally { appendInterruptedLaunchReceipt(effective, options, runContext, startedAt); }
         }
       );
       captured = true;
+      capturedResult = raw;
       processed = adapter.processRunResult(raw, effective, context);
       await cleanup();
       recordCompletedLaunch(effective, options, processed, startedAt);
@@ -213,7 +239,12 @@ export async function launchRunRequest(
     }
     if (request.experimentMcp) {
       context.harnessVersion = await assertHarnessSupported(adapter.id, adapter.binaryName, options.cwd, envArg,
-        request.autonomy, true, request.passthroughEnv, "2.1.280");
+        request.autonomy, true, request.passthroughEnv, request.agent === "codex" ? "0.165.0" : request.agent === "kimi" ? "2.3.2" : "2.1.280");
+      try { await context.experimentCodex?.prepare(context.harnessVersion); }
+      finally {
+        context.experimentRecording ??= context.experimentCodex?.startedRecordingPath;
+      }
+      await context.experimentKimi?.prepare();
     }
     // The override question reads the ADAPTER's environment view, not
     // process.env: a custom-environment launch (an adapter built against
@@ -241,24 +272,54 @@ export async function launchRunRequest(
       adapter.getEnvOmissions(),
       context.stdoutSink,
       async () => {
+        recordInterruption();
         try { await cleanup(); }
         finally { appendInterruptedLaunchReceipt(request, options, runContext, startedAt); }
       }
     );
     captured = true;
-    processed = adapter.processRunResult(raw, request, context);
+    capturedResult = raw;
+    if (request.experimentMcp && raw.captureLimitExceeded)
+      throw experimentFailure(new Error("experiment output exceeded the capture limit"));
+    // Read Codex's fallback before verification can trigger private-home cleanup.
+    if (context.experimentCodex) processed = adapter.processRunResult(raw, request, context);
+    await context.experimentCodex?.verify();
+    await context.experimentKimi?.complete();
+    processed ??= adapter.processRunResult(raw, request, context);
     await cleanup();
     recordCompletedLaunch(request, options, processed, startedAt);
     return processed;
   } catch (error) {
-    // Dispose once before recording the actual outcome, preserving the first error.
+    if (context?.experimentCodex && !capturedResult && !processed) capturedResult = { stdout: context.experimentCodex.capturedOutput, stderr: "", exitCode: 1, success: false };
+    const owner = context?.experimentBridge ?? (context?.experimentCodex?.startedRecordingPath
+      ? context.experimentCodex.relay : context?.experimentKimi?.relay);
+    owner?.fail(experimentFailure(error instanceof CapturedRunFailure ? error.cause : error));
+    if (request.experimentMcp && request.agent === "kimi") {
+      const source = capturedResult ?? processed ?? { stdout: context?.experimentKimi?.capturedOutput ?? "", stderr: "", exitCode: 1, success: false };
+      processed = adapter.processRunResult({ ...source,
+        usage: processed?.usage ?? foldedSinkUsage(context?.stdoutSink) ?? source.usage }, receiptRequest, context,
+        retainedExperimentFailure() ?? experimentFailure(error instanceof CapturedRunFailure ? error.cause : error));
+    }
     let failure = error;
+    let cleanupFailure: unknown;
     try { await cleanup(); }
     catch (cleanupError) {
+      cleanupFailure = cleanupError;
       if (cleanupError !== error) {
         failure = new AggregateError([error, cleanupError],
           `${error instanceof Error ? error.message : String(error)}; cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
       }
+    }
+    if (request.experimentMcp && (context?.experimentRecording || context?.experimentCodex || error instanceof ExperimentFailure)) {
+      const primary = retainedExperimentFailure() ?? experimentFailure(error instanceof CapturedRunFailure ? error.cause : error);
+      const diagnostic = cleanupFailure && cleanupFailure !== primary && cleanupFailure !== error
+        ? new ExperimentFailure(primary.code, `${primary.message}; cleanup failed: ${cleanupFailure instanceof Error ? cleanupFailure.message : String(cleanupFailure)}`)
+        : primary;
+      const result = experimentFailedResult(processed ?? capturedResult, receiptRequest,
+        context?.experimentRecording ?? null, diagnostic, foldedSinkUsage(context?.stdoutSink), adapter.resultModel(receiptRequest));
+      if (context) appendFailedLaunchReceipt(receiptRequest, options, context, startedAt, failure,
+        captured || error instanceof CapturedRunFailure, result, result.exitCode);
+      return result;
     }
     if (context) appendFailedLaunchReceipt(receiptRequest, options, context, startedAt, failure,
       captured || error instanceof CapturedRunFailure, processed);
@@ -306,18 +367,7 @@ async function runDirect(
   });
 }
 
-/**
- * Appends the call ledger's receipt for one completed launch. Runs only on
- * the paths that reached a finished (captured, post-processed) result: a
- * launch that rejected before the spawn — a refused request, a missing
- * sandbox — completed no call and records nothing, a launch whose harness
- * ran but whose capture rejected or post-processor threw records through
- * appendFailedLaunchReceipt instead, and a launch stopped by a signal to
- * codemux records through appendInterruptedLaunchReceipt, because the
- * runner's exit 143 means this path never runs. The ledger itself never
- * fails the run (call-log.ts), and usage stays an all-null block when no
- * structured wire reported any, never a fabricated one.
- */
+/** Records a processed launch; refusals, capture failures, and signals use other paths. */
 function recordCompletedLaunch(
   request: RunRequest,
   options: LaunchOptions,
@@ -394,8 +444,8 @@ function appendInterruptedLaunchReceipt(
  * rejects and recordCompletedLaunch never runs. A refusal before the spawn
  * (a missing scode, an unresolved binary) is neither: it ran nothing and
  * records nothing, keeping recordCompletedLaunch's contract. The exit code
- * is the one the CLI gives the failed launch (unexpectedErrorExitCode: 64
- * for a usage refusal, 1 otherwise) and the usage is what the stdout fold
+ * comes from the returned failure result when one exists, or from the CLI
+ * error mapping when the launch throws. The usage is what the stdout fold
  * had folded — all-null when no structured stream reported any, never a
  * guess. Must not throw: the rejection it rides cannot gain a second
  * failure (review ul8). */
@@ -406,7 +456,8 @@ function appendFailedLaunchReceipt(
   startedAt: number,
   error: unknown,
   captured: boolean,
-  processed?: RunResult
+  processed?: RunResult,
+  exitCode: number = unexpectedErrorExitCode(error)
 ): void {
   if (!captured && !(error instanceof CapturedRunFailure)) return;
   try {
@@ -424,7 +475,7 @@ function appendFailedLaunchReceipt(
       autonomy: request.autonomy ?? "read-only",
       hermetic: Boolean(request.hermetic),
       sandboxed: Boolean(request.sandboxed),
-      exit_code: unexpectedErrorExitCode(error),
+      exit_code: exitCode,
       finish: null,
       duration_ms: Math.max(0, Date.now() - startedAt),
       cwd: request.cwd ?? process.cwd(),

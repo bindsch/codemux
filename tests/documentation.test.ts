@@ -5,6 +5,7 @@ import { runCli } from "./helpers/cli.js";
 import { parseInputLine } from "../src/session/protocol.js";
 import { claudeSessionCapabilities } from "../src/session/claude-session.js";
 import { readExperimentSpec } from "../src/experiment-mcp.js";
+import { getAllAdapters } from "../src/adapters/index.js";
 
 const root = join(import.meta.dir, "..");
 const read = (path: string): string => readFileSync(join(root, path), "utf8");
@@ -95,6 +96,40 @@ describe("documentation integrity", () => {
         expect(reference, path).toContain(long!);
       }
     }
+  });
+
+  test("experiment option rows and structured adapter count match current capabilities", () => {
+    const structured = getAllAdapters().filter((adapter) => adapter.capabilities().supportsResultJson);
+    expect(structured).toHaveLength(5);
+    expect(read("docs/harnesses.md")).toContain("describe the five structured adapters");
+    const rows = read("docs/cli.md").split("\n").filter((line) => line.startsWith("| `--experiment-mcp"));
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      for (const agent of ["claude", "zai", "codex", "kimi"]) expect(row).toContain("`" + agent + "`");
+    }
+    expect(rows[1]).toContain("paired checks are unsupported");
+  });
+
+  test("Codex exec refusal documents both native item types", () => {
+    for (const path of ["docs/experiment-mcp.md", "docs/experiment-codex-catalog.md"]) {
+      const text = read(path).replace(/\s+/g, " ");
+      expect(text).toContain("`code_mode` for either `function_call` or `custom_tool_call`");
+      expect(text).toContain("inventory function named `exec` remains allowed");
+    }
+  });
+
+  test("relay documentation distinguishes valid notifications from tools/call violations", () => {
+    const text = read("docs/experiment-mcp.md");
+    expect(text).toContain("Valid notifications get HTTP 202 with no body");
+    expect(text).toContain("`tools/call` notification lacks a required request ID");
+    expect(text).toContain("HTTP 400 and fails with `protocol` before dispatch");
+  });
+
+  test("inventory documentation names both sanitizers and shared validation", () => {
+    const text = read("docs/experiment-mcp.md");
+    for (const expected of ["mcpCore/tool-naming.ts", "codex-mcp/src/mcp/mod.rs:601",
+      "shared inventory validator checks both sanitizers for every harness before exposing tools",
+      "`foo__bar` / `foo_bar`", "`foo-bar` / `foo_bar`"]) expect(text).toContain(expected);
   });
 
   test("published README input is accepted by the protocol parser", () => {

@@ -84,6 +84,8 @@ export class ZaiAdapter extends BaseAdapter {
     return level === "none" ? [] : ["--effort", level];
   }
 
+  override resultModel(request: RunRequest): string { return request.model || ZAI_DEFAULT_MODEL; }
+
   /** The user home a run sees: the seam, else $HOME, else the account home. */
   private effectiveHome(): string {
     if (this.homeDirectory !== undefined && !isAbsolute(this.homeDirectory)) {
@@ -220,7 +222,7 @@ export class ZaiAdapter extends BaseAdapter {
     const experimentBridge = new ExperimentBridge(readExperimentRunSpec(request),
       request.cwd ?? process.cwd(), request.prompt, this.environment,
       claudeChildProject(this.environment, request.passthroughEnv));
-    return { experimentBridge, stdoutSink: experimentBridge };
+    return { experimentBridge, experimentRecording: experimentBridge.recordingPath, stdoutSink: experimentBridge };
   }
 
   override cleanupRun(context?: RunContext): void | Promise<void> {
@@ -287,7 +289,7 @@ export class ZaiAdapter extends BaseAdapter {
     cmd.push("--output-format", request.experimentMcp ? "stream-json" : "json");
     if (request.experimentMcp) {
       const spec = context?.experimentBridge?.spec ?? readExperimentRunSpec(request);
-      cmd.push("--input-format", "stream-json", "--verbose", "--permission-prompt-tool", "stdio",
+      cmd.push("--input-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool", "stdio",
         "--mcp-config", JSON.stringify({ mcpServers: { [spec.name]: { type: "sdk", name: spec.name } } }));
     }
     if (request.tools === "none") {
@@ -301,7 +303,7 @@ export class ZaiAdapter extends BaseAdapter {
       enabled: request.enablePlaywrightMcp,
       forbiddenRoot: request.cwd ?? process.cwd(),
     }));
-    cmd.push("--model", request.model || ZAI_DEFAULT_MODEL);
+    cmd.push("--model", this.resultModel(request));
 
     if (request.autonomy) {
       // scode enforces read-only for the harness; the host authorizes only
@@ -339,9 +341,9 @@ export class ZaiAdapter extends BaseAdapter {
       // sees the model codemux actually selected.
       return claudeFamilyResult(
         result,
-        { ...request, model: request.model || ZAI_DEFAULT_MODEL },
+        { ...request, model: this.resultModel(request) },
         this.id,
-        context?.experimentBridge?.recordingPath ?? null
+        context?.experimentRecording ?? null
       );
     }
     // A plain run: the same envelope, unwrapped back to the reply text.

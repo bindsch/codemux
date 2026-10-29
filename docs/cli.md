@@ -56,7 +56,7 @@ printf 'Reply with OK.\n' | codemux run -a claude -f -
 | `--hermetic` | Off; suppress supported automatic customization loading |
 | `--tools <selection>` | `default`; `none` has harness-specific residual capabilities |
 | `--no-web` | Off; deny the Claude-family web tools (`WebSearch`, `WebFetch`) with a deny rule, which holds at `--auto high` and over approvals saved in the operator's settings; headless `claude` and `zai` otherwise grant them at every autonomy level, and other agents refuse the flag |
-| `--experiment-mcp <spec.json>` | Unset; experiment bridge for `claude` and `zai` (the same Claude Code binary) with required isolation policy |
+| `--experiment-mcp <spec.json>` | Unset; experiment MCP server for `claude`, `zai`, `codex`, or `kimi`; requires hermetic mode, tools none, and read-only scode |
 | `--label <KEY=VALUE>` | Repeatable; metadata stored with the run; otherwise read `CODEMUX_LABELS` |
 | `--result-json` | Off; structured result with harness-specific normalization |
 
@@ -77,6 +77,8 @@ shutdown are distinct phases.
 
 See [isolation](isolation.md), [experiment MCP](experiment-mcp.md), and
 [results](results-and-usage.md) for these contracts.
+
+Kimi supports both `--hermetic` and `--result-json`. Hermetic runs reject project instruction/configuration paths and `--pass-env KIMI_CODE_HOME`. Result-json returns assistant text, parsed stream events, the native session ID, and wire-log usage. See [isolation](isolation.md) and [results](results-and-usage.md).
 
 ### Labels
 
@@ -145,7 +147,7 @@ they do not prove that every possible customization channel is absent.
 | `--timeout <seconds>` | 60 per probe; same positive/86400 bound and rounding as run |
 | `--hermetic` | Off; paired checks in a managed directory; incompatible with `--cwd` |
 | `--tools <selection>` | `default` or `none`, subject to harness restrictions |
-| `--experiment-mcp <spec.json>` | Extend Claude's hermetic canary with the experiment bridge |
+| `--experiment-mcp <spec.json>` | Extend the `claude`, `zai`, or `kimi` hermetic canary with an experiment MCP server; `codex` paired checks are unsupported |
 | `--agy-isolation-probe <mode>` | Diagnostic mode: `login`, `hermetic`, `control`, `tools`, `tools-control` |
 
 Shared launch options apply, except accounting and Playwright. Paired or

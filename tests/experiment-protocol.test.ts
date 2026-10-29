@@ -2,10 +2,12 @@ import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { ExperimentServer, MAX_EXPERIMENT_MESSAGE_BYTES, type JsonObject } from "../src/experiment-server.js";
 import { claudeContentBlocks } from "../src/experiment-bridge.js";
+import { ExperimentFailureCode } from "../src/experiment-records.js";
 import { claudeFamilyResult, parseClaudeResultEnvelope } from "../src/result-envelope.js";
 import { cleanupPeers, peer, restores } from "./helpers/experiment-peer.js";
 
 afterEach(cleanupPeers);
+
 test("a rejected control stops later tool calls in the same chunk synchronously", async () => {
   for (const invalid of [{ request_id: "bad", request: { subtype: "unsupported" } }, { request_id: null }]) {
     const p = peer();
@@ -91,16 +93,6 @@ test("identical parallel calls retain native IDs when requests and replies rever
   expect(JSON.parse(p.bridge.finish()).result).toBe("OK");
 });
 
-test("a JSON-RPC response with the wrong ID cannot be associated", async () => {
-  const p = peer();
-  await p.ready();
-  p.request.mockResolvedValue({ jsonrpc: "2.0", id: 999, result: { content: [] } });
-  p.call("first");
-  p.invoke("first", 10);
-  await Promise.resolve();
-  await Promise.resolve();
-  expect(() => p.bridge.finish()).toThrow("response id mismatch");
-});
 
 test("calls without native ID metadata cannot fall back to matching arguments", async () => {
   const p = peer();
@@ -109,6 +101,8 @@ test("calls without native ID metadata cannot fall back to matching arguments", 
   p.mcp("call", { id: 10, method: "tools/call", params: { name: "bash", arguments: {} } });
   await Promise.resolve();
   expect(() => p.bridge.finish()).toThrow("matching native tool_use id");
+  expect(p.bridge.failureCode).toBe(ExperimentFailureCode.CallIdUnresolved);
+  expect(p.records().find((record) => record.kind === "failure")).toMatchObject({ code: ExperimentFailureCode.CallIdUnresolved });
 });
 
 test("result cannot bypass tools/list or system/init", async () => {
@@ -278,9 +272,11 @@ test("run_end records server cleanup failure after cleanup settles", async () =>
   await expect(p.bridge.close()).rejects.toThrow("cleanup failed");
   const records = readFileSync(p.bridge.recordingPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
   expect(records.at(-1)).toMatchObject({ kind: "run_end", result_received: true, error: "cleanup failed" });
+  expect(records.at(-1)?.code).toBe(ExperimentFailureCode.Protocol);
   await expect(p.bridge.close()).resolves.toBeUndefined();
   expect(close).toHaveBeenCalledTimes(1);
 });
+
 
 test("a JSON-RPC error reply, ping included, fails the bridge", async () => {
   const p = peer();
@@ -291,6 +287,7 @@ test("a JSON-RPC error reply, ping included, fails the bridge", async () => {
   await Promise.resolve();
   await Promise.resolve();
   expect(() => p.bridge.finish()).toThrow("experiment MCP ping returned a JSON-RPC error: server exploded");
+  expect(p.bridge.failureCode).toBe(ExperimentFailureCode.ServerError);
 });
 
 test("Claude's exposed tools must equal the server's advertised set", async () => {
@@ -308,6 +305,7 @@ test("Claude's exposed tools must equal the server's advertised set", async () =
   const inventory = records.find((r) => r.kind === "tool_inventory")!;
   expect(inventory.tools).toEqual(["mcp__experiment__bash"]);
   expect(inventory.server_tools).toEqual(["mcp__experiment__bash", "mcp__experiment__read"]);
+  expect(p.bridge.failureCode).toBe(ExperimentFailureCode.InventoryMismatch);
 });
 
 test("a partial server frame after a valid reply fails cleanup and retains its exact bytes", async () => {

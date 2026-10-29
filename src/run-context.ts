@@ -1,12 +1,15 @@
 import type { HermeticHome } from "./hermetic-home.js";
 import type { StdoutSink } from "./process-runner.js";
 import type { ExperimentBridge } from "./experiment-bridge.js";
+import type { ExperimentCodexRun } from "./experiment-codex-run.js";
+import type { ExperimentKimiRun } from "./experiment-kimi-run.js";
 import type { CodexProviderHome } from "./codex-provider.js";
 import type { AiderHistoryFile } from "./aider-history.js";
 import type { OpencodeHermeticHome } from "./opencode-hermetic.js";
 import type { OpencodeProviderConfig } from "./opencode-provider.js";
 import type { DroidProviderSettings } from "./droid-provider.js";
 import type { KimiNoToolsFile } from "./kimi-no-tools.js";
+import type { KimiHermeticHome } from "./kimi-hermetic.js";
 import type { PiProviderAgentDir } from "./pi-provider.js";
 
 /**
@@ -29,6 +32,10 @@ export interface RunContext {
   /** Agy private HOME for every sandboxed run; mode also selects native stream handling. */
   agyProbe?: { mode: string; home?: string; operatorHome?: string; diagnostic?: boolean };
   experimentBridge?: ExperimentBridge;
+  experimentCodex?: ExperimentCodexRun;
+  experimentKimi?: ExperimentKimiRun;
+  /** Per-run experiment recording, independent of the harness transport. */
+  experimentRecording?: string;
   /**
    * Codex: this run's `--output-last-message` file, on every launch that can
    * have one (every `--json` launch — which is all of them — except an
@@ -85,6 +92,10 @@ export interface RunContext {
   droidProviderSettings?: DroidProviderSettings;
   /** Kimi: this run's generated `tools: []` agent file, when the run asks for `--tools none`. */
   kimiNoToolsFile?: KimiNoToolsFile;
+  /** Kimi: private HOME and brand home for a hermetic run. */
+  kimiHermeticHome?: KimiHermeticHome;
+  /** Kimi: the session wire log read before the private home is finalized. */
+  kimiWireLogPath?: string;
   /** Pi: this run's private agent directory, when a provider override is configured. */
   piProviderAgentDir?: PiProviderAgentDir;
   /**

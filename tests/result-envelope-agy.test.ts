@@ -177,6 +177,7 @@ describe("agyResult", () => {
       // conversation_id is agy's own; no codemux run can resume it.
       session_id: null,
       recording: null,
+      failure_code: null,
       labels: null,
     });
   });

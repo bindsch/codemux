@@ -41,6 +41,7 @@ describe("Kimi headless reply output", () => {
     expect(adapter.processRunResult(result, request, { harnessVersion: "2.3.2" })).toEqual({
       ...result,
       stdout: expected,
+      scanSurface: result.stdout + result.stderr,
     });
   });
 
@@ -55,6 +56,7 @@ describe("Kimi headless reply output", () => {
     expect(adapter.processRunResult(result, request, { harnessVersion: "2.3.2" })).toEqual({
       ...result,
       stdout: "partial reply\n",
+      scanSurface: result.stdout + result.stderr,
     });
   });
 
@@ -64,7 +66,9 @@ describe("Kimi headless reply output", () => {
       const result: RunResult = {
         stdout: "• A\n  B\n\n", stderr: "", exitCode: 0, success: true,
       };
-      expect(adapter.processRunResult(result, request, { harnessVersion })).toBe(result);
+      expect(adapter.processRunResult(result, request, { harnessVersion })).toEqual({
+        ...result, scanSurface: result.stdout + result.stderr,
+      });
     }
   );
 
@@ -72,7 +76,9 @@ describe("Kimi headless reply output", () => {
     const result: RunResult = {
       stdout: "• OK\n\n", stderr: "", exitCode: 0, success: true,
     };
-    expect(adapter.processRunResult(result, request)).toBe(result);
+    expect(adapter.processRunResult(result, request)).toEqual({
+      ...result, scanSurface: result.stdout + result.stderr,
+    });
   });
 
   test("normalizes bullet replies above major version 2", () => {

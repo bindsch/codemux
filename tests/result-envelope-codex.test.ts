@@ -35,6 +35,7 @@ describe("codexResult", () => {
       // one could.
       session_id: null,
       recording: null,
+      failure_code: null,
       labels: null,
     });
   });

@@ -1,17 +1,8 @@
-import { isAbsolute, join } from "node:path";
-import { BaseAdapter, type SandboxPreparation, type RunContext } from "./base.js";
+import { join } from "node:path";
+import type { RunContext } from "./base.js";
+import { ClaudeCredentialAdapter } from "./claude-credentials.js";
 import { ExperimentBridge } from "../experiment-bridge.js";
 import { readExperimentRunSpec } from "../experiment-mcp.js";
-import {
-  CLAUDE_KEYCHAIN_SERVICE,
-  claudeCredentialTarget,
-  defaultCredentialBackupDir,
-  fileCarriesRefreshToken,
-  readKeychainSecret,
-  syncKeychainCredential,
-  type SecretReader,
-  type SecretReadResult,
-} from "../credentials.js";
 import { getPlaywrightSandboxMcpArgs } from "../mcp.js";
 import { appendDiagnostic, claudeFamilyResult } from "../result-envelope.js";
 import { claudeFamilyPlainResult } from "../plain-unwrap.js";
@@ -102,7 +93,7 @@ export function claudeEnvironmentInteger(value: string | undefined): number | un
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-export class ClaudeAdapter extends BaseAdapter {
+export class ClaudeAdapter extends ClaudeCredentialAdapter {
   readonly id: AgentId = "claude";
   readonly binaryName = "claude";
 
@@ -156,6 +147,8 @@ export class ClaudeAdapter extends BaseAdapter {
     return resolved;
   }
 
+  override resultModel(request: RunRequest): string | undefined { return this.modelFor(request.model); }
+
   override getEnv(): Record<string, string> {
     const override = this.validatedProvider();
     if (override === null) {
@@ -191,147 +184,6 @@ export class ClaudeAdapter extends BaseAdapter {
     // out of the child environment. Without one, both keep forwarding as
     // before (ALLOWED_CREDENTIAL_ENV.claude).
     return this.validatedProvider() === null ? [] : claudeGatewayOmissions();
-  }
-
-  // Overridable seams so unit tests exercise the launch wiring without
-  // touching the user's real Keychain or real credential file. (The spawned
-  // end-to-end CLI tests cannot inject these; they disable the sync outright
-  // via CODEMUX_NO_KEYCHAIN_SYNC.)
-  protected credentialReader: SecretReader = readKeychainSecret;
-  protected credentialTarget: () => string = () => claudeCredentialTarget(this.environment.HOME);
-  protected credentialBackupDir: () => string = defaultCredentialBackupDir;
-
-  // Env vars that repoint Claude's credential mirror off the default path.
-  // If any is forwarded to the child, the child reads a DIFFERENT file, so
-  // refreshing the default one is pointless and could touch an unrelated
-  // profile — those setups own their own credential story.
-  private static readonly PROFILE_REDIRECTS = [
-    "CLAUDE_CONFIG_DIR",
-    "CLAUDE_SECURESTORAGE_CONFIG_DIR",
-  ];
-
-  /**
-   * Refresh Claude Code's on-disk credential MIRROR from the macOS Keychain
-   * before a sandboxed launch. The scode sandbox cannot reach the Keychain,
-   * so a sandboxed Claude reads only the file — which goes stale as the
-   * Keychain token rotates. Sandboxed launches only: an unsandboxed Claude
-   * reads the Keychain directly and needs nothing. See credentials.ts for
-   * the deliberately narrow scope (only an existing mirror is refreshed).
-   */
-  override prepareSandbox(context: SandboxPreparation = {}): void {
-    // An untrusted sandbox denies harness-state access by design: the child
-    // cannot read the file, so refreshing it would be pointless work.
-    if (context.sandboxTrust === "untrusted") return;
-    const passthrough = context.passthroughEnv ?? [];
-    const redirects = ClaudeAdapter.PROFILE_REDIRECTS.filter(
-      (name) => passthrough.includes(name) && name in this.environment
-    );
-    for (const redirect of redirects) {
-      // That profile owns its own credential story: codemux does not know
-      // which Keychain entry (if any) backs it, so it neither syncs nor
-      // scrubs nor refuses it — a file-only profile login would otherwise be
-      // refused or destroyed. The operator is told what the file carries.
-      // Only an absolute directory names a file worth reporting on
-      // (`CLAUDE_CONFIG_DIR` is validated absolute before launch; the
-      // secure-storage variable is simply not reported on when relative).
-      const dir = this.environment[redirect] as string;
-      const profileFile = isAbsolute(dir) ? join(dir, ".credentials.json") : null;
-      console.error(
-        `claude: ${redirect} points the child at a non-default credential ` +
-          "mirror; not syncing it (that profile owns its own file)" +
-          (profileFile !== null && fileCarriesRefreshToken(profileFile)
-            ? `. Note: ${profileFile} holds a refresh token codemux does not manage; ` +
-              "a sandboxed child can read it"
-            : "")
-      );
-    }
-    // The default mirror is checked even when the child is pointed
-    // elsewhere: it sits in ~/.claude, which the sandbox lets the child
-    // read, so a refresh token left in it is the same hazard.
-    const target = this.credentialTarget();
-    // A provider override authenticates with its own token, so nothing of
-    // the operator's login is copied for the run: the Keychain sync is
-    // skipped entirely. The mirror is still guarded, because the child
-    // reads ~/.claude whatever credential it uses — a refresh token left in
-    // the file is the same revoke hazard here as on a subscription run.
-    if (readProviderOverride("claude", this.environment) !== null) {
-      // A refresh token in the file is a hazard only when the file is a
-      // MIRROR, i.e. a Keychain entry owns the login (macOS). With no entry
-      // at all (Linux, a file-only macOS login) the file is Claude Code's
-      // only store and that token is normal — the same rule the sync
-      // module applies. The Keychain is consulted for presence only, and
-      // only when the file carries a refresh token; nothing is copied.
-      if (fileCarriesRefreshToken(target)) {
-        // The opt-out means "do not consult the Keychain" here as on a plain
-        // run: the file is reported, never refused, and the operator who
-        // set it owns what is in it.
-        if (process.env.CODEMUX_NO_KEYCHAIN_SYNC === "1") {
-          console.error(
-            `claude: CODEMUX_NO_KEYCHAIN_SYNC is set and ${target} holds a refresh token ` +
-              "codemux will not touch without the Keychain; a sandboxed child can read it"
-          );
-          return;
-        }
-        let read: SecretReadResult;
-        try {
-          read = this.credentialReader(CLAUDE_KEYCHAIN_SERVICE);
-        } catch {
-          read = { kind: "error", detail: "the Keychain read threw" };
-        }
-        if (read.kind !== "missing") {
-          throw new Error(
-            `claude: the credential mirror at ${target} holds a refresh token. A ` +
-              "provider-override run never uses the operator login, but a sandboxed " +
-              "child can still read the file, and a refresh token in it could revoke " +
-              "your Claude login (2026-10-05). One plain sandboxed claude run scrubs " +
-              "it (a Keychain entry owns the login), then retry."
-          );
-        }
-      }
-      return;
-    }
-    const outcome = syncKeychainCredential(
-      CLAUDE_KEYCHAIN_SERVICE,
-      target,
-      this.credentialReader,
-      { backupDir: this.credentialBackupDir() }
-    );
-    if (outcome === "skipped" && fileCarriesRefreshToken(target)) {
-      console.error(
-        `claude: CODEMUX_NO_KEYCHAIN_SYNC is set and ${target} holds a refresh token ` +
-          "codemux will not touch without the Keychain; a sandboxed child can read it"
-      );
-    }
-    if (outcome === "unsafe") {
-      // The mirror still carries a refresh token and could not be scrubbed.
-      // A sandboxed child holding it could rotate the operator's login and
-      // get every Claude session revoked (2026-10-05), so this launch does
-      // not happen at all.
-      throw new Error(
-        `claude: the credential mirror at ${target} holds a refresh token that ` +
-          "could not be removed safely; refusing the sandboxed launch (a child " +
-          "holding that token could revoke your Claude login). Unlock the " +
-          "Keychain if it is locked, make the file and its directory writable, " +
-          "replace a symlinked ~/.claude or .credentials.json with a real one, " +
-          "or empty the refreshToken value in that file yourself, then retry."
-      );
-    }
-    if (outcome === "failed") {
-      // A silently stale mirror produces the exact 401 this exists to
-      // prevent; the launch proceeds, but the operator gets the diagnosis.
-      console.error(
-        `claude: could not refresh the credential mirror at ${target}; ` +
-          "a sandboxed run may fail to authenticate"
-      );
-    } else if (outcome === "unrecognized") {
-      console.error(
-        `claude: the credential mirror at ${target} holds an emptied Claude ` +
-          "credential with keys this codemux does not know; left untouched, so " +
-          "a sandboxed run may fail to authenticate (a newer Claude Code?)"
-      );
-    } else if (outcome === "synced" && process.stderr.isTTY) {
-      console.error("claude: refreshed the credential mirror from the Keychain");
-    }
   }
 
   capabilities(): AdapterCapabilities {
@@ -400,7 +252,7 @@ export class ClaudeAdapter extends BaseAdapter {
     const experimentBridge = new ExperimentBridge(readExperimentRunSpec(request),
       request.cwd ?? process.cwd(), request.prompt, this.environment,
       claudeChildProject(this.environment, request.passthroughEnv));
-    return { experimentBridge, stdoutSink: experimentBridge };
+    return { experimentBridge, experimentRecording: experimentBridge.recordingPath, stdoutSink: experimentBridge };
   }
 
   override cleanupRun(context?: RunContext): void | Promise<void> {
@@ -449,7 +301,7 @@ export class ClaudeAdapter extends BaseAdapter {
     cmd.push("--output-format", request.experimentMcp ? "stream-json" : "json");
     if (request.experimentMcp) {
       const spec = context?.experimentBridge?.spec ?? readExperimentRunSpec(request);
-      cmd.push("--input-format", "stream-json", "--verbose", "--permission-prompt-tool", "stdio",
+      cmd.push("--input-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool", "stdio",
         "--mcp-config", JSON.stringify({ mcpServers: { [spec.name]: { type: "sdk", name: spec.name } } }));
     }
     if (request.tools === "none") {
@@ -527,12 +379,11 @@ export class ClaudeAdapter extends BaseAdapter {
       // An override run always launched with --model resolved (the same
       // fallback buildRunCommand applies), so the envelope's model fallback
       // sees the model codemux actually selected.
-      const override = this.validatedProvider();
       return claudeFamilyResult(
         result,
-        override === null ? request : { ...request, model: this.modelFor(request.model) },
+        { ...request, model: this.resultModel(request) },
         this.id,
-        context?.experimentBridge?.recordingPath ?? null
+        context?.experimentRecording ?? null
       );
     }
     // A plain run: the same envelope, unwrapped back to the reply text.

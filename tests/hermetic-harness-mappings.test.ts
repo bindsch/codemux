@@ -504,7 +504,7 @@ describe("hermetic runs: kimi", () => {
       .toEqual(["kimi", "--prompt", "p"]);
   });
 
-  test("kimi claims --tools none (verified live); --hermetic stays refused", () => {
+  test("kimi claims --tools none (verified live) and --hermetic (private homes)", () => {
     const adapter = kimiAdapter();
     const cwd = mkdtempSync(join(tmpdir(), "codemux-kimi-claim-"));
     scratch.push(cwd);
@@ -513,15 +513,16 @@ describe("hermetic runs: kimi", () => {
       // The capability probes ran live on 2026-09-17 through a provider
       // override (GLM-5.3 via Z.AI): under --tools none neither the read
       // probe nor the shell probe could produce its secret, while a plain
-      // run produced both. Hermetic stays refused — the same control probe
-      // leaked the planted code word through ~/.agents/AGENTS.md and the
-      // project AGENTS.md (docs/HERMETIC.md).
+      // run produced both. Hermetic is claimed since the private HOME and
+      // KIMI_CODE_HOME homes (src/kimi-hermetic.ts): the ~/.agents/AGENTS.md
+      // and brand AGENTS.md channels the 2026-09-17 control leaked through
+      // are empty there, and a project instruction file refuses the run.
       expect(adapter.capabilities().supportsToolSelection ?? false).toBe(true);
       expect(() => adapter.validateRunRequest({ agent: "kimi", prompt: "p", cwd, tools: "none" }))
         .not.toThrow();
-      expect(adapter.capabilities().supportsHermetic ?? false).toBe(false);
+      expect(adapter.capabilities().supportsHermetic ?? false).toBe(true);
       expect(() => adapter.validateRunRequest({ agent: "kimi", prompt: "p", cwd, hermetic: true }))
-        .toThrow("no verified hermetic mode");
+        .not.toThrow();
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

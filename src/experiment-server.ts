@@ -2,6 +2,7 @@ import { createTerminationTarget, type TerminationTarget } from "./process-tree.
 import { FORCE_KILL_DELAY_MS, PIPE_GIVE_UP_MS, signalProcess } from "./process-runner.js";
 import type { ExperimentSpec } from "./experiment-mcp.js";
 import { resolveTrustedExecutable } from "./executable-security.js";
+import { ExperimentFailure, ExperimentFailureCode, experimentFailure } from "./experiment-records.js";
 
 export type JsonObject = Record<string, any>;
 export type ExperimentRecord = (kind: string, fields: JsonObject) => void;
@@ -47,12 +48,12 @@ export class ExperimentServer {
       this.read(proc.stderr as ReadableStream<Uint8Array>, "server_stderr")];
     this.record("server_spawn", { pid: proc.pid });
     void proc.exited.then((code) => {
-      if (!this.closed) this.fail(new Error(`experiment MCP server exited unexpectedly (${code})`));
+      if (!this.closed) this.fail(new ExperimentFailure(ExperimentFailureCode.ServerError, `experiment MCP server exited unexpectedly (${code})`));
     });
   }
 
   request(message: JsonObject): Promise<JsonObject | undefined> {
-    if (!this.proc || this.closed) return Promise.reject(new Error("experiment MCP server is closed"));
+    if (!this.proc || this.closed) return Promise.reject(new ExperimentFailure(ExperimentFailureCode.ServerError, "experiment MCP server is closed"));
     const line = JSON.stringify(message) + "\n";
     if (Buffer.byteLength(line) > MAX_EXPERIMENT_MESSAGE_BYTES) throw new Error("experiment MCP request exceeds 1 MiB");
     const id = message.id;
@@ -113,9 +114,9 @@ export class ExperimentServer {
         }
         if (this.buffer.length >= MAX_EXPERIMENT_MESSAGE_BYTES) throw new Error("experiment MCP response exceeds 1 MiB");
       }
-      if (!this.closed && kind === "server_stdout") throw new Error("experiment MCP stdout closed before run completion");
+      if (!this.closed && kind === "server_stdout") throw new ExperimentFailure(ExperimentFailureCode.ServerError, "experiment MCP stdout closed before run completion");
     } catch (error) {
-      if (!this.abandoned) this.fail(error instanceof Error ? error : new Error(String(error)));
+      if (!this.abandoned) this.fail(experimentFailure(error));
     } finally {
       // Cancellation itself need not settle if a descendant retains the pipe.
       void reader.cancel().catch(() => {});
@@ -158,12 +159,12 @@ export class ExperimentServer {
         this.abandoned = true;
         this.giveUp();
         await drained;
-        this.fail(new Error("experiment MCP server kept output pipes open after termination; readers abandoned"));
+        this.fail(new ExperimentFailure(ExperimentFailureCode.ServerError, "experiment MCP server kept output pipes open after termination; readers abandoned"));
       }
     } finally { if (timer) clearTimeout(timer); }
     process.off("exit", this.onExit);
     this.validatePartial();
-    for (const pending of this.pending.values()) pending.reject(new Error("experiment MCP run ended"));
+    for (const pending of this.pending.values()) pending.reject(new ExperimentFailure(ExperimentFailureCode.ServerError, "experiment MCP run ended"));
     this.pending.clear();
   }
 }

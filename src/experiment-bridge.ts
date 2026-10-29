@@ -1,27 +1,15 @@
-import { closeSync, fsyncSync, mkdirSync, openSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { codemuxStateDir } from "./call-log.js";
 import { PIPE_GIVE_UP_MS, type StdoutSink } from "./process-runner.js";
 import type { ExperimentSpec } from "./experiment-mcp.js";
 import { ExperimentServer, MAX_EXPERIMENT_MESSAGE_BYTES, type JsonObject } from "./experiment-server.js";
 import { canonicalWorkingDirectory, compareSpill } from "./experiment-spill.js";
 import type { ClaudeChildProject } from "./adapters/claude.js";
+import { ExperimentFailure, ExperimentFailureCode, experimentFailure, ExperimentRecording, toolResultDeliveredRecord, turnCallRecord, type ExperimentRecord } from "./experiment-records.js";
+import { ExperimentInventory } from "./experiment-inventory.js";
+import { ClaudeExperimentUsage } from "./experiment-claude-usage.js";
 
-// An experiment server names its own tools. Claude Code 2.1.300's SDK bridge
-// rejects an injected tools[] entry whose `name` fails /^[a-zA-Z0-9_-]{1,64}$/
-// (its "[bridge:meta-mcp] injected tools[] entry is malformed" check, read
-// from the binary); whether that entry carries the raw or the namespaced
-// name is not visible there, so the namespaced form mcp__<server>__<tool> is
-// held to 64 characters, which satisfies both readings (the MCP name parser
-// allows 128). The inventory checks below keep the exposed set equal to the
-// advertised one, so a name cannot reach a built-in tool. Tool definitions,
-// inputSchema included, pass through unchanged; a large inventory is bounded
-// only by the control frame limit (MAX_EXPERIMENT_MESSAGE_BYTES).
-const EXPERIMENT_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
-const MAX_NAMESPACED_TOOL_NAME = 64;
-const MAX_RECORDING_BYTES = 256 * 1024 * 1024;
 // SDKMessage discriminants and the SDK control transport envelopes.
 // https://code.claude.com/docs/en/agent-sdk/typescript#sdkmessage
 const CLAUDE_FRAME_TYPES = new Set([
@@ -30,13 +18,10 @@ const CLAUDE_FRAME_TYPES = new Set([
   "conversation_reset", "control_request", "control_response", "control_cancel_request", "keep_alive",
 ]);
 
-/** One bound governs every experiment control frame; the prompt preflight in
- * experiment-mcp.ts and this bridge's send path measure against the same
- * constant. Re-exported so the preflight needs no second copy. */
+/** Prompt preflight and bridge frames use the same byte bound. */
 export { MAX_EXPERIMENT_MESSAGE_BYTES };
 
-/** The exact user frame the bridge serializes for a prompt. The preflight
- * must measure the bytes send() would actually write, not the prompt alone. */
+/** Measure the serialized user frame, including its envelope and newline. */
 export function experimentUserFrameBytes(prompt: string): number {
   return Buffer.byteLength(JSON.stringify({ type: "user", message: { role: "user", content: prompt } }) + "\n");
 }
@@ -88,12 +73,10 @@ export function modelResultMatches(expected: unknown, actual: unknown): boolean 
 }
 
 export class ExperimentBridge implements StdoutSink {
-  readonly runId = randomUUID();
-  readonly recordingPath: string;
+  private recording: ExperimentRecording;
+  get runId(): string { return this.recording.runId; }
+  get recordingPath(): string { return this.recording.recordingPath; }
   private canonicalCwd: string;
-  private fd: number;
-  private sequence = 0;
-  private recordedBytes = 0;
   private buffer = "";
   private result = "";
   private trace = "";
@@ -101,20 +84,24 @@ export class ExperimentBridge implements StdoutSink {
   private write?: (line: string) => void;
   private end?: () => void;
   private abort?: () => void;
-  private failure?: Error;
+  private failure?: ExperimentFailure;
+  get failureError(): ExperimentFailure | null { return this.failure ?? this.closeFailure ?? null; }
+  get failureCode(): ExperimentFailureCode | null { return this.failure?.code ?? this.closeFailure?.code ?? null; }
   private closed = false;
   private closing?: Promise<void>;
-  private closeFailure?: Error;
+  private closeFailure?: ExperimentFailure;
   private closeFailureReported = false;
   private initialized = false;
   private inventoryValidated = false;
   private initRequest = randomUUID();
   private calls = new Map<string, { name: string; input: unknown; claimed: boolean; result?: JsonObject; received: boolean }>();
   private activeControls = new Set<string>();
-  private toolNames = new Set<string>();
-  private toolDefinitions?: unknown[];
-  private inventoryChanges = 0;
-  private inventoryRecheck?: Promise<void>;
+  private inventory: ExperimentInventory;
+  private get toolNames(): Set<string> { return this.inventory.names; }
+  private get toolDefinitions(): JsonObject[] | undefined { return this.inventory.definitions; }
+  private get inventoryRecheck(): Promise<void> | undefined { return this.inventory.rechecking; }
+  private usage: ClaudeExperimentUsage;
+  private get turn() { return this.usage.turn; }
 
   // `claudeProject` is where the CHILD Claude keeps this project's files:
   // the adapter resolves it (claudeChildProject), because CLAUDE_CONFIG_DIR
@@ -124,48 +111,28 @@ export class ExperimentBridge implements StdoutSink {
   constructor(readonly spec: ExperimentSpec, private readonly cwd: string, private prompt: string,
     environment: NodeJS.ProcessEnv = process.env,
     private claudeProject: ClaudeChildProject = { configDir: environment.HOME ? join(environment.HOME, ".claude") : undefined }) {
-    // Recordings are codemux state, not run-directory output: the run
-    // directory belongs to the experiment, and a recording landing there is
-    // visible to the harness's own tools. A spec may relocate the directory.
-    // Claude Code resolves its working directory once at startup; start()
-    // replaces this with the directory the runner spawned the child in.
+    // Keep recordings outside the harness's run directory. start() replaces
+    // this cwd with the runner's resolved child directory.
     this.canonicalCwd = canonicalWorkingDirectory(cwd);
-    const directory = spec.recording ?? join(codemuxStateDir(environment), "experiments");
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
-    this.recordingPath = join(directory, `${this.runId}${spec.control ? ".control" : ""}.jsonl`);
-    this.fd = openSync(this.recordingPath, "wx", 0o600);
+    this.recording = new ExperimentRecording(spec, cwd, environment);
+    this.usage = new ClaudeExperimentUsage(this.record);
     try {
       this.server = new ExperimentServer(spec, cwd, environment,
-        (kind, fields) => this.record(kind, fields), (error) => this.fail(error), () => {
-          this.inventoryChanges++;
-          this.recheckInventory();
+        this.record, (error) => this.fail(error), () => this.inventory.changed());
+      this.inventory = new ExperimentInventory(spec.name, (message) => this.server.request(message),
+        this.record, (error) => this.fail(error), () => !this.failure && !this.closed, () => {
+          if (this.result && !this.inventoryRecheck && !this.failure && !this.closed) this.end?.();
         });
-      this.record("run_start", { server: spec.name, cwd, env_names: spec.env,
-        server_sandbox: "outside scode; experiment-owned", harness_sandbox: "scode read-only" });
-      console.error(`codemux: experiment MCP recording: ${this.recordingPath}`);
     } catch (error) {
-      try { closeSync(this.fd); }
-      finally { unlinkSync(this.recordingPath); }
+      this.recording.discard();
       throw error;
     }
   }
 
-  private record(kind: string, fields: JsonObject): void {
-    if (this.closed) return;
-    const line = JSON.stringify({ run_id: this.runId, seq: this.sequence++, kind, ...fields }) + "\n";
-    this.recordedBytes += Buffer.byteLength(line);
-    if (this.recordedBytes > MAX_RECORDING_BYTES && kind !== "failure" && kind !== "run_end") throw new Error("experiment MCP recording exceeds 256 MiB");
-    const bytes = Buffer.from(line);
-    let offset = 0;
-    while (offset < bytes.length) offset += writeSync(this.fd, bytes, offset);
-  }
+  private readonly record: ExperimentRecord = (kind, fields) => this.recording.record(kind, fields);
 
   start(write: (line: string) => void, end: () => void, abort: () => void, cwd?: string): void {
-    // The launch helper resolves the working directory once and spawns the
-    // child in it; the runner hands that directory here as the child's own,
-    // so a cwd symlink retargeted between that resolution and the spawn, or
-    // during the run, cannot name a project the child never used. Without a
-    // runner, the bridge's own cwd stands.
+    // Use the child's resolved directory even if a cwd symlink changes later.
     this.canonicalCwd = canonicalWorkingDirectory(cwd ?? this.cwd);
     this.write = write;
     this.end = () => { this.end = undefined; end(); };
@@ -236,7 +203,7 @@ export class ExperimentBridge implements StdoutSink {
       if (!this.initialized || !this.toolDefinitions || this.inventoryValidated ||
         !Array.isArray(frame.tools) || frame.tools.length === 0 || frame.tools.some((name: unknown) =>
         typeof name !== "string")) {
-        throw new Error("Claude sent an invalid experiment tool inventory");
+        throw new ExperimentFailure(ExperimentFailureCode.InventoryMismatch, "Claude sent an invalid experiment tool inventory");
       }
       // The exposed set must equal the advertised set: a built-in tool the
       // server never offered is as much a leak as a dropped experiment tool.
@@ -245,27 +212,43 @@ export class ExperimentBridge implements StdoutSink {
       const equal = exposed.length === frame.tools.length && isDeepStrictEqual(exposed, advertised);
       this.record("tool_inventory", { tools: frame.tools, server_tools: advertised, equal, mcp_servers: frame.mcp_servers });
       if (!equal) {
-        throw new Error(`Claude's exposed tools must equal the experiment server's advertised set (server: ${advertised.join(", ") || "none"}; claude: ${JSON.stringify(frame.tools)})`);
+        throw new ExperimentFailure(ExperimentFailureCode.InventoryMismatch, `Claude's exposed tools must equal the experiment server's advertised set (server: ${advertised.join(", ") || "none"}; claude: ${JSON.stringify(frame.tools)})`);
       }
       this.inventoryValidated = true;
     } else if (frame.type === "assistant" || frame.type === "user") {
-      if (!this.inventoryValidated) throw new Error("Claude conversation frame before validated Claude inventory");
+      if (!this.inventoryValidated) throw new ExperimentFailure(ExperimentFailureCode.InventoryMismatch, "Claude conversation frame before validated Claude inventory");
       const content = frame.message?.content;
       if (!Array.isArray(content)) throw new Error("Claude message.content must be an array");
       if (frame.message.role !== frame.type) throw new Error("Claude message.role must match the conversation frame type");
+      const receivedAt = Date.now() / 1000;
+      const firstFrame = frame.type === "assistant" && this.usage.begin(frame.message, receivedAt);
+      const newCalls: { id: string; name: string; input: unknown }[] = [];
+      const frameCallIds = new Set<string>();
       for (const block of content) {
         if (block.type === "tool_use") {
           if (frame.type !== "assistant" || frame.message.role !== "assistant") throw new Error("tool_use must come from the assistant");
-          if (typeof block.id !== "string" || this.calls.has(block.id) || !this.toolNames.has(block.name)) {
-            throw new Error("Claude called an unknown, duplicate, or built-in tool");
+          if (frameCallIds.has(block.id)) throw new ExperimentFailure(ExperimentFailureCode.Protocol, "Claude repeated a tool ID within one frame");
+          frameCallIds.add(block.id);
+          const previous = this.calls.get(block.id);
+          const turn = this.turn;
+          if (previous && turn && turn.message_id === frame.message.id &&
+              turn.tool_calls.some((call) => call.call_id === block.id) &&
+              previous.name === block.name && isDeepStrictEqual(previous.input, block.input)) continue;
+          if (typeof block.id !== "string" || previous) {
+            throw new ExperimentFailure(ExperimentFailureCode.Protocol, "Claude emitted an invalid or reused tool ID");
+          }
+          if (!this.toolNames.has(block.name)) {
+            throw new ExperimentFailure(ExperimentFailureCode.UnknownTool, "Claude called an unknown or built-in tool");
           }
           this.calls.set(block.id, { name: block.name, input: block.input, claimed: false, received: false });
-          this.record("tool_call", { tool_use_id: block.id, name: block.name, input: block.input });
+          newCalls.push(block);
+          this.turn?.tool_calls.push({ call_id: block.id, name: block.name.slice(`mcp__${this.spec.name}__`.length) });
         } else if (block.type === "tool_result") {
           if (frame.type !== "user" || frame.message.role !== "user") throw new Error("tool_result must be delivered in a user frame");
           const call = this.calls.get(block.tool_use_id);
           this.record("model_tool_result", { tool_use_id: block.tool_use_id, block });
           if (!call?.result || call.received) throw new Error("unmatched model-bound experiment tool result");
+          this.record("tool_result_delivered", toolResultDeliveredRecord(block.tool_use_id, receivedAt));
           if (block.is_error !== undefined && typeof block.is_error !== "boolean") {
             throw new Error("Claude tool_result is_error must be a boolean");
           }
@@ -279,15 +262,26 @@ export class ExperimentBridge implements StdoutSink {
             comparison = { equal: false, spilled: false, spill_kind, spill_rejected: "error flag" };
           }
           this.record("result_comparison", { tool_use_id: block.tool_use_id, ...comparison });
-          if (!comparison.equal) throw new Error("Claude changed the experiment tool result before model delivery");
+          if (!comparison.equal) throw new ExperimentFailure(ExperimentFailureCode.ResultChanged, "Claude changed the experiment tool result before model delivery");
           call.received = true;
         }
       }
+      if (firstFrame && this.turn) {
+        this.record("turn", this.turn);
+      }
+      for (const call of newCalls) {
+        this.record("tool_call", { tool_use_id: call.id, name: call.name, input: call.input });
+        if (this.turn) this.record("turn_call", turnCallRecord(this.turn.message_id, call.id,
+          call.name.slice(`mcp__${this.spec.name}__`.length), receivedAt));
+      }
+    } else if (frame.type === "stream_event") {
+      this.usage.stream(frame.event, Date.now() / 1000);
     } else if (frame.type === "result") {
       if (!this.initialized) throw new Error("Claude returned a result before SDK initialization");
       if (!this.inventoryValidated || !this.toolDefinitions || this.activeControls.size) {
         throw new Error("Claude returned a result before experiment inventory and control completion");
       }
+      this.usage.complete();
       this.result = JSON.stringify(frame);
       if (!this.inventoryRecheck) this.end?.();
     }
@@ -308,16 +302,22 @@ export class ExperimentBridge implements StdoutSink {
         if (!message || message.jsonrpc !== "2.0" || typeof message.method !== "string") throw new Error("invalid Claude MCP request");
         let callId: string | undefined;
         if (message.method === "tools/call") {
-          if (!this.inventoryValidated) throw new Error("MCP tools/call before validated Claude inventory");
+          if (!this.inventoryValidated) throw new ExperimentFailure(ExperimentFailureCode.InventoryMismatch, "MCP tools/call before validated Claude inventory");
+          const input = message.params?.arguments === undefined ? {} : message.params.arguments;
+          if (!input || typeof input !== "object" || Array.isArray(input)) {
+            throw new ExperimentFailure(ExperimentFailureCode.Protocol, "experiment MCP tool arguments must be an object");
+          }
           const name = `mcp__${this.spec.name}__${message.params?.name}`;
           const nativeId = message.params?._meta?.["claudecode/toolUseId"];
           const call = typeof nativeId === "string" ? this.calls.get(nativeId) : undefined;
           if (message.id === undefined || !call || call.claimed || call.name !== name ||
-              !isDeepStrictEqual(call.input, message.params?.arguments ?? {})) {
-            throw new Error("MCP call lacks a matching native tool_use id");
+              !isDeepStrictEqual(call.input, input)) {
+            throw new ExperimentFailure(ExperimentFailureCode.CallIdUnresolved, "MCP call lacks a matching native tool_use id");
           }
           callId = nativeId;
           call.claimed = true;
+          message.params.arguments = input;
+          message.params._meta = { ...message.params._meta, "codemux/callId": callId };
         }
         this.record("mcp_request", { control_id: id, rpc_id: message.id ?? null, tool_use_id: callId ?? null, message });
         const reply = await this.server.request(message);
@@ -334,18 +334,12 @@ export class ExperimentBridge implements StdoutSink {
         // result Claude never produced. Ping and tools/list are included.
         if (reply.error !== undefined) {
           const detail = reply.error && typeof reply.error.message === "string" ? `: ${reply.error.message}` : "";
-          throw new Error(`experiment MCP ${message.method} returned a JSON-RPC error${detail}`);
+          throw new ExperimentFailure(ExperimentFailureCode.ServerError, `experiment MCP ${message.method} returned a JSON-RPC error${detail}`);
         }
         if (message.method === "tools/list") {
           if (message.params?.cursor !== undefined) throw new Error("experiment tools/list must start at the first page");
-          const tools = await this.collectInventory(reply, id);
+          await this.inventory.accept(reply, id);
           if (this.closed || this.failure) return;
-          if (this.toolDefinitions && !isDeepStrictEqual(this.toolDefinitions, tools)) throw new Error("experiment tool definitions changed during the run");
-          for (const tool of tools) this.toolNames.add(`mcp__${this.spec.name}__${tool.name}`);
-          this.toolDefinitions = tools;
-          this.recheckInventory();
-          reply.result = { ...reply.result, tools };
-          delete reply.result.nextCursor;
         }
         if (callId) {
           if (!Array.isArray(reply.result?.content)) throw new Error("experiment tools/call must return an MCP content result");
@@ -372,64 +366,10 @@ export class ExperimentBridge implements StdoutSink {
     } finally { if (registered) this.activeControls.delete(id); }
   }
 
-  private async inventoryPage(controlId: string | null, cursor?: string): Promise<JsonObject> {
-    const message = { jsonrpc: "2.0", id: randomUUID(), method: "tools/list",
-      ...(cursor === undefined ? {} : { params: { cursor } }) };
-    this.record("mcp_request", { control_id: controlId, rpc_id: message.id, tool_use_id: null, message });
-    const reply = await this.server.request(message);
-    if (this.failure) throw this.failure;
-    if (!reply || reply.id !== message.id) throw new Error("experiment MCP response id mismatch");
-    if (reply.error !== undefined) throw new Error("experiment MCP tools/list returned a JSON-RPC error");
-    return reply;
-  }
-
-  private async collectInventory(page: JsonObject, controlId: string | null): Promise<JsonObject[]> {
-    const tools: JsonObject[] = [];
-    const names = new Set<string>();
-    const cursors = new Set<string>();
-    for (;;) {
-      if (!Array.isArray(page.result?.tools)) throw new Error("experiment server requires one complete nonempty tools/list");
-      for (const tool of page.result.tools) {
-        if (!tool || typeof tool.name !== "string" || !EXPERIMENT_TOOL_NAME.test(tool.name) || names.has(tool.name) ||
-          `mcp__${this.spec.name}__${tool.name}`.length > MAX_NAMESPACED_TOOL_NAME) {
-          throw new Error("experiment server exposes an unsupported or duplicate tool name");
-        }
-        names.add(tool.name);
-        tools.push(tool);
-      }
-      const cursor = page.result.nextCursor;
-      if (cursor === undefined) break;
-      if (typeof cursor !== "string" || cursors.has(cursor)) throw new Error("invalid or repeated experiment tools/list cursor");
-      cursors.add(cursor);
-      page = await this.inventoryPage(controlId, cursor);
-    }
-    if (tools.length === 0) throw new Error("experiment server requires one complete nonempty tools/list");
-    return tools;
-  }
-
-  private recheckInventory(): void {
-    // Notifications during the first inventory wait for its validated baseline.
-    // Serialize rechecks so a burst cannot exhaust the transport's pending IDs.
-    if (!this.toolDefinitions || !this.inventoryChanges || this.inventoryRecheck || this.failure || this.closed) return;
-    this.inventoryRecheck = (async () => {
-      while (this.inventoryChanges && !this.failure) {
-        this.inventoryChanges--;
-        const tools = await this.collectInventory(await this.inventoryPage(null), null);
-        const equal = isDeepStrictEqual(this.toolDefinitions, tools);
-        this.record("tool_inventory_recheck", { equal, previous: this.toolDefinitions, current: tools });
-        if (!equal) throw new Error("experiment tool definitions changed during the run");
-      }
-    })().catch((error) => this.fail(error instanceof Error ? error : new Error(String(error)))).finally(() => {
-      this.inventoryRecheck = undefined;
-      this.recheckInventory();
-      if (this.result && !this.inventoryRecheck && !this.failure && !this.closed) this.end?.();
-    });
-  }
-
-  private fail(error: Error): void {
+  fail(cause: unknown): void {
     if (this.failure || this.closed) return;
-    this.failure = error;
-    try { this.record("failure", { message: error.message }); }
+    const error = this.failure = experimentFailure(cause);
+    try { this.record("failure", { code: error.code, message: error.message }); }
     catch { console.error(`codemux: experiment recording failed: ${error.message}`); }
     finally { this.abort?.(); }
   }
@@ -449,10 +389,19 @@ export class ExperimentBridge implements StdoutSink {
       this.record("cancellation", { reason: "stdout capture aborted" });
       return this.result;
     }
+    if (!this.result && !options?.timedOut) {
+      const error = new ExperimentFailure(ExperimentFailureCode.Protocol, "Claude returned no experiment result envelope");
+      this.fail(error);
+      throw error;
+    }
     if (this.result && [...this.calls.values()].some((call) => !call.received)) {
       const error = new Error("Claude ended without emitting every model-bound tool result");
       this.fail(error);
       throw error;
+    }
+    if (!options?.timedOut) {
+      try { this.usage.verify(); }
+      catch (error) { this.fail(experimentFailure(error)); throw error; }
     }
     return this.result;
   }
@@ -460,11 +409,11 @@ export class ExperimentBridge implements StdoutSink {
   scanSurface(): string { return this.trace; }
   terminateProtocol(): void { this.server.terminate(); }
 
-  /** Unexpected exit cannot drain readers. Record that loss and close now. */
   closeSync(): void {
     if (this.closed) return;
+    this.fail(new ExperimentFailure(ExperimentFailureCode.Protocol, "process exited before asynchronous experiment cleanup completed"));
     try { this.terminateProtocol(); }
-    finally { this.closeRecording(this.failure?.message ?? "process exited before asynchronous experiment cleanup completed"); }
+    finally { this.closeRecording(this.failure!.message); }
   }
 
   async closeProtocol(): Promise<void> {
@@ -481,7 +430,7 @@ export class ExperimentBridge implements StdoutSink {
     // Cache a settled outcome, so launcher and exit cleanup cannot replay a
     // finalization rejection already reported by the protocol owner.
     await (this.closing ??= this.finalize().catch((error) => {
-      this.closeFailure = error instanceof Error ? error : new Error(String(error));
+      this.closeFailure = experimentFailure(error);
     }));
     if (this.closeFailure !== undefined && !this.closeFailureReported) {
       this.closeFailureReported = true;
@@ -500,7 +449,7 @@ export class ExperimentBridge implements StdoutSink {
             const settled = async () => { while (this.inventoryRecheck) await this.inventoryRecheck; };
             await Promise.race([settled(), new Promise<void>((resolve) => {
               timer = setTimeout(() => {
-                this.fail(new Error("experiment tool inventory recheck did not complete before shutdown"));
+                this.fail(new ExperimentFailure(ExperimentFailureCode.InventoryMismatch, "experiment tool inventory recheck did not complete before shutdown"));
                 resolve();
               }, PIPE_GIVE_UP_MS);
             })]);
@@ -512,8 +461,8 @@ export class ExperimentBridge implements StdoutSink {
       catch (error) {
         // An operational cleanup error is evidence to retain, not a new
         // protocol abort that can replace the completed child's result.
-        this.closeFailure = error instanceof Error ? error : new Error(String(error));
-        this.record("failure", { message: this.closeFailure.message });
+        this.closeFailure = experimentFailure(error);
+        this.record("failure", { code: this.closeFailure.code, message: this.closeFailure.message });
         throw error;
       }
       if (this.buffer.length) {
@@ -527,12 +476,11 @@ export class ExperimentBridge implements StdoutSink {
   private closeRecording(error: string | null): void {
     if (this.closed) return;
     try {
-      this.record("run_end", { result_received: Boolean(this.result), tool_calls: this.calls.size,
-        model_results: [...this.calls.values()].filter((call) => call.received).length, error });
-      fsyncSync(this.fd);
+      this.recording.close({ result_received: Boolean(this.result), tool_calls: this.calls.size,
+        model_results: [...this.calls.values()].filter((call) => call.received).length, error,
+        code: error ? this.failureCode ?? ExperimentFailureCode.Protocol : null });
     } finally {
       this.closed = true;
-      closeSync(this.fd);
     }
   }
 }

@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, 
 import { dirname, resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { ExperimentBridge, experimentUserFrameBytes, MAX_EXPERIMENT_MESSAGE_BYTES } from "../src/experiment-bridge.js";
+import { ExperimentFailureCode } from "../src/experiment-records.js";
 import { readExperimentSpec, validateExperimentRequest, experimentCanaryControl } from "../src/experiment-mcp.js";
 import { runCapturedCommand } from "../src/process-runner.js";
 import { ClaudeAdapter } from "../src/adapters/claude.js";
@@ -13,9 +14,51 @@ import { MARKER } from "./fixtures/experiment-mcp.js";
 import type { RunRequest } from "../src/types.js";
 import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
 import { launchRunRequest } from "../src/launch.js";
+import { cleanupPeers, peer, restores } from "./helpers/experiment-peer.js";
+import { ExperimentServer } from "../src/experiment-server.js";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+afterEach(cleanupPeers);
+test("a JSON-RPC response with the wrong ID cannot be associated", async () => {
+  const p = peer();
+  await p.ready();
+  p.request.mockResolvedValue({ jsonrpc: "2.0", id: 999, result: { content: [] } });
+  p.call("first");
+  p.invoke("first", 10);
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(() => p.bridge.finish()).toThrow("response id mismatch");
+});
+test("normal completion without a Claude result latches a protocol failure before recording closes", async () => {
+  const p = peer();
+  await p.ready();
+  expect(() => p.bridge.finish({ timedOut: false })).toThrow("no experiment result envelope");
+  await expect(p.bridge.closeProtocol()).rejects.toThrow("no experiment result envelope");
+  expect(p.records().at(-1)).toMatchObject({ kind: "run_end", code: ExperimentFailureCode.Protocol,
+    error: "Claude returned no experiment result envelope" });
+});
+
+test.each([{ timedOut: true }, { timedOut: false, aborted: true }])("interrupted completion permits an absent Claude result: %j", async (options) => {
+  const p = peer();
+  await p.ready();
+  expect(p.bridge.finish(options)).toBe("");
+  expect(p.bridge.failureCode).toBeNull();
+});
+test("a later cleanup failure keeps its code while run_end retains the first failure", async () => {
+  const p = peer();
+  await p.ready();
+  expect(() => p.push({ type: "assistant", message: { role: "assistant", content: [
+    { type: "tool_use", id: "unknown-call", name: "built_in", input: {} },
+  ] } })).toThrow("unknown");
+  const close = spyOn(ExperimentServer.prototype, "close").mockImplementation(() => { throw new Error("cleanup failed"); });
+  restores.push(() => close.mockRestore());
+  await expect(p.bridge.close()).rejects.toThrow("cleanup failed");
+  const records = p.records();
+  expect(records.filter((record) => record.kind === "failure").map((record) => record.code))
+    .toEqual([ExperimentFailureCode.UnknownTool, ExperimentFailureCode.Protocol]);
+  expect(records.at(-1)).toMatchObject({ kind: "run_end", code: ExperimentFailureCode.UnknownTool });
+});
 function setup() {
   const cwd = mkdtempSync(join(tmpdir(), "codemux-bridge-test-"));
   dirs.push(cwd);
@@ -32,6 +75,83 @@ function setup() {
 function bridgeEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   return { CODEMUX_TEST_LEDGER: process.env.CODEMUX_TEST_LEDGER, ...extra };
 }
+
+describe("normalized Claude experiment records", () => {
+  test("forwards native and common call ID keys before recording the MCP request", async () => {
+    const p = peer();
+    await p.ready();
+    p.call("native-keys");
+    p.request.mockResolvedValue({ jsonrpc: "2.0", id: 10, result: { content: [] } });
+    p.mcp("native-keys-control", { id: 10, method: "tools/call", params: {
+      name: "bash", arguments: {}, _meta: { "claudecode/toolUseId": "native-keys", upstream: "kept" },
+    } });
+    await Promise.resolve();
+    const message = p.request.mock.calls.at(-1)![0];
+    expect(message.params._meta).toEqual({ "claudecode/toolUseId": "native-keys", "codemux/callId": "native-keys", upstream: "kept" });
+    expect(p.records().find((record) => record.kind === "mcp_request" && record.tool_use_id === "native-keys")?.message).toEqual(message);
+  });
+  test("emits the first Claude frame immediately and records calls added by later frames", async () => {
+    const p = peer();
+    await p.ready();
+    const call = { type: "tool_use", id: "native-1", name: "mcp__experiment__bash", input: {} };
+    const assistant = (content: unknown[], usage: object) => p.push({ type: "assistant", message: {
+      id: "message-1", role: "assistant", content, usage,
+    } });
+    assistant([call], { input_tokens: 11, output_tokens: 1, cache_read_input_tokens: 7 });
+    const first = p.records().find((record) => record.kind === "turn");
+    expect(first).toMatchObject({ message_id: "message-1", usage: null,
+      tool_calls: [{ call_id: "native-1", name: "bash" }] });
+    expect(p.records().find((record) => record.kind === "turn_usage")).toBeUndefined();
+    assistant([call, { ...call, id: "native-2" }], { output_tokens: 4, cache_creation_input_tokens: 3 });
+    assistant([call, { ...call, id: "native-2" }], { output_tokens: 5 });
+    p.push({ type: "assistant", message: { id: "message-2", role: "assistant", content: [],
+      usage: { input_tokens: 13, output_tokens: 5 } } });
+    p.result();
+    const turns = p.records().filter((record) => record.kind === "turn");
+    expect(turns).toHaveLength(2);
+    expect(turns[0]).toEqual(first);
+    expect(turns[1]).toMatchObject({ message_id: "message-2", usage: null, tool_calls: [] });
+    expect(turns.every((record) => Number.isFinite(record.t) && record.t > 1_000_000_000)).toBe(true);
+    expect(p.records().filter((record) => record.kind === "turn_usage").map(({ message_id, usage }) => ({ message_id, usage }))).toEqual([
+      { message_id: "message-1", usage: { input: 11, output: 5, cache_read: 7, cache_write: 3 } }, { message_id: "message-2", usage: { input: 13, output: 5, cache_read: 0, cache_write: 0 } }]);
+    expect(p.records().filter((record) => record.kind === "turn_call").map(({ run_id, seq, ...record }) => record)).toEqual([
+      { kind: "turn_call", message_id: "message-1", call_id: "native-1", name: "bash", t: first.t },
+      { kind: "turn_call", message_id: "message-1", call_id: "native-2", name: "bash", t: expect.any(Number) },
+    ]);
+    expect(p.records().filter((record) => record.kind === "tool_call")).toHaveLength(2);
+  });
+  test("records the native ID and receipt time when a result enters a user frame", async () => {
+    const p = peer();
+    await p.ready();
+    p.call("native-1");
+    p.request.mockResolvedValue({ jsonrpc: "2.0", id: 10, result: { content: [{ type: "text", text: "output" }] } });
+    p.invoke("native-1", 10);
+    await Promise.resolve();
+    const before = Date.now() / 1000;
+    p.delivered("native-1", "output");
+    const after = Date.now() / 1000;
+    p.result();
+    const records = p.records().filter((record) => record.kind === "tool_result_delivered");
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ call_id: "native-1", run_id: p.bridge.runId });
+    expect(records[0].t).toBeGreaterThanOrEqual(before);
+    expect(records[0].t).toBeLessThanOrEqual(after);
+  });
+  test("a changed result still records model delivery before comparison fails", async () => {
+    const p = peer();
+    await p.ready();
+    p.call("native-1");
+    p.request.mockResolvedValue({ jsonrpc: "2.0", id: 10, result: { content: [{ type: "text", text: "original" }] } });
+    p.invoke("native-1", 10);
+    await Promise.resolve();
+    expect(() => p.delivered("native-1", "changed")).toThrow("changed the experiment tool result");
+    expect(p.records().find((record) => record.kind === "tool_result_delivered")).toMatchObject({ call_id: "native-1" });
+    const comparison = p.records().find((record) => record.kind === "result_comparison");
+    expect(comparison).toMatchObject({ equal: false });
+    expect(p.bridge.failureCode).toBe(ExperimentFailureCode.ResultChanged);
+    expect(p.records().find((record) => record.kind === "failure")).toMatchObject({ code: ExperimentFailureCode.ResultChanged });
+  });
+});
 
 describe("experiment validation and isolation", () => {
   test("session cleanup tolerates an absent run context", () => {

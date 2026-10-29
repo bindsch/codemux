@@ -154,6 +154,7 @@ export function claudeFamilyResult(
     // The experiment bridge's JSONL path on an --experiment-mcp run, so the
     // caller can find the recording without scraping stderr; null otherwise.
     recording,
+    failure_code: null,
   });
   if (parsed.isError) {
     // The subtype is the specific reason when the envelope names one; the

@@ -1,16 +1,15 @@
+import { signalProcess } from "./process-signal.js";
+export { signalProcess } from "./process-signal.js";
+import { OutputLimitError, readBounded } from "./process-capture.js";
+export { MAX_CAPTURE_BYTES } from "./process-capture.js";
 import {
   createTerminationTarget,
-  rememberDescendants,
-  signalDescendant,
-  signalDescendants,
   waitForDescendantsGrace,
   type TerminationTarget,
 } from "./process-tree.js";
-import { readProcessTable } from "./process-table.js";
 import type { RunResult } from "./types.js";
 
 export const DEFAULT_RUN_TIMEOUT_MS = 30 * 60 * 1000;
-export const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
 export const MAX_ARGV_PROMPT_BYTES = 32 * 1024;
 export const MAX_RUN_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
@@ -25,15 +24,6 @@ const TIMEOUT_EXIT_CODE = 124;
 // 128 + SIGTERM: the child tree was terminated after a signal to codemux.
 export const SIGNAL_EXIT_CODE = 143;
 export const OUTPUT_LIMIT_EXIT_CODE = 125;
-
-class OutputLimitError extends Error {
-  constructor(
-    readonly streamName: "stdout" | "stderr",
-    readonly partialOutput: string
-  ) {
-    super(`${streamName} exceeded the ${MAX_CAPTURE_BYTES}-byte capture limit`);
-  }
-}
 
 /** A capture failure of a command that ran: the child was spawned and a
  * stream's output could not be captured (invalid UTF-8). Wrapping marks the
@@ -70,211 +60,6 @@ export interface StdoutSink {
   finish(options?: { timedOut: boolean; aborted?: boolean }): string;
   /** What the sink is currently keeping, in bytes. */
   keptBytes(): number;
-}
-
-/** Read a stream to its end, or until `giveUp` resolves, in which case the
- * read is canceled and what arrived so far is returned. Without a `sink` the
- * whole stream is captured, bounded at `MAX_CAPTURE_BYTES`; with one, the
- * sink consumes the stream and the bound applies to what it keeps — on
- * every exit branch, the give-up cancellation included (round al32). */
-async function readBounded(
-  stream: ReadableStream<Uint8Array>,
-  streamName: "stdout" | "stderr",
-  giveUp: Promise<void> = new Promise(() => {}),
-  sink?: StdoutSink,
-  finishOptions: () => { timedOut: boolean; aborted?: boolean } = () => ({ timedOut: false })
-): Promise<string> {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let bytesRead = 0;
-  let output = "";
-  let gaveUp = false;
-
-  // The give-up reaction is registered ONCE, here — never raced against
-  // each read. A chatty command emits thousands of small chunks, and a
-  // pending promise per chunk pins all of them in memory until the capture
-  // ends. Canceling the reader resolves the pending read as done, which
-  // is what ends the loop on a timeout.
-  giveUp.then(() => {
-    gaveUp = true;
-    reader.cancel().catch(() => {
-      // The lock may already be released after a natural end.
-    });
-  }, () => {
-    gaveUp = true;
-    reader.cancel().catch(() => {});
-  });
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        if (gaveUp) {
-          // A give-up cancellation can leave an incomplete multibyte
-          // character buffered, and flushing a fatal decoder throws on
-          // one. Every complete character was already emitted, so the
-          // incomplete suffix is all that is lost: drop it and return the
-          // timeout result instead of rejecting the whole capture. A
-          // natural end with a partial character is genuinely invalid
-          // UTF-8 and still throws.
-          let tail = "";
-          try {
-            tail = decoder.decode();
-          } catch {
-            // Only the incomplete suffix is lost.
-          }
-          if (sink === undefined) return output + tail;
-          if (tail !== "") sink.push(tail);
-          // The capture bound holds on EVERY exit branch (round al32,
-          // edges major 1): a timeout or signal abandonment ends the
-          // read with give-up, and the fold a sink performs inside
-          // finish() can push what it keeps past the limit exactly as at
-          // a natural EOF (the al30 rule) — an abandoned run over the
-          // bound fails at 125, never succeeds over the bound at 124.
-          const folded = sink.finish({ ...finishOptions(), aborted: true });
-          if (sink.keptBytes() > MAX_CAPTURE_BYTES) {
-            await reader.cancel();
-            throw new OutputLimitError(streamName, folded);
-          }
-          return folded;
-        }
-        const tail = decoder.decode();
-        if (sink !== undefined && tail !== "") sink.push(tail);
-        if (sink !== undefined) {
-          // The EOF tail — and the fold a sink performs inside finish()
-          // — are accounted against the capture bound like any completed
-          // chunk (round al30, edges major 1): the check runs AFTER
-          // finish(), because a wire-regime fold does not count the
-          // buffered partial line until close() folds it (round al27's
-          // rule), so a final unterminated event whose value crosses the
-          // limit latches it exactly there — the run fails at 125 instead
-          // of succeeding over the bound.
-          const folded = sink.finish(finishOptions());
-          if (sink.keptBytes() > MAX_CAPTURE_BYTES) {
-            await reader.cancel();
-            throw new OutputLimitError(streamName, folded);
-          }
-          return folded;
-        }
-        return output + tail;
-      }
-      if (sink !== undefined) {
-        sink.push(decoder.decode(value, { stream: true }));
-        // The sink's residue is this run's stdout: past the capture bound
-        // the run fails at the limit, partial output and all, exactly as a
-        // whole-stream capture does.
-        if (sink.keptBytes() > MAX_CAPTURE_BYTES) {
-          await reader.cancel();
-          throw new OutputLimitError(streamName, sink.finish({ ...finishOptions(), aborted: true }));
-        }
-        continue;
-      }
-      const remaining = MAX_CAPTURE_BYTES - bytesRead;
-      bytesRead += value.byteLength;
-      if (value.byteLength > remaining) {
-        output += decoder.decode(value.subarray(0, remaining), { stream: true });
-        await reader.cancel();
-        throw new OutputLimitError(streamName, output);
-      }
-      output += decoder.decode(value, { stream: true });
-    }
-  } catch (error) {
-    if (error instanceof TypeError) {
-      throw new Error(`${streamName} is not valid UTF-8`, { cause: error });
-    }
-    throw error;
-  } finally {
-    reader.releaseLock();
-  }
-}
-
-/**
- * Signal the child. `scope: "tree"` also signals its process group (when it
- * leads one) and every descendant found by walking the process table;
- * `scope: "process"` signals the child alone but still records its
- * descendants so a later tree-scoped escalation can reach them. This
- * function sends signals and reports send failures. Every nonzero or
- * signal child exit remains a failure, regardless of signal delivery.
- * Process-table reads serve tree cleanup alone:
- * `signalDescendants` walks before it signals — an agent that exits
- * promptly reparents its escaped descendants within milliseconds, so the
- * walk must come first or the tree kill has nothing to remember — and
- * the process-scope arm's `rememberDescendants` read keeps the map a
- * later escalation will need.
- *
- * The child is signaled through its subprocess handle, which cannot
- * address a reused pid even before the exit continuation runs. After an
- * observed exit only tree cleanup runs: the group and remembered
- * descendants, with isStillOurs guarding remembered pid reuse.
- *
- * A send that throws ESRCH is silent — the pid no longer exists.
- * Every other refusal names a process that exists (EPERM above
- * all — a live process the sender may not signal), so it is reported on
- * stderr as a signal failure the operator should see, never taken to
- * mean the child is gone (round al35, edges major 3).
- */
-export function signalProcess(
-  target: TerminationTarget,
-  signal: NodeJS.Signals,
-  scope: "process" | "tree"
-): void {
-  const { proc, processGroup } = target;
-  if (process.platform !== "win32") {
-    const groupSignaled = processGroup && scope === "tree" ? proc.pid : null;
-    let leftToGroup: number[] = [];
-    if (scope === "tree") {
-      leftToGroup = signalDescendants(target, signal, groupSignaled);
-    } else {
-      // Remember the descendants a process-scoped send leaves alive, so
-      // the later tree-scoped escalation can reach them (the tree-kill
-      // mechanics above).
-      rememberDescendants(target, readProcessTable());
-    }
-    if (groupSignaled !== null) {
-      try {
-        process.kill(-proc.pid, signal);
-        return; // the group send reached the child with it
-      } catch (error) {
-        // The group signal did not go out. ESRCH means the group is gone
-        // (the child exited between the timer and delivery); anything else
-        // is reported. Either way the members left to it are reached one by
-        // one: a member that moved to another group since the snapshot is
-        // still alive, and ESRCH per pid is harmless.
-        if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
-          console.error(
-            `codemux: could not send ${signal} to process group ${proc.pid}: ` +
-              (error instanceof Error ? error.message : String(error))
-          );
-        }
-        for (const pid of leftToGroup) signalDescendant(pid, signal);
-      }
-    }
-    // The handle also guards the interval before the exit callback runs.
-    if (target.childExited) return;
-    try {
-      proc.kill(signal);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
-        console.error(
-          `codemux: could not send ${signal} to child ${proc.pid}: ` +
-            (error instanceof Error ? error.message : String(error))
-        );
-      }
-    }
-    return;
-  }
-  // The same pid-reuse guard on the platform without process groups.
-  if (target.childExited) return;
-  try {
-    proc.kill(signal);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
-      console.error(
-        `codemux: could not send ${signal} to child ${proc.pid}: ` +
-          (error instanceof Error ? error.message : String(error))
-      );
-    }
-  }
 }
 
 /**
@@ -496,6 +281,7 @@ export async function runCapturedCommand(
         stderr: `${stderrOutput}${separator}Error: ${captureError.message}\n`,
         exitCode: OUTPUT_LIMIT_EXIT_CODE,
         success: false,
+        captureLimitExceeded: true,
       };
     }
     if (captureError) {

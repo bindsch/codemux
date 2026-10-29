@@ -149,7 +149,8 @@ export type CodexFinalMessageFallback = string | { missing: string } | null;
 export function codexResult(
   result: RunResult,
   request: RunRequest,
-  finalMessageFallback: CodexFinalMessageFallback = null
+  finalMessageFallback: CodexFinalMessageFallback = null,
+  recording: string | null = null
 ): RunResult {
   const stream = parseCodexEventStream(result.stdout);
   if (stream === null) {
@@ -185,11 +186,10 @@ export function codexResult(
     // already nulls usage for a stream-level failure; this extends the
     // rule to every failed envelope.
     usage: verdict.failed ? emptyUsage() : stream.usage,
-    // Always null in this release: the adapter runs `--ephemeral`, so no
-    // thread a run leaves behind can be resumed (reserved for the
-    // live-sessions release; see types.ts).
+    // Runs are not registered for resume. Experiment rollouts are private.
     session_id: null,
-    recording: null,
+    recording,
+    failure_code: null,
   };
   const notes: string[] = stream.warnings.map((message) => `codemux: codex warning: ${message}`);
   // Round al29 (contracts minor): a named fallback file that is missing,
