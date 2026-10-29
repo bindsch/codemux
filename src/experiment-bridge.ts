@@ -6,9 +6,12 @@ import type { ExperimentSpec } from "./experiment-mcp.js";
 import { ExperimentServer, MAX_EXPERIMENT_MESSAGE_BYTES, type JsonObject } from "./experiment-server.js";
 import { canonicalWorkingDirectory, compareSpill } from "./experiment-spill.js";
 import type { ClaudeChildProject } from "./adapters/claude.js";
-import { ExperimentFailure, ExperimentFailureCode, experimentFailure, ExperimentRecording, toolResultDeliveredRecord, turnCallRecord, type ExperimentRecord } from "./experiment-records.js";
+import { ExperimentFailure, ExperimentFailureCode, experimentFailure, ExperimentRecording, resultContentSha256, toolResultDeliveredRecord, turnCallRecord, type ExperimentRecord, type ExperimentRecordFields } from "./experiment-records.js";
 import { ExperimentInventory } from "./experiment-inventory.js";
 import { ClaudeExperimentUsage } from "./experiment-claude-usage.js";
+import { modelResultMatches } from "./experiment-claude-content.js";
+
+export { claudeContentBlocks, modelResultMatches } from "./experiment-claude-content.js";
 
 // SDKMessage discriminants and the SDK control transport envelopes.
 // https://code.claude.com/docs/en/agent-sdk/typescript#sdkmessage
@@ -29,49 +32,6 @@ export function experimentUserFrameBytes(prompt: string): number {
 /** Claude's SDK control transport. Raw stdio and the harness's emitted
  * model-bound tool_result blocks are different evidence and remain separate.
  */
-// Claude Code 2.1.300 delivers a server result whose content is one text
-// block as that block's text, a plain string, with trailing whitespace removed
-// (seen on an `isError` Playwright result: "...\n" arrived without the newline).
-// That canonical form is accepted in either error state. The only other
-// accepted difference is an oversize-result spill verified by compareSpill;
-// anything else (another block type, more than one block, a changed
-// character, leading whitespace) still fails the run.
-// Claude Code 2.1.300 rebuilds each MCP content block before delivery (its
-// `ho()`): a text block as {type, text} plus a truthy _meta, with annotations
-// dropped; an image block whose media type it inlines (PNG, JPEG, GIF, WebP;
-// "image/jpg" read as JPEG) as the API's base64 image source with the same
-// bytes, as long as the image is within its size and dimension budgets (a
-// larger one is resized, and its changed bytes fail the run). Other blocks
-// (audio, resource, resource_link) become Claude's own text and are not
-// reproduced here, so they fail the run too.
-const INLINE_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-export function claudeContentBlocks(content: unknown): unknown {
-  if (!Array.isArray(content)) return content;
-  return content.map((block) => {
-    if (!block || typeof block !== "object") return block;
-    const { type, text, data, mimeType, _meta } = block as JsonObject;
-    if (type === "text" && typeof text === "string") return { type: "text", text, ...(_meta ? { _meta } : {}) };
-    if (type === "image" && typeof data === "string" && typeof mimeType === "string") {
-      const media = mimeType.split(";")[0]!.trim().toLowerCase();
-      const mediaType = media === "image/jpg" ? "image/jpeg" : media;
-      if (INLINE_IMAGE_TYPES.has(mediaType)) return { type: "image", source: { type: "base64", media_type: mediaType, data } };
-    }
-    return block;
-  });
-}
-
-export function modelResultMatches(expected: unknown, actual: unknown): boolean {
-  const canonical = claudeContentBlocks(expected);
-  if (isDeepStrictEqual(canonical, actual)) return true;
-  if (!Array.isArray(canonical) || canonical.length !== 1) return false;
-  const block = canonical[0];
-  if (!block || typeof block !== "object" || (block as JsonObject).type !== "text") return false;
-  const text = (block as JsonObject).text;
-  // Claude removes trailing whitespace; it never adds any, so only the
-  // removed form is accepted, never an actual with whitespace the server did not send.
-  return typeof text === "string" && typeof actual === "string" && (actual === text || actual === text.trimEnd());
-}
-
 export class ExperimentBridge implements StdoutSink {
   private recording: ExperimentRecording;
   get runId(): string { return this.recording.runId; }
@@ -95,6 +55,7 @@ export class ExperimentBridge implements StdoutSink {
   private inventoryValidated = false;
   private initRequest = randomUUID();
   private calls = new Map<string, { name: string; input: unknown; claimed: boolean; result?: JsonObject; received: boolean }>();
+  private callsDelivered = 0;
   private activeControls = new Set<string>();
   private inventory: ExperimentInventory;
   private get toolNames(): Set<string> { return this.inventory.names; }
@@ -297,6 +258,7 @@ export class ExperimentBridge implements StdoutSink {
       registered = true;
       const request = frame.request;
       let response: JsonObject;
+      let delivery: Omit<ExperimentRecordFields["call_ledger"], "delivered_t"> | undefined;
       if (request?.subtype === "mcp_message" && request.server_name === this.spec.name) {
         const message = request.message;
         if (!message || message.jsonrpc !== "2.0" || typeof message.method !== "string") throw new Error("invalid Claude MCP request");
@@ -319,7 +281,9 @@ export class ExperimentBridge implements StdoutSink {
           message.params.arguments = input;
           message.params._meta = { ...message.params._meta, "codemux/callId": callId };
         }
-        this.record("mcp_request", { control_id: id, rpc_id: message.id ?? null, tool_use_id: callId ?? null, message });
+        this.record("mcp_request", { control_id: id, rpc_id: message.id ?? null, tool_use_id: callId ?? null,
+          ...(callId ? { relay_request_seq: id } : {}), message });
+        const dispatchedAt = Date.now() / 1000;
         const reply = await this.server.request(message);
         if (this.closed || this.failure) return;
         // A control acknowledgment is required even for an MCP notification,
@@ -347,7 +311,11 @@ export class ExperimentBridge implements StdoutSink {
             throw new Error("MCP tools/call isError must be a boolean");
           }
           this.calls.get(callId)!.result = reply.result;
-          this.record("server_tool_result", { tool_use_id: callId, rpc_id: message.id, result: reply.result });
+          const resultSha256 = resultContentSha256(reply.result.content);
+          this.record("server_tool_result", { tool_use_id: callId, relay_request_seq: id,
+            rpc_id: message.id, result_sha256: resultSha256, result: reply.result });
+          delivery = { relay_request_seq: id, native_call_id: callId, dispatched_t: dispatchedAt,
+            correlation: "request_meta", rpc_id: message.id, result_sha256: resultSha256 };
         }
         response = { mcp_response: reply };
       } else if (request?.subtype === "can_use_tool") {
@@ -359,6 +327,10 @@ export class ExperimentBridge implements StdoutSink {
         throw new Error(`unsupported Claude control request: ${String(request?.subtype)}`);
       }
       this.send({ type: "control_response", response: { subtype: "success", request_id: id, response } });
+      if (delivery) {
+        this.record("call_ledger", { ...delivery, delivered_t: Date.now() / 1000 });
+        this.callsDelivered++;
+      }
     } catch (error) {
       // Latch validation errors before the async function yields, so the
       // rest of this stdout chunk cannot forward another request.
@@ -477,6 +449,7 @@ export class ExperimentBridge implements StdoutSink {
     if (this.closed) return;
     try {
       this.recording.close({ result_received: Boolean(this.result), tool_calls: this.calls.size,
+        calls_delivered: this.callsDelivered,
         model_results: [...this.calls.values()].filter((call) => call.received).length, error,
         code: error ? this.failureCode ?? ExperimentFailureCode.Protocol : null });
     } finally {

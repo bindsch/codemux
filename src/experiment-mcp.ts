@@ -41,11 +41,18 @@ export interface ExperimentSpec {
   recording?: string;
   /** Accepted harness additions to the model-bound server result. */
   accept_harness_prefix?: string[];
+  /** Harness MCP tool deadline; the transport itself has no call deadline. */
+  tool_timeout_seconds?: number;
   /** Internal paired-check designation, never accepted from a spec file. */
   control?: boolean;
 }
 
 const MAX_SPEC_BYTES = 64 * 1024;
+const DEFAULT_TOOL_TIMEOUT_SECONDS = 7200;
+const MAX_TOOL_TIMEOUT_SECONDS = 86400;
+export function experimentToolTimeoutSeconds(spec: Pick<ExperimentSpec, "tool_timeout_seconds">): number {
+  return spec.tool_timeout_seconds ?? DEFAULT_TOOL_TIMEOUT_SECONDS;
+}
 const canaryControls = new WeakSet<RunRequest>();
 /** Only check's deliberately non-hermetic, planted control uses this path. */
 export function experimentCanaryControl(request: RunRequest): RunRequest {
@@ -60,6 +67,10 @@ export function readExperimentRunSpec(request: RunRequest): ExperimentSpec {
 }
 export function readExperimentSpec(path: string): ExperimentSpec {
   const value = JSON.parse(readUtf8FileBounded(path, { maxBytes: MAX_SPEC_BYTES, label: "experiment MCP spec" }));
+  if (value && typeof value === "object" && !Array.isArray(value) && value.tool_timeout_seconds !== undefined &&
+      (!Number.isInteger(value.tool_timeout_seconds) || value.tool_timeout_seconds <= 0 || value.tool_timeout_seconds > MAX_TOOL_TIMEOUT_SECONDS)) {
+    throw new Error(`experiment MCP spec tool_timeout_seconds must be a positive integer at most ${MAX_TOOL_TIMEOUT_SECONDS}`);
+  }
   if (value && typeof value === "object" && !Array.isArray(value) && value.accept_harness_prefix !== undefined &&
       (!Array.isArray(value.accept_harness_prefix) ||
        value.accept_harness_prefix.some((prefix: unknown) => prefix !== "codex-wall-time" && prefix !== "kimi-wall-time") ||
@@ -67,14 +78,14 @@ export function readExperimentSpec(path: string): ExperimentSpec {
     throw new Error("experiment MCP spec accept_harness_prefix must be an array of unique supported prefixes: codex-wall-time, kimi-wall-time");
   }
   if (!value || typeof value !== "object" || Array.isArray(value) ||
-      Object.keys(value).some((key) => !["name", "command", "args", "env", "recording", "accept_harness_prefix"].includes(key)) ||
+      Object.keys(value).some((key) => !["name", "command", "args", "env", "recording", "accept_harness_prefix", "tool_timeout_seconds"].includes(key)) ||
       typeof value.name !== "string" || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(value.name) ||
       typeof value.command !== "string" || !isAbsolute(value.command) || value.command.includes("\0") ||
       !Array.isArray(value.args) || value.args.some((arg: unknown) => typeof arg !== "string" || arg.includes("\0")) ||
       !Array.isArray(value.env) || value.env.some((name: unknown) => typeof name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) ||
       new Set(value.env).size !== value.env.length ||
       (value.recording !== undefined && (typeof value.recording !== "string" || value.recording.length === 0 || value.recording.includes("\0")))) {
-    throw new Error("experiment MCP spec requires name, absolute command, string args, unique env variable names, and optional recording and accept_harness_prefix fields only");
+    throw new Error("experiment MCP spec requires name, absolute command, string args, unique env variable names, and optional recording, accept_harness_prefix, and tool_timeout_seconds fields only");
   }
   // A relative recording path resolves against the spec file's directory:
   // the spec is the operator's coordinate system for its own artifacts.

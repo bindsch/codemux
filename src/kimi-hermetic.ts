@@ -25,7 +25,7 @@ export const KIMI_CONFIG_ALLOWLIST = [
 ] as const;
 export const KIMI_HERMETIC_ENV_OMISSIONS = [
   "KIMI_CODE_TRUST_WORKSPACE", "KIMI_CODE_IDENTITY_NAME", "KIMI_CODE_IDENTITY_SLUG",
-  "KIMI_CODE_BUILTIN_PRODUCT_SKILLS",
+  "KIMI_CODE_BUILTIN_PRODUCT_SKILLS", "KIMI_MCP_TOOL_TIMEOUT_MS", "KIMI_MCP_STARTUP_TIMEOUT_MS",
 ] as const;
 const MCP_TIMEOUT_KEYS = ["startup_timeout_ms", "tool_timeout_ms"] as const;
 const MAX_CONFIG_BYTES = 1024 * 1024;
@@ -56,12 +56,12 @@ function untrack(finalize: () => void): void {
   handlers.clear();
 }
 
-function tomlValue(value: unknown): string {
+export function kimiTomlValue(value: unknown): string {
   if (typeof value === "string") return JSON.stringify(value);
   if (typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) return String(value);
-  if (Array.isArray(value)) return `[${value.map(tomlValue).join(", ")}]`;
+  if (Array.isArray(value)) return `[${value.map(kimiTomlValue).join(", ")}]`;
   if (value !== null && typeof value === "object" && !(value instanceof Date)) {
-    return `{ ${Object.entries(value).map(([key, entry]) => `${JSON.stringify(key)} = ${tomlValue(entry)}`).join(", ")} }`;
+    return `{ ${Object.entries(value).map(([key, entry]) => `${JSON.stringify(key)} = ${kimiTomlValue(entry)}`).join(", ")} }`;
   }
   throw new Error("kimi hermetic config contains an unsupported TOML value");
 }
@@ -91,7 +91,7 @@ export function kimiHermeticConfig(sourceBrandHome: string): string {
     } else filtered[key] = parsed[key];
   }
   filtered.auto_session_title = false;
-  return Object.entries(filtered).map(([key, value]) => `${JSON.stringify(key)} = ${tomlValue(value)}\n`).join("");
+  return Object.entries(filtered).map(([key, value]) => `${JSON.stringify(key)} = ${kimiTomlValue(value)}\n`).join("");
 }
 
 /** Each private brand home shares the credential directory, including atomic token renames. */

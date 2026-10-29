@@ -175,8 +175,9 @@ test.each([false, true])("Codex preserves an existing mcp__ namespace prefix; fl
   expect(parser.calls).toHaveLength(1);
   const doubled = new CodexRolloutParser("thread", "mcp__foo", () => new Set(["lookup"]), () => {}, () => codexDefinitions(["lookup"]));
   doubled.accept(codexCatalog(["lookup"], "mcp__foo"));
-  expect(() => doubled.accept({ timestamp: "2026-10-29T00:00:00Z", type: "response_item", payload: {
+  doubled.accept({ timestamp: "2026-10-29T00:00:00Z", type: "response_item", payload: {
     type: "function_call", id: "function", call_id: "call", arguments: "{}",
     namespace: "mcp__mcp__foo", name: "lookup",
-  } })).toThrow("outside the experiment set");
+  } });
+  expect(() => doubled.finish()).toThrow("outside the experiment set");
 });

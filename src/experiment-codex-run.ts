@@ -6,7 +6,7 @@ import { assertTrustedDirectory } from "./hermetic-home.js";
 import { ExperimentHttpRelay } from "./experiment-relay.js";
 import { ExperimentCodexEvidence } from "./experiment-codex.js";
 import { copyExperimentHarnessLog } from "./experiment-harness-log.js";
-import type { ExperimentSpec } from "./experiment-mcp.js";
+import { experimentToolTimeoutSeconds, type ExperimentSpec } from "./experiment-mcp.js";
 import type { CodexExperimentModel } from "./experiment-codex-model.js";
 import { CODEX_EXPERIMENT_PROVIDER_ID, CODEX_EXPERIMENT_OMITTED_SURFACES,
   codexCatalogProviderTable } from "./experiment-codex-config.js";
@@ -17,7 +17,6 @@ import { capturePrefix } from "./experiment-capture.js";
 
 const MAX_CONFIG_BYTES = 1024 * 1024;
 const STARTUP_TIMEOUT_SECONDS = 120;
-const TOOL_TIMEOUT_SECONDS = 600;
 
 /** One run's relay, exec events, and private rollout evidence. */
 export class ExperimentCodexRun implements StdoutSink {
@@ -94,7 +93,7 @@ export class ExperimentCodexRun implements StdoutSink {
       `http_headers = { Authorization = ${JSON.stringify(`Bearer ${this.relay.token}`)} }`,
       "required = true",
       `startup_timeout_sec = ${STARTUP_TIMEOUT_SECONDS}`,
-      `tool_timeout_sec = ${TOOL_TIMEOUT_SECONDS}`,
+      `tool_timeout_sec = ${experimentToolTimeoutSeconds(this.spec)}`,
       `omit_tools_from = [${CODEX_EXPERIMENT_OMITTED_SURFACES.map((surface) => JSON.stringify(surface)).join(", ")}]`,
     ].join("\n");
     const temporary = join(this.codexHome, `config.${randomBytes(8).toString("hex")}.toml`);

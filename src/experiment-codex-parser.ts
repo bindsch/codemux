@@ -23,6 +23,33 @@ const CODEX_BUILTIN_DECLARATIONS: ReadonlySet<string> = new Set([
   "collaboration.spawn_agent:function",
   "collaboration.wait_agent:function",
 ]);
+// Codex rust-v0.165.0: core/src/tools/spec_plan.rs, app-server/src/extensions.rs, and their native tool contributors.
+// Keep namespace-only tools qualified so unrelated invented names can still fail natively.
+const CODEX_RESTRICTED_TOOLS: ReadonlySet<string> = new Set([
+  "update_plan", "plan", "exec_command", "write_stdin", "apply_patch",
+  "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource",
+  "wait_for_environment", "request_user_input", "request_user_input_async", "send_message_to_user_async",
+  "request_permissions", "new_context", "get_context_remaining", "test_sync_tool", "view_image",
+  "list_available_plugins_to_install", "request_plugin_install", "tool_search", "tool_search_tool", "exec", "wait",
+  "spawn_agent", "send_input", "resume_agent", "close_agent", "send_message", "followup_task", "wait_agent",
+  "interrupt_agent", "list_agents", "web_search", "clock.curr_time", "clock.sleep", "web.run", "image_gen.imagegen",
+  "get_goal", "create_goal", "update_goal", "multi_env_copy_file",
+  "create_channel", "get_channels", "list_threads", "search_posts", "read_thread", "read_post", "subscribe", "unsubscribe", "post",
+  "history.list_windows", "history.list_items", "history.read_item", "history.search_contents",
+  "notes.list_files_by_prefix", "notes.read_file", "notes.search_contents", "notes.append_to_file", "notes.write_file",
+  "memories.add_ad_hoc_note", "memories.list", "memories.read", "memories.search",
+  "skills.list", "skills.read", "skills.installations", "user_message.search_messages", "user_message.read_messages",
+]);
+
+function restrictedCodexTool(call: JsonObject): boolean {
+  const name = typeof call.name === "string" ? call.name.replace(/^functions\./u, "") : "";
+  const namespace = call.namespace && call.namespace !== "functions" ? call.namespace : undefined;
+  const qualified = namespace ? `${namespace}.${name}` : name;
+  if (CODEX_RESTRICTED_TOOLS.has(name.split(".").at(-1)!) || CODEX_RESTRICTED_TOOLS.has(qualified)) return true;
+  // protocol/src/mcp.rs recognizes these browser/computer actor namespaces and flat aliases.
+  if (namespace) return /^(?:mcp__)?(?:node_repl|cua_repl)(?:__)?$/u.test(namespace);
+  return /^(?:mcp__)?(?:node_repl|cua_repl)(?:(?:__)?\.|__)/u.test(name);
+}
 
 export interface CodexNativeCall {
   callId: string; name: string; input: unknown; item: JsonObject;
@@ -37,7 +64,9 @@ interface PendingTurn {
 /** Native items, normalized records, and call lookup share this parser for the whole run. */
 export class CodexRolloutParser {
   readonly calls: CodexNativeCall[] = [];
+  private modelErrors: CodexNativeCall[] = [];
   private byId = new Map<string, CodexNativeCall>();
+  private declaredBuiltins = new Set<string>();
   private pending?: PendingTurn;
   private lastCompleted?: { responseId: string; counters: JsonObject; totals: unknown };
   private responseIds = new Set<string>();
@@ -100,7 +129,8 @@ export class CodexRolloutParser {
     }
     if (line.type !== "response_item") return;
     if (payload.type === "additional_tools") { this.acceptCatalog(payload); return; }
-    if ((payload.type === "message" && payload.role === "assistant") || payload.type === "reasoning" || payload.type === "function_call") {
+    if ((payload.type === "message" && payload.role === "assistant") || payload.type === "reasoning" ||
+        payload.type === "function_call" || payload.type === "custom_tool_call") {
       this.pending ??= { calls: [] };
       if (payload.type === "message" && !this.pending.messageSeen) {
         this.pending.messageSeen = true;
@@ -108,15 +138,28 @@ export class CodexRolloutParser {
         this.emitTurn(t);
       }
     }
-    if (payload.type === "function_call") {
+    if (payload.type === "function_call" || payload.type === "custom_tool_call") {
       if (!this.catalogSeen) throw new ExperimentFailure(Code.InventoryMismatch,
         "Codex function_call precedes a complete additional_tools catalog");
       this.beforeFunctionCall?.(); this.acceptCall(payload, t);
     }
-    else if (payload.type === "function_call_output") {
+    else if (payload.type === "function_call_output" || payload.type === "custom_tool_call_output") {
       this.record("model_tool_result", { call_id: payload.call_id, output: payload.output, item: payload });
       const call = this.byId.get(payload.call_id);
       if (!call || call.output) throw new ExperimentFailure(Code.Protocol, `Unmatched or duplicate Codex function_call_output ${String(payload.call_id)}`);
+      const expectedType = call.item.type === "custom_tool_call" ? "custom_tool_call_output" : "function_call_output";
+      if (payload.type !== expectedType) throw new ExperimentFailure(Code.Protocol, "Codex tool output type does not match its call");
+      if (this.modelErrors.includes(call)) {
+        const text = typeof payload.output === "string" ? payload.output : Array.isArray(payload.output) &&
+          payload.output.every((part: unknown) => object(part)?.type === "input_text" && typeof object(part)?.text === "string")
+          ? payload.output.map((part: JsonObject) => part.text).join("") : undefined;
+        const prefix = call.item.type === "custom_tool_call" ? "unsupported custom tool call: " : "unsupported call: ";
+        // ToolName::Display drops the default namespace and concatenates other namespaces.
+        const namespace = call.item.namespace;
+        const nativeName = namespace && namespace !== "functions" ? namespace + call.item.name : call.item.name;
+        if (text !== prefix + nativeName) this.refuseTool(call.item);
+        this.record("model_tool_error", { call_id: call.callId, name: call.name, input: call.input, harness_output: payload.output });
+      }
       call.output = { value: payload.output, item: payload };
       this.record("tool_result_delivered", toolResultDeliveredRecord(call.callId, t));
     } else if (typeof payload.type === "string" && payload.type.endsWith("_call")) {
@@ -126,6 +169,7 @@ export class CodexRolloutParser {
   }
 
   finish(options?: { timedOut?: boolean }): void {
+    for (const call of this.modelErrors) if (!call.output) this.refuseTool(call.item);
     if (!options?.timedOut && this.pending) throw new ExperimentFailure(Code.HarnessLogMissing, "Codex rollout is missing a following token_count usage event");
     if (!options?.timedOut && this.usageRecords !== this.turns) throw new ExperimentFailure(Code.HarnessLogMissing, "Codex rollout is missing normalized turn usage");
     if (this.turns === 0) throw new ExperimentFailure(Code.HarnessLogMissing, "Codex rollout has no completed response evidence");
@@ -165,6 +209,7 @@ export class CodexRolloutParser {
           const tool = object(value);
           const identity = `${namespace}.${tool?.name}:${tool?.type}`;
           const builtin = tool && CODEX_BUILTIN_DECLARATIONS.has(identity);
+          if (builtin) this.declaredBuiltins.add(JSON.stringify([namespace ?? "functions", tool.name]));
           const name = tool?.type === "function" ? this.bareName({ ...tool, namespace }) : undefined;
           const classification = builtin ? "builtin" : name !== undefined ? "experiment" : "foreign";
           const entry: JsonObject = { namespace: namespace ?? null, name: tool?.name ?? null, type: tool?.type ?? null, classification };
@@ -192,20 +237,36 @@ export class CodexRolloutParser {
   }
 
   private acceptCall(payload: JsonObject, t: number): void {
-    const name = this.bareName(payload);
+    if (payload.namespace !== undefined && payload.namespace !== null && typeof payload.namespace !== "string") {
+      throw new ExperimentFailure(Code.Protocol, "Invalid Codex tool call namespace");
+    }
+    if (payload.type === "function_call" && typeof payload.arguments !== "string") {
+      throw new ExperimentFailure(Code.Protocol, "Invalid Codex function_call arguments");
+    }
+    if (payload.type === "custom_tool_call" && this.bareName(payload) !== undefined) this.refuseTool(payload);
+    const name = payload.type === "function_call" ? this.bareName(payload) : undefined;
     let input: unknown;
     let invalidArguments = false;
-    try { input = JSON.parse(payload.arguments); }
+    try { input = payload.type === "custom_tool_call" ? payload.input : JSON.parse(payload.arguments); }
     catch { invalidArguments = true; input = payload.arguments; }
     this.record(name === undefined ? "tool_call" : "harness_tool_call", { call_id: payload.call_id, name: payload.name,
       ...(payload.namespace === undefined ? {} : { namespace: payload.namespace }), input, allowed: name !== undefined, item: payload });
-    if (name === undefined) this.refuseTool(payload);
-    if (invalidArguments || !object(input)) throw new ExperimentFailure(Code.Protocol, `Invalid Codex function_call arguments for ${String(payload.call_id)}`);
+    const qualified = payload.namespace ? `${payload.namespace}.${payload.name}` : payload.name;
+    if (name === undefined && (typeof payload.name !== "string" || !payload.name ||
+        typeof payload.call_id !== "string" || !payload.call_id ||
+        restrictedCodexTool(payload) || this.declaredBuiltins.has(JSON.stringify([payload.namespace || "functions", payload.name])))) this.refuseTool(payload);
+    if (payload.type === "custom_tool_call" && typeof input !== "string") {
+      throw new ExperimentFailure(Code.Protocol, "Invalid Codex custom_tool_call input");
+    }
+    if (input === undefined) throw new ExperimentFailure(Code.Protocol, "Missing Codex tool call input");
+    if ((invalidArguments || !object(input)) && name !== undefined) {
+      throw new ExperimentFailure(Code.Protocol, `Invalid Codex function_call arguments for ${String(payload.call_id)}`);
+    }
     if (typeof payload.call_id !== "string" || !payload.call_id || this.byId.has(payload.call_id)) {
       throw new ExperimentFailure(Code.Protocol, "Duplicate or missing Codex function_call call_id");
     }
-    const call: CodexNativeCall = { callId: payload.call_id, name, input, item: payload };
-    this.calls.push(call);
+    const call: CodexNativeCall = { callId: payload.call_id, name: name ?? qualified, input, item: payload };
+    if (name === undefined) this.modelErrors.push(call); else this.calls.push(call);
     this.byId.set(call.callId, call);
     if (!this.pending!.functionSeen) {
       this.pending!.functionSeen = true;
@@ -215,7 +276,7 @@ export class CodexRolloutParser {
     if (!this.emitTurn(t) && this.pending!.turnId) {
       this.record("turn_call", turnCallRecord(this.pending!.turnId, call.callId, call.name, t));
     }
-    this.onCall?.(call, this.calls.length - 1);
+    if (name !== undefined) this.onCall?.(call, this.calls.length - 1);
   }
 
   private bareName(call: JsonObject): string | undefined {
@@ -235,12 +296,9 @@ export class CodexRolloutParser {
 
   private refuseTool(call: JsonObject): never {
     const name = typeof call.name === "string" && call.name ? call.name : call.type;
-    if (name === "exec") {
-      throw new ExperimentFailure(Code.CodeMode,
-        "Codex called code mode tool exec outside the experiment set; choose a direct-tool model with -m gpt-5.5");
-    }
+    const baseName = name.split(".").at(-1);
     const qualified = call.namespace ? `${call.namespace}.${name}` : name;
-    if (call.type === "tool_search_call" || name === "tool_search" || name === "tool_search_tool") {
+    if (call.type === "tool_search_call" || baseName === "tool_search" || baseName === "tool_search_tool") {
       throw new ExperimentFailure(Code.UnknownTool,
         "Codex offered its tool search instead of the experiment tools; " +
         "the experiment server table omits the deferred surface, so this means the exposure policy changed: " + qualified);

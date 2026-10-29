@@ -62,7 +62,7 @@ test("stopping unfinished Kimi evidence cannot make verification succeed", () =>
   expect(() => evidence.finish()).toThrow(expect.objectContaining({ code: Code.Protocol }));
 });
 
-test("Kimi refuses two pending identical requests before staggered native records resolve", async () => {
+test("Kimi matches pending identical requests FIFO across staggered native records", async () => {
   const home = directory(), path = join(home, "sessions/workspace/session_test/agents/main/wire.jsonl");
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify({ type: "llm.tools_snapshot", tools: [
@@ -83,10 +83,9 @@ test("Kimi refuses two pending identical requests before staggered native record
       } }) + "\n");
       await Bun.sleep(275);
     }
-    expect(await outcomes).toEqual([0, 1].map(() => ({ status: "rejected", reason: expect.objectContaining({
-      code: Code.CallIdUnresolved, message: expect.stringContaining("Kimi cannot carry identical concurrent calls"),
-    }) })));
-    expect(identified).toHaveLength(0);
+    expect(await outcomes).toEqual([1, 2].map((index) => ({ status: "fulfilled", value: `call-${index}` })));
+    expect(identified).toEqual([1, 2].map((index) => ({ relay_index: index - 1, call_id: `call-${index}`,
+      name: "lookup", input: { query: "same" }, correlation: "fifo" })));
   } finally { evidence.stop(); }
 });
 
@@ -126,11 +125,11 @@ test("tools/call notifications return 400 and protocol before server dispatch", 
   } finally { await relay.close().catch(() => {}); mock.restore(); }
 });
 
-test.each(["function_call", "custom_tool_call"])("Codex refuses foreign exec with code_mode for %s", (type) => {
+test.each(["function_call", "custom_tool_call"])("Codex refuses foreign exec with unknown_tool for %s", (type) => {
   const parser = new CodexRolloutParser("thread-1", "experiment", () => new Set(["lookup"]), () => {}, () => codexDefinitions(["lookup"]));
   parser.accept(codexCatalog(["lookup"]));
   expect(() => parser.accept({ timestamp: "2026-10-29T00:00:00.000Z", type: "response_item", payload: {
     type, namespace: "functions", name: "exec", id: "fc1", call_id: "call1", arguments: "{}", input: "{}",
-  } })).toThrow(expect.objectContaining({ code: Code.CodeMode }));
+  } })).toThrow(expect.objectContaining({ code: Code.UnknownTool }));
   expect(parser.calls).toHaveLength(0);
 });

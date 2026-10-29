@@ -1,6 +1,6 @@
 import { closeSync, fsyncSync, ftruncateSync, mkdirSync, openSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { codemuxStateDir } from "./call-log.js";
 import type { ExperimentSpec } from "./experiment-mcp.js";
 import type { JsonObject } from "./experiment-server.js";
@@ -47,6 +47,8 @@ export interface ExperimentRecordFields {
     { harness: "codex" | "kimi"; path: string; error: string };
   harness_stdout_partial: { bytes_base64: string };
   tool_result_delivered: { call_id: string; t: number };
+  call_ledger: { relay_request_seq: number | string; native_call_id: string | null; dispatched_t: number;
+    delivered_t: number; correlation: "exact" | "fifo" | "request_meta"; rpc_id: string | number; result_sha256: string };
   http_request: { method: string; path: string; token_matched: boolean; bytes_base64: string; body_complete: boolean } |
     { method: string; path: "/catalog"; client_version: string | null; authorization_present: boolean; bytes_base64: string; body_complete: boolean };
   http_response: { status: number; bytes_base64: string };
@@ -64,6 +66,21 @@ export function turnCallRecord(message_id: string, call_id: string, name: string
 }
 export function toolResultDeliveredRecord(call_id: string, t: number): ExperimentRecordFields["tool_result_delivered"] {
   return { call_id, t };
+}
+
+/** Hash JSON content with sorted object keys and unchanged array order. */
+export function resultContentSha256(content: unknown): string {
+  const canonical = (value: unknown): string => {
+    if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+    if (value !== null && typeof value === "object") {
+      const object = value as JsonObject;
+      return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${canonical(object[key])}`).join(",")}}`;
+    }
+    const json = JSON.stringify(value);
+    if (json === undefined) throw new Error("experiment result content must be JSON");
+    return json;
+  };
+  return createHash("sha256").update(canonical(content)).digest("hex");
 }
 
 /** The shared private, bounded JSONL recording for one experiment run. */

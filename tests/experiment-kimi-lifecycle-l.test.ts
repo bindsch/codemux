@@ -69,7 +69,7 @@ function evidenceFixture(lines: Entry[]) {
 
 test("Kimi stop preserves a prior evidence failure and notifies once", () => {
   const { evidence, failures } = evidenceFixture([SNAPSHOT, { type: "context.append_loop_event", time: 1000,
-    event: { type: "tool.call", uuid: "tool-1", stepUuid: "step-1", toolCallId: "call-1", name: "foreign", args: {} } }]);
+    event: { type: "tool.call", uuid: "tool-1", stepUuid: "step-1", toolCallId: "call-1", name: "Bash", args: {} } }]);
   evidence.stop(); evidence.stop();
   expect(failures).toHaveLength(1);
   expect(() => evidence.finish()).toThrow(expect.objectContaining({ code: Code.UnknownTool }));

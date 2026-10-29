@@ -1,11 +1,13 @@
 import { isDeepStrictEqual } from "node:util";
-import { kimiObject, kimiProjectedResult, kimiToolName } from "./experiment-kimi-content.js";
+import { kimiContentParts, kimiObject, kimiOutputParts, kimiProjectedResult, kimiToolName } from "./experiment-kimi-content.js";
 import { ExperimentFailure, ExperimentFailureCode as Code, toolResultDeliveredRecord, turnCallRecord, turnRecord, turnUsageRecord,
   type ExperimentRecord, type ExperimentUsage } from "./experiment-records.js";
 import type { JsonObject } from "./experiment-server.js";
+import { experimentToolTimeoutSeconds } from "./experiment-mcp.js";
 
 export interface KimiNativeCall {
   callId: string; name: string; input: unknown; qualified: string; item: JsonObject;
+  modelToolError?: boolean;
   result?: JsonObject; content?: JsonObject[]; wireContent?: JsonObject[]; header?: string | null;
 }
 export interface KimiAssistantFrame { text: string; callIds: string[] }
@@ -25,7 +27,13 @@ export class KimiWireParser {
   private inventorySeen = false;
 
   constructor(private readonly server: string, private readonly toolNames: () => ReadonlySet<string>,
-    private readonly record: ExperimentRecord, private readonly toolDefinitions: () => readonly JsonObject[] | undefined) {}
+    private readonly record: ExperimentRecord, private readonly toolDefinitions: () => readonly JsonObject[] | undefined,
+    private readonly toolTimeoutMs = experimentToolTimeoutSeconds({}) * 1000,
+    private readonly serverResults: () => readonly { name: string; input: unknown; result?: JsonObject }[] = () => []) {}
+
+  assertToolAllowed(name: string): void {
+    if (KIMI_BUILTIN_TOOLS.has(name)) throw new ExperimentFailure(Code.UnknownTool, `Kimi called a built-in tool outside the experiment set: ${name}`);
+  }
 
   names(): Map<string, string> {
     const names = new Map<string, string>();
@@ -95,7 +103,14 @@ export class KimiWireParser {
         }
         if (event.result.note !== undefined && typeof event.result.note !== "string") throw new ExperimentFailure(Code.Protocol, "Kimi tool.result note must be a string");
         if (event.parentUuid !== call.item.uuid) throw new ExperimentFailure(Code.Protocol, "Kimi tool.result parentUuid does not match tool.call");
+        if (!call.modelToolError && event.result.isError === true && typeof event.result.output === "string" &&
+            event.result.output.startsWith(`Tool "${call.qualified}" failed: `) && !this.isServerError(call, event.result)) this.assertNoToolTimeout(event.result);
+        if (call.modelToolError && (event.result.isError !== true || event.result.output !== `Tool "${call.qualified}" not found`)) {
+          throw new ExperimentFailure(Code.UnknownTool, `Kimi unknown tool lacks its own missing-tool error: ${call.qualified}`);
+        }
         call.result = event.result;
+        if (call.modelToolError) this.record("model_tool_error", { call_id: call.callId, name: call.qualified,
+          input: call.input, harness_output: event.result.output });
         this.record("tool_result_delivered", toolResultDeliveredRecord(call.callId, timestamp(line.time)));
       }
     } else if (line.type === "agent.message.appended") {
@@ -129,14 +144,15 @@ export class KimiWireParser {
     const name = this.names().get(event.name);
     this.record(name === undefined ? "tool_call" : "harness_tool_call", { call_id: event.toolCallId,
       name: event.name, input: event.args, allowed: name !== undefined, item: event });
-    if (name === undefined) throw new ExperimentFailure(Code.UnknownTool, `Kimi called a tool outside the experiment set: ${String(event.name)}`);
+    this.assertToolAllowed(event.name);
     if (typeof event.toolCallId !== "string" || !event.toolCallId.trim() || this.byId.has(event.toolCallId) ||
-        typeof event.uuid !== "string" || !event.uuid.trim() || !kimiObject(event.args)) {
+        typeof event.name !== "string" || !event.name.trim() || typeof event.uuid !== "string" || !event.uuid.trim() || !kimiObject(event.args)) {
       throw new ExperimentFailure(Code.Protocol, "Duplicate or malformed Kimi tool.call");
     }
     const step = this.step(event.stepUuid);
     if (step.end) throw new ExperimentFailure(Code.Protocol, "Kimi tool.call follows step.end");
-    const call: KimiNativeCall = { callId: event.toolCallId, name, input: event.args, qualified: event.name, item: event };
+    const call: KimiNativeCall = { callId: event.toolCallId, name: name ?? event.name, input: event.args,
+      qualified: event.name, item: event, modelToolError: name === undefined };
     const t = timestamp(time);
     step.calls.push(call);
     this.byId.set(call.callId, call);
@@ -147,6 +163,7 @@ export class KimiWireParser {
 
   private acceptStep(event: JsonObject, time: unknown): void {
     const step = this.step(event.uuid);
+    if (event.finishReason === "error" && step.calls.some((call) => !call.modelToolError && !call.result)) this.assertNoToolTimeout(event.error ?? event);
     if (step.end) throw new ExperimentFailure(Code.HarnessLogMissing, "Kimi wire log has duplicate step.end usage evidence");
     if (event.messageId !== undefined && (typeof event.messageId !== "string" || !event.messageId.trim())) {
       throw new ExperimentFailure(Code.Protocol, "Kimi step.end has an invalid provider messageId");
@@ -164,6 +181,21 @@ export class KimiWireParser {
     step.end = event;
     this.completed.push(step);
     this.emitUsage(step);
+  }
+
+  private assertNoToolTimeout(value: JsonObject): void {
+    const text = JSON.stringify(value);
+    if (!/(?:\bRequest timed out\b|\btool (?:call )?timed out\b|"code":-32001)/i.test(text)) return;
+    const error = kimiObject(value.error) ?? value;
+    const supplied = kimiObject(error.data)?.timeout ?? error.timeoutMs ?? error.timeout;
+    const milliseconds = Number.isSafeInteger(supplied) && supplied > 0 ? supplied : this.toolTimeoutMs;
+    throw new ExperimentFailure(Code.ServerError, `kimi tool call timed out after ${milliseconds} ms`);
+  }
+
+  private isServerError(call: KimiNativeCall, result: JsonObject): boolean {
+    return this.serverResults().some((server) => server.name === call.name && isDeepStrictEqual(server.input, call.input) &&
+      server.result?.isError === true && Array.isArray(server.result.content) &&
+      isDeepStrictEqual(kimiContentParts(server.result.content, call.qualified), kimiOutputParts(result.output)));
   }
 
   private emitTurn(step: Step, time: unknown): void {
@@ -184,6 +216,8 @@ export class KimiWireParser {
 
   finish(options?: { timedOut?: boolean }): void {
     if (!this.inventorySeen) throw new ExperimentFailure(Code.InventoryMismatch, "Kimi wire log is missing llm.tools_snapshot");
+    const unresolved = this.calls.find((call) => call.modelToolError && !call.result);
+    if (unresolved) throw new ExperimentFailure(Code.UnknownTool, `Kimi unknown tool lacks its own missing-tool error: ${unresolved.qualified}`);
     const finalStep = [...this.steps.values()].filter((step) => !step.retry).at(-1);
     const isTimedOutFinal = (step: Step) => options?.timedOut === true && step === finalStep;
     const completed = [...this.completed];
@@ -220,6 +254,13 @@ export class KimiWireParser {
     this.verified = completed;
   }
 }
+
+// Kimi Code 2.3.2 agent/tools, feature contributions, and human/media/tool.ts.
+const KIMI_BUILTIN_TOOLS = new Set(["Agent", "AskUserQuestion", "Bash", "Edit", "FetchURL", "Glob", "Grep", "Read",
+  "ReadMediaFile", "TaskList", "TaskOutput", "TaskStop", "WaitFor", "WebSearch", "Write", "select_tools", "EnterPlanMode",
+  "ExitPlanMode", "TodoList", "NotifyUser", "Skill", "AgentSwarm", "CronCreate", "CronList", "CronDelete", "CreateGoal",
+  "GetGoal", "SetGoalBudget", "UpdateGoal", "TowerInit", "TowerPlan", "TowerSpawn", "TowerMerge", "TowerRebase",
+  "TowerTeardown", "TowerComplete", "TowerSend", "TowerInbox", "TowerFinding", "TowerReview", "TowerMission", "TowerStatus"]);
 
 function timestamp(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new ExperimentFailure(Code.Protocol, "Kimi wire time must be Unix epoch milliseconds");

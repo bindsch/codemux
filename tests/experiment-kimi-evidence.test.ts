@@ -86,7 +86,8 @@ describe("Kimi experiment evidence", () => {
         equal: true, harness_prefix: "kimi-wall-time", header: "Wall time: 0.025 seconds\n" }]);
       expect(kinds(records, "tool_call")).toHaveLength(0);
       expect(kinds(records, "tool_inventory")[0]?.tools).toEqual(inventory().tools);
-      expect(kinds(records, "tool_call_identified")).toEqual([{ kind: "tool_call_identified", relay_index: 0, call_id: "call-1", name: "lookup", input: INPUT }]);
+      expect(kinds(records, "tool_call_identified")).toEqual([{ kind: "tool_call_identified", relay_index: 0, call_id: "call-1", name: "lookup", input: INPUT,
+        correlation: "exact" }]);
       expect(kinds(records, "harness_tool_result")[0]).toMatchObject({ tool_call_id: "call-1", content: "answer\n" });
       expect(kinds(records, "harness_loop_tool_result")).toHaveLength(1);
     } finally { evidence.stop(); }
@@ -192,16 +193,16 @@ describe("Kimi experiment evidence", () => {
     try { expect(await run.evidence.resolveCallId(run.relay.calls[0]!)).toBe("call-2"); }
     finally { clearTimeout(timer); run.evidence.stop(); }
   });
-  test("refuses identical concurrent native calls before assigning stateful results", async () => {
+  test("assigns identical concurrent native calls in native FIFO order", async () => {
     const run = fixture([inventory(), call(), call({ uuid: "tool-2", toolCallId: "call-2" })]);
     run.relay.calls[0]!.result = { content: [{ type: "text", text: "state-1" }] };
     run.relay.calls.push({ relay_index: 1, name: "lookup", input: { nested: { answer: 42 }, query: "hello" },
       result: { content: [{ type: "text", text: "state-2" }] } });
     try {
-      for (const entry of run.relay.calls) await expect(run.evidence.resolveCallId(entry)).rejects.toMatchObject({
-        code: Code.CallIdUnresolved, message: expect.stringContaining("Kimi cannot carry identical concurrent calls"),
-      });
-      expect(kinds(run.records, "tool_call_identified")).toHaveLength(0);
+      expect(await Promise.all(run.relay.calls.map((entry) => run.evidence.resolveCallId(entry)))).toEqual(["call-1", "call-2"]);
+      expect(kinds(run.records, "tool_call_identified")).toMatchObject([
+        { call_id: "call-1", correlation: "fifo" }, { call_id: "call-2", correlation: "fifo" },
+      ]);
       expect(kinds(run.records, "result_comparison")).toHaveLength(0);
     } finally { run.evidence.stop(); }
   });

@@ -113,7 +113,7 @@ describe("documentation integrity", () => {
   test("Codex exec refusal documents both native item types", () => {
     for (const path of ["docs/experiment-mcp.md", "docs/experiment-codex-catalog.md"]) {
       const text = read(path).replace(/\s+/g, " ");
-      expect(text).toContain("`code_mode` for either `function_call` or `custom_tool_call`");
+      expect(text).toContain("`unknown_tool` for either `function_call` or `custom_tool_call`");
       expect(text).toContain("inventory function named `exec` remains allowed");
     }
   });

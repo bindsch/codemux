@@ -260,22 +260,23 @@ test("experiment flags disable configurable code mode without changing ordinary 
   expect(ordinary).not.toContain("code_mode_host");
 });
 
-test.each(["custom_tool_call", "function_call"])("classifies outside exec as code_mode for %s", (type) => {
+test.each(["custom_tool_call", "function_call"])("rejects outside exec as unknown_tool for %s", (type) => {
   const records: Record<string, unknown>[] = [];
   const parser = new CodexRolloutParser("thread", "experiment", () => new Set(["bash"]),
     (kind, fields) => { records.push({ kind, ...fields }); }, () => codexDefinitions(["bash"]));
   parser.accept(codexCatalog(["bash"])); records.length = 0;
   expectFailure(() => parser.accept({ timestamp: "2026-10-29T01:02:03Z", type: "response_item",
-    payload: { type, id: "outside", call_id: "native-exec", name: "exec", arguments: "{}", input: "text(ALL_TOOLS)" } }), "code_mode", "exec");
+    payload: { type, id: "outside", call_id: "native-exec", name: "exec", arguments: "{}", input: "text(ALL_TOOLS)" } }), "unknown_tool", "exec");
   expect(records[0]).toMatchObject({ kind: "tool_call", name: "exec", allowed: false });
 });
 
-test.each(["custom_tool_call", "function_call"])("names an unknown tool instead of its %s item type", (type) => {
+test.each(["custom_tool_call", "function_call"])("names an unknown tool without its own %s error result", (type) => {
   const parser = new CodexRolloutParser("thread", "experiment", () => new Set(["bash"]), () => {}, () => codexDefinitions(["bash"]));
   parser.accept(codexCatalog(["bash"]));
-  expectFailure(() => parser.accept({ timestamp: "2026-10-29T01:02:03Z", type: "response_item", payload: {
+  parser.accept({ timestamp: "2026-10-29T01:02:03Z", type: "response_item", payload: {
     type, id: "outside", call_id: "native-foreign", name: "foreign_tool", namespace: "functions",
-    arguments: "{}", input: "ignored" } }), "unknown_tool", "foreign_tool");
+    arguments: "{}", input: "ignored" } });
+  expectFailure(() => parser.finish(), "unknown_tool", "foreign_tool");
 });
 
 test("an experiment tool named exec remains an allowed direct function call", () => {

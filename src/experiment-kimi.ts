@@ -7,10 +7,11 @@ import { ExperimentFailure, ExperimentFailureCode as Code, experimentFailure, ty
 import type { ExperimentRelayCall } from "./experiment-relay.js";
 import type { JsonObject } from "./experiment-server.js";
 import { parseKimiStreamLine } from "./session/kimi-session.js";
+import { experimentToolTimeoutSeconds } from "./experiment-mcp.js";
 
 export { kimiToolName } from "./experiment-kimi-content.js";
 export interface KimiEvidenceRelay {
-  spec: { name: string; accept_harness_prefix?: string[] };
+  spec: { name: string; accept_harness_prefix?: string[]; tool_timeout_seconds?: number };
   toolNames: ReadonlySet<string>;
   toolDefinitions: readonly JsonObject[] | undefined;
   calls: ExperimentRelayCall[];
@@ -30,13 +31,16 @@ export class ExperimentKimiEvidence {
   private stdoutAssistants: KimiAssistantFrame[] = [];
   private identified = new Map<number, KimiNativeCall>();
   private matchedNativeIds = new Set<string>();
+  private fifoNativeIds = new Set<string>();
+  private fifoGroups = new Map<number, Set<number>>();
   private sessionId?: string;
   private finished = false;
   private liveError?: ExperimentFailure;
   private finishError?: ExperimentFailure;
 
   constructor(private readonly relay: KimiEvidenceRelay, private readonly options: EvidenceOptions) {
-    this.parser = new KimiWireParser(relay.spec.name, () => relay.toolNames, relay.record, () => relay.toolDefinitions);
+    this.parser = new KimiWireParser(relay.spec.name, () => relay.toolNames, relay.record, () => relay.toolDefinitions,
+      experimentToolTimeoutSeconds(relay.spec) * 1000, () => relay.calls);
     this.cursor = new KimiWireCursor(options.kimiHome, (line) => this.parser.accept(line));
     this.poll();
     if (!this.liveError) { this.timer = setInterval(() => this.poll(), WIRE_POLL_MS); this.timer.unref(); }
@@ -62,7 +66,7 @@ export class ExperimentKimiEvidence {
       this.stdoutResults.set(event.tool_call_id, event.content);
     } else if (parsed.kind === "assistant") {
       for (const call of parsed.toolCalls) {
-        if (!this.parser.names().has(call.name)) throw new ExperimentFailure(Code.UnknownTool, "Kimi stdout called a tool outside the experiment set");
+        this.parser.assertToolAllowed(call.name);
         if (this.stdoutCalls.has(call.callId)) throw new ExperimentFailure(Code.Protocol, "Duplicate Kimi stdout assistant tool call ID");
         this.stdoutCalls.set(call.callId, { name: call.name, input: call.input });
       }
@@ -99,36 +103,54 @@ export class ExperimentKimiEvidence {
   private matchCall(call: ExperimentRelayCall): KimiNativeCall | undefined {
     const identified = this.identified.get(call.relay_index);
     if (identified) return identified;
-    if (this.relay.calls.some((other) => other !== call &&
-        (other.call_id === undefined || other.result === undefined) &&
-        call.name === other.name && isDeepStrictEqual(call.input, other.input))) {
-      throw new ExperimentFailure(Code.CallIdUnresolved,
-        "Kimi cannot carry identical concurrent calls because its MCP requests have no native call ID");
+    for (const earlier of this.relay.calls) {
+      if (earlier.relay_index >= call.relay_index) break;
+      if (!this.identified.has(earlier.relay_index) && call.name === earlier.name && isDeepStrictEqual(call.input, earlier.input) && !this.matchCall(earlier)) return undefined;
     }
-    const matches = this.parser.calls.filter((candidate) => !this.matchedNativeIds.has(candidate.callId) &&
+    const matches = this.parser.calls.filter((candidate) => !candidate.modelToolError && !this.matchedNativeIds.has(candidate.callId) &&
       call.name === candidate.name && isDeepStrictEqual(call.input, candidate.input));
-    if (matches.length > 1) throw new ExperimentFailure(Code.CallIdUnresolved,
-      "Kimi cannot carry identical concurrent calls because its MCP requests have no native call ID");
+    const peers = this.relay.calls.filter((other) => other !== call &&
+      (other.call_id === undefined || other.result === undefined) && call.name === other.name && isDeepStrictEqual(call.input, other.input));
+    if (matches.length > 1 || peers.length > 0) {
+      matches.forEach((native) => this.fifoNativeIds.add(native.callId));
+      peers.filter((peer) => !this.identified.has(peer.relay_index)).forEach((peer) => { peer.correlation = "fifo"; });
+      call.correlation = "fifo";
+    }
     const native = matches[0];
     if (native) {
-      this.relay.record("tool_call_identified", { relay_index: call.relay_index, call_id: native.callId, name: call.name, input: call.input });
+      call.correlation = call.correlation === "fifo" || this.fifoNativeIds.has(native.callId) ? "fifo" : "exact";
+      if (call.correlation === "fifo") this.groupFifoCalls(call, peers);
+      this.relay.record("tool_call_identified", { relay_index: call.relay_index, call_id: native.callId, name: call.name, input: call.input,
+        correlation: call.correlation });
       this.identified.set(call.relay_index, native);
       this.matchedNativeIds.add(native.callId);
     }
     return native;
   }
 
-  private poll(): void {
+  private groupFifoCalls(call: ExperimentRelayCall, peers: ExperimentRelayCall[]): void {
+    const group = new Set<number>();
+    for (const peer of [call, ...peers.filter((candidate) => candidate.correlation === "fifo")]) {
+      group.add(peer.relay_index);
+      for (const index of this.fifoGroups.get(peer.relay_index) ?? []) group.add(index);
+    }
+    for (const index of group) this.fifoGroups.set(index, group);
+  }
+
+  private poll(notifyFailure = true): void {
     if (this.finished || this.liveError) return;
     try { this.cursor.poll(); }
     catch (error) {
       this.liveError = experimentFailure(error);
       if (this.timer) clearInterval(this.timer);
       this.timer = undefined;
-      this.options.onFailure?.(this.liveError);
+      if (notifyFailure) this.options.onFailure?.(this.liveError);
     }
     for (const notify of [...this.waiters]) notify();
   }
+
+  refresh(notifyFailure = true): void { this.poll(notifyFailure); }
+  get failureError(): ExperimentFailure | undefined { return this.liveError ?? this.finishError; }
 
   finish(path?: string, options?: { timedOut?: boolean }): void {
     if (this.finished) { if (this.finishError ?? this.liveError) throw this.finishError ?? this.liveError; return; }
@@ -162,10 +184,20 @@ export class ExperimentKimiEvidence {
     if (!isDeepStrictEqual(this.stdoutAssistants, this.parser.assistantFrames())) {
       throw new ExperimentFailure(Code.Protocol, "Kimi stdout assistant text and calls do not match the same wire steps");
     }
-    if (this.parser.calls.length !== this.relay.calls.length || this.stdoutResults.size !== this.relay.calls.length) {
+    for (const call of this.parser.calls.filter((native) => native.modelToolError)) {
+      if (!call.result || call.content === undefined || !this.stdoutResults.has(call.callId)) {
+        throw new ExperimentFailure(Code.HarnessLogMissing, `Missing Kimi model or stdout unknown-tool error for ${call.callId}`);
+      }
+      if (this.stdoutResults.get(call.callId) !== call.result.output || !isDeepStrictEqual(kimiOutputParts(call.result.output), call.wireContent) ||
+          !isDeepStrictEqual(kimiWithoutHeader(call.content, call.header ?? null), kimiStatusParts([{ type: "text", text: call.result.output }], true))) {
+        throw new ExperimentFailure(Code.ResultChanged, `Kimi unknown-tool error changed between loop, model, and stdout for ${call.callId}`);
+      }
+    }
+    if (this.parser.calls.filter((native) => !native.modelToolError).length !== this.relay.calls.length || this.stdoutResults.size !== this.parser.calls.length) {
       throw new ExperimentFailure(Code.HarnessLogMissing, "Kimi wire, stdout, and relay call counts do not agree");
     }
     let changed = false;
+    const usedResults = new Set<number>();
     for (const [index, call] of this.relay.calls.entries()) {
       const native = this.matchCall(call);
       if (call.relay_index !== index || !native || call.name !== native.name || !isDeepStrictEqual(call.input, native.input) || (call.call_id !== undefined && call.call_id !== native.callId)) {
@@ -175,16 +207,26 @@ export class ExperimentKimiEvidence {
       if (!native.result || native.content === undefined || !this.stdoutResults.has(native.callId)) {
         throw new ExperimentFailure(Code.HarnessLogMissing, `Missing Kimi delivery, model, or stdout evidence for ${native.callId}`);
       }
-      const expected = kimiContentParts(call.result.content, native.qualified);
-      const stdout = typeof native.result.output === "string" ? native.result.output : JSON.stringify(native.result.output);
-      const equal = isDeepStrictEqual(kimiWithoutHeader(native.content, native.header ?? null), kimiStatusParts(expected, call.result.isError === true)) &&
-        isDeepStrictEqual(expected, native.wireContent) && isDeepStrictEqual(kimiOutputParts(native.result.output), native.wireContent) &&
-        stdout === this.stdoutResults.get(native.callId) && (call.result.isError === true) === (native.result.isError === true);
+      const group = call.correlation === "fifo" ? this.fifoGroups.get(call.relay_index) : undefined;
+      const candidates = this.relay.calls.filter((peer) => (group ? group.has(peer.relay_index) : peer === call) && !usedResults.has(peer.relay_index));
+      const source = candidates.find((peer) => this.resultMatches(native, peer.result)) ?? candidates[0];
+      const equal = source !== undefined && this.resultMatches(native, source.result);
+      if (source) usedResults.add(source.relay_index);
       this.relay.record("result_comparison", { call_id: native.callId, relay_index: index, equal,
+        ...(group ? { server_relay_index: source?.relay_index ?? null } : {}),
         harness_prefix: "kimi-wall-time", header: native.header ?? null });
       changed ||= !equal;
     }
     if (changed) throw new ExperimentFailure(Code.ResultChanged, "Kimi model, loop, or stdout result changed or truncated the experiment server result");
+  }
+
+  private resultMatches(native: KimiNativeCall, result: unknown): boolean {
+    assertKimiResult(result);
+    const expected = kimiContentParts(result.content, native.qualified);
+    const stdout = typeof native.result!.output === "string" ? native.result!.output : JSON.stringify(native.result!.output);
+    return isDeepStrictEqual(kimiWithoutHeader(native.content!, native.header ?? null), kimiStatusParts(expected, result.isError === true)) &&
+      isDeepStrictEqual(expected, native.wireContent) && isDeepStrictEqual(kimiOutputParts(native.result!.output), native.wireContent) &&
+      stdout === this.stdoutResults.get(native.callId) && (result.isError === true) === (native.result!.isError === true);
   }
 
   stop(message = "interrupted before verification"): void {

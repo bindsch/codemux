@@ -197,6 +197,18 @@ ${mode === "exit" ? "" : "setInterval(() => {}, 1000);"}`;
 });
 
 describe("Kimi hermetic adapter", () => {
+  test.each(["KIMI_MCP_TOOL_TIMEOUT_MS", "KIMI_MCP_STARTUP_TIMEOUT_MS"])("private argv removes inherited %s", (name) => {
+    const f = fixture();
+    const context = f.adapter.prepareRun(f.request);
+    try {
+      const argv = f.adapter.buildRunCommand(f.request, context);
+      const position = argv.indexOf(name);
+      expect(position).toBeGreaterThan(0);
+      expect(argv[position - 1]).toBe("-u");
+      expect(position).toBeLessThan(argv.indexOf(`HOME=${context.kimiHermeticHome!.home}`));
+    } finally { f.adapter.cleanupRunSync(context); f.cleanup(); }
+  });
+
   test.each([undefined, "none"] as const)("prepared argv and environment with tools %s", (tools) => {
     const f = fixture();
     const request = { ...f.request, tools, resultJson: true };

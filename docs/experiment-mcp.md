@@ -1,16 +1,8 @@
 # Experiment MCP
 
-`run --experiment-mcp <spec.json>` connects one experiment-owned stdio MCP
-server with `-a claude`, `-a zai`, `-a codex`, or `-a kimi`. It requires `--hermetic
---tools none --auto read-only`, scode, and no Playwright MCP. Claude and
-Z.AI use Claude Code's SDK control bridge. Codex and Kimi use a loopback HTTP
-relay. Codex and Kimi require explicit result-header opt-ins. Other adapters refuse before
-reading the spec or starting a model.
+`run --experiment-mcp <spec.json>` connects one experiment-owned stdio MCP server with `-a claude`, `-a zai`, `-a codex`, or `-a kimi`. It requires `--hermetic --tools none --auto read-only`, scode, and no Playwright MCP. Claude and Z.AI use Claude Code's SDK control bridge. Codex and Kimi use a loopback HTTP relay and require explicit result-header opt-ins. Other adapters refuse before reading the spec or starting a model.
 
-The server runs **outside scode** with only the environment names in the spec.
-Its command and arguments are operator-controlled. The harness remains inside
-read-only scode. Hermetic mode excludes operator-configured MCP integrations;
-this explicitly requested server is the exception.
+The server runs **outside scode** with only the environment names in the spec. Its command and arguments are operator-controlled. The harness remains inside read-only scode. Hermetic mode excludes operator-configured MCP integrations; this explicitly requested server is the exception.
 
 ## Specification
 
@@ -24,19 +16,14 @@ exactly these supported fields. Unknown properties, including `control`, fail.
 | `args` | Yes | Array of strings without NUL; may be empty |
 | `env` | Yes | Array of unique names matching `[A-Za-z_][A-Za-z0-9_]*`; every named variable must be set |
 | `recording` | No | Nonempty directory path without NUL; relative to the spec's directory; existing non-directory rejected |
+| `tool_timeout_seconds` | No | Positive integer, default 7200, maximum 86400; private Codex and Kimi tool-call timeout |
 | `accept_harness_prefix` | No | Array of unique strings: `"codex-wall-time"` and `"kimi-wall-time"`. Each harness requires its own value; ignored on Claude/Z.AI |
 
-The command must be a trusted regular executable owned by the user or root,
-not group/world writable, and outside the execution cwd. No shell is inserted.
-Claude and Z.AI prompts must fit a 1 MiB serialized control frame, including
-escaping and wrapper. Codex uses a 16 MiB stdin limit; Kimi uses a 32 KiB argv bound.
+The command must be a trusted regular executable owned by the user or root, not group/world writable, and outside the execution cwd. No shell is inserted. Claude and Z.AI prompts must fit a 1 MiB serialized control frame, including escaping and wrapper. Codex uses a 16 MiB stdin limit; Kimi uses a 32 KiB argv bound.
 
 ## Runnable fixture example
 
-The repository ships a sanitized server at
-[`tests/fixtures/experiment-mcp.ts`](../tests/fixtures/experiment-mcp.ts).
-Its `bash` tool returns a fixed marker and executes no command. The fixture
-also supports intentional failure cases for tests; use the prompt below.
+The repository ships a sanitized server at [`tests/fixtures/experiment-mcp.ts`](../tests/fixtures/experiment-mcp.ts). Its `bash` tool returns a fixed marker and executes no command. With `command: "hold:<milliseconds>"`, it waits for that duration, up to 3600000 ms, then returns the marker. The fixture also supports intentional failure cases for tests; use the prompt below.
 
 From the checkout, these commands write a specification with actual absolute
 paths. Shell `~` expands in shell expressions; JSON does not expand it.
@@ -56,25 +43,17 @@ codemux run -a claude --hermetic --tools none --auto read-only \
   --result-json
 ```
 
-This last command is a real model request and consumes quota. A trusted Bun
-installation outside the checkout is required. Server code is supplied as
-an explicit argument; the experiment operator is responsible for that code.
-The recording directory above resolves to `scratch/recordings/`.
+This last command is a real model request and consumes quota. A trusted Bun installation outside the checkout is required. Server code is supplied as an explicit argument; the experiment operator is responsible for that code. The recording directory above resolves to `scratch/recordings/`.
 
-For Codex, add `"accept_harness_prefix": ["codex-wall-time"]` to the spec
-and select `-a codex -m <cached-model-slug>` using the cache described below. For Kimi, add
-`"accept_harness_prefix": ["kimi-wall-time"]` and select `-a kimi`.
-Omitting the harness's prefix refuses the run before launch. Unknown prefixes,
-duplicate entries, and non-array values fail spec validation. Codex requires
-CLI 0.165.0 or later; Claude/Z.AI require Claude Code 2.1.280 or later.
-Kimi requires Code 2.3.2 or later and a clean working directory as described
-in [isolation](isolation.md).
+For Codex, add `"accept_harness_prefix": ["codex-wall-time"]` to the spec and select `-a codex -m <cached-model-slug>` using the cache described below. For Kimi, add `"accept_harness_prefix": ["kimi-wall-time"]` and select `-a kimi`.
+
+Omitting the harness's prefix refuses the run before launch. Unknown prefixes, duplicate entries, and non-array values fail spec validation. Codex requires CLI 0.165.0 or later; Claude/Z.AI require Claude Code 2.1.280 or later. Kimi requires Code 2.3.2 or later and a clean working directory as described in [isolation](isolation.md).
 
 ## Protocol and recordings
 
 The server speaks newline-delimited JSON-RPC 2.0. Responses must match pending
 request IDs (strings or safe integers) and contain exactly one of result/error.
-The transport permits at most 64 pending requests. Request/response and Claude
+The transport permits at most 256 pending requests, including held calls. Request/response and Claude
 control frames are limited to 1 MiB. This prompt bound applies only to Claude and Z.AI. Codex retains its 16 MiB stdin prompt limit; Kimi retains its 32 KiB argv bound. A server notification with method
 `notifications/tools/list_changed` and no `id` is recorded as
 `server_notification`. The bridge rechecks the full paginated `tools/list`
@@ -114,6 +93,10 @@ or incorrect authorization gets 401; GET and DELETE get 405; a body over
 HTTP 200 and `application/json`. Valid notifications get HTTP 202 with no body. A `tools/call` notification lacks a required request ID, so it gets HTTP 400 and fails with `protocol` before dispatch. Non-object `arguments`, including explicit null, also get HTTP 400 and `protocol` before dispatch. Omitted arguments become `{}` in both native correlation and the forwarded request. The Claude bridge applies the same argument rules.
 Malformed authenticated JSON or JSON-RPC envelopes also return HTTP 400 and fail the run with `protocol`.
 HTTP 413 headers are flushed immediately; rejected uploads drain only until the original 30-second request deadline. HTTP 408 closes without another drain period.
+The 30-second deadline covers request-body receipt only. The relay sets `requestTimeout = 0`, `timeout = 0`, `headersTimeout = 120000`, and `keepAliveTimeout = 86400000`. A regression test checks the running server object for `requestTimeout === 0`, `timeout === 0`, and `keepAliveTimeout >= 86400000`. `ExperimentServer.request()` has no pending-request deadline. The private tool timeout and the run's `--timeout` remain configured bounds; the harness or host can terminate a hold earlier.
+
+On October 29, 2026, Bun 1.4.4 answered a four-second delayed response with `requestTimeout = 2000`, and 15-second and 70-second delayed responses with `requestTimeout = 0`. These observations do not explain the Kimi cutoff near 300 seconds. A Kimi or host limit is suspected. The live `hold:400000` probe remains pending; no new live probe was run for this change.
+
 Inventory validation and definition rechecks use the same rules as Claude.
 The relay records `http_request` with method, path, token match, and base64
 body bytes, and `http_response` with status and base64 body bytes. Accepted
@@ -167,9 +150,9 @@ With no searchable deferred tools, the builder omits tool search (`codex-rs/core
 
 Each experiment declaration must match the relay description (absent means `""`) and set `strict: false`. Its `parameters` must be a recursive subset of the original relay `inputSchema`: retained keys, indices, and values stay at the same paths; only object keys and array suffix entries may be omitted. Additions, changed values, or shifted indices fail with `inventory_mismatch`. Each declaration records omitted JSON Pointer paths in `catalog_pruned_paths`. Codemux does not reproduce Codex schema lowering, pruning, compaction, or byte budgets. See the [catalog contract and direct-renderer source](experiment-codex-catalog.md#built-in-declarations).
 
-The exact Codex 0.165.0 built-in declarations accepted by `CODEX_BUILTIN_DECLARATIONS` are `functions.list_mcp_resources`, `functions.list_mcp_resource_templates`, `functions.read_mcp_resource`, `functions.request_user_input`, `functions.request_user_input_async`, `functions.apply_patch`, `clock.curr_time`, `clock.sleep`, `collaboration.followup_task`, `collaboration.interrupt_agent`, `collaboration.list_agents`, `collaboration.send_message`, `collaboration.spawn_agent`, and `collaboration.wait_agent`. `apply_patch` has type `custom`; the others have type `function`. Catalog records mark them `builtin`. Every other declaration outside the experiment inventory fails with `inventory_mismatch`. Calling any built-in still fails with `unknown_tool`. See the [source references for each declaration](experiment-codex-catalog.md#built-in-declarations).
+The exact Codex 0.165.0 built-in declarations accepted by `CODEX_BUILTIN_DECLARATIONS` are `functions.list_mcp_resources`, `functions.list_mcp_resource_templates`, `functions.read_mcp_resource`, `functions.request_user_input`, `functions.request_user_input_async`, `functions.apply_patch`, `clock.curr_time`, `clock.sleep`, `collaboration.followup_task`, `collaboration.interrupt_agent`, `collaboration.list_agents`, `collaboration.send_message`, `collaboration.spawn_agent`, and `collaboration.wait_agent`. `apply_patch` has type `custom`; the others have type `function`. Catalog records mark them `builtin`. Every other declaration outside the experiment inventory fails with `inventory_mismatch`. Built-in calls fail with `unknown_tool` even if undeclared or paired with an unsupported-call error. The restricted set covers the Codex 0.165.0 shell, core utility, collaboration, web, image, and code execution tools. See the [built-in names and source references](experiment-codex-catalog.md#built-in-declarations).
 
-A refused `exec` call fails with `code_mode` for either `function_call` or `custom_tool_call`; an inventory function named `exec` remains allowed.
+A refused `exec` call fails with `unknown_tool` for either `function_call` or `custom_tool_call`; an inventory function named `exec` remains allowed.
 An override run also fails with `code_mode` if Codex has not fetched the catalog before call ID resolution and dispatch, including requests with `_meta.callId`.
 
 The preserved October 29, 2026 `gpt-6-astra` probe completed direct experiment delivery. Replay verifies its saved rollout, relay result, and exec completion after the catalog fix. No new live probe was run. See [Codex catalog and delivery details](experiment-codex-catalog.md) for nonce authentication, recording fields, rollout evidence, and exact header comparison.
@@ -194,7 +177,7 @@ The generated entry has this shape; the URL and token are unique per run:
 {"mcpServers":{"experiment":{
   "url":"http://127.0.0.1:<port>/mcp",
   "headers":{"Authorization":"Bearer <per-run-token>"},
-  "startupTimeoutMs":120000,"toolTimeoutMs":600000
+  "startupTimeoutMs":120000,"toolTimeoutMs":7200000
 }}}
 ```
 
@@ -206,16 +189,19 @@ tools-none run still uses `tools: []` and exposes no tools. The wire log's
 call is dispatched. Kimi 2.3.2 preserves each description, using an empty string when absent,
 and maps `inputSchema` unchanged to `parameters`. Changed metadata fails with `inventory_mismatch`.
 Source: `mcpCore/client-shared.ts:68-73`, `mcpCore/connection-manager.ts:509-512`, and `agent/mcp/tools/mcp.ts:37-39` under `packages/agent-core-v2/src/` in Kimi 2.3.2.
-A built-in or foreign MCP tool fails the run.
+A built-in call fails the run. An unknown name with Kimi's own error result follows the `model_tool_error` rule below.
+Codex writes `tool_timeout_seconds` as `tool_timeout_sec` and keeps `startup_timeout_sec = 120`. Kimi writes seconds multiplied by 1000 to both `mcp.json`'s `toolTimeoutMs` and private `config.toml`'s `[mcp] tool_timeout_ms`. In Kimi 2.3.2, `app/mcpConfig/configSection.ts:9-12` defines the global setting, `mcpCore/connection-manager.ts:444-445` chooses server `toolTimeoutMs` over that default, and `mcpCore/client-http.ts:113-114` passes the selected `toolCallTimeoutMs` to the SDK. These paths are under `packages/agent-core-v2/src/`.
+Both Codex and Kimi record the effective integer in `run_start.tool_timeout_seconds`, including the default 7200. Hermetic Kimi launches use `env -u` to remove `KIMI_MCP_TOOL_TIMEOUT_MS` and `KIMI_MCP_STARTUP_TIMEOUT_MS`, so the private configuration supplies these settings.
+Kimi's tool executor catches an MCP timeout and emits an error tool result; the turn can continue and print a resume hint. A turn that ends in error throws before printing that hint. Wire `tool.result` timeout errors or timeout-bearing error steps fail with `server_error` and `kimi tool call timed out after N ms`, before a missing-hint or closed-stdout diagnostic. A server exit triggers shutdown immediately. Before recording its failure, Codemux waits for Kimi to exit and polls the wire log every 25 ms until its size stays unchanged for 100 ms, bounded at one second. A late native timeout takes precedence over the generic server-exit message. An earlier unrelated failure retains precedence. Source: `agent/toolExecutor/toolExecutorService.ts:539-552` and `apps/kimi-code/src/cli/v2/run-v2-print.ts:356,652-656,770-773` in Kimi 2.3.2.
 
 Kimi qualifies tools as `mcp__<server>__<tool>`, replacing characters outside `[A-Za-z0-9_-]` with `_` and collapsing underscore runs within each part (`mcpCore/tool-naming.ts`). Codex replaces every character outside `[A-Za-z0-9_]` in the qualified name with `_`, preserving underscore runs (`codex-mcp/src/mcp/mod.rs:601`).
 The shared inventory validator checks both sanitizers for every harness before exposing tools, including collisions across pages. Thus `foo__bar` / `foo_bar` collide under Kimi, while `foo-bar` / `foo_bar` collide under Codex. Both fail with `inventory_mismatch`.
 Codemux matches each harness's qualified name and records the server's bare name. Kimi's profile pattern and evidence parser share the same sanitizer, which collapses every underscore run. The shared 64-character namespaced bound keeps experiment names below Kimi's hash-shortening threshold.
 
 Codemux tails the private session's `wire.jsonl` every 250 ms during the run.
-Each `tools/call` waits up to five seconds for a unique unmatched native `tool.call`
+Each `tools/call` waits up to five seconds for an unmatched native `tool.call`
 with the same qualified name and deeply equal arguments. HTTP arrival order may differ.
-Kimi cannot carry identical concurrent calls. Multiple pending identical requests or matching native calls fail with `call_id_unresolved` before dispatch, even when native records arrive in separate polls. Claude and Codex carry native IDs and are unaffected.
+Kimi matches identical pending calls FIFO: the earliest unmatched native call wins. Their `tool_call` and `tool_call_identified` records carry `correlation: "fifo"`; unambiguous matches carry `correlation: "exact"`. Correlation describes ambiguity at identification; a later identical call does not rewrite an earlier exact record. Kimi requests have no native ID, so concurrent ambiguous calls form a FIFO group. Each delivery must match one server result in that group, using each result once. Separate groups cannot share results. An exact call must match its own result. `result_comparison.server_relay_index` identifies the matched server result for FIFO groups. Claude and Codex retain native-ID correlation.
 The forwarded request carries its native `toolCallId` as
 `params._meta["codemux/callId"]`. Unresolved calls fail before server dispatch.
 The first `tool.call` emits a turn. Content-first turns retain the first `content.part` timestamp
@@ -402,14 +388,9 @@ Failed saves and other changed strings still fail. Plain matches have no
 
 ### Shared recordings
 
-Recordings are mode 0600 JSONL files under the codemux state directory's
-`experiments/<run-id>.jsonl`, or the chosen recording directory.
-Each record has `run_id`, monotonic `seq`, `kind`, and kind-specific fields.
-Raw server stdin/stdout/stderr records use `bytes_base64`; control frames,
-rollout or wire-log evidence, inventories, tool calls, server results, model-bound
-results, comparisons, failures, and the terminal `run_end` are separate records.
-They can contain prompts and tool content. They are not the prompt-free
-[call ledger](results-and-usage.md).
+Recordings are mode 0600 JSONL files under the codemux state directory's `experiments/<run-id>.jsonl`, or the chosen recording directory. Each record has `run_id`, monotonic `seq`, `kind`, and kind-specific fields.
+
+Raw server stdin/stdout/stderr records use `bytes_base64`; control frames, rollout or wire-log evidence, inventories, tool calls, server results, model-bound results, `call_ledger`, comparisons, failures, and the terminal `run_end` are separate records. They can contain prompts and tool content. They are not the prompt-free [call ledger](results-and-usage.md).
 
 The recording budget is 256 MiB, with failure/end records allowed afterward. A failed record write truncates the file to its previous length before rethrowing, so later records cannot append to a partial JSON fragment. Codex and Kimi use the runner's actual timeout state, tolerate only missing final usage, preserve unterminated stdout bytes in `harness_stdout_partial` without parsing them, and retain exit 124. Completed catalogs, results, and native call correlations are still checked. Ordinary completed runs with missing usage fail with `harness_log_missing`. Recordings survive cleanup. `CODEMUX_CALL_LOG=off` disables only the ledger, not evidence recordings. A relocated ledger changes the default recording state directory. `--result-json` reports the path as `codemux.recording`.
 
@@ -426,7 +407,14 @@ Usage = {"input":int,"output":int,"cache_read":int,"cache_write":int}
 {"run_id":…,"seq":…,"kind":"turn_usage","message_id":str,"usage":Usage,"t":float}
 {"run_id":…,"seq":…,"kind":"turn_call","message_id":str,"call_id":str,"name":str,"t":float}
 {"run_id":…,"seq":…,"kind":"tool_result_delivered","call_id":str,"t":float}
+{"run_id":…,"seq":…,"kind":"call_ledger","relay_request_seq":int|str,"native_call_id":str|null,"dispatched_t":float,"delivered_t":float,"correlation":"exact"|"fifo"|"request_meta","rpc_id":int|str,"result_sha256":str}
 ```
+
+`call_ledger` records one delivered server call with exactly seven fields beyond `run_id`, `seq`, and `kind`. `relay_request_seq` is the zero-based `tools/call` ordinal for Codex/Kimi, or the string control-request ID for Claude/Z.AI. `rpc_id` is the harness's JSON-RPC request ID. Request identity remains independent of native attribution: `native_call_id` is a string or null, and `correlation` records `exact`, `fifo`, or `request_meta` attribution. Codex, Claude, and Z.AI can use request metadata. HTTP calls currently require native resolution before dispatch; the schema permits null.
+
+`dispatched_t` is captured before forwarding to the server. `delivered_t` is captured on HTTP response `finish`, or after writing the Claude control response. Both are Unix epoch seconds as floats. This records transport delivery; `tool_result_delivered` records separate model-context evidence. `run_end.calls_delivered` counts emitted `call_ledger` records.
+
+`result_sha256` is the lowercase hexadecimal SHA256 of canonical JSON for the server's `result.content`, encoded as UTF-8. Recursively sort object keys in JavaScript UTF-16 code-unit order, preserve array order, and use JSON serialization for strings and primitives. Match `mcp_request` by both `rpc_id` and `relay_request_seq`; match `server_tool_result` by `relay_request_seq` and `result_sha256`. These server-result records gain both fields and retain existing `relay_index` or `tool_use_id` fields where applicable.
 
 `turn` appears once per model response as soon as its native identity is available. `usage` is the counter object or null if usage is not yet known. Usage separates uncached input, output, cache reads, and cache writes; Codex uncached input is `max(0, input_tokens - cached_input_tokens - cache_write_input_tokens)`, with absent cache writes treated as zero. `turn_usage` appears exactly once per turn when usage is known, even when the turn already contains it. Its `t` is the usage event's timestamp. Missing, duplicate, or conflicting turn usage fails consistency verification with `harness_log_missing` when detected or at turn end. An exact repeated Codex snapshot after completion is a retry marker as described below.
 
@@ -442,6 +430,7 @@ Kimi uses the stable native step UUID as `message_id`. The first `tool.call` emi
 receipt of Claude's user frame or the timestamp of Codex's rollout
 `function_call_output`, or Kimi's `tool.result` loop event. `t` is Unix epoch
 seconds as a float. Claude uses codemux's receipt clock; Codex and Kimi use their native log timestamps. These records do not establish when a provider processed the result.
+Codex and Kimi record `model_tool_error` with `{call_id, name, input, harness_output}` when an unknown native name receives the harness's own missing-tool error. `harness_output` preserves Codex's rollout output or Kimi's loop error output. The call never reaches the experiment server. Declared built-ins and restricted built-in names still fail closed. Missing or inconsistent error evidence fails verification. `run_end.model_tool_errors` counts these records; an otherwise verified run reports `failure_code: null`.
 
 ### Failure codes
 
@@ -459,14 +448,14 @@ codemux: experiment failure [<code>]: <message>
 |---|---|
 | `call_id_unresolved` | A call could not be matched to its native harness call ID before dispatch. |
 | `result_changed` | The model-bound result differs from the accepted server result. |
-| `unknown_tool` | The harness called a tool outside the validated experiment inventory. |
+| `unknown_tool` | A restricted built-in was called, or an unknown call lacked its verified harness error. |
 | `model_required` | A Codex experiment omitted explicit `-m`. |
 | `model_unavailable` | The account's Codex catalog lacks the requested slug. The diagnostic names its cache path, `fetched_at`, and listed slugs; Codex itself cannot run that model for this account. |
-| `code_mode` | Codex catalog evidence is unusable, a catalog override cannot coexist with an active provider override, an override exceeds its cap or was not fetched before the first function call, or the rollout calls a refused `exec` through `function_call` or `custom_tool_call`. |
+| `code_mode` | Codex catalog evidence is unusable, a catalog override cannot coexist with an active provider override, or an override exceeds its cap or was not fetched before the first function call. |
 | `inventory_mismatch` | The advertised inventory or a later definition recheck differs from the validated inventory. |
 | `harness_log_missing` | Required harness log evidence is missing, unreadable, incomplete, or invalid. |
 | `message_id_missing` | A required native response identity is absent or malformed: Claude and Z.AI require a valid assistant `message.id` when present; Codex requires a message item ID or function-call item ID; Kimi requires a stable native step UUID. |
-| `server_error` | The experiment server failed or returned a JSON-RPC error. |
+| `server_error` | The experiment server failed or returned a JSON-RPC error, or native Kimi evidence identified a tool-call timeout. |
 | `unsupported_result` | The server returned a result shape the harness path cannot preserve. |
 | `protocol` | Other malformed, duplicate, incomplete, or inconsistent protocol evidence was observed. |
 

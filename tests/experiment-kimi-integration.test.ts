@@ -52,7 +52,7 @@ test.each([true, false])("Kimi experiment writes one private authenticated endpo
   expect(statSync(configPath).mode & 0o777).toBe(0o600);
   expect(JSON.parse(readFileSync(configPath, "utf8"))).toEqual({ mcpServers: { exp__test: {
     url: experiment.relay.url, headers: { Authorization: `Bearer ${experiment.relay.token}` },
-    startupTimeoutMs: 120000, toolTimeoutMs: 600000,
+    startupTimeoutMs: 120000, toolTimeoutMs: 7200000,
   } } });
   const agent = readFileSync(context.kimiHermeticHome!.agentFile, "utf8");
   expect(agent).toContain('tools: ["mcp__exp_test__*"]');

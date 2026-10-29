@@ -139,7 +139,7 @@ test.each([true, false])("Codex experiment lifecycle verifies a synthetic rollou
   expect(statSync(configPath).mode & 0o777).toBe(0o600);
   expect(config.mcp_servers.experiment).toEqual({ url: experiment.relay.url,
     http_headers: { Authorization: `Bearer ${experiment.relay.token}` }, required: true,
-    startup_timeout_sec: 120, tool_timeout_sec: 600, omit_tools_from: ["deferred", "code_mode"] });
+    startup_timeout_sec: 120, tool_timeout_sec: 7200, omit_tools_from: ["deferred", "code_mode"] });
   expect(config.model_providers).toBeUndefined();
   const command = adapter.buildRunCommand(request, context);
   expect(command).not.toContain("--ephemeral");
@@ -178,7 +178,7 @@ test.each(["gpt-5.5", "gpt-6-astra"])("%s keeps the experiment tools direct and 
   const text = readFileSync(join(context.hermeticHome!.codexHome, "config.toml"), "utf8");
   const table = ["[mcp_servers.experiment]", `url = ${JSON.stringify(experiment.relay.url)}`,
     `http_headers = { Authorization = ${JSON.stringify(`Bearer ${experiment.relay.token}`)} }`,
-    "required = true", "startup_timeout_sec = 120", "tool_timeout_sec = 600",
+    "required = true", "startup_timeout_sec = 120", "tool_timeout_sec = 7200",
     'omit_tools_from = ["deferred", "code_mode"]'].join("\n");
   expect(text).toContain(table);
   expect((Bun.TOML.parse(text) as any).mcp_servers.experiment.omit_tools_from).toEqual(["deferred", "code_mode"]);

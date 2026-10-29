@@ -2,8 +2,31 @@ import { existsSync, renameSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { assertTrustedDirectory } from "./hermetic-home.js";
+import { readUtf8FileBounded } from "./file-io.js";
+import { kimiTomlValue } from "./kimi-hermetic.js";
+import { experimentToolTimeoutSeconds } from "./experiment-mcp.js";
 import { sanitizeKimiToolNamePart } from "./experiment-kimi-tool-names.js";
 import type { ExperimentHttpRelay } from "./experiment-relay.js";
+
+const MAX_CONFIG_BYTES = 1024 * 1024;
+
+function writeKimiToolTimeout(kimiHome: string, milliseconds: number): void {
+  const path = join(kimiHome, "config.toml");
+  const source = existsSync(path)
+    ? readUtf8FileBounded(path, { maxBytes: MAX_CONFIG_BYTES, label: "private Kimi config" }) : "";
+  const config = Bun.TOML.parse(source) as Record<string, unknown>;
+  const mcp = config.mcp;
+  if (mcp !== undefined && (!mcp || typeof mcp !== "object" || Array.isArray(mcp))) {
+    throw new Error("private Kimi config requires an MCP timeout table");
+  }
+  const root = Object.entries(config).filter(([key]) => key !== "mcp")
+    .map(([key, value]) => `${JSON.stringify(key)} = ${kimiTomlValue(value)}\n`).join("");
+  const table = Object.entries({ ...mcp as Record<string, unknown>, tool_timeout_ms: milliseconds })
+    .map(([key, value]) => `${JSON.stringify(key)} = ${kimiTomlValue(value)}\n`).join("");
+  const temporary = join(kimiHome, `config.${randomBytes(8).toString("hex")}.toml`);
+  writeFileSync(temporary, `${root}\n[mcp]\n${table}`, { flag: "wx", mode: 0o600 });
+  renameSync(temporary, path);
+}
 
 /** Kimi 2.3.2 only applies wildcard entries to MCP tools; built-ins use exact names. */
 export function kimiExperimentToolPattern(serverName: string): string {
@@ -15,10 +38,12 @@ export function writeKimiExperimentConfig(relay: ExperimentHttpRelay, kimiHome: 
   assertTrustedDirectory(kimiHome);
   const path = join(kimiHome, "mcp.json");
   if (existsSync(path)) throw new Error(`Kimi experiment refuses an existing MCP config: ${path}`);
+  const milliseconds = experimentToolTimeoutSeconds(relay.spec) * 1000;
+  writeKimiToolTimeout(kimiHome, milliseconds);
   const temporary = join(kimiHome, `mcp.${randomBytes(8).toString("hex")}.json`);
   const config = { mcpServers: { [relay.spec.name]: {
     url: relay.url, headers: { Authorization: `Bearer ${relay.token}` },
-    startupTimeoutMs: 120_000, toolTimeoutMs: 600_000,
+    startupTimeoutMs: 120_000, toolTimeoutMs: milliseconds,
   } } };
   writeFileSync(temporary, JSON.stringify(config) + "\n", { flag: "wx", mode: 0o600 });
   renameSync(temporary, path);

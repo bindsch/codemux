@@ -7,7 +7,7 @@ import { ExperimentFailure, ExperimentFailureCode, experimentFailure } from "./e
 export type JsonObject = Record<string, any>;
 export type ExperimentRecord = (kind: string, fields: JsonObject) => void;
 export const MAX_EXPERIMENT_MESSAGE_BYTES = 1024 * 1024;
-const MAX_PENDING_REQUESTS = 64;
+const MAX_PENDING_REQUESTS = 256;
 
 /** A single experiment-owned stdio process, outside the harness sandbox.
  * No shell, ambient environment, sampling, or elicitation is supplied.

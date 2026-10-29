@@ -40,10 +40,12 @@ experiment server table, beside its relay URL and bearer header:
 
 ```toml
 [mcp_servers.<name>]
+startup_timeout_sec = 120
+tool_timeout_sec = 7200
 omit_tools_from = ["deferred", "code_mode"]
 ```
 
-`run_start.omit_tools_from` records the same list. The setting leaves only
+`tool_timeout_sec` uses the spec's optional `tool_timeout_seconds` (positive integer, default 7200, maximum 86400). Startup stays at 120 seconds. Held calls wait for the experiment server within that tool deadline; the run's `--timeout` is the only other bound. `run_start.omit_tools_from` records the same list. The setting leaves only
 `direct`, which places the experiment tools in the model's initial tool list.
 The requested entry keeps `supports_search_tool`; `catalog_override.removed`
 remains `["tool_mode"]`.
@@ -132,13 +134,33 @@ source references are registrations in Codex `rust-v0.165.0`, inspected at
 | `collaboration.spawn_agent` | `function` | 1472-1504 |
 | `collaboration.wait_agent` | `function` | 1525-1534 |
 
-This exception permits declarations only. Calling any listed built-in
-still fails with `unknown_tool`; only experiment tools may be called. The
+This exception permits declarations only. Calling any declared built-in
+still fails with `unknown_tool`. Unknown native names can follow the verified harness-error rule below. The
 declaration set does not allow other tools in `functions`, `clock`, or
 `collaboration`. Replay of a byte-identical preserved rollout verifies its
 catalog, two turns, two usage records, and experiment call/output. Adding
 a foreign declaration fails with `inventory_mismatch`. This replay does
 not establish a new live delivery result.
+
+Calls use a broader restricted set than declarations. Every built-in below fails with `unknown_tool`, even if undeclared and followed by its own unsupported-call error. Experiment inventory calls keep their qualified MCP names and remain allowed. Sources below are from Codex `rust-v0.165.0` (`360319d8dee62d87e2d59fc0c21805d79519cfed`), relative to `codex-rs/`.
+
+| Restricted names | Registration and name sources |
+|---|---|
+| `exec_command`, `write_stdin` | `core/src/tools/spec_plan.rs:1242-1272`; `core/src/tools/handlers/unified_exec/exec_command.rs:110-112`, `write_stdin.rs:47-49`. |
+| `list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource` | `core/src/tools/spec_plan.rs:1276-1289`; `core/src/tools/handlers/mcp_resource_spec.rs:26,55,84`. |
+| `update_plan` (also `plan`), `wait_for_environment`, `request_user_input`, `request_user_input_async`, `send_message_to_user_async`, `request_permissions`, `new_context`, `get_context_remaining` | `core/src/tools/spec_plan.rs:1294-1378`; names in `core/src/tools/handlers/plan_spec.rs:43`, `wait_for_environment.rs:19`, `request_user_input_spec.rs:9`, `request_user_input_async.rs:22`, `send_message_to_user_async.rs:21`, `request_permissions.rs:33-35`, `new_context_window_spec.rs:8`, `get_context_remaining_spec.rs:10`. |
+| `clock.curr_time`, `clock.sleep`, `list_available_plugins_to_install`, `request_plugin_install`, `apply_patch`, `test_sync_tool`, `view_image` | `core/src/tools/spec_plan.rs:1381-1450`; handler names in `current_time.rs:24-25,53-54`, `sleep.rs:26-27,66-67`, `list_available_plugins_to_install_spec.rs:32`, `request_plugin_install_spec.rs:102,161`, `apply_patch_spec.rs:19`, `test_sync_spec.rs:59`, `view_image.rs:73-75`, under `core/src/tools/handlers/`. |
+| `spawn_agent`, `send_input`, `resume_agent`, `close_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, `list_agents` | `core/src/tools/spec_plan.rs:1455-1582`; `core/src/tools/handlers/multi_agents_spec.rs:14,89-92,190-193,272-275,289-292,343-346`; `core/src/tools/multi_agent_tool.rs:68-74` applies configured namespaces such as `collaboration`. |
+| `tool_search`, `tool_search_tool`, `exec`, `wait` | `core/src/tools/spec_plan.rs:1093-1102,1621-1637`; `tools/src/tool_discovery.rs:6`; `core/src/tools/tool_namespaces_info.rs:16,39-41,63-66`; `code-mode-protocol/src/lib.rs:54-55`. |
+| `web_search`, `web.run`, `image_gen.imagegen` | `core/src/tools/spec_plan.rs:701-717,787-795,1650-1659`; `tools/src/tool_spec.rs:39-40,64`; `ext/web-search/src/tool.rs:41-42,54-56`; `ext/image-generation/src/lib.rs:8-9`, `ext/image-generation/src/tool.rs:127-130`. |
+| `get_goal`, `create_goal`, `update_goal`, `multi_env_copy_file` | `app-server/src/extensions.rs:73-134` installs native contributors; `ext/goal/src/spec.rs:9-11`, `ext/goal/src/extension.rs:555-609`; `ext/multi-env-copy-file/src/tool.rs:21,42-44`. |
+| `create_channel`, `get_channels`, `list_threads`, `search_posts`, `read_thread`, `read_post`, `subscribe`, `unsubscribe`, `post` | `ext/agent-message-board/src/extension.rs:129-136` selects the nine `DISCUSSION` tools at `message-board/src/tools/selection.rs:23-45`. The optional library action `append` is not registered. |
+| `history.list_windows`, `history.list_items`, `history.read_item`, `history.search_contents`, `notes.list_files_by_prefix`, `notes.read_file`, `notes.search_contents`, `notes.append_to_file`, `notes.write_file` | `ext/history-notes/src/tools.rs:28-29,48-84`. |
+| `memories.add_ad_hoc_note`, `memories.list`, `memories.read`, `memories.search` | `ext/memories/src/lib.rs:18-22`; `ext/memories/src/tools/mod.rs:55-56`. |
+| `skills.list`, `skills.read`, `skills.installations` | `ext/skills/src/tools/mod.rs:53,83-94,342-343`; `ext/skills/src/tools/list.rs:31`, `read.rs:38`, `installations.rs:31`. |
+| `user_message.search_messages`, `user_message.read_messages` | `core/src/mcp_tool_call/conversation_history.rs:38-64,92-110` defines the fixed Guardian wrappers. |
+
+Browser and computer actor calls are also blocked in `node_repl` and `cua_repl` namespaces, including their `mcp__` and flat aliases. `protocol/src/mcp.rs:41-64` defines those spellings. `plugin/src/bundled_hooks.rs:65-97` connects the browser and computer plugins to these MCP servers. The public source has no core handler registrations for those feature names. Qualified native names remain distinct from invented names such as `invented.sleep`. Native extension executors enter the model router at `core/src/tools/spec_plan.rs:350-365,1640-1664`. Queue and agent runtime extensions add no model tools.
 
 `tests/experiment-codex-native-replay.test.ts` repeats both checks using
 `tests/fixtures/experiment-codex-native-excerpt.json`. That excerpt keeps
@@ -276,13 +298,11 @@ request metadata, dispatch waits up to five seconds for the matching rollout
 `function_call` in arrival order, without waiting for usage. The ID is attached to the
 forwarded request as `params._meta["codemux/callId"]`. An unresolved call fails
 with `call_id_unresolved` and never reaches the server. Missing, duplicate,
-malformed, or unmatched evidence fails the run. Every function call must
-belong to the experiment inventory, so `update_plan` and `apply_patch` fail too.
+malformed, or unmatched evidence fails the run. Built-ins such as `update_plan`, `apply_patch`, and MCP resource tools fail even if undeclared. Declared optional built-ins also fail.
 
 Experiment flags disable `code_mode` and `code_mode_host`. A refused `exec`
-fails with `code_mode` for either `function_call` or `custom_tool_call`.
-An inventory function named `exec` remains allowed. Other foreign function
-or custom tools fail with `unknown_tool`. Diagnostics name the tool. The
+fails with `unknown_tool` for either `function_call` or `custom_tool_call`.
+An inventory function named `exec` remains allowed. A hallucinated function or custom tool with its matching native `unsupported call: <name>` or `unsupported custom tool call: <name>` output records `model_tool_error` with `call_id`, qualified `name`, `input`, and exact `harness_output`. Codex's source emits these errors at `core/src/tools/registry.rs:1049-1054`. Such calls do not reach the experiment server or affect native-ID correlation. `run_end.model_tool_errors` counts them; an otherwise verified run reports `failure_code: null`. Missing or inconsistent error evidence and built-in calls still fail with `unknown_tool`. The
 earlier October 29, 2026 probe established the custom `exec` call form.
 The 01:41 probe above fetched the override but called tool search.
 The 01:58 probe called the experiment tool directly, then failed waiting for
