@@ -62,7 +62,7 @@ test.each([
     if (resultJson) {
       const envelope = JSON.parse(result.stdout);
       expect(envelope.result).toBe("retained reply");
-      expect(envelope.events).toEqual(events);
+      expect(envelope.events).toEqual(events.filter((event) => event.type !== "item.completed"));
       expect(envelope.codemux).toMatchObject({ agent: "codex", model: "selected-model",
         recording: sink.recordingPath, failure_code: "protocol" });
     } else expect(result.stdout).toBe(prefix[0]?.type === "thread.started" ? "retained reply\n" : "");

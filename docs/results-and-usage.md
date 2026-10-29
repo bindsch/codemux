@@ -44,7 +44,8 @@ The recording includes raw evidence and normalized `turn`, `turn_usage`,
 `seq`, and `kind`; usage objects have `input`, `output`, `cache_read`, and `cache_write`.
 Every turn in a complete recording has exactly one usage record. Interrupted or
 timed-out recordings can omit usage records because final usage verification is
-skipped. Every call has a call record, including calls already listed in the
+skipped. Claude, Z.AI, Codex, and Kimi skip final usage verification on timeout.
+The timeout exit remains 124. Every call has a call record, including calls already listed in the
 initial turn. Later streaming frames can add calls.
 `codemux.failure_code` is `string | null`. It contains the experiment's
 stable failure code, or null for success and non-experiment runs. The same

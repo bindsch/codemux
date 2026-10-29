@@ -109,6 +109,8 @@ export interface RunResult {
   success: boolean;
   /** Set only when the runner exceeds its stdout or stderr capture bound. */
   captureLimitExceeded?: true;
+  /** Set only when the runner's timeout timer fires, including after stdout EOF. */
+  timedOut?: true;
   // The model's answer when the harness's stdout is a transcript around it
   // (aider's banner, summaries and cost lines), extracted by
   // processRunResult from the run's own record while the run context is

@@ -216,10 +216,11 @@ emits exactly one `turn_usage`; final verification requires one per turn.
 Each `token_usage_record.response_id` belongs to one pending response.
 Overlapping distinct response IDs, repeated response IDs, and conflicting
 counters between the response record and its `token_count` fail with
-`harness_log_missing`. A snapshot that exactly
-repeats the last completed response's native counters records `harness_retry`
-with that `response_id`, without another turn or usage record, even when a
-response is pending. That response keeps waiting for its own counters. A
+`harness_log_missing`. A new response ID or advanced cumulative totals means a
+new response, even with equal per-response counters. A snapshot for the same
+completed response with equal counters and unchanged cumulative totals records
+`harness_retry` with that `response_id`, without another turn or usage record.
+A pending response with different counters keeps waiting for its own snapshot. A
 conflicting idle snapshot still fails. Rate-limit-only events with `info: null`
 carry no usage.
 

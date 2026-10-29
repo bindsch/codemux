@@ -304,6 +304,7 @@ export async function runCapturedCommand(
           : stderrResult.value ?? "",
       exitCode: timedOut ? TIMEOUT_EXIT_CODE : signaled ? SIGNAL_EXIT_CODE : exitCode,
       success: !timedOut && !signaled && exitCode === 0,
+      ...(timedOut ? { timedOut: true as const } : {}),
     };
     if (timedOut) {
       firstError = new CapturedRunFailure(`agent timed out after ${timeoutMs}ms`);

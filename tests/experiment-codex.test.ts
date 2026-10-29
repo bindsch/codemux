@@ -5,8 +5,8 @@ import { ExperimentCodexEvidence, type CodexEvidenceRelay } from "../src/experim
 import { CodexRolloutParser } from "../src/experiment-codex-parser.js";
 import { ExperimentFailureCode } from "../src/experiment-records.js";
 import { ExperimentCodexRun } from "../src/experiment-codex-run.js";
-import { MARKER } from "./fixtures/experiment-mcp.js";
-import { codexCatalog } from "./fixtures/experiment-codex.js";
+import { MARKER, respond } from "./fixtures/experiment-mcp.js";
+import { codexCatalog, codexDefinitions } from "./fixtures/experiment-codex.js";
 const THREAD = "12345678-1234-4234-8234-123456789abc";
 const HEADER = "Wall time: 0.0123 seconds\nOutput:";
 const TIME = "2026-10-29T01:02:03.125Z";
@@ -34,7 +34,7 @@ function message(id: string | undefined = "msg_1"): Entry {
 function fixture(result: Entry = RESULT) {
   const records: Entry[] = [];
   const relay: CodexEvidenceRelay = { spec: { name: "experiment", accept_harness_prefix: ["codex-wall-time"] },
-    toolNames: new Set(["lookup", "another"]), calls: [{ relay_index: 0, name: "lookup", input: INPUT, result }],
+    toolNames: new Set(["lookup", "another"]), get toolDefinitions() { return codexDefinitions([...this.toolNames]); }, calls: [{ relay_index: 0, name: "lookup", input: INPUT, result }],
     record(kind, fields) { records.push({ kind, ...fields }); } };
   const evidence = new ExperimentCodexEvidence(relay);
   evidence.accept({ type: "thread.started", thread_id: THREAD });
@@ -352,7 +352,7 @@ describe("live Codex rollout evidence", () => {
   test("emits the first native turn before outputs and usage and keeps its ID", () => {
     const records: Entry[] = [];
     const parser = new CodexRolloutParser(THREAD, "experiment", () => new Set(["lookup"]),
-      (kind, fields) => records.push({ kind, ...fields }));
+      (kind, fields) => records.push({ kind, ...fields }), () => codexDefinitions(["lookup"]));
     for (const entry of [codexCatalog(["lookup"]), call(), message("later_message"), output()]) parser.accept(entry);
     expect(kinds(records, "turn")).toEqual([{ kind: "turn", message_id: "fc_1", t: Date.parse(TIME) / 1000,
       usage: null, tool_calls: [{ call_id: "call_1", name: "lookup" }] }]);
@@ -364,7 +364,7 @@ describe("live Codex rollout evidence", () => {
       .map((entry) => entry.kind)).toEqual(["turn", "tool_result_delivered", "turn_usage"]);
   });
   test("records a growing rollout before synthetic exec exits and before relay dispatch", async () => {
-    const home = rollout([], codexCatalog(["bash"]));
+    const home = rollout([], codexCatalog((respond({ id: 1, method: "tools/list" }) as Entry).result.tools));
     const path = join(home, "sessions/2026/10/29", `rollout-2026-10-29T01-02-03-${THREAD}.jsonl`);
     const run = new ExperimentCodexRun({ name: "experiment", command: process.execPath, env: [],
       args: [resolve("tests/fixtures/experiment-mcp.ts")], recording: join(home, "recordings"),

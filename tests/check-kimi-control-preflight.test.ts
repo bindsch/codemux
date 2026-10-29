@@ -11,7 +11,7 @@ import * as kimiCanary from "../src/kimi-isolation-probe.js";
 import * as launcher from "../src/launch.js";
 import type { RunRequest } from "../src/types.js";
 
-async function checkWithPassedNames(names: string[], syntheticValidation = false, retainHome = false) {
+async function checkWithPassedNames(names: string[], syntheticValidation = false, retainHome = false, launchError?: Error) {
   const scratch = join(import.meta.dir, "../scratch");
   mkdirSync(scratch, { recursive: true });
   const home = mkdtempSync(join(scratch, "codemux-check-kimi-control-"));
@@ -25,6 +25,7 @@ async function checkWithPassedNames(names: string[], syntheticValidation = false
   const previousExit = process.exitCode;
   let cleaned = false;
   const output: string[] = [];
+  const warnings: string[] = [];
   const mocks = [
     spyOn(cliRuntime, "isScodeAvailable").mockReturnValue(true),
     spyOn(cliRuntime, "assertHarnessSupported").mockResolvedValue("2.3.2"),
@@ -37,10 +38,12 @@ async function checkWithPassedNames(names: string[], syntheticValidation = false
       } }),
     spyOn(launcher, "launchRunRequest").mockImplementation(async (selectedAdapter, request) => {
       requests.push(request);
+      if (launchError) throw launchError;
       selectedAdapter.validateRunRequest(request);
       return { exitCode: 0, success: true, stdout: request.hermetic ? "OK\n" : `${marker}\n`, stderr: "" };
     }),
     spyOn(console, "error").mockImplementation(() => {}),
+    spyOn(console, "warn").mockImplementation((message) => { warnings.push(String(message)); }),
     spyOn(process.stdout, "write").mockImplementation((chunk) => { output.push(String(chunk)); return true; }),
   ];
   if (syntheticValidation) {
@@ -57,10 +60,10 @@ async function checkWithPassedNames(names: string[], syntheticValidation = false
       await program.parseAsync(["check", "-a", "kimi", "--hermetic", "--pass-env", names.join(",")],
         { from: "user" });
     } catch (caught) { error = caught; }
-    return { error, requests, cleaned, exitCode: process.exitCode, output: output.join("") };
+    return { error, requests, cleaned, exitCode: process.exitCode, output: output.join(""), warnings };
   } finally {
     for (const mock of mocks) mock.mockRestore();
-    process.exitCode = previousExit;
+    process.exitCode = previousExit ?? 0;
     rmSync(home, { recursive: true, force: true });
   }
 }
@@ -77,7 +80,18 @@ test("Kimi paired check refuses OK when cleanup leaves its planted brand home", 
   const result = await checkWithPassedNames(["CONTROL_ENV"], false, true);
   expect(result.requests).toHaveLength(2);
   expect(result.cleaned).toBe(true);
-  expect(String(result.error)).toContain("Kimi planted brand home still exists after cleanup");
+  expect(result.error).toBeUndefined();
+  expect(result.exitCode).toBe(1);
+  expect(result.warnings).toContain("Warning: Kimi planted brand home still exists after cleanup");
+  expect(result.output).not.toContain("HERMETIC kimi: OK");
+});
+
+test("Kimi cleanup warning preserves the original launch exception", async () => {
+  const failure = new Error("synthetic original refusal");
+  const result = await checkWithPassedNames(["CONTROL_ENV"], false, true, failure);
+  expect(result.error).toBe(failure);
+  expect(result.cleaned).toBe(true);
+  expect(result.warnings).toContain("Warning: Kimi planted brand home still exists after cleanup");
   expect(result.output).not.toContain("HERMETIC kimi: OK");
 });
 

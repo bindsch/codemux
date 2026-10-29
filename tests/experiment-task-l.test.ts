@@ -9,7 +9,7 @@ import { ExperimentFailureCode as Code } from "../src/experiment-records.js";
 import { ExperimentHttpRelay } from "../src/experiment-relay.js";
 import { ExperimentServer } from "../src/experiment-server.js";
 import { cleanupPeers, peer } from "./helpers/experiment-peer.js";
-import { codexCatalog } from "./fixtures/experiment-codex.js";
+import { codexCatalog, codexDefinitions } from "./fixtures/experiment-codex.js";
 
 afterEach(cleanupPeers);
 const tool = { name: "lookup", description: "test", inputSchema: {} };
@@ -127,7 +127,7 @@ test("tools/call notifications return 400 and protocol before server dispatch", 
 });
 
 test.each(["function_call", "custom_tool_call"])("Codex refuses foreign exec with code_mode for %s", (type) => {
-  const parser = new CodexRolloutParser("thread-1", "experiment", () => new Set(["lookup"]), () => {});
+  const parser = new CodexRolloutParser("thread-1", "experiment", () => new Set(["lookup"]), () => {}, () => codexDefinitions(["lookup"]));
   parser.accept(codexCatalog(["lookup"]));
   expect(() => parser.accept({ timestamp: "2026-10-29T00:00:00.000Z", type: "response_item", payload: {
     type, namespace: "functions", name: "exec", id: "fc1", call_id: "call1", arguments: "{}", input: "{}",

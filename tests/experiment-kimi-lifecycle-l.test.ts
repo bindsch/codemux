@@ -82,6 +82,7 @@ test("Kimi stop after successful verification preserves its verified verdict", (
     { type: "context.append_loop_event", time: 1100, event: { type: "step.end", uuid: "step-1", usage: USAGE } },
     { type: "agent.message.appended", message: { message: { role: "assistant", content: [part], toolCalls: [] }, meta: { usage: USAGE } } },
   ]);
+  evidence.accept({ role: "assistant", content: part.text });
   evidence.finish(); evidence.stop(); evidence.stop(); evidence.finish();
   expect(failures).toHaveLength(0);
 });

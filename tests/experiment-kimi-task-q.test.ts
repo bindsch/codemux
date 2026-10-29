@@ -26,6 +26,10 @@ function fixture() {
     { type: "agent.message.appended", message: { message: { role: "assistant", content: [],
       toolCalls: [{ type: "function", id: "call-1", name: NAME, arguments: JSON.stringify(INPUT) }] }, meta: { usage: USAGE } } },
     { type: "agent.message.appended", message: { message: { role: "tool", toolCallId: "call-1", content: [{ type: "text", text: "answer" }] } } },
+    loop({ type: "content.part", stepUuid: "step-2", part: { type: "text", text: "answer" } }),
+    loop({ type: "step.end", uuid: "step-2", usage: USAGE }),
+    { type: "agent.message.appended", message: { message: { role: "assistant", content: [{ type: "text", text: "answer" }],
+      toolCalls: [] }, meta: { usage: USAGE } } },
   ].map((event) => JSON.stringify(event)).join("\n") + "\n");
   const records: Record<string, unknown>[] = [];
   const evidence = new ExperimentKimiEvidence({ spec: { name: "experiment", accept_harness_prefix: ["kimi-wall-time"] },

@@ -8,6 +8,7 @@ export interface KimiNativeCall {
   callId: string; name: string; input: unknown; qualified: string; item: JsonObject;
   result?: JsonObject; content?: JsonObject[]; wireContent?: JsonObject[]; header?: string | null;
 }
+export interface KimiAssistantFrame { text: string; callIds: string[] }
 interface Step {
   uuid: string; calls: KimiNativeCall[]; parts: JsonObject[]; end?: JsonObject;
   turnTime?: number; usage?: ExperimentUsage; usageTime?: number; usageRecords: number;
@@ -33,6 +34,16 @@ export class KimiWireParser {
       names.set(qualified, name);
     }
     return names;
+  }
+
+  assistantFrames(): KimiAssistantFrame[] {
+    return this.completed.map((step) => ({
+      text: step.parts.filter((part) => part.type === "text").map((part) => {
+        if (typeof part.text !== "string") throw new ExperimentFailure(Code.Protocol, "Kimi assistant text part must contain a string");
+        return part.text;
+      }).join(""),
+      callIds: step.calls.map((call) => call.callId),
+    })).filter((frame) => frame.text.length > 0 || frame.callIds.length > 0);
   }
 
   accept(line: JsonObject): void {
@@ -122,8 +133,9 @@ export class KimiWireParser {
         typeof event.uuid !== "string" || !event.uuid.trim() || !kimiObject(event.args)) {
       throw new ExperimentFailure(Code.Protocol, "Duplicate or malformed Kimi tool.call");
     }
-    const call: KimiNativeCall = { callId: event.toolCallId, name, input: event.args, qualified: event.name, item: event };
     const step = this.step(event.stepUuid);
+    if (step.end) throw new ExperimentFailure(Code.Protocol, "Kimi tool.call follows step.end");
+    const call: KimiNativeCall = { callId: event.toolCallId, name, input: event.args, qualified: event.name, item: event };
     const t = timestamp(time);
     step.calls.push(call);
     this.byId.set(call.callId, call);

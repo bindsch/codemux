@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { object } from "./experiment-codex-content.js";
+import { assertCodexToolDefinition } from "./experiment-codex-catalog.js";
 import { sanitizeCodexToolName as sanitize } from "./experiment-tool-names.js";
 import { ExperimentFailure, ExperimentFailureCode as Code, turnRecord, turnUsageRecord, turnCallRecord, toolResultDeliveredRecord,
   type ExperimentRecord, type ExperimentUsage } from "./experiment-records.js";
@@ -38,7 +39,7 @@ export class CodexRolloutParser {
   readonly calls: CodexNativeCall[] = [];
   private byId = new Map<string, CodexNativeCall>();
   private pending?: PendingTurn;
-  private lastCompleted?: { responseId: string; counters: JsonObject };
+  private lastCompleted?: { responseId: string; counters: JsonObject; totals: unknown };
   private responseIds = new Set<string>();
   private turnIds = new Set<string>();
   private catalogSeen = false;
@@ -47,6 +48,7 @@ export class CodexRolloutParser {
 
   constructor(private readonly threadId: string, private readonly server: string,
     private readonly toolNames: () => ReadonlySet<string>, private readonly record: ExperimentRecord,
+    private readonly toolDefinitions: () => readonly JsonObject[] | undefined,
     private readonly beforeFunctionCall?: () => void,
     private readonly onCall?: (call: CodexNativeCall, index: number) => void) {}
 
@@ -69,15 +71,22 @@ export class CodexRolloutParser {
       this.pending.responseUsage = usage;
     }
     if (line.type === "event_msg" && payload.type === "token_count" && object(payload.info)?.last_token_usage) {
-      if (this.lastCompleted && isDeepStrictEqual(this.lastCompleted.counters, payload.info.last_token_usage)) {
-        this.record("harness_retry", { response_id: this.lastCompleted.responseId, t, item: payload });
-        return;
-      }
       const pending = this.pending;
+      const usage = normalizedUsage(payload.info.last_token_usage);
+      const newResponse = pending?.responseId !== undefined && pending.responseId !== this.lastCompleted?.responseId &&
+        pending.responseUsage !== undefined && sameUsage(pending.responseUsage, usage);
+      if (!newResponse && this.lastCompleted && isDeepStrictEqual(this.lastCompleted.counters, payload.info.last_token_usage)) {
+        if (isDeepStrictEqual(this.lastCompleted.totals, payload.info.total_token_usage)) {
+          this.record("harness_retry", { response_id: this.lastCompleted.responseId, t, item: payload });
+          return;
+        }
+        if (!cumulativeUsageAdvanced(this.lastCompleted.totals, payload.info.total_token_usage)) {
+          throw new ExperimentFailure(Code.HarnessLogMissing, "Codex token_count cumulative usage conflicts with the last completed response");
+        }
+      }
       if (!pending) {
         throw new ExperimentFailure(Code.HarnessLogMissing, "Codex token_count usage without a pending response conflicts with the last completed response");
       }
-      const usage = normalizedUsage(payload.info.last_token_usage);
       if (pending.responseUsage && !sameUsage(pending.responseUsage, usage)) {
         throw new ExperimentFailure(Code.HarnessLogMissing, `Codex token_count conflicts with response usage ${pending.responseId}`);
       }
@@ -86,7 +95,7 @@ export class CodexRolloutParser {
       this.record("turn_usage", turnUsageRecord(id, usage, t));
       this.usageRecords++;
       this.lastCompleted = pending.responseId
-        ? { responseId: pending.responseId, counters: payload.info.last_token_usage } : undefined;
+        ? { responseId: pending.responseId, counters: payload.info.last_token_usage, totals: payload.info.total_token_usage } : undefined;
       this.pending = undefined;
     }
     if (line.type !== "response_item") return;
@@ -168,6 +177,7 @@ export class CodexRolloutParser {
           const key = builtin ? identity : name!;
           if (seen.has(key)) throw new ExperimentFailure(Code.InventoryMismatch,
             `Codex additional_tools repeats a declaration: ${key}`);
+          if (!builtin) assertCodexToolDefinition(tool!, name!, this.toolDefinitions());
           seen.add(key);
         }
       }
@@ -236,6 +246,18 @@ export class CodexRolloutParser {
     }
     throw new ExperimentFailure(Code.UnknownTool, `Codex called a tool outside the experiment set: ${qualified}`);
   }
+}
+
+function cumulativeUsageAdvanced(previous: unknown, current: unknown): boolean {
+  const before = object(previous);
+  const after = object(current);
+  if (!before || !after || !Object.keys(before).length) return false;
+  let advanced = false;
+  for (const [key, value] of Object.entries(before)) {
+    if (!Number.isSafeInteger(value) || !Number.isSafeInteger(after[key]) || after[key] < value) return false;
+    advanced ||= after[key] > value;
+  }
+  return advanced;
 }
 
 function sameUsage(left: ExperimentUsage, right: ExperimentUsage): boolean {

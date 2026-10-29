@@ -1,10 +1,7 @@
 /**
- * Driver e2e tests for the codex app-server session (design §4.7): the
- * real CodexSessionDriver over the scenario-driven fake app-server
- * (tests/fixtures/live/fake-codex-app-server.ts), whose wire shapes come
- * from the step-0 fixture. Every round-trip is live: the handshake, turn
- * submission and queueing, steering, interrupts, approval decisions and
- * their ceiling, usage accumulation, and the three tiers' end paths.
+ * Shared helpers for the Codex app-server session tests.
+ * Start the real CodexSessionDriver with the scenario-driven fake server,
+ * read its records, and wait for observable session state.
  */
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";

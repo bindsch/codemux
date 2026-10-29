@@ -12,7 +12,7 @@ import { experimentFailedResult } from "../src/result-envelope/experiment.js";
 import type { RunRequest, RunResult } from "../src/types.js";
 import { AGY_SUCCESS_ENVELOPE, CLAUDE_ENVELOPE, CODEX_EVENTS, finished } from "./helpers/result-envelope.js";
 import { cleanupPeers, peer } from "./helpers/experiment-peer.js";
-import { codexCatalog } from "./fixtures/experiment-codex.js";
+import { codexCatalog, codexDefinitions } from "./fixtures/experiment-codex.js";
 
 afterEach(cleanupPeers);
 test.each([false, true])("Claude synchronous exit records one failure before run_end; priorFailure=%s", async (priorFailure) => {
@@ -39,7 +39,7 @@ test.each([undefined, null, [], "missing", {}, { input_tokens: 5 }, { output_tok
 });
 
 test("Codex refuses repeated native turn IDs instead of emitting ambiguous usage", () => {
-  const parser = new CodexRolloutParser("thread-test", "experiment", () => new Set(["bash"]), () => {});
+  const parser = new CodexRolloutParser("thread-test", "experiment", () => new Set(["bash"]), () => {}, () => []);
   const line = (type: string, payload: object) => ({ timestamp: "2026-10-29T01:58:00.000Z", type, payload });
   const message = line("response_item", { type: "message", role: "assistant", id: "same", content: [] });
   parser.accept(message);
@@ -62,7 +62,7 @@ test.each([
 ])("Codex search call %j reports an exposure policy change with unknown_tool", ({ type, name, namespace }) => {
   const observed: Record<string, unknown>[] = [];
   const parser = new CodexRolloutParser("thread-test", "experiment", () => new Set(["bash"]),
-    (kind, fields) => { observed.push({ kind, ...fields }); });
+    (kind, fields) => { observed.push({ kind, ...fields }); }, () => codexDefinitions(["bash"]));
   parser.accept(codexCatalog(["bash"]));
   observed.length = 0;
   const qualified = namespace ? `${namespace}.${name}` : type;

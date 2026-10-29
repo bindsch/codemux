@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { CodexRolloutParser } from "../src/experiment-codex-parser.js";
 import type { JsonObject } from "../src/experiment-server.js";
+import { codexDefinitions } from "./fixtures/experiment-codex.js";
 
 const TIME = "2026-10-29T00:00:00Z";
 const USAGE = { input_tokens: 4, cached_input_tokens: 1, output_tokens: 2 };
@@ -34,7 +35,7 @@ function count(usage = USAGE): JsonObject {
 function fixture() {
   const records: JsonObject[] = [];
   const parser = new CodexRolloutParser("thread", "experiment", () => new Set(["lookup"]),
-    (kind, fields) => records.push({ kind, ...fields }));
+    (kind, fields) => records.push({ kind, ...fields }), () => codexDefinitions(["lookup"]));
   return { parser, records };
 }
 function rejectsUsage(entries: JsonObject[]): void {
@@ -49,7 +50,8 @@ describe("Codex observed built-in catalog declarations", () => {
   test.each(BUILTINS)("accepts declaration but rejects call of %s.%s:%s", (namespace, type, name) => {
     const { parser, records } = fixture();
     const payload = { type: "additional_tools", tools: [{ type: "namespace", name: namespace,
-      tools: [{ type, name }] }, { type: "namespace", name: "mcp__experiment", tools: [{ type: "function", name: "lookup" }] }] };
+      tools: [{ type, name }] }, { type: "namespace", name: "mcp__experiment", tools: [{ type: "function", name: "lookup",
+        description: "", parameters: { type: "object", properties: {} } }] }] };
     expect(() => parser.accept(line("response_item", payload))).not.toThrow();
     expect(records).toEqual([{ kind: "harness_tool_catalog", tools: payload.tools, item: payload,
       declarations: [{ namespace, type, name, classification: "builtin" },

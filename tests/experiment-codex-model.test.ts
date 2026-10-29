@@ -6,7 +6,7 @@ import { codexCatalogProviderTable } from "../src/experiment-codex-config.js";
 import { codexExperimentModel } from "../src/experiment-codex-model.js";
 import { CodexRolloutParser } from "../src/experiment-codex-parser.js";
 import type { RunRequest } from "../src/types.js";
-import { codexCatalog } from "./fixtures/experiment-codex.js";
+import { codexCatalog, codexDefinitions } from "./fixtures/experiment-codex.js";
 
 const MAX_CATALOG_BYTES = 1024 * 1024;
 const MAX_CACHE_BYTES = 2 * MAX_CATALOG_BYTES;
@@ -263,7 +263,7 @@ test("experiment flags disable configurable code mode without changing ordinary 
 test.each(["custom_tool_call", "function_call"])("classifies outside exec as code_mode for %s", (type) => {
   const records: Record<string, unknown>[] = [];
   const parser = new CodexRolloutParser("thread", "experiment", () => new Set(["bash"]),
-    (kind, fields) => { records.push({ kind, ...fields }); });
+    (kind, fields) => { records.push({ kind, ...fields }); }, () => codexDefinitions(["bash"]));
   parser.accept(codexCatalog(["bash"])); records.length = 0;
   expectFailure(() => parser.accept({ timestamp: "2026-10-29T01:02:03Z", type: "response_item",
     payload: { type, id: "outside", call_id: "native-exec", name: "exec", arguments: "{}", input: "text(ALL_TOOLS)" } }), "code_mode", "exec");
@@ -271,7 +271,7 @@ test.each(["custom_tool_call", "function_call"])("classifies outside exec as cod
 });
 
 test.each(["custom_tool_call", "function_call"])("names an unknown tool instead of its %s item type", (type) => {
-  const parser = new CodexRolloutParser("thread", "experiment", () => new Set(["bash"]), () => {});
+  const parser = new CodexRolloutParser("thread", "experiment", () => new Set(["bash"]), () => {}, () => codexDefinitions(["bash"]));
   parser.accept(codexCatalog(["bash"]));
   expectFailure(() => parser.accept({ timestamp: "2026-10-29T01:02:03Z", type: "response_item", payload: {
     type, id: "outside", call_id: "native-foreign", name: "foreign_tool", namespace: "functions",
@@ -279,7 +279,7 @@ test.each(["custom_tool_call", "function_call"])("names an unknown tool instead 
 });
 
 test("an experiment tool named exec remains an allowed direct function call", () => {
-  const parser = new CodexRolloutParser("thread", "experiment", () => new Set(["exec"]), () => {});
+  const parser = new CodexRolloutParser("thread", "experiment", () => new Set(["exec"]), () => {}, () => codexDefinitions(["exec"]));
   parser.accept(codexCatalog(["exec"]));
   expect(() => parser.accept({ timestamp: "2026-10-29T01:02:03Z", type: "response_item", payload: {
     type: "function_call", id: "experiment-exec", call_id: "native-exec", namespace: "mcp__experiment",

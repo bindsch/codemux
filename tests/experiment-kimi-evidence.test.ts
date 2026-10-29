@@ -172,8 +172,10 @@ describe("Kimi experiment evidence", () => {
       const ids = await Promise.all(run.relay.calls.map((entry) => run.evidence.resolveCallId(entry)));
       expect(ids).toEqual(["call-2", "call-1"]);
       run.relay.calls.forEach((entry, index) => { entry.call_id = ids[index]; });
-      run.evidence.accept(kimiAssistantCall("call-1", QUALIFIED, INPUT));
-      run.evidence.accept(kimiAssistantCall("call-2", qualified, input));
+      run.evidence.accept({ role: "assistant", tool_calls: [
+        ...kimiAssistantCall("call-1", QUALIFIED, INPUT).tool_calls,
+        ...kimiAssistantCall("call-2", qualified, input).tool_calls,
+      ] });
       run.evidence.accept({ role: "tool", tool_call_id: "call-2", content: output });
       run.evidence.accept({ role: "tool", tool_call_id: "call-1", content: "answer\n" });
       run.evidence.finish();
@@ -208,7 +210,8 @@ describe("Kimi experiment evidence", () => {
     const run = fixture([]); run.relay.calls = [];
     writeFileSync(run.path, [inventory(), ...parts.map((part) => loop("content.part", { stepUuid: "step-final", part })),
       end("step-final"), assistant({ content: parts, toolCalls: [] })].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
-    try { run.evidence.finish(); expect(kinds(run.records, "turn")[0]).toMatchObject({ message_id: "step-final", tool_calls: [] }); }
+    try { run.evidence.accept({ role: "assistant", content: "finished" }); run.evidence.finish();
+      expect(kinds(run.records, "turn")[0]).toMatchObject({ message_id: "step-final", tool_calls: [] }); }
     finally { run.evidence.stop(); }
   });
   test("resolving the same call again emits one native identification", async () => {

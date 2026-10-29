@@ -5,7 +5,7 @@ import { ExperimentCodexEvidence, type CodexEvidenceRelay } from "../src/experim
 import { ExperimentFailureCode } from "../src/experiment-records.js";
 import { ExperimentHttpRelay, type ExperimentRelayCall } from "../src/experiment-relay.js";
 import { ExperimentServer, type JsonObject } from "../src/experiment-server.js";
-import { codexCatalog } from "./fixtures/experiment-codex.js";
+import { codexCatalog, codexDefinitions } from "./fixtures/experiment-codex.js";
 
 const THREAD = "12345678-1234-4234-8234-123456789abc";
 const TIME = "2026-10-29T01:02:03.125Z";
@@ -60,7 +60,7 @@ test.each([
   const request = spyOn(ExperimentServer.prototype, "request").mockImplementation(async (message) => {
     if (message.method === "tools/call") dispatches++;
     return { jsonrpc: "2.0", id: message.id, result: message.method === "tools/list"
-      ? { tools: [{ name: "lookup" }] } : { content: CONTENT } };
+      ? { tools: codexDefinitions(["lookup"]) } : { content: CONTENT } };
   });
   const relay = new ExperimentHttpRelay({ name: "experiment", command: process.execPath, env: [],
     args: [], recording: join(cwd, "records") }, cwd, {}, { catalog: { body: '{"models":[]}' } });
@@ -96,7 +96,7 @@ test("Codex metadata correlates parallel HTTP arrivals in reverse rollout order"
   const request = spyOn(ExperimentServer.prototype, "request").mockImplementation(async (message) => {
     if (message.params?.arguments?.value === "second") await Bun.sleep(20);
     return { jsonrpc: "2.0", id: message.id, result: message.method === "tools/list"
-      ? { tools: [{ name: "lookup" }] } : { content: [{ type: "text", text: message.params.arguments.value }] } };
+      ? { tools: codexDefinitions(["lookup"]) } : { content: [{ type: "text", text: message.params.arguments.value }] } };
   });
   const relay = new ExperimentHttpRelay({ name: "experiment", command: process.execPath, env: [],
     accept_harness_prefix: ["codex-wall-time"], recording: join(cwd, "records"),
@@ -144,7 +144,7 @@ function identicalCalls(): ExperimentRelayCall[] {
 
 function evidenceFor(calls: ExperimentRelayCall[]) {
   const relay: CodexEvidenceRelay = { spec: { name: "experiment", accept_harness_prefix: ["codex-wall-time"] },
-    toolNames: new Set(["lookup"]), calls, record() {} };
+    toolNames: new Set(["lookup"]), toolDefinitions: codexDefinitions(["lookup"]), calls, record() {} };
   const evidence = new ExperimentCodexEvidence(relay);
   evidence.accept({ type: "thread.started", thread_id: THREAD });
   return evidence;
@@ -155,7 +155,7 @@ test.each(["tool reported failure", { message: "tool reported failure" }])(
     const calls = identicalCalls();
     const records: JsonObject[] = [];
     const evidence = new ExperimentCodexEvidence({ spec: { name: "experiment", accept_harness_prefix: ["codex-wall-time"] },
-      toolNames: new Set(["lookup"]), calls, record: (kind, fields) => { records.push({ kind, ...fields }); } });
+      toolNames: new Set(["lookup"]), toolDefinitions: codexDefinitions(["lookup"]), calls, record: (kind, fields) => { records.push({ kind, ...fields }); } });
     evidence.accept({ type: "thread.started", thread_id: THREAD });
     complete(evidence, calls[0]!);
     complete(evidence, calls[1]!, { error });

@@ -192,7 +192,11 @@ export class ExperimentHttpRelay {
       }
       const message = parseMessage(body.bytes);
       const reply = await this.forward(message);
-      this.respond(response, reply === undefined ? 202 : 200, reply === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(reply)));
+      const bytes = reply === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(reply));
+      if (bytes.length > MAX_EXPERIMENT_MESSAGE_BYTES) {
+        throw new ExperimentFailure(ExperimentFailureCode.Protocol, "experiment MCP HTTP response exceeds 1 MiB");
+      }
+      this.respond(response, reply === undefined ? 202 : 200, bytes);
       if (reply?.error !== undefined) {
         const detail = typeof reply.error?.message === "string" ? `: ${reply.error.message}` : "";
         this.fail(new ExperimentFailure(ExperimentFailureCode.ServerError, `experiment MCP ${message.method} returned a JSON-RPC error${detail}`));

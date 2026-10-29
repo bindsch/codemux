@@ -7,7 +7,7 @@ import { launchRunRequest } from "../src/launch.js";
 import * as runtime from "../src/cli-runtime.js";
 import type { RunContext } from "../src/run-context.js";
 import type { RunRequest } from "../src/types.js";
-import { codexCatalog } from "./fixtures/experiment-codex.js";
+import { codexCatalog, codexDefinitions } from "./fixtures/experiment-codex.js";
 
 const contexts: { adapter: CodexAdapter; context: RunContext }[] = [];
 afterEach(async () => {
@@ -166,14 +166,14 @@ test.each(["direct", "code"].flatMap((model) => [null, undefined, "0.166.0"].map
   });
 
 test.each([false, true])("Codex preserves an existing mcp__ namespace prefix; flat=%s", (flat) => {
-  const parser = new CodexRolloutParser("thread", "mcp__foo", () => new Set(["lookup"]), () => {});
+  const parser = new CodexRolloutParser("thread", "mcp__foo", () => new Set(["lookup"]), () => {}, () => codexDefinitions(["lookup"]));
   parser.accept(codexCatalog(["lookup"], "mcp__foo"));
   parser.accept({ timestamp: "2026-10-29T00:00:00Z", type: "response_item", payload: {
     type: "function_call", id: "function", call_id: "call", arguments: "{}",
     ...(flat ? { name: "mcp__foo__lookup" } : { namespace: "mcp__foo", name: "lookup" }),
   } });
   expect(parser.calls).toHaveLength(1);
-  const doubled = new CodexRolloutParser("thread", "mcp__foo", () => new Set(["lookup"]), () => {});
+  const doubled = new CodexRolloutParser("thread", "mcp__foo", () => new Set(["lookup"]), () => {}, () => codexDefinitions(["lookup"]));
   doubled.accept(codexCatalog(["lookup"], "mcp__foo"));
   expect(() => doubled.accept({ timestamp: "2026-10-29T00:00:00Z", type: "response_item", payload: {
     type: "function_call", id: "function", call_id: "call", arguments: "{}",

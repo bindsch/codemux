@@ -90,7 +90,11 @@ export class ExperimentRecording {
 
   readonly record: ExperimentRecord = (kind, fields) => {
     if (this.closed) return;
-    const line = JSON.stringify({ run_id: this.runId, seq: this.sequence, kind, ...fields }) + "\n";
+    for (const key of ["run_id", "seq", "kind"]) {
+      if (Object.hasOwn(fields, key)) throw new ExperimentFailure(ExperimentFailureCode.Protocol,
+        `experiment record fields contain reserved field ${key}`);
+    }
+    const line = JSON.stringify({ ...fields, run_id: this.runId, seq: this.sequence, kind }) + "\n";
     const bytes = Buffer.from(line);
     if (this.bytes + bytes.length > MAX_RECORDING_BYTES && kind !== "failure" && kind !== "run_end") {
       throw new Error("experiment MCP recording exceeds 256 MiB");

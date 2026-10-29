@@ -24,7 +24,7 @@ function count(usage: JsonObject = USAGE, timestamp = TIME): JsonObject {
 function fixture() {
   const records: JsonObject[] = [];
   const parser = new CodexRolloutParser("thread", "experiment", () => new Set(["lookup"]),
-    (kind, fields) => records.push({ kind, ...fields }));
+    (kind, fields) => records.push({ kind, ...fields }), () => []);
   return { parser, records };
 }
 function accept(parser: CodexRolloutParser, entries: JsonObject[]): void {

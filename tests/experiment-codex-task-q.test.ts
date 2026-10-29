@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { CodexRolloutParser } from "../src/experiment-codex-parser.js";
 import type { JsonObject } from "../src/experiment-server.js";
+import { codexDefinitions } from "./fixtures/experiment-codex.js";
 
 const TIME = "2026-10-29T00:00:00Z";
 const USAGE = { input_tokens: 10, cached_input_tokens: 0, output_tokens: 2 };
@@ -16,7 +17,7 @@ function response(id: string, usage: JsonObject): JsonObject {
 function count(usage: JsonObject): JsonObject {
   return line("event_msg", { type: "token_count", info: { last_token_usage: usage } });
 }
-function fn(name: string): JsonObject { return { type: "function", name }; }
+function fn(name: string): JsonObject { return { type: "function", name, description: "", parameters: { type: "object", properties: {} } }; }
 function namespace(name: string, tools: JsonObject[]): JsonObject { return { type: "namespace", name, tools }; }
 function catalog(tools: JsonObject[]): JsonObject { return line("response_item", { type: "additional_tools", tools }); }
 function call(): JsonObject {
@@ -27,7 +28,7 @@ function fixture(names = ["lookup", "search"]) {
   const records: JsonObject[] = [];
   let beforeCalls = 0;
   const parser = new CodexRolloutParser("thread", "experiment", () => new Set(names),
-    (kind, fields) => records.push({ kind, ...fields }), () => { beforeCalls++; });
+    (kind, fields) => records.push({ kind, ...fields }), () => codexDefinitions(names), () => { beforeCalls++; });
   return { parser, records, beforeCalls: () => beforeCalls };
 }
 function accept(parser: CodexRolloutParser, entries: JsonObject[]): void {

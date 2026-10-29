@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { relative, sep } from "node:path";
 import { assertKimiResult, kimiContentParts, kimiObject, kimiOutputParts, kimiStatusParts, kimiWithoutHeader } from "./experiment-kimi-content.js";
-import { KimiWireParser, type KimiNativeCall } from "./experiment-kimi-parser.js";
+import { KimiWireParser, type KimiAssistantFrame, type KimiNativeCall } from "./experiment-kimi-parser.js";
 import { KimiWireCursor } from "./experiment-kimi-wire.js";
 import { ExperimentFailure, ExperimentFailureCode as Code, experimentFailure, type ExperimentRecord } from "./experiment-records.js";
 import type { ExperimentRelayCall } from "./experiment-relay.js";
@@ -27,6 +27,7 @@ export class ExperimentKimiEvidence {
   private waiters = new Set<() => void>();
   private stdoutResults = new Map<string, string>();
   private stdoutCalls = new Map<string, { name: string; input: unknown }>();
+  private stdoutAssistants: KimiAssistantFrame[] = [];
   private identified = new Map<number, KimiNativeCall>();
   private matchedNativeIds = new Set<string>();
   private sessionId?: string;
@@ -65,6 +66,7 @@ export class ExperimentKimiEvidence {
         if (this.stdoutCalls.has(call.callId)) throw new ExperimentFailure(Code.Protocol, "Duplicate Kimi stdout assistant tool call ID");
         this.stdoutCalls.set(call.callId, { name: call.name, input: call.input });
       }
+      this.stdoutAssistants.push({ text: parsed.text ?? "", callIds: parsed.toolCalls.map((call) => call.callId) });
     } else if (event.type === "error" || event.role === "error") {
       throw new ExperimentFailure(Code.Protocol, `Kimi stream-json reported an error: ${String(event.message ?? event.error ?? "unknown")}`);
     }
@@ -156,6 +158,9 @@ export class ExperimentKimiEvidence {
       return !stdout || stdout.name !== native.qualified || !isDeepStrictEqual(stdout.input, native.input);
     })) {
       throw new ExperimentFailure(Code.Protocol, "Kimi stdout assistant tool calls do not match wire tool.call IDs, names, and arguments");
+    }
+    if (!isDeepStrictEqual(this.stdoutAssistants, this.parser.assistantFrames())) {
+      throw new ExperimentFailure(Code.Protocol, "Kimi stdout assistant text and calls do not match the same wire steps");
     }
     if (this.parser.calls.length !== this.relay.calls.length || this.stdoutResults.size !== this.relay.calls.length) {
       throw new ExperimentFailure(Code.HarnessLogMissing, "Kimi wire, stdout, and relay call counts do not agree");

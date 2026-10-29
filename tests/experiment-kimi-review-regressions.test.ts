@@ -42,6 +42,7 @@ test.each([false, true])("Kimi provider retry without usage creates no turn; par
     loop(retry), ...completed(),
   ]);
   try {
+    evidence.accept({ role: "assistant", content: PART.text });
     evidence.finish();
     expect(records.filter((record) => record.kind === "harness_retry")).toEqual([
       { kind: "harness_retry", message_id: "failed-step", t: 1, item: retry },
@@ -64,6 +65,6 @@ test.each([
 
 test("Kimi accepts the upstream description and inputSchema-to-parameters mapping", () => {
   const { evidence } = fixture(completed());
-  try { expect(() => evidence.finish()).not.toThrow(); }
+  try { evidence.accept({ role: "assistant", content: PART.text }); expect(() => evidence.finish()).not.toThrow(); }
   finally { evidence.stop(); }
 });

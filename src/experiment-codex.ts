@@ -12,6 +12,7 @@ const CALL_ID_TIMEOUT_MS = 5000;
 export interface CodexEvidenceRelay {
   spec: { name: string; accept_harness_prefix?: string[] };
   toolNames: ReadonlySet<string>;
+  readonly toolDefinitions: readonly JsonObject[] | undefined;
   calls: ExperimentRelayCall[];
   record: ExperimentRecord;
   readonly catalogServed?: boolean;
@@ -111,7 +112,7 @@ export class ExperimentCodexEvidence {
 
   private initialize(home: string): void {
     this.parser = new CodexRolloutParser(this.threadId!, this.relay.spec.name, () => this.relay.toolNames,
-      (kind, fields) => this.relay.record(kind, fields), () => this.assertCatalog(),
+      (kind, fields) => this.relay.record(kind, fields), () => this.relay.toolDefinitions, () => this.assertCatalog(),
       (call, index) => this.verifyNativeCall(call, index));
     this.cursor = new CodexRolloutCursor(home, this.threadId!, (line) => this.parser!.accept(line));
   }

@@ -5,7 +5,7 @@ import { appendDiagnostic, emptyUsage } from "./common.js";
 import { codexResult } from "./codex.js";
 import { CodexEventReducer } from "./codex-reducer.js";
 import { parseCodexEventStream } from "./codex-stream.js";
-import { OUTPUT_LIMIT_EXIT_CODE } from "../process-runner.js";
+import { MAX_CAPTURE_BYTES, OUTPUT_LIMIT_EXIT_CODE } from "../process-runner.js";
 import { claudeFamilyPlainResult } from "../plain-unwrap.js";
 
 function envelopeObject(stdout: string): Record<string, unknown> | null {
@@ -28,7 +28,47 @@ function codexCapturedPrefix(stdout: string) {
     if (reducer.drift !== null) break;
     events.push(event);
   }
-  return { reducer, events };
+  return { reducer, events: events.filter((event) => {
+    const item = event.item as Record<string, unknown> | undefined;
+    return !(item?.type === "agent_message" && item.text === reducer.finalMessage);
+  }) };
+}
+
+const TRUNCATION_NOTE = "\n[truncated by codemux]";
+
+/** Bound the serialized envelope, including JSON escapes and the final newline. */
+function boundedCodexEnvelope(envelope: Record<string, unknown>): { stdout: string; truncated: boolean } {
+  const serialize = () => JSON.stringify(envelope) + "\n";
+  let stdout = serialize();
+  if (Buffer.byteLength(stdout) <= MAX_CAPTURE_BYTES) return { stdout, truncated: false };
+  delete envelope.events;
+  stdout = serialize();
+  if (Buffer.byteLength(stdout) <= MAX_CAPTURE_BYTES) return { stdout, truncated: false };
+  const originalResult = envelope.result;
+  envelope.result = typeof originalResult === "string" ? TRUNCATION_NOTE : originalResult;
+  const block = envelope.codemux as CodemuxResultBlock;
+  // A reroute event can put nearly the entire captured prefix in model metadata.
+  if (Buffer.byteLength(serialize()) > MAX_CAPTURE_BYTES) block.model = null;
+  envelope.result = originalResult;
+  stdout = serialize();
+  if (Buffer.byteLength(stdout) <= MAX_CAPTURE_BYTES) return { stdout, truncated: true };
+  const text = typeof envelope.result === "string" ? envelope.result : "";
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    envelope.result = text.slice(0, middle) + TRUNCATION_NOTE;
+    if (Buffer.byteLength(serialize()) <= MAX_CAPTURE_BYTES) low = middle;
+    else high = middle - 1;
+  }
+  // Avoid cutting a UTF-16 surrogate pair in the retained reply.
+  if (low > 0 && /[\uD800-\uDBFF]/.test(text[low - 1]!)) low--;
+  envelope.result = typeof originalResult === "string" ? text.slice(0, low) + TRUNCATION_NOTE : originalResult;
+  stdout = serialize();
+  // Keep even oversized caller metadata from defeating the failure-output bound.
+  if (Buffer.byteLength(stdout) > MAX_CAPTURE_BYTES) stdout = JSON.stringify({ result: null,
+    codemux: { agent: "codex", failure_code: block.failure_code, recording: null } }) + "\n";
+  return { stdout, truncated: true };
 }
 
 /** Report experiment verification failures even when capture produced no envelope. */
@@ -52,6 +92,7 @@ export function experimentFailedResult(
   let stdout = !request.resultJson && request.agent === "kimi" ? raw.reply ?? raw.stdout : raw.stdout;
   let usage = raw.usage ?? foldedUsage ?? emptyUsage();
   let servedModel = raw.servedModel ?? null;
+  let truncated = false;
   if (request.resultJson) {
     const prefix = request.agent === "codex" &&
       (raw.exitCode === OUTPUT_LIMIT_EXIT_CODE || parseCodexEventStream(raw.stdout) === null) &&
@@ -73,12 +114,16 @@ export function experimentFailedResult(
       ? { ...existing as CodemuxResultBlock, recording, failure_code: failure.code }
       : { agent: request.agent, model: servedModel ?? request.model ?? null, labels: request.labels ?? null,
           usage, session_id: null, recording, failure_code: failure.code };
-    stdout = `${JSON.stringify({ ...(existing ? envelope : { result: null }),
-      ...(partial?.sawThreadStarted ? { result: partial.finalMessage, events: prefix!.events } : {}), codemux: block })}\n`;
+    const output = { ...(existing ? envelope : { result: null }),
+      ...(partial?.sawThreadStarted ? { result: partial.finalMessage, events: prefix!.events } : {}), codemux: block };
+    ({ stdout, truncated } = request.agent === "codex" ? boundedCodexEnvelope(output) :
+      { stdout: JSON.stringify(output) + "\n", truncated: false });
+    if (block.model === null) servedModel = null;
   }
   const diagnostic = `codemux: experiment failure [${failure.code}]: ${failure.message}`;
   // Replace an intermediate normalization diagnostic with the final cleanup outcome.
-  const stderr = raw.stderr.split("\n").filter((line) => !line.startsWith(`codemux: experiment failure [${failure.code}]: `)).join("\n");
+  let stderr = raw.stderr.split("\n").filter((line) => !line.startsWith(`codemux: experiment failure [${failure.code}]: `)).join("\n");
+  if (truncated) stderr = appendDiagnostic(stderr, "codemux: result truncated to the 16 MiB capture limit");
   return { ...raw, stdout, usage, servedModel, success: false, exitCode: raw.exitCode || 1,
     stderr: appendDiagnostic(stderr, diagnostic) };
 }

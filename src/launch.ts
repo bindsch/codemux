@@ -283,7 +283,8 @@ export async function launchRunRequest(
       throw experimentFailure(new Error("experiment output exceeded the capture limit"));
     // Read Codex's fallback before verification can trigger private-home cleanup.
     if (context.experimentCodex) processed = adapter.processRunResult(raw, request, context);
-    await context.experimentCodex?.verify();
+    // Stdout EOF can precede the runner's timeout; pass the final timer outcome.
+    await context.experimentCodex?.verify({ timedOut: raw.timedOut === true });
     await context.experimentKimi?.complete();
     processed ??= adapter.processRunResult(raw, request, context);
     await cleanup();

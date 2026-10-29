@@ -228,6 +228,8 @@ export function registerCheckCommand(
 
         const kimiCanary = agentId === "kimi" ? plantKimiCanary() : null;
         const canary = kimiCanary ?? plantCanary(Boolean(options.experimentMcp));
+        let probeThrew = false;
+        let cleanupWarning = false;
         try {
           const canaryAdapter = kimiCanary?.adapter ?? adapter;
           const canaryLaunch = { ...launch, cwd: canary.cwd };
@@ -314,12 +316,18 @@ export function registerCheckCommand(
             return;
           }
           console.error(controlLine);
+        } catch (error) {
+          probeThrew = true;
+          throw error;
         } finally {
           canary.cleanup();
           if (kimiCanary && existsSync(kimiCanary.brandHome)) {
-            throw new Error("Kimi planted brand home still exists after cleanup");
+            cleanupWarning = true;
+            console.warn("Warning: Kimi planted brand home still exists after cleanup");
+            if (!probeThrew) process.exitCode ||= 1;
           }
         }
+        if (cleanupWarning) return;
         process.stdout.write(`HERMETIC ${agentId}: OK\n`);
         process.exitCode = 0;
       } catch (error) {

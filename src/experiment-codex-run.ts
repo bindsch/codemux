@@ -35,6 +35,7 @@ export class ExperimentCodexRun implements StdoutSink {
   private closePromise?: Promise<void>;
   private removeFailureListener?: () => void;
   private logCopied = false;
+  private timedOut = false;
 
   constructor(private spec: ExperimentSpec, private cwd: string, private codexHome: string,
     private resultJson: boolean, private environment: NodeJS.ProcessEnv, private prompt = "", private selection?: CodexExperimentModel,
@@ -134,6 +135,7 @@ export class ExperimentCodexRun implements StdoutSink {
   }
 
   finish(options?: { timedOut: boolean; aborted?: boolean }): string {
+    this.timedOut ||= options?.timedOut === true;
     if (!this.closed) {
       this.closed = true;
       if (this.buffer !== "" && !this.overflowed) {
@@ -155,13 +157,16 @@ export class ExperimentCodexRun implements StdoutSink {
   /** Verify only after the harness has exited and flushed its rollout. */
   complete(): Promise<void> { return this.verify(); }
 
-  verify(): Promise<void> { return this.completePromise ??= this.verifyEvidence(); }
+  verify(options?: { timedOut: boolean }): Promise<void> {
+    this.timedOut ||= options?.timedOut === true;
+    return this.completePromise ??= this.verifyEvidence();
+  }
 
   private async verifyEvidence(): Promise<void> {
     try {
       this.finish();
       this.relay.finish();
-      this.evidence.finish(this.codexHome);
+      if (!this.timedOut) this.evidence.finish(this.codexHome);
     } catch (error) {
       this.relay.fail(error instanceof Error ? error : new Error(String(error)));
     }

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { ExperimentCodexEvidence } from "../src/experiment-codex.js";
 import type { JsonObject } from "../src/experiment-server.js";
+import { respond } from "./fixtures/experiment-mcp.js";
 
 const fixture: JsonObject = JSON.parse(readFileSync(new URL("./fixtures/experiment-codex-native-excerpt.json", import.meta.url), "utf8"));
 
@@ -22,7 +23,8 @@ function replay(extraDeclaration?: JsonObject) {
   const records: JsonObject[] = [];
   const evidence = new ExperimentCodexEvidence({
     spec: { name: "experiment", accept_harness_prefix: ["codex-wall-time"] },
-    toolNames: new Set(["bash"]), calls: [structuredClone(fixture.relay_call)], catalogServed: true,
+    toolNames: new Set(["bash"]), toolDefinitions: (respond({ id: 1, method: "tools/list" }) as JsonObject).result.tools,
+    calls: [structuredClone(fixture.relay_call)], catalogServed: true,
     record: (kind, fields) => records.push({ kind, ...fields }),
   }, { catalogRequired: true });
   evidence.accept({ type: "thread.started", thread_id: thread });

@@ -9,7 +9,8 @@ type Entry = JsonObject & { kind: string };
 function fixture(server = "experiment", names = ["lookup"]) {
   const records: Entry[] = [];
   const parser = new CodexRolloutParser("thread", server, () => new Set(names),
-    (kind, fields) => records.push({ kind, ...fields }));
+    (kind, fields) => records.push({ kind, ...fields }), () => names.map((name) => ({ name,
+      description: "Lookup", inputSchema: { type: "object", properties: {}, additionalProperties: false } })));
   return { parser, records };
 }
 

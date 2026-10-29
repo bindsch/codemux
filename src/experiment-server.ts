@@ -18,6 +18,7 @@ export class ExperimentServer {
   private buffer = Buffer.alloc(0);
   private closed = false;
   private readers: Promise<void>[] = [];
+  private exited?: Promise<void>;
   private closing?: Promise<void>;
   private drainDeadline = 0;
   private abandoned = false;
@@ -47,8 +48,11 @@ export class ExperimentServer {
     this.readers = [this.read(proc.stdout as ReadableStream<Uint8Array>, "server_stdout"),
       this.read(proc.stderr as ReadableStream<Uint8Array>, "server_stderr")];
     this.record("server_spawn", { pid: proc.pid });
-    void proc.exited.then((code) => {
-      if (!this.closed) this.fail(new ExperimentFailure(ExperimentFailureCode.ServerError, `experiment MCP server exited unexpectedly (${code})`));
+    this.exited = proc.exited.then((code) => {
+      // Natural exits remain failures during cleanup; only our SIGKILL is expected.
+      if (!this.closed || proc.signalCode !== "SIGKILL") {
+        this.fail(new ExperimentFailure(ExperimentFailureCode.ServerError, `experiment MCP server exited unexpectedly (${code})`));
+      }
     });
   }
 
@@ -114,7 +118,10 @@ export class ExperimentServer {
         }
         if (this.buffer.length >= MAX_EXPERIMENT_MESSAGE_BYTES) throw new Error("experiment MCP response exceeds 1 MiB");
       }
-      if (!this.closed && kind === "server_stdout") throw new ExperimentFailure(ExperimentFailureCode.ServerError, "experiment MCP stdout closed before run completion");
+      if (kind === "server_stdout") {
+        this.validatePartial();
+        if (!this.closed) throw new ExperimentFailure(ExperimentFailureCode.ServerError, "experiment MCP stdout closed before run completion");
+      }
     } catch (error) {
       if (!this.abandoned) this.fail(experimentFailure(error));
     } finally {
@@ -133,6 +140,9 @@ export class ExperimentServer {
 
   terminate(): void {
     if (this.closed) return;
+    if (typeof this.proc?.exitCode === "number" || typeof this.proc?.signalCode === "string") {
+      this.fail(new ExperimentFailure(ExperimentFailureCode.ServerError, "experiment MCP server exited before termination"));
+    }
     this.closed = true;
     this.drainDeadline = performance.now() + FORCE_KILL_DELAY_MS + PIPE_GIVE_UP_MS;
     // Kill the tree even after the leader exits: background commands belong
@@ -148,9 +158,11 @@ export class ExperimentServer {
     this.terminate();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const drained = Promise.allSettled(this.readers);
+    // Readers can finish before the queued exit callback records a failure.
+    const finished = Promise.allSettled([drained, this.exited]);
     try {
       const complete = await Promise.race([
-        drained.then(() => true),
+        finished.then(() => true),
         new Promise<boolean>((resolve) => {
           timer = setTimeout(() => resolve(false), Math.max(0, this.drainDeadline - performance.now()));
         }),
@@ -159,7 +171,7 @@ export class ExperimentServer {
         this.abandoned = true;
         this.giveUp();
         await drained;
-        this.fail(new ExperimentFailure(ExperimentFailureCode.ServerError, "experiment MCP server kept output pipes open after termination; readers abandoned"));
+        this.fail(new ExperimentFailure(ExperimentFailureCode.ServerError, "experiment MCP server did not finish termination and output draining; readers abandoned"));
       }
     } finally { if (timer) clearTimeout(timer); }
     process.off("exit", this.onExit);

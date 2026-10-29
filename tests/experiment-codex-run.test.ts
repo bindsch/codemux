@@ -10,7 +10,7 @@ import { assertNoCodexSystemMcp } from "../src/experiment-codex-config.js";
 import { CODEX_PROVIDER_ID } from "../src/codex-provider.js";
 import type { RunContext } from "../src/run-context.js";
 import type { RunRequest } from "../src/types.js";
-import { MARKER } from "./fixtures/experiment-mcp.js";
+import { MARKER, respond } from "./fixtures/experiment-mcp.js";
 import { minimalPath, runCli } from "./helpers/cli.js";
 const contexts: { adapter: CodexAdapter; context: RunContext }[] = [];
 afterEach(async () => {
@@ -68,7 +68,7 @@ function rollout(context: RunContext, output: unknown = [
   const sessions = join(context.hermeticHome!.codexHome, "sessions", "2026", "10", "29");
   mkdirSync(sessions, { recursive: true });
   const lines = [
-    { type: "session_meta", payload: { id: "thread-test" } }, codexCatalog(["bash"]),
+    { type: "session_meta", payload: { id: "thread-test" } }, codexCatalog((respond({ id: 1, method: "tools/list" }) as any).result.tools),
     { type: "response_item", payload: { type: "function_call", id: "fc_1", call_id: "call_1",
       name: "mcp__experiment__bash", arguments: '{"command":"marker"}' } },
     { type: "event_msg", payload: { type: "token_count", info: { last_token_usage: {
