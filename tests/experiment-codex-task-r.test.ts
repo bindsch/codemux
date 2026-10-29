@@ -98,7 +98,7 @@ describe("Codex model-facing experiment definitions", () => {
     { description: "Changed description." },
     { description: undefined },
     { parameters: { ...TOOL.inputSchema, properties: { query: { type: "integer" } } } },
-    { parameters: { ...TOOL.inputSchema, required: [] } },
+    { parameters: { ...TOOL.inputSchema, required: ["another"] } },
     { parameters: { ...TOOL.inputSchema, additionalProperties: true } },
     { parameters: undefined },
   ])("rejects changed descriptions or schemas: %j", (change) => {
@@ -134,17 +134,17 @@ describe("Codex model-facing experiment definitions", () => {
   test("checks definitions on later catalogs as well", () => {
     const { parser } = fixture();
     parser.accept(catalog());
-    inventoryFailure(parser, catalog(declaration({ parameters: { type: "object", properties: {} } })));
+    inventoryFailure(parser, catalog(declaration({ parameters: { type: "array", properties: {} } })));
   });
 
-  test("renders absent descriptions and missing schema properties as Codex does", () => {
+  test("defaults absent descriptions without adding schema properties", () => {
     const { parser } = fixture([{ name: "lookup", inputSchema: { type: "object" } }]);
-    expect(() => parser.accept(catalog(declaration({ description: "", parameters: { type: "object", properties: {} } })))).not.toThrow();
+    expect(() => parser.accept(catalog(declaration({ description: "", parameters: { type: "object" } })))).not.toThrow();
   });
 
-  test("renders supported nested schema lowering without mutating relay definitions", () => {
+  test("allows nested removals without mutating relay definitions", () => {
     const definition = { name: "lookup", description: "", inputSchema: { type: "object", properties: {
-      mode: { const: "exact", title: "Dropped by Codex" },
+      mode: { type: "string", enum: ["exact"], title: "Dropped by Codex" },
       entries: { type: ["array", "null"] },
       flag: true,
       loose: { description: "No schema hints" },
@@ -153,8 +153,8 @@ describe("Codex model-facing experiment definitions", () => {
     const saved = structuredClone(definition);
     const { parser } = fixture([definition]);
     const parameters = { type: "object", properties: {
-      mode: { type: "string", enum: ["exact"] }, entries: { type: ["array", "null"], items: { type: "string" } },
-      flag: { type: "string" }, loose: {}, nested: { type: "object", properties: {} },
+      mode: { type: "string", enum: ["exact"] }, entries: { type: ["array", "null"] },
+      loose: {}, nested: { type: "object" },
     } };
     expect(() => parser.accept(catalog(declaration({ description: "", parameters })))).not.toThrow();
     expect(definition).toEqual(saved);
@@ -175,7 +175,7 @@ describe("Codex model-facing experiment definitions", () => {
     } })));
   });
 
-  test("uses Codex's default schema budget to remove long nested descriptions", () => {
+  test("allows Codex to remove long nested descriptions", () => {
     const definition = { ...TOOL, inputSchema: { type: "object", properties: {
       query: { type: "string", description: "x".repeat(6000) },
     } } };
@@ -194,9 +194,9 @@ describe("Codex model-facing experiment definitions", () => {
     inventoryFailure(parser, catalog(declaration({ parameters })));
   });
 
-  test("preserves repeated valid types while removing unrecognized type names", () => {
+  test("preserves repeated valid types while allowing a removed array suffix", () => {
     const { parser } = fixture([{ ...TOOL, inputSchema: { type: "object", properties: {
-      query: { type: ["string", "invalid", "string"] },
+      query: { type: ["string", "string", "invalid"] },
     } } }]);
     expect(() => parser.accept(catalog(declaration({ parameters: { type: "object", properties: {
       query: { type: ["string", "string"] },

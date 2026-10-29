@@ -25,6 +25,7 @@ export class ExperimentKimiRun implements StdoutSink {
   private removeFailureListener?: () => void;
   private usage?: ResultUsageBlock;
   private logCopied = false;
+  private timedOut = false;
 
   constructor(spec: ExperimentSpec, cwd: string, private kimiHome: string,
     private agentFile: string, environment: NodeJS.ProcessEnv) {
@@ -77,6 +78,7 @@ export class ExperimentKimiRun implements StdoutSink {
   }
 
   finish(options?: { timedOut: boolean; aborted?: boolean }): string {
+    this.timedOut ||= options?.timedOut === true;
     if (!this.closed) {
       this.closed = true;
       if (this.buffer !== "" && this.capturedBytes <= MAX_CAPTURE_BYTES) {
@@ -100,20 +102,27 @@ export class ExperimentKimiRun implements StdoutSink {
     catch { return null; }
   }
 
-  terminateProtocol(): void {
-    const message = this.hasOutput ? "interrupted before verification" : "interrupted before harness evidence";
-    this.relay.fail(new ExperimentFailure(Code.Protocol, message));
-    this.evidence.stop(message); this.relay.terminateProtocol();
+  terminateProtocol(options?: { timedOut: boolean }): void {
+    this.timedOut ||= options?.timedOut === true;
+    if (!this.timedOut) {
+      const message = this.hasOutput ? "interrupted before verification" : "interrupted before harness evidence";
+      this.relay.fail(new ExperimentFailure(Code.Protocol, message));
+      this.evidence.stop(message);
+    }
+    this.relay.terminateProtocol();
   }
 
   /** Verify after the harness has flushed its wire log and before its home is removed. */
-  complete(): Promise<void> { return this.completePromise ??= this.verify(); }
+  complete(options?: { timedOut?: boolean }): Promise<void> {
+    this.timedOut ||= options?.timedOut === true;
+    return this.completePromise ??= this.verify();
+  }
 
   private async verify(): Promise<void> {
     try {
       this.finish();
       this.relay.finish();
-      this.evidence.finish();
+      this.evidence.finish(undefined, { timedOut: this.timedOut });
     } catch (error) { this.relay.fail(error); }
     this.foldedUsage();
     this.preserveHarnessLog();

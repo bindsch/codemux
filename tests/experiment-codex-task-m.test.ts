@@ -65,11 +65,12 @@ describe("Codex additional_tools catalogs", () => {
     const declarations = item.payload.tools.flatMap((group: JsonObject) => group.tools.map((tool: JsonObject) => ({
       namespace: group.name, name: tool.name, type: tool.type,
       classification: group.name === "mcp__experiment" ? "experiment" : "builtin",
+      ...(group.name === "mcp__experiment" ? { catalog_pruned_paths: [] } : {}),
     })));
     expect(records).toEqual([{ kind: "harness_tool_catalog", tools: item.payload.tools, item: item.payload, declarations }]);
     expect(records[0]?.declarations.filter((tool: JsonObject) => tool.classification === "builtin")).toHaveLength(14);
     expect(records[0]?.declarations.filter((tool: JsonObject) => tool.classification === "experiment"))
-      .toEqual([{ namespace: "mcp__experiment", name: "lookup", type: "function", classification: "experiment" }]);
+      .toEqual([{ namespace: "mcp__experiment", name: "lookup", type: "function", classification: "experiment", catalog_pruned_paths: [] }]);
     expect(parser.calls).toHaveLength(0);
   });
 

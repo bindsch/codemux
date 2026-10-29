@@ -42,7 +42,7 @@ test("replays the preserved Codex native excerpt with its full catalog and saved
   expect(catalog.item).toEqual(lines.find((line) => line.payload.type === "additional_tools")!.payload);
   expect(catalog.declarations.filter((tool: JsonObject) => tool.classification === "builtin")).toHaveLength(14);
   expect(catalog.declarations.filter((tool: JsonObject) => tool.classification === "experiment"))
-    .toEqual([{ namespace: "mcp__experiment", name: "bash", type: "function", classification: "experiment" }]);
+    .toEqual([{ namespace: "mcp__experiment", name: "bash", type: "function", classification: "experiment", catalog_pruned_paths: [] }]);
   expect(records.filter((record) => record.kind === "turn").map((record) => record.message_id)).toEqual([
     "msg_0a36d4efa34409ca016ae29db7844481918997cd8f7c4dede8",
     "msg_0a36d4efa34409ca016ae29dbb15e08191a3a99127325717b9",

@@ -4,7 +4,6 @@ import { join, resolve } from "node:path";
 import { CodexAdapter } from "../src/adapters/codex.js";
 import * as runtime from "../src/cli-runtime.js";
 import { ExperimentCodexRun } from "../src/experiment-codex-run.js";
-import { ExperimentFailure, ExperimentFailureCode as Code } from "../src/experiment-records.js";
 import { ExperimentServer } from "../src/experiment-server.js";
 import { launchRunRequest } from "../src/launch.js";
 import { runCapturedCommand } from "../src/process-runner.js";
@@ -27,8 +26,7 @@ test.each([
   const context: RunContext = { stdoutSink: sink, experimentCodex: sink, experimentRecording: sink.recordingPath };
   const request: RunRequest = { agent: "codex", prompt: "fixture", model: "fixture", resultJson,
     experimentMcp: "synthetic.json", hermetic: true, sandboxed: true, tools: "none" };
-  const missingUsage = new ExperimentFailure(Code.HarnessLogMissing, "missing token_count");
-  const finish = spyOn(sink.evidence, "finish").mockImplementation(() => { throw missingUsage; });
+  const finish = spyOn(sink.evidence, "finish").mockImplementation(() => {});
   let stdout!: ReadableStreamDefaultController<Uint8Array>;
   let stderr!: ReadableStreamDefaultController<Uint8Array>;
   let exit!: (code: number) => void;
@@ -68,7 +66,7 @@ test.each([
   try {
     const result = await launchRunRequest(adapter, request, { sandbox: true, requestedAutonomy: "read-only" });
     expect(result).toMatchObject({ exitCode: 124, success: false });
-    expect(finish).not.toHaveBeenCalled();
+    expect(finish).toHaveBeenCalledWith(cwd, { timedOut: true });
     expect(sink.relay.failureCode).toBeNull();
     expect(result.stderr).not.toContain("harness_log_missing");
     const records = readFileSync(sink.recordingPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));

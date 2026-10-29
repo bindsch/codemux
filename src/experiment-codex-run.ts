@@ -166,7 +166,7 @@ export class ExperimentCodexRun implements StdoutSink {
     try {
       this.finish();
       this.relay.finish();
-      if (!this.timedOut) this.evidence.finish(this.codexHome);
+      this.evidence.finish(this.codexHome, { timedOut: this.timedOut });
     } catch (error) {
       this.relay.fail(error instanceof Error ? error : new Error(String(error)));
     }

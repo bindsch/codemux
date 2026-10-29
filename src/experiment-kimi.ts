@@ -130,7 +130,7 @@ export class ExperimentKimiEvidence {
     for (const notify of [...this.waiters]) notify();
   }
 
-  finish(path?: string): void {
+  finish(path?: string, options?: { timedOut?: boolean }): void {
     if (this.finished) { if (this.finishError ?? this.liveError) throw this.finishError ?? this.liveError; return; }
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
@@ -146,7 +146,7 @@ export class ExperimentKimiEvidence {
         throw new ExperimentFailure(Code.HarnessLogMissing, "Kimi stdout session ID does not match the discovered wire log");
       }
       this.relay.record("harness_wire_log", { path: wirePath, session_id: this.sessionId ?? null });
-      this.parser.finish();
+      this.parser.finish(options);
       this.verifyResults();
     } catch (error) { this.finishError = experimentFailure(error); throw this.finishError; }
     finally { this.finished = true; for (const notify of [...this.waiters]) notify(); }

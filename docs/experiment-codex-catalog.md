@@ -63,6 +63,8 @@ Source: Codex `rust-v0.165.0`. These paths start at `codex-rs/`:
 | `config/src/mcp_types.rs:266-269` | Each MCP server accepts `omit_tools_from`. |
 | `core/src/tools/spec_plan.rs:198-290` | The policy subtracts omitted surfaces at line 255. At lines 266-274, a search-capable model loses `direct` only if `deferred` remains. Omitting `deferred` and `code_mode` yields `DirectModelOnly` at line 283. |
 | `core/src/tools/spec_plan.rs:392-417,454-461` | The builder registers tool search only when the model supports it and another allowed tool is searchable and deferred. With no such tools, it does not offer tool search. |
+| `core/src/tools/spec_plan.rs:663-687` | `spec_for_model_request` selects code-mode augmentation only for eligible code-mode tools; otherwise it returns the direct spec unchanged. |
+| `tools/src/responses_api.rs:164-172` | The MCP Responses renderer uses the tool definition's description and input schema and sets `strict: false`. |
 | `core/src/tools/spec_plan.rs:1621-1637`; `core/src/tools/handlers/tool_search_spec.rs:16-20,97-105` | Registration builds the handler and its `ToolSpec::ToolSearch` schema. The match at `spec_plan.rs:989-999` only selects an existing search tool for code mode. |
 | `features/src/lib.rs:1647-1652` | `tool_search` is Removed. It is not a working disable switch. No extra flag or catalog-field removal is needed. |
 | `protocol/src/models.rs:1150-1163,4297-4336` | Native `tool_search_call` response items omit `name`. They also receive the search-specific failure diagnostic. |
@@ -88,6 +90,24 @@ declarations fail. A missing or incomplete catalog before the first
 `function_call` fails with `inventory_mismatch`.
 Codex `protocol/src/models.rs:1053-1061` defines the item's optional `id`,
 `role`, and raw `tools` array.
+
+Each experiment declaration's description must equal the relay description,
+defaulting an absent description to `""`. Its `strict` field must be `false`.
+Its `parameters` must be a recursive subset of the original relay
+`inputSchema`. Every retained object key and array index must have the same
+path and value. Object keys and array suffix entries may be omitted; entries
+cannot move or change. Additions, substituted values, and shifted array
+entries fail with `inventory_mismatch`.
+
+Each normalized experiment declaration records its omitted schema paths in
+`catalog_pruned_paths`, as JSON Pointers relative to the original `inputSchema`.
+For example, omitting a description under property `value` records
+`/properties/value/description`; dropping the second and later `required`
+entries records their original indices, starting with `/required/1`.
+An unchanged schema records an empty array. Codemux compares the original
+schema directly; it does not reproduce Codex's schema lowering, pruning,
+compaction, or byte budget. The source paths above establish direct exposure
+and `strict: false`; they do not justify transforming the reference schema.
 
 `CODEX_BUILTIN_DECLARATIONS` in `src/experiment-codex-parser.ts` contains
 only these 14 identities from the preserved
@@ -212,7 +232,11 @@ the run fails with `code_mode` before dispatching that call.
 Codemux polls Codex's private rollout every 250 ms while the harness runs.
 It emits `turn` at the first native assistant message or function-call item,
 with null usage, and `turn_call` for every call. The following `token_count`
-emits exactly one `turn_usage`; final verification requires one per turn.
+emits exactly one `turn_usage`; completed runs require one per turn.
+The runner's actual timeout state permits only missing final usage and
+preserves exit 124. Completed catalogs, results, and native call correlations
+are still checked. An ordinary completed run with missing usage fails with
+`harness_log_missing`.
 Each `token_usage_record.response_id` belongs to one pending response.
 Overlapping distinct response IDs, repeated response IDs, and conflicting
 counters between the response record and its `token_count` fail with

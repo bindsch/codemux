@@ -17,7 +17,7 @@ function response(id: string, usage: JsonObject): JsonObject {
 function count(usage: JsonObject): JsonObject {
   return line("event_msg", { type: "token_count", info: { last_token_usage: usage } });
 }
-function fn(name: string): JsonObject { return { type: "function", name, description: "", parameters: { type: "object", properties: {} } }; }
+function fn(name: string): JsonObject { return { type: "function", name, description: "", strict: false, parameters: { type: "object", properties: {} } }; }
 function namespace(name: string, tools: JsonObject[]): JsonObject { return { type: "namespace", name, tools }; }
 function catalog(tools: JsonObject[]): JsonObject { return line("response_item", { type: "additional_tools", tools }); }
 function call(): JsonObject {

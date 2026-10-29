@@ -20,6 +20,7 @@ export class KimiWireParser {
   private byId = new Map<string, KimiNativeCall>();
   private steps = new Map<string, Step>();
   private completed: Step[] = [];
+  private verified?: Step[];
   private assistants: JsonObject[] = [];
   private inventorySeen = false;
 
@@ -37,7 +38,7 @@ export class KimiWireParser {
   }
 
   assistantFrames(): KimiAssistantFrame[] {
-    return this.completed.map((step) => ({
+    return (this.verified ?? this.completed).map((step) => ({
       text: step.parts.filter((part) => part.type === "text").map((part) => {
         if (typeof part.text !== "string") throw new ExperimentFailure(Code.Protocol, "Kimi assistant text part must contain a string");
         return part.text;
@@ -181,18 +182,30 @@ export class KimiWireParser {
     step.usageRecords++;
   }
 
-  finish(): void {
+  finish(options?: { timedOut?: boolean }): void {
     if (!this.inventorySeen) throw new ExperimentFailure(Code.InventoryMismatch, "Kimi wire log is missing llm.tools_snapshot");
-    if (!this.completed.length || [...this.steps.values()].some((step) => !step.retry && (!step.end || step.turnTime === undefined || step.usageRecords !== 1))) {
+    const finalStep = [...this.steps.values()].filter((step) => !step.retry).at(-1);
+    const isTimedOutFinal = (step: Step) => options?.timedOut === true && step === finalStep;
+    const completed = [...this.completed];
+    if (finalStep && isTimedOutFinal(finalStep) && !finalStep.end) {
+      if (finalStep.turnTime === undefined && finalStep.firstPartTime !== undefined) this.emitTurn(finalStep, finalStep.firstPartTime * 1000);
+      completed.push(finalStep);
+    }
+    if (!completed.length || [...this.steps.values()].some((step) => !step.retry &&
+        ((!step.end && !isTimedOutFinal(step)) || step.turnTime === undefined ||
+        (step.usageRecords !== 1 && !(isTimedOutFinal(step) && step.usage === undefined))))) {
       throw new ExperimentFailure(Code.HarnessLogMissing, "Kimi wire log requires a completed step and exactly one usage record per turn");
     }
-    if (this.completed.length !== this.assistants.length) throw new ExperimentFailure(Code.HarnessLogMissing, "Kimi assistant message count does not match completed steps");
-    for (const [index, step] of this.completed.entries()) {
+    if (completed.length !== this.assistants.length) throw new ExperimentFailure(Code.HarnessLogMissing, "Kimi assistant message count does not match completed steps");
+    for (const [index, step] of completed.entries()) {
       const entry = this.assistants[index]!, message = entry.message, meta = kimiObject(entry.meta);
       const toolCalls = message.toolCalls;
+      const messageUsage = meta?.usage == null ? undefined : normalizedUsage(meta.usage);
+      const usageMatches = isTimedOutFinal(step) && (!step.usage || !messageUsage) ||
+        isDeepStrictEqual(messageUsage ?? normalizedUsage(meta?.usage), step.usage ?? normalizedUsage(step.end?.usage));
       if (!Array.isArray(toolCalls) || !Array.isArray(message.content) || !isDeepStrictEqual(message.content, step.parts) ||
-          !isDeepStrictEqual(normalizedUsage(meta?.usage), normalizedUsage(step.end!.usage)) ||
-          (step.end!.messageId !== undefined && step.end!.messageId !== meta?.messageId) || toolCalls.length !== step.calls.length) {
+          !usageMatches ||
+          (step.end?.messageId !== undefined && step.end.messageId !== meta?.messageId) || toolCalls.length !== step.calls.length) {
         throw new ExperimentFailure(Code.Protocol, "Kimi assistant message does not match its loop step content, usage, or calls");
       }
       for (const [callIndex, call] of step.calls.entries()) {
@@ -204,6 +217,7 @@ export class KimiWireParser {
         }
       }
     }
+    this.verified = completed;
   }
 }
 

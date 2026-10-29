@@ -285,7 +285,7 @@ export async function launchRunRequest(
     if (context.experimentCodex) processed = adapter.processRunResult(raw, request, context);
     // Stdout EOF can precede the runner's timeout; pass the final timer outcome.
     await context.experimentCodex?.verify({ timedOut: raw.timedOut === true });
-    await context.experimentKimi?.complete();
+    await context.experimentKimi?.complete({ timedOut: raw.timedOut === true });
     processed ??= adapter.processRunResult(raw, request, context);
     await cleanup();
     recordCompletedLaunch(request, options, processed, startedAt);

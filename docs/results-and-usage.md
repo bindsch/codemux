@@ -42,10 +42,14 @@ The recording includes raw evidence and normalized `turn`, `turn_usage`,
 `turn_usage` has exactly `{message_id, usage, t}` with a known usage object.
 `turn_call` has exactly `{message_id, call_id, name, t}`. All share `run_id`,
 `seq`, and `kind`; usage objects have `input`, `output`, `cache_read`, and `cache_write`.
-Every turn in a complete recording has exactly one usage record. Interrupted or
-timed-out recordings can omit usage records because final usage verification is
-skipped. Claude, Z.AI, Codex, and Kimi skip final usage verification on timeout.
-The timeout exit remains 124. Every call has a call record, including calls already listed in the
+Every turn in a complete recording has exactly one usage record.
+Interrupted or timed-out recordings can omit usage records.
+Claude, Z.AI, Codex, and Kimi skip final usage verification on timeout.
+For Codex and Kimi, the runner's actual timeout state permits only missing final
+usage; completed catalogs, results, and native call correlations are still
+checked. Ordinary completed runs with missing usage fail with
+`harness_log_missing`. The timeout exit remains 124.
+Every call has a call record, including calls already listed in the
 initial turn. Later streaming frames can add calls.
 `codemux.failure_code` is `string | null`. It contains the experiment's
 stable failure code, or null for success and non-experiment runs. The same
@@ -75,8 +79,8 @@ Codex experiment recordings are written while the harness runs. Codemux polls
 the rollout every 250 ms. Native response items emit `turn` and `turn_call`
 without waiting for usage; `token_count` emits `turn_usage` with its own timestamp.
 Each delivery is written when its output line is observed. Final verification
-uses the same cursor and requires exactly one usage record per turn, otherwise
-`harness_log_missing`. A nonempty request `_meta.callId` is used immediately,
+uses the same cursor and requires exactly one usage record per turn on ordinary
+completed runs, otherwise `harness_log_missing`. A nonempty request `_meta.callId` is used immediately,
 copied to `params._meta["codemux/callId"]`, and recorded on `tool_call` with
 `native_call_id_source: "request_meta"`. Live and final rollout correlation
 then verifies the ID, name, and arguments regardless of parallel HTTP arrival
@@ -144,7 +148,13 @@ reducers have separate limits for an individual input line and retained
 reply/output data. Stderr remains bounded too. A line is checked while it
 accumulates and when it completes, including an unterminated final line.
 Exceeding a capture limit fails with exit 125 and a stderr diagnostic.
-Codex and Kimi experiment sinks use the same limit and preserve partial output. On a Codex experiment output-limit failure, JSON `result` retains the last complete assistant message from the valid stream prefix; the run still fails with exit 125. Codex experiment parsing failures also retain the valid reply and parsed prefix in `events`; plain failures retain the reply text. Plain Claude and Z.AI experiment capture-limit failures extract the captured result envelope's reply and keep exit 125. Early Claude and Z.AI experiment failure envelopes retain the adapter's effective model, including its configured default. Kimi result JSON always returns an envelope on parsing, session-hint, or wire-log errors. It names the error, preserves complete events before a malformed or truncated line, and reports `failure_code: null` for non-experiment runs.
+Codex and Kimi experiment sinks use the same limit and preserve partial output. On a Codex experiment output-limit failure, JSON `result` retains the last complete assistant message from the valid stream prefix; the run still fails with exit 125. Codex experiment parsing failures also retain the valid reply and parsed prefix in `events`; plain failures retain the reply text.
+Recovered Codex failure envelopes remove only the final completed
+`agent_message` event from `events`, by its position, because `result` already
+contains that message. Earlier events with identical text remain. The
+serialized envelope stays within 16 MiB, including JSON escapes and the final
+newline. It drops events before truncating the reply with a note.
+Plain Claude and Z.AI experiment capture-limit failures extract the captured result envelope's reply and keep exit 125. Early Claude and Z.AI experiment failure envelopes retain the adapter's effective model, including its configured default. Kimi result JSON always returns an envelope on parsing, session-hint, or wire-log errors. It names the error, preserves complete events before a malformed or truncated line, and reports `failure_code: null` for non-experiment runs.
 
 Discarded tool events do not accumulate against retained-output capacity.
 They can still exceed the individual-line limit. For example, many 1 KiB

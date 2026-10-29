@@ -51,11 +51,11 @@ describe("Codex observed built-in catalog declarations", () => {
     const { parser, records } = fixture();
     const payload = { type: "additional_tools", tools: [{ type: "namespace", name: namespace,
       tools: [{ type, name }] }, { type: "namespace", name: "mcp__experiment", tools: [{ type: "function", name: "lookup",
-        description: "", parameters: { type: "object", properties: {} } }] }] };
+        description: "", strict: false, parameters: { type: "object", properties: {} } }] }] };
     expect(() => parser.accept(line("response_item", payload))).not.toThrow();
     expect(records).toEqual([{ kind: "harness_tool_catalog", tools: payload.tools, item: payload,
       declarations: [{ namespace, type, name, classification: "builtin" },
-        { namespace: "mcp__experiment", type: "function", name: "lookup", classification: "experiment" }] }]);
+        { namespace: "mcp__experiment", type: "function", name: "lookup", classification: "experiment", catalog_pruned_paths: [] }] }]);
     let failure: unknown;
     try { parser.accept(line("response_item", { type: type === "custom" ? "custom_tool_call" : "function_call",
       namespace, name, id: "function", call_id: "call", arguments: "{}", input: "patch" })); }

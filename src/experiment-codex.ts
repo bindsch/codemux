@@ -166,7 +166,7 @@ export class ExperimentCodexEvidence {
     for (const notify of [...this.waiters]) notify();
   }
 
-  finish(codexHome: string): void {
+  finish(codexHome: string, options?: { timedOut?: boolean }): void {
     if (this.finished) { if (this.finishError ?? this.liveError) throw this.finishError ?? this.liveError; return; }
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
@@ -179,7 +179,7 @@ export class ExperimentCodexEvidence {
       if (!this.cursor) this.initialize(codexHome);
       const path = this.cursor!.finish();
       this.relay.record("harness_rollout", { path, thread_id: this.threadId });
-      this.parser!.finish();
+      this.parser!.finish(options);
       this.verifyCalls(path);
       this.verifyExecResults();
     } catch (error) { this.finishError = experimentFailure(error); throw this.finishError; }

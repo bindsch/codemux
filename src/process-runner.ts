@@ -53,7 +53,7 @@ export interface StdoutSink {
   start?(write: (line: string) => void, end: () => void, abort: () => void, cwd?: string): void;
   closeProtocol?(): void | Promise<void>;
   /** Stop an external protocol process immediately on timeout or signal. */
-  terminateProtocol?(): void;
+  terminateProtocol?(options?: { timedOut: boolean }): void;
   /** One decoded chunk of the stdout stream, in arrival order. */
   push(chunk: string): void;
   /** The run's stdout once the stream has ended (or been abandoned). */
@@ -177,7 +177,7 @@ export async function runCapturedCommand(
         giveUpExit();
       }, FORCE_KILL_DELAY_MS + PIPE_GIVE_UP_MS);
     }
-    try { options.stdoutSink?.terminateProtocol?.(); }
+    try { options.stdoutSink?.terminateProtocol?.({ timedOut }); }
     catch (error) {
       terminationNote ??= `protocol termination failed: ${error instanceof Error ? error.message : String(error)}`;
     }

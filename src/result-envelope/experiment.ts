@@ -20,18 +20,19 @@ function envelopeObject(stdout: string): Record<string, unknown> | null {
 function codexCapturedPrefix(stdout: string) {
   const reducer = new CodexEventReducer();
   const events: Record<string, unknown>[] = [];
+  let finalMessageIndex = -1;
   for (const line of stdout.split("\n")) {
     if (!line.trim()) continue;
     const event = envelopeObject(line);
     if (!event) break;
     reducer.takeEvent(event);
     if (reducer.drift !== null) break;
+    const item = event.item as Record<string, unknown> | undefined;
+    if (reducer.finalMessage === null) finalMessageIndex = -1;
+    else if (event.type === "item.completed" && item?.type === "agent_message") finalMessageIndex = events.length;
     events.push(event);
   }
-  return { reducer, events: events.filter((event) => {
-    const item = event.item as Record<string, unknown> | undefined;
-    return !(item?.type === "agent_message" && item.text === reducer.finalMessage);
-  }) };
+  return { reducer, events: events.filter((_, index) => index !== finalMessageIndex) };
 }
 
 const TRUNCATION_NOTE = "\n[truncated by codemux]";

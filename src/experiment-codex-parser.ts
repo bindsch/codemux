@@ -125,9 +125,9 @@ export class CodexRolloutParser {
     }
   }
 
-  finish(): void {
-    if (this.pending) throw new ExperimentFailure(Code.HarnessLogMissing, "Codex rollout is missing a following token_count usage event");
-    if (this.usageRecords !== this.turns) throw new ExperimentFailure(Code.HarnessLogMissing, "Codex rollout is missing normalized turn usage");
+  finish(options?: { timedOut?: boolean }): void {
+    if (!options?.timedOut && this.pending) throw new ExperimentFailure(Code.HarnessLogMissing, "Codex rollout is missing a following token_count usage event");
+    if (!options?.timedOut && this.usageRecords !== this.turns) throw new ExperimentFailure(Code.HarnessLogMissing, "Codex rollout is missing normalized turn usage");
     if (this.turns === 0) throw new ExperimentFailure(Code.HarnessLogMissing, "Codex rollout has no completed response evidence");
   }
 
@@ -167,7 +167,8 @@ export class CodexRolloutParser {
           const builtin = tool && CODEX_BUILTIN_DECLARATIONS.has(identity);
           const name = tool?.type === "function" ? this.bareName({ ...tool, namespace }) : undefined;
           const classification = builtin ? "builtin" : name !== undefined ? "experiment" : "foreign";
-          declarations.push({ namespace: namespace ?? null, name: tool?.name ?? null, type: tool?.type ?? null, classification });
+          const entry: JsonObject = { namespace: namespace ?? null, name: tool?.name ?? null, type: tool?.type ?? null, classification };
+          declarations.push(entry);
           if (classification === "foreign") {
             const name = String(tool?.name ?? tool?.type ?? "invalid declaration");
             throw new ExperimentFailure(Code.InventoryMismatch,
@@ -177,7 +178,7 @@ export class CodexRolloutParser {
           const key = builtin ? identity : name!;
           if (seen.has(key)) throw new ExperimentFailure(Code.InventoryMismatch,
             `Codex additional_tools repeats a declaration: ${key}`);
-          if (!builtin) assertCodexToolDefinition(tool!, name!, this.toolDefinitions());
+          if (!builtin) entry.catalog_pruned_paths = assertCodexToolDefinition(tool!, name!, this.toolDefinitions());
           seen.add(key);
         }
       }
