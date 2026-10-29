@@ -86,7 +86,7 @@ test("identical concurrent Kimi calls retain request delivery identity despite F
     expect(ledgers.map((r) => r.relay_request_seq)).toEqual([1, 0]);
     const fields = ["relay_request_seq", "native_call_id", "dispatched_t", "delivered_t", "correlation", "rpc_id", "result_sha256"];
     for (const ledger of ledgers) {
-      expect(Object.keys(ledger).sort()).toEqual([...fields, "run_id", "seq", "kind"].sort());
+      expect(Object.keys(ledger).sort()).toEqual([...fields, "run_id", "seq", "t", "kind"].sort());
       const request = records.find((r) => r.kind === "mcp_request" && r.rpc_id === ledger.rpc_id)!;
       const result = records.find((r) => r.kind === "server_tool_result" && r.relay_request_seq === ledger.relay_request_seq)!;
       expect(request.relay_request_seq).toBe(ledger.relay_request_seq);

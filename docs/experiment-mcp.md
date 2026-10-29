@@ -63,8 +63,8 @@ have their own `mcp_request` records. Deep-equal definitions allow the run to
 continue; changed definitions fail the run. The notification never reaches
 Claude, and call responses still resolve by their pending request IDs.
 Every other server-initiated message, including `notifications/progress`,
-sampling, elicitation, and requests with an `id`, is refused. JSON-RPC errors
-are fatal, including errors on `ping`.
+sampling, elicitation, and requests with an `id`, is refused. Forwarded JSON-RPC errors
+are fatal. Claude and Z.AI forward `ping` and also fail on its errors.
 
 `tools/list` must produce a complete nonempty inventory, following pagination
 without repeated cursors. Tool names are unique, match `[A-Za-z0-9_-]{1,64}`,
@@ -89,13 +89,16 @@ managed settings remain subject to the limits in [isolation](isolation.md).
 
 Each `/mcp` POST must carry one JSON-RPC object. Arrays fail with HTTP 400; missing
 or incorrect authorization gets 401; GET and DELETE get 405; a body over
-1 MiB gets 413. A request is forwarded to the stdio server and answered with
+1 MiB gets 413. An ordinary request is forwarded to the stdio server and answered with
 HTTP 200 and `application/json`. Valid notifications get HTTP 202 with no body. A `tools/call` notification lacks a required request ID, so it gets HTTP 400 and fails with `protocol` before dispatch. Non-object `arguments`, including explicit null, also get HTTP 400 and `protocol` before dispatch. Omitted arguments become `{}` in both native correlation and the forwarded request. The Claude bridge applies the same argument rules.
 Malformed authenticated JSON or JSON-RPC envelopes also return HTTP 400 and fail the run with `protocol`.
 HTTP 413 headers are flushed immediately; rejected uploads drain only until the original 30-second request deadline. HTTP 408 closes without another drain period.
 The 30-second deadline covers request-body receipt only. The relay sets `requestTimeout = 0`, `timeout = 0`, `headersTimeout = 120000`, and `keepAliveTimeout = 86400000`. A regression test checks the running server object for `requestTimeout === 0`, `timeout === 0`, and `keepAliveTimeout >= 86400000`. `ExperimentServer.request()` has no pending-request deadline. The private tool timeout and the run's `--timeout` remain configured bounds; the harness or host can terminate a hold earlier.
 
-On October 29, 2026, Bun 1.4.4 answered a four-second delayed response with `requestTimeout = 2000`, and 15-second and 70-second delayed responses with `requestTimeout = 0`. These observations do not explain the Kimi cutoff near 300 seconds. A Kimi or host limit is suspected. The live `hold:400000` probe remains pending; no new live probe was run for this change.
+The relay answers `ping` locally with `{jsonrpc: "2.0", id, result: {}}` and records `relay_ping` with `rpc_id` and `t`. This is the only fresh JSON-RPC result it creates on the server's behalf. A synchronous stdio server can block on a held tool call, leaving a forwarded ping unanswered past Kimi's five-second liveness deadline. The Claude/Z.AI bridge continues forwarding pings.
+The relay caches the original successful `initialize` result. A later `initialize` replays that result with the new request ID and records `relay_reinitialize` with `rpc_id` and `t`. It does not restart the server or clear pending tool calls. The fixture schedules `hold:<ms>` replies with a timer, so its stdin loop keeps answering other requests, including pings.
+
+On October 29, 2026, Bun 1.4.4 answered a four-second delayed response with `requestTimeout = 2000`, and 15-second and 70-second delayed responses with `requestTimeout = 0`. The supplied Kimi 2.4.0 recording from 20:42 (`5176b1de-0a16-4858-a51c-a80194058909`) identifies the hold failure: the fixture blocked its stdin loop, missed the five-second ping, and Kimi recorded `mcp.server_failed` with `fetch failed`, then sent another `initialize`. The held response reached a closed socket and failed with `Premature close`. The fresh live 2.4.0 `hold:400000` probe with these fixes remains pending; no new live probe was run for this change.
 
 Inventory validation and definition rechecks use the same rules as Claude.
 The relay records `http_request` with method, path, token match, and base64
@@ -165,6 +168,10 @@ argv and the child environment. The private home, config, empty skill
 directory, explicit agent profile, and project-path refusals follow the
 Kimi hermetic contract in [isolation](isolation.md).
 
+Every hermetic Kimi child sets `KIMI_CODE_NO_AUTO_UPDATE=1` and never updates the installed binary.
+This disables both the startup update check and background installation, for experiment and ordinary runs.
+Plain runs, including non-hermetic check controls, may still update the binary. Record the Kimi version used in the live-gate notes.
+
 The existing preflight rules still apply. A request that would expose the
 working directory or recording directory to Kimi's built-in tools is
 refused before launch: experiments require `--tools none` and the MCP-only
@@ -213,6 +220,8 @@ Missing, duplicate, inconsistent, or incomplete evidence fails the run, except m
 The native log is copied before private-home cleanup. The recording closes after cleanup, so a cleanup error produces a `failure` record and the same failure code in `run_end`. Capture failures preserve complete prefix events and replies before malformed or truncated lines. The failure result names the parse error and retains the session ID, effective model, and usage when the wire log is readable. The paired check validates its generated control before either probe starts. It adds `KIMI_CODE_HOME` only when absent and refuses a control that would exceed the 64-name environment limit.
 
 Kimi's model-bound bytes are **reconstructed**, unlike Claude's observed frames and Codex's rollout output item. The wire log does not contain the provider request. Codemux reproduces Kimi 2.3.2's `agent/contextMemory/toolResultRender.ts` and `agent/contextProjector/projection.ts`, using raw tool-message content and the loop result's `isError`, `durationMs`, and `note`. The producer is `agent/loop/loopService.ts`; `agent/contextMemory/loopEventFold.ts` attaches these fields. These paths are under `packages/agent-core-v2/src/`.
+
+The October 29, 2026 source comparison of tags `@moonshot-ai/kimi-code@2.3.2` and `@moonshot-ai/kimi-code@2.4.0` keeps the experiment floor at 2.3.2. The renderer, projection, MCP output conversion, wire event contracts, prompt renderer, and MCP schema are unchanged. `loopService.ts` adds logging and a ten-minute warning watchdog (`2.4.0:133-134,1140-1195,1263,2124`); its result producer is unchanged (`1790-1810`). `loopEventFold.ts` adds a mutable sink (`229-366`), retaining the result-field mapping (`193-208`). `run-v2-print.ts` changes telemetry, Plan mode handling, and workspace leases (`273-283,441-451,474,495,522-528,554-571`), while retaining completion/error and resume-hint behavior (`633-685,361`). `mcpCore/connection-manager.ts` adds probing and reconnect states (`484-660,725-779`); timeout precedence (`793-794`) and tool mapping (`868-875`) remain equivalent. `workspace/sessionLifecycle/sessionLifecycle.ts:8,10` and `sessionLifecycleService.ts:348,358-412,429-442` add reclaim reasons and lifecycle telemetry without changing the wire-log contract. These are source checks, not a successful live 2.4.0 delivery check.
 
 The `kimi-wall-time` opt-in accepts `Wall time: N.NNN seconds\n`, with exactly three
 decimals from `(durationMs / 1000).toFixed(3)`, prepended to the first text part.
@@ -388,7 +397,7 @@ Failed saves and other changed strings still fail. Plain matches have no
 
 ### Shared recordings
 
-Recordings are mode 0600 JSONL files under the codemux state directory's `experiments/<run-id>.jsonl`, or the chosen recording directory. Each record has `run_id`, monotonic `seq`, `kind`, and kind-specific fields.
+Recordings are mode 0600 JSONL files under the codemux state directory's `experiments/<run-id>.jsonl`, or the chosen recording directory. Each record starts with `run_id`, monotonic `seq`, `t` (Unix epoch seconds as a float), and `kind`, followed by kind-specific fields. The recorder supplies codemux's current time when `t` is absent. Existing `t` values on `turn`, `turn_usage`, `turn_call`, `tool_result_delivered`, and `call_ledger` are preserved, including native-event and frame-receipt times.
 
 Raw server stdin/stdout/stderr records use `bytes_base64`; control frames, rollout or wire-log evidence, inventories, tool calls, server results, model-bound results, `call_ledger`, comparisons, failures, and the terminal `run_end` are separate records. They can contain prompts and tool content. They are not the prompt-free [call ledger](results-and-usage.md).
 
@@ -399,18 +408,20 @@ Before private-home cleanup, successful and failed Codex/Kimi runs attempt to co
 ### Normalized records
 
 Claude, Z.AI, Codex, and Kimi recordings also contain these harness-neutral records
-with the same `run_id` and `seq` fields:
+with the same common fields:
 
 ```text
 Usage = {"input":int,"output":int,"cache_read":int,"cache_write":int}
-{"run_id":…,"seq":…,"kind":"turn","message_id":str,"t":float,"usage":Usage|null,"tool_calls":[{"call_id":str,"name":str}]}
-{"run_id":…,"seq":…,"kind":"turn_usage","message_id":str,"usage":Usage,"t":float}
-{"run_id":…,"seq":…,"kind":"turn_call","message_id":str,"call_id":str,"name":str,"t":float}
-{"run_id":…,"seq":…,"kind":"tool_result_delivered","call_id":str,"t":float}
-{"run_id":…,"seq":…,"kind":"call_ledger","relay_request_seq":int|str,"native_call_id":str|null,"dispatched_t":float,"delivered_t":float,"correlation":"exact"|"fifo"|"request_meta","rpc_id":int|str,"result_sha256":str}
+{"run_id":…,"seq":…,"t":float,"kind":"turn","message_id":str,"usage":Usage|null,"tool_calls":[{"call_id":str,"name":str}]}
+{"run_id":…,"seq":…,"t":float,"kind":"turn_usage","message_id":str,"usage":Usage}
+{"run_id":…,"seq":…,"t":float,"kind":"turn_call","message_id":str,"call_id":str,"name":str}
+{"run_id":…,"seq":…,"t":float,"kind":"tool_result_delivered","call_id":str}
+{"run_id":…,"seq":…,"t":float,"kind":"call_ledger","relay_request_seq":int|str,"native_call_id":str|null,"dispatched_t":float,"delivered_t":float,"correlation":"exact"|"fifo"|"request_meta","rpc_id":int|str,"result_sha256":str}
+{"run_id":…,"seq":…,"t":float,"kind":"relay_ping","rpc_id":int|str}
+{"run_id":…,"seq":…,"t":float,"kind":"relay_reinitialize","rpc_id":int|str}
 ```
 
-`call_ledger` records one delivered server call with exactly seven fields beyond `run_id`, `seq`, and `kind`. `relay_request_seq` is the zero-based `tools/call` ordinal for Codex/Kimi, or the string control-request ID for Claude/Z.AI. `rpc_id` is the harness's JSON-RPC request ID. Request identity remains independent of native attribution: `native_call_id` is a string or null, and `correlation` records `exact`, `fifo`, or `request_meta` attribution. Codex, Claude, and Z.AI can use request metadata. HTTP calls currently require native resolution before dispatch; the schema permits null.
+`call_ledger` records one delivered server call with exactly seven fields beyond the common `run_id`, `seq`, `t`, and `kind`. `relay_request_seq` is the zero-based `tools/call` ordinal for Codex/Kimi, or the string control-request ID for Claude/Z.AI. `rpc_id` is the harness's JSON-RPC request ID. Request identity remains independent of native attribution: `native_call_id` is a string or null, and `correlation` records `exact`, `fifo`, or `request_meta` attribution. Codex, Claude, and Z.AI can use request metadata. HTTP calls currently require native resolution before dispatch; the schema permits null. `relay_ping` and `relay_reinitialize` record local protocol handling and do not count as delivered tool calls.
 
 `dispatched_t` is captured before forwarding to the server. `delivered_t` is captured on HTTP response `finish`, or after writing the Claude control response. Both are Unix epoch seconds as floats. This records transport delivery; `tool_result_delivered` records separate model-context evidence. `run_end.calls_delivered` counts emitted `call_ledger` records.
 

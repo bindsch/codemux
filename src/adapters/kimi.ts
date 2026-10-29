@@ -6,7 +6,7 @@ import { assertNoKimiProjectExecutionConfig } from "../project-safety.js";
 import { kimiPromptIsCommand } from "../session/kimi-session.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import { writeKimiNoToolsFile } from "../kimi-no-tools.js";
-import { createKimiHermeticHome, KIMI_HERMETIC_ENV_OMISSIONS } from "../kimi-hermetic.js";
+import { createKimiHermeticHome, KIMI_HERMETIC_ENV_ASSIGNMENTS, KIMI_HERMETIC_ENV_OMISSIONS } from "../kimi-hermetic.js";
 import { assertNoKimiHermeticProjectConfig } from "../kimi-project-safety.js";
 import { kimiResult } from "../result-envelope/kimi.js";
 import { parseVersionParts } from "../harness-compatibility.js";
@@ -300,6 +300,7 @@ export class KimiAdapter extends BaseAdapter {
     // Scode must keep the real HOME for policy and credential access. Redirect only its child.
     const cmd = request.hermetic
       ? ["env", ...KIMI_HERMETIC_ENV_OMISSIONS.flatMap((name) => ["-u", name]),
+        ...KIMI_HERMETIC_ENV_ASSIGNMENTS,
         `HOME=${privateHome?.home ?? unpreparedHome}`,
         `KIMI_CODE_HOME=${privateHome?.kimiHome ?? join(unpreparedHome, ".kimi-code")}`, "kimi"]
       : ["kimi"];

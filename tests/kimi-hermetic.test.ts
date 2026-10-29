@@ -9,7 +9,7 @@ import { plantKimiCanary } from "../src/kimi-isolation-probe.js";
 import type { RunRequest } from "../src/types.js";
 import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
 
-function fixture() {
+function fixture(environment: NodeJS.ProcessEnv = {}) {
   const scratch = join(import.meta.dir, "../scratch");
   mkdirSync(scratch, { recursive: true });
   const home = mkdtempSync(join(scratch, "kimi-hermetic-"));
@@ -18,7 +18,7 @@ function fixture() {
   mkdirSync(join(brand, "credentials"), { recursive: true });
   mkdirSync(join(cwd, ".git"), { recursive: true });
   writeFileSync(join(brand, "credentials", "kimi.json"), "original");
-  const adapter = new KimiAdapter({ HOME: home, KIMI_CODE_TRUST_WORKSPACE: "true" }, home);
+  const adapter = new KimiAdapter({ HOME: home, KIMI_CODE_TRUST_WORKSPACE: "true", ...environment }, home);
   const request: RunRequest = { agent: "kimi", prompt: "hello", cwd, hermetic: true, autonomy: "high" };
   return { home, brand, cwd, adapter, request, cleanup: () => rmSync(home, { recursive: true, force: true }) };
 }
@@ -197,6 +197,25 @@ ${mode === "exit" ? "" : "setInterval(() => {}, 1000);"}`;
 });
 
 describe("Kimi hermetic adapter", () => {
+  test.each([false, true])("argv disables binary updates only for hermetic runs; experiment=%s", (experiment) => {
+    const f = fixture({ KIMI_CODE_NO_AUTO_UPDATE: "0", KIMI_CLI_NO_AUTO_UPDATE: "0" });
+    const context = f.adapter.prepareRun(f.request);
+    const request = { ...f.request, experimentMcp: experiment ? join(f.home, "spec.json") : undefined,
+      passthroughEnv: ["KIMI_CODE_NO_AUTO_UPDATE", "KIMI_CLI_NO_AUTO_UPDATE"] };
+    try {
+      for (const prepared of [undefined, context]) {
+        const argv = f.adapter.buildRunCommand(request, prepared);
+        expect(argv[0]).toBe("env");
+        expect(argv.slice(1, argv.indexOf("kimi"))).toContain("KIMI_CODE_NO_AUTO_UPDATE=1");
+        expect(argv.filter((arg) => arg.startsWith("KIMI_CODE_NO_AUTO_UPDATE=")))
+          .toEqual(["KIMI_CODE_NO_AUTO_UPDATE=1"]);
+        const plain = f.adapter.buildRunCommand({ ...request, hermetic: false }, prepared);
+        expect(plain[0]).toBe("kimi");
+        expect(plain).not.toContain("KIMI_CODE_NO_AUTO_UPDATE=1");
+      }
+    } finally { f.adapter.cleanupRunSync(context); f.cleanup(); }
+  });
+
   test.each(["KIMI_MCP_TOOL_TIMEOUT_MS", "KIMI_MCP_STARTUP_TIMEOUT_MS"])("private argv removes inherited %s", (name) => {
     const f = fixture();
     const context = f.adapter.prepareRun(f.request);
@@ -219,7 +238,7 @@ describe("Kimi hermetic adapter", () => {
       expect(f.adapter.capabilities().supportsResultJson).toBe(true);
       expect(f.adapter.buildRunCommand(request, context)).toEqual(["env",
         ...KIMI_HERMETIC_ENV_OMISSIONS.flatMap((name) => ["-u", name]),
-        `HOME=${home.home}`, `KIMI_CODE_HOME=${home.kimiHome}`, "kimi", "--skills-dir", home.skillsDir,
+        "KIMI_CODE_NO_AUTO_UPDATE=1", `HOME=${home.home}`, `KIMI_CODE_HOME=${home.kimiHome}`, "kimi", "--skills-dir", home.skillsDir,
         "--agent-file", home.agentFile, "--output-format", "stream-json", "--prompt", "hello"]);
       expect(f.adapter.getRunEnv(request, context)).toEqual({});
       expect(f.adapter.getRunEnv({ ...request, sandboxed: true }, context)).toEqual({});

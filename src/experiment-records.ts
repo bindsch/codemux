@@ -52,6 +52,8 @@ export interface ExperimentRecordFields {
   http_request: { method: string; path: string; token_matched: boolean; bytes_base64: string; body_complete: boolean } |
     { method: string; path: "/catalog"; client_version: string | null; authorization_present: boolean; bytes_base64: string; body_complete: boolean };
   http_response: { status: number; bytes_base64: string };
+  relay_ping: { rpc_id: string | number };
+  relay_reinitialize: { rpc_id: string | number };
 }
 export type ExperimentRecord = <K extends keyof ExperimentRecordFields & string>(kind: K, fields: ExperimentRecordFields[K]) => void;
 export function turnRecord(message_id: string, t: number, usage: ExperimentUsage | null,
@@ -111,7 +113,9 @@ export class ExperimentRecording {
       if (Object.hasOwn(fields, key)) throw new ExperimentFailure(ExperimentFailureCode.Protocol,
         `experiment record fields contain reserved field ${key}`);
     }
-    const line = JSON.stringify({ ...fields, run_id: this.runId, seq: this.sequence, kind }) + "\n";
+    const { t, ...payload } = fields;
+    const line = JSON.stringify({ run_id: this.runId, seq: this.sequence,
+      t: t ?? Date.now() / 1000, kind, ...payload }) + "\n";
     const bytes = Buffer.from(line);
     if (this.bytes + bytes.length > MAX_RECORDING_BYTES && kind !== "failure" && kind !== "run_end") {
       throw new Error("experiment MCP recording exceeds 256 MiB");

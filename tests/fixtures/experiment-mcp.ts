@@ -1,5 +1,5 @@
 // A protocol fixture only: bash returns a constant and executes no command.
-// The hold:<milliseconds> command delays its response by at most one hour.
+// The hold:<milliseconds> command schedules its response at most one hour later.
 import { createInterface } from "node:readline";
 
 export const MARKER = "CODEMUX-MCP-RESULT-8B73E209";
@@ -36,9 +36,12 @@ if (import.meta.main) {
     const command = message?.params?.arguments?.command;
     const hold = message.id !== undefined && message.method === "tools/call" && message.params?.name === "bash"
       && typeof command === "string" ? /^hold:(\d+)$/.exec(command) : null;
-    if (hold) await new Promise<void>((resolve) => setTimeout(resolve, Math.min(Number(hold[1]), MAX_HOLD_MS)));
-    const result = respond(message);
-    if (result) process.stdout.write(JSON.stringify(result) + "\n");
+    const reply = () => {
+      const result = respond(message);
+      if (result) process.stdout.write(JSON.stringify(result) + "\n");
+    };
+    if (hold) setTimeout(reply, Math.min(Number(hold[1]), MAX_HOLD_MS));
+    else reply();
     // The late-failure regression: answer normally, then exit after a beat,
     // so the failure lands after Claude's successful finish.
     if (command === "exit-later") {

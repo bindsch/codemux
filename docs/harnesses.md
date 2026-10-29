@@ -86,6 +86,8 @@ Kimi's headless bullet format was observed on 2.3.2: each reply block starts wit
 
 Kimi hermetic runs use private HOME/KIMI_CODE_HOME directories, a filtered config, an empty skill directory, and an explicit agent file. Project customization paths are refused; see [isolation](isolation.md). Result-json runs use stream JSON plus the session wire log for usage; see [results](results-and-usage.md). These mechanisms are grounded in 2.3.2 source and verified with synthetic fixtures. No new live check is claimed.
 
+An October 29, 2026 comparison against Kimi 2.4.0 retains the experiment floor at 2.3.2: the reproduced result rendering and wire evidence remain equivalent. `run-v2-print.ts` changes telemetry, Plan mode, and workspace leases; `loopService.ts` adds logging and a warning watchdog. The MCP connection manager adds liveness probing and reconnect handling. Codemux's relay answers pings locally and replays the cached successful initialize result without clearing held tool calls. Every recording now includes `t`; existing event timestamps are preserved. See [the source line ranges](experiment-mcp.md#kimi-configuration-and-delivery-evidence) and [recording schema](experiment-mcp.md#normalized-records). The fresh live 2.4.0 `hold:400000` probe with these fixes remains pending.
+
 ## TUI restrictions
 
 All adapters provide an interactive entry point, but headless options do not automatically apply there. Hermetic mode, tools selection, result envelopes, and experiment MCP injection are not TUI options.

@@ -38,7 +38,7 @@ test("Claude control delivery records exact ledger fields, transport times, nati
   resolve({ jsonrpc: "2.0", id: "rpc-91", result: { content } });
   await settle();
   const entry = ledger(p)[0];
-  expect(entry).toEqual({ kind: "call_ledger", run_id: p.bridge.runId, seq: expect.any(Number),
+  expect(entry).toEqual({ kind: "call_ledger", run_id: p.bridge.runId, seq: expect.any(Number), t: expect.any(Number),
     relay_request_seq: "control-91", native_call_id: "native-7", dispatched_t: 1_793_275_200.123,
     delivered_t: 1_793_275_201.789, correlation: "request_meta", rpc_id: "rpc-91", result_sha256: hash });
   const serverResult = p.records().find((record) => record.kind === "server_tool_result");

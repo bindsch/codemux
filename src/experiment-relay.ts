@@ -35,6 +35,7 @@ export class ExperimentHttpRelay {
   private catalogDelivered = false;
   private modelToolErrors = 0;
   private callsDelivered = 0;
+  private initializeReply?: JsonObject;
   private failure?: ExperimentFailure;
   private mappingFailure = false;
   private closed = false;
@@ -256,6 +257,15 @@ export class ExperimentHttpRelay {
   private async forward(message: JsonObject): Promise<ForwardedResponse> {
     if (this.failure) throw this.failure;
     if (this.closed) throw new Error("experiment HTTP relay is closed");
+    if (message.id !== undefined && (message.method === "ping" ||
+        (message.method === "initialize" && this.initializeReply))) {
+      const ping = message.method === "ping";
+      // Liveness must not wait for the server's stdin loop. A reconnect
+      // reuses the established session and leaves outstanding calls intact.
+      this.record(ping ? "relay_ping" : "relay_reinitialize", { rpc_id: message.id });
+      return { reply: { jsonrpc: "2.0", id: message.id, result: ping ? {} : this.initializeReply!.result },
+        dispatched_t: Date.now() / 1000 };
+    }
     let call: ExperimentRelayCall | undefined;
     if (message.method === "tools/call") {
       if (message.id === undefined) throw new ExperimentFailure(ExperimentFailureCode.Protocol, "experiment MCP tools/call requires a request id");
@@ -296,6 +306,7 @@ export class ExperimentHttpRelay {
     if (reply === undefined) return { dispatched_t };
     if (reply.id !== message.id) throw new Error("experiment MCP response id mismatch");
     if (reply.error !== undefined) return { reply, dispatched_t };
+    if (message.method === "initialize") this.initializeReply = reply;
     if (message.method === "tools/list") {
       if (message.params?.cursor !== undefined) throw new Error("experiment tools/list must start at the first page");
       await this.inventory.accept(reply, null);
