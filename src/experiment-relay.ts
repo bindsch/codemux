@@ -1,20 +1,24 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { finished } from "node:stream/promises";
+import { isDeepStrictEqual } from "node:util";
 import { experimentToolTimeoutSeconds, type ExperimentSpec } from "./experiment-mcp.js";
 import { ExperimentInventory } from "./experiment-inventory.js";
 import { ExperimentFailure, ExperimentFailureCode, experimentFailure, ExperimentRecording, resultContentSha256, type ExperimentRecord } from "./experiment-records.js";
 import { ExperimentServer, MAX_EXPERIMENT_MESSAGE_BYTES, type JsonObject } from "./experiment-server.js";
 import { PIPE_GIVE_UP_MS } from "./process-runner.js";
+import { ExperimentRelayResponse, RELAY_SSE_KEEPALIVE_MS, RELAY_SSE_SWITCH_MS } from "./experiment-relay-response.js";
 
 const REQUEST_BODY_TIMEOUT_MS = 30_000;
 const HTTP_HEADERS_TIMEOUT_MS = 120_000;
 const HTTP_KEEP_ALIVE_TIMEOUT_MS = 86_400_000;
 
 export type ExperimentRelayCall = { relay_index: number; call_id?: string; native_call_id_source?: "request_meta";
-  correlation?: "exact" | "fifo"; name: string; input: unknown; result?: JsonObject };
-export type ExperimentRelayOptions = { catalog?: { body: string }; startFields?: JsonObject };
-type ForwardedResponse = { reply?: JsonObject; call?: ExperimentRelayCall; dispatched_t: number };
+  correlation?: "exact" | "fifo"; name: string; input: unknown; result?: JsonObject; rpc_ids?: (string | number)[] };
+export type ExperimentRelayOptions = { catalog?: { body: string }; startFields?: JsonObject;
+  sseSwitchMs?: number; sseKeepaliveMs?: number };
+type ForwardedResponse = { reply?: JsonObject; call?: ExperimentRelayCall; dispatched_t: number;
+  correlation?: "retry" | "retry_cached" };
 
 /** The experiment server stays outside the harness sandbox. Only this
  * authenticated loopback endpoint is passed to the harness's MCP client. */
@@ -44,9 +48,11 @@ export class ExperimentHttpRelay {
   private requests = new Set<Promise<void>>();
   private resolving = new Set<(error: ExperimentFailure) => void>();
   private failureListeners = new Set<(error: Error) => void>();
+  private dispatches = new Map<ExperimentRelayCall, { response: Promise<ForwardedResponse>; completed: boolean;
+    delivery: ExperimentRelayResponse; nativeId?: string }>();
 
   constructor(readonly spec: ExperimentSpec, cwd: string, environment: NodeJS.ProcessEnv = process.env,
-    options: ExperimentRelayOptions = {}) {
+    private options: ExperimentRelayOptions = {}) {
     if (options.catalog) this.catalog = { nonce: randomBytes(32).toString("hex"), body: Buffer.from(options.catalog.body) };
     this.recording = new ExperimentRecording(spec, cwd, environment,
       { ...options.startFields, catalog_override: options.catalog !== undefined,
@@ -171,6 +177,7 @@ export class ExperimentHttpRelay {
 
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const deadline = Date.now() + REQUEST_BODY_TIMEOUT_MS;
+    let delivery: ExperimentRelayResponse | undefined;
     try {
       const target = request.url ?? "";
       const path = target.split("?", 1)[0] ?? "";
@@ -211,18 +218,27 @@ export class ExperimentHttpRelay {
         return;
       }
       const message = parseMessage(body.bytes);
-      const { reply, call, dispatched_t } = await this.forward(message);
+      if (message.method === "tools/call" && message.id !== undefined) delivery = new ExperimentRelayResponse(
+        response, message.id, this.record, this.options.sseSwitchMs ?? RELAY_SSE_SWITCH_MS,
+        this.options.sseKeepaliveMs ?? RELAY_SSE_KEEPALIVE_MS);
+      const { reply, call, dispatched_t, correlation } = await this.forward(message, delivery);
       const bytes = reply === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(reply));
       if (bytes.length > MAX_EXPERIMENT_MESSAGE_BYTES) {
         throw new ExperimentFailure(ExperimentFailureCode.Protocol, "experiment MCP HTTP response exceeds 1 MiB");
       }
-      const written = finished(response, { readable: false, cleanup: true });
-      this.respond(response, reply === undefined ? 202 : 200, bytes);
-      await written;
-      if (call?.result) {
+      let delivered_t: number | undefined;
+      if (delivery) delivered_t = await delivery.send(bytes, call?.relay_index);
+      else {
+        const written = finished(response, { readable: false, cleanup: true });
+        this.respond(response, reply === undefined ? 202 : 200, bytes);
+        await written;
+        delivered_t = Date.now() / 1000;
+      }
+      if (call?.result && delivered_t !== undefined) {
+        this.dispatches.delete(call);
         this.record("call_ledger", { relay_request_seq: call.relay_index, native_call_id: call.call_id ?? null,
-          dispatched_t, delivered_t: Date.now() / 1000,
-          correlation: call.native_call_id_source ?? call.correlation ?? "exact", rpc_id: message.id,
+          dispatched_t, delivered_t,
+          correlation: correlation ?? call.native_call_id_source ?? call.correlation ?? "exact", rpc_id: message.id,
           result_sha256: resultContentSha256(call.result.content) });
         this.callsDelivered++;
       }
@@ -234,7 +250,7 @@ export class ExperimentHttpRelay {
       this.fail(asError(error));
       try { if (!response.headersSent) this.respond(response, 400); else response.destroy(); }
       catch { response.destroy(); }
-    }
+    } finally { delivery?.close(); }
   }
 
   private serveCatalog(request: IncomingMessage, response: ServerResponse, path: string, query: URLSearchParams): void {
@@ -254,7 +270,7 @@ export class ExperimentHttpRelay {
     this.record("catalog_served", { client_version: clientVersion, bytes: this.catalog.body.length });
   }
 
-  private async forward(message: JsonObject): Promise<ForwardedResponse> {
+  private async forward(message: JsonObject, delivery?: ExperimentRelayResponse): Promise<ForwardedResponse> {
     if (this.failure) throw this.failure;
     if (this.closed) throw new Error("experiment HTTP relay is closed");
     if (message.id !== undefined && (message.method === "ping" ||
@@ -279,8 +295,36 @@ export class ExperimentHttpRelay {
         throw new ExperimentFailure(ExperimentFailureCode.Protocol, "experiment MCP tool arguments must be an object");
       }
       message.params.arguments = input;
-      call = { relay_index: this.calls.length, name, input };
+      const meta = message.params._meta;
+      if (meta !== undefined && (!meta || typeof meta !== "object" || Array.isArray(meta))) throw new Error("experiment MCP request metadata must be an object");
+      if (!delivery) throw new Error("experiment MCP tools/call lacks an HTTP response");
+      const nativeId = typeof meta?.callId === "string" && meta.callId.trim() ? meta.callId : undefined;
+      const retry = [...this.dispatches].find(([candidate, dispatch]) =>
+        candidate.name === name && isDeepStrictEqual(candidate.input, input) &&
+        (nativeId === undefined || nativeId === (dispatch.nativeId ?? candidate.call_id)) &&
+        dispatch.delivery.abandoned && (!dispatch.completed || dispatch.delivery.failed));
+      if (retry) {
+        const [previous, dispatch] = retry;
+        const correlation = dispatch.completed ? "retry_cached" : "retry";
+        // A replacement with an open connection cannot absorb another identical call.
+        dispatch.delivery = delivery;
+        previous.rpc_ids!.push(message.id);
+        this.record("tool_call", { ...previous, relay_request_seq: previous.relay_index, correlation });
+        const forwarded = await dispatch.response;
+        return { ...forwarded, reply: forwarded.reply && { ...forwarded.reply, id: message.id }, correlation };
+      }
+      call = { relay_index: this.calls.length, name, input, rpc_ids: [message.id] };
       this.calls.push(call);
+      const dispatch = { response: this.dispatch(message, call), completed: false, delivery, nativeId };
+      dispatch.response = dispatch.response.then((forwarded) => { dispatch.completed = true; return forwarded; });
+      this.dispatches.set(call, dispatch);
+      return dispatch.response;
+    }
+    return this.dispatch(message);
+  }
+
+  private async dispatch(message: JsonObject, call?: ExperimentRelayCall): Promise<ForwardedResponse> {
+    if (call) {
       try {
         if (!this.resolveCallId) throw new Error("experiment MCP call has no native call ID resolver");
         const callId = await this.nativeCallId(call, message);
@@ -296,7 +340,7 @@ export class ExperimentHttpRelay {
       const meta = message.params._meta;
       if (meta !== undefined && (!meta || typeof meta !== "object" || Array.isArray(meta))) throw new Error("experiment MCP request metadata must be an object");
       message.params._meta = { ...meta, "codemux/callId": call.call_id };
-      this.record("tool_call", { ...call });
+      this.record("tool_call", { ...call, relay_request_seq: call.relay_index });
     }
     this.record("mcp_request", { rpc_id: message.id ?? null,
       ...(call ? { relay_index: call.relay_index, relay_request_seq: call.relay_index } : {}), message });
@@ -408,7 +452,7 @@ export class ExperimentHttpRelay {
     if (this.closed) return;
     try { this.recording.close({ tool_calls: this.calls.length, model_tool_errors: this.modelToolErrors, calls_delivered: this.callsDelivered,
       error, code: error ? this.failureCode ?? ExperimentFailureCode.Protocol : null }); }
-    finally { this.closed = true; }
+    finally { this.closed = true; this.dispatches.clear(); }
   }
 }
 

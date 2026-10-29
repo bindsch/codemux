@@ -161,7 +161,8 @@ test("loopback relay preserves request and response bytes and tool-call ordinals
   expect(response.status).toBe(200);
   expect(response.type).toBe("application/json");
   expect(JSON.parse(response.body)).toEqual({ jsonrpc: "2.0", id: 2, result: { content: [{ type: "text", text: MARKER }] } });
-  expect(relay.calls).toEqual([{ relay_index: 0, call_id: "native-0", name: "bash", input: { command: "π" }, result: { content: [{ type: "text", text: MARKER }] } }]);
+  expect(relay.calls).toEqual([{ relay_index: 0, call_id: "native-0", rpc_ids: [2], name: "bash",
+    input: { command: "π" }, result: { content: [{ type: "text", text: MARKER }] } }]);
   expect([...relay.toolNames]).toEqual(["bash"]);
   relay.finish();
   await relay.close();

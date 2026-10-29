@@ -39,7 +39,7 @@ function post(relay: ExperimentHttpRelay, id: string | number, method: string, p
   return response;
 }
 
-test("identical concurrent Kimi calls retain request delivery identity despite FIFO native attribution", async () => {
+test("identical concurrent Kimi calls retain separate dispatches and FIFO native attribution", async () => {
   const { cwd, spec } = fixture(`import { createInterface } from 'node:readline';
     const held = []; const send = (m, text) => process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,
       result:{content:[{type:'text',text}]}})+'\\n');
@@ -84,6 +84,11 @@ test("identical concurrent Kimi calls retain request delivery identity despite F
     const records = read(relay), ledgers = records.filter((r) => r.kind === "call_ledger");
     expect(ledgers).toHaveLength(2);
     expect(ledgers.map((r) => r.relay_request_seq)).toEqual([1, 0]);
+    expect(ledgers.map((r) => r.rpc_id)).toEqual([42, "rpc-first"]);
+    expect(relay.calls).toHaveLength(2);
+    expect(records.filter((r) => r.kind === "tool_call_identified")).toHaveLength(2);
+    expect(records.filter((r) => r.kind === "mcp_request" && r.message.method === "tools/call")).toHaveLength(2);
+    expect(records.filter((r) => r.kind === "server_tool_result")).toHaveLength(2);
     const fields = ["relay_request_seq", "native_call_id", "dispatched_t", "delivered_t", "correlation", "rpc_id", "result_sha256"];
     for (const ledger of ledgers) {
       expect(Object.keys(ledger).sort()).toEqual([...fields, "run_id", "seq", "t", "kind"].sort());

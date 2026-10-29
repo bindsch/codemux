@@ -48,12 +48,15 @@ export interface ExperimentRecordFields {
   harness_stdout_partial: { bytes_base64: string };
   tool_result_delivered: { call_id: string; t: number };
   call_ledger: { relay_request_seq: number | string; native_call_id: string | null; dispatched_t: number;
-    delivered_t: number; correlation: "exact" | "fifo" | "request_meta"; rpc_id: string | number; result_sha256: string };
+    delivered_t: number; correlation: "exact" | "fifo" | "request_meta" | "retry" | "retry_cached";
+    rpc_id: string | number; result_sha256: string };
   http_request: { method: string; path: string; token_matched: boolean; bytes_base64: string; body_complete: boolean } |
     { method: string; path: "/catalog"; client_version: string | null; authorization_present: boolean; bytes_base64: string; body_complete: boolean };
   http_response: { status: number; bytes_base64: string };
   relay_ping: { rpc_id: string | number };
   relay_reinitialize: { rpc_id: string | number };
+  relay_sse: { rpc_id: string | number; keepalives: number };
+  relay_delivery_failed: { rpc_id: string | number; relay_request_seq?: number; message: string };
 }
 export type ExperimentRecord = <K extends keyof ExperimentRecordFields & string>(kind: K, fields: ExperimentRecordFields[K]) => void;
 export function turnRecord(message_id: string, t: number, usage: ExperimentUsage | null,
