@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { readUtf8FileBounded } from "./file-io.js";
+import { CODEX_EXPERIMENT_CATALOG_REMOVED, codexExperimentCatalogEntry } from "./experiment-codex-catalog.js";
 import { ExperimentFailure, ExperimentFailureCode as Code } from "./experiment-records.js";
 import { MAX_MODEL_NAME_BYTES, validateModelName } from "./validation.js";
 
@@ -17,7 +18,7 @@ export interface CodexExperimentCatalog {
     source_fetched_at: unknown;
     served_models: number;
     served_bytes: number;
-    removed: ["tool_mode"];
+    removed: typeof CODEX_EXPERIMENT_CATALOG_REMOVED;
     requested_only: boolean;
   };
 }
@@ -51,14 +52,11 @@ export function codexExperimentModel(model: string | undefined, realCodexHome: s
   const requested = matches[0]!;
   const mode = requested.tool_mode;
   const selection = { model: selected, clientVersion, sourcePath };
-  // Omitted/null modes defer to feature flags, disabled by experiment launch.
-  if (mode == null || mode === "direct") return selection;
-  if (mode !== "code_mode" && mode !== "code_mode_only") {
+  if (mode != null && mode !== "direct" && mode !== "code_mode" && mode !== "code_mode_only") {
     throw sourceFailure(sourcePath, `model ${selected} has an unsupported tool_mode`);
   }
-  const rewritten = { ...requested };
-  delete rewritten.tool_mode;
-  let served = models.map((entry) => entry === requested ? rewritten : entry);
+  const rewritten = codexExperimentCatalogEntry(requested);
+  let served = models.map(codexExperimentCatalogEntry);
   let body = JSON.stringify({ models: served });
   let requestedOnly = false;
   if (Buffer.byteLength(body, "utf8") > MAX_CATALOG_BYTES) {
@@ -72,7 +70,8 @@ export function codexExperimentModel(model: string | undefined, realCodexHome: s
   }
   return { ...selection, catalog: { body, override: {
     slug: selected, source_path: sourcePath, source_fetched_at: cache.fetched_at ?? null,
-    served_models: served.length, served_bytes: servedBytes, removed: ["tool_mode"], requested_only: requestedOnly,
+    served_models: served.length, served_bytes: servedBytes,
+    removed: CODEX_EXPERIMENT_CATALOG_REMOVED, requested_only: requestedOnly,
   } } };
 }
 

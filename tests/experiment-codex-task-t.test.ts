@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { ExperimentCodexEvidence, type CodexEvidenceRelay } from "../src/experiment-codex.js";
-import { codexCatalog, codexDefinitions } from "./fixtures/experiment-codex.js";
+import { codexCatalog, codexDefinitions, codexWorldState } from "./fixtures/experiment-codex.js";
 
 const THREAD = "12345678-1234-4234-8234-123456789abc";
 const timestamp = "2026-10-29T01:02:03.125Z";
@@ -24,7 +24,7 @@ function fixture(entries: Entry[], builtins: Entry[] = []) {
   const catalog = codexCatalog(["clock__wait"]);
   catalog.payload.tools.push(...builtins);
   writeFileSync(join(dir, `rollout-2026-10-29T01-02-03-${THREAD}.jsonl`),
-    [line("session_meta", { id: THREAD }), catalog, ...entries].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    [line("session_meta", { id: THREAD }), catalog, codexWorldState(["clock__wait"]), ...entries].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
   const records: Entry[] = [];
   const relay: CodexEvidenceRelay = { spec: { name: "experiment", accept_harness_prefix: ["codex-wall-time"] },
     toolNames: new Set(["clock__wait"]), toolDefinitions: codexDefinitions(["clock__wait"]), calls: [],
@@ -60,11 +60,23 @@ describe("Codex model tool errors", () => {
     expect(records.find((record) => record.kind === "result_comparison")).toMatchObject({ call_id: "good", equal: true });
   });
 
-  test.each(["update_plan", "apply_patch", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"])(
+  test.each(["update_plan", "apply_patch"])(
     "keeps built-in %s blocked even with an error result", (name) => {
       const { home, evidence } = fixture([unknown({ namespace: "functions", name }),
         output(`unsupported call: functions.${name}`), token()]);
       expect(() => evidence.finish(home)).toThrow("outside the experiment set");
+    });
+
+  test.each(["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"])(
+    "records resource built-in %s with its native error output", (name) => {
+      const harness_output = `unsupported call: functions.${name}`;
+      const { home, evidence, records } = fixture([unknown({ namespace: "functions", name }),
+        output(harness_output), token()]);
+      expect(() => evidence.finish(home)).not.toThrow();
+      expect(records.filter((record) => record.kind === "harness_builtin_call")).toEqual([
+        { kind: "harness_builtin_call", call_id: "bad", name: `functions.${name}`, input: { seconds: 1 }, harness_output },
+      ]);
+      expect(records.filter((record) => record.kind === "model_tool_error")).toHaveLength(0);
     });
 
   test.each([undefined, "functions"])("accepts a flattened unknown name in namespace %j", (namespace) => {
@@ -75,11 +87,18 @@ describe("Codex model tool errors", () => {
       name: namespace ? "functions.weather.forecast" : "weather.forecast", harness_output: "unsupported call: weather.forecast" });
   });
 
-  test.each(["functions.apply_patch", "functions.read_mcp_resource", "functions.update_plan"])(
+  test.each(["functions.apply_patch", "functions.update_plan"])(
     "blocks a flattened built-in name %s", (name) => {
       const { home, evidence } = fixture([unknown({ namespace: undefined, name }), output(`unsupported call: ${name}`), token()]);
       expect(() => evidence.finish(home)).toThrow("outside the experiment set");
     });
+
+  test("rejects a literal functions prefix in a resource call name", () => {
+    const name = "functions.read_mcp_resource";
+    const harness_output = `unsupported call: ${name}`;
+    const { home, evidence } = fixture([unknown({ namespace: undefined, name }), output(harness_output), token()]);
+    expect(() => evidence.finish(home)).toThrow("outside the experiment set");
+  });
 
   test("blocks a declared optional built-in", () => {
     const { home, evidence } = fixture([unknown({ namespace: "clock", name: "sleep" }), output("unsupported call: clock.sleep"), token()], [

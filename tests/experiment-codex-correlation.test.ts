@@ -5,7 +5,7 @@ import { ExperimentCodexEvidence, type CodexEvidenceRelay } from "../src/experim
 import { ExperimentFailureCode } from "../src/experiment-records.js";
 import { ExperimentHttpRelay, type ExperimentRelayCall } from "../src/experiment-relay.js";
 import { ExperimentServer, type JsonObject } from "../src/experiment-server.js";
-import { codexCatalog, codexDefinitions } from "./fixtures/experiment-codex.js";
+import { codexCatalog, codexDefinitions, codexWorldState } from "./fixtures/experiment-codex.js";
 
 const THREAD = "12345678-1234-4234-8234-123456789abc";
 const TIME = "2026-10-29T01:02:03.125Z";
@@ -26,12 +26,13 @@ function rollout(calls: ExperimentRelayCall[]): string {
   const lines = [
     { type: "session_meta", payload: { id: THREAD } },
     codexCatalog(["lookup"]),
+    codexWorldState(["lookup"]),
     ...calls.map((call, index) => ({ type: "response_item", payload: { type: "function_call",
       id: `function-${index}`, call_id: call.call_id, namespace: "mcp__experiment", name: call.name,
       arguments: JSON.stringify(call.input) } })),
     ...calls.map((call) => ({ type: "response_item", payload: { type: "function_call_output", call_id: call.call_id,
       output: `${HEADER}\n${call.result!.content[0].text}` } })),
-    { type: "event_msg", payload: { type: "token_count", info: { last_token_usage: USAGE } } },
+    ...(calls.length ? [{ type: "event_msg", payload: { type: "token_count", info: { last_token_usage: USAGE } } }] : []),
   ];
   writeFileSync(join(sessions, `rollout-2026-10-29T01-02-03-${THREAD}.jsonl`),
     lines.map((line) => JSON.stringify({ timestamp: TIME, ...line })).join("\n") + "\n");
@@ -64,7 +65,7 @@ test.each([
   });
   const relay = new ExperimentHttpRelay({ name: "experiment", command: process.execPath, env: [],
     args: [], recording: join(cwd, "records") }, cwd, {}, { catalog: { body: '{"models":[]}' } });
-  const evidence = new ExperimentCodexEvidence(relay, { catalogRequired: true, callIdTimeoutMs: 25 });
+  const evidence = new ExperimentCodexEvidence(relay, { codexHome: rollout([]), catalogRequired: true, callIdTimeoutMs: 25 });
   relay.resolveCallId = (call, message) => evidence.resolveCallId(call, message);
   try {
     await relay.start();

@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { assertCodexResult, compareCodexOutput, object } from "./experiment-codex-content.js";
 import { CodexRolloutCursor, findRollout } from "./experiment-codex-rollout.js";
 import { CodexRolloutParser, type CodexNativeCall } from "./experiment-codex-parser.js";
+import { matchesCodexResourceResult } from "./experiment-codex-resource.js";
 import { ExperimentFailure, ExperimentFailureCode as Code, experimentFailure, type ExperimentRecord } from "./experiment-records.js";
 import type { ExperimentRelayCall } from "./experiment-relay.js";
 import type { JsonObject } from "./experiment-server.js";
@@ -82,9 +83,6 @@ export class ExperimentCodexEvidence {
     if (typeof requestId === "string" && requestId.trim()) {
       this.requestIds.set(call.relay_index, requestId);
       call.native_call_id_source = "request_meta";
-      const native = this.nativeCall(call);
-      if (native) this.assertNativeCall(native, call);
-      return requestId;
     }
     const deadline = this.options.callIdTimeoutMs ?? CALL_ID_TIMEOUT_MS;
     return new Promise<string>((resolve, reject) => {
@@ -96,16 +94,24 @@ export class ExperimentCodexEvidence {
       };
       const check = () => {
         if (this.liveError || this.finishError) { settle(this.liveError ?? this.finishError); return; }
-        if (this.finished) { settle(new ExperimentFailure(Code.CallIdUnresolved, "Codex evidence closed before native call ID resolution")); return; }
+        if (this.finished) { settle(new ExperimentFailure(this.parser?.inventoryChecked ? Code.CallIdUnresolved : Code.HarnessLogMissing,
+          "Codex evidence closed before top-level inventory and native call ID verification")); return; }
+        if (!this.parser?.inventoryChecked) return;
         const native = this.nativeCall(call);
+        if (this.requestIds.has(call.relay_index)) {
+          try { if (native) this.assertNativeCall(native, call); settle(undefined, this.requestIds.get(call.relay_index)); }
+          catch (error) { settle(experimentFailure(error)); }
+          return;
+        }
         if (native) {
           try { this.assertNativeCall(native, call); settle(undefined, native.callId); }
           catch (error) { settle(experimentFailure(error)); }
         }
       };
       this.waiters.add(check);
-      timer = setTimeout(() => settle(new ExperimentFailure(Code.CallIdUnresolved,
-        `Codex native call ID unresolved for relay call ${call.relay_index} after ${deadline} ms`)), deadline);
+      timer = setTimeout(() => settle(new ExperimentFailure(this.parser?.inventoryChecked ? Code.CallIdUnresolved : Code.HarnessLogMissing,
+        this.parser?.inventoryChecked ? `Codex native call ID unresolved for relay call ${call.relay_index} after ${deadline} ms`
+          : `Codex world_state top_level_tools missing before relay call ${call.relay_index} after ${deadline} ms`)), deadline);
       check();
     });
   }
@@ -179,6 +185,8 @@ export class ExperimentCodexEvidence {
       if (!this.cursor) this.initialize(codexHome);
       const path = this.cursor!.finish();
       this.relay.record("harness_rollout", { path, thread_id: this.threadId });
+      if (!this.parser!.inventoryChecked) throw new ExperimentFailure(Code.HarnessLogMissing,
+        "Codex rollout is missing world_state top_level_tools");
       this.parser!.finish(options);
       this.verifyCalls(path);
       this.verifyExecResults();
@@ -214,12 +222,17 @@ export class ExperimentCodexEvidence {
 
   private verifyExecResults(): void {
     const remaining = [...this.relay.calls];
+    const builtinCalls = [...this.parser!.builtinCalls];
     for (const item of this.execResults) {
       const nativeId = item.call_id ?? item.callId;
       const index = remaining.findIndex((call) => item.server === this.relay.spec.name && item.tool === call.name &&
         (nativeId === undefined || nativeId === this.nativeId(call)) &&
         item.status === (call.result?.isError === true ? "failed" : "completed") &&
         isDeepStrictEqual(item.arguments, call.input) && isDeepStrictEqual(object(item.result)?.content, call.result?.content));
+      if (index === -1) {
+        const builtin = builtinCalls.findIndex((call) => matchesCodexResourceResult(call, item));
+        if (builtin !== -1) { builtinCalls.splice(builtin, 1); continue; }
+      }
       if (index === -1 || (item.error != null && item.status !== "failed") || !object(item.result)) {
         throw new ExperimentFailure(Code.ResultChanged, "Codex exec MCP result does not match a completed experiment relay call");
       }

@@ -7,9 +7,9 @@ import { codexCatalog, codexDefinitions } from "./fixtures/experiment-codex.js";
 
 const timestamp = "2026-10-29T01:02:03Z";
 const line = (payload: JsonObject) => ({ timestamp, type: "response_item", payload });
+const resourceNames = ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"];
 const coreNames = [
   "update_plan", "plan", "exec_command", "write_stdin", "apply_patch",
-  "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource",
   "wait_for_environment", "request_user_input", "request_user_input_async", "send_message_to_user_async",
   "request_permissions", "new_context", "get_context_remaining", "test_sync_tool", "view_image",
   "list_available_plugins_to_install", "request_plugin_install", "tool_search", "tool_search_tool", "exec", "wait",
@@ -60,12 +60,36 @@ function rejectedCall(namespace: string | undefined, name: string, type = "funct
   expect(records.filter((record) => record.kind === "model_tool_error")).toHaveLength(0);
 }
 
+function resourceCall(namespace: string | undefined, name: string) {
+  const { parser, records } = fixture();
+  const qualified = namespace ? `${namespace}.${name}` : name;
+  const harness_output = `unsupported call: ${name}`;
+  parser.accept(line({ type: "function_call", namespace, name, id: "fc_resource", call_id: "resource", arguments: "{}" }));
+  parser.accept(line({ type: "function_call_output", call_id: "resource", output: harness_output }));
+  parser.accept({ timestamp, type: "event_msg", payload: { type: "token_count",
+    info: { last_token_usage: { input_tokens: 8, cached_input_tokens: 0, output_tokens: 2 } } } });
+  expect(() => parser.finish()).not.toThrow();
+  expect(records.filter((record) => record.kind === "harness_builtin_call")).toEqual([
+    { kind: "harness_builtin_call", call_id: "resource", name: qualified, input: {}, harness_output },
+  ]);
+  expect(records.filter((record) => record.kind === "model_tool_error")).toHaveLength(0);
+  expect(parser.calls).toHaveLength(0);
+}
+
 describe("Codex restricted built-in calls", () => {
   test.each(coreNames)("rejects undeclared built-in %s despite its matching unsupported-call error", (name) => {
     rejectedCall("functions", name);
   });
 
   test.each(coreNames)("rejects flattened built-in functions.%s", (name) => {
+    rejectedCall(undefined, `functions.${name}`);
+  });
+
+  test.each(resourceNames)("records native resource built-in functions.%s despite its unsupported-call output", (name) => {
+    resourceCall("functions", name);
+  });
+
+  test.each(resourceNames)("rejects a literal functions prefix in resource call name functions.%s", (name) => {
     rejectedCall(undefined, `functions.${name}`);
   });
 

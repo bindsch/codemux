@@ -51,6 +51,23 @@ export const CODEX_NO_TOOLS_FLAGS = [
   "-c", "tools.view_image=false",
 ] as const;
 
+// Disable configurable native tools. Catalog overrides also remove native-tool
+// settings selected by model metadata.
+export const CODEX_EXPERIMENT_FLAGS = [
+  "-c", "features.non_prefixed_mcp_tool_names=false",
+  "--disable", "code_mode",
+  "--disable", "code_mode_host",
+  "--disable", "sleep_tool",
+  "--disable", "send_message_to_user_async",
+  "--disable", "request_permissions_tool",
+  "--disable", "token_budget",
+  "--disable", "deferred_executor",
+  "--disable", "current_time_reminder",
+  "-c", "multi_agent_v2.disable_native_tools=true",
+  "-c", "tools.update_plan.enabled=false",
+  "-c", "tools.experimental_request_user_input.enabled=false",
+] as const;
+
 // The file's name inside its per-run directory (or the private hermetic
 // home): the directory gives the run its uniqueness, so the file itself
 // needs none.

@@ -1,0 +1,38 @@
+{
+  "provenance": {
+    "kind": "native world_state excerpt",
+    "source_run_id": "8415a55b-5587-4255-bd7d-d80c22ca40f6",
+    "source_rollout_bytes": 84944,
+    "source_rollout_sha256": "b3ac7b7fa50254d83f78236ad3a372580cc363f4271b768239f643a6b7070b41"
+  },
+  "world_state": {
+    "timestamp": "2026-10-29T22:11:43.347Z",
+    "type": "world_state",
+    "payload": {
+      "full": true,
+      "state": {
+        "top_level_tools": {
+          "clock": "056c51947a5ff3696d9903c0056dda49a7b4a700",
+          "clock.curr_time": "8aa514f3b96b1b0c5dac51f90767c83e5e3456a5",
+          "clock.sleep": "d950878350d3930efdf6960ff2a2209affa5961f",
+          "collaboration": "1a57bec22b804d9b7cd49b48ad24adfd4a1feea1",
+          "collaboration.followup_task": "8af28fd0b803a052209ece91fc9f67d124318928",
+          "collaboration.interrupt_agent": "2267464134322564b477c2071a43759fd536efa3",
+          "collaboration.list_agents": "d987d2a1e82acbbae7443d42e8f2d95193658cf8",
+          "collaboration.send_message": "b819d4153e4de3810e02069a09a02d792d729740",
+          "collaboration.spawn_agent": "98ef97feb629c6e513a9e006304b796ce28f32b2",
+          "collaboration.wait_agent": "dc7676a6bd8dfdc175b52d69b71c14b1c6e276fd",
+          "functions": "1280f4a8681f8bc4035e99ba9c8e3ba2e657c6af",
+          "functions.apply_patch": "53fa10e704ea49b64551be5d76ce0f9012d1b0c1",
+          "functions.list_mcp_resource_templates": "0801747fb3afb11a2b21366df7834c404f0aa860",
+          "functions.list_mcp_resources": "7ee2924e9404f0050548ce5eaa7c2ed6a00b7f2e",
+          "functions.read_mcp_resource": "f4a79c9aecf8082eb13f893077b1d0d9c775e543",
+          "functions.request_user_input": "776071d04540321db1d194f0ec11ed4e2319f8ae",
+          "functions.request_user_input_async": "32fcc4bbb4a5ae6aa165ae1cabca86d57a4189aa",
+          "mcp__experiment": "9cd9552d4f515cc2ceb2e62638094727a75d1a0f",
+          "mcp__experiment.bash": "d82b8eb06a4b6087a2070540cf8b86e50763dee9"
+        }
+      }
+    }
+  }
+}

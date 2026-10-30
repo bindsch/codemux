@@ -95,7 +95,7 @@ Malformed authenticated JSON or JSON-RPC envelopes also return HTTP 400 and fail
 HTTP 413 headers are flushed immediately; rejected uploads drain only until the original 30-second request deadline. HTTP 408 closes without another drain period.
 The 30-second deadline covers request-body receipt only. The relay sets `requestTimeout = 0`, `timeout = 0`, `headersTimeout = 120000`, and `keepAliveTimeout = 86400000`. A regression test checks the running server object for `requestTimeout === 0`, `timeout === 0`, and `keepAliveTimeout >= 86400000`. `ExperimentServer.request()` has no pending-request deadline. The private tool timeout and the run's `--timeout` remain configured bounds; the harness or host can terminate a hold earlier.
 
-The relay answers `ping` locally with `{jsonrpc: "2.0", id, result: {}}` and records `relay_ping` with `rpc_id` and `t`. This is the only fresh JSON-RPC result it creates on the server's behalf. A synchronous stdio server can block on a held tool call, leaving a forwarded ping unanswered past Kimi's five-second liveness deadline. The Claude/Z.AI bridge continues forwarding pings.
+The relay answers `ping` locally with `{jsonrpc: "2.0", id, result: {}}` and records `relay_ping` with `rpc_id` and `t`. A synchronous stdio server can block on a held tool call, leaving a forwarded ping unanswered past Kimi's five-second liveness deadline. The Claude/Z.AI bridge continues forwarding pings.
 The relay caches the original successful `initialize` result. A later `initialize` replays that result with the new request ID and records `relay_reinitialize` with `rpc_id` and `t`. It does not restart the server or clear pending tool calls. The fixture schedules `hold:<ms>` replies with a timer, so its stdin loop keeps answering other requests, including pings.
 
 For either relay harness, a retry requires the same tool name, deeply equal arguments, and no distinct native identity. The prior matching pending request's own HTTP connection must already be closed by the client. A distinct Codex `_meta.callId` starts a new call. Reusing the same ID still requires the abandoned connection. Identical requests with open connections are legitimate concurrent calls. They dispatch separately and match native calls FIFO when no native ID distinguishes them. A retry can attach while native resolution is pending and reuses the original native call ID. Its `tool_call` record has `correlation: "retry"`, the original and retry IDs in `rpc_ids`, and the shared `relay_request_seq`.
@@ -118,13 +118,9 @@ A slug absent from the account's catalog fails with `model_unavailable`;
 the diagnostic names the cache path, `fetched_at`, and listed slugs.
 With `--result-json`, preflight failures `model_required`, `model_unavailable`, and `code_mode` return the failure envelope with `recording: null` because no recording has been created.
 
-Only cached `code_mode` or `code_mode_only` requests use a catalog override.
-Codemux removes `tool_mode` from the requested entry and preserves every other
-entry and field. It serves `{"models":[...]}` with a 1 MiB response cap, falling
-back to the requested entry alone if necessary. That entry exceeding the cap
-fails with `code_mode`. Direct-tool requests leave the catalog unchanged.
+Every Codex experiment serves a sanitized catalog, including direct, omitted, and null tool modes. For every served model, Codemux deletes `tool_mode` and `multi_agent_version`, removes only `clock` from `experimental_supported_tools`, and sets `apply_patch_tool_type` to null. Other fields stay unchanged. It serves `{"models":[...]}` with a 1 MiB response cap, falling back to the requested entry alone if necessary. That entry exceeding the cap fails with `code_mode`. The real cache is unchanged.
 
-For an override, this token-free config selects a custom provider. It has no
+This token-free config selects a custom provider. It has no
 `base_url`; Codex keeps its normal authenticated backend route.
 
 ```toml
@@ -143,23 +139,22 @@ model_catalog_url = "http://127.0.0.1:<port>/catalog/<nonce>"
 
 The provider retains `name = "OpenAI"` and ChatGPT authentication. See
 [provider differences](experiment-codex-catalog.md#provider-selection-and-differences)
-for reserved IDs, metadata, cyber access, and defaults. A catalog override
-cannot coexist with an active `CODEMUX_CODEX_PROVIDER_*` override; Codemux
-refuses the combination before private config writes. Direct-mode experiments
-without a catalog override retain existing provider override behavior.
-Experiment flags still include `--disable code_mode --disable code_mode_host`.
-Both direct-model and catalog-override runs set `omit_tools_from = ["deferred", "code_mode"]` in the private `[mcp_servers.<name>]` table. `run_start.omit_tools_from` records the same list.
+for reserved IDs, metadata, cyber access, and defaults. Every experiment refuses an active `CODEMUX_CODEX_PROVIDER_*` override before private config writes.
+Experiment flags disable `code_mode`, `code_mode_host`, `sleep_tool`, `current_time_reminder`, `multi_agent`, `multi_agent_v2`, `send_message_to_user_async`, `request_permissions_tool`, `token_budget`, and `deferred_executor`, in addition to the existing shell, image, browser, and plugin controls. They set `multi_agent_v2.disable_native_tools=true`, `tools.update_plan.enabled=false`, and `tools.experimental_request_user_input.enabled=false`. See [all built-in names, removal switches, and source registrations](experiment-codex-catalog.md#native-tool-removal-and-startup-check).
+Every run sets `omit_tools_from = ["deferred", "code_mode"]` in the private `[mcp_servers.<name>]` table. `run_start.omit_tools_from` records the same list.
 Finding, October 29, 2026: Codex `rust-v0.165.0` subtracts these surfaces before deferral, leaving only `direct` in the initial tool list (`codex-rs/core/src/tools/spec_plan.rs:255-287`). The server field is at `codex-rs/config/src/mcp_types.rs:266-269`; the serialized surface names are at `codex-rs/protocol/src/config_types.rs:396-407`.
 With no searchable deferred tools, the builder omits tool search (`codex-rs/core/src/tools/spec_plan.rs:392-417,454-461`). An unexpected call fails with `unknown_tool`, names the tool, and reports an exposure policy change. See the [dated source finding](experiment-codex-catalog.md#direct-mcp-exposure).
 
 Each experiment declaration must match the relay description (absent means `""`) and set `strict: false`. Its `parameters` must be a recursive subset of the original relay `inputSchema`: retained keys, indices, and values stay at the same paths; only object keys and array suffix entries may be omitted. Additions, changed values, or shifted indices fail with `inventory_mismatch`. Each declaration records omitted JSON Pointer paths in `catalog_pruned_paths`. Codemux does not reproduce Codex schema lowering, pruning, compaction, or byte budgets. See the [catalog contract and direct-renderer source](experiment-codex-catalog.md#built-in-declarations).
 
-The exact Codex 0.165.0 built-in declarations accepted by `CODEX_BUILTIN_DECLARATIONS` are `functions.list_mcp_resources`, `functions.list_mcp_resource_templates`, `functions.read_mcp_resource`, `functions.request_user_input`, `functions.request_user_input_async`, `functions.apply_patch`, `clock.curr_time`, `clock.sleep`, `collaboration.followup_task`, `collaboration.interrupt_agent`, `collaboration.list_agents`, `collaboration.send_message`, `collaboration.spawn_agent`, and `collaboration.wait_agent`. `apply_patch` has type `custom`; the others have type `function`. Catalog records mark them `builtin`. Every other declaration outside the experiment inventory fails with `inventory_mismatch`. Built-in calls fail with `unknown_tool` even if undeclared or paired with an unsupported-call error. The restricted set covers the Codex 0.165.0 shell, core utility, collaboration, web, image, and code execution tools. See the [built-in names and source references](experiment-codex-catalog.md#built-in-declarations).
+The 14 historical Codex 0.165.0 built-in declarations remain accepted for saved-rollout replay and recorded as `builtin`. Live dispatch first requires `world_state.state.top_level_tools` to contain only qualified experiment tools and `functions.list_mcp_resources`, `functions.list_mcp_resource_templates`, and `functions.read_mcp_resource`, with their namespace headers. `harness_top_level_tools` records the raw `tools` map and native `t`. Extra names fail with `inventory_mismatch` and terminate before dispatch. All `tools/call` requests, including `_meta.callId` requests, wait within the existing five-second native-ID deadline; missing inventory evidence fails with `harness_log_missing`. See the [historical declarations and complete restricted list](experiment-codex-catalog.md#built-in-declarations).
+
+The resource trio is unavoidable when Codex has an MCP server. The relay answers `resources/list` with `{"resources":[]}`, `resources/templates/list` with `{"resourceTemplates":[]}`, and `resources/read` with error `-32002`, message `no resources`, without forwarding or failing the run. It records `relay_resources` with `method`, `rpc_id`, and `t`. Native trio calls record `harness_builtin_call` with `call_id`, qualified `name`, `input`, exact `harness_output`, and common `t`, then continue outside experiment-call and model-error counts. Every other built-in call fails with `unknown_tool` even if undeclared or paired with an unsupported-call error.
 
 A refused `exec` call fails with `unknown_tool` for either `function_call` or `custom_tool_call`; an inventory function named `exec` remains allowed.
 An override run also fails with `code_mode` if Codex has not fetched the catalog before call ID resolution and dispatch, including requests with `_meta.callId`.
 
-The preserved October 29, 2026 `gpt-6-astra` probe completed direct experiment delivery. Replay verifies its saved rollout, relay result, and exec completion after the catalog fix. No new live probe was run. See [Codex catalog and delivery details](experiment-codex-catalog.md) for nonce authentication, recording fields, rollout evidence, and exact header comparison.
+The preserved October 29, 2026 `gpt-6-astra` excerpt verifies delivery with an explicitly synthetic restricted world state. The unmodified preserved `8415a55b` rollout is rejected for its visible built-ins. Later that day, Atomix rig `brain18`, run `s105`, lock `lw`, case `A6`, twice exposed clock, collaboration, and `apply_patch` tools at Codemux `ee9f3d0`; `clock.sleep` failed with `unknown_tool`. This finding motivates the startup check. No new live probe was run for the fix. See [Codex catalog and delivery details](experiment-codex-catalog.md).
 
 ### Kimi configuration and delivery evidence
 
@@ -169,7 +164,7 @@ argv and the child environment. The private home, config, empty skill
 directory, explicit agent profile, and project-path refusals follow the
 Kimi hermetic contract in [isolation](isolation.md).
 
-Every hermetic Kimi child sets `KIMI_CODE_NO_AUTO_UPDATE=1` and never updates the installed binary.
+Every hermetic Kimi child sets `KIMI_CODE_NO_AUTO_UPDATE=1` and never updates the installed binary, and `KIMI_CODE_REPEAT_BREAKER=false` so kimi never appends its repeated-call reminder to a tool result (seen live on 2026-10-30 in a lock-holding run: the reminder made the model-bound result differ from the server's and failed the run as result_changed).
 This disables both the startup update check and background installation, for experiment and ordinary runs.
 Plain runs, including non-hermetic check controls, may still update the binary. Record the Kimi version used in the live-gate notes.
 
@@ -417,11 +412,14 @@ Usage = {"input":int,"output":int,"cache_read":int,"cache_write":int}
 {"run_id":…,"seq":…,"t":float,"kind":"call_ledger","relay_request_seq":int|str,"native_call_id":str|null,"dispatched_t":float,"delivered_t":float,"correlation":"exact"|"fifo"|"request_meta"|"retry"|"retry_cached","rpc_id":int|str,"result_sha256":str}
 {"run_id":…,"seq":…,"t":float,"kind":"relay_ping","rpc_id":int|str}
 {"run_id":…,"seq":…,"t":float,"kind":"relay_reinitialize","rpc_id":int|str}
+{"run_id":…,"seq":…,"t":float,"kind":"relay_resources","method":str,"rpc_id":int|str|null}
+{"run_id":…,"seq":…,"t":float,"kind":"harness_top_level_tools","tools":object}
+{"run_id":…,"seq":…,"t":float,"kind":"harness_builtin_call","call_id":str,"name":str,"input":unknown,"harness_output":unknown}
 {"run_id":…,"seq":…,"t":float,"kind":"relay_sse","rpc_id":int|str,"keepalives":int}
 {"run_id":…,"seq":…,"t":float,"kind":"relay_delivery_failed","rpc_id":int|str,"relay_request_seq"?:int,"message":str}
 ```
 
-`call_ledger` records one delivered request with exactly seven fields beyond the common `run_id`, `seq`, `t`, and `kind`. `relay_request_seq` is the zero-based dispatch ordinal for Codex/Kimi, or the string control-request ID for Claude/Z.AI. `rpc_id` is the harness's JSON-RPC request ID. Request identity remains independent of native attribution: `native_call_id` is a string or null, and `correlation` records `exact`, `fifo`, `request_meta`, `retry`, or `retry_cached`. Codex, Claude, and Z.AI can use request metadata. Initial HTTP dispatches require native resolution; retries reuse it. `relay_ping`, `relay_reinitialize`, `relay_sse`, and `relay_delivery_failed` do not count as delivered calls. `relay_sse` records the request ID, keepalive count, and time. `relay_delivery_failed` has the request ID, an optional dispatch sequence, and the error message.
+`call_ledger` records one delivered request with exactly seven fields beyond the common `run_id`, `seq`, `t`, and `kind`. `relay_request_seq` is the zero-based dispatch ordinal for Codex/Kimi, or the string control-request ID for Claude/Z.AI. `rpc_id` is the harness's JSON-RPC request ID. Request identity remains independent of native attribution: `native_call_id` is a string or null, and `correlation` records `exact`, `fifo`, `request_meta`, `retry`, or `retry_cached`. Codex, Claude, and Z.AI can use request metadata. Initial HTTP dispatches require native resolution; retries reuse it. `relay_ping`, `relay_reinitialize`, `relay_resources`, `harness_top_level_tools`, `harness_builtin_call`, `relay_sse`, and `relay_delivery_failed` do not count as delivered calls. `relay_sse` records the request ID, keepalive count, and time. `relay_delivery_failed` has the request ID, an optional dispatch sequence, and the error message.
 
 `dispatched_t` is captured before forwarding to the server. `delivered_t` is captured when the SSE result data is written, on JSON HTTP response `finish`, or after writing the Claude control response. Both are Unix epoch seconds as floats. This records transport delivery. SSE headers and keepalive comments do not count as result delivery. `tool_result_delivered` records separate model-context evidence. `run_end.calls_delivered` counts emitted `call_ledger` records, including successful retry deliveries.
 
@@ -441,7 +439,7 @@ Kimi uses the stable native step UUID as `message_id`. The first `tool.call` emi
 receipt of Claude's user frame or the timestamp of Codex's rollout
 `function_call_output`, or Kimi's `tool.result` loop event. `t` is Unix epoch
 seconds as a float. Claude uses codemux's receipt clock; Codex and Kimi use their native log timestamps. These records do not establish when a provider processed the result.
-Codex and Kimi record `model_tool_error` with `{call_id, name, input, harness_output}` when an unknown native name receives the harness's own missing-tool error. `harness_output` preserves Codex's rollout output or Kimi's loop error output. The call never reaches the experiment server. Declared built-ins and restricted built-in names still fail closed. Missing or inconsistent error evidence fails verification. `run_end.model_tool_errors` counts these records; an otherwise verified run reports `failure_code: null`.
+Codex and Kimi record `model_tool_error` with `{call_id, name, input, harness_output}` when an unknown native name receives the harness's own missing-tool error. `harness_output` preserves Codex's rollout output or Kimi's loop error output. The call never reaches the experiment server. Built-ins other than Codex's resource trio still fail closed. Missing or inconsistent error evidence fails verification. `run_end.model_tool_errors` counts these records; an otherwise verified run reports `failure_code: null`.
 
 ### Failure codes
 
@@ -496,4 +494,4 @@ Codex refusal evidence in the investigation predates the explicit header
 opt-in. Kimi's relay, naming, tool policy, and reconstructed projection are
 grounded in Kimi Code 2.3.2 source. The October 29 live probes established
 the Kimi header and Codex code-mode call. The 01:41 Codex probe called tool search;
-the 01:58 probe called the experiment tool directly and reached the relay, then failed while waiting for usage. The preserved `gpt-6-astra` probe completed delivery and now verifies by replay. No new live probe was run for these fixes.
+the 01:58 probe called the experiment tool directly and reached the relay, then failed while waiting for usage. The preserved `gpt-6-astra` excerpt verifies delivery with a synthetic restricted world state; the unmodified `8415a55b` rollout is rejected. No new live probe was run for these fixes.

@@ -7,6 +7,24 @@ const SCHEMA_TYPES = new Set(["string", "number", "boolean", "integer", "object"
 const DEFINITION_KEYS = ["$defs", "definitions"];
 const COMPOSITION_KEYS = ["anyOf", "oneOf", "allOf"];
 
+export const CODEX_EXPERIMENT_CATALOG_REMOVED = [
+  "tool_mode", "experimental_supported_tools.clock", "multi_agent_version", "apply_patch_tool_type",
+] as const;
+
+/** Remove model metadata that registers native tools in experiment runs. */
+export function codexExperimentCatalogEntry(value: unknown): unknown {
+  const entry = object(value);
+  if (!entry) return value;
+  const rewritten = { ...entry };
+  delete rewritten.tool_mode;
+  delete rewritten.multi_agent_version;
+  if (Array.isArray(rewritten.experimental_supported_tools)) {
+    rewritten.experimental_supported_tools = rewritten.experimental_supported_tools.filter((tool) => tool !== "clock");
+  }
+  rewritten.apply_patch_tool_type = null;
+  return rewritten;
+}
+
 /** Retained schema values must match the relay. Codex may remove keys or array suffixes. */
 export function assertCodexToolDefinition(tool: JsonObject, name: string, definitions: readonly JsonObject[] | undefined): string[] {
   const definition = definitions?.find((definition) => definition.name === name);

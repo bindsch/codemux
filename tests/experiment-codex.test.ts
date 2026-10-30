@@ -6,12 +6,11 @@ import { CodexRolloutParser } from "../src/experiment-codex-parser.js";
 import { ExperimentFailureCode } from "../src/experiment-records.js";
 import { ExperimentCodexRun } from "../src/experiment-codex-run.js";
 import { MARKER, respond } from "./fixtures/experiment-mcp.js";
-import { codexCatalog, codexDefinitions } from "./fixtures/experiment-codex.js";
+import { codexCatalog, codexDefinitions, codexWorldState } from "./fixtures/experiment-codex.js";
 const THREAD = "12345678-1234-4234-8234-123456789abc";
 const HEADER = "Wall time: 0.0123 seconds\nOutput:";
 const TIME = "2026-10-29T01:02:03.125Z";
-const INPUT = { nested: { answer: 42 }, query: "hello" };
-const RESULT = { content: [{ type: "text", text: "answer\n" }] };
+const INPUT = { nested: { answer: 42 }, query: "hello" }, RESULT = { content: [{ type: "text", text: "answer\n" }] };
 const USAGE = { input_tokens: 21, cached_input_tokens: 5, cache_write_input_tokens: 2,
   output_tokens: 3, reasoning_output_tokens: 1, total_tokens: 24 };
 type Entry = Record<string, any>; function line(type: string, payload: Entry, timestamp = TIME): Entry { return { timestamp, type, payload }; }
@@ -50,7 +49,8 @@ function rollout(lines: Entry[], catalog = codexCatalog(["lookup", "another"])):
   const dir = join(home, "sessions", "2026", "10", "29");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, `rollout-2026-10-29T01-02-03-${THREAD}.jsonl`),
-    [line("session_meta", { id: THREAD }), catalog, ...lines].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    [line("session_meta", { id: THREAD }), catalog, codexWorldState(catalog.payload.tools[0].tools.map((tool: Entry) => tool.name),
+      catalog.payload.tools[0].name), ...lines].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
   return home;
 }
 function kinds(records: Entry[], kind: string): Entry[] { return records.filter((record) => record.kind === kind); }
@@ -324,30 +324,30 @@ describe("Codex experiment evidence", () => {
   });
 });
 describe("live Codex rollout evidence", () => {
-  test("uses request metadata immediately without a rollout", async () => {
+  test("requires inventory evidence even when request metadata provides the native ID", async () => {
     const { relay } = fixture();
     const evidence = new ExperimentCodexEvidence(relay, { callIdTimeoutMs: 30 });
     const call = relay.calls[0]!;
-    expect(await evidence.resolveCallId(call, { params: { _meta: { callId: "native_request" } } })).toBe("native_request");
+    await expect(evidence.resolveCallId(call, { params: { _meta: { callId: "native_request" } } })).rejects.toMatchObject({ code: ExperimentFailureCode.HarnessLogMissing });
     expect(call.native_call_id_source).toBe("request_meta");
     evidence.stop();
   });
   test("rejects unobserved request IDs after the final rollout read", async () => {
-    for (const live of [true, false]) {
-      const { relay } = fixture();
-      const home = rollout([call(), token(), output()]);
-      const failures: Error[] = [];
-      const evidence = new ExperimentCodexEvidence(relay, { ...(live ? { codexHome: home } : {}),
-        callIdTimeoutMs: 30, onFailure: (error) => failures.push(error) });
-      expect(await evidence.resolveCallId(relay.calls[0]!, { params: { _meta: { callId: "request_other" } } })).toBe("request_other");
-      evidence.accept({ type: "thread.started", thread_id: THREAD });
-      expect(failures).toHaveLength(0);
-      try { evidence.finish(home); throw new Error("accepted different native IDs"); }
-      catch (error) {
-        expect(error).toMatchObject({ code: ExperimentFailureCode.CallIdUnresolved });
-        expect(String(error)).toContain("request_other"); expect(String(error)).toContain("call_1");
-      } finally { evidence.stop(); }
-    }
+    const { relay } = fixture();
+    const home = rollout([]);
+    const failures: Error[] = [];
+    const evidence = new ExperimentCodexEvidence(relay, { codexHome: home,
+      callIdTimeoutMs: 30, onFailure: (error) => failures.push(error) });
+    evidence.accept({ type: "thread.started", thread_id: THREAD });
+    expect(await evidence.resolveCallId(relay.calls[0]!, { params: { _meta: { callId: "request_other" } } })).toBe("request_other");
+    expect(failures).toHaveLength(0);
+    appendFileSync(join(home, "sessions/2026/10/29", `rollout-2026-10-29T01-02-03-${THREAD}.jsonl`),
+      [call(), token(), output()].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    try { evidence.finish(home); throw new Error("accepted different native IDs"); }
+    catch (error) {
+      expect(error).toMatchObject({ code: ExperimentFailureCode.CallIdUnresolved });
+      expect(String(error)).toContain("request_other"); expect(String(error)).toContain("call_1");
+    } finally { evidence.stop(); }
   });
   test("emits the first native turn before outputs and usage and keeps its ID", () => {
     const records: Entry[] = [];
@@ -444,7 +444,7 @@ describe("live Codex rollout evidence", () => {
     const evidence = new ExperimentCodexEvidence(relay, { codexHome: home });
     evidence.accept({ type: "thread.started", thread_id: "delayed-thread" });
     const path = join(home, "sessions/2026/10/29/rollout-2026-10-29T01-02-03-delayed-thread.jsonl");
-    const timer = setTimeout(() => writeFileSync(path, [line("session_meta", { id: "delayed-thread" }), codexCatalog(["lookup", "another"]), call(), token()]
+    const timer = setTimeout(() => writeFileSync(path, [line("session_meta", { id: "delayed-thread" }), codexCatalog(["lookup", "another"]), codexWorldState(["lookup", "another"]), call(), token()]
       .map((entry) => JSON.stringify(entry)).join("\n") + "\n"), 30);
     try { expect(await evidence.resolveCallId(relay.calls[0]!)).toBe("call_1"); expect(kinds(records, "turn")).toHaveLength(1); }
     finally { clearTimeout(timer); evidence.stop(); }

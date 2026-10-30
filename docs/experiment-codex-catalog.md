@@ -4,7 +4,8 @@ Read this with the [experiment MCP contract](experiment-mcp.md). Codex
 experiments require explicit `-m` and the spec's `codex-wall-time` opt-in.
 The preserved October 29, 2026 `gpt-6-astra` probe completed direct experiment
 tool delivery. Replay verifies its saved native rollout, relay result, and
-exec completion. No new live probe was run for the parser fixes below.
+exec completion. A later Atomix run exposed built-in tools; the finding below
+motivates the startup inventory check. No new live probe was run for this fix.
 
 ## Cache and catalog override
 
@@ -23,10 +24,13 @@ These refusals use the experiment failure envelope when `--result-json` is
 set. `codemux.failure_code` contains `model_required`, `model_unavailable`,
 or `code_mode`; `codemux.recording` is null before preparation.
 
-Only a requested entry marked `code_mode` or `code_mode_only` gets an override.
-Codemux deletes that entry's `tool_mode` field. All its other fields and all
-other model entries remain unchanged. Direct, omitted, and null modes use the
-normal catalog. Unsupported modes fail. The source cache is never rewritten.
+Every experiment serves a sanitized catalog, including direct, omitted, and
+null tool modes. The requested mode must be one of those values,
+`code_mode`, or `code_mode_only`; unsupported modes fail. For every served
+model, Codemux deletes `tool_mode` and `multi_agent_version`, removes `clock`
+from `experimental_supported_tools`, and sets `apply_patch_tool_type` to null.
+Other supported-tool entries and model fields stay unchanged. The source
+cache is never rewritten.
 
 The served JSON has exactly the envelope `{"models":[...]}`. Its serialized
 UTF-8 body is capped at 1 MiB. If the full catalog exceeds the cap, Codemux
@@ -35,7 +39,7 @@ entry alone exceeds the cap, the run fails with `code_mode`.
 
 ## Direct MCP exposure
 
-Both direct-model and catalog-override runs write this setting in the private
+Every Codex experiment writes this setting in the private
 experiment server table, beside its relay URL and bearer header:
 
 ```toml
@@ -47,8 +51,8 @@ omit_tools_from = ["deferred", "code_mode"]
 
 `tool_timeout_sec` uses the spec's optional `tool_timeout_seconds` (positive integer, default 7200, maximum 86400). Startup stays at 120 seconds. Held calls wait for the experiment server within that tool deadline; the run's `--timeout` is the only other bound. `run_start.omit_tools_from` records the same list. The setting leaves only
 `direct`, which places the experiment tools in the model's initial tool list.
-The requested entry keeps `supports_search_tool`; `catalog_override.removed`
-remains `["tool_mode"]`.
+The requested entry keeps `supports_search_tool`. Catalog sanitation and the
+disable switches below remove native tool sources independently of MCP exposure.
 
 Finding, October 29, 2026: the 01:41 `gpt-6-astra` probe fetched the override
 twice and initialized and listed MCP tools through the relay. It made no
@@ -75,6 +79,72 @@ An unexpected `tool_search`, `tool_search_tool`, or native `tool_search_call` fa
 `unknown_tool`. Its diagnostic names the qualified tool and says Codex offered
 tool search instead of the experiment tools. The server table omits the
 deferred surface, so this means the exposure policy changed.
+
+### Native tool removal and startup check
+
+Finding, October 29, 2026: Atomix rig `brain18`, run `s105`, lock `lw`, case
+`A6`, exposed `clock.sleep`, `clock.curr_time`, `collaboration.followup_task`,
+`collaboration.interrupt_agent`, `collaboration.list_agents`, and `apply_patch`
+twice at Codemux `ee9f3d0`. A `clock.sleep` call failed with `unknown_tool`.
+Rejecting calls did not prevent the model from seeing these tools.
+
+Codex `rust-v0.165.0` registers the native tools below in
+`core/src/tools/spec_plan.rs`. These are the removal controls; the complete
+restricted-name list follows. `--disable` names are feature keys.
+
+| Native tools | Removal control | Source lines |
+|---|---|---|
+| `exec_command`, `write_stdin` | `--disable shell_tool --disable unified_exec` | 1242-1272 |
+| `update_plan` | `-c tools.update_plan.enabled=false` | 1299-1300 |
+| `wait_for_environment` | `--disable deferred_executor` | 1303-1312 |
+| `request_user_input`, `request_user_input_async` | `-c tools.experimental_request_user_input.enabled=false` | 1315-1349 |
+| `send_message_to_user_async` | `--disable send_message_to_user_async`; a catalog entry can still enable it and fails the startup check | 1352-1360 |
+| `request_permissions` | `--disable request_permissions_tool` | 1363-1364 |
+| `new_context`, `get_context_remaining` | `--disable token_budget` | 1367-1378 |
+| `clock.curr_time` | `--disable current_time_reminder` and remove catalog `experimental_supported_tools` entry `clock` | 1381-1388 |
+| `clock.sleep` | `--disable sleep_tool`; this feature defaults to true (`features/src/lib.rs:1118-1121`) | 1390-1406 |
+| `list_available_plugins_to_install`, `request_plugin_install` | `--disable tool_suggest`; hermetic flags also disable apps and plugins | 1409-1422 |
+| `apply_patch` | Set catalog `apply_patch_tool_type` to null | 1425-1427 |
+| `test_sync_tool` | No feature switch; its catalog entry fails the startup check | 1430-1436 |
+| `view_image` | `--disable view_image` and `-c tools.view_image=false` | 1439-1450 |
+| V1 `spawn_agent`, `send_input`, `resume_agent`, `wait_agent`, `close_agent`; V2 `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, `list_agents` | `--disable multi_agent --disable multi_agent_v2`, `-c multi_agent_v2.disable_native_tools=true`, and remove catalog `multi_agent_version` | 1455-1582; activation at 733-745 |
+
+Model `multi_agent_version` can override feature selection. Removing it and
+setting `multi_agent_v2.disable_native_tools=true` closes both activation paths.
+Other existing switches disable `code_mode`, `code_mode_host`, `browser_use`,
+`computer_use`, and `image_generation`, and set `web_search="disabled"`.
+Hermetic flags also disable native app, plugin, memory, and goal sources.
+
+Before dispatching any `tools/call`, Codemux reads the first rollout
+`world_state.state.top_level_tools`. This is a map of tool names to hashes.
+It permits only the qualified experiment names and the resource trio below.
+Namespace header keys are permitted only for those allowed members. The producer
+stores both headers and qualified leaves at
+`core/src/context/world_state/top_level_tools.rs:51-76,90-94,133`.
+`harness_top_level_tools` records the raw map as `tools` with its native `t`.
+An extra name fails with `inventory_mismatch` and terminates the run before
+server dispatch. Calls, including those with `_meta.callId`, wait for this
+check within the existing five-second native-ID deadline. Missing inventory
+evidence fails with `harness_log_missing`.
+
+### Resource exception
+
+An MCP server unconditionally adds `functions.list_mcp_resources`,
+`functions.list_mcp_resource_templates`, and `functions.read_mcp_resource`
+(`core/src/tools/spec_plan.rs:1276-1291`). No removal switch exists on this path.
+The relay answers `resources/list` locally with `{"resources":[]}` and
+`resources/templates/list` with `{"resourceTemplates":[]}`. It answers
+`resources/read` with JSON-RPC error `-32002`, message `no resources`.
+These methods never reach the experiment server and never fail the run.
+Each records `relay_resources` with `method`, `rpc_id`, and `t`.
+
+Native calls to this trio record `harness_builtin_call` with `call_id`,
+qualified `name`, `input`, exact `harness_output`, and common `t`. They continue
+without entering the experiment call list or `model_tool_errors` count.
+Resource MCP exec completions must match a native resource call's name, server,
+arguments, and exact output. A literal `functions.` prefix inside the native
+call's `name` is not a resource alias and remains restricted.
+Every other built-in call still fails with `unknown_tool`.
 
 ### Built-in declarations
 
@@ -134,15 +204,16 @@ source references are registrations in Codex `rust-v0.165.0`, inspected at
 | `collaboration.spawn_agent` | `function` | 1472-1504 |
 | `collaboration.wait_agent` | `function` | 1525-1534 |
 
-This exception permits declarations only. Calling any declared built-in
-still fails with `unknown_tool`. Unknown native names can follow the verified harness-error rule below. The
+These historical declarations remain accepted for saved-rollout replay. The
+startup check permits only experiment tools and the resource trio in a live
+inventory. Other built-in calls fail with `unknown_tool`. Unknown native names can follow the verified harness-error rule below. The
 declaration set does not allow other tools in `functions`, `clock`, or
-`collaboration`. Replay of a byte-identical preserved rollout verifies its
-catalog, two turns, two usage records, and experiment call/output. Adding
+`collaboration`. Replay of the preserved excerpt with a synthetic restricted
+world-state inventory verifies its catalog, turns, usage, and call/output. Adding
 a foreign declaration fails with `inventory_mismatch`. This replay does
 not establish a new live delivery result.
 
-Calls use a broader restricted set than declarations. Every built-in below fails with `unknown_tool`, even if undeclared and followed by its own unsupported-call error. Experiment inventory calls keep their qualified MCP names and remain allowed. Sources below are from Codex `rust-v0.165.0` (`360319d8dee62d87e2d59fc0c21805d79519cfed`), relative to `codex-rs/`.
+Calls use a broader restricted set than declarations. Every built-in below except the resource trio fails with `unknown_tool`, even if undeclared and followed by its own unsupported-call error. Experiment inventory calls keep their qualified MCP names and remain allowed. Sources below are from Codex `rust-v0.165.0` (`360319d8dee62d87e2d59fc0c21805d79519cfed`), relative to `codex-rs/`.
 
 | Restricted names | Registration and name sources |
 |---|---|
@@ -166,8 +237,11 @@ Browser and computer actor calls are also blocked in `node_repl` and `cua_repl` 
 `tests/fixtures/experiment-codex-native-excerpt.json`. That excerpt keeps
 the full captured tool catalog, native response identities, timestamps,
 usage, model output, relay result, and exec completion. It omits account
-metadata, instructions, user input, workspace metadata, and rate limits.
+metadata, instructions, user input, world state, workspace metadata, and rate limits.
 Its provenance records the original run ID, rollout size, and SHA-256.
+The replay adds an explicitly synthetic restricted world state. The unmodified
+`8415a55b-5587-4255-bd7d-d80c22ca40f6.codex-rollout.jsonl` instead fails the
+inventory check for its visible built-ins in `tests/experiment-codex-task-aa.test.ts`.
 
 ## Provider selection and differences
 
@@ -211,9 +285,8 @@ These differences from the built-in provider remain:
 The ordinary `CODEMUX_CODEX_PROVIDER_*` override uses
 `CODEX_PROVIDER_ID = "codemux"`, which differs from `codemux-experiment`.
 It selects its own provider, so it cannot coexist with a catalog override.
-Codemux refuses the combination before writing private configuration.
-A direct-mode experiment without a catalog override retains the existing
-provider override behavior.
+Codemux refuses the combination before writing private configuration for every
+experiment, including a requested model with direct, omitted, or null tool mode.
 
 Provider selection does not change model attribution. The result envelope
 still reports Codex's served model when a reroute reports one, otherwise the
@@ -235,17 +308,18 @@ body (`bytes_base64: ""`, `body_complete: true`). It never records request
 headers, authorization values, or the nonce. The generated provider table
 contains no token.
 
-`run_start.catalog_override` is a boolean. `run_start.omit_tools_from` records
-`["deferred", "code_mode"]` for every Codex experiment. An override also emits:
+`run_start.catalog_override` is true for every prepared Codex experiment.
+`run_start.omit_tools_from` records `["deferred", "code_mode"]`. Each emits:
 
 | Record | Fields |
 |---|---|
-| `catalog_override` | `slug`, `source_path`, `source_fetched_at`, `served_models`, `served_bytes`, `removed: ["tool_mode"]`, `requested_only` |
+| `catalog_override` | `slug`, `source_path`, `source_fetched_at`, `served_models`, `served_bytes`, `removed: ["tool_mode", "experimental_supported_tools.clock", "multi_agent_version", "apply_patch_tool_type"]`, `requested_only` |
 | `catalog_served` | `client_version`, `bytes` |
 
 `source_path` and `source_fetched_at` identify the real cache used.
 `served_models` counts model entries; `served_bytes` and `bytes` count the
-serialized response's UTF-8 bytes. `catalog_served` establishes a successful
+serialized response's UTF-8 bytes. `removed` names sanitation operations;
+`apply_patch_tool_type` is set to null rather than deleted. `catalog_served` establishes a successful
 fetch. If Codex produces its first `function_call` before fetching the override,
 the run fails with `code_mode` before dispatching that call.
 
@@ -298,11 +372,12 @@ request metadata, dispatch waits up to five seconds for the matching rollout
 `function_call` in arrival order, without waiting for usage. The ID is attached to the
 forwarded request as `params._meta["codemux/callId"]`. An unresolved call fails
 with `call_id_unresolved` and never reaches the server. Missing, duplicate,
-malformed, or unmatched evidence fails the run. Built-ins such as `update_plan`, `apply_patch`, and MCP resource tools fail even if undeclared. Declared optional built-ins also fail.
+malformed, or unmatched evidence fails the run. Built-ins such as `update_plan`
+and `apply_patch` fail even if undeclared. The resource trio follows the local exception above.
 
 Experiment flags disable `code_mode` and `code_mode_host`. A refused `exec`
 fails with `unknown_tool` for either `function_call` or `custom_tool_call`.
-An inventory function named `exec` remains allowed. A hallucinated function or custom tool with its matching native `unsupported call: <name>` or `unsupported custom tool call: <name>` output records `model_tool_error` with `call_id`, qualified `name`, `input`, and exact `harness_output`. Codex's source emits these errors at `core/src/tools/registry.rs:1049-1054`. Such calls do not reach the experiment server or affect native-ID correlation. `run_end.model_tool_errors` counts them; an otherwise verified run reports `failure_code: null`. Missing or inconsistent error evidence and built-in calls still fail with `unknown_tool`. The
+An inventory function named `exec` remains allowed. A hallucinated function or custom tool with its matching native `unsupported call: <name>` or `unsupported custom tool call: <name>` output records `model_tool_error` with `call_id`, qualified `name`, `input`, and exact `harness_output`. Codex's source emits these errors at `core/src/tools/registry.rs:1049-1054`. Such calls do not reach the experiment server or affect native-ID correlation. `run_end.model_tool_errors` counts them; an otherwise verified run reports `failure_code: null`. Missing or inconsistent error evidence and non-resource built-in calls still fail with `unknown_tool`. The
 earlier October 29, 2026 probe established the custom `exec` call form.
 The 01:41 probe above fetched the override but called tool search.
 The 01:58 probe called the experiment tool directly, then failed waiting for

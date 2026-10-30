@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import type { RunContext } from "./base.js";
 import { CodexPolicy } from "./codex-policy.js";
 import {
+  CODEX_EXPERIMENT_FLAGS,
   CODEX_HERMETIC_FLAGS,
   CODEX_NO_TOOLS_FLAGS,
   LAST_MESSAGE_BASENAME,
@@ -63,9 +64,7 @@ export class CodexAdapter extends CodexPolicy {
       cmd.push(...CODEX_NO_TOOLS_FLAGS);
     }
     if (request.experimentMcp) {
-      // The private config has only the relay. Keep its model-facing names stable.
-      cmd.push("-c", "features.non_prefixed_mcp_tool_names=false");
-      cmd.push("--disable", "code_mode", "--disable", "code_mode_host");
+      cmd.push(...CODEX_EXPERIMENT_FLAGS);
     }
 
     const model = request.experimentMcp

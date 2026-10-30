@@ -55,6 +55,9 @@ export interface ExperimentRecordFields {
   http_response: { status: number; bytes_base64: string };
   relay_ping: { rpc_id: string | number };
   relay_reinitialize: { rpc_id: string | number };
+  relay_resources: { method: string; rpc_id: string | number | null };
+  harness_top_level_tools: { tools: JsonObject; t: number };
+  harness_builtin_call: { call_id: string; name: string; input: unknown; harness_output: unknown };
   relay_sse: { rpc_id: string | number; keepalives: number };
   relay_delivery_failed: { rpc_id: string | number; relay_request_seq?: number; message: string };
 }

@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { codexCatalog } from "./fixtures/experiment-codex.js";
+import { codexCatalog, codexWorldState } from "./fixtures/experiment-codex.js";
 import { join, resolve } from "node:path";
 import { CodexAdapter } from "../src/adapters/codex.js";
 import { launchRunRequest } from "../src/launch.js";
@@ -44,6 +44,7 @@ function setup(resultJson = true, model = "gpt-5.5", clientVersion = "0.165.0") 
 }
 async function callFixture(experiment: RunContext["experimentCodex"], context: RunContext, requestMeta = false) {
   const relay = experiment!.relay;
+  expect((await fetch(relay.catalogUrl!)).status).toBe(200);
   async function post(message: object) {
     const response = await fetch(relay.url, { method: "POST", headers: {
       Authorization: `Bearer ${relay.token}`, "Content-Type": "application/json",
@@ -57,8 +58,16 @@ async function callFixture(experiment: RunContext["experimentCodex"], context: R
     rollout(context);
     experiment!.push(JSON.stringify({ type: "thread.started", thread_id: "thread-test" }) + "\n");
   }
-  await post({ jsonrpc: "2.0", id: 3, method: "tools/call",
+  const result = post({ jsonrpc: "2.0", id: 3, method: "tools/call",
     params: { name: "bash", arguments: { command: "marker" }, ...(requestMeta ? { _meta: { callId: "call_1" } } : {}) } });
+  if (requestMeta) {
+    await Bun.sleep(10);
+    expect(relay.calls[0]?.call_id).toBeUndefined();
+    expect(readFileSync(experiment!.recordingPath, "utf8")).not.toContain('"kind":"tool_call"');
+    rollout(context);
+    experiment!.push(JSON.stringify({ type: "thread.started", thread_id: "thread-test" }) + "\n");
+  }
+  await result;
 }
 
 function rollout(context: RunContext, output: unknown = [
@@ -68,7 +77,7 @@ function rollout(context: RunContext, output: unknown = [
   const sessions = join(context.hermeticHome!.codexHome, "sessions", "2026", "10", "29");
   mkdirSync(sessions, { recursive: true });
   const lines = [
-    { type: "session_meta", payload: { id: "thread-test" } }, codexCatalog((respond({ id: 1, method: "tools/list" }) as any).result.tools),
+    { type: "session_meta", payload: { id: "thread-test" } }, codexCatalog((respond({ id: 1, method: "tools/list" }) as any).result.tools), codexWorldState(["bash"]),
     { type: "response_item", payload: { type: "function_call", id: "fc_1", call_id: "call_1",
       name: "mcp__experiment__bash", arguments: '{"command":"marker"}' } },
     { type: "event_msg", payload: { type: "token_count", info: { last_token_usage: {
@@ -102,7 +111,7 @@ function execEvents(context: RunContext, servedModel?: string) {
   return context.stdoutSink!.finish();
 }
 
-test("Codex forwards request-meta IDs before a rollout or thread exists", async () => {
+test("Codex request-meta IDs wait for the checked rollout inventory before dispatch", async () => {
   const { context, experiment } = setup();
   await experiment.prepare("0.165.0");
   await callFixture(experiment, context, true);
@@ -111,8 +120,6 @@ test("Codex forwards request-meta IDs before a rollout or thread exists", async 
   expect(records.find((record) => record.kind === "tool_call")).toMatchObject({ native_call_id_source: "request_meta" });
   expect(records.find((record) => record.kind === "mcp_request" && record.relay_index === 0).message.params._meta)
     .toEqual({ callId: "call_1", "codemux/callId": "call_1" });
-  rollout(context);
-  experiment.push(JSON.stringify({ type: "thread.started", thread_id: "thread-test" }) + "\n");
   execEvents(context);
   await experiment.complete();
 });
@@ -140,7 +147,7 @@ test.each([true, false])("Codex experiment lifecycle verifies a synthetic rollou
   expect(config.mcp_servers.experiment).toEqual({ url: experiment.relay.url,
     http_headers: { Authorization: `Bearer ${experiment.relay.token}` }, required: true,
     startup_timeout_sec: 120, tool_timeout_sec: 7200, omit_tools_from: ["deferred", "code_mode"] });
-  expect(config.model_providers).toBeUndefined();
+  expect(config.model_providers["codemux-experiment"].model_catalog_url).toBe(experiment.relay.catalogUrl);
   const command = adapter.buildRunCommand(request, context);
   expect(command).not.toContain("--ephemeral");
   expect(command).not.toContain("--ignore-user-config");
@@ -183,7 +190,7 @@ test.each(["gpt-5.5", "gpt-6-astra"])("%s keeps the experiment tools direct and 
   expect(text).toContain(table);
   expect((Bun.TOML.parse(text) as any).mcp_servers.experiment.omit_tools_from).toEqual(["deferred", "code_mode"]);
   const start = JSON.parse(readFileSync(experiment.recordingPath, "utf8").split("\n")[0]!);
-  expect(start).toMatchObject({ kind: "run_start", catalog_override: model === "gpt-6-astra",
+  expect(start).toMatchObject({ kind: "run_start", catalog_override: true,
     omit_tools_from: ["deferred", "code_mode"] });
 });
 
@@ -306,7 +313,7 @@ test("a code-mode model selects a custom OpenAI provider and fetches its direct 
   const fetched = await fetch(`${provider.model_catalog_url}?client_version=0.165.0`);
   expect(fetched.status).toBe(200);
   expect(await fetched.json()).toEqual({ models: [
-    { slug: "gpt-5.5", tool_mode: "direct" }, { slug: "gpt-6-astra" },
+    { slug: "gpt-5.5", apply_patch_tool_type: null }, { slug: "gpt-6-astra", apply_patch_tool_type: null },
   ] });
   await callFixture(experiment, context);
   const stdout = execEvents(context, "served-model");
@@ -318,7 +325,8 @@ test("a code-mode model selects a custom OpenAI provider and fetches its direct 
   expect(records[0]).toMatchObject({ kind: "run_start", catalog_override: true });
   expect(records.find((record) => record.kind === "catalog_override")).toMatchObject({ slug: "gpt-6-astra",
     source_path: join(context.hermeticHome!.codexHome, "..", "..", "..", "models_cache.json"),
-    source_fetched_at: "2026-10-29T00:00:00Z", served_models: 2, removed: ["tool_mode"] });
+    source_fetched_at: "2026-10-29T00:00:00Z", served_models: 2,
+    removed: ["tool_mode", "experimental_supported_tools.clock", "multi_agent_version", "apply_patch_tool_type"] });
   expect(records.find((record) => record.kind === "catalog_served")).toMatchObject({ client_version: "0.165.0" });
 });
 
@@ -390,7 +398,7 @@ test.each(["missing", "slug", "unreadable"])("refuses %s real cache before compa
   } finally { floor.mockRestore(); }
 });
 
-test.each(["code_mode", "code_mode_only"])("refuses a provider override with a %s catalog override before preparing state", async (mode) => {
+test.each(["direct", "code_mode", "code_mode_only", null, undefined])("refuses a provider override with a %s tool mode before preparing state", async (mode) => {
   const { request } = setup(true, "gpt-6-astra");
   const home = join(request.cwd!, "provider-operator");
   const codexHome = join(home, ".codex");
@@ -415,30 +423,6 @@ test.each(["code_mode", "code_mode_only"])("refuses a provider override with a %
     expect(floor).not.toHaveBeenCalled();
     expect(existsSync(join(codexHome, ".codemux-hermetic"))).toBe(false);
   } finally { floor.mockRestore(); }
-});
-
-test("a direct-mode experiment keeps the ordinary provider override", async () => {
-  const { request } = setup();
-  const home = join(request.cwd!, "operator");
-  const adapter = new CodexAdapter({ HOME: home,
-    CODEMUX_CODEX_PROVIDER_BASE_URL: "https://provider.example/v1", CODEMUX_CODEX_PROVIDER_API_KEY: "synthetic",
-    CODEMUX_CODEX_PROVIDER_MODEL: request.model }, home);
-  adapter.validateRunRequest(request);
-  const context = adapter.prepareRun(request);
-  contexts.push({ adapter, context });
-  const experiment = context.experimentCodex!;
-  await experiment.prepare("0.165.0");
-  const text = readFileSync(join(context.hermeticHome!.codexHome, "config.toml"), "utf8");
-  const config = Bun.TOML.parse(text) as any;
-  expect(config.model_provider).toBe(CODEX_PROVIDER_ID);
-  expect(config.model).toBe(request.model);
-  expect(Object.keys(config.model_providers)).toEqual([CODEX_PROVIDER_ID]);
-  expect(config.mcp_servers.experiment.url).toBe(experiment.relay.url);
-  expect(experiment.relay.catalogUrl).toBeUndefined();
-  expect(text).not.toContain("codemux-experiment");
-  await callFixture(experiment, context);
-  execEvents(context);
-  await experiment.complete();
 });
 
 test("the launch passes the detected version to catalog preflight before capture", async () => {

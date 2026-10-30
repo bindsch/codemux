@@ -14,7 +14,7 @@ import * as processTable from "../src/process-table.js";
 import { kimiResult } from "../src/result-envelope/kimi.js";
 import type { RunContext } from "../src/run-context.js";
 import type { RunRequest } from "../src/types.js";
-import { codexCatalog } from "./fixtures/experiment-codex.js";
+import { codexCatalog, codexWorldState } from "./fixtures/experiment-codex.js";
 import { KIMI_STREAM_SESSION, kimiAssistantCall, kimiResumeHint } from "./fixtures/kimi-stream.js";
 
 type Entry = Record<string, any>;
@@ -52,7 +52,7 @@ async function fixture(mode: Mode, change = "none", missingUsage = true, resultJ
   let wire: Entry[], stdout: Entry[], path: string;
   if (mode === "codex") {
     path = join(home, "sessions/2026/10/29/rollout-2026-10-29T01-02-03-thread-s.jsonl");
-    wire = [line("session_meta", { id: "thread-s" }), codexCatalog([TOOL]),
+    wire = [line("session_meta", { id: "thread-s" }), codexCatalog([TOOL]), codexWorldState([TOOL.name]),
       line("response_item", { type: "function_call", id: "function-1", call_id: "call-1",
         namespace: "mcp__experiment", name: TOOL.name, arguments: "{}" }),
       line("response_item", { type: "function_call_output", call_id: "call-1", output: [

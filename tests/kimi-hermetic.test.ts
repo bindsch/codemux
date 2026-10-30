@@ -238,7 +238,7 @@ describe("Kimi hermetic adapter", () => {
       expect(f.adapter.capabilities().supportsResultJson).toBe(true);
       expect(f.adapter.buildRunCommand(request, context)).toEqual(["env",
         ...KIMI_HERMETIC_ENV_OMISSIONS.flatMap((name) => ["-u", name]),
-        "KIMI_CODE_NO_AUTO_UPDATE=1", `HOME=${home.home}`, `KIMI_CODE_HOME=${home.kimiHome}`, "kimi", "--skills-dir", home.skillsDir,
+        "KIMI_CODE_NO_AUTO_UPDATE=1", "KIMI_CODE_REPEAT_BREAKER=false", `HOME=${home.home}`, `KIMI_CODE_HOME=${home.kimiHome}`, "kimi", "--skills-dir", home.skillsDir,
         "--agent-file", home.agentFile, "--output-format", "stream-json", "--prompt", "hello"]);
       expect(f.adapter.getRunEnv(request, context)).toEqual({});
       expect(f.adapter.getRunEnv({ ...request, sandboxed: true }, context)).toEqual({});

@@ -4,11 +4,15 @@ import { join, resolve } from "node:path";
 import { ExperimentCodexEvidence } from "../src/experiment-codex.js";
 import type { JsonObject } from "../src/experiment-server.js";
 import { respond } from "./fixtures/experiment-mcp.js";
+import { codexWorldState } from "./fixtures/experiment-codex.js";
 
 const fixture: JsonObject = JSON.parse(readFileSync(new URL("./fixtures/experiment-codex-native-excerpt.json", import.meta.url), "utf8"));
 
 function replay(extraDeclaration?: JsonObject) {
   const lines: JsonObject[] = structuredClone(fixture.lines);
+  // Synthetic restricted inventory isolates historical catalog and output coverage.
+  // The preserved native excerpt has no world_state and is not accepted as live evidence.
+  lines.splice(1, 0, codexWorldState(["bash"], "experiment", lines[0]!.timestamp));
   if (extraDeclaration) {
     lines.find((line) => line.payload.type === "additional_tools")!.payload.tools.push(extraDeclaration);
   }
@@ -32,12 +36,14 @@ function replay(extraDeclaration?: JsonObject) {
   return { evidence, home, records, lines };
 }
 
-test("replays the preserved Codex native excerpt with its full catalog and saved result", () => {
+test("replays the historical Codex catalog and saved result with a synthetic restricted inventory", () => {
   expect(fixture.provenance).toMatchObject({ kind: "native evidence excerpt",
     source_run_id: "c008786c-0ec2-4909-a1df-37e6b51eec44", source_rollout_bytes: 81131,
     source_rollout_sha256: "ebdd57261e4bbbff7d751bf1738f7476f04a9032c95d7c4721a4bf0b3851c033" });
   const { evidence, home, records, lines } = replay();
   expect(() => evidence.finish(home)).not.toThrow();
+  expect(records.find((record) => record.kind === "harness_top_level_tools")?.tools)
+    .toEqual(codexWorldState(["bash"]).payload.state.top_level_tools);
   const catalog = records.find((record) => record.kind === "harness_tool_catalog")!;
   expect(catalog.item).toEqual(lines.find((line) => line.payload.type === "additional_tools")!.payload);
   expect(catalog.declarations.filter((tool: JsonObject) => tool.classification === "builtin")).toHaveLength(14);
@@ -57,7 +63,7 @@ test("replays the preserved Codex native excerpt with its full catalog and saved
   expect(records.filter((record) => record.kind === "tool_result_delivered")).toHaveLength(1);
 });
 
-test("rejects a foreign declaration added to the preserved Codex native catalog", () => {
+test("rejects a foreign declaration in the synthetic restricted-inventory replay", () => {
   const { evidence, home, records } = replay({ type: "function", name: "foreign_tool",
     parameters: { type: "object", properties: {} }, strict: false });
   let failure: unknown;

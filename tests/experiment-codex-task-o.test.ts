@@ -5,6 +5,7 @@ import { codexDefinitions } from "./fixtures/experiment-codex.js";
 
 const TIME = "2026-10-29T00:00:00Z";
 const USAGE = { input_tokens: 4, cached_input_tokens: 1, output_tokens: 2 };
+const RESOURCE_NAMES = new Set(["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]);
 const BUILTINS = [
   ["functions", "function", "list_mcp_resources"],
   ["functions", "function", "list_mcp_resource_templates"],
@@ -47,7 +48,7 @@ function rejectsUsage(entries: JsonObject[]): void {
 }
 
 describe("Codex observed built-in catalog declarations", () => {
-  test.each(BUILTINS)("accepts declaration but rejects call of %s.%s:%s", (namespace, type, name) => {
+  test.each(BUILTINS)("accepts declaration and applies call policy for %s.%s:%s", (namespace, type, name) => {
     const { parser, records } = fixture();
     const payload = { type: "additional_tools", tools: [{ type: "namespace", name: namespace,
       tools: [{ type, name }] }, { type: "namespace", name: "mcp__experiment", tools: [{ type: "function", name: "lookup",
@@ -60,8 +61,20 @@ describe("Codex observed built-in catalog declarations", () => {
     try { parser.accept(line("response_item", { type: type === "custom" ? "custom_tool_call" : "function_call",
       namespace, name, id: "function", call_id: "call", arguments: "{}", input: "patch" })); }
     catch (error) { failure = error; }
-    expect(failure).toMatchObject({ code: "unknown_tool" });
-    expect(records.at(-1)).toMatchObject({ kind: "tool_call", namespace, name, allowed: false });
+    if (namespace === "functions" && RESOURCE_NAMES.has(name)) {
+      expect(failure).toBeUndefined();
+      const harness_output = { content: [{ type: "text", text: "no resources" }] };
+      parser.accept(line("response_item", { type: "function_call_output", call_id: "call", output: harness_output }));
+      parser.accept(count());
+      expect(() => parser.finish()).not.toThrow();
+      expect(records.filter((record) => record.kind === "harness_builtin_call")).toEqual([
+        { kind: "harness_builtin_call", call_id: "call", name: `functions.${name}`, input: {}, harness_output },
+      ]);
+      expect(records.filter((record) => record.kind === "model_tool_error")).toHaveLength(0);
+    } else {
+      expect(failure).toMatchObject({ code: "unknown_tool" });
+      expect(records.at(-1)).toMatchObject({ kind: "tool_call", namespace, name, allowed: false });
+    }
     expect(parser.calls).toHaveLength(0);
   });
 

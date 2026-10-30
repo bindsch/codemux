@@ -54,41 +54,55 @@ test("catalog provider table uses its custom id with the same OpenAI transport a
   expect(table).not.toContain("[model_providers.openai]");
 });
 
-test.each(["code_mode", "code_mode_only"])("rewrites only requested tool_mode %s and preserves all other model data", (mode) => {
+test.each(["code_mode", "code_mode_only"])("removes native-tool catalog settings from every served model for %s", (mode) => {
   const { codexHome, sourcePath, cache } = fixture();
   const requested = { slug: "gpt-6.1-sol", tool_mode: mode, supports_search_tool: true, display_name: "Exact model", priority: 4,
-    nested: { tool_mode: "keep", instructions: ["first\nsecond", "é", null] }, future_flag: true };
-  const other = { slug: "other", tool_mode: "code_mode_only", nested: { arbitrary: 3 }, tools: [] };
+    experimental_supported_tools: ["clock", "search", "clock", "future_tool"], multi_agent_version: "v2",
+    apply_patch_tool_type: "freeform", nested: { tool_mode: "keep", instructions: ["first\nsecond", "é", null] }, future_flag: true };
+  const other = { slug: "other", tool_mode: "code_mode_only", nested: { arbitrary: 3 }, tools: [],
+    experimental_supported_tools: ["clock", "other_tool"], multi_agent_version: "v1", apply_patch_tool_type: "function" };
   const source = cache([other, requested], { etag: "source-metadata-is-not-catalog-data" });
   const result = codexExperimentModel(requested.slug, codexHome);
-  const { tool_mode: _removed, ...expected } = requested;
+  const { tool_mode: _mode, multi_agent_version: _version, ...retained } = requested;
+  const expected = { ...retained, experimental_supported_tools: ["search", "future_tool"], apply_patch_tool_type: null };
+  const expectedOther = { slug: "other", nested: { arbitrary: 3 }, tools: [],
+    experimental_supported_tools: ["other_tool"], apply_patch_tool_type: null };
   expect(result.model).toBe(requested.slug);
   expect(result.clientVersion).toBe(CLIENT_VERSION);
   expect(result.sourcePath).toBe(sourcePath);
-  expect(JSON.parse(result.catalog!.body)).toEqual({ models: [other, expected] });
+  expect(result.catalog!.body).toBe(JSON.stringify({ models: [expectedOther, expected] }));
   expect(result.catalog!.override).toEqual({ slug: requested.slug, source_path: sourcePath,
     source_fetched_at: "2026-10-29T00:00:00Z", served_models: 2,
-    served_bytes: Buffer.byteLength(result.catalog!.body), removed: ["tool_mode"], requested_only: false });
+    served_bytes: Buffer.byteLength(result.catalog!.body),
+    removed: ["tool_mode", "experimental_supported_tools.clock", "multi_agent_version", "apply_patch_tool_type"], requested_only: false });
   expect(readFileSync(sourcePath, "utf8")).toBe(source);
 });
 
-test.each(["direct", null, undefined])("does not override requested mode %j despite another code-mode entry", (mode) => {
+test.each(["direct", null, undefined])("overrides requested mode %j and sanitizes the complete catalog", (mode) => {
   const { codexHome, sourcePath, cache } = fixture();
-  cache([{ slug: "gpt-6.1-sol", tool_mode: mode }, { slug: "other", tool_mode: "code_mode_only" }]);
-  expect(codexExperimentModel("gpt-6.1-sol", codexHome)).toEqual({ model: "gpt-6.1-sol", clientVersion: CLIENT_VERSION, sourcePath });
+  cache([{ slug: "gpt-6.1-sol", tool_mode: mode, experimental_supported_tools: ["clock", "search"], multi_agent_version: "v2" },
+    { slug: "other", tool_mode: "code_mode_only", apply_patch_tool_type: "freeform" }]);
+  const result = codexExperimentModel("gpt-6.1-sol", codexHome);
+  expect(result).toMatchObject({ model: "gpt-6.1-sol", clientVersion: CLIENT_VERSION, sourcePath });
+  expect(result.catalog?.body).toBe('{"models":[{"slug":"gpt-6.1-sol","experimental_supported_tools":["search"],"apply_patch_tool_type":null},{"slug":"other","apply_patch_tool_type":null}]}');
+  expect(result.catalog?.override.removed).toEqual([
+    "tool_mode", "experimental_supported_tools.clock", "multi_agent_version", "apply_patch_tool_type",
+  ]);
 });
 
 test("serves the complete catalog at exactly 1 MiB", () => {
   const { codexHome, cache } = fixture();
   const requested = { slug: "requested", tool_mode: "code_mode", instructions: "" };
   const other = { slug: "other", payload: "kept" };
-  const bytes = Buffer.byteLength(JSON.stringify({ models: [{ slug: requested.slug, instructions: "" }, other] }));
+  const bytes = Buffer.byteLength(JSON.stringify({ models: [
+    { slug: requested.slug, instructions: "", apply_patch_tool_type: null }, { ...other, apply_patch_tool_type: null },
+  ] }));
   requested.instructions = "x".repeat(MAX_CATALOG_BYTES - bytes);
   cache([requested, other]);
   const catalog = codexExperimentModel(requested.slug, codexHome).catalog!;
   expect(Buffer.byteLength(catalog.body)).toBe(MAX_CATALOG_BYTES);
   expect(catalog.override).toMatchObject({ served_models: 2, served_bytes: MAX_CATALOG_BYTES, requested_only: false });
-  expect(JSON.parse(catalog.body).models[1]).toEqual(other);
+  expect(JSON.parse(catalog.body).models[1]).toEqual({ ...other, apply_patch_tool_type: null });
 });
 
 test("serves only the requested entry when full UTF-8 catalog exceeds 1 MiB", () => {
@@ -97,7 +111,7 @@ test("serves only the requested entry when full UTF-8 catalog exceeds 1 MiB", ()
   const other = { slug: "other", payload: "é".repeat(MAX_CATALOG_BYTES / 2) };
   cache([other, requested]);
   const catalog = codexExperimentModel(requested.slug, codexHome).catalog!;
-  expect(JSON.parse(catalog.body)).toEqual({ models: [{ slug: requested.slug, payload: "retain" }] });
+  expect(JSON.parse(catalog.body)).toEqual({ models: [{ slug: requested.slug, payload: "retain", apply_patch_tool_type: null }] });
   expect(catalog.override).toMatchObject({ served_models: 1, requested_only: true,
     served_bytes: Buffer.byteLength(catalog.body) });
 });
@@ -115,7 +129,7 @@ test("accepts a 2 MiB source cache and strips source metadata before measuring c
   cache(models, { padding: "x".repeat(MAX_CACHE_BYTES - Buffer.byteLength(base)) });
   expect(Buffer.byteLength(readFileSync(sourcePath))).toBe(MAX_CACHE_BYTES);
   const result = codexExperimentModel("requested", codexHome);
-  expect(JSON.parse(result.catalog!.body)).toEqual({ models: [{ slug: "requested" }] });
+  expect(JSON.parse(result.catalog!.body)).toEqual({ models: [{ slug: "requested", apply_patch_tool_type: null }] });
   expect(result.catalog!.override.requested_only).toBe(false);
 });
 
@@ -242,22 +256,35 @@ test("reads the specified real home without consulting another home", () => {
   other.cache([{ slug: "requested", tool_mode: "direct", marker: "other" }]);
   const catalog = codexExperimentModel("requested", real.codexHome).catalog!;
   expect(catalog.override.source_path).toBe(real.sourcePath);
-  expect(JSON.parse(catalog.body)).toEqual({ models: [{ slug: "requested", marker: "real" }] });
+  expect(JSON.parse(catalog.body)).toEqual({ models: [{ slug: "requested", marker: "real", apply_patch_tool_type: null }] });
 });
 
-test("experiment flags disable configurable code mode without changing ordinary launches", () => {
+test("experiment flags disable every configurable native utility without changing ordinary launches", () => {
   const { cwd, home, cache } = fixture();
   cache([{ slug: "gpt-5.5", tool_mode: "direct" }]);
   const request: RunRequest = { agent: "codex", prompt: "fixture", cwd, model: "gpt-5.5",
     hermetic: true, tools: "none", autonomy: "read-only", experimentMcp: "synthetic-spec.json" };
   const adapter = new CodexAdapter({ HOME: home, CODEX_API_KEY: "synthetic" }, home);
   const command = adapter.buildRunCommand(request);
+  const start = command.indexOf("features.non_prefixed_mcp_tool_names=false") - 1;
+  const flags = [
+    "-c", "features.non_prefixed_mcp_tool_names=false",
+    "--disable", "code_mode", "--disable", "code_mode_host",
+    "--disable", "sleep_tool", "--disable", "send_message_to_user_async",
+    "--disable", "request_permissions_tool", "--disable", "token_budget",
+    "--disable", "deferred_executor", "--disable", "current_time_reminder",
+    "-c", "multi_agent_v2.disable_native_tools=true",
+    "-c", "tools.update_plan.enabled=false",
+    "-c", "tools.experimental_request_user_input.enabled=false",
+  ];
+  expect(command.slice(start, command.indexOf("-m"))).toEqual(flags);
   const disabled = command.flatMap((value, index) => value === "--disable" ? [command[index + 1]] : []);
-  expect(disabled).toContain("code_mode");
-  expect(disabled).toContain("code_mode_host");
+  expect(disabled).toContain("multi_agent");
+  expect(disabled).toContain("multi_agent_v2");
   const ordinary = adapter.buildRunCommand({ ...request, experimentMcp: undefined });
-  expect(ordinary).not.toContain("code_mode");
-  expect(ordinary).not.toContain("code_mode_host");
+  for (const value of flags.filter((value) => value !== "-c" && value !== "--disable")) {
+    expect(ordinary).not.toContain(value);
+  }
 });
 
 test.each(["custom_tool_call", "function_call"])("rejects outside exec as unknown_tool for %s", (type) => {

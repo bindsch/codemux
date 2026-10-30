@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { object } from "./experiment-codex-content.js";
 import { assertCodexToolDefinition } from "./experiment-codex-catalog.js";
+import { CodexTopLevelInventory, isCodexResourceCall } from "./experiment-codex-inventory.js";
 import { sanitizeCodexToolName as sanitize } from "./experiment-tool-names.js";
 import { ExperimentFailure, ExperimentFailureCode as Code, turnRecord, turnUsageRecord, turnCallRecord, toolResultDeliveredRecord,
   type ExperimentRecord, type ExperimentUsage } from "./experiment-records.js";
@@ -65,6 +66,8 @@ interface PendingTurn {
 export class CodexRolloutParser {
   readonly calls: CodexNativeCall[] = [];
   private modelErrors: CodexNativeCall[] = [];
+  readonly builtinCalls: CodexNativeCall[] = [];
+  private inventory: CodexTopLevelInventory;
   private byId = new Map<string, CodexNativeCall>();
   private declaredBuiltins = new Set<string>();
   private pending?: PendingTurn;
@@ -79,11 +82,16 @@ export class CodexRolloutParser {
     private readonly toolNames: () => ReadonlySet<string>, private readonly record: ExperimentRecord,
     private readonly toolDefinitions: () => readonly JsonObject[] | undefined,
     private readonly beforeFunctionCall?: () => void,
-    private readonly onCall?: (call: CodexNativeCall, index: number) => void) {}
+    private readonly onCall?: (call: CodexNativeCall, index: number) => void) {
+    this.inventory = new CodexTopLevelInventory(server, toolNames, record);
+  }
+
+  get inventoryChecked(): boolean { return this.inventory.checked; }
 
   accept(line: JsonObject): void {
     const payload = line.payload as JsonObject;
     const t = Date.parse(line.timestamp) / 1000;
+    if (line.type === "world_state") { this.inventory.accept(payload, t); return; }
     if (line.type === "token_usage_record") {
       if (payload.thread_id !== this.threadId || typeof payload.response_id !== "string" || !payload.response_id) {
         throw new ExperimentFailure(Code.Protocol, "Invalid Codex token_usage_record response identity");
@@ -149,7 +157,9 @@ export class CodexRolloutParser {
       if (!call || call.output) throw new ExperimentFailure(Code.Protocol, `Unmatched or duplicate Codex function_call_output ${String(payload.call_id)}`);
       const expectedType = call.item.type === "custom_tool_call" ? "custom_tool_call_output" : "function_call_output";
       if (payload.type !== expectedType) throw new ExperimentFailure(Code.Protocol, "Codex tool output type does not match its call");
-      if (this.modelErrors.includes(call)) {
+      if (this.builtinCalls.includes(call)) {
+        this.record("harness_builtin_call", { call_id: call.callId, name: call.name, input: call.input, harness_output: payload.output });
+      } else if (this.modelErrors.includes(call)) {
         const text = typeof payload.output === "string" ? payload.output : Array.isArray(payload.output) &&
           payload.output.every((part: unknown) => object(part)?.type === "input_text" && typeof object(part)?.text === "string")
           ? payload.output.map((part: JsonObject) => part.text).join("") : undefined;
@@ -169,6 +179,8 @@ export class CodexRolloutParser {
   }
 
   finish(options?: { timedOut?: boolean }): void {
+    if (this.builtinCalls.some((call) => !call.output)) throw new ExperimentFailure(Code.HarnessLogMissing,
+      "Codex rollout is missing a resource builtin output");
     for (const call of this.modelErrors) if (!call.output) this.refuseTool(call.item);
     if (!options?.timedOut && this.pending) throw new ExperimentFailure(Code.HarnessLogMissing, "Codex rollout is missing a following token_count usage event");
     if (!options?.timedOut && this.usageRecords !== this.turns) throw new ExperimentFailure(Code.HarnessLogMissing, "Codex rollout is missing normalized turn usage");
@@ -245,6 +257,7 @@ export class CodexRolloutParser {
     }
     if (payload.type === "custom_tool_call" && this.bareName(payload) !== undefined) this.refuseTool(payload);
     const name = payload.type === "function_call" ? this.bareName(payload) : undefined;
+    const resource = name === undefined && isCodexResourceCall(payload);
     let input: unknown;
     let invalidArguments = false;
     try { input = payload.type === "custom_tool_call" ? payload.input : JSON.parse(payload.arguments); }
@@ -252,9 +265,10 @@ export class CodexRolloutParser {
     this.record(name === undefined ? "tool_call" : "harness_tool_call", { call_id: payload.call_id, name: payload.name,
       ...(payload.namespace === undefined ? {} : { namespace: payload.namespace }), input, allowed: name !== undefined, item: payload });
     const qualified = payload.namespace ? `${payload.namespace}.${payload.name}` : payload.name;
+    const restricted = restrictedCodexTool(payload) || this.declaredBuiltins.has(JSON.stringify([payload.namespace || "functions", payload.name]));
     if (name === undefined && (typeof payload.name !== "string" || !payload.name ||
         typeof payload.call_id !== "string" || !payload.call_id ||
-        restrictedCodexTool(payload) || this.declaredBuiltins.has(JSON.stringify([payload.namespace || "functions", payload.name])))) this.refuseTool(payload);
+        (!resource && restricted))) this.refuseTool(payload);
     if (payload.type === "custom_tool_call" && typeof input !== "string") {
       throw new ExperimentFailure(Code.Protocol, "Invalid Codex custom_tool_call input");
     }
@@ -265,8 +279,9 @@ export class CodexRolloutParser {
     if (typeof payload.call_id !== "string" || !payload.call_id || this.byId.has(payload.call_id)) {
       throw new ExperimentFailure(Code.Protocol, "Duplicate or missing Codex function_call call_id");
     }
-    const call: CodexNativeCall = { callId: payload.call_id, name: name ?? qualified, input, item: payload };
-    if (name === undefined) this.modelErrors.push(call); else this.calls.push(call);
+    const call: CodexNativeCall = { callId: payload.call_id, name: name ?? (resource ? `functions.${payload.name}` : qualified), input, item: payload };
+    if (resource) this.builtinCalls.push(call);
+    else if (name === undefined) this.modelErrors.push(call); else this.calls.push(call);
     this.byId.set(call.callId, call);
     if (!this.pending!.functionSeen) {
       this.pending!.functionSeen = true;

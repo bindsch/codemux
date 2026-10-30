@@ -18,7 +18,7 @@ export type ExperimentRelayCall = { relay_index: number; call_id?: string; nativ
 export type ExperimentRelayOptions = { catalog?: { body: string }; startFields?: JsonObject;
   sseSwitchMs?: number; sseKeepaliveMs?: number };
 type ForwardedResponse = { reply?: JsonObject; call?: ExperimentRelayCall; dispatched_t: number;
-  correlation?: "retry" | "retry_cached" };
+  correlation?: "retry" | "retry_cached"; expected_error?: boolean };
 
 /** The experiment server stays outside the harness sandbox. Only this
  * authenticated loopback endpoint is passed to the harness's MCP client. */
@@ -221,7 +221,7 @@ export class ExperimentHttpRelay {
       if (message.method === "tools/call" && message.id !== undefined) delivery = new ExperimentRelayResponse(
         response, message.id, this.record, this.options.sseSwitchMs ?? RELAY_SSE_SWITCH_MS,
         this.options.sseKeepaliveMs ?? RELAY_SSE_KEEPALIVE_MS);
-      const { reply, call, dispatched_t, correlation } = await this.forward(message, delivery);
+      const { reply, call, dispatched_t, correlation, expected_error } = await this.forward(message, delivery);
       const bytes = reply === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(reply));
       if (bytes.length > MAX_EXPERIMENT_MESSAGE_BYTES) {
         throw new ExperimentFailure(ExperimentFailureCode.Protocol, "experiment MCP HTTP response exceeds 1 MiB");
@@ -242,7 +242,7 @@ export class ExperimentHttpRelay {
           result_sha256: resultContentSha256(call.result.content) });
         this.callsDelivered++;
       }
-      if (reply?.error !== undefined) {
+      if (reply?.error !== undefined && !expected_error) {
         const detail = typeof reply.error?.message === "string" ? `: ${reply.error.message}` : "";
         this.fail(new ExperimentFailure(ExperimentFailureCode.ServerError, `experiment MCP ${message.method} returned a JSON-RPC error${detail}`));
       }
@@ -273,6 +273,16 @@ export class ExperimentHttpRelay {
   private async forward(message: JsonObject, delivery?: ExperimentRelayResponse): Promise<ForwardedResponse> {
     if (this.failure) throw this.failure;
     if (this.closed) throw new Error("experiment HTTP relay is closed");
+    if (["resources/list", "resources/templates/list", "resources/read"].includes(message.method)) {
+      this.record("relay_resources", { method: message.method, rpc_id: message.id ?? null });
+      const dispatched_t = Date.now() / 1000;
+      if (message.id === undefined) return { dispatched_t };
+      const read = message.method === "resources/read";
+      return { dispatched_t, expected_error: read, reply: { jsonrpc: "2.0", id: message.id,
+        ...(read ? { error: { code: -32002, message: "no resources" } } : {
+          result: message.method === "resources/list" ? { resources: [] } : { resourceTemplates: [] },
+        }) } };
+    }
     if (message.id !== undefined && (message.method === "ping" ||
         (message.method === "initialize" && this.initializeReply))) {
       const ping = message.method === "ping";

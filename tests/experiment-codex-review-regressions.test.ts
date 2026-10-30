@@ -7,7 +7,7 @@ import { launchRunRequest } from "../src/launch.js";
 import * as runtime from "../src/cli-runtime.js";
 import type { RunContext } from "../src/run-context.js";
 import type { RunRequest } from "../src/types.js";
-import { codexCatalog, codexDefinitions } from "./fixtures/experiment-codex.js";
+import { codexCatalog, codexDefinitions, codexWorldState } from "./fixtures/experiment-codex.js";
 
 const contexts: { adapter: CodexAdapter; context: RunContext }[] = [];
 afterEach(async () => {
@@ -46,6 +46,7 @@ function records(path: string) {
 async function completedEvidence(context: RunContext, verify = true) {
   const experiment = context.experimentCodex!;
   await experiment.prepare("0.165.0");
+  expect((await fetch(experiment.relay.catalogUrl!)).status).toBe(200);
   for (const [id, method] of [[1, "initialize"], [2, "tools/list"]] as const) {
     const response = await fetch(experiment.relay.url, { method: "POST", headers: {
       Authorization: `Bearer ${experiment.relay.token}`, "Content-Type": "application/json",
@@ -57,6 +58,7 @@ async function completedEvidence(context: RunContext, verify = true) {
   mkdirSync(sessions, { recursive: true });
   const lines = [
     { type: "session_meta", payload: { id: "thread-cleanup" } },
+    codexWorldState(["bash"]),
     { type: "response_item", payload: { type: "message", role: "assistant", id: "message-cleanup",
       content: [{ type: "output_text", text: "OK" }] } },
     { type: "event_msg", payload: { type: "token_count", info: { last_token_usage: {

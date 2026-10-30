@@ -28,7 +28,7 @@ export const KIMI_HERMETIC_ENV_OMISSIONS = [
   "KIMI_CODE_BUILTIN_PRODUCT_SKILLS", "KIMI_MCP_TOOL_TIMEOUT_MS", "KIMI_MCP_STARTUP_TIMEOUT_MS",
 ] as const;
 // Private update state does not stop Kimi from replacing the shared executable.
-export const KIMI_HERMETIC_ENV_ASSIGNMENTS = ["KIMI_CODE_NO_AUTO_UPDATE=1"] as const;
+export const KIMI_HERMETIC_ENV_ASSIGNMENTS = ["KIMI_CODE_NO_AUTO_UPDATE=1", "KIMI_CODE_REPEAT_BREAKER=false"] as const;
 const MCP_TIMEOUT_KEYS = ["startup_timeout_ms", "tool_timeout_ms"] as const;
 const MAX_CONFIG_BYTES = 1024 * 1024;
 const liveHomes = new Set<() => void>();
