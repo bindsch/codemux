@@ -91,6 +91,16 @@ describe("scode facts", () => {
     expect(await probeScodeNamespace()).toBe("failed");
   });
 
+  test("the namespace probe runs the trusted scode it is given, not a later PATH resolution (review round 57)", async () => {
+    const trusted = fakeBin({ scode: "exit 0" });
+    const goodPath = join(trusted, "scode");
+    // A different scode planted first on PATH would fail the probe...
+    fakeBin({ scode: "exit 3" });
+    expect(await probeScodeNamespace(process.cwd())).toBe("failed");
+    // ...but the facts' trusted path is what runs.
+    expect(await probeScodeNamespace(process.cwd(), goodPath)).toBe("pass");
+  });
+
   test("the namespace vocabulary matches bubblewrap's messages, line by line", () => {
     expect(isNamespaceCapabilityFailure("bwrap: No permissions to creating new namespace\n")).toBe(true);
     expect(isNamespaceCapabilityFailure("other\nbwrap: setting up gid map: EPERM")).toBe(true);

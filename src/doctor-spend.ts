@@ -92,8 +92,10 @@ export async function applySpendStage(
       (row.state === "OK" ||
         row.state === "LOGIN-UNKNOWN" ||
         (flags.spendUnreadable === true && row.state === "QUOTA-UNREADABLE")) &&
-      // The gate would refuse anyway; spending there buys a refusal.
-      row.usageVerdict !== "refuse" &&
+      // The gate would refuse anyway; spending there buys a refusal. An
+      // active override skips the native gate, so its row stays eligible
+      // (review round 57).
+      (row.usageVerdict !== "refuse" || row.overrideActive) &&
       // An active override routes the probe to its own provider: the
       // native usage row is irrelevant to it (review round 51).
       (flags.spendUnreadable === true || row.usageReadable || row.overrideActive)

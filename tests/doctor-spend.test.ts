@@ -323,3 +323,30 @@ describe("an active override and an unreadable native usage row", () => {
     }
   });
 });
+
+describe("an active override and an exhausted native window", () => {
+  test("--spend still probes the row: the override skips the native gate (review round 57)", async () => {
+    const fake = createFakeBinaryEnv({
+      scode: fakeScodeHelp(),
+      usagemux: fakeUsagemux({ remainingPercent: 0, usedPercent: 100 }),
+      claude: claudeGreen,
+      codemux: fakeCodemux(),
+    });
+    try {
+      probeThrough(fake.env);
+      const result = await runDoctor(["--only", "claude", "--spend"], {
+        path: fake.env.PATH!,
+        home: fixtureHome(claudeHome, homes),
+        env: {
+          CODEMUX_CLAUDE_PROVIDER_BASE_URL: "https://provider.example/v1",
+          CODEMUX_CLAUDE_PROVIDER_API_KEY: "test-key-do-not-print",
+          CODEMUX_CLAUDE_PROVIDER_MODEL: "m",
+        },
+      });
+      expect(result.output).toContain("| OK |");
+      expect(readPathMarker(fake.env, "codemux-calls.log")).toContain("-a claude");
+    } finally {
+      fake.cleanup();
+    }
+  });
+});

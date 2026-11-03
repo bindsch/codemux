@@ -43,7 +43,8 @@ export function workRoot(): string {
 export async function startSession(
   overrides: Partial<AgyDriverOptions> = {},
   extraEnv: Record<string, string> = {},
-  beforeAttach?: (driver: AgySessionDriver) => void
+  beforeAttach?: (driver: AgySessionDriver) => void,
+  graceMs = 500
 ): Promise<Session> {
   const dir = mkdtempSync(join(workRoot(), "s-"));
   const workDir = join(dir, "work");
@@ -90,7 +91,7 @@ export async function startSession(
     },
     onLine: (line) => driver.handleHarnessLine(line),
     onFatal: (fatal) => driver.handleFatal(fatal),
-    graceMs: 500,
+    graceMs,
   });
   // A harness line that lands before attach queues as an early line.
   beforeAttach?.(driver);

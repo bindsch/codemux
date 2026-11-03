@@ -124,7 +124,9 @@ describe("aider session e2e - end paths", () => {
   });
 
   test("a wrapper exiting 143 during the drain fails the session", async () => {
-    const session = await startSession({}, { FAKE_SIGTERM_PERSIST: "exit143" });
+    // A longer shutdown grace than the helper's 500 ms: under a full-suite
+    // load the wrapper's 143 exit lost the race to the grace's SIGKILL.
+    const session = await startSession({}, { FAKE_SIGTERM_PERSIST: "exit143" }, undefined, 0, 2_000);
     send(session.driver, { type: "user", text: "scenario:basic one" });
     await waitFor(session.events, of("turn_completed"), "first turn_completed");
     send(session.driver, { type: "user", text: "scenario:wait two" });

@@ -40,7 +40,9 @@ describe("agy session e2e - honest false capabilities", () => {
   });
 
   test("a user line mid-turn is rejected busy — turns serialize", async () => {
-    const session = await startSession();
+    // A longer shutdown grace than the helper's 500 ms: under a full-suite
+    // load the held turn's drain missed it and the end read as a failure.
+    const session = await startSession({}, {}, undefined, 2_000);
     send(session.driver, { type: "user", text: "scenario:wait hold" });
     await waitFor(session.events, of("turn_started"), "turn_started");
     send(session.driver, { type: "user", text: "scenario:basic two" });

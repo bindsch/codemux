@@ -199,9 +199,13 @@ export const quotaDetail = (config: CodemuxConfig): string => {
  * vocabulary): only the sandboxed probe detects a scode that answers
  * --version but cannot sandbox. */
 export const probeScodeNamespace = async (
-  workdir = process.cwd()
+  workdir = process.cwd(),
+  scodePath: string | null = null
 ): Promise<"pass" | "skipped" | "failed"> => {
-  const resolved = Bun.which("scode", { PATH: process.env.PATH ?? "" });
+  // The trusted path the facts resolved, when the caller has one: a second
+  // PATH resolution could pick a binary planted between the two lookups
+  // (review round 57).
+  const resolved = scodePath ?? Bun.which("scode", { PATH: process.env.PATH ?? "" });
   if (resolved === null) return "failed";
   try {
     const result = await runCapturedCommand([resolved, "--", "/bin/sh", "-c", "exit 0"], {
@@ -259,7 +263,7 @@ export const scodeEnvironmentRow = async (facts: ScodeFacts): Promise<Environmen
       );
     }
   }
-  const namespace = await probeScodeNamespace();
+  const namespace = await probeScodeNamespace(process.cwd(), facts.path);
   if (namespace === "skipped") {
     lines.push("namespace probe skipped (this runner cannot create user namespaces)");
     if (severity === "ok") severity = "info";
