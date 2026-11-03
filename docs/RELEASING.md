@@ -19,14 +19,21 @@ before pushing, publishing a release, or changing the shared Homebrew tap.
 5. Run the [canonical full gate and checklist](RELEASE-GATE.md#automated-gate).
    Record exact outcomes, skips, and test-count changes.
 6. Have the owner run `make live-gate` on the release machine before tagging.
-   This required step spends quota. Record both probes and all skips under the
+   This required step spends quota. Record every probe row per harness, the
+   version-contract column, and all skips under the
    [live harness gate](RELEASE-GATE.md#live-harness-gate). Refuse the release
-   if an installed, credentialed harness fails either probe or a feature
-   differs across harnesses without a documented unsupported entry.
+   if an installed, credentialed harness fails a probe it supports, a version
+   contract is `CONTRACT-STALE` or `KNOWN-BREAK` without an allowed
+   explanation, or an
+   `UNSUPPORTED` cell no longer matches the documented capability matrix.
 7. Prepare the release notes from that release's curated changelog section.
    Review the exact text before publication.
 8. Commit using the repository's conventional commit format. Follow the
    authorized review and merge process. Wait for CI on the exact commit to tag.
+9. The docs/archive/ files and the deletions of the files they replace land
+   in the same commit: the test suite reads the archived documents from
+   disk, so a commit that deletes a doc without adding its archive copy
+   (or the reverse) breaks a fresh clone's gate.
 
 ## Publish the approved candidate
 
@@ -50,7 +57,18 @@ tagged source archive, compute its SHA-256, and test its frozen-lockfile
 installation. Confirm the published notes match the reviewed changelog text.
 
 For an authorized Homebrew update, update the formula's source tag and pinned
-revision, or its archive URL and checksum when using an archive source.
+revision, or its archive URL and checksum when using an archive source. The
+formula also rewrites the launcher's `codemux_pinned_bun=` line to the keg's
+Bun at install time (`inreplace`): that line is the pin token, it must appear
+in `bin/codemux` exactly once, and no literal `exec bun ` call exists for an
+older `inreplace` to find — `scripts/check-installed-layout.ts` fails the gate
+if a launcher edit drops or duplicates the token, and it checks the installed
+launcher only after applying the formula's transformation.
+`brew install --HEAD` fails from the moment this launcher lands until the tap
+formula's `inreplace` targets `codemux_pinned_bun=`: the old formula rewrites a
+pattern the new launcher no longer carries and errors on the missing match. The
+tag and the formula change therefore land together, so no tag points at a
+launcher the published formula cannot install.
 Publish bottles only for tested platforms and use their
 actual checksums. Verify runtime dependencies, project and dependency
 licenses, launcher symlink layout, runtime files, and installed documentation

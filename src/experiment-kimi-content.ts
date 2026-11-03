@@ -78,6 +78,20 @@ export function kimiStatusParts(content: JsonObject[], isError: boolean): JsonOb
   return isError ? [text(TOOL_ERROR_STATUS), ...content] : [...content];
 }
 
+const KIMI_WALL_TIME_HEADER = /^Wall time: \d+\.\d{3} seconds\n/;
+
+/** The valid `Wall time: <secs> seconds` header at the start of `text`, or
+ * null when the text opens with nothing valid. Kimi's header carries three
+ * decimals and no `Output:` line (kimiProjectedResult builds it with
+ * toFixed(3) plus the boundary newline), unlike codex's four-decimal
+ * `Wall time: <secs> seconds\nOutput:` spelling
+ * (src/experiment-codex-content.ts). Kept in lockstep with the construction
+ * by tests/experiment-kimi.test.ts. */
+export function kimiWallTimeHeader(text: string): string | null {
+  const match = KIMI_WALL_TIME_HEADER.exec(text);
+  return match === null ? null : match[0]!;
+}
+
 /** Wire tool messages are raw. The provider receives this reconstructed projection. */
 export function kimiProjectedResult(content: JsonObject[], result: JsonObject): { content: JsonObject[]; header: string | null } {
   const rendered = kimiStatusParts(content, result.isError === true);

@@ -1,5 +1,6 @@
 import { signalProcess } from "./process-signal.js";
 export { signalProcess } from "./process-signal.js";
+import { assertExecutablesUnchanged, type ExecutableCheck } from "./executable-security.js";
 import { OutputLimitError, readBounded } from "./process-capture.js";
 export { MAX_CAPTURE_BYTES } from "./process-capture.js";
 import {
@@ -105,6 +106,15 @@ export interface CapturedCommandOptions {
    * since the launch path never resumes. Rejections and waits beyond
    * FORCE_KILL_DELAY_MS are reported without replacing the signal exit. */
   onSignaled?: () => void | Promise<void>;
+  /** This launch's own executable resolutions, forwarded to the pre-spawn
+   * re-stat: a path with a check re-stats against that identity alone —
+   * never another launch's record of a replaced binary — and a required
+   * path with no recorded identity is refused instead of skipped. A caller
+   * that resolved its own command (the launch paths) passes both; a caller
+   * that runs a binary another module resolved passes neither and the
+   * re-stat falls back to the process-wide identity list. */
+  requiredPaths?: readonly string[];
+  checks?: readonly ExecutableCheck[];
 }
 
 // Captured commands in flight. While one runs, its own signal handlers own
@@ -132,6 +142,7 @@ export async function runCapturedCommand(
   const timeoutMs = options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
   validateTimeout(timeoutMs);
   const useProcessGroup = process.platform !== "win32";
+  assertExecutablesUnchanged(command, "command", options.requiredPaths, options.checks);
   const proc = Bun.spawn(command, {
     cwd: options.cwd,
     stdout: "pipe",

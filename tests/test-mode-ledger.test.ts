@@ -89,7 +89,7 @@ describe("the test-run ledger redirect", () => {
       ]);
       expect(exitCode, stderr).toBe(0);
       // The default paths come from the seam itself, never spelled by hand
-      // (the registry-path guard in tests/session-cli.test.ts).
+      // (the registry-path guard in tests/session-cli-happy-path.test.ts).
       for (const platform of ["darwin", "linux"] as const) {
         const ledger = callLogPath({ HOME: home }, platform);
         expect(ledger).not.toBeNull();

@@ -9,6 +9,8 @@ Headless `run` and interactive `tui` default to read-only autonomy and scode. Ev
 
 ## Native mappings
 
+Read-only runs under scode `--ro` on every harness; the rows below name each harness's native policy only.
+
 | Harness | Read-only | Low | Medium | High |
 | --- | --- | --- | --- | --- |
 | Claude, Z.AI | Plan, with headless web grants | Manual, with headless web grants | Accept edits, with headless edit grant scoped to launch directory, shell grant, and web grants | Skip permissions, with headless edit/write/notebook/shell and web grants |
@@ -28,6 +30,10 @@ Headless `run` and interactive `tui` default to read-only autonomy and scode. Ev
 | Qwen | plan | default | auto (classifier approves shell commands) | yolo |
 
 Kimi's headless `--prompt` rejects its interactive autonomy flags. OpenHands headless mode auto-approves. Their headless boundaries therefore depend on scode, not the interactive rows. Antigravity can soft-deny a headless approval while still exiting 0; native success alone does not establish that a requested action ran.
+
+Codex's row names the flags an unsandboxed launch passes. On the default sandboxed path codex runs with `--dangerously-bypass-approvals-and-sandbox` and none of the row's native flags, so scode alone enforces the level.
+
+Pi's TUI passes `--no-approve` at medium and high only; read-only and low keep pi's native approvals in the TUI. Pi's headless runs pass `--no-approve` at every level, because no one is present to answer an approval.
 
 Antigravity medium headless runs add `command(*)` to `permissions.allow` in a private copy of the operator's settings. Existing allow, ask, and deny rules remain; deny rules take precedence. The command grant relies on scode for filesystem and network limits. Read-only, low, and interactive runs keep their native policies.
 

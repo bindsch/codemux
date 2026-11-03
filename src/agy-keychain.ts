@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, sep } from "node:path";
-import { resolveTrustedExecutable } from "./executable-security.js";
+import { assertExecutablesUnchanged, executableCheck, resolveTrustedExecutable } from "./executable-security.js";
 import { callLogPath } from "./call-log.js";
 
 export const AGY_MIRROR_PATH = "Library/Keychains/login.keychain-db";
@@ -102,10 +102,15 @@ function client(environment: NodeJS.ProcessEnv, cwd?: string, home = agyKeychain
   const path = agyKeychainHost.securityPath(environment);
   if (!path) return;
   const security = resolveTrustedExecutable(path, "security", cwd);
+  // This client's own resolution, captured where it happened: the re-stat
+  // below compares this identity alone, never one a later launch in this
+  // process recorded for the same path (review round 13, edges 2).
+  const securityCheck = executableCheck(security) ?? undefined;
   // Use the real login HOME unless explicitly selecting a private default.
   const env = { HOME: home, PATH: "/usr/bin:/bin" };
   return (args: string[], failure: string, stdin?: string): Buffer => {
     try {
+      assertExecutablesUnchanged([security], "security", undefined, securityCheck && [securityCheck]);
       const result = agyKeychainHost.spawnSync([security, ...args], {
         env, stdin: stdin === undefined ? "ignore" : Buffer.from(stdin),
         stdout: "pipe", stderr: "pipe", timeout: SECURITY_TIMEOUT_MS,
@@ -144,8 +149,13 @@ function setMirrorDefault(invoke: NonNullable<ReturnType<typeof client>>, home: 
   catch {
     try { original = defaultKeychain(invoke); }
     catch {
-      console.error("codemux: no readable default keychain; agy may prompt to store its token");
-      return;
+      // Without a default for the private HOME, agy's token refresh raises
+      // the macOS "a keychain cannot be found to store antigravity" prompt
+      // on the operator's screen. Refuse instead (2026-11-03).
+      throw new Error(
+        "cannot read the user's default keychain, so the agy private HOME cannot be given one; " +
+        "refusing to launch agy because it would prompt to store its token"
+      );
     }
   }
   const privateInvoke = client(environment, cwd, home);

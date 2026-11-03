@@ -35,6 +35,13 @@ export interface ClaudeEnvelopeInfo {
  * `input_tokens` excludes the cache; the cache read and write counts become
  * `cached_input_tokens` so the three fields sum to the whole conversation.
  */
+/** The field the claude-family --result-json envelope (claude and zai,
+ * the same binary) spells its answer text with; the envelope is the
+ * harness's own, re-emitted verbatim with the codemux block. The release
+ * gate's probe C verifies this exact field per agent, so the parser and
+ * the gate share one name (review round 16, edges 3). */
+export const CLAUDE_FAMILY_ANSWER_FIELD = "result";
+
 export function parseClaudeResultEnvelope(
   stdout: string
 ): ClaudeEnvelopeInfo | null {
@@ -69,7 +76,7 @@ export function parseClaudeResultEnvelope(
       ? envelope.subtype
       : null;
   const isError = envelope.is_error === true || errorSubtype !== null;
-  if (typeof envelope.result !== "string" && !isError) {
+  if (typeof envelope[CLAUDE_FAMILY_ANSWER_FIELD] !== "string" && !isError) {
     return null;
   }
 
@@ -133,8 +140,8 @@ export function claudeFamilyResult(
   // structured path must not turn it into a successful result a caller
   // could record as a run with no output.
   const replyAbsent =
-    typeof parsed.envelope.result !== "string" ||
-    parsed.envelope.result.trim() === "";
+    typeof parsed.envelope[CLAUDE_FAMILY_ANSWER_FIELD] !== "string" ||
+    (parsed.envelope[CLAUDE_FAMILY_ANSWER_FIELD] as string).trim() === "";
   const block = (): CodemuxResultBlock => ({
     agent,
     labels: request.labels ?? null,
@@ -146,6 +153,10 @@ export function claudeFamilyResult(
     model: parsed.multipleModels
       ? null
       : parsed.servedModel ?? request.model ?? null,
+    // Provider-reported: the same modelUsage key `model` above prefers,
+    // kept apart from it so a caller can tell a served report from the
+    // selection (several models served is a null, not a pick).
+    served_model: parsed.multipleModels ? null : parsed.servedModel,
     usage: parsed.usage,
     // Always null in this release: the adapter passes
     // --no-session-persistence, so no run leaves a session a later resume

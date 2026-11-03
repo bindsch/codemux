@@ -198,10 +198,23 @@ const handleLine = (line: string): void => {
   }
   if (typeof parsed !== "object" || parsed === null) return;
   const event = parsed as Record<string, unknown>;
-  if (event["type"] === "user") {
+  if (event["event"] === undefined) {
+    // agy 1.4.12 (antigravity.google/docs/cli/headless): an input frame is
+    // keyed by `event`; the claude-shaped `type: "user"` frame gets this
+    // ERROR result and the process exits 1 (live gate, 2026-11-02).
+    result({
+      conversation_id: conversationId, status: "ERROR", response: "",
+      error: 'stream input message is missing the "event" field', duration_seconds: 0, num_turns: 0,
+      usage: { input_tokens: 0, output_tokens: 0, thinking_tokens: 0, cache_read_tokens: 0, total_tokens: 0 },
+    });
+    process.exit(1);
+  }
+  if (event["event"] === "user") {
     const message = event["message"] as Record<string, unknown> | undefined;
-    const content = Array.isArray(message?.["content"]) ? (message?.["content"] as Record<string, unknown>[]) : [];
-    const text = typeof content[0]?.["text"] === "string" ? (content[0]["text"] as string) : "";
+    const raw = message?.["content"];
+    // The documented shape: a string, or a list of {type: "text", text} blocks.
+    const content = Array.isArray(raw) ? (raw as Record<string, unknown>[]) : [];
+    const text = typeof raw === "string" ? raw : typeof content[0]?.["text"] === "string" ? (content[0]["text"] as string) : "";
     record("input-lines.jsonl", { text });
     if (turnActive) {
       inputQueue.push(text);

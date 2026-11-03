@@ -41,6 +41,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import type { ProviderOverride } from "./provider-override.js";
+import { UsageRefusalError } from "./validation.js";
 
 export interface PiProviderAgentDir {
   /** The value for `PI_CODING_AGENT_DIR`: pi's agent directory for the run. */
@@ -82,7 +83,7 @@ export function piProviderModelSelector(model: string): string {
  */
 export function piProviderBareModel(model: string): string {
   if (model.includes("{") || model.includes("}")) {
-    throw new Error(
+    throw new UsageRefusalError(
       "the pi provider override model must not contain '{' or '}': pi expands $VAR/${VAR} templates inside models.json, so a brace could splice another value into it"
     );
   }

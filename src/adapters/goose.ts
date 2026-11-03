@@ -6,7 +6,7 @@ import {
   requireProviderOverride,
   type ProviderOverride,
 } from "../provider-override.js";
-import { validateWorkingDirectory } from "../validation.js";
+import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -14,6 +14,7 @@ import type {
   RunRequest,
   AdapterCapabilities,
 } from "../types.js";
+import { gooseLoginState, loginHome, type LoginState } from "../harness-health.js";
 
 /**
  * Splits an override base URL into goose's `OPENAI_HOST` /
@@ -33,7 +34,9 @@ export function gooseOpenAiEndpoint(baseUrl: string): {
 } {
   const parsed = new URL(baseUrl);
   if (parsed.search !== "") {
-    throw new Error(
+    // A configuration mistake the operator can fix at the flag boundary,
+    // not a launch failure: the 64 every pre-launch refusal carries.
+    throw new UsageRefusalError(
       "CODEMUX_GOOSE_PROVIDER_BASE_URL with a query string cannot map onto goose's OPENAI_HOST/OPENAI_BASE_PATH"
     );
   }
@@ -71,7 +74,7 @@ export class GooseAdapter extends BaseAdapter {
       effortLevels: [],
       // Hermetic has no mechanism for goose's context-file and
       // config-system-prompt channels, and the live control probe leaked
-      // the planted code word (2026-09-17); see docs/HERMETIC.md.
+      // the planted code word (2026-09-17); see docs/isolation.md.
       // `--tools none` is claimed: verified live at 1.50.1 through the
       // provider override — under `--no-profile` neither capability probe
       // could produce its secret while plain runs produced both.
@@ -107,7 +110,7 @@ export class GooseAdapter extends BaseAdapter {
     const override = this.validatedProvider();
     const resolved = model ?? override?.model;
     if (resolved === undefined && override !== null) {
-      throw new Error(
+      throw new UsageRefusalError(
         "goose needs a model for the provider override; pass --model or set CODEMUX_GOOSE_PROVIDER_MODEL"
       );
     }
@@ -154,10 +157,16 @@ export class GooseAdapter extends BaseAdapter {
     assertNoGooseProjectExecutionConfig(
       validateWorkingDirectory(request.cwd) ?? process.cwd()
     );
-    // Fail before launch on a half-configured override, and surface the
-    // model requirement early: goose's own configured default would
-    // otherwise silently answer through the operator's provider.
-    this.modelFor(request.model);
+    // Fail before launch on a half-configured override, surface the model
+    // requirement early (goose's own configured default would otherwise
+    // silently answer through the operator's provider), and refuse a base
+    // URL goose's env pair cannot carry before the quota gate — the same
+    // refusal the launch path would raise later, now as a usage error.
+    const override = this.validatedProvider();
+    if (override !== null) {
+      this.modelFor(request.model);
+      gooseOpenAiEndpoint(override.baseUrl);
+    }
   }
 
   override validateTuiRequest(
@@ -172,7 +181,11 @@ export class GooseAdapter extends BaseAdapter {
     assertNoGooseProjectExecutionConfig(
       validateWorkingDirectory(cwd) ?? process.cwd()
     );
-    this.modelFor(model);
+    const override = this.validatedProvider();
+    if (override !== null) {
+      this.modelFor(model);
+      gooseOpenAiEndpoint(override.baseUrl);
+    }
   }
 
   /**
@@ -227,5 +240,10 @@ export class GooseAdapter extends BaseAdapter {
       ...(model ? { GOOSE_MODEL: model } : {}),
       ...this.providerEnv(model),
     };
+  }
+
+  /** The goose login read: its config file, or an API key. */
+  override loginState(): LoginState {
+    return gooseLoginState(loginHome(this.environment), this.environment);
   }
 }

@@ -10,6 +10,7 @@ import * as runtime from "../src/cli-runtime.js";
 import type { RunContext } from "../src/run-context.js";
 import type { RunRequest } from "../src/types.js";
 import { KIMI_STREAM_SESSION, kimiResumeHint } from "./fixtures/kimi-stream.js";
+import { assertNoRelaySecretsInRecordings } from "./experiment-secret-scan.js";
 
 const contexts: { adapter: KimiAdapter; context: RunContext }[] = [];
 afterEach(async () => {
@@ -39,6 +40,21 @@ function setup(resultJson = true) {
 test("Kimi accepts the shared experiment request with its own prefix opt-in", () => {
   const { adapter, request } = setup();
   expect(() => adapter.validateRunRequest(request)).not.toThrow();
+  // Acceptance is field-level, not just a missing throw: the validated
+  // request keeps the experiment shape (a validator that stopped checking
+  // anything would also pass a bare not.toThrow).
+  expect(request).toMatchObject({
+    agent: "kimi", hermetic: true, tools: "none", autonomy: "read-only", sandboxed: true,
+  });
+  // The refusal side of the same validator: a goal-dispatch prompt and a
+  // hermetic KIMI_CODE_HOME passthrough are usage refusals, so the
+  // acceptance above cannot come from a disabled check.
+  expect(() => adapter.validateRunRequest({ ...request, prompt: "/goal ship it" })).toThrow(
+    "kimi prompts must not be the /goal command"
+  );
+  expect(() => adapter.validateRunRequest({ ...request, passthroughEnv: ["KIMI_CODE_HOME"] })).toThrow(
+    "kimi --hermetic owns KIMI_CODE_HOME; remove --pass-env KIMI_CODE_HOME"
+  );
 });
 
 test.each([true, false])("Kimi experiment writes one private authenticated endpoint and no built-ins: JSON=%s", async (json) => {
@@ -174,4 +190,5 @@ test("Kimi evidence completion leaves recording open until result normalization 
   expect(recorded().filter((record) => record.kind === "harness_log_copy")).toHaveLength(1);
   expect(existsSync(copy.path)).toBe(true);
   expect(recorded().at(-1)).toMatchObject({ kind: "run_end", code: null, error: null });
+  assertNoRelaySecretsInRecordings(experiment.recordingPath, experiment.relay.catalogUrl);
 });

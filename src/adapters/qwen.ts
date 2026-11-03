@@ -6,6 +6,7 @@ import type {
   RunRequest,
   AdapterCapabilities,
 } from "../types.js";
+import { envKeyLoginState, type LoginState } from "../harness-health.js";
 
 export class QwenAdapter extends BaseAdapter {
   readonly id: AgentId = "qwen";
@@ -30,7 +31,7 @@ export class QwenAdapter extends BaseAdapter {
       // every operator channel by construction, so --hermetic has nothing
       // left to close and its control can never leak; no tool-removal
       // flag survives safe mode. Both refusals are detailed in
-      // docs/HERMETIC.md.
+      // docs/isolation.md.
       supportsHermetic: false,
       supportsToolSelection: false,
     };
@@ -133,5 +134,10 @@ export class QwenAdapter extends BaseAdapter {
       cmd.push(...this.mapAutonomy(autonomy));
     }
     return cmd;
+  }
+
+  /** The qwen login read: a credential variable in the environment. */
+  override loginState(): LoginState {
+    return envKeyLoginState(this.id, this.environment);
   }
 }

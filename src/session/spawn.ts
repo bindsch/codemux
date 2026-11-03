@@ -17,7 +17,13 @@ import {
   resolveKeepEnvSandboxOptions,
   resolveScodeExecutableForEnv,
 } from "../cli-runtime.js";
-import { resolveTrustedCommand } from "../executable-security.js";
+import {
+  executableCheck,
+  resolveTrustedCommand,
+  trustCheckedCommandChecks,
+  trustCheckedCommandPaths,
+  type ExecutableCheck,
+} from "../executable-security.js";
 import { buildSandboxEnv, buildScodeCommand, type SandboxOptions } from "../sandbox.js";
 import { validateWorkingDirectory } from "../validation.js";
 import type { AutonomyLevel } from "../types.js";
@@ -34,6 +40,81 @@ export interface SessionSpawnOptions {
   /** Adapter env omissions, deleted from the sandbox environment like
    * `runSandboxedWithStdin` deletes them (belt over buildExecutionEnv). */
   envOmissions?: readonly string[];
+}
+
+/**
+ * Everything the sandboxed half of a session spawn resolves before the
+ * spawn itself: the scode argv and the child environment. Split out of
+ * spawnSessionChild so `session --print-sandbox` can resolve exactly what
+ * a spawn would exec — probes, trusted-command resolution, keep-env
+ * resolution included — without creating a process. `workdir` is the
+ * already-validated working directory.
+ */
+export async function resolveSessionSandboxSpawn(
+  command: string[],
+  env: Record<string, string>,
+  options: SessionSpawnOptions,
+  workdir: string
+): Promise<{
+  scodeCmd: string[];
+  sandboxEnv: Record<string, string>;
+  /** This spawn's own resolutions, captured in each resolution's own
+   * synchronous block (round 20, minor 6): the scode identity before
+   * the first await, and the resolved command's trust-checked
+   * positions right after resolveTrustedCommand. The SessionProcess
+   * re-stats pins these, so its check compares this spawn's identities
+   * alone — the same pin the run path applies at its spawn. */
+  executablePin: {
+    requiredPaths: readonly string[];
+    checks: readonly ExecutableCheck[];
+  };
+}> {
+  assertNoProjectScodePolicy(workdir);
+  // The launch environment's PATH, the same resolver the run runner
+  // uses (resolveScodeExecutableForEnv): the session's scode and the
+  // run's are one binary for one launch environment, never two
+  // lookups that can disagree (round al14).
+  const scode = resolveScodeExecutableForEnv(env, workdir);
+  if (!scode) throw new Error("scode is not installed");
+  // Captured before the first await (the rule executableCheck's doc
+  // states): the probes below await, and a capture after them could
+  // read another launch's record for the same path (round 20, minor 7).
+  const scodeCheck = executableCheck(scode);
+  await assertCompatibleScode(scode, workdir, env);
+  // The keep-env seam the run runner owns (runSandboxedWithStdin): the
+  // session's sandbox options may carry the exemption for the env the
+  // CLI injected (an override's credential above all), and the same
+  // resolver decides — keep, drop, or refuse with the run path's
+  // message — so the two spawn paths cannot drift.
+  const effectiveSandboxOptions = await resolveKeepEnvSandboxOptions(
+    scode,
+    workdir,
+    env,
+    options.sandboxOptions
+  );
+  const resolved = resolveTrustedCommand(
+    command,
+    "sandbox command",
+    workdir,
+    env.PATH ?? ""
+  );
+  const executablePin = {
+    requiredPaths: [...trustCheckedCommandPaths(resolved), scode],
+    checks: [
+      ...trustCheckedCommandChecks(resolved),
+      ...(scodeCheck === null ? [] : [scodeCheck]),
+    ],
+  };
+  const scodeCmd = buildScodeCommand(
+    resolved,
+    workdir,
+    options.autonomy,
+    effectiveSandboxOptions,
+    scode
+  );
+  const sandboxEnv = buildSandboxEnv(env, effectiveSandboxOptions);
+  for (const name of options.envOmissions ?? []) delete sandboxEnv[name];
+  return { scodeCmd, sandboxEnv, executablePin };
 }
 
 /**
@@ -67,45 +148,18 @@ export async function spawnSessionChild(
     throw new Error("session command produced an invalid command");
   }
   if (options.sandboxed) {
-    assertNoProjectScodePolicy(workdir);
-    // The launch environment's PATH, the same resolver the run runner
-    // uses (resolveScodeExecutableForEnv): the session's scode and the
-    // run's are one binary for one launch environment, never two
-    // lookups that can disagree (round al14).
-    const scode = resolveScodeExecutableForEnv(env, workdir);
-    if (!scode) throw new Error("scode is not installed");
-    await assertCompatibleScode(scode, workdir, env);
-    // The keep-env seam the run runner owns (runSandboxedWithStdin): the
-    // session's sandbox options may carry the exemption for the env the
-    // CLI injected (an override's credential above all), and the same
-    // resolver decides — keep, drop, or refuse with the run path's
-    // message — so the two spawn paths cannot drift.
-    const effectiveSandboxOptions = await resolveKeepEnvSandboxOptions(
-      scode,
-      workdir,
-      env,
-      options.sandboxOptions
-    );
-    const resolved = resolveTrustedCommand(
+    const { scodeCmd, sandboxEnv, executablePin } = await resolveSessionSandboxSpawn(
       command,
-      "sandbox command",
-      workdir,
-      env.PATH ?? ""
+      env,
+      options,
+      workdir
     );
-    const scodeCmd = buildScodeCommand(
-      resolved,
-      workdir,
-      options.autonomy,
-      effectiveSandboxOptions,
-      scode
-    );
-    const sandboxEnv = buildSandboxEnv(env, effectiveSandboxOptions);
-    for (const name of options.envOmissions ?? []) delete sandboxEnv[name];
     return new SessionProcess({
       command: scodeCmd,
       cwd: workdir,
       env: sandboxEnv,
       graceMs: options.graceMs,
+      executableChecks: executablePin,
       ...hooks,
     });
   }
@@ -122,6 +176,10 @@ export async function spawnSessionChild(
     cwd: workdir,
     env,
     graceMs: options.graceMs,
+    executableChecks: {
+      requiredPaths: trustCheckedCommandPaths(resolved),
+      checks: trustCheckedCommandChecks(resolved),
+    },
     ...hooks,
   });
 }

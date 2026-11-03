@@ -33,6 +33,16 @@ const cleanups: Array<() => Promise<void> | void> = [];
 export async function cleanupSessions(): Promise<void> {
   while (cleanups.length > 0) await cleanups.pop()!();
 }
+/** Ends the sessions started since `mark` (a `cleanups.length` captured in
+ * a beforeEach): each suite's afterEach drains its own test's drivers so
+ * none carries the process's signal handlers into a later test (review
+ * round 4, session finding 8). */
+export async function cleanupSessionsSince(mark: number): Promise<void> {
+  while (cleanups.length > mark) await cleanups.pop()!();
+}
+/** The current drain mark: `cleanupMark()` captured before a test, then
+ * `cleanupSessionsSince(mark)` after it. */
+export const cleanupMark = (): number => cleanups.length;
 
 let root: string | null = null;
 export function workRoot(): string {

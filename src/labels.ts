@@ -9,12 +9,6 @@ function unicodeEscape(character: string): string {
   return `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`;
 }
 
-/** Escape backslashes too, so literal escape text cannot look like a control. */
-export function escapeLabelText(value: string): string {
-  return value.replace(/[\\\x00-\x1f\x7f-\x9f]/g, (character) =>
-    character === "\\" ? "\\\\" : unicodeEscape(character));
-}
-
 /** Raw C0 in parsed JSON is whitespace; replace it without re-encoding tokens. */
 export function escapeJsonControls(json: string): string {
   return json.replace(/[\x00-\x1f]/g, " ").replace(/[\x7f-\x9f]/g, unicodeEscape);

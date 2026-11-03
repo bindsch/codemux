@@ -243,43 +243,37 @@ test("a failed initial real-default read retries before private mirror selection
   expect(warning).not.toHaveBeenCalled();
 });
 
-test.each([false, true])("an unreadable real default skips private selection with one warning; login exists=%s", (loginExists) => {
+test.each([false, true])("an unreadable real default refuses the run instead of letting agy prompt; login exists=%s", (loginExists) => {
+  // Without a private default, agy's token refresh raises the macOS "a
+  // keychain cannot be found to store antigravity" prompt (2026-11-03), so
+  // the preparation fails closed after its two read attempts.
   const state = setup("mirror", { unreadableDefault: true });
-  const warning = spyOn(console, "error").mockImplementation(() => {});
-  cleanup.push(() => warning.mockRestore());
   const login = join(state.home, AGY_MIRROR_PATH);
   if (loginExists) {
     mkdirSync(join(state.home, "Library/Keychains"), { recursive: true });
     writeFileSync(login, "real login keychain");
   }
-  expect(() => prepareAgyPrivateKeychain(state.privateHome, state.environment)).not.toThrow();
-  expect(existsSync(state.mirror)).toBe(true);
+  expect(() => prepareAgyPrivateKeychain(state.privateHome, state.environment))
+    .toThrow("refusing to launch agy because it would prompt to store its token");
   expect(state.selectedMirror()).toBeUndefined();
-  expect(state.selectedExistingMirror()).toBe(false);
   expect(state.current()).toBeUndefined();
   expect(state.calls.every((call) => call.home === state.home)).toBe(true);
   expect(state.calls.filter((call) => call.args[0] === "default-keychain"))
     .toEqual(Array.from({ length: 2 }, () => ({ home: state.home, args: ["default-keychain", "-d", "user"] })));
-  expect(warning.mock.calls).toEqual([["codemux: no readable default keychain; agy may prompt to store its token"]]);
 });
 
-test("an unreadable real default allows run preparation and cleanup", () => {
+test("an unreadable real default refuses run preparation and leaves no private home behind", () => {
   const state = setup("private", { unreadableDefault: true });
-  const warning = spyOn(console, "error").mockImplementation(() => {});
-  cleanup.push(() => warning.mockRestore());
   const cwd = join(state.home, "work");
   mkdirSync(cwd);
   const adapter = new AgyAdapter(state.environment);
-  const context = adapter.prepareRun({ agent: "agy", prompt: "unused", cwd, sandboxed: true, autonomy: "read-only" });
-  cleanup.push(() => adapter.cleanupRun(context));
-  expect(existsSync(join(context.agyProbe!.home!, AGY_MIRROR_PATH))).toBe(true);
-  adapter.cleanupRun(context);
+  expect(() => adapter.prepareRun({ agent: "agy", prompt: "unused", cwd, sandboxed: true, autonomy: "read-only" }))
+    .toThrow("refusing to launch agy because it would prompt to store its token");
   expect(readdirSync(join(state.home, ".gemini/.codemux-isolation-probes"))).toEqual([]);
   expect(state.current()).toBeUndefined();
   expect(state.calls.every((call) => call.home === state.home)).toBe(true);
   expect(state.calls.filter((call) => call.args[0] === "default-keychain"))
     .toEqual(Array.from({ length: 2 }, () => ({ home: state.home, args: ["default-keychain", "-d", "user"] })));
-  expect(warning.mock.calls).toEqual([["codemux: no readable default keychain; agy may prompt to store its token"]]);
 });
 
 test("a concurrent operator default survives private mirror selection", () => {

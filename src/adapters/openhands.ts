@@ -1,6 +1,6 @@
 import { BaseAdapter } from "./base.js";
 import { assertNoOpenHandsProjectExecutionConfig } from "../project-safety.js";
-import { validateWorkingDirectory } from "../validation.js";
+import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import {
   assertProviderCap,
   readProviderOverride,
@@ -13,6 +13,7 @@ import type {
   RunRequest,
   AdapterCapabilities,
 } from "../types.js";
+import { envKeyLoginState, type LoginState } from "../harness-health.js";
 
 /**
  * OpenHands CLI (`openhands`), audited against 1.16.0.
@@ -95,7 +96,7 @@ export class OpenHandsAdapter extends BaseAdapter {
     const resolved = model ?? override?.model;
     if (resolved === undefined) {
       if (override !== null) {
-        throw new Error(
+        throw new UsageRefusalError(
           "openhands needs a model for the provider override; pass --model or set CODEMUX_OPENHANDS_PROVIDER_MODEL"
         );
       }
@@ -217,5 +218,10 @@ export class OpenHandsAdapter extends BaseAdapter {
       cmd.push(...this.mapAutonomy(autonomy));
     }
     return cmd;
+  }
+
+  /** The openhands login read: a credential variable in the environment. */
+  override loginState(): LoginState {
+    return envKeyLoginState(this.id, this.environment);
   }
 }

@@ -18,15 +18,18 @@ import {
   resolveEffortForAdapter,
 } from "./cli-runtime.js";
 import { resolveModel } from "./config.js";
+import { collectLabel, parseLabels } from "./labels.js";
 import {
   HERMETIC_CANARY_PROMPT,
   evaluateCanary,
   plantCanary,
 } from "./hermetic-canary.js";
 import { launchRunRequest, type LaunchOptions } from "./launch.js";
+import { assertQuotaHeadroomForLaunch, resolveQuotaGate } from "./quota-gate.js";
+import { UsageRefusalError } from "./validation.js";
 import { AGENT_IDS, type AgentId, type CodemuxConfig, type RunRequest, type RunResult } from "./types.js";
 
-const OK_LINE = /(?:^|\r?\n)\s*OK[.!]?\s*(?:\r?\n|$)/;
+export const OK_LINE = /(?:^|\r?\n)\s*OK[.!]?\s*(?:\r?\n|$)/;
 
 function reportFailure(result: RunResult): void {
   if (result.stdout) process.stderr.write(result.stdout);
@@ -69,18 +72,41 @@ export function registerCheckCommand(
     )
     .option("--sandbox-no-net", "Pass --no-net to scode when sandboxed")
     .option("--sandbox-scrub-env", "Pass --scrub-env to scode when sandboxed")
+    .option(
+      "--sandbox-block <path>",
+      "Pass an extra scode --block for this probe (repeatable); absolute paths only",
+      (value: string, previous: string[]) => [...previous, value],
+      []
+    )
+    .option(
+      "--print-sandbox",
+      "Print the scode argv this probe would exec, one argument per line (controls escaped, a newline prints as \\n), and exit 0 without running anything; requires --sandbox and a plain probe without Agy isolation or tools canaries"
+    )
     .option("--pass-env <names>", "Pass comma-separated sensitive environment names")
     .option("--timeout <seconds>", "Timeout per probe in seconds; paired and multiple probes each receive this budget", "60")
     .option("--cwd <path>", "Working directory (incompatible with --hermetic and Agy isolation canaries)")
+    .option(
+      "--quota-ceiling <percent>",
+      "Refuse the probe when a bounding usage window is below this percent remaining; overrides the config quota ceiling for this invocation"
+    )
+    .option("--no-quota-gate", "Skip the pre-launch usagemux quota check for this invocation")
+    .option(
+      "--label <KEY=VALUE>",
+      "Record a workflow label on the probe's ledger record (repeatable)",
+      collectLabel,
+      []
+    )
     .action(async (options) => {
       try {
         requireValidConfig();
         const agentId = options.agent as AgentId;
 
         if (!AGENT_IDS.includes(agentId)) {
-          console.error(`Error: Unknown agent '${agentId}'`);
-          console.error(`Available agents: ${AGENT_IDS.join(", ")}`);
-          process.exit(1);
+          // One message, two lines: handleUnexpectedError prints it with the
+          // "Error:" prefix, so the output matches the old console.error pair.
+          throw new UsageRefusalError(
+            `Unknown agent '${agentId}'\nAvailable agents: ${AGENT_IDS.join(", ")}`
+          );
         }
 
         const requestedAutonomy = parseAutonomyOption(options.auto) ?? "read-only";
@@ -94,15 +120,32 @@ export function registerCheckCommand(
           sandboxTrust: options.sandboxTrust,
           sandboxNoNet: Boolean(options.sandboxNoNet),
           sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
+          sandboxBlock: options.sandboxBlock,
         });
+        // The run command's own refusals, so one operator request cannot
+        // yield three outcomes across the launch commands: the argv print
+        // belongs to the sandboxed spawn, and the hermetic probes below
+        // run several different children with no single argv to print.
+        if (options.printSandbox && !options.sandbox) {
+          throw new UsageRefusalError("--print-sandbox requires --sandbox: it prints the scode argv of a sandboxed probe");
+        }
+        if (options.printSandbox && options.agyIsolationProbe !== undefined) {
+          throw new UsageRefusalError("--print-sandbox cannot be combined with --agy-isolation-probe: isolation probes do not provide print-only argv");
+        }
+        if (options.printSandbox && hermetic) {
+          throw new UsageRefusalError("--print-sandbox supports the plain probe only: hermetic checks run several probes with no single scode argv");
+        }
+        if (options.printSandbox && agentId === "agy" && tools === "none") {
+          throw new UsageRefusalError("--print-sandbox cannot be combined with --tools none for agy: canary checks run several probes with no single scode argv");
+        }
         validateExperimentRequest({ agent: agentId, prompt: "probe", experimentMcp: options.experimentMcp,
           hermetic, tools, autonomy: requestedAutonomy, sandboxed: Boolean(options.sandbox),
           sandboxNoNet: Boolean(options.sandboxNoNet), sandboxTrust: sandboxPolicyOverrides?.trust });
         if (options.experimentMcp && agentId === "codex") {
-          throw new Error("Codex --experiment-mcp supports run only; the paired check requires a non-hermetic control and is supported only by claude, zai, and kimi");
+          throw new UsageRefusalError("Codex --experiment-mcp supports run only; the paired check requires a non-hermetic control and is supported only by claude, zai, and kimi");
         }
         if (hermetic && options.cwd !== undefined) {
-          throw new Error("--hermetic plants its own working directory; drop --cwd");
+          throw new UsageRefusalError("--hermetic plants its own working directory; drop --cwd");
         }
         const timeoutMs = parseTimeoutOption(options.timeout);
         const model = options.model
@@ -112,13 +155,13 @@ export function registerCheckCommand(
           if (agentId !== "agy" || hermetic || tools === "none" || options.experimentMcp ||
               !options.sandbox || requestedAutonomy !== "read-only" || options.cwd || passthroughEnv.length ||
               options.sandboxTrust || options.sandboxNoNet || options.sandboxScrubEnv || requestedEffort) {
-            throw new Error("--agy-isolation-probe requires -a agy --auto read-only with default scode and no other isolation flags");
+            throw new UsageRefusalError("--agy-isolation-probe requires -a agy --auto read-only with default scode and no other isolation flags");
           }
         }
         if (agentId === "agy" && (hermetic || tools === "none")) {
           if (!options.sandbox || requestedAutonomy !== "read-only" || options.cwd || passthroughEnv.length ||
               options.sandboxTrust || options.sandboxNoNet || options.sandboxScrubEnv || requestedEffort) {
-            throw new Error("agy canary checks require default read-only scode and manage their own scratch cwd and HOME");
+            throw new UsageRefusalError("agy canary checks require default read-only scode and manage their own scratch cwd and HOME");
           }
         }
 
@@ -132,8 +175,7 @@ export function registerCheckCommand(
 
         const caps = adapter.capabilities();
         if (model && !caps.supportsModel) {
-          console.error(`Error: ${agentId} does not support model selection`);
-          process.exit(1);
+          throw new UsageRefusalError(`${agentId} does not support model selection`);
         }
 
         // The control repeats the probe's --tools selection without
@@ -147,38 +189,24 @@ export function registerCheckCommand(
         // their own instruments (check --hermetic without --tools for the
         // isolation, the capability probes for --tools none).
         if (hermetic && tools === "none" && caps.toolsNoneRequiresHermetic) {
-          throw new Error(
+          throw new UsageRefusalError(
             `check --hermetic --tools none cannot run for ${agentId}: the control probe would be a ` +
               `plain --tools none run, which ${agentId} refuses. Run the check without --tools for the ` +
-              "isolation claim; the --tools none claim keeps its own capability probes (docs/HERMETIC.md)"
+              "isolation claim; the --tools none claim keeps its own capability probes (docs/isolation.md)"
           );
         }
 
         const autonomy = resolveAutonomyForAdapter(agentId, caps, requestedAutonomy);
         if (adapter.requiresSandboxForAutonomy(autonomy) && !options.sandbox) {
-          console.error(
-            `Error: ${agentId} cannot enforce '${autonomy}' autonomy without --sandbox`
+          throw new UsageRefusalError(
+            `${agentId} cannot enforce '${autonomy}' autonomy without --sandbox`
           );
-          process.exit(1);
         }
         const effort = resolveEffortForAdapter(agentId, caps, requestedEffort);
 
         if (options.sandbox && !isScodeAvailable()) {
           console.error("Error: scode is not installed (required for --sandbox)");
           process.exit(1);
-        }
-
-        const harnessVersion = await assertHarnessSupported(
-          agentId, adapter.binaryName, options.cwd, undefined,
-          autonomy, Boolean(options.sandbox), passthroughEnv
-        );
-        if (options.agyIsolationProbe !== undefined) {
-          process.exitCode = await runAgyIsolationProbe(options.agyIsolationProbe, timeoutMs, model, harnessVersion);
-          return;
-        }
-        if (agentId === "agy" && (hermetic || tools === "none")) {
-          process.exitCode = await runAgyCanaryChecks(hermetic, tools === "none", timeoutMs, model, harnessVersion);
-          return;
         }
 
         const baseRequest: RunRequest = {
@@ -195,7 +223,63 @@ export function registerCheckCommand(
           timeoutMs,
           tools,
           experimentMcp: options.experimentMcp,
+          // The label lands on the ledger record every probe of this
+          // check inherits (baseRequest spreads into each of them), so
+          // `codemux calls --label … --sum` can report what a labeled
+          // batch cost — the machine check's --spend stage relies on it.
+          labels: parseLabels(options.label),
         };
+        // Validation before the quota gate, the order the run path holds:
+        // the plain request below is the control every check launches, and
+        // its hermetic twin is the probe, so a request the adapter refuses
+        // (opencode's plain --tools none among them) must surface as its
+        // own exit-64 refusal, never hide behind a quota refusal (review
+        // round 12, edges 3). Only the plain request is validated here.
+        // The hermetic twin's cwd is the canary's scratch directory,
+        // planted only below; validating it here — against the operator's
+        // cwd, the request's undefined cwd — refused hermetic checks for
+        // kimi, codex, and agy from any repo holding project config
+        // (AGENTS.md and kin) before any probe ran (review round 14,
+        // contracts 1), so the hermetic request is validated where it is
+        // built, on the planted directory (below). The same rule covers
+        // every flow that builds forms of its own: the agy canary and
+        // isolation-probe flows launch requests against a scratch cwd this
+        // command owns — agy's hermetic rule demands one — and an
+        // experiment check's plain control is valid only once registered
+        // (canaryControls), which happens when the canary is planted
+        // below; all of them keep their per-probe validation there.
+        const buildsItsOwnPlainRequest =
+          options.experimentMcp !== undefined ||
+          (agentId === "agy" && (hermetic || tools === "none" || options.agyIsolationProbe !== undefined));
+        if (!buildsItsOwnPlainRequest) {
+          adapter.validateRunRequest(baseRequest);
+        }
+
+        // The quota gate: a check spends real requests, so it passes the
+        // same gate a run does — after every request check, before any
+        // probe spawns. A provider override in force skips the native gate
+        // (assertQuotaHeadroomForLaunch).
+        const quotaPolicy = resolveQuotaGate({
+          config: config.quota,
+          ceiling: options.quotaCeiling,
+          disabled: options.quotaGate === false,
+        });
+        // A print-only check spends nothing (review round 56).
+        if (quotaPolicy !== null && !options.printSandbox) await assertQuotaHeadroomForLaunch(adapter, quotaPolicy);
+
+        const harnessVersion = await assertHarnessSupported(
+          agentId, adapter.binaryName, options.cwd, undefined,
+          autonomy, Boolean(options.sandbox), passthroughEnv
+        );
+        if (options.agyIsolationProbe !== undefined) {
+          process.exitCode = await runAgyIsolationProbe(options.agyIsolationProbe, timeoutMs, model, harnessVersion);
+          return;
+        }
+        if (agentId === "agy" && (hermetic || tools === "none")) {
+          process.exitCode = await runAgyCanaryChecks(hermetic, tools === "none", timeoutMs, model, harnessVersion);
+          return;
+        }
+
         const launch: LaunchOptions = {
           sandbox: Boolean(options.sandbox),
           sandboxPolicyOverrides,
@@ -204,12 +288,19 @@ export function registerCheckCommand(
           cwd: options.cwd,
           kind: "check",
           harnessVersion,
+          printSandbox: Boolean(options.printSandbox),
         };
         const label = `${agentId}${model ? ` (model: ${model})` : ""}${options.sandbox ? " (sandboxed)" : ""}`;
 
         if (!hermetic) {
           console.error(`Checking ${label}...`);
           const result = await launchRunRequest(adapter, baseRequest, launch);
+          if (options.printSandbox) {
+            // The argv was printed inside the launch and nothing ran, so
+            // the probe's OK-line judgment has no response to judge.
+            process.exitCode = result.exitCode;
+            return;
+          }
           if (result.exitCode !== 0) {
             reportFailure(result);
             process.exitCode = result.exitCode;
@@ -242,7 +333,7 @@ export function registerCheckCommand(
           const plantedControl = agentId === "kimi" && !passthroughEnv.includes("KIMI_CODE_HOME")
             ? { ...probe, passthroughEnv: [...passthroughEnv, "KIMI_CODE_HOME"] }
             : probe;
-          const controlProbe = options.experimentMcp ? experimentCanaryControl(plantedControl) : plantedControl;
+          const controlProbe = options.experimentMcp ? experimentCanaryControl(plantedControl, kimiCanary?.brandHome) : plantedControl;
           // Fail before spending a request when the adapter cannot claim it;
           // validate both requests against the planted directory before either launch.
           canaryAdapter.validateRunRequest({ ...probe, hermetic: true });

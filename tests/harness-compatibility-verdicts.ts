@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   compareVersions,
+  describeHarnessBreakage,
   evaluateHarnessVersion,
   extractHarnessVersion,
   HARNESS_CONTRACTS,
@@ -57,12 +58,14 @@ describe("three-tier verdicts", () => {
   test("an audited version runs silently", () => {
     const verdict = evaluateHarnessVersion("claude", claude, "2.1.223");
     expect(verdict.kind).toBe("supported");
+    expect(verdict.reason).toBe("supported");
     expect(verdict.message).toBeNull();
   });
 
   test("a version below the floor is refused", () => {
     const verdict = evaluateHarnessVersion("claude", claude, "2.1.100");
     expect(verdict.kind).toBe("refuse");
+    expect(verdict.reason).toBe("below-minimum");
     expect(verdict.message).toContain("older than");
   });
 
@@ -71,7 +74,40 @@ describe("three-tier verdicts", () => {
     // refusing them all would make Codemux unusable.
     const verdict = evaluateHarnessVersion("claude", claude, "2.1.999");
     expect(verdict.kind).toBe("unaudited");
+    expect(verdict.reason).toBe("unaudited");
     expect(verdict.message).toContain("newer than");
+  });
+});
+
+describe("verdict reasons separate the two refusals", () => {
+  // Doctor once mapped every `refuse` to "below minimum", so opencode
+  // 1.18.18 — above the minimum, refused by a scoped break — printed a
+  // false label. The reason field is the fix; report surfaces read it,
+  // never the message text.
+  test("a breakage refusal is a breakage whatever the autonomy", () => {
+    const withoutAutonomy = evaluateHarnessVersion("opencode", opencode, "1.18.18");
+    expect(withoutAutonomy.kind).toBe("refuse");
+    expect(withoutAutonomy.reason).toBe("breakage");
+    expect(withoutAutonomy.breakage).toBeDefined();
+    const scoped = evaluateHarnessVersion("opencode", opencode, "1.18.18", "low");
+    expect(scoped.reason).toBe("breakage");
+  });
+
+  test("the breakage label names the levels and the mitigation", () => {
+    const verdict = evaluateHarnessVersion("opencode", opencode, "1.18.18");
+    const label = describeHarnessBreakage(verdict.breakage!);
+    expect(label.startsWith("known break at low and medium autonomy from 1.18.18 (sandbox mitigates): ")).toBe(true);
+    expect(label).toContain("no longer gates writes or execution");
+  });
+
+  test("an unmitigated break says so", () => {
+    const label = describeHarnessBreakage({
+      from: "0.9.0", note: "auto-approve ignores its flag",
+      affects: ["high"], mitigatedBySandbox: false,
+    });
+    expect(label).toBe(
+      "known break at high autonomy from 0.9.0 (no mitigation): auto-approve ignores its flag"
+    );
   });
 });
 
@@ -80,8 +116,9 @@ describe("session floors and the audited band", () => {
 
   test("a session at exactly its floor is supported, never unaudited", () => {
     // Review live10: both harnesses whose floors sit above their run
-    // contracts' maxAudited (claude 2.1.280 over 2.1.223, codex 0.159.3
-    // over 0.147.0) warned "unaudited" on every session launch — the
+    // contracts' maxAudited at the time (claude 2.1.280 over 2.1.223, codex
+    // 0.159.3 over 0.147.0; both ceilings rose on 2026-11-02) warned
+    // "unaudited" on every session launch — the
     // floor IS the audited build (the release the session wire was
     // recorded on), so the audited ceiling rises with it.
     for (const [agent, contract, floor] of [
@@ -94,20 +131,25 @@ describe("session floors and the audited band", () => {
     }
   });
 
-  test("above the floor still warns, naming the floor as the audited ceiling", () => {
+  test("above the audited band still warns, naming the higher of floor and ceiling", () => {
+    // The session floor (2.1.280) sits inside the run contract's audited
+    // band since the 2026-11-02 live gate raised the ceiling to 2.1.300, so
+    // the band's top is the ceiling; a floor above the ceiling would be
+    // named instead (the override raises both, never lowers either).
     const verdict = evaluateHarnessVersion(
       "claude",
       claude,
-      "2.1.290",
+      "2.1.310",
       "high",
       false,
       "2.1.280"
     );
     expect(verdict.kind).toBe("unaudited");
-    expect(verdict.message).toContain("newer than the 2.1.280");
+    expect(verdict.message).toContain("newer than the 2.1.300");
+    expect(evaluateHarnessVersion("claude", claude, "2.1.290", "high", false, "2.1.280").kind).toBe("supported");
     // Below the floor is still a refusal whatever the run contract's
     // maxAudited says — the floor, not the contract, is the session's
-    // boundary (2.1.240 sits above 2.1.223 but under the 2.1.280 floor).
+    // boundary (2.1.240 sits above the 2.1.220 minimum but under the 2.1.280 floor).
     expect(
       evaluateHarnessVersion("claude", claude, "2.1.240", "high", false, "2.1.280").kind
     ).toBe("refuse");

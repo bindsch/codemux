@@ -4,7 +4,7 @@ read_when: Starting, controlling, or resuming a live agent session.
 
 # Sessions
 
-`codemux session` is the persistent, bidirectional interface in v0.13.3.
+`codemux session` is the persistent, bidirectional interface.
 Send JSONL on stdin and read JSONL events on stdout. Diagnostics use stderr.
 Use [the protocol reference](session-protocol.md) when writing a client.
 For one prompt and one captured result, use `codemux run` instead.
@@ -26,8 +26,19 @@ binary; it does not promise every optional capability or a working login.
 
 All seven report `live_input: true` and `resume: true`. Read the capabilities
 on `session_started`; unsupported operations receive `input_rejected`.
-ZAI uses the Claude binary. The other installed agents have no session driver.
-See [harness compatibility](HARNESS-COMPATIBILITY.md) for harness-specific limits.
+ZAI uses the Claude binary. The other installed agents have no session driver:
+
+- `cline`: the CLI wraps a VS Code extension; it prints one-shot output and has no bidirectional control wire upstream.
+- `copilot`: one-shot CLI; no bidirectional control wire upstream.
+- `cursor`: the standalone `cursor-agent` entry is one-shot, and the desktop agent has no external control wire; not built.
+- `droid`: one-shot headless entry plus a human TUI; no bidirectional control wire upstream.
+- `gemini`: one-shot `-p` entry plus a human TUI; no bidirectional control wire upstream.
+- `goose`: upstream keeps a session ledger a driver could resume, but the run path exposes no bidirectional control wire; not built.
+- `openhands`: the local service owns the event loop and the adapter drives only `--headless` one-shot runs; not built.
+- `pi`: one-shot headless entry plus a human REPL; no bidirectional control wire upstream.
+- `qwen`: one-shot headless entry plus a human TUI (a gemini-cli fork); no bidirectional control wire upstream.
+
+See [harness compatibility](harnesses.md) for harness-specific limits.
 
 ## Start, finish a turn, and shut down
 
@@ -106,11 +117,13 @@ may be a symlink. System symlink ancestors are resolved. It contains at most
 with a live owner cannot be resumed concurrently.
 
 Resume checks the agent, canonical working directory, resolved harness home,
-provider identity, hermetic provenance, autonomy, sandbox trust, network and
-environment containment, passed environment names, and Playwright access.
-It cannot add a passed name, enable Playwright, remove existing containment,
-or increase reach. Provider identity excludes URL query and fragment.
-Changing the model is not itself a resume refusal.
+provider identity, hermetic provenance, project-settings mode, autonomy,
+sandbox trust, network and environment containment, blocked paths, passed
+environment names, and Playwright access. It cannot add a passed name, enable
+Playwright, remove existing containment, drop a recorded `--sandbox-block`
+path, or increase reach. Provider
+identity excludes URL query and fragment. Changing the model is not itself
+a resume refusal.
 
 For Claude, ZAI, and Codex, the reach order is
 `read-only < medium < high < low`: a low session's caller can approve more
@@ -141,15 +154,89 @@ are warned about and ignored.
 | `--permission-timeout <seconds>` | 300 | Deny an unanswered permission request |
 | `--shutdown-grace <seconds>` | 10 | Grace before SIGTERM, then another grace before SIGKILL |
 | `--no-author-prefix` | prefix enabled | Preserve attribution events without prepending `[author] ` to harness text |
+| `--permission-policy <policy>` | `default` | `deny` answers every permission request with an immediate deny (Claude/ZAI); see [permissions](#permissions-and-attribution). Per invocation: the registry record does not carry it, so a `--resume` that wants the deny policy passes the flag again |
+| `--experiment-project-settings` | Off; requires `--hermetic` | The one hermetic session mode (Claude/ZAI); see [below](#hermetic-project-settings-sessions) |
+| `--final` | Off; requires the project-settings mode | Remove the session's private config directory when this session ends |
+| `--sandbox-block <path>` | none | Repeatable; pass an extra scode `--block` for this session's children (absolute paths only), an operator-side extra on top of the project-settings blocks. Canonicalized once at flag parse (symlinks dereferenced, then deduplicated and sorted), and that same spelling is recorded and enforced by every child; a resume must carry every recorded block path and may add more |
+| `--print-sandbox` | Off; requires `--sandbox` | Print the scode argv the long-lived child would exec, one argument per line with control characters escaped (a newline inside an argument prints as `\n`), and exit 0 without starting a session (refused for the turn-per-process agents); the credential sandbox preparation is skipped and the credential copy deferred — the command is print only; a fresh session's private directory is removed on the way out |
+| `--quota-ceiling <percent>` | config `quota.minRemainingPercent`, initially 10 | Refuse the session when a bounding usage window is below this percent remaining; overrides the config ceiling for this one session |
+| `--no-quota-gate` | gate on | Skip the pre-launch usagemux quota check for this session |
 
 Every timeout accepts finite positive seconds up to **86400**, including
 fractions, and rounds upward to whole milliseconds. Zero disables nothing:
 omit an optional timeout to have no cap. A turn timeout that successfully
 interrupts leaves the session available for another turn.
 
-`--hermetic` and every `--tools` value are refused for sessions. Codex
-sessions also refuse `--effort none`. `--enable-playwright-mcp` is supported
-only for Claude/ZAI and requires `--sandbox` and `--auto low`.
+The first command of a session and every resume pass the
+[quota gate](results-and-usage.md#quota-gate) — after every request check and
+resume guard, before anything spawns, records a fresh session, or creates a
+home — so a refused session (exit 64) spends nothing. A refused fresh session
+records nothing; a refused resume has already written its ownership claim to
+the registry (the claim precedes the gate), and the refusal releases it, so
+the record stays resumable for the next attempt.
+
+A plain `--hermetic` and every `--tools` value are refused for sessions;
+the one hermetic mode is `--hermetic --experiment-project-settings`
+(below). `--effort none` sends no effort field on every session harness, codex included.
+`--enable-playwright-mcp` is supported only for Claude/ZAI and requires
+`--sandbox` and `--auto low`.
+
+## Hermetic project-settings sessions
+
+`--hermetic --experiment-project-settings` on Claude or ZAI gives a
+persistent session the same isolation `run` gives the flag (see
+[isolation](isolation.md)): a private Claude config directory,
+`--setting-sources project,local`, `--disable-slash-commands`, and no
+`--safe-mode`, so the repository's own permission rules, hooks, and
+project memory apply while the operator's user memory, settings, skills,
+plugins, and hooks stay out. It requires scode and `--auto low` or
+`--auto high`. The session high is codemux's own — `--permission-mode
+default` plus the Edit/Write/NotebookEdit/Bash grants, never
+`--dangerously-skip-permissions` — so the repository's deny rules still
+bind; a run keeps the low-only rule because its high is the bypass flag.
+The run path's refusals apply unchanged: no `--pass-env CLAUDE_CONFIG_DIR`
+or `CLAUDE_CODE_PROJECT_DIR_NAME`, and no ancestor of the working
+directory may carry `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`,
+or `.claude/rules` (a home normally carries `~/.claude/CLAUDE.md`, so
+place the working tree outside the home).
+
+The private directory is created at the first command under
+`~/.claude/.codemux-hermetic/session-<session id>/` and holds the
+session's own transcript and trust record, so every `--resume` of that
+session reuses it. The operator's harness state is unreachable from the
+session's children: every spawn (the long-lived child and each turn's)
+runs under scode with the real config root and the `~/.claude.json`
+beside it blocked and only this session's own directory re-allowed, so
+the operator's transcripts, history, and every other run's and session's
+`.codemux-hermetic` directory are out of reach, read and write (see
+[isolation](isolation.md)). A resume whose directory is missing — removed
+by `--final` or the stale sweep — is refused as policy (exit 78), never
+silently remade: the transcript it exists to continue would be gone.
+Three lifetimes:
+
+- Without `--final`, the directory persists after the session ends, for
+  the next `--resume`.
+- `--final` on a session command removes the directory when that session
+  ends, any copied access token with it, and that command's `session_ended`
+  reports `resumable: false` — but only once the removal succeeded. The
+  end path tries the removal twice (one attempt, a pause, one retry); if
+  both fail, the directory is kept, two stderr lines name the kept path
+  and the reason (one per attempt), the command exits 1, and the record
+  stays ended and
+  resumable with no final stamp — so a later `--resume --final` or the
+  stale sweep can retry.
+- The stale sweep removes a directory that has been quiet for two days
+  and whose registry entry is gone, the same dead-owner rule as hermetic
+  run directories.
+
+The mode is containment provenance: a resume must carry the same flags,
+and a session cannot gain or lose the mode on resume. A project's
+PreToolUse and PostToolUse hooks fire for every tool call on every turn
+under this mode — Claude Code runs hooks per call, not per turn — which
+is the observable the mode exists to provide. A Claude session without a
+provider override carries an access-token-only copy of the credential
+mirror inside the directory; ZAI and override sessions carry no operator
+login ([authentication](authentication.md)).
 
 Provider overrides via `CODEMUX_<AGENT>_PROVIDER_*` are supported on session
 spawns for Claude, Codex, OpenCode, Aider, and Kimi. ZAI and Agy refuse
@@ -173,6 +260,25 @@ For a `permission_request`, answer using its `request_id` and one of its
 on timeout, interrupt, completion, or shutdown. A late answer receives
 `unknown_request`. A caller's `allow` cannot exceed the launch autonomy:
 the harness receives a deny and the input receives `autonomy_escalation`.
+
+On Claude/ZAI a deny may carry a `message` (1–2000 UTF-16 code units, no
+NUL, no control characters other than newline), which the harness shows
+the model as the rejection text; Codex rejects the field as `unsupported`.
+Without one, every deny codemux sends — yours, the permission policy, the
+autonomy ceiling, the timeouts, supersession, shutdown — uses the text
+Claude Code itself gives the model on a user rejection (it begins "The
+user doesn't want to proceed with this tool use."), so the agent reads the
+denial as its own harness's answer rather than an outside wrapper's. The
+`permission_denied` and `permission_resolved` events and the
+`autonomy_escalation` rejection record the text that was sent.
+
+`--permission-policy deny` (Claude/ZAI) answers every request with an
+immediate deny instead of forwarding it to you: the request is still
+emitted, then a `permission_denied` event records it, and no
+`permission_resolved` follows — a decision for it receives
+`unknown_request`. This is the shortest safe setting for a session with
+no human on the input; without it, the permission timeout (default 300
+seconds) and the turn timeout remain the fallbacks.
 
 On Claude/ZAI, read-only approves no tool; medium permits scoped editing
 outside executable configuration; high grants editing and Bash; low lets

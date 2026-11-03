@@ -110,7 +110,7 @@ test.each(["claude", "zai"] as const)("plain %s launch preserves the captured re
     spyOn(adapter, "prepareRun").mockReturnValue({ experimentRecording: "/synthetic/recording.jsonl" }),
     spyOn(adapter, "getRunEnv").mockReturnValue({}),
     spyOn(adapter, "buildRunCommand").mockReturnValue(["synthetic"]),
-    spyOn(adapter, "cleanupRun").mockImplementation(() => {}),
+    spyOn(adapter, "cleanupRun").mockImplementation(async () => {}),
     spyOn(runtime, "assertHarnessSupported").mockResolvedValue("2.1.280"),
     spyOn(runtime, "runSandboxedWithStdin").mockResolvedValue({
       ...complete(JSON.stringify({ type: "result", result: "answer" })), exitCode: 125, success: false }),

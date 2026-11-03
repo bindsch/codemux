@@ -7,7 +7,7 @@ import type { AgyProbeMode } from "../agy-isolation-probe.js";
 import { summarizeAgyStream } from "../agy-stream.js";
 import { AGY_MIRROR_PATH, agyKeychainHost, agyProbeRoots, insertAgyKeychainItem, prepareAgyPrivateKeychain, recoverAgyKeychainSearchList, verifyAgyKeychainSearchList } from "../agy-keychain.js";
 import { assertNoAgyProjectExecutionConfig } from "../project-safety.js";
-import { validateWorkingDirectory } from "../validation.js";
+import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import { agyResult } from "../result-envelope.js";
 import { agyPlainResult } from "../plain-unwrap.js";
 import { withKeepEnvExemption, type SandboxOptions, type ScodeTrustLevel } from "../sandbox.js";
@@ -18,7 +18,8 @@ import type {
   RunRequest,
   RunResult,
   AdapterCapabilities,
-} from "../types.js";
+ LaunchIntent } from "../types.js";
+import { agyLoginState, loginHome, type LoginState } from "../harness-health.js";
 
 const isolationProbes = new WeakMap<RunRequest, { mode: AgyProbeMode; operatorHome?: string }>();
 const ownedProbeHomes = new WeakMap<RunContext, {
@@ -152,6 +153,9 @@ export class AgyAdapter extends BaseAdapter {
       // VERIFIED on the Round 11 tree with agy 1.3.3 and scode 0.6.0.
       supportsHermetic: true,
       supportsToolSelection: true,
+      // validateRunRequest refuses isolation without read-only scode and a
+      // clean --cwd; the list labels say so (hermetic(read-only), tools(read-only)).
+      isolationRequiresReadOnly: true,
     };
   }
 
@@ -171,21 +175,22 @@ export class AgyAdapter extends BaseAdapter {
   }
 
   override mapEffort(level: ReasoningEffort): string[] {
-    // `=` form; see the class comment.
-    return [`--effort=${level}`];
+    return [`--effort=${level}`]; // `=` form; see the class comment
   }
 
-  override prepareRun(request: RunRequest, sandboxTrust?: ScodeTrustLevel, sandboxOptions: SandboxOptions = {}): RunContext {
+  override prepareRun(request: RunRequest, sandboxTrust?: ScodeTrustLevel, sandboxOptions: SandboxOptions = {}, launch: LaunchIntent = {}): RunContext {
     const probe = isolationProbes.get(request);
     const mode = probe?.mode ?? (request.tools === "none" ? "tools" : request.hermetic ? "hermetic" : undefined);
     const operatorHome = probe?.operatorHome ?? this.environment.HOME ?? homedir();
     const recoveryEnvironment = { ...this.environment, HOME: operatorHome };
     const roots = agyProbeRoots(recoveryEnvironment);
-    recoverAgyKeychainSearchList(recoveryEnvironment, request.cwd);
-    for (const root of roots) sweepStaleHomes(root);
+    const printOnly = launch.printOnly === true;
+    if (!printOnly) { // a print-only launch repairs and sweeps nothing
+      recoverAgyKeychainSearchList(recoveryEnvironment, request.cwd);
+      for (const root of roots) sweepStaleHomes(root); }
     if (!request.sandboxed) return {};
     const context: RunContext = { agyProbe: { mode: mode ?? "plain", diagnostic: Boolean(probe),
-      operatorHome: probe?.operatorHome } };
+      operatorHome: probe?.operatorHome, printOnly } };
     return this.preparePrivateHome(context, operatorHome,
       !probe && !request.hermetic && request.tools !== "none", request,
       { ...sandboxOptions, trust: sandboxTrust ?? sandboxOptions.trust });
@@ -213,6 +218,7 @@ export class AgyAdapter extends BaseAdapter {
       ownedProbeHomes.set(context, { home, parent: root, parentDev: parentStat.dev, parentIno: parentStat.ino,
         homeDev: homeStat.dev, homeIno: homeStat.ino, marker, parentFd, homeFd });
       context.agyProbe!.home = home;
+      if (context.agyProbe!.printOnly) return context; // print-only: the HOME path for the argv, no Keychain, no login
       const keychainPassword = prepareAgyPrivateKeychain(home, this.environment, request.cwd);
       const token = join(agyKeychainHost.home(), PROBE_TOKEN);
       const injectedEnv = { ...this.getEnv(), ...this.getRunEnv(request, context) };
@@ -294,12 +300,15 @@ export class AgyAdapter extends BaseAdapter {
     }
     let homePath = owned.home;
     let searchError: unknown;
-    try {
-      const recoveryEnvironment = { ...this.environment, HOME: context?.agyProbe?.operatorHome ?? this.environment.HOME };
-      recoverAgyKeychainSearchList(recoveryEnvironment);
-      verifyAgyKeychainSearchList(recoveryEnvironment);
+    if (!probe.printOnly) { // print-only created no Keychain state: nothing to repair
+
+      try {
+        const recoveryEnvironment = { ...this.environment, HOME: context?.agyProbe?.operatorHome ?? this.environment.HOME };
+        recoverAgyKeychainSearchList(recoveryEnvironment);
+        verifyAgyKeychainSearchList(recoveryEnvironment);
+      }
+      catch (error) { searchError = error; }
     }
-    catch (error) { searchError = error; }
     try {
       const parent = fstatSync(owned.parentFd);
       const home = fstatSync(owned.homeFd);
@@ -430,16 +439,16 @@ export class AgyAdapter extends BaseAdapter {
     super.validateRunRequest(request);
     const isolated = request.hermetic || request.tools === "none";
     if (isolated && (!request.sandboxed || request.autonomy !== "read-only")) {
-      throw new Error("agy isolation requires read-only scode (--auto read-only)");
+      throw new UsageRefusalError("agy isolation requires read-only scode (--auto read-only)");
     }
     if (request.hermetic || isolationProbes.get(request)?.mode === "hermetic") {
-      if (!request.cwd) throw new Error("agy --hermetic requires an explicit --cwd owned by this run");
+      if (!request.cwd) throw new UsageRefusalError("agy --hermetic requires an explicit --cwd owned by this run");
       let directory = validateWorkingDirectory(request.cwd)!;
       while (true) {
         for (const name of ["GEMINI.md", "AGENTS.md", ".agents"]) {
           const path = join(directory, name);
           if (lstatSync(path, { throwIfNoEntry: false })) {
-            throw new Error(`agy --hermetic requires a clean working directory owned by this run; offending path: ${path}`);
+            throw new UsageRefusalError(`agy --hermetic requires a clean working directory owned by this run; offending path: ${path}`);
           }
         }
         if (existsSync(join(directory, ".git")) || dirname(directory) === directory) break;
@@ -482,5 +491,10 @@ export class AgyAdapter extends BaseAdapter {
       cmd.push(...this.mapAutonomy(autonomy));
     }
     return cmd;
+  }
+
+  /** The agy login read: the file token under ~/.gemini, or an API key. */
+  override loginState(): LoginState {
+    return agyLoginState(loginHome(this.environment), this.environment);
   }
 }

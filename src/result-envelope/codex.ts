@@ -146,6 +146,11 @@ export type CodexFinalMessageFallback = string | { missing: string } | null;
  * because there is no stream to build one from), and the codemux line on
  * stderr.
  */
+/** The field codex's --result-json envelope spells its answer text with.
+ * The release gate's probe C verifies this exact field per agent, so the
+ * builder and the gate share one name (review round 16, edges 3). */
+export const CODEX_ANSWER_FIELD = "result";
+
 export function codexResult(
   result: RunResult,
   request: RunRequest,
@@ -178,6 +183,9 @@ export function codexResult(
     // model, so it is the one codemux selected or null (the harness
     // default, unreported).
     model: stream.servedModel ?? request.model ?? null,
+    // Provider-reported: the reroute's served model, null when the stream
+    // named none (`model` above then reports the selection).
+    served_model: stream.servedModel,
     // A failed run's envelope reports null usage even when the stream
     // parsed and carried a snapshot (round23): a complete stream paired
     // with codex's own non-zero exit still fails -- the verdict reads the
@@ -243,7 +251,7 @@ export function codexResult(
   }
   return {
     ...result,
-    stdout: `${JSON.stringify({ result: verdict.failed ? null : stream.finalMessage, codemux: block })}\n`,
+    stdout: `${JSON.stringify({ [CODEX_ANSWER_FIELD]: verdict.failed ? null : stream.finalMessage, codemux: block })}\n`,
     stderr:
       notes.length > 0
         ? appendDiagnostic(result.stderr, notes.join("\n"))

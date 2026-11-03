@@ -36,13 +36,24 @@ export function compareCodexOutput(content: unknown[], output: unknown): { equal
       isDeepStrictEqual(first, { type: "input_text", text: header }) && isDeepStrictEqual(output.slice(1), expected), header };
   }
   if (typeof output === "string") {
-    const separator = output.indexOf("\nOutput:");
-    const header = separator === -1 ? null : output.slice(0, separator + "\nOutput:".length);
+    const header = wallTimeHeader(output);
     const text = expected.length === 0 ? "" : expected.length === 1 && expected[0]?.type === "input_text" ? expected[0].text : undefined;
-    return { equal: header !== null && WALL_TIME_HEADER.test(header) && text !== undefined &&
+    return { equal: header !== null && text !== undefined &&
       output === (text === "" ? header : `${header}\n${text}`), header };
   }
   return { equal: false, header: null };
+}
+
+/** The valid `Wall time: <secs> seconds\nOutput:` header at the start of
+ * `text`, or null when the text opens with nothing valid. This is the one
+ * parser for the header codemux itself prepends to model-bound MCP results
+ * for codex and kimi (experiment-mcp.ts), so the release gate's marker
+ * check accepts exactly the header shape the experiment enforces. */
+export function wallTimeHeader(text: string): string | null {
+  const separator = text.indexOf("\nOutput:");
+  if (separator === -1) return null;
+  const header = text.slice(0, separator + "\nOutput:".length);
+  return WALL_TIME_HEADER.test(header) ? header : null;
 }
 
 export function object(value: unknown): JsonObject | undefined {

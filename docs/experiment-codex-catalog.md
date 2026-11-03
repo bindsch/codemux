@@ -1,11 +1,14 @@
+---
+read_when: "Checking how the Codex model catalog override and code-mode exposure work."
+---
 # Codex experiment catalog and delivery
 
 Read this with the [experiment MCP contract](experiment-mcp.md). Codex
 experiments require explicit `-m` and the spec's `codex-wall-time` opt-in.
 The preserved October 29, 2026 `gpt-6-astra` probe completed direct experiment
-tool delivery. Replay verifies its saved native rollout, relay result, and
-exec completion. A later Atomix run exposed built-in tools; the finding below
-motivates the startup inventory check. No new live probe was run for this fix.
+tool delivery; replay verifies its saved native rollout, relay result, and
+exec completion. The dated probe and Atomix findings moved to
+[delivery evidence](archive/experiment-evidence.md#codex-delivery-findings).
 
 ## Cache and catalog override
 
@@ -54,26 +57,8 @@ omit_tools_from = ["deferred", "code_mode"]
 The requested entry keeps `supports_search_tool`. Catalog sanitation and the
 disable switches below remove native tool sources independently of MCP exposure.
 
-Finding, October 29, 2026: the 01:41 `gpt-6-astra` probe fetched the override
-twice and initialized and listed MCP tools through the relay. It made no
-code-mode `exec` call. Its only call was `tool_search.tool_search_tool` with
-`{"query":"+experiment bash","limit":1}`. That call failed with `unknown_tool`.
-The probe preceded the exposure setting above. The preserved passing probe
-described below used it.
-
-Source: Codex `rust-v0.165.0`. These paths start at `codex-rs/`:
-
-| Source lines | Finding |
-|---|---|
-| `protocol/src/config_types.rs:396-407` | `ToolExposureSurface` serializes `code_mode`, `deferred`, and `direct` in snake_case. `direct` means the initial tool list. |
-| `config/src/mcp_types.rs:266-269` | Each MCP server accepts `omit_tools_from`. |
-| `core/src/tools/spec_plan.rs:198-290` | The policy subtracts omitted surfaces at line 255. At lines 266-274, a search-capable model loses `direct` only if `deferred` remains. Omitting `deferred` and `code_mode` yields `DirectModelOnly` at line 283. |
-| `core/src/tools/spec_plan.rs:392-417,454-461` | The builder registers tool search only when the model supports it and another allowed tool is searchable and deferred. With no such tools, it does not offer tool search. |
-| `core/src/tools/spec_plan.rs:663-687` | `spec_for_model_request` selects code-mode augmentation only for eligible code-mode tools; otherwise it returns the direct spec unchanged. |
-| `tools/src/responses_api.rs:164-172` | The MCP Responses renderer uses the tool definition's description and input schema and sets `strict: false`. |
-| `core/src/tools/spec_plan.rs:1621-1637`; `core/src/tools/handlers/tool_search_spec.rs:16-20,97-105` | Registration builds the handler and its `ToolSpec::ToolSearch` schema. The match at `spec_plan.rs:989-999` only selects an existing search tool for code mode. |
-| `features/src/lib.rs:1647-1652` | `tool_search` is Removed. It is not a working disable switch. No extra flag or catalog-field removal is needed. |
-| `protocol/src/models.rs:1150-1163,4297-4336` | Native `tool_search_call` response items omit `name`. They also receive the search-specific failure diagnostic. |
+The dated source-line findings for the exposure setting moved to
+[direct-exposure evidence](archive/experiment-evidence.md#codex-direct-exposure-source-evidence).
 
 An unexpected `tool_search`, `tool_search_tool`, or native `tool_search_call` fails with
 `unknown_tool`. Its diagnostic names the qualified tool and says Codex offered
@@ -81,12 +66,6 @@ tool search instead of the experiment tools. The server table omits the
 deferred surface, so this means the exposure policy changed.
 
 ### Native tool removal and startup check
-
-Finding, October 29, 2026: Atomix rig `brain18`, run `s105`, lock `lw`, case
-`A6`, exposed `clock.sleep`, `clock.curr_time`, `collaboration.followup_task`,
-`collaboration.interrupt_agent`, `collaboration.list_agents`, and `apply_patch`
-twice at Codemux `ee9f3d0`. A `clock.sleep` call failed with `unknown_tool`.
-Rejecting calls did not prevent the model from seeing these tools.
 
 Codex `rust-v0.165.0` registers the native tools below in
 `core/src/tools/spec_plan.rs`. These are the removal controls; the complete
@@ -213,7 +192,7 @@ world-state inventory verifies its catalog, turns, usage, and call/output. Addin
 a foreign declaration fails with `inventory_mismatch`. This replay does
 not establish a new live delivery result.
 
-Calls use a broader restricted set than declarations. Every built-in below except the resource trio fails with `unknown_tool`, even if undeclared and followed by its own unsupported-call error. Experiment inventory calls keep their qualified MCP names and remain allowed. Sources below are from Codex `rust-v0.165.0` (`360319d8dee62d87e2d59fc0c21805d79519cfed`), relative to `codex-rs/`.
+Calls use a broader restricted set than declarations. Every built-in below except the resource trio fails with `unknown_tool`, even if undeclared and followed by its own unsupported-call error. Experiment inventory calls keep their qualified MCP names and remain allowed. Sources below are from Codex `rust-v0.165.0`, relative to `codex-rs/`.
 
 | Restricted names | Registration and name sources |
 |---|---|
@@ -323,105 +302,13 @@ serialized response's UTF-8 bytes. `removed` names sanitation operations;
 fetch. If Codex produces its first `function_call` before fetching the override,
 the run fails with `code_mode` before dispatching that call.
 
-## Rollout evidence
+## Rollout evidence and correlation
 
-Codemux polls Codex's private rollout every 250 ms while the harness runs.
-It emits `turn` at the first native assistant message or function-call item,
-with null usage, and `turn_call` for every call. The following `token_count`
-emits exactly one `turn_usage`; completed runs require one per turn.
-The runner's actual timeout state permits only missing final usage and
-preserves exit 124. Completed catalogs, results, and native call correlations
-are still checked. An ordinary completed run with missing usage fails with
-`harness_log_missing`.
-Each `token_usage_record.response_id` belongs to one pending response.
-Overlapping distinct response IDs, repeated response IDs, and conflicting
-counters between the response record and its `token_count` fail with
-`harness_log_missing`. A new response ID or advanced cumulative totals means a
-new response, even with equal per-response counters. A snapshot for the same
-completed response with equal counters and unchanged cumulative totals records
-`harness_retry` with that `response_id`, without another turn or usage record.
-A pending response with different counters keeps waiting for its own snapshot. A
-conflicting idle snapshot still fails. Rate-limit-only events with `info: null`
-carry no usage.
-
-The inspected Codex `rust-v0.165.0` checkout contains this recovery path.
-Paths below start at `codex-rs/`. In `core/src/session/turn.rs`,
-`try_run_sampling_request` marks rate-limit updates for token-count emission
-at lines 3181-3185. A recoverable stream error breaks the loop at lines
-2861-2886. The post-loop code at lines 3432-3437 still calls
-`send_token_count_event`, then returns the error. In
-`core/src/session/mod.rs:5374-5380`, that method reads and emits stored token
-info, which can still contain the previous response's counters.
-`run_sampling_request` in `core/src/session/turn.rs:1840-1867` calls
-`handle_response_stream_error` and retries. That handler in
-`core/src/responses_retry.rs:57-175` permits recovery within the retry budget.
-The matching repeated snapshot therefore records a retry rather than new usage.
-It emits `tool_result_delivered` when it observes the corresponding
-`function_call_output` line, before the next model reply. Final verification
-reads the complete rollout with the same cursor and checks consistency. It
-does not emit duplicate normalized records.
-
-Codemux uses a nonempty request `params._meta.callId` immediately and records
-`native_call_id_source: "request_meta"` on `tool_call`. Live and final rollout
-checks require the same native ID, bare name, and deeply equal arguments.
-Native IDs determine correlation when present; HTTP arrival order can differ
-from rollout order for parallel calls. The relay index records arrival order
-and does not replace native identity. An ID mismatch fails with
-`call_id_unresolved` and names the request and observed IDs. Without
-request metadata, dispatch waits up to five seconds for the matching rollout
-`function_call` in arrival order, without waiting for usage. The ID is attached to the
-forwarded request as `params._meta["codemux/callId"]`. An unresolved call fails
-with `call_id_unresolved` and never reaches the server. Missing, duplicate,
-malformed, or unmatched evidence fails the run. Built-ins such as `update_plan`
-and `apply_patch` fail even if undeclared. The resource trio follows the local exception above.
-
-Experiment flags disable `code_mode` and `code_mode_host`. A refused `exec`
-fails with `unknown_tool` for either `function_call` or `custom_tool_call`.
-An inventory function named `exec` remains allowed. A hallucinated function or custom tool with its matching native `unsupported call: <name>` or `unsupported custom tool call: <name>` output records `model_tool_error` with `call_id`, qualified `name`, `input`, and exact `harness_output`. Codex's source emits these errors at `core/src/tools/registry.rs:1049-1054`. Such calls do not reach the experiment server or affect native-ID correlation. `run_end.model_tool_errors` counts them; an otherwise verified run reports `failure_code: null`. Missing or inconsistent error evidence and non-resource built-in calls still fail with `unknown_tool`. The
-earlier October 29, 2026 probe established the custom `exec` call form.
-The 01:41 probe above fetched the override but called tool search.
-The 01:58 probe called the experiment tool directly, then failed waiting for
-usage. The preserved `c008786c-0ec2-4909-a1df-37e6b51eec44` probe
-started at `2026-10-29T01:13:24.377Z`. Its private-server policy omitted
-`deferred` and `code_mode`. It completed `experiment.bash`, preserved the
-marker in the native model output, and recorded a true
-`result_comparison.equal` and a successful `run_end`. Replay verifies this
-saved rollout with the built-in catalog declarations accepted. These facts describe the
-preserved run; no new live delivery claim is made.
-
-Exec MCP completions also match by native call ID when one is present.
-Otherwise they match server, tool, arguments, content, and expected status
-(`completed` or `failed`). Identical successful and error calls can complete
-in either order.
-An `isError: true` relay result requires `failed` status. A non-null completion `error` is accepted only with that status and matching server, tool, arguments, and content; `harness_tool_result.error_text` records its string or `message` text beside the raw error. Successful completions with a non-null error still fail. In the inspected Codex source (`codex-rs/core/src/mcp_tool_call.rs:1061`), a transport error produces `failed`, no result, and an error message; an `isError` tool result produces `failed`, preserves the result, and has no error. Transport errors without matching result content remain refused.
-
-The relay records what the server returned. Rollout output items establish
-what reached the model context; the exec JSON stream's MCP result alone is
-not delivery evidence. Final verification compares both sources with the
-server result before cleanup.
-Before private-home cleanup, Codemux copies the raw rollout to
-`<recording dir>/<run-id>.codex-rollout.jsonl`, mode 0600, capped at 256 MiB.
-`harness_log_copy` records the destination and byte count or a nonfatal error.
-
-Rollouts may identify a tool with the flattened name
-`mcp__<server>__<tool>` or a `namespace` of `mcp__<server>` and a bare `name`.
-Raw call fields are recorded; normalized tool names stay bare.
-The relay's `tool_call` records carry a zero-based `relay_index` and the native
-`call_id` resolved before dispatch. `harness_tool_call` retains the raw
-rollout call; `harness_tool_result` retains the exec MCP result. Each raw model
-output is stored in `model_tool_result`. Missing calls or model-bound outputs
-fail.
-
-Codex prepends this separate text item, with four decimal places for elapsed
-seconds:
-
-```text
-Wall time: 0.1234 seconds
-Output:
-```
-
-The `codex-wall-time` opt-in accepts only that header shape. The recording
-retains its exact text and all model-bound items; comparison removes only
-the accepted header. Other changes fail. Results carrying `structuredContent`
-or `_meta` are refused. Results past Codex's MCP output budget fail the run:
-truncation is a content change, and no spill file is accepted on this path.
+The rollout is polled every 250 ms; turn, usage, call, and delivery records
+follow the [normalized record contract](experiment-mcp.md#normalized-records).
+A refused `exec` call fails with `unknown_tool` for either `function_call` or
+`custom_tool_call`; an inventory function named `exec` remains allowed. The
+rate-limit retry sequence, the recovery source path, the preserved-rollout
+provenance, the wall-time header rules, and the exec-completion matching
+evidence moved to
+[rollout evidence](archive/experiment-evidence.md#codex-rollout-evidence).

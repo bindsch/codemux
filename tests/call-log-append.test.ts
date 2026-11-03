@@ -61,6 +61,34 @@ describe("appendCallRecord", () => {
     }
   });
 
+  test("cost_source is computed by the writer from the agent and the figure (audit round 2, B5)", () => {
+    // claude and zai report a harness-folded estimate whatever the
+    // figure; on every other harness a zero means the subscription
+    // covered the call; anything else was billed; no figure, no claim.
+    // The classification runs at this seam, so a caller's claim never
+    // reaches the file.
+    const { env, dir, cleanup } = tempEnv();
+    try {
+      const path = join(dir, "calls.jsonl");
+      const withPath = { ...env, [CALL_LOG_ENV]: path };
+      const cost = (costUsd: number | null) => ({ ...emptyUsage(), cost_usd: costUsd });
+      appendCallRecord({ ...BASE_RECORD, agent: "claude", usage: cost(1.23) }, withPath);
+      appendCallRecord({ ...BASE_RECORD, agent: "zai", usage: cost(0) }, withPath);
+      appendCallRecord({ ...BASE_RECORD, agent: "opencode", usage: cost(0) }, withPath);
+      appendCallRecord({ ...BASE_RECORD, agent: "codex", usage: cost(0.5) }, withPath);
+      appendCallRecord({ ...BASE_RECORD, agent: "codex", usage: cost(null) }, withPath);
+      appendCallRecord({ ...BASE_RECORD, agent: "claude", usage: cost(9.99), cost_source: "billed" }, withPath);
+      const sources = readFileSync(path, "utf8").trim().split("\n")
+        .map((line) => (JSON.parse(line) as { cost_source: string | null }).cost_source);
+      expect(sources).toEqual([
+        "harness-estimate", "harness-estimate", "subscription-zero", "billed", null,
+        "harness-estimate",
+      ]);
+    } finally {
+      cleanup();
+    }
+  });
+
   test("the default state directory arriving wider is still tightened (ul2)", () => {
     const { env, cleanup } = tempEnv();
     try {

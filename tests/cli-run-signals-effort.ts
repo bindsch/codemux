@@ -259,20 +259,20 @@ printf 'OK'
     }
   });
 
-  test("the same spelling through -a claude still refuses: each adapter keeps its own surface (al21)", async () => {
-    // contracts-2 minor 4: same binary, two adapters, two CLI surfaces.
-    // zai carries `none` (its 0.11 surface, pinned above); claude never
-    // took the spelling, so its effortLevels omit it and the gate
-    // refuses. Both adapters' comments name the divergence so neither
-    // list "fixes" the other by accident.
+  test("the same spelling through -a claude now launches with no effort flag (al21, superseded by audit round 2, A2)", async () => {
+    // contracts-2 minor 4 once pinned the split surface: zai carried
+    // `none` while claude refused it. A2 made `none` the CLI's "send no
+    // effort flag" spelling on every adapter whose level list omits it,
+    // so the claude launch succeeds and sends no flag — the surface
+    // difference is gone by design, and this pins its replacement.
     const fake = createFakeBinaryEnv({ claude: "exit 0" });
     try {
       const { stderr, exitCode } = await runCli(
         ["run", "--no-sandbox", "--auto", "high", "-a", "claude", "--effort", "none", "-p", "test"],
         fake.env
       );
-      expect(exitCode).not.toBe(0);
-      expect(stderr).toContain("does not support reasoning effort 'none'");
+      expect(exitCode).toBe(0);
+      expect(stderr).not.toContain("does not support reasoning effort 'none'");
     } finally {
       fake.cleanup();
     }

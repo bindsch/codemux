@@ -1,3 +1,4 @@
+import { validateProjectSettingsRequest } from "./claude-project-settings.js";
 import {
   handleUnexpectedError,
   isScodeAvailable,
@@ -20,6 +21,17 @@ import { experimentFailedResult } from "./result-envelope/experiment.js";
 import { readUtf8FileBounded } from "./file-io.js";
 import { parseTimeoutOption, parseToolsOption } from "./cli-runtime.js";
 import { collectLabel, LABELS_ENV, parseLabels } from "./labels.js";
+import { assertQuotaHeadroomForLaunch, resolveQuotaGate } from "./quota-gate.js";
+import { UsageRefusalError } from "./validation.js";
+
+/** A prompt-source refusal is usage (exit 64) like every other
+ * pre-launch refusal of the caller's request: the prompt is part of the
+ * request, so an empty, oversized, malformed, or ambiguous prompt source
+ * is a mistake only the caller can fix. The one prompt failure that is
+ * NOT usage stays a plain error: a stdin producer that stalls past
+ * --timeout is a runtime failure (exit 1), like the run timeouts. */
+const promptRefusal = (message: string): UsageRefusalError =>
+  new UsageRefusalError(message);
 
 const MAX_PROMPT_FILE_BYTES = 16 * 1024 * 1024;
 
@@ -50,7 +62,7 @@ async function readStdinPrompt(
   timeoutMs: number
 ): Promise<string> {
   if (process.stdin.isTTY) {
-    throw new Error("-f - reads the prompt from stdin, but stdin is a terminal; pipe the prompt instead");
+    throw promptRefusal("-f - reads the prompt from stdin, but stdin is a terminal; pipe the prompt instead");
   }
   const stdin = process.stdin;
   const chunks: Buffer[] = [];
@@ -82,7 +94,7 @@ async function readStdinPrompt(
       total += chunk.length;
       if (total > maxBytes) {
         finish(
-          new Error(
+          promptRefusal(
             `-f - prompt exceeds the ${maxBytes}-byte limit (stdin is not argv, but the bound still applies)`
           )
         );
@@ -101,7 +113,7 @@ async function readStdinPrompt(
       Buffer.concat(chunks)
     );
   } catch {
-    throw new Error("-f - prompt must contain valid UTF-8");
+    throw promptRefusal("-f - prompt must contain valid UTF-8");
   }
 }
 
@@ -131,6 +143,10 @@ export function registerRunCommand(
     )
     .option("--tools <selection>", "Built-in tools the harness exposes: default, none")
     .option("--no-web", "Keep the Claude-family web tools (WebSearch, WebFetch) gated in a headless run")
+    .option(
+      "--experiment-project-settings",
+      "Load the repository's own settings on a hermetic run (claude, zai, opencode), for experiments on the native permission system; requires scode and auto low (claude, zai) or auto low/high (opencode)"
+    )
     .option("--experiment-mcp <spec.json>", "One experiment stdio MCP server for claude, zai, codex, or kimi; requires hermetic, tools none, read-only")
     .option(
       "--result-json",
@@ -153,6 +169,16 @@ export function registerRunCommand(
       "Opaque correlation token recorded in the scode accounting line"
     )
     .option(
+      "--sandbox-block <path>",
+      "Pass an extra scode --block for this run (repeatable); absolute paths only",
+      (value: string, previous: string[]) => [...previous, value],
+      []
+    )
+    .option(
+      "--print-sandbox",
+      "Print the scode argv this run would exec, one argument per line (controls escaped, a newline prints as \\n), and exit 0 without running anything; requires --sandbox"
+    )
+    .option(
       "--auto <level>",
       "Autonomy level: read-only, low, medium, high",
       "read-only"
@@ -162,6 +188,11 @@ export function registerRunCommand(
       "Reasoning effort: none, minimal, low, medium, high, xhigh, max, ultra"
     )
     .option("--cwd <path>", "Working directory")
+    .option(
+      "--quota-ceiling <percent>",
+      "Refuse the launch when a bounding usage window is below this percent remaining; overrides the config quota ceiling for this invocation"
+    )
+    .option("--no-quota-gate", "Skip the pre-launch usagemux quota check for this invocation")
     .action(async (options) => {
       let failureRequest: RunRequest | undefined;
       try {
@@ -170,9 +201,11 @@ export function registerRunCommand(
         const agentId = options.agent as AgentId;
 
         if (!AGENT_IDS.includes(agentId)) {
-          console.error(`Error: Unknown agent '${agentId}'`);
-          console.error(`Available agents: ${AGENT_IDS.join(", ")}`);
-          process.exit(1);
+          // One message, two lines: handleUnexpectedError prints it with the
+          // "Error:" prefix, so the output matches the old console.error pair.
+          throw new UsageRefusalError(
+            `Unknown agent '${agentId}'\nAvailable agents: ${AGENT_IDS.join(", ")}`
+          );
         }
 
         const requestedAutonomy = parseAutonomyOption(options.auto) ?? "read-only";
@@ -181,10 +214,10 @@ export function registerRunCommand(
         const passthroughEnv = parsePassthroughEnvOption(options.passEnv);
         const enablePlaywrightMcp = Boolean(options.enablePlaywrightMcp);
         if (enablePlaywrightMcp && !options.sandbox) {
-          throw new Error("--enable-playwright-mcp requires --sandbox");
+          throw new UsageRefusalError("--enable-playwright-mcp requires --sandbox");
         }
         if (enablePlaywrightMcp && agentId !== "claude" && agentId !== "zai") {
-          throw new Error("--enable-playwright-mcp is supported only by claude and zai");
+          throw new UsageRefusalError("--enable-playwright-mcp is supported only by claude and zai");
         }
         const hermetic = Boolean(options.hermetic);
         const tools = parseToolsOption(options.tools);
@@ -195,19 +228,34 @@ export function registerRunCommand(
           sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
           sandboxAccount: options.sandboxAccount,
           sandboxAccountId: options.sandboxAccountId,
+          sandboxBlock: options.sandboxBlock,
         });
         validateExperimentRequest({ agent: agentId, prompt: PREFLIGHT_PROMPT, experimentMcp: options.experimentMcp,
           hermetic, tools, autonomy: requestedAutonomy, sandboxed: Boolean(options.sandbox),
           sandboxNoNet: Boolean(options.sandboxNoNet), sandboxTrust: sandboxPolicyOverrides?.trust, enablePlaywrightMcp });
         if ((hermetic || tools === "none") && enablePlaywrightMcp) {
-          throw new Error("--hermetic and --tools none cannot be combined with --enable-playwright-mcp");
+          throw new UsageRefusalError("--hermetic and --tools none cannot be combined with --enable-playwright-mcp");
         }
         // The flag denies Claude Code's own web tools; another harness's web
         // tools are untouched, so accepting it there would promise a gate
         // that does not exist.
         if (options.web === false && agentId !== "claude" && agentId !== "zai") {
-          throw new Error(`--no-web applies to the claude and zai agents only; ${agentId} keeps its own web tools`);
+          throw new UsageRefusalError(`--no-web applies to the claude and zai agents only; ${agentId} keeps its own web tools`);
         }
+        if (options.experimentProjectSettings) {
+          validateProjectSettingsRequest({ agent: agentId, hermetic, autonomy: requestedAutonomy,
+            sandbox: Boolean(options.sandbox), cwd: options.cwd ?? process.cwd(), tools,
+            experimentMcp: options.experimentMcp, passthroughEnv });
+        }
+        if (options.printSandbox && !options.sandbox) {
+          throw new UsageRefusalError("--print-sandbox requires --sandbox: it prints the scode argv of a sandboxed run");
+        }
+        if (options.printSandbox && options.experimentMcp) {
+          throw new UsageRefusalError(
+            "--print-sandbox cannot be combined with --experiment-mcp: the MCP relay is minted at start, so its argv cannot be shown without starting it"
+          );
+        }
+
         const adapter = getAdapter(agentId);
 
         // Parsed before the prompt is read: a `-f -` read is bounded by the
@@ -229,8 +277,7 @@ export function registerRunCommand(
         let readPromptFromStdin = false;
         if (options.file) {
           if (options.prompt !== undefined) {
-            console.error("Error: --prompt and --file cannot be used together");
-            process.exit(1);
+            throw promptRefusal("--prompt and --file cannot be used together");
           }
           if (options.file === "-") {
             // The stand-in (PREFLIGHT_PROMPT) until the read below: stdin is
@@ -246,20 +293,17 @@ export function registerRunCommand(
               });
             } catch (error) {
               const message = error instanceof Error ? `: ${error.message}` : "";
-              console.error(`Error: Could not read file '${options.file}'${message}`);
-              process.exit(1);
+              throw promptRefusal(`Could not read file '${options.file}'${message}`);
             }
             if (earlyPrompt.trim().length === 0) {
-              console.error("Error: No prompt provided. Use -p or -f");
-              process.exit(1);
+              throw promptRefusal("No prompt provided. Use -p or -f");
             }
           }
         } else if (
           typeof options.prompt !== "string" ||
           options.prompt.trim().length === 0
         ) {
-          console.error("Error: No prompt provided. Use -p or -f");
-          process.exit(1);
+          throw promptRefusal("No prompt provided. Use -p or -f");
         } else {
           earlyPrompt = options.prompt;
         }
@@ -275,16 +319,14 @@ export function registerRunCommand(
           ? resolveModel(options.model, agentId, config)
           : undefined;
         if (model && !caps.supportsModel) {
-          console.error(`Error: ${agentId} does not support model selection`);
-          process.exit(1);
+          throw new UsageRefusalError(`${agentId} does not support model selection`);
         }
 
         const autonomy = resolveAutonomyForAdapter(agentId, caps, requestedAutonomy);
         if (adapter.requiresSandboxForAutonomy(autonomy) && !options.sandbox) {
-          console.error(
-            `Error: ${agentId} cannot enforce '${autonomy}' autonomy without --sandbox`
+          throw new UsageRefusalError(
+            `${agentId} cannot enforce '${autonomy}' autonomy without --sandbox`
           );
-          process.exit(1);
         }
         const effort = resolveEffortForAdapter(agentId, caps, requestedEffort);
         const sandboxAutonomy = requestedAutonomy;
@@ -320,6 +362,7 @@ export function registerRunCommand(
           enablePlaywrightMcp,
           hermetic,
           experimentMcp: options.experimentMcp,
+          experimentProjectSettings: Boolean(options.experimentProjectSettings),
           tools,
           web: options.web !== false,
           resultJson: Boolean(options.resultJson),
@@ -336,8 +379,7 @@ export function registerRunCommand(
         if (readPromptFromStdin) {
           prompt = await readStdinPrompt(MAX_PROMPT_FILE_BYTES, timeoutMs);
           if (prompt.trim().length === 0) {
-            console.error("Error: -f - read an empty prompt from stdin");
-            process.exit(1);
+            throw promptRefusal("-f - read an empty prompt from stdin");
           }
         }
 
@@ -347,6 +389,19 @@ export function registerRunCommand(
         // validated (one source, request.passthroughEnv).
         request.prompt = prompt;
         adapter.validateRunRequest(request);
+
+        // The quota gate: after every request check, before anything spawns
+        // or is recorded. A refusal exits 64 and nothing runs. A provider
+        // override in force moves the spend off the native account, and the
+        // gate skips it with one stderr line (assertQuotaHeadroomForLaunch).
+        const quotaPolicy = resolveQuotaGate({
+          config: config.quota,
+          ceiling: options.quotaCeiling,
+          disabled: options.quotaGate === false,
+        });
+        // A print-only launch spends nothing: the quota gate has nothing to
+        // protect and must not refuse the diagnostic (review round 55).
+        if (quotaPolicy !== null && !options.printSandbox) await assertQuotaHeadroomForLaunch(adapter, quotaPolicy);
 
         console.error(`Running with ${agentId}${model ? ` (model: ${model})` : ""}${options.sandbox ? " (sandboxed)" : ""}...`);
 
@@ -372,6 +427,7 @@ export function registerRunCommand(
           timeoutMs,
           cwd: options.cwd,
           harnessVersion,
+          printSandbox: Boolean(options.printSandbox),
         });
 
         process.stdout.write(result.stdout);

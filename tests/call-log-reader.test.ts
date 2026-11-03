@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appendCallRecord, CALL_LOG_ENV, MAX_CALL_LOG_BYTES, readCallLog, resetCallLogWarningForTests } from "../src/call-log.js";
+import { appendCallRecord, CALL_LOG_ENV, MAX_CALL_LOG_BYTES, MAX_CALL_LOG_LINE_BYTES, readCallLog, resetCallLogWarningForTests, streamCallLog } from "../src/call-log.js";
 import { BASE_RECORD, tempEnv } from "./helpers/call-log.js";
 
 afterEach(() => {
@@ -9,6 +10,41 @@ afterEach(() => {
 });
 
 describe("readCallLog", () => {
+  test("a ledger path that is not a regular file is refused at once, never read (review round 56)", () => {
+    const { dir, cleanup } = tempEnv();
+    try {
+      const fifo = join(dir, "calls.jsonl");
+      const made = Bun.spawnSync(["mkfifo", fifo]);
+      if (made.exitCode !== 0) return; // no mkfifo here: nothing to prove
+      const started = performance.now();
+      expect(() => readCallLog(fifo)).toThrow("is not a regular file");
+      expect(performance.now() - started).toBeLessThan(2_000);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("negative or fractional token counts and a negative cost are malformed (review round 45)", () => {
+    const { dir, cleanup } = tempEnv();
+    try {
+      const path = join(dir, "calls.jsonl");
+      const withUsage = (usage: Record<string, unknown>) => JSON.stringify({ ...BASE_RECORD, usage: { ...BASE_RECORD.usage, ...usage } });
+      writeFileSync(path, [
+        withUsage({ input_tokens: -5 }),
+        withUsage({ output_tokens: 1.5 }),
+        withUsage({ cost_usd: -0.01 }),
+        withUsage({ cost_usd: 0.0123 }), // a fractional cost is a cost
+        withUsage({ input_tokens: 0, cost_usd: 0 }),
+      ].join("\n") + "\n");
+      const read = readCallLog(path);
+      // Every line is an entry; a malformed one carries no record.
+      expect(read.entries.filter((entry) => entry.record !== null)).toHaveLength(2);
+      expect(read.malformed).toBe(3);
+    } finally {
+      cleanup();
+    }
+  });
+
   test("a line without the record's full shape is malformed, never a record (ul2)", () => {
     const { dir, cleanup } = tempEnv();
     try {
@@ -59,6 +95,32 @@ describe("readCallLog", () => {
       expect(log.entries[3]!.line).toBe("{bad json");
       expect(log.entries[3]!.record).toBeNull();
       expect(log.truncated).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("cost_source is optional, normalized to null, and validated (audit round 2, B5)", () => {
+    const { dir, cleanup } = tempEnv();
+    try {
+      const path = join(dir, "calls.jsonl");
+      const lines = [
+        // A line an older ledger wrote, before the field existed: still a
+        // record, read as a cost with no claim.
+        JSON.stringify(BASE_RECORD),
+        JSON.stringify({ ...BASE_RECORD, cost_source: null }),
+        JSON.stringify({ ...BASE_RECORD, agent: "claude", cost_source: "harness-estimate" }),
+        // Any other string is a wrong-shaped line: skipped and counted.
+        JSON.stringify({ ...BASE_RECORD, cost_source: "guessed" }),
+      ].join("\n") + "\n";
+      writeFileSync(path, lines);
+      const log = readCallLog(path);
+      expect(log.malformed).toBe(1);
+      expect(log.entries).toHaveLength(4);
+      expect(log.entries[0]!.record?.cost_source).toBeNull();
+      expect(log.entries[1]!.record?.cost_source).toBeNull();
+      expect(log.entries[2]!.record?.cost_source).toBe("harness-estimate");
+      expect(log.entries[3]!.record).toBeNull();
     } finally {
       cleanup();
     }
@@ -191,4 +253,75 @@ describe("readCallLog", () => {
       cleanup();
     }
   });
+
+  test("a 2 MiB line reads whole: the bound is the capture bound, not 1 MiB (round 23, edges 6)", () => {
+    // The reader once skipped any line over 1 MiB while the writer wrote
+    // any length, so a legitimate record — a model string the capture
+    // itself allows — vanished from every read. The shared bound is the
+    // capture bound (16 MiB); a 2 MiB record must read back whole, from
+    // the bounded read and from the stream alike.
+    const { dir, cleanup } = tempEnv();
+    try {
+      const path = join(dir, "calls.jsonl");
+      const model = "m".repeat(2 * 1024 * 1024);
+      writeFileSync(path, `${JSON.stringify({ ...BASE_RECORD, model })}\n`);
+      const log = readCallLog(path);
+      expect(log.malformed).toBe(0);
+      expect(log.entries).toHaveLength(1);
+      expect(log.entries[0]!.record?.model).toBe(model);
+      let seen = 0;
+      const streamed = streamCallLog(path, (entry) => {
+        seen++;
+        expect(entry.record?.model).toBe(model);
+      });
+      expect(streamed.malformed).toBe(0);
+      expect(seen).toBe(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("the stream still skips and counts a line past the shared bound", () => {
+    // The reader's half of the shared constant: a line the writer would
+    // refuse — hand-written here, over 16 MiB — is skipped without ever
+    // being held and counts as malformed once, at its end. Records on
+    // either side of it survive.
+    const { dir, cleanup } = tempEnv();
+    try {
+      const path = join(dir, "calls.jsonl");
+      const handle = Bun.file(path).writer();
+      handle.write(`${JSON.stringify({ ...BASE_RECORD, agent: "aider" })}\n`);
+      handle.write(`${JSON.stringify({ ...BASE_RECORD, model: "x".repeat(MAX_CALL_LOG_LINE_BYTES + 1024) })}\n`);
+      handle.write(`${JSON.stringify({ ...BASE_RECORD, agent: "zai" })}\n`);
+      handle.end();
+      const records: string[] = [];
+      const streamed = streamCallLog(path, (entry) => {
+        if (entry.record !== null) records.push(entry.record.agent);
+      });
+      expect(streamed.malformed).toBe(1);
+      expect(records).toEqual(["aider", "zai"]);
+    } finally {
+      cleanup();
+    }
+  });
 });
+
+test("endAt stops the stream at the byte the caller saw, so a growing ledger reads the same twice (round 28, edges 2)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "codemux-calls-endat-"));
+  try {
+    const path = join(dir, "calls.jsonl");
+    const env = { [CALL_LOG_ENV]: path } as NodeJS.ProcessEnv;
+    appendCallRecord({ ...BASE_RECORD, model: "first" }, env);
+    const seen = statSync(path).size;
+    appendCallRecord({ ...BASE_RECORD, model: "second" }, env);
+    const models: (string | null)[] = [];
+    streamCallLog(path, (entry) => models.push(entry.record?.model ?? null), { endAt: seen });
+    expect(models).toEqual(["first"]);
+    const all: (string | null)[] = [];
+    streamCallLog(path, (entry) => all.push(entry.record?.model ?? null));
+    expect(all).toEqual(["first", "second"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+

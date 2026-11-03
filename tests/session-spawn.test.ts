@@ -17,6 +17,8 @@ import { signalProcess } from "../src/process-runner.js";
 import { createTerminationTarget } from "../src/process-tree.js";
 import { buildClaudeSessionCommand } from "../src/session/claude-session.js";
 import { spawnSessionChild } from "../src/session/spawn.js";
+import { trackFixtureProcess } from "./setup.ts";
+import { childIdentityWrite, readFixtureIdentity, writeFixtureIdentity } from "./helpers/fixture-leak.js";
 import { buildSandboxEnv, buildScodeCommand } from "../src/sandbox.js";
 import { resolveSandboxOptionsForAgent } from "../src/sandbox-policy.js";
 import { validateWorkingDirectory } from "../src/validation.js";
@@ -254,6 +256,12 @@ describe("SessionProcess signal delivery", () => {
         env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir },
         detached: true,
       });
+      // The kill refusals under test must not leak the child if the test
+      // itself dies before its own real kill (the fixture-leak guard,
+      // review round 14, edges 14).
+      const fixturePidFile = join(dir, "fixture.pid");
+      writeFixtureIdentity(fixturePidFile, child.pid);
+      const untrack = trackFixtureProcess({ label: "session-spawn refused-kill child", pidFile: fixturePidFile });
       const target = createTerminationTarget(child, true);
       const realKill = process.kill.bind(process);
       const handleKill = spyOn(child, "kill");
@@ -286,6 +294,7 @@ describe("SessionProcess signal delivery", () => {
         } catch {
           // The expected path already ended it.
         }
+        untrack();
         await child.exited;
         rmSync(dir, { recursive: true, force: true });
       }
@@ -327,6 +336,9 @@ describe("signal delivery past an observed exit (al34)", () => {
         env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir },
         detached: true,
       });
+      const fixturePidFile = join(dir, "fixture.pid");
+      writeFixtureIdentity(fixturePidFile, child.pid);
+      const untrack = trackFixtureProcess({ label: "session-spawn pid-reuse child", pidFile: fixturePidFile });
       const target = createTerminationTarget(child, true);
       try {
         await child.exited; // markExited ran first: the flag is set
@@ -349,6 +361,7 @@ describe("signal delivery past an observed exit (al34)", () => {
         // and the child's own pid was never addressed by either scope.
         expect(calls).toEqual([-child.pid]);
       } finally {
+        untrack();
         rmSync(dir, { recursive: true, force: true });
       }
     }
@@ -366,7 +379,7 @@ describe("signal delivery past an observed exit (al34)", () => {
       const grandchildPidFile = join(dir, "grandchild.pid");
       const script =
         `const g = Bun.spawn(["/bin/sleep", "30"], { stdio: ["ignore", "ignore", "ignore"] }); ` +
-        `await Bun.write(${JSON.stringify(grandchildPidFile)}, String(g.pid)); ` +
+        `${childIdentityWrite(grandchildPidFile, "g.pid")} ` +
         `process.exit(0);`;
       const child = Bun.spawn(["bun", "-e", script], {
         cwd: dir,
@@ -377,10 +390,14 @@ describe("signal delivery past an observed exit (al34)", () => {
         detached: true,
       });
       const target = createTerminationTarget(child, true);
+      // The grandchild outlives its leader by design; the guard covers a
+      // crash before the test's own kill (review round 14, edges 14).
+      const untrack = trackFixtureProcess({ label: "session-spawn group-member grandchild", pidFile: grandchildPidFile });
       let grandchildPid: number | null = null;
       try {
         await child.exited; // the leader is gone; the member keeps the group
-        grandchildPid = Number(readFileSync(grandchildPidFile, "utf8"));
+        grandchildPid = readFixtureIdentity(grandchildPidFile)?.pid ?? null;
+        if (grandchildPid === null) throw new Error("the grandchild identity file was unreadable");
         signalProcess(target, "SIGKILL", "tree");
         // The group send itself still flew: the member is gone too.
         let gone = false;
@@ -401,6 +418,7 @@ describe("signal delivery past an observed exit (al34)", () => {
             // already gone
           }
         }
+        untrack();
         rmSync(dir, { recursive: true, force: true });
       }
     }, 5_000

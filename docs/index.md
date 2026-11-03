@@ -1,3 +1,6 @@
+---
+read_when: "Finding the right codemux documentation page."
+---
 # Documentation
 
 These pages describe the current code. Historical evidence is listed separately.
@@ -25,6 +28,7 @@ Run `codemux --version` to identify an installed release.
 - [Testing](TESTING.md): unit tests, installed contracts, paid probes.
 - [Full release gate](RELEASE-GATE.md): automated verification and required live harness probes.
 - [Releasing](RELEASING.md): notes, tags, source and Homebrew artifacts.
+- [Hooks configuration](../HOOKS.md): the review-chain tooling hookrun reads.
 - [Contributing](../CONTRIBUTING.md), [security](../SECURITY.md), [license](https://github.com/bindsch/codemux/blob/main/LICENSE).
 - [Changelog](https://github.com/bindsch/codemux/blob/main/CHANGELOG.md): user-visible release history.
 

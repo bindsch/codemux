@@ -65,7 +65,9 @@ test.each(["codex", "kimi"] as const)("%s experiment commands refuse untrusted s
       const result = await runCli([command, "-a", agent, "--hermetic", "--tools", "none",
         "--auto", "read-only", "--sandbox-trust", "untrusted", "--experiment-mcp", spec,
         ...(command === "run" ? ["-p", "fixture"] : [])], fake.env);
-      expect(result.exitCode).toBe(1);
+      // A pre-launch refusal of a caller mistake: 64 since review round 3
+      // made the experiment flag-combination refusals UsageRefusalErrors.
+      expect(result.exitCode).toBe(64);
       expect(result.stderr).toContain("--sandbox-trust untrusted");
       expect(result.stderr).not.toContain("is not installed");
     }

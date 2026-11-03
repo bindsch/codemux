@@ -30,7 +30,6 @@ describe("Kimi headless reply output", () => {
     ["CRLF unindented continuation", "• A\r\nB\r\n\r\n", "• A\r\nB\r\n\r\n"],
     ["plain text before a block", "banner\n• OK\n\n", "banner\n• OK\n\n"],
     ["plain text after blocks", "• A\n\n• B\nplain\n", "• A\n\n• B\nplain\n"],
-    ["empty stdout", "", ""],
   ])("%s", (_name, stdout, expected) => {
     const result: RunResult = {
       stdout,
@@ -43,6 +42,15 @@ describe("Kimi headless reply output", () => {
       stdout: expected,
       scanSurface: result.stdout + result.stderr,
     });
+  });
+
+  test("empty stdout is a failure, not a pass-through (review round 46)", () => {
+    // Every launch requests stream-json; a zero-exit run that printed
+    // nothing produced neither a reply nor the wire.
+    const result: RunResult = { stdout: "", stderr: "", exitCode: 0, success: true };
+    const processed = adapter.processRunResult(result, request, { harnessVersion: "2.3.2" });
+    expect(processed.success).toBe(false);
+    expect(processed.stderr).toContain("kimi produced no output");
   });
 
   test("preserves a failed run's status and metadata", () => {
@@ -132,4 +140,13 @@ printf '• OK\\n\\n'`,
       }
     }
   );
+});
+
+describe("a non-string role", () => {
+  test("is plain output, never a thrown coercion (review round 55)", () => {
+    // `String({ toString: null })` throws; the line is not a wire line and
+    // passes through as the model's own plain text.
+    const result: RunResult = { stdout: '{"role":{"toString":null}}\n', stderr: "", exitCode: 0, success: true };
+    expect(() => adapter.processRunResult(result, request, { harnessVersion: "2.3.2" })).not.toThrow();
+  });
 });

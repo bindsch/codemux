@@ -3,12 +3,29 @@ import type { StdoutSink } from "./process-runner.js";
 export const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
 
 export class OutputLimitError extends Error {
+  /** What the failure reports of the stream, itself bounded at the capture
+   * limit: a fold that overflowed on its cumulative kept bytes could hand
+   * over more than the limit (two sub-limit replies), and a failure result
+   * larger than the bound it reports contradicts it (round 31, edges 5). */
+  readonly partialOutput: string;
   constructor(
     readonly streamName: "stdout" | "stderr",
-    readonly partialOutput: string
+    partialOutput: string
   ) {
     super(`${streamName} exceeded the ${MAX_CAPTURE_BYTES}-byte capture limit`);
+    this.partialOutput = boundedUtf8Prefix(partialOutput, MAX_CAPTURE_BYTES);
   }
+}
+
+/** The longest prefix of `text` whose UTF-8 encoding fits in `maxBytes`,
+ * ending on a character boundary (the same rule src/plain-unwrap/common.ts
+ * applies; spelled here to keep this module free of fold imports). */
+export function boundedUtf8Prefix(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.byteLength <= maxBytes) return text;
+  let end = maxBytes;
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
+  return bytes.subarray(0, end).toString("utf8");
 }
 
 

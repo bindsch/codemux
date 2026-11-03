@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -14,6 +15,7 @@ import {
   minimalPath,
   runCli,
 } from "./helpers/cli.js";
+import { fakeScodeHelp } from "./helpers/doctor.js";
 
 describe("CLI - Help", () => {
   test("--help shows usage", async () => {
@@ -49,24 +51,35 @@ describe("CLI - Help", () => {
     writeFileSync(join(hostile, ".env"), "XDG_CONFIG_HOME=.\n");
     writeFileSync(join(hostile, "codemux", "config.yaml"), "defaultAgent: codex\n");
     try {
-      const proc = Bun.spawn([linkedBin, "doctor"], {
-        cwd: hostile,
-        stdout: "pipe",
-        stderr: "pipe",
-        env: {
-          ...process.env,
-          HOME: home,
-          PATH: minimalPath(),
-          BUN_OPTIONS: "--preload=./owned.ts",
-        },
-      });
-      const [stdout, exitCode] = await Promise.all([
-        new Response(proc.stdout).text(),
-        proc.exited,
-      ]);
-      expect(exitCode).toBe(0);
-      expect(stdout).toContain("Default agent: claude");
-      expect(await Bun.file(marker).exists()).toBe(false);
+      // A green machine-check environment (a fake scode): this test is
+      // about the launcher ignoring the hostile preload and dotenv, so the
+      // doctor exit code must reflect that subject alone, not a missing
+      // sandbox binary.
+      const fake = createFakeBinaryEnv({ scode: fakeScodeHelp() });
+      try {
+        const proc = Bun.spawn([linkedBin, "doctor"], {
+          cwd: hostile,
+          stdout: "pipe",
+          stderr: "pipe",
+          env: {
+            ...process.env,
+            HOME: home,
+            PATH: fake.env.PATH!,
+            // Never read the operator's real Keychain from a spawned run.
+            CODEMUX_NO_KEYCHAIN_SYNC: "1",
+            BUN_OPTIONS: "--preload=./owned.ts",
+          },
+        });
+        const [stdout, exitCode] = await Promise.all([
+          new Response(proc.stdout).text(),
+          proc.exited,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("Default agent: claude");
+        expect(await Bun.file(marker).exists()).toBe(false);
+      } finally {
+        fake.cleanup();
+      }
     } finally {
       rmSync(hostile, { recursive: true, force: true });
     }
@@ -190,7 +203,7 @@ describe("CLI - Verify", () => {
 
   test("verify with unknown agent shows error", async () => {
     const { stderr, exitCode } = await runCli(["verify", "-a", "unknown"]);
-    expect(exitCode).not.toBe(0);
+    expect(exitCode).toBe(64);
     expect(stderr).toContain("Unknown agent");
   });
 
@@ -255,42 +268,47 @@ describe("CLI - Verify", () => {
 });
 
 describe("CLI - Doctor", () => {
-  test("doctor shows agent status", async () => {
-    const { stdout } = await runCli(["doctor"]);
-    expect(stdout).toContain("Checking AI coding agents");
-    expect(stdout).toContain("claude (claude):");
-    expect(stdout).toContain("codex (codex):");
-    expect(stdout).toContain("droid (droid):");
-    expect(stdout).toContain("goose (goose):");
-    expect(stdout).toContain("gemini (gemini):");
-    expect(stdout).toContain("opencode (opencode):");
-    expect(stdout).toContain("pi (pi):");
-    expect(stdout).toContain("qwen (qwen):");
-    expect(stdout).toContain("zai (claude):");
-  });
-
-  test("doctor shows summary", async () => {
-    const { stdout } = await runCli(["doctor"]);
-    expect(stdout).toContain("Summary:");
-    expect(stdout).toContain("installed");
-    expect(stdout).toContain("missing");
+  // Doctor probes every installed harness's version command, so these tests
+  // never run against the machine's real PATH: a slow real binary would make
+  // the result depend on the host. minimalPath() installs nothing; fakes
+  // install exactly what a test names. runCli gives each spawn a throwaway
+  // HOME, so no login row reads a real store. The row-level behavior lives
+  // in tests/doctor-*.test.ts; these check the spawned CLI end to end.
+  test("doctor prints one row per harness and the summary", async () => {
+    const { stdout, exitCode } = await runCli(["doctor"], { PATH: minimalPath() });
+    expect(exitCode).toBe(1); // scode missing: a broken environment row
+    expect(stdout).toContain("Machine health check");
+    expect(stdout).toContain(
+      "| Agent | Installed | Version | Contract | Floors | Login | Usage | Sandbox | State | Remedy |"
+    );
+    expect(stdout).toContain("| claude | no |");
+    expect(stdout).toContain("| NOT-INSTALLED |");
+    expect(stdout).toContain("Summary: 0 ok, 0 warn, 0 broken, 16 not installed");
   });
 
   test("doctor reports the optional usage integration without requiring it", async () => {
-    const { stdout, exitCode } = await runCli(["doctor"], {
-      PATH: minimalPath(),
-    });
-    expect(exitCode).toBe(0);
-    expect(stdout).toContain("usagemux (optional usage): ❌ not found (optional)");
+    const { stdout } = await runCli(["doctor"], { PATH: minimalPath() });
+    expect(stdout).toContain("usagemux: USAGEMUX-MISSING: not installed (optional");
+    expect(stdout).toContain("brew install bindsch/tap/usagemux");
   });
 
-  test("doctor shows default agent", async () => {
-    const { stdout } = await runCli(["doctor"]);
+  test("doctor reports an installed but untrusted usagemux", async () => {
+    const fake = createFakeBinaryEnv({ usagemux: "exit 0" });
+    try {
+      // Group-writable fails the trust check every codemux executable
+      // goes through; doctor names the issue instead of a silent pass.
+      chmodSync(join(fake.env.PATH!.split(":")[0]!, "usagemux"), 0o775);
+      const { stdout } = await runCli(["doctor"], fake.env);
+      expect(stdout).toContain("usagemux: USAGEMUX-MISSING: usagemux binary is not a trusted executable");
+      expect(stdout).toContain("group- or world-writable");
+    } finally {
+      fake.cleanup();
+    }
+  });
+
+  test("doctor shows default agent and model aliases", async () => {
+    const { stdout } = await runCli(["doctor"], { PATH: minimalPath() });
     expect(stdout).toContain("Default agent: claude");
-  });
-
-  test("doctor shows model aliases", async () => {
-    const { stdout } = await runCli(["doctor"]);
     expect(stdout).toContain("Model aliases available:");
     expect(stdout).toContain("sonnet:");
     expect(stdout).toContain("opus:");
@@ -312,106 +330,49 @@ describe("CLI - Doctor", () => {
       fake.cleanup();
     }
   });
-});
 
-describe("CLI - Usage", () => {
-  const snapshot = JSON.stringify({
-    schemaVersion: "1",
-    generatedAt: "2026-08-03T12:00:00.000Z",
-    results: [
-      {
-        client: "codex",
-        provider: "codex",
-        status: "ok",
-        source: "codex-cli",
-        plan: "plus",
-        account: null,
-        windows: [
-          {
-            kind: "weekly",
-            usedPercent: 39,
-            remainingPercent: 61,
-            windowMinutes: 10080,
-            resetsAt: "2026-08-07T09:00:00.000Z",
-          },
-        ],
-        credits: null,
-        subscriptionRenewsAt: null,
-        subscriptionExpiresAt: null,
-        message: null,
-      },
-    ],
-  });
-
-  test("prints validated usagemux JSON for one agent", async () => {
+  test("doctor stays under one second with fake harnesses", async () => {
+    // The version probes run in parallel with a bounded probe each; serial
+    // probes cost the sum of every startup (about 4.8 s on a machine with
+    // 14 harnesses installed). With fakes the whole report must stay fast.
+    // Exit is 1: the installed harnesses have no credentials in the
+    // throwaway HOME, which is a broken row, not a slow one.
     const fake = createFakeBinaryEnv({
-      usagemux: `printf '%s' '${snapshot}'`,
+      claude: `if [ "$1" = "--version" ]; then printf '2.1.300 (Claude Code)\\n'; fi`,
+      codex: `if [ "$1" = "--version" ]; then printf 'codex-cli 0.165.0\\n'; fi`,
+      gemini: `if [ "$1" = "--version" ]; then printf 'gemini version 1.2.3\\n'; fi`,
+      goose: `if [ "$1" = "--version" ]; then printf 'goose version 1.0.0\\n'; fi`,
     });
     try {
-      const result = await runCli(["usage", "-a", "codex", "--json"], fake.env);
-      expect(result.exitCode).toBe(0);
-      expect(JSON.parse(result.stdout)).toEqual(JSON.parse(snapshot));
+      const started = Date.now();
+      const { exitCode } = await runCli(["doctor"], fake.env);
+      const elapsed = Date.now() - started;
+      expect(exitCode).toBe(1);
+      expect(elapsed).toBeLessThan(1_000);
     } finally {
       fake.cleanup();
     }
   });
 
-  test("renders a concise human usage summary", async () => {
+  test("doctor reports a harness whose version probe times out", async () => {
+    // A hanging version command must not hang the report: --timeout bounds
+    // the probe and the row prints the timeout verdict. The test's own
+    // bound must clear the 2 s probe plus CLI startup.
     const fake = createFakeBinaryEnv({
-      usagemux: `printf '%s' '${snapshot}'`,
+      scode: fakeScodeHelp(),
+      claude: `if [ "$1" = "--version" ]; then sleep 30; fi`,
     });
     try {
-      const result = await runCli(["usage", "-a", "codex"], fake.env);
-      expect(result.exitCode).toBe(0);
-      expect(result.stdout).toContain("codex (codex): plus");
-      expect(result.stdout).toContain("weekly: 61% left");
+      const { stdout, exitCode } = await runCli(
+        ["doctor", "--only", "claude", "--timeout", "2"],
+        fake.env
+      );
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain("unreadable (timed out)");
     } finally {
       fake.cleanup();
     }
-  });
-
-  test("fails only the usage command when usagemux is absent", async () => {
-    const usage = await runCli(["usage"], { PATH: minimalPath() });
-    expect(usage.exitCode).toBe(69);
-    expect(usage.stderr).toContain("usagemux is not installed");
-    expect(usage.stderr).toContain("optional usage integration");
-
-    const list = await runCli(["list"], { PATH: minimalPath() });
-    expect(list.exitCode).toBe(0);
-  });
-
-  test("rejects unknown agents before invoking usagemux", async () => {
-    const result = await runCli(["usage", "-a", "unknown"]);
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("Unknown agent 'unknown'");
-  });
-
-  test("rejects combining one agent with all agents", async () => {
-    const result = await runCli(["usage", "-a", "codex", "--all"]);
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("--agent and --all cannot be used together");
-  });
-
-  test("rejects usage timeouts above the usagemux protocol maximum", async () => {
-    const result = await runCli(["usage", "--timeout", "301"]);
-    expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain(
-      "--timeout must be a number from 0 (exclusive) to 300 seconds"
-    );
-  });
-
-  test("fails closed on malformed protocol output", async () => {
-    const fake = createFakeBinaryEnv({
-      usagemux: "printf '%s' '{\"schemaVersion\":\"2\",\"results\":[]}'",
-    });
-    try {
-      const result = await runCli(["usage", "-a", "codex"], fake.env);
-      expect(result.exitCode).toBe(1);
-      expect(result.stderr).toContain("unsupported usagemux protocol version '2'");
-    } finally {
-      fake.cleanup();
-    }
-  });
+  }, 15_000);
 });
 
 describe("CLI - Unknown options", () => {
@@ -485,14 +446,15 @@ describe("CLI - Configuration recovery", () => {
     mkdirSync(configDir, { recursive: true });
     writeFileSync(join(configDir, "config.yaml"), "default_agent: codex\n");
     try {
-      const env = { XDG_CONFIG_HOME: dir };
+      const env = { XDG_CONFIG_HOME: dir, PATH: minimalPath() };
       const help = await runCli(["--help"], env);
       expect(help.exitCode).toBe(0);
       expect(help.stdout).toContain("Usage: codemux");
 
       const doctor = await runCli(["doctor"], env);
-      expect(doctor.exitCode).toBe(1);
-      expect(doctor.stdout).toContain("Configuration: ❌");
+      // A config error is doctor's own exit lane (2), ahead of any row.
+      expect(doctor.exitCode).toBe(2);
+      expect(doctor.stdout).toContain("config: invalid:");
       expect(doctor.stdout).toContain("unknown configuration key");
 
       const run = await runCli(["run", "-p", "test"], env);

@@ -50,7 +50,16 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { AgentId, AutonomyLevel, ResultUsageBlock } from "./types.js";
-export { readCallLog, MAX_CALL_LOG_BYTES, type CallLogEntry, type CallLogContents } from "./call-log-reader.js";
+import { MAX_CALL_LOG_LINE_BYTES } from "./call-log-reader.js";
+export {
+  readCallLog,
+  streamCallLog,
+  MAX_CALL_LOG_BYTES,
+  MAX_CALL_LOG_LINE_BYTES,
+  type CallLogEntry,
+  type CallLogContents,
+  type StreamedCallLog,
+} from "./call-log-reader.js";
 
 export const CALL_LOG_ENV = "CODEMUX_CALL_LOG";
 /** The test-run ledger redirect codemux's own test preload sets; a name
@@ -58,6 +67,27 @@ export const CALL_LOG_ENV = "CODEMUX_CALL_LOG";
  * set for its own reasons (review ul4). */
 export const CALL_LOG_TEST_ENV = "CODEMUX_TEST_LEDGER";
 const CALL_LOG_BASENAME = "calls.jsonl";
+
+/** What the ledger claims about `usage.cost_usd`: a figure the provider
+ * bills per call, an estimate the harness itself folded (claude and zai
+ * report a session-lifetime number, not a per-call bill), or a zero the
+ * subscription covers (opencode reports 0 on a Claude subscription). Null
+ * when no cost was reported. See docs/results-and-usage.md. */
+export type CostSource = "billed" | "harness-estimate" | "subscription-zero";
+
+/** The one classifier, run by the writer (appendCallRecord): claude and zai
+ * report an estimate whatever the figure; on every other harness a zero
+ * means the subscription covered the call; anything else with a figure was
+ * billed. No figure, no claim. */
+export function costSourceFor(
+  agent: AgentId,
+  costUsd: number | null
+): CostSource | null {
+  if (costUsd === null) return null;
+  if (agent === "claude" || agent === "zai") return "harness-estimate";
+  if (costUsd === 0) return "subscription-zero";
+  return "billed";
+}
 
 /** One JSONL record: one finished harness call. `ts` marks the start of the
  * call, turn, or session; `duration_ms` carries the wall time from there.
@@ -88,6 +118,10 @@ export interface CallRecord {
   cwd: string;
   labels: Record<string, string> | null;
   usage: ResultUsageBlock;
+  /** How to read `usage.cost_usd` (CostSource). Computed by the writer from
+   * the agent and the figure, never a caller's claim; null when no cost was
+   * reported and on lines older ledgers wrote before the field existed. */
+  cost_source?: CostSource | null;
 }
 
 /** "default", or the host of a provider override's base URL — the identity
@@ -226,7 +260,9 @@ export function appendCallRecord(
     // model names, the provider host, and finish reasons arrive from an
     // endpoint codemux did not choose (a provider override serves any
     // model string it likes), and what is stored is what every later
-    // reader gets (review ul6).
+    // reader gets (review ul6). cost_source is computed here for the same
+    // reason — one classifier, not a claim each call site remembers to
+    // make (audit round 2, B5).
     record = {
       ...record,
       model: sanitizeReportedString(record.model),
@@ -234,6 +270,7 @@ export function appendCallRecord(
       provider: sanitizeReportedString(record.provider) || "default",
       finish: sanitizeReportedString(record.finish),
       labels: record.labels ?? null,
+      cost_source: costSourceFor(record.agent, record.usage.cost_usd),
     };
     const dir = dirname(path);
     // Whether mkdirSync is about to create the directory decides if
@@ -248,6 +285,16 @@ export function appendCallRecord(
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     tightenDirectory(dir, !dirExisted || dir === defaultStateDir(environment, process.platform));
     const line = `${JSON.stringify(record)}\n`;
+    // A line past the shared bound (call-log-reader.ts) would be skipped
+    // and counted by every reader forever — a permanent silent gap. The
+    // writer refuses it instead: one stderr note, nothing written (round
+    // 23, edges 6).
+    if (Buffer.byteLength(line) > MAX_CALL_LOG_LINE_BYTES) {
+      warnOnce(
+        `codemux: call record not written: line exceeds ${MAX_CALL_LOG_LINE_BYTES} bytes`
+      );
+      return;
+    }
     // One write of one line on an O_APPEND descriptor: concurrent appends
     // cannot interleave, because the kernel places each whole write at the
     // file's end atomically. A planted symlink or a device where the

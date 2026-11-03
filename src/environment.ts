@@ -1,6 +1,9 @@
 import type { AgentId } from "./types.js";
 
-const ALLOWED_CREDENTIAL_ENV: Record<AgentId, readonly string[]> = {
+/** The per-harness credential environment names (existence only; never a
+ * value). Consumed by the environment sanitizer and by the login-state
+ * readers (src/harness-health.ts), which report which names are set. */
+export const ALLOWED_CREDENTIAL_ENV: Record<AgentId, readonly string[]> = {
   // Antigravity authenticates through a cached OAuth login or an API key:
   // the binary's strings read both GEMINI_API_KEY and GOOGLE_API_KEY.
   // GOOGLE_APPLICATION_CREDENTIALS is deliberately absent: the ADC function

@@ -4,7 +4,7 @@
  * --restore-chat-history, the per-session history file codemux owns, and
  * its integrity rules — the collision refusal, the stale-directory sweep,
  * and the symlink refusal (aider-session.ts names the pinned sources). The
- * driver round-trips are the e2e suite (tests/session-aider-e2e.test.ts).
+ * driver round-trips are the e2e suite (the tests/session-aider-e2e-*.test.ts family).
  */
 
 import { describe, expect, test } from "bun:test";

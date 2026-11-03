@@ -16,7 +16,8 @@ import type { AgentId, CodemuxConfig } from "./types.js";
 import { resolveSandboxOptionsForAgent } from "./sandbox-policy.js";
 import { withKeepEnvExemption } from "./sandbox.js";
 import { runSandboxed } from "./cli-runtime.js";
-import { validateWorkingDirectory } from "./validation.js";
+import { assertQuotaHeadroomForLaunch, resolveQuotaGate } from "./quota-gate.js";
+import { UsageRefusalError, validateWorkingDirectory } from "./validation.js";
 
 export function registerTuiCommand(
   program: Command,
@@ -44,20 +45,37 @@ export function registerTuiCommand(
       "--sandbox-account-id <id>",
       "Opaque correlation token recorded in the scode accounting line"
     )
+    .option(
+      "--sandbox-block <path>",
+      "Pass an extra scode --block for this run (repeatable); absolute paths only",
+      (value: string, previous: string[]) => [...previous, value],
+      []
+    )
+    .option(
+      "--print-sandbox",
+      "Print the scode argv this TUI would exec, one argument per line (controls escaped, a newline prints as \\n), and exit 0 without running anything; requires --sandbox"
+    )
     .option("--auto <level>", "Autonomy level: read-only, low, medium, high")
     .option("--effort <level>", "Reasoning effort: none, minimal, low, medium, high, xhigh, max, ultra")
     .option("--pass-env <names>", "Pass comma-separated sensitive environment names")
     .option("--enable-playwright-mcp", "Enable local Playwright MCP inside the sandbox")
     .option("--cwd <path>", "Working directory")
+    .option(
+      "--quota-ceiling <percent>",
+      "Refuse the launch when a bounding usage window is below this percent remaining; overrides the config quota ceiling for this invocation"
+    )
+    .option("--no-quota-gate", "Skip the pre-launch usagemux quota check for this invocation")
     .action(async (options) => {
       try {
         requireValidConfig();
         const agentId = options.agent as AgentId;
 
         if (!AGENT_IDS.includes(agentId)) {
-          console.error(`Error: Unknown agent '${agentId}'`);
-          console.error(`Available agents: ${AGENT_IDS.join(", ")}`);
-          process.exit(1);
+          // One message, two lines: handleUnexpectedError prints it with the
+          // "Error:" prefix, so the output matches the old console.error pair.
+          throw new UsageRefusalError(
+            `Unknown agent '${agentId}'\nAvailable agents: ${AGENT_IDS.join(", ")}`
+          );
         }
 
         const parsedAutonomy = parseAutonomyOption(options.auto);
@@ -65,10 +83,10 @@ export function registerTuiCommand(
         const passthroughEnv = parsePassthroughEnvOption(options.passEnv);
         const enablePlaywrightMcp = Boolean(options.enablePlaywrightMcp);
         if (enablePlaywrightMcp && !options.sandbox) {
-          throw new Error("--enable-playwright-mcp requires --sandbox");
+          throw new UsageRefusalError("--enable-playwright-mcp requires --sandbox");
         }
         if (enablePlaywrightMcp && agentId !== "claude" && agentId !== "zai") {
-          throw new Error("--enable-playwright-mcp is supported only by claude and zai");
+          throw new UsageRefusalError("--enable-playwright-mcp is supported only by claude and zai");
         }
         const sandboxPolicyOverrides = parseSandboxPolicyOverrides({
           sandbox: Boolean(options.sandbox),
@@ -77,7 +95,14 @@ export function registerTuiCommand(
           sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
           sandboxAccount: options.sandboxAccount,
           sandboxAccountId: options.sandboxAccountId,
+          sandboxBlock: options.sandboxBlock,
         });
+        // The same refusal run carries: a print of the scode argv is a
+        // property of the sandboxed spawn, and the print below must not
+        // fall through to an unsandboxed interactive launch.
+        if (options.printSandbox && !options.sandbox) {
+          throw new UsageRefusalError("--print-sandbox requires --sandbox: it prints the scode argv of a sandboxed session");
+        }
 
         const adapter = getAdapter(agentId);
 
@@ -98,25 +123,38 @@ export function registerTuiCommand(
           ? resolveModel(options.model, agentId, config)
           : undefined;
         if (model && !adapter.supportsTuiModel()) {
-          console.error(`Error: ${agentId} does not support model selection in TUI mode`);
-          process.exit(1);
+          throw new UsageRefusalError(`${agentId} does not support model selection in TUI mode`);
         }
 
         const requestedAutonomy = parsedAutonomy ?? "read-only";
         const sandboxAutonomy = requestedAutonomy;
         const autonomy = resolveAutonomyForAdapter(agentId, caps, requestedAutonomy);
         if (adapter.requiresSandboxForTuiAutonomy(autonomy) && !options.sandbox) {
-          console.error(
-            `Error: ${agentId} cannot enforce '${autonomy}' autonomy without --sandbox`
+          throw new UsageRefusalError(
+            `${agentId} cannot enforce '${autonomy}' autonomy without --sandbox`
           );
-          process.exit(1);
         }
-        const effort = adapter.supportsTuiEffort()
-          ? resolveEffortForAdapter(agentId, caps, requestedEffort)
-          : undefined;
-        if (requestedEffort && !adapter.supportsTuiEffort()) {
-          console.warn(`Warning: ${agentId} does not support --effort in TUI mode, ignoring`);
+        // The same resolution as run: a value outside the adapter's effort
+        // set is a usage refusal (exit 64), never a dropped flag. Droid and
+        // opencode accept effort on run but have no TUI carrier for it, so
+        // a materialized level on their TUI refuses by name. `none` is the
+        // no-flag spelling everywhere: on a no-TUI-effort adapter it maps
+        // to undefined here, or the adapter's own validateTuiRequest would
+        // refuse what launches with no flag at all.
+        const resolvedEffort = resolveEffortForAdapter(agentId, caps, requestedEffort);
+        if (
+          requestedEffort !== undefined &&
+          requestedEffort !== "none" &&
+          !adapter.supportsTuiEffort()
+        ) {
+          throw new UsageRefusalError(
+            `${agentId} does not carry --effort in TUI mode; omit it or use run`
+          );
         }
+        const effort =
+          resolvedEffort === "none" && !adapter.supportsTuiEffort()
+            ? undefined
+            : resolvedEffort;
         const sandboxOptions = options.sandbox
           ? resolveSandboxOptionsForAgent(agentId, sandboxAutonomy, sandboxPolicyOverrides)
           : undefined;
@@ -135,6 +173,18 @@ export function registerTuiCommand(
           enablePlaywrightMcp
         );
 
+        // The quota gate: an interactive session spends from the same
+        // windows a run does, so it passes the same check — after every
+        // request check, before anything spawns. A provider override in
+        // force skips the native gate (assertQuotaHeadroomForLaunch).
+        const quotaPolicy = resolveQuotaGate({
+          config: config.quota,
+          ceiling: options.quotaCeiling,
+          disabled: options.quotaGate === false,
+        });
+        // A print-only launch spends nothing (review round 56).
+        if (quotaPolicy !== null && !options.printSandbox) await assertQuotaHeadroomForLaunch(adapter, quotaPolicy);
+
         await assertHarnessSupported(
           agentId,
           adapter.binaryName,
@@ -149,7 +199,14 @@ export function registerTuiCommand(
         // the compound guard lets the type system see that too.
         if (options.sandbox && sandboxOptions !== undefined) {
           adapter.beforeLaunch();
-          adapter.prepareSandbox({ sandboxTrust: sandboxOptions?.trust, passthroughEnv });
+          // A print-only launch skips the sandbox preparation the run path
+          // skips under --print-sandbox (launch.ts): it exists for its side
+          // effects alone — the claude family's refreshes or scrubs the
+          // operator's credential mirror — and a diagnostic command that
+          // promises to run nothing must not touch that state.
+          if (!options.printSandbox) {
+            adapter.prepareSandbox({ sandboxTrust: sandboxOptions?.trust, passthroughEnv });
+          }
           // The environment codemux itself chose for this child: the
           // adapter's standing variables plus the tui-specific ones — the
           // two maps buildExecutionEnv merges — captured here for their
@@ -184,7 +241,8 @@ export function registerTuiCommand(
               injectedEnv,
               adapter.providerOverrideActive()
             ),
-            adapter.getEnvOmissions()
+            adapter.getEnvOmissions(),
+            Boolean(options.printSandbox)
           );
           process.exitCode = exitCode;
         } else {

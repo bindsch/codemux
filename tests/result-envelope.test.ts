@@ -136,6 +136,7 @@ describe("claudeFamilyResult", () => {
       // Set only on --experiment-mcp runs, where the bridge records the
       // protocol exchange to a per-run JSONL file.
       recording: null,
+      served_model: "claude-opus-5",
       failure_code: null,
       labels: null,
     });

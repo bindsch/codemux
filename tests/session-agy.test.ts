@@ -5,7 +5,7 @@
  * each shape pinned against the step-0 fixture
  * (tests/fixtures/live/agy-session.ndjson), because no live exchange
  * ever ran (login expired). The driver round-trips are the e2e suite
- * (tests/session-agy-e2e.test.ts).
+ * (the tests/session-agy-e2e-*.test.ts family).
  */
 
 import { describe, expect, test } from "bun:test";

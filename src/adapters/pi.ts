@@ -13,6 +13,7 @@ import {
   requireProviderOverride,
   type ProviderOverride,
 } from "../provider-override.js";
+import { UsageRefusalError } from "../validation.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -20,6 +21,7 @@ import type {
   RunRequest,
   AdapterCapabilities,
 } from "../types.js";
+import { piLoginState, loginHome, type LoginState } from "../harness-health.js";
 
 export class PiAdapter extends BaseAdapter {
   readonly id: AgentId = "pi";
@@ -43,7 +45,7 @@ export class PiAdapter extends BaseAdapter {
       effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
       // Hermetic has no mechanism for the global SYSTEM.md channel, and
       // the live control probe leaked the planted code word (2026-09-17);
-      // see docs/HERMETIC.md. `--tools none` is claimed: verified live at
+      // see docs/isolation.md. `--tools none` is claimed: verified live at
       // 0.85.1 through the provider override — under `--no-tools` neither
       // capability probe could produce its secret while plain runs
       // produced both.
@@ -73,7 +75,7 @@ export class PiAdapter extends BaseAdapter {
     const override = this.validatedProvider();
     const resolved = model ?? override?.model;
     if (resolved === undefined && override !== null) {
-      throw new Error(
+      throw new UsageRefusalError(
         "pi needs a model for the provider override; pass --model or set CODEMUX_PI_PROVIDER_MODEL"
       );
     }
@@ -96,7 +98,10 @@ export class PiAdapter extends BaseAdapter {
     const configured = this.environment[PI_AGENT_DIR_ENV]?.trim();
     if (passedThrough && configured) {
       if (!isAbsolute(configured)) {
-        throw new Error(`passed-through ${PI_AGENT_DIR_ENV} must be an absolute path`);
+        // A caller mistake at the flag boundary, the sibling rule of
+        // codex's CODEX_HOME and claude's CLAUDE_CONFIG_DIR: exit 64 at
+        // validation, before the quota gate or any "Running with" line.
+        throw new UsageRefusalError(`passed-through ${PI_AGENT_DIR_ENV} must be an absolute path`);
       }
       return configured;
     }
@@ -154,10 +159,10 @@ export class PiAdapter extends BaseAdapter {
           "read,grep,find,ls,edit,write",
         ];
       case "medium":
-        console.warn("Warning: pi has no dedicated 'medium' approval mode, using default tool-enabled mode");
-        return [];
       case "high":
-        console.warn("Warning: pi has no dedicated 'high' approval mode, using default tool-enabled mode");
+        // medium and high have no dedicated flags: pi's default mode
+        // already runs every tool. No warning per launch — the capability
+        // table (docs/harnesses.md) is the one place this is recorded.
         return [];
     }
   }
@@ -229,10 +234,14 @@ export class PiAdapter extends BaseAdapter {
     // requirement early (pi's own default provider, google, would
     // otherwise silently answer), and refuse a model models.json cannot
     // carry verbatim: pi expands $VAR/${VAR} templates inside it
-    // (pi-provider.ts).
+    // (pi-provider.ts). A passed-through PI_CODING_AGENT_DIR is checked
+    // here too, with the override active (the only launches that read
+    // it), so a relative value refuses at the boundary instead of after
+    // the quota gate.
     const resolved = this.modelFor(request.model);
     if (resolved !== undefined && this.validatedProvider() !== null) {
       piProviderBareModel(resolved);
+      this.realAgentDir(request);
     }
   }
 
@@ -249,7 +258,7 @@ export class PiAdapter extends BaseAdapter {
     // the headless launch path calls; an interactive session has no hook
     // to write and remove it.
     if (this.validatedProvider() !== null) {
-      throw new Error(
+      throw new UsageRefusalError(
         "the pi provider override supports headless runs only; unset CODEMUX_PI_PROVIDER_* for an interactive session"
       );
     }
@@ -261,7 +270,14 @@ export class PiAdapter extends BaseAdapter {
     effort?: ReasoningEffort,
     _sandboxed?: boolean
   ): string[] {
-    const cmd = ["pi", "--no-approve"];
+    // --no-approve answers every approval request automatically, so it
+    // belongs to medium and high only: at read-only and low the TUI keeps
+    // pi's native approvals, matching the headless mapAutonomy flags
+    // (which restrict tools instead of approving requests).
+    const cmd =
+      autonomy === "medium" || autonomy === "high"
+        ? ["pi", "--no-approve"]
+        : ["pi"];
     if (model) {
       cmd.push("--model", model);
     }
@@ -272,5 +288,10 @@ export class PiAdapter extends BaseAdapter {
       cmd.push(...this.mapEffort(effort));
     }
     return cmd;
+  }
+
+  /** The pi login read: auth.json, or a provider key in the environment. */
+  override loginState(): LoginState {
+    return piLoginState(loginHome(this.environment), this.environment);
   }
 }

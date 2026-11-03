@@ -44,13 +44,22 @@ export function isReasoningEffort(value: string): value is ReasoningEffort {
 }
 
 // Which built-in tools a headless run exposes. "default" keeps the harness's
-// own set; "none" removes the harness's own tools (see docs/HERMETIC.md for
+// own set; "none" removes the harness's own tools (see docs/isolation.md for
 // the one documented residue, Codex's apply_patch).
 export const TOOL_SELECTIONS = Object.freeze(["default", "none"] as const);
 export type ToolSelection = (typeof TOOL_SELECTIONS)[number];
 
 export function isToolSelection(value: string): value is ToolSelection {
   return (TOOL_SELECTIONS as readonly string[]).includes(value);
+}
+
+/** What the launcher tells an adapter about this launch beyond the request:
+ * `printOnly` is `--print-sandbox` (the argv is printed and nothing runs), so
+ * preparation builds only the paths the argv needs and never reads or writes
+ * a credential (agy: no private Keychain, no login mirror, no search-list
+ * repair). Review rounds 36, 39, 41, 42. */
+export interface LaunchIntent {
+  printOnly?: boolean;
 }
 
 export interface RunRequest {
@@ -76,10 +85,14 @@ export interface RunRequest {
   // files, skills, plugins, hooks, MCP servers, memories. The model sees only
   // the prompt and the harness's own base instructions; the login still works.
   // Independent of `tools`: a hermetic run keeps the harness's built-in tools
-  // unless `tools` removes them. See docs/HERMETIC.md.
+  // unless `tools` removes them. See docs/isolation.md.
   hermetic?: boolean;
   // One experiment-owned stdio MCP server, with harness-specific delivery evidence.
   experimentMcp?: string;
+  // Load the repository's own permission rules on a hermetic Claude-family run,
+  // so an experiment can observe the native permission system. See
+  // claude-project-settings.ts.
+  experimentProjectSettings?: boolean;
   // Headless Claude-family runs grant WebSearch and WebFetch at every autonomy level
   // (see claude-autonomy.ts); `--no-web` sets this false to keep them gated, for a
   // review of an untrusted tree whose content must not pick the URLs the model fetches.
@@ -100,6 +113,14 @@ export interface RunRequest {
   // working directory's own (Claude Code's --add-dir). The hermetic check
   // plants its code word there to prove the control probe sees it.
   instructionDirs?: readonly string[];
+  // The scratch brand home a Kimi experiment control probe writes its
+  // private MCP configuration into. Set only by experimentCanaryControl
+  // from the check's planted home, so the control run's `mcp.json` and
+  // `config.toml` writes are structurally inside the canary scratch rather
+  // than depending on the planted adapter's environment. Internal: no CLI
+  // flag sets it, and validateExperimentRequest refuses it on every
+  // request that is not the control probe, with or without --experiment-mcp.
+  kimiControlBrandHome?: string;
 }
 
 export interface RunResult {
@@ -129,8 +150,10 @@ export interface RunResult {
   // ledger records an all-null block then, never a fabricated one.
   usage?: ResultUsageBlock;
   // The model the harness says served the run (an envelope's modelUsage
-  // key, a codex reroute), when it names exactly one. Absent when nothing
-  // reported it; the ledger falls back to null, not to the request's model.
+  // key; codex reports one when a reroute notice names it, which is not
+  // evidence that an override was honored), when it names exactly one.
+  // Absent when nothing reported it; the ledger falls back to null, not
+  // to the request's model.
   servedModel?: string | null;
 }
 
@@ -158,6 +181,16 @@ export interface ResultUsageBlock {
 export interface CodemuxResultBlock {
   agent: string;
   model: string | null;
+  /** The model the PROVIDER reported serving the run (claude's and zai's
+   * modelUsage key), when it names exactly one. Codex reports one only
+   * when a reroute notice names the model — reported, but not evidence
+   * that an override was honored (SERVED_MODEL_EVIDENCE_HARNESSES carries
+   * claude and zai only). Null when the harness's wire exposes no
+   * served-model field — opencode's pinned run wire and kimi's
+   * stream-json and wire log carry none — so `model` above (the
+   * selection, served when reported) and this field together distinguish
+   * an honored override from an ignored one where the wire is evidence. */
+  served_model: string | null;
   labels: Record<string, string> | null;
   usage: ResultUsageBlock;
   session_id: string | null;
@@ -173,7 +206,7 @@ export interface AdapterCapabilities {
   autonomyLevels: AutonomyLevel[];
   supportsEffort: boolean;
   effortLevels: ReasoningEffort[];
-  // A verified mechanism loads no operator customization (docs/HERMETIC.md).
+  // A verified mechanism loads no operator customization (docs/isolation.md).
   // Absent means unsupported: `--hermetic` is refused for the harness.
   supportsHermetic?: boolean;
   // The harness can remove its built-in tools on request (`--tools none`).
@@ -184,6 +217,12 @@ export interface AdapterCapabilities {
   // combination for such a harness: its control must repeat the tools
   // selection without `--hermetic`, and that plain run is refused.
   toolsNoneRequiresHermetic?: boolean;
+  // `--tools none` is accepted at read-only autonomy only (codex: its
+  // apply_patch tool cannot be removed, so a run that may write keeps it).
+  toolsNoneRequiresReadOnly?: boolean;
+  // `--hermetic` and `--tools none` need read-only scode and a working
+  // directory this run owns (agy). `list` prints the condition in its labels.
+  isolationRequiresReadOnly?: boolean;
   // The harness can return a structured result envelope carrying token usage
   // (`--result-json`). Absent means unsupported and the flag is refused.
   supportsResultJson?: boolean;
@@ -195,9 +234,34 @@ export interface AdapterCapabilities {
 
 export type ModelMapping = Partial<Record<AgentId, string>>;
 
+/** The pre-spend quota gate's policy (src/quota-gate.ts, configured under
+ * the `quota` key). `false` disables the gate globally; every field is
+ * resolved over its default in src/config.ts, so an absent key means the
+ * defaults, not "off". */
+export interface QuotaPolicy {
+  // Refuse a launch when a bounding usage window's remaining percent is
+  // below this.
+  minRemainingPercent: number;
+  // Warn (and proceed) when a weekly window's used percent is above this.
+  weeklyWarnUsedPercent: number;
+  // The usagemux budget for one gate check, in seconds: one number for
+  // every agent, or a per-agent map ({default: 60, claude: 90}) whose
+  // `default` covers the agents the map does not name.
+  timeoutSeconds: number | QuotaTimeoutMap;
+  // The usagemux client a harness spends from when it is not itself
+  // (opencode: claude): the gate queries the mapped client instead and
+  // names the harness in its messages.
+  spendsFrom?: Partial<Record<AgentId, string>>;
+}
+
+/** The map form of `quota.timeoutSeconds`. Keys are agent ids or
+ * `default`; values are integers from 1 to 300. */
+export type QuotaTimeoutMap = Record<string, number>;
+
 export interface CodemuxConfig {
   defaultAgent: AgentId;
   models: {
     [alias: string]: ModelMapping;
   };
+  quota: QuotaPolicy | false;
 }

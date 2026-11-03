@@ -293,7 +293,7 @@ test("Antigravity documentation separates supported policy from dated live evide
   expect(doc).toContain("| Antigravity |");
   expect(doc).toContain("read-only scode");
   expect(doc).toContain("Tool schemas can remain visible");
-  const report = readFileSync(join(import.meta.dir, "../docs/experiment-mcp-report.md"), "utf8");
+  const report = readFileSync(join(import.meta.dir, "../docs/archive/experiment-mcp-report.md"), "utf8");
   const outcome = report.split("## Outcome")[1]!.split("\n## ")[0]!;
   expect(outcome).toContain("Round 11");
   expect(outcome).toContain("They were not included in that");
@@ -303,12 +303,15 @@ test("Antigravity documentation separates supported policy from dated live evide
 test("Antigravity compatibility evidence does not renew the historical live claim", () => {
   const compatibility = readFileSync(join(import.meta.dir, "../docs/harnesses.md"), "utf8");
   const row = compatibility.split("\n").find((line) => line.startsWith("| Antigravity CLI |"))!;
-  expect(row).toContain("1.3.3, 2026-10-13");
-  expect(row).toContain("Round 11");
-  expect(row).toContain("Later hardening was not live-retested");
-  const report = readFileSync(join(import.meta.dir, "../docs/experiment-mcp-report.md"), "utf8");
+  // The 2026-11-02 live gate passed agy 1.4.12 (read-only, medium shell,
+  // result JSON, hermetic check, one session turn) and the row says so; the
+  // Round 11 claim is history, not renewed evidence.
+  expect(row).toContain("1.4.12, 2026-11-02");
+  expect(row).toContain("2026-11-02 live gate");
+  expect(row).not.toContain("Round 11");
+  const report = readFileSync(join(import.meta.dir, "../docs/archive/experiment-mcp-report.md"), "utf8");
   expect(report).toContain("> Historical report:");
-  expect(report).toContain("[experiment MCP](experiment-mcp.md)");
+  expect(report).toContain("[experiment MCP](../experiment-mcp.md)");
   expect(report).toContain("**unavailable**");
 });
 
@@ -319,14 +322,18 @@ test("the capability test comment records the supported policies", () => {
 });
 
 test("the base capability comment describes the supported Antigravity mechanism", () => {
-  const source = readFileSync(join(import.meta.dir, "../src/adapters/base.ts"), "utf8");
-  expect(source).toContain("mechanism and its verification evidence, including Antigravity");
+  // The validators (and their comment) live in base-validate.ts since the base adapter was split.
+  const source = readFileSync(join(import.meta.dir, "../src/adapters/base-validate.ts"), "utf8");
+  expect(source).toContain("records each");
+  expect(source).toContain("mechanism and its verification evidence");
+  expect(source).toContain("Antigravity");
+  expect(source).toContain("docs/isolation.md");
   expect(source).not.toContain("agy candidate awaiting");
   expect(new AgyAdapter({}).capabilities().supportsHermetic).toBe(true);
 });
 
 test("the Round 11 live record retains the operator's date, outcomes, and gate", () => {
-  const report = readFileSync(join(import.meta.dir, "../docs/experiment-mcp-report.md"), "utf8");
+  const report = readFileSync(join(import.meta.dir, "../docs/archive/experiment-mcp-report.md"), "utf8");
   const live = report.split("## Final live verification on the Round 11 tree")[1]!.split("\n## ")[0]!;
   for (const fact of ["2026-10-13 at 07:41 CEST", "scode 0.6.0 and agy 1.3.3", "1931 pass, 2 skip, 0 fail",
     "only the login keychain before and after", "`OK` (exit 0)", "`HERMETIC agy: OK`", "`TOOLS agy: OK` (exit 0)",

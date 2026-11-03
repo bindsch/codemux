@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Command } from "commander";
@@ -10,6 +10,7 @@ import * as experimentMcp from "../src/experiment-mcp.js";
 import * as launcher from "../src/launch.js";
 import { agyKeychainHost } from "../src/agy-keychain.js";
 import { registerCheckCommand } from "../src/check-command.js";
+import { CANARY_MARKER_PATTERN } from "../src/hermetic-canary.js";
 import { getDefaultConfig } from "../src/config.js";
 import type { RunRequest } from "../src/types.js";
 import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
@@ -192,4 +193,229 @@ test.each([
     fake.cleanup();
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+describe("CLI - check pre-launch usage refusals exit 64", () => {
+  // The same refusal classes `run` and `tui` exit 64 for, on the check
+  // path: every row refuses before any probe spends a request.
+  const refusalCases: {
+    label: string;
+    binaries: Record<string, string>;
+    argv: string[];
+    message: string;
+  }[] = [
+    {
+      label: "unknown agent",
+      binaries: {},
+      argv: ["check", "-a", "nope"],
+      message: "Unknown agent 'nope'",
+    },
+    {
+      // Only qwen's legacy binary (qwen-coder, found when "qwen" is absent)
+      // lacks model selection, so this is the reachable model refusal.
+      label: "model selection the agent cannot carry",
+      binaries: { "qwen-coder": "exit 0" },
+      argv: ["check", "-a", "qwen", "-m", "raw-model-name", "--no-sandbox", "--auto", "high"],
+      message: "qwen does not support model selection",
+    },
+    {
+      label: "autonomy below high without --sandbox",
+      binaries: { opencode: "exit 0" },
+      argv: ["check", "-a", "opencode", "--no-sandbox", "--auto", "read-only"],
+      message: "opencode cannot enforce 'read-only' autonomy without --sandbox",
+    },
+    {
+      label: "unsupported tools none request",
+      binaries: { cline: "exit 0" },
+      argv: ["check", "-a", "cline", "--no-sandbox", "--auto", "high", "--tools", "none"],
+      message: "cline cannot remove its built-in tools",
+    },
+  ];
+  test.each(refusalCases)("$label", async ({ binaries, argv, message }) => {
+    const fake = createFakeBinaryEnv(binaries);
+    try {
+      const { stderr, exitCode } = await runCli(argv, fake.env);
+      expect(exitCode).toBe(64);
+      expect(stderr).toContain(message);
+    } finally {
+      fake.cleanup();
+    }
+  });
+});
+
+/** The plain (non-hermetic) check flow in process: the launch is mocked,
+ * so the command's own branch on the probe outcome is what is measured. */
+async function runPlainCheck(
+  result: { exitCode: number; stdout: string; stderr?: string }
+): Promise<{ stdout: string; stderr: string; exitCode: number | undefined }> {
+  const program = new Command();
+  registerCheckCommand(program, getDefaultConfig(), () => {});
+  const stdoutChunks: string[] = [];
+  const stderrLines: string[] = [];
+  const originalPath = process.env.PATH;
+  const originalExitCode = process.exitCode;
+  const write = spyOn(process.stdout, "write").mockImplementation(((chunk: Uint8Array | string) => {
+    stdoutChunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    return true;
+  }) as typeof process.stdout.write);
+  const error = spyOn(console, "error").mockImplementation((...values: unknown[]) => {
+    stderrLines.push(values.map(String).join(" "));
+  });
+  const stderrWrite = spyOn(process.stderr, "write").mockImplementation(((chunk: Uint8Array | string) => {
+    stderrLines.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    return true;
+  }) as typeof process.stderr.write);
+  const fake = createFakeBinaryEnv({ claude: "exit 0", scode: "exit 0" });
+  const mocks = [
+    write, error, stderrWrite,
+    spyOn(cliRuntime, "isScodeAvailable").mockReturnValue(true),
+    spyOn(cliRuntime, "assertHarnessSupported").mockResolvedValue("2.1.220"),
+    spyOn(launcher, "launchRunRequest").mockImplementation(async () => ({
+      success: result.exitCode === 0, ...result, stderr: result.stderr ?? "",
+    })),
+  ];
+  process.env.PATH = fake.env.PATH;
+  try {
+    await program.parseAsync(["check", "-a", "claude"], { from: "user" });
+    const resolved = process.exitCode;
+    return {
+      stdout: stdoutChunks.join(""),
+      stderr: stderrLines.join("\n"),
+      exitCode: typeof resolved === "number" ? resolved : undefined,
+    };
+  } finally {
+    for (const mock of mocks) mock.mockRestore();
+    process.env.PATH = originalPath;
+    process.exitCode = originalExitCode;
+    fake.cleanup();
+  }
+}
+
+describe("the plain check probe outcomes in process", () => {
+  test("an OK line passes the check", async () => {
+    const outcome = await runPlainCheck({ exitCode: 0, stdout: "OK\n", stderr: "" });
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.stdout).toBe("OK\n");
+  });
+
+  test("a failing probe reports the harness output and its exit code", async () => {
+    const outcome = await runPlainCheck({ exitCode: 3, stdout: "noise\n", stderr: "boom\n" });
+    expect(outcome.exitCode).toBe(3);
+    expect(outcome.stderr).toContain("noise");
+    expect(outcome.stderr).toContain("boom");
+  });
+
+  test("a clean exit without an OK line is an unexpected response", async () => {
+    const outcome = await runPlainCheck({ exitCode: 0, stdout: "not ok\n", stderr: "" });
+    expect(outcome.exitCode).toBe(1);
+    expect(outcome.stderr).toContain("agent probe returned an unexpected response");
+    expect(outcome.stderr).toContain("not ok");
+  });
+});
+
+/** The hermetic check flow in process (audit round 2, C-9): the canary is
+ * planted for real, and the launch mock answers per request — the hermetic
+ * probe (`request.hermetic === true`) and the control — with whatever
+ * surface the test wants the verdict to judge. The marker is read from the
+ * planted instructions, the way a leaking harness would read it. */
+async function runHermeticCheck(
+  answer: (marker: string, hermetic: boolean) => { exitCode: number; stdout: string; stderr?: string; reply?: string }
+): Promise<{ stdout: string; stderr: string; exitCode: number | undefined; launches: number }> {
+  const program = new Command();
+  registerCheckCommand(program, getDefaultConfig(), () => {});
+  const stdoutChunks: string[] = [];
+  const stderrLines: string[] = [];
+  const originalPath = process.env.PATH;
+  const originalExitCode = process.exitCode;
+  const write = spyOn(process.stdout, "write").mockImplementation(((chunk: Uint8Array | string) => {
+    stdoutChunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    return true;
+  }) as typeof process.stdout.write);
+  const error = spyOn(console, "error").mockImplementation((...values: unknown[]) => {
+    stderrLines.push(values.map(String).join(" "));
+  });
+  const stderrWrite = spyOn(process.stderr, "write").mockImplementation(((chunk: Uint8Array | string) => {
+    stderrLines.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    return true;
+  }) as typeof process.stderr.write);
+  const fake = createFakeBinaryEnv({ claude: "exit 0", scode: "exit 0" });
+  let launches = 0;
+  const mocks = [
+    write, error, stderrWrite,
+    spyOn(cliRuntime, "isScodeAvailable").mockReturnValue(true),
+    spyOn(cliRuntime, "assertHarnessSupported").mockResolvedValue("2.1.220"),
+    spyOn(launcher, "launchRunRequest").mockImplementation(async (_adapter, request) => {
+      launches += 1;
+      const marker = CANARY_MARKER_PATTERN.exec(readFileSync(join(request.cwd!, "AGENTS.md"), "utf8"))![0];
+      const result = answer(marker, request.hermetic === true);
+      return { success: result.exitCode === 0, ...result, stderr: result.stderr ?? "" };
+    }),
+  ];
+  process.env.PATH = fake.env.PATH;
+  try {
+    await program.parseAsync(["check", "-a", "claude", "--hermetic"], { from: "user" });
+    const resolved = process.exitCode;
+    return {
+      stdout: stdoutChunks.join(""),
+      stderr: stderrLines.join("\n"),
+      exitCode: typeof resolved === "number" ? resolved : undefined,
+      launches,
+    };
+  } finally {
+    for (const mock of mocks) mock.mockRestore();
+    process.env.PATH = originalPath;
+    process.exitCode = originalExitCode;
+    fake.cleanup();
+  }
+}
+
+describe("the hermetic check verdicts in process (C-9)", () => {
+  test("a failing hermetic probe reports the harness output and its exit code", async () => {
+    const outcome = await runHermeticCheck((_marker, hermetic) =>
+      hermetic ? { exitCode: 7, stdout: "noise\n", stderr: "boom\n" } : { exitCode: 0, stdout: "OK\n" }
+    );
+    expect(outcome.exitCode).toBe(7);
+    expect(outcome.launches).toBe(1); // a failed probe never reaches the control
+    expect(outcome.stderr).toContain("noise");
+    expect(outcome.stderr).toContain("boom");
+  });
+
+  test("the planted code word in the probe output is a leak verdict", async () => {
+    const outcome = await runHermeticCheck((marker, hermetic) =>
+      hermetic ? { exitCode: 0, stdout: `${marker}\nOK\n`, reply: "OK" } : { exitCode: 0, stdout: `${marker}\n` }
+    );
+    expect(outcome.exitCode).toBe(1);
+    expect(outcome.stderr).toContain("is NOT hermetic: the planted code word reached the model");
+    expect(outcome.stderr).toContain("control: planted code word reached the model, as expected");
+    expect(outcome.stdout).not.toContain("HERMETIC");
+  });
+
+  test("a probe answer other than OK fails the check even when the control leaks", async () => {
+    const outcome = await runHermeticCheck((marker, hermetic) =>
+      hermetic
+        ? { exitCode: 0, stdout: "", reply: "I cannot answer that" }
+        : { exitCode: 0, stdout: `${marker}\n` }
+    );
+    expect(outcome.exitCode).toBe(1);
+    expect(outcome.stderr).toContain("probe did not pass: the model answered 'I cannot answer that' instead of OK");
+    expect(outcome.stderr).toContain("control: planted code word reached the model, as expected");
+  });
+
+  test("a clean control proves nothing and fails the check", async () => {
+    const outcome = await runHermeticCheck((_marker, hermetic) =>
+      hermetic ? { exitCode: 0, stdout: "OK\n" } : { exitCode: 0, stdout: "OK\n" }
+    );
+    expect(outcome.exitCode).toBe(1);
+    expect(outcome.stderr).toContain("answered OK, but the check proved nothing");
+    expect(outcome.stderr).toContain("clean too, so the planted files never reached the model");
+  });
+
+  test("a failing control proves nothing and reports the control's output", async () => {
+    const outcome = await runHermeticCheck((_marker, hermetic) =>
+      hermetic ? { exitCode: 0, stdout: "OK\n" } : { exitCode: 5, stdout: "control-died\n", stderr: "gone\n" }
+    );
+    expect(outcome.exitCode).toBe(1);
+    expect(outcome.stderr).toContain("answered OK, but the check proved nothing: the request failed (exit 5)");
+    expect(outcome.stderr).toContain("control-died");
+  });
 });

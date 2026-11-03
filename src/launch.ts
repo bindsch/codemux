@@ -1,24 +1,23 @@
 import type { BaseAdapter, RunContext } from "./adapters/base.js";
-import { appendCallRecord, providerHost } from "./call-log.js";
-import { assertCompatibleScode, assertHarnessSupported, resolveScodeExecutableForEnv, runSandboxedWithStdin, unexpectedErrorExitCode } from "./cli-runtime.js";
+import { assertCompatibleScode, assertHarnessSupported, resolveScodeExecutableForEnv, runSandboxedWithStdin } from "./cli-runtime.js";
 import { foldedSinkUsage } from "./plain-unwrap.js";
 import { ExperimentFailure, experimentFailure } from "./experiment-records.js";
 import { experimentFailedResult } from "./result-envelope/experiment.js";
-import { readProviderOverride } from "./provider-override.js";
 import {
   CapturedRunFailure,
   runCapturedCommand,
-  SIGNAL_EXIT_CODE,
 } from "./process-runner.js";
-import { emptyUsage } from "./result-envelope.js";
+import { trustCheckedCommandChecks, trustCheckedCommandPaths } from "./executable-security.js";
+import { appendFailedLaunchReceipt, appendInterruptedLaunchReceipt, recordCompletedLaunch } from "./launch/receipts.js";
 import { registerRunExitCleanup } from "./run-exit-cleanup.js";
 import {
   resolveSandboxOptionsForAgent,
   type SandboxPolicyOverrides,
 } from "./sandbox-policy.js";
-import { withKeepEnvExemption } from "./sandbox.js";
-import type { AgentId, AutonomyLevel, RunRequest, RunResult } from "./types.js";
-import { validateWorkingDirectory } from "./validation.js";
+import { assertNoCallerBlockOverStateDirs, withKeepEnvExemption } from "./sandbox.js";
+import { featureFloor, SCODE_FLOORS } from "./harness-contracts.js";
+import type { AutonomyLevel, RunRequest, RunResult } from "./types.js";
+import { UsageRefusalError, validateWorkingDirectory } from "./validation.js";
 
 export interface LaunchOptions {
   sandbox: boolean;
@@ -32,6 +31,13 @@ export interface LaunchOptions {
   /** Which command asked for this launch: the call ledger's `kind` field.
    * Absent means "run" — the default caller. */
   kind?: "run" | "check";
+  /** `--print-sandbox`: the launch resolves and prints its scode argv
+   * instead of running the harness. The sandboxed path still runs its
+   * preflight (probes, validation, option resolution) so the printed argv
+   * is the real one; nothing is spawned, recorded, or receipted. Refused
+   * with `experimentMcp`: the relay is minted at start, so its argv cannot
+   * be shown without starting it. */
+  printSandbox?: boolean;
 }
 
 /**
@@ -99,6 +105,25 @@ export async function launchRunRequest(
     // directory look like a mismatch (the review's cwd finding).
     const effectiveWorkingDirectory = (value?: string): string =>
       validateWorkingDirectory(value) ?? process.cwd();
+    if (options.printSandbox && request.experimentMcp) {
+      // The experiment relays are minted at prepare — the MCP server command
+      // from the spec is spawned there — so a launch that must not run
+      // anything can never reach the argv print. The CLI refuses the
+      // combination before any preparation (run-command.ts); this guard
+      // holds it for any other caller of the launcher, before prepareRun
+      // (claude's and zai's already write the recording file) and before
+      // the codex/kimi prepare block below.
+      throw new UsageRefusalError(
+        "--print-sandbox cannot be combined with --experiment-mcp: the MCP relay is minted at start, so its argv cannot be shown without starting it"
+      );
+    }
+    if (options.printSandbox && !options.sandbox) {
+      // Fail closed in the launcher itself, not only in the CLI: the
+      // direct branch below has no sandboxed spawn, so a caller that
+      // bypassed run-command.ts's refusal must not reach a real spawn
+      // it believed was only printed (review round 7, edges).
+      throw new UsageRefusalError("--print-sandbox requires --sandbox");
+    }
     if (request.experimentMcp && (!options.sandbox || options.requestedAutonomy !== "read-only" ||
         effectiveWorkingDirectory(options.cwd) !== effectiveWorkingDirectory(request.cwd))) {
       throw new Error("experiment MCP launch must use read-only scode and the request's working directory");
@@ -115,6 +140,18 @@ export async function launchRunRequest(
         (!options.sandbox || options.requestedAutonomy !== "read-only" ||
          effectiveWorkingDirectory(options.cwd) !== effectiveWorkingDirectory(request.cwd))) {
       throw new Error("agy isolation launch requires read-only scode and the run's own working directory");
+    }
+    if (request.experimentProjectSettings &&
+        effectiveWorkingDirectory(options.cwd) !== effectiveWorkingDirectory(request.cwd)) {
+      // The project-settings gate validates the directory the REQUEST
+      // names (claude's adapter reads request.cwd), while the child runs
+      // in options.cwd — the same split the experiment MCP and agy rules
+      // above refuse. A caller passing two directories could validate a
+      // safe one and execute with the project hooks of another (review
+      // round 16, edges 2).
+      throw new UsageRefusalError(
+        "experiment project-settings launch must run in the request's working directory"
+      );
     }
     if (!options.sandbox) {
       // A direct launch has no sandbox it could attest, so a request that
@@ -195,23 +232,72 @@ export async function launchRunRequest(
     // The resolved trust rides into prepareRun so per-run scratch can be
     // shaped for the sandbox the child will actually run in (an untrusted
     // sandbox denies harness state, where codex's fallback file lives).
-    context = adapter.prepareRun(request, sandboxOptions.trust, sandboxOptions);
+    // Print-only launches prepare paths, never credentials (LaunchIntent);
+    // the request itself is never mutated (review round 42).
+    context = adapter.prepareRun(request, sandboxOptions.trust, sandboxOptions, { printOnly: options.printSandbox === true });
     if (options.harnessVersion !== undefined) context.harnessVersion = options.harnessVersion;
     releaseExitCleanup = registerRunExitCleanup(adapter, context);
     if (context.agyProbe?.diagnostic && context.agyProbe.operatorHome) {
       // Shared temp storage is hidden. Expose only this check's HOME,
       // never the planted parent or cwd; --ro still protects the project.
       sandboxOptions.harnessStateDirs = [context.agyProbe.home ?? context.agyProbe.operatorHome];
+      assertNoCallerBlockOverStateDirs(sandboxOptions.blockPaths ?? [], sandboxOptions.harnessStateDirs);
+    }
+    if (context.claudeProjectConfigDir !== undefined) {
+      // A project-settings run points the harness at a private config
+      // directory, but the operator's real config root still sits inside
+      // the sandbox's default-allowed harness state — readable and
+      // writable. Block it (and the ~/.claude.json beside it), then
+      // re-allow only this run's own private directory: every other run's
+      // and session's tree under .codemux-hermetic stays unreachable too.
+      // scode emits the block first and the child allow after it, and its
+      // final guards re-assert both, so exactly the private directory
+      // remains reachable.
+      // A caller's own block must not be re-opened by that allow: it is
+      // checked here, while sandboxOptions.blockPaths still holds only the
+      // caller's --sandbox-block values, before the launcher's own pair
+      // is appended (review round 9, edges finding 1).
+      assertNoCallerBlockOverStateDirs(
+        sandboxOptions.blockPaths ?? [],
+        [...(sandboxOptions.harnessStateDirs ?? []), context.claudeProjectConfigDir.dir]
+      );
+      sandboxOptions.blockPaths = [
+        ...(sandboxOptions.blockPaths ?? []),
+        ...context.claudeProjectConfigDir.blockedPaths,
+      ];
+      sandboxOptions.harnessStateDirs = [
+        ...(sandboxOptions.harnessStateDirs ?? []),
+        context.claudeProjectConfigDir.dir,
+      ];
     }
     // Same const capture as the direct path, for the receipt closures.
     const runContext = context;
     // One source for the whole launch (round15): request.passthroughEnv is
     // the list validation checked, so it -- not a second copy on the
     // options -- is what the sandbox environment is built from.
-    adapter.prepareSandbox({
-      sandboxTrust: sandboxOptions.trust,
-      passthroughEnv: request.passthroughEnv,
-    });
+    // A print-only launch skips it: prepareSandbox contributes nothing to
+    // the argv or the sandbox options (it exists for its side effects
+    // alone), and the claude family's implementation refreshes or scrubs
+    // the operator's default credential mirror and prunes its backups —
+    // authentication state a diagnostic command that promises to run
+    // nothing must not touch (review round 18, edges 2).
+    if (options.printSandbox) {
+      console.error("codemux: credential sandbox preparation skipped: --print-sandbox is print only");
+      // The credential copy is deferred too (round 19, edges 3): getRunEnv
+      // below still runs — the printed argv needs CLAUDE_CONFIG_DIR — and
+      // claude's copy reads the operator's mirror (refusing a
+      // refresh-token mirror) and writes into the private directory. A
+      // print answers the environment with neither side effect, the same
+      // deferral the session's pre-claim probe uses (cli-spawn-prep.ts).
+      if (context.claudeProjectConfigDir !== undefined) {
+        context.claudeProjectConfigDir.deferCredentialCopy = true;
+      }
+    } else {
+      adapter.prepareSandbox({
+        sandboxTrust: sandboxOptions.trust,
+        passthroughEnv: request.passthroughEnv,
+      });
+    }
     // The environment codemux itself chose for this child: the adapter's
     // standing variables plus the per-run ones — exactly the two maps
     // buildExecutionEnv merges — captured here for their names. Under
@@ -228,18 +314,25 @@ export async function launchRunRequest(
     };
     const envArg = adapter.buildExecutionEnv(injectedEnv, request.passthroughEnv);
     // Probe the same binaries and environment that the sandbox runner resolves.
-    if (request.agent === "agy") {
+    // The floor comes from SCODE_FLOORS, the same table doctor reads, so a
+    // launch refusal and the machine check's SANDBOX-TOO-OLD row cannot
+    // disagree on the number.
+    const scodeFloorForAgent = SCODE_FLOORS[request.agent];
+    if (scodeFloorForAgent !== undefined) {
       const cwd = effectiveWorkingDirectory(options.cwd);
       const scode = resolveScodeExecutableForEnv(envArg, cwd);
-      if (!scode) throw new Error("every sandboxed agy run requires scode 0.6.0 or newer");
-      try { await assertCompatibleScode(scode, cwd, envArg, "0.6.0"); }
+      if (!scode) throw new Error(`every sandboxed ${request.agent} run requires scode ${scodeFloorForAgent} or newer`);
+      try { await assertCompatibleScode(scode, cwd, envArg, scodeFloorForAgent); }
       catch (error) {
-        throw new Error(`every sandboxed agy run requires scode 0.6.0 or newer: ${error instanceof Error ? error.message : String(error)}`);
+        throw new Error(`every sandboxed ${request.agent} run requires scode ${scodeFloorForAgent} or newer: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
     if (request.experimentMcp) {
+      // The experiment floor comes from FEATURE_FLOORS (fail closed: the
+      // accessor throws when an experiment harness has no recorded floor),
+      // the same table the session drivers and doctor read.
       context.harnessVersion = await assertHarnessSupported(adapter.id, adapter.binaryName, options.cwd, envArg,
-        request.autonomy, true, request.passthroughEnv, request.agent === "codex" ? "0.165.0" : request.agent === "kimi" ? "2.3.2" : "2.1.280");
+        request.autonomy, true, request.passthroughEnv, featureFloor(adapter.id, "experiment-mcp"));
       try { await context.experimentCodex?.prepare(context.harnessVersion); }
       finally {
         context.experimentRecording ??= context.experimentCodex?.startedRecordingPath;
@@ -275,8 +368,16 @@ export async function launchRunRequest(
         recordInterruption();
         try { await cleanup(); }
         finally { appendInterruptedLaunchReceipt(request, options, runContext, startedAt); }
-      }
+      },
+      options.printSandbox
     );
+    if (options.printSandbox) {
+      // The argv was already printed inside the runner (after every probe
+      // and resolution above, so it is the argv a real launch would exec);
+      // nothing ran, so there is no result to process, record, or receipt.
+      await cleanup();
+      return raw;
+    }
     captured = true;
     capturedResult = raw;
     if (request.experimentMcp && raw.captureLimitExceeded)
@@ -349,6 +450,15 @@ async function runDirect(
     adapter.buildRunCommand(request, context),
     cwd
   );
+  // This launch's own resolutions (resolveExecutionCommand's trust
+  // checks), captured in the resolution's synchronous block and carried to
+  // the runner's pre-spawn re-stat: without them the re-stat falls back to
+  // the process-wide identity list, where another launch's record of a
+  // replaced binary would let this one exec bytes it never checked (round
+  // 23, edges 1). The required paths refuse a recording gap instead of
+  // skipping the re-check.
+  const requiredPaths = trustCheckedCommandPaths(command);
+  const checks = trustCheckedCommandChecks(command);
   const stdinInput = adapter.getStdinInput(request);
   const env = adapter.buildExecutionEnv(
     adapter.getRunEnv(request, context),
@@ -365,135 +475,7 @@ async function runDirect(
     // folded reply and usage back off the same object (review ul4).
     stdoutSink: context.stdoutSink,
     onSignaled,
+    requiredPaths,
+    checks,
   });
-}
-
-/** Records a processed launch; refusals, capture failures, and signals use other paths. */
-function recordCompletedLaunch(
-  request: RunRequest,
-  options: LaunchOptions,
-  result: RunResult,
-  startedAt: number
-): void {
-  appendCallRecord({
-    ts: new Date(startedAt).toISOString(),
-    kind: options.kind ?? "run",
-    labels: options.kind === "check" ? null : request.labels ?? null,
-    agent: request.agent,
-    model: request.model ?? null,
-    model_effective: result.servedModel ?? null,
-    provider: providerHostFor(request.agent),
-    session_id: null,
-    turn_id: null,
-    autonomy: request.autonomy ?? "read-only",
-    hermetic: Boolean(request.hermetic),
-    sandboxed: Boolean(request.sandboxed),
-    exit_code: result.exitCode,
-    finish: null,
-    duration_ms: Math.max(0, Date.now() - startedAt),
-    cwd: request.cwd ?? process.cwd(),
-    usage: result.usage ?? emptyUsage(),
-  });
-}
-
-/** The receipt a signal interrupt owes the ledger: the run was in flight
- * when a signal to codemux stopped it, so the process runner exits 143
- * from inside the run and this launch's recordCompletedLaunch never runs.
- * Called from the runner's onSignaled hook — the one place left with the
- * launch's facts — it writes the signal exit code and whatever usage the
- * stdout fold had already folded (null everywhere else, never a guess)
- * through the same never-fail append. Must not throw: a throw here would
- * only mask the exit it runs inside (review ul6). */
-function appendInterruptedLaunchReceipt(
-  request: RunRequest,
-  options: LaunchOptions,
-  context: RunContext,
-  startedAt: number
-): void {
-  try {
-    const folded = foldedSinkUsage(context.stdoutSink);
-    appendCallRecord({
-      ts: new Date(startedAt).toISOString(),
-      kind: options.kind ?? "run",
-      labels: options.kind === "check" ? null : request.labels ?? null,
-      agent: request.agent,
-      model: request.model ?? null,
-      model_effective: null,
-      provider: providerHostFor(request.agent),
-      session_id: null,
-      turn_id: null,
-      autonomy: request.autonomy ?? "read-only",
-      hermetic: Boolean(request.hermetic),
-      sandboxed: Boolean(request.sandboxed),
-      exit_code: SIGNAL_EXIT_CODE,
-      finish: null,
-      duration_ms: Math.max(0, Date.now() - startedAt),
-      cwd: request.cwd ?? process.cwd(),
-      usage: folded ?? emptyUsage(),
-    });
-  } catch {
-    // The never-fail contract, enforced here too: appendCallRecord already
-    // swallows its own failures, and anything else (a read of the sink)
-    // must not turn the exit path into a crash.
-  }
-}
-
-/** The receipt a failed launch owes the ledger: the harness ran — its
- * capture rejected (invalid UTF-8 on a stream; the runner wraps that as
- * CapturedRunFailure) or its processRunResult threw (`captured` true, the
- * raw result was in hand) — so the call happened even though the launch
- * rejects and recordCompletedLaunch never runs. A refusal before the spawn
- * (a missing scode, an unresolved binary) is neither: it ran nothing and
- * records nothing, keeping recordCompletedLaunch's contract. The exit code
- * comes from the returned failure result when one exists, or from the CLI
- * error mapping when the launch throws. The usage is what the stdout fold
- * had folded — all-null when no structured stream reported any, never a
- * guess. Must not throw: the rejection it rides cannot gain a second
- * failure (review ul8). */
-function appendFailedLaunchReceipt(
-  request: RunRequest,
-  options: LaunchOptions,
-  context: RunContext,
-  startedAt: number,
-  error: unknown,
-  captured: boolean,
-  processed?: RunResult,
-  exitCode: number = unexpectedErrorExitCode(error)
-): void {
-  if (!captured && !(error instanceof CapturedRunFailure)) return;
-  try {
-    const folded = foldedSinkUsage(context.stdoutSink);
-    appendCallRecord({
-      ts: new Date(startedAt).toISOString(),
-      kind: options.kind ?? "run",
-      labels: options.kind === "check" ? null : request.labels ?? null,
-      agent: request.agent,
-      model: request.model ?? null,
-      model_effective: processed?.servedModel ?? null,
-      provider: providerHostFor(request.agent),
-      session_id: null,
-      turn_id: null,
-      autonomy: request.autonomy ?? "read-only",
-      hermetic: Boolean(request.hermetic),
-      sandboxed: Boolean(request.sandboxed),
-      exit_code: exitCode,
-      finish: null,
-      duration_ms: Math.max(0, Date.now() - startedAt),
-      cwd: request.cwd ?? process.cwd(),
-      usage: processed?.usage ?? folded ?? emptyUsage(),
-    });
-  } catch {
-    // The never-fail contract, as the interrupted receipt enforces it.
-  }
-}
-
-/** The endpoint identity for the ledger: "default", or the host of the
- * provider override this launch ran against — never the key. A malformed
- * override cannot fail the receipt; it failed the launch itself already. */
-function providerHostFor(agent: AgentId): string {
-  try {
-    return providerHost(readProviderOverride(agent)?.baseUrl ?? null);
-  } catch {
-    return "default";
-  }
 }

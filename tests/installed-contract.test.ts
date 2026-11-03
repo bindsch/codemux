@@ -354,7 +354,7 @@ describe("version probes run the arguments the contracts actually send", () => {
       }
       // No minimum count. The suite runs on every PR through `make release-gate`, and CI runners
       // carry no harness CLIs at all -- the same fact this repo documents in
-      // docs/HARNESS-COMPATIBILITY.md. A threshold here would turn "nothing installed", the
+      // docs/harnesses.md. A threshold here would turn "nothing installed", the
       // designed and expected CI condition, into a deterministic red gate on every push and tag.
       // What is exercised is reported instead, matching the suite's existing behavior above.
       console.log(

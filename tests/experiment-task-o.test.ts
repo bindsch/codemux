@@ -64,7 +64,7 @@ test("native experiment exit 125 with bounded output is processed and verified",
     spyOn(adapter, "prepareRun").mockReturnValue(context),
     spyOn(adapter, "getRunEnv").mockReturnValue({}),
     spyOn(adapter, "buildRunCommand").mockReturnValue(["synthetic"]),
-    spyOn(adapter, "cleanupRun").mockImplementation(() => {}),
+    spyOn(adapter, "cleanupRun").mockImplementation(async () => {}),
     spyOn(runtime, "assertHarnessSupported").mockResolvedValue("0.165.0"),
     spyOn(runtime, "runSandboxedWithStdin").mockImplementation(() =>
       runCapturedCommand(["synthetic"], { cwd, env: {} })),

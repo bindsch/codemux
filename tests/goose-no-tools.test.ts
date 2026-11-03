@@ -7,7 +7,7 @@ import { GooseAdapter } from "../src/adapters/goose.js";
 // Goose's `--tools none` is claimed: verified live at 1.50.1 on 2026-09-17
 // through the provider override — under `--no-profile` neither capability
 // probe could produce its secret while plain runs produced both
-// (docs/HERMETIC.md). `--hermetic` stays refused: the live control probe
+// (docs/isolation.md). `--hermetic` stays refused: the live control probe
 // leaked the planted code word, and the config-file system-prompt override
 // `GOOSE_SYSTEM_PROMPT_FILE_PATH` has no switch.
 

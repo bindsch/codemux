@@ -2,7 +2,7 @@
  * The chat history files behind aider's answer extraction, on two
  * surfaces. On the run path the file is the `--hermetic` check's answer
  * source, and that check is refused for now (aider's own config layers
- * have no switch; docs/HERMETIC.md), so no reachable run reads or
+ * have no switch; docs/isolation.md), so no reachable run reads or
  * creates one — the machinery stays for the day that changes, and a
  * hermetic run would still record its reply here instead of leaving
  * state on the adapter. Plain runs keep /dev/null (h6 review): nothing

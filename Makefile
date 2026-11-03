@@ -1,4 +1,4 @@
-.PHONY: install link unlink runtime typecheck shell test contracts sandbox-contract check smoke release-gate live-gate
+.PHONY: install link unlink runtime typecheck shell test contracts sandbox-contract check smoke release-gate live-gate machine-check installed-layout
 
 install:
 	bun install
@@ -20,6 +20,9 @@ shell:
 	sh -n scripts/aliases.sh
 
 test:
+	mkdir -p coverage
+	rm -f coverage/lcov.info coverage/.run-stamp
+	touch coverage/.run-stamp
 	bun run test:coverage
 
 contracts:
@@ -28,7 +31,7 @@ contracts:
 sandbox-contract:
 	bun run scripts/check-scode-version.ts
 
-check: typecheck shell test
+check: runtime typecheck shell test
 
 smoke:
 	./bin/codemux --help >/dev/null
@@ -48,7 +51,17 @@ smoke:
 live-gate:
 	bun run scripts/live-gate.ts $(LIVE_GATE_ARGS)
 
-release-gate: runtime check contracts sandbox-contract smoke
+# The free machine health check: the JSON document (schema codemux-doctor-1)
+# for tooling, then the human table on stdout. No --spend here by design:
+# the target stays free; `codemux doctor --spend` adds the paid stage.
+machine-check:
+	./bin/codemux doctor --format json
+	@./bin/codemux doctor
+
+installed-layout:
+	bun run scripts/check-installed-layout.ts
+
+release-gate: runtime check contracts sandbox-contract smoke installed-layout
 	bun audit
 	bun install --frozen-lockfile --dry-run
 	./bin/codemux run --help >/dev/null

@@ -3,10 +3,10 @@ import { readFileSync } from "node:fs";
 
 const read = (file: string) => readFileSync(file, "utf8").replace(/\s+/g, " ");
 
-test("Unreleased retry notes distinguish new response IDs and advanced cumulative totals", () => {
-  const unreleased = read("CHANGELOG.md").split("## [0.15.1]")[0]!;
-  expect(unreleased).not.toContain("usage snapshots without a pending response");
-  expect(unreleased).toContain("A new response ID or advanced cumulative totals means a new response, even with equal counters");
+test("2.0.0 detail notes distinguish new response IDs and advanced cumulative totals", () => {
+  const details = read("docs/archive/changelog-2.0.0-details.md");
+  expect(details).not.toContain("usage snapshots without a pending response");
+  expect(details).toContain("A new response ID or advanced cumulative totals means a new response, even with equal counters");
 });
 
 test("Codex session shared scaffolding has a helpers header", () => {
@@ -23,8 +23,8 @@ test("harness guide records the live Codex catalog override verification", () =>
   expect(guide).toContain("experiment-codex-catalog.md");
 });
 
-test("usage guide and Unreleased notes describe all four timeout verification paths", () => {
-  for (const file of ["docs/results-and-usage.md", "CHANGELOG.md"]) {
+test("usage guide and 2.0.0 detail notes describe all four timeout verification paths", () => {
+  for (const file of ["docs/results-and-usage.md", "docs/archive/changelog-2.0.0-details.md"]) {
     expect(read(file)).toContain("Claude, Z.AI, Codex, and Kimi skip final usage verification on timeout");
   }
 });

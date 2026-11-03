@@ -33,12 +33,18 @@
  */
 
 import {
+  closeSync,
+  constants,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
+  readSync,
   readdirSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 
@@ -102,13 +108,87 @@ function sweepStaleHomes(parent: string): void {
   }
 }
 
+/** The one byte of operator state a hermetic run keeps: OpenCode reads its
+ * default model from `model.json` in the state directory when neither a
+ * flag nor a config names one, and a private state directory without it
+ * made a hermetic run fall to the provider's first model — one the
+ * subscription did not include (live gate, 2026-11-02). The file is a
+ * model preference, not an instruction, skill, or hook, so carrying it
+ * keeps a hermetic run on the model a plain run uses. Copied only when it
+ * is a regular file owned by this user, at most 64 KiB, and valid JSON;
+ * anything else is left behind with the reason returned. Null means
+ * copied; undefined means there was nothing to copy. */
+export function carryOpencodeModelState(
+  realStateDir: string,
+  home: string
+): string | null | undefined {
+  const source = join(realStateDir, "model.json");
+  // One descriptor, opened without following links, judged by fstat and
+  // read through the same descriptor: a path swapped between the check and
+  // the read cannot substitute another file (round 28, edges 5).
+  let fd: number;
+  try {
+    fd = openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return undefined;
+    if (code === "ELOOP" || code === "EMLINK") return `${source} is not a regular file`;
+    return `${source} could not be opened: ${code ?? String(error)}`;
+  }
+  let text: string;
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) return `${source} is not a regular file`;
+    if (
+      process.platform !== "win32" &&
+      typeof process.getuid === "function" &&
+      stat.uid !== process.getuid()
+    ) {
+      return `${source} is not owned by the current user`;
+    }
+    if (stat.size > MODEL_STATE_MAX_BYTES) return `${source} is larger than ${MODEL_STATE_MAX_BYTES} bytes`;
+    if (process.platform !== "win32" && (stat.mode & 0o022) !== 0) {
+      return `${source} is writable by other accounts (mode ${(stat.mode & 0o777).toString(8)})`;
+    }
+    try {
+      // Read exactly the judged size through the same descriptor: a file
+      // grown after the fstat is refused, not copied past the bound
+      // (round 35, edges 4).
+      const buffer = Buffer.alloc(stat.size);
+      let offset = 0;
+      while (offset < buffer.length) {
+        const read = readSync(fd, buffer, offset, buffer.length - offset, offset);
+        // EOF before the judged size: the file shrank under the copy (an
+        // OpenCode rewrite); a shorter document is never accepted (round 56).
+        if (read === 0) return `${source} shrank below its judged size while being read`;
+        offset += read;
+      }
+      const probe = Buffer.alloc(1);
+      if (readSync(fd, probe, 0, 1, buffer.length) !== 0) return `${source} grew past its judged size while being read`;
+      text = buffer.toString("utf8", 0, offset);
+      JSON.parse(text);
+    } catch (error) {
+      return `${source} is not readable JSON: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  } finally {
+    closeSync(fd);
+  }
+  const target = join(home, ".local", "state", "opencode");
+  mkdirSync(target, { recursive: true, mode: 0o700 });
+  writeFileSync(join(target, "model.json"), text, { mode: 0o600, flag: "wx" });
+  return null;
+}
+
+const MODEL_STATE_MAX_BYTES = 64 * 1024;
+
 /**
  * Creates the private home. `realDataDir` is the real OpenCode data
  * directory (the one holding auth.json); the home is created beside it,
  * under `.codemux-hermetic/`.
  */
 export function createOpencodeHermeticHome(
-  realDataDir: string
+  realDataDir: string,
+  realStateDir?: string
 ): OpencodeHermeticHome {
   const parent = join(realDataDir, PARENT_DIR_NAME);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
@@ -126,6 +206,9 @@ export function createOpencodeHermeticHome(
   sweepStaleHomes(parent);
   const home = mkdtempSync(join(parent, `${RUN_PREFIX}${process.pid}-`));
 
+  // Cleanup is registered before anything else touches the home: a copy
+  // below that throws (disk full, a permission change) must not leave the
+  // directory behind (review round 22, edges 3).
   let finalized = false;
   const finalize = (): void => {
     if (finalized) return;
@@ -134,6 +217,18 @@ export function createOpencodeHermeticHome(
     process.off("exit", finalize);
   };
   process.once("exit", finalize);
+  if (realStateDir !== undefined) {
+    let skipped: string | null | undefined;
+    try {
+      skipped = carryOpencodeModelState(realStateDir, home);
+    } catch (error) {
+      finalize();
+      throw error;
+    }
+    if (typeof skipped === "string") {
+      console.error(`Warning: hermetic opencode run keeps no model preference: ${skipped}`);
+    }
+  }
 
   return { home, finalize };
 }

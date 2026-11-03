@@ -9,7 +9,7 @@ import { PiAdapter } from "../src/adapters/pi.js";
 // `--no-tools` neither capability probe could produce its secret while
 // plain runs produced both, and the non-hermetic control probe leaked the
 // planted code word, which grounds the hermetic refusal (the global
-// `~/.pi/SYSTEM.md` system-prompt channel has no switch; docs/HERMETIC.md).
+// `~/.pi/SYSTEM.md` system-prompt channel has no switch; docs/isolation.md).
 
 describe("tools none: pi", () => {
   const adapter = new PiAdapter();

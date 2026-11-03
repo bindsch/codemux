@@ -7,7 +7,14 @@ stdin), `out` (a line the harness wrote to stdout), `unparsable` (a
 non-JSON stdout line), or `meta` (probe-side outcome: child exit code,
 timeouts, resolved ids). The `.ts` files are executable fixtures, not
 recordings — live-check endpoints and fake harnesses — and carry no such
-records; their entries below say what each one is.
+records; their entries below say what each one is. Every `.ts` fixture is
+imported by some test under `tests/`, except the entries marked
+manual-only, which no test drives;
+`tests/session-fake-headers.test.ts` enforces that split (and that every
+fake's header lists the scenarios its switch implements). Two fakes are
+split across a `*-parts/` subdirectory (entry plus scenario, wire, and
+handler modules); the guards enumerate only the top-level `.ts` files, so
+a parts module is a piece of its entry fixture, not a fixture itself.
 
 Claude-family frames were recorded with `claude` 2.1.280 through the zai
 endpoint (the codemux `zai` adapter's endpoint, same binary and same
@@ -60,7 +67,10 @@ result.
   `event` (not `type`): `{"event":"result","result":{conversation_id,
   status, response, error, duration_seconds, num_turns, usage}}`. The
   full-exchange probe was NOT run: agy's login is expired and re-login is
-  interactive.
+  interactive. The `in` line is the frame codemux sends, keyed by `event`
+  as the headless docs specify (`{"event":"user","message":{"content":
+  [{"type":"text","text":...}]}}`); agy 1.4.12 answers a `type`-keyed frame
+  with an ERROR result (live gate, 2026-11-02).
 - `opencode-session.ndjson` — recorded 2026-10-07 with `opencode` 1.18.18
   through the provider override against the local vLLM gateway
   (`clawvm-qwen32b-coder`): a three-turn exchange whose first turn plants
@@ -110,7 +120,9 @@ result.
   history writes are the fixture's own rendering of io.py's, never an
   import of codemux's builder, so the two stay independent witnesses of
   the pinned source.
-- `fake-anthropic-messages.ts` — not a recording but a live-check
+- `fake-anthropic-messages.ts` — manual-only: imported by no test (the
+  inventory test in `tests/session-fake-headers.test.ts` pins that fact
+  to this entry). Not a recording but a live-check
   fixture (2026-10-10, the claude model-catalog alignment): a logging
   fake Messages endpoint for driving `codemux run`/`session -a claude`
   under the provider override. Canned mode answers `POST /v1/messages`
@@ -128,7 +140,10 @@ result.
   stdout). Its scenarios carry the whole control surface — tool calls,
   `can_use_tool` round-trips and their failure shapes, interrupts
   refused, ignored, or racing the turn's own end — and are documented in
-  the script's own header.
+  the script's own header. Since the 2.0.0 file-size split the scenario
+  bodies, the wire writer, and the control handlers live in
+  `fake-claude-session-parts/`; the entry keeps the header, the scenario
+  switch, and the process lifecycle.
 - `fake-codex-app-server.ts` — not a recording but a fake harness
   (2026-10-07, the live-sessions item): a scenario-driven fake of the
   codex app-server built from the shapes the step-0 fixture pins
@@ -136,7 +151,11 @@ result.
   ends, requests carrying `jsonrpc` and responses omitting it exactly as
   recorded. Its scenarios cover steers, interrupts, approvals under
   string and numeric ids, and the late/straggler usage deliveries; the
-  list is documented in the script's own header.
+  list is documented in the script's own header. Since the 2.0.0
+  file-size split the scenario bodies, the wire writers and shared
+  state, the item/approval emitters, and the request handlers live in
+  `fake-codex-app-server-parts/`; the entry keeps the header, the
+  scenario switch, and the process lifecycle.
 - `fake-kimi-run.ts` — not a recording but a fake harness (2026-10-10,
   the kimi sessions item): a scenario-driven fake of headless kimi
   (`--prompt … --output-format stream-json`) built from the line shapes

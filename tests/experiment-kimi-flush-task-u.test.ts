@@ -69,11 +69,17 @@ test("Kimi starts the wire quiet interval after the harness exit boundary", asyn
   const f = await fixture();
   f.run.relay.fail(new ExperimentFailure(Code.ServerError, EXIT_MESSAGES[0]!));
   const verification = f.run.complete().catch((error: unknown) => error);
-  const exit = Bun.sleep(100).then(() => f.run.closeProtocol());
-  const append = Bun.sleep(150).then(() => appendFileSync(f.path, timeoutRecord()));
   try {
+    // Causal ordering, not a pair of parent-clock sleeps (100 vs 150 ms that
+    // load could reorder). The exit boundary is set synchronously at the
+    // closeProtocol() call (harnessExitedAt / harnessActive), before the
+    // reconciliation promise it returns settles, so appending right after
+    // the call is provably after the exit and inside the quiet interval.
+    const closing = f.run.closeProtocol();
+    appendFileSync(f.path, timeoutRecord());
+    await closing;
     expect(await verification).toMatchObject({ code: Code.ServerError, message: "kimi tool call timed out after 123000 ms" });
-  } finally { await Promise.all([exit, append]); await f.close(); }
+  } finally { await f.close(); }
 });
 
 test("Kimi retains the first server exit when the flushed log has no timeout", async () => {

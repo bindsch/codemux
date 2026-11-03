@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { BaseAdapter, type RunContext } from "./base.js";
 import { assertNoDroidProjectExecutionConfig } from "../project-safety.js";
-import { validateWorkingDirectory } from "../validation.js";
+import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import {
   writeDroidProviderSettings,
   droidProviderModelId,
@@ -21,6 +21,7 @@ import type {
   RunRequest,
   AdapterCapabilities,
 } from "../types.js";
+import { envKeyLoginState, type LoginState } from "../harness-health.js";
 
 // `--tools none`: droid's tool controls are `--only-tools`/`--add-tools`/
 // `--remove-tools` with validated IDs ("Use only tool IDs or
@@ -72,7 +73,7 @@ export class DroidAdapter extends BaseAdapter {
       // Verified live on 2026-09-17 through a provider override (GLM-5.3
       // via Z.AI): under --tools none neither the read nor the shell probe
       // could produce its secret, while a plain run produced both
-      // (docs/HERMETIC.md).
+      // (docs/isolation.md).
       supportsToolSelection: true,
       supportsProviderOverride: true,
     };
@@ -136,7 +137,7 @@ export class DroidAdapter extends BaseAdapter {
     const override = this.validatedProvider();
     const resolved = model ?? override?.model;
     if (resolved === undefined && override !== null) {
-      throw new Error(
+      throw new UsageRefusalError(
         "droid needs a model for the provider override; pass --model or set CODEMUX_DROID_PROVIDER_MODEL"
       );
     }
@@ -271,7 +272,7 @@ export class DroidAdapter extends BaseAdapter {
     // the headless launch path calls; an interactive session has no hook to
     // write and remove the file.
     if (this.validatedProvider() !== null) {
-      throw new Error(
+      throw new UsageRefusalError(
         "the droid provider override supports headless runs only; unset CODEMUX_DROID_PROVIDER_* for an interactive session"
       );
     }
@@ -296,5 +297,10 @@ export class DroidAdapter extends BaseAdapter {
 
   override supportsTuiEffort(): boolean {
     return false;
+  }
+
+  /** The droid login read: a credential variable in the environment. */
+  override loginState(): LoginState {
+    return envKeyLoginState(this.id, this.environment);
   }
 }

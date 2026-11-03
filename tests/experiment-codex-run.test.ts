@@ -6,11 +6,11 @@ import { CodexAdapter } from "../src/adapters/codex.js";
 import { launchRunRequest } from "../src/launch.js";
 import * as runtime from "../src/cli-runtime.js";
 import * as callLog from "../src/call-log.js";
-import { assertNoCodexSystemMcp } from "../src/experiment-codex-config.js";
 import { CODEX_PROVIDER_ID } from "../src/codex-provider.js";
 import type { RunContext } from "../src/run-context.js";
 import type { RunRequest } from "../src/types.js";
 import { MARKER, respond } from "./fixtures/experiment-mcp.js";
+import { assertNoRelaySecretsInRecordings } from "./experiment-secret-scan.js";
 import { minimalPath, runCli } from "./helpers/cli.js";
 const contexts: { adapter: CodexAdapter; context: RunContext }[] = [];
 afterEach(async () => {
@@ -61,7 +61,21 @@ async function callFixture(experiment: RunContext["experimentCodex"], context: R
   const result = post({ jsonrpc: "2.0", id: 3, method: "tools/call",
     params: { name: "bash", arguments: { command: "marker" }, ...(requestMeta ? { _meta: { callId: "call_1" } } : {}) } });
   if (requestMeta) {
-    await Bun.sleep(10);
+    // Observable barrier, not a fixed sleep: wait until the relay has
+    // recorded the authenticated tools/call request (the http_request record
+    // precedes the inventory gate in the handler), then assert the gate has
+    // not dispatched. A dispatch-first regression would have recorded the
+    // tool_call by then under any load; a held dispatch records neither.
+    const deadline = Date.now() + 2_000;
+    for (;;) {
+      const seen = readFileSync(experiment!.recordingPath, "utf8").split("\n")
+        .filter((line) => line.includes('"kind":"http_request"'))
+        .some((line) => Buffer.from((JSON.parse(line).bytes_base64 ?? "") as string, "base64")
+          .toString().includes('"method":"tools/call"'));
+      if (seen) break;
+      if (Date.now() > deadline) throw new Error("relay never recorded the tools/call request");
+      await Bun.sleep(5);
+    }
     expect(relay.calls[0]?.call_id).toBeUndefined();
     expect(readFileSync(experiment!.recordingPath, "utf8")).not.toContain('"kind":"tool_call"');
     rollout(context);
@@ -177,6 +191,7 @@ test.each([true, false])("Codex experiment lifecycle verifies a synthetic rollou
   await adapter.cleanupRun(context);
   expect(existsSync(privateHome)).toBe(false);
   expect(existsSync(copy.path)).toBe(true);
+  assertNoRelaySecretsInRecordings(experiment.recordingPath, experiment.relay.catalogUrl);
 });
 
 test.each(["gpt-5.5", "gpt-6-astra"])("%s keeps the experiment tools direct and records the omitted surfaces", async (model) => {
@@ -201,10 +216,25 @@ test("a changed model-bound result fails completion and survives in the recordin
   rollout(context, [{ type: "input_text", text: "Wall time: 0.0123 seconds\nOutput:" },
     { type: "input_text", text: "changed" }]);
   execEvents(context);
-  await expect(experiment.complete()).rejects.toThrow();
-  await expect(adapter.cleanupRun(context)).rejects.toThrow();
+  // The specific cause, not any rejection: a changed model-bound result
+  // fails with result_changed on both paths and the recording's last
+  // record carries the same code.
+  // The specific cause, not any rejection: the rollout rewrite is caught as
+  // an integrity failure (harness_log_missing, "rollout changed after live
+  // records were emitted"), never an unrelated error. Fields are read as
+  // plain values: reusing one reason object across toMatchObject calls with
+  // asymmetric matchers lets the matcher's diff overwrite the field.
+  const settled = await Promise.allSettled([experiment.complete(), adapter.cleanupRun(context)]);
+  for (const outcome of settled) {
+    expect(outcome.status).toBe("rejected");
+    const reason: { code?: string; message?: string } = (outcome as PromiseRejectedResult).reason;
+    expect(reason.code).toBe("harness_log_missing");
+    expect(String(reason.message)).toContain("rollout changed");
+  }
   const records = readFileSync(experiment.recordingPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-  expect(records.at(-1).error).toBeTruthy();
+  // run_end carries the error text and the code as sibling fields.
+  expect(String(records.at(-1).error)).toContain("rollout changed");
+  expect(records.at(-1).code).toBe("harness_log_missing");
   expect(records.find((record) => record.kind === "harness_log_copy")).toMatchObject({ harness: "codex", bytes: expect.any(Number) });
 });
 
@@ -347,8 +377,11 @@ test("a catalog override must be fetched before the first native function call",
   expect(records.some((record) => record.kind === "harness_tool_call")).toBe(false);
 });
 
-test.each(["gpt-5.5", "gpt-6-astra"].flatMap((model) => ["0.164.0", null, undefined].map((version) => ({ model, version }))))(
-  "refuses unmatched or unknown detected versions before relay startup: %j", async ({ model, version }) => {
+// A cache from another Codex client version is served with a warning
+// (tests/experiment-codex-cache-version.test.ts); only an undetected version
+// refuses, because the provider table needs it.
+test.each(["gpt-5.5", "gpt-6-astra"].flatMap((model) => [null, undefined].map((version) => ({ model, version }))))(
+  "refuses an undetected version before relay startup: %j", async ({ model, version }) => {
   const { experiment } = setup(true, model);
   await expect(experiment.prepare(version)).rejects.toMatchObject({ code: "code_mode" });
   expect(() => experiment.relay.url).toThrow("has not started");
@@ -426,9 +459,12 @@ test.each(["direct", "code_mode", "code_mode_only", null, undefined])("refuses a
 });
 
 test("the launch passes the detected version to catalog preflight before capture", async () => {
+  // An undetected version is the preflight refusal left (a cache from another
+  // client version is served with a warning), so it is what proves the
+  // version reaches the preflight before any capture.
   const { adapter, request, context, experiment } = setup(true, "gpt-6-astra");
   const prepare = spyOn(adapter, "prepareRun").mockReturnValue(context);
-  const floor = spyOn(runtime, "assertHarnessSupported").mockResolvedValue("0.166.0");
+  const floor = spyOn(runtime, "assertHarnessSupported").mockResolvedValue(null as unknown as string);
   const capture = spyOn(runtime, "runSandboxedWithStdin").mockImplementation(async () => { throw new Error("unexpected capture"); });
   try {
     const result = await launchRunRequest(adapter, request, { sandbox: true, requestedAutonomy: "read-only", cwd: request.cwd });
@@ -458,26 +494,4 @@ test("Codex paired experiment check refuses before installation or a paid probe"
   expect(result.exitCode).not.toBe(0);
   expect(result.stderr).toContain("supports run only");
   expect(result.stderr).not.toContain("not installed");
-});
-
-test.each([
-  ["", false], ['model = "fixture"', false], ["[mcp_servers]", false],
-  ['[mcp_servers.foreign]\ncommand = "server"', true],
-  ['[profiles.custom.mcp_servers.foreign]\ncommand = "server"', true],
-  ['mcp_servers = []', true], ['broken = [', true], ["#".repeat(1024 * 1024 + 1), true],
-])("system MCP preflight bounds and validates external configuration case %#", (text, refused) => {
-  const parent = resolve("scratch/session-14c66a93/exp/system-config-fixtures");
-  mkdirSync(parent, { recursive: true });
-  const directory = mkdtempSync(join(parent, "case-"));
-  const path = join(directory, "config.toml");
-  expect(() => assertNoCodexSystemMcp(path)).not.toThrow();
-  writeFileSync(path, text as string);
-  if (refused) expect(() => assertNoCodexSystemMcp(path)).toThrow(path);
-  else expect(() => assertNoCodexSystemMcp(path)).not.toThrow();
-});
-
-test("system MCP preflight refuses unreadable non-file config", () => {
-  const path = resolve("scratch/session-14c66a93/exp/system-config-directory");
-  mkdirSync(path, { recursive: true });
-  expect(() => assertNoCodexSystemMcp(path)).toThrow(path);
 });

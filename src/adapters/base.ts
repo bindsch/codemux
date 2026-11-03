@@ -1,35 +1,23 @@
 import {
-  TOOL_SELECTIONS,
-  isToolSelection,
   type AgentId,
   type AutonomyLevel,
   type ReasoningEffort,
   type RunRequest,
   type RunResult,
   type AdapterCapabilities,
-} from "../types.js";
+ type LaunchIntent } from "../types.js";
 import { sanitizeEnvironment } from "../environment.js";
 import { isAbsolute } from "node:path";
-import { validateExperimentRequest } from "../experiment-mcp.js";
 import { readProviderOverride } from "../provider-override.js";
 import { launchRunRequest } from "../launch.js";
 import type { ExperimentFailure } from "../experiment-records.js";
 import { runInteractive } from "./interactive.js";
+import { validateRunRequestFor, validateTuiRequestFor } from "./base-validate.js";
+import type { LoginState } from "../harness-health.js";
 import type { SandboxOptions, ScodeTrustLevel } from "../sandbox.js";
 import { resolveTrustedCommand } from "../executable-security.js";
 import type { RunContext } from "../run-context.js";
-import {
-  MAX_ARGV_PROMPT_BYTES,
-  validateTimeout,
-} from "../process-runner.js";
-import {
-  validateAutonomy,
-  validateEffort,
-  validateEnvironmentNames,
-  validateModelName,
-  validatePrompt,
-  validateWorkingDirectory,
-} from "../validation.js";
+import { UsageRefusalError } from "../validation.js";
 
 export interface SandboxPreparation {
   /** The RESOLVED trust preset of the sandbox the child will run in
@@ -147,6 +135,17 @@ export abstract class BaseAdapter {
   }
 
   /**
+   * The machine check's login read: whether this harness is logged in on
+   * this machine, from the credential store codemux can read without
+   * running the harness. Touches existence, mode, and expiry only — never
+   * a credential value. The base answer is `unknown`; every adapter with a
+   * readable store overrides it (src/harness-health.ts holds the readers).
+   */
+  loginState(): LoginState {
+    return { state: "unknown", note: "no credential store codemux can read" };
+  }
+
+  /**
    * Returns custom environment variables for this adapter.
    * Override in subclasses to set things like API endpoints.
    */
@@ -256,7 +255,7 @@ export abstract class BaseAdapter {
    * launch passes nothing, and adapters that need no trust keep ignoring it.
    * The full sandbox options let authentication selection account for scrubbing.
    */
-  prepareRun(_request: RunRequest, _sandboxTrust?: ScodeTrustLevel, _sandboxOptions?: SandboxOptions): RunContext {
+  prepareRun(_request: RunRequest, _sandboxTrust?: ScodeTrustLevel, _sandboxOptions?: SandboxOptions, _launch?: LaunchIntent): RunContext {
     // Most adapters need no per-run state.
     return {};
   }
@@ -320,11 +319,12 @@ export abstract class BaseAdapter {
    * `verify` (PATH-only view) never reports an exported override as broken
    * wiring while a real launch still refuses it.
    */
-  protected assertNoUnsupportedProviderOverride(): void {
+  // Public for base-validate.ts's structural seam; no adapter overrides it.
+  assertNoUnsupportedProviderOverride(): void {
     if (this.capabilities().supportsProviderOverride) return;
     const override = readProviderOverride(this.id, this.environment);
     if (override !== null) {
-      throw new Error(
+      throw new UsageRefusalError(
         `${this.id} does not support a provider override; unset ` +
           `CODEMUX_${this.id.toUpperCase()}_PROVIDER_* to run it, or route ` +
           "through an agent that does (codemux list marks them \"provider\")"
@@ -332,106 +332,23 @@ export abstract class BaseAdapter {
     }
   }
 
+  /** What a launch's override validation would say about this adapter's
+   * environment view: the unsupported-override refusal, then the adapter's
+   * own validator (provider shape, token caps) where it has one. The
+   * refusal's first line, or null when a launch would accept the override
+   * (review round 45; the machine check reads this). */
+  providerOverrideIssue(): string | null {
+    try {
+      this.assertNoUnsupportedProviderOverride();
+      (this as unknown as { validatedProvider?: () => unknown }).validatedProvider?.();
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message.split("\n")[0] ?? "" : String(error);
+    }
+  }
+
   validateRunRequest(request: RunRequest): void {
-    if (typeof request !== "object" || request === null) {
-      throw new Error("run request must be an object");
-    }
-    if (request.agent !== this.id) {
-      throw new Error(
-        `request agent '${request.agent}' does not match adapter '${this.id}'`
-      );
-    }
-    validateExperimentRequest(request);
-    const caps = this.capabilities();
-    if (!caps.supportsNonInteractive) {
-      throw new Error(`${this.id} does not support non-interactive execution`);
-    }
-    this.assertNoUnsupportedProviderOverride();
-    validatePrompt(request.prompt);
-    if (request.model !== undefined) {
-      validateModelName(request.model);
-      if (!caps.supportsModel) {
-        throw new Error(`${this.id} does not support model selection`);
-      }
-    }
-    const autonomy = validateAutonomy(request.autonomy);
-    if (
-      autonomy !== undefined &&
-      (!caps.supportsAutonomy || !caps.autonomyLevels.includes(autonomy))
-    ) {
-      throw new Error(`${this.id} does not support autonomy level '${autonomy}'`);
-    }
-    const effort = validateEffort(request.effort);
-    if (
-      effort !== undefined &&
-      (!caps.supportsEffort || !caps.effortLevels.includes(effort))
-    ) {
-      throw new Error(`${this.id} does not support reasoning effort '${effort}'`);
-    }
-    validateWorkingDirectory(request.cwd);
-    validateEnvironmentNames(request.passthroughEnv);
-    if (request.web !== undefined && typeof request.web !== "boolean") {
-      throw new Error("web must be a boolean");
-    }
-    if (
-      request.sandboxed !== undefined &&
-      typeof request.sandboxed !== "boolean"
-    ) {
-      throw new Error("sandboxed must be a boolean");
-    }
-    if (
-      request.enablePlaywrightMcp !== undefined &&
-      typeof request.enablePlaywrightMcp !== "boolean"
-    ) {
-      throw new Error("enablePlaywrightMcp must be a boolean");
-    }
-    if (request.hermetic !== undefined && typeof request.hermetic !== "boolean") {
-      throw new Error("hermetic must be a boolean");
-    }
-    if (request.resultJson !== undefined && typeof request.resultJson !== "boolean") {
-      throw new Error("resultJson must be a boolean");
-    }
-    if (request.resultJson && !caps.supportsResultJson) {
-      // Refuse rather than run and return plain text: a caller that asked for usage and got
-      // none would record a run as costing nothing.
-      throw new Error(
-        `${this.id} cannot return a structured result envelope; --result-json is unsupported`
-      );
-    }
-    if (request.hermetic && !caps.supportsHermetic) {
-      // Capabilities explicitly opt in; HERMETIC.md records each supported
-      // mechanism and its verification evidence, including Antigravity.
-      throw new Error(
-        `${this.id} has no verified hermetic mode; see docs/HERMETIC.md`
-      );
-    }
-    if (request.tools !== undefined) {
-      if (typeof request.tools !== "string" || !isToolSelection(request.tools)) {
-        throw new Error(`tools must be one of: ${TOOL_SELECTIONS.join(", ")}`);
-      }
-      if (request.tools === "none" && !caps.supportsToolSelection) {
-        throw new Error(
-          `${this.id} cannot remove its built-in tools; see docs/HERMETIC.md`
-        );
-      }
-    }
-    if (request.instructionDirs !== undefined) {
-      if (!Array.isArray(request.instructionDirs)) {
-        throw new Error("instructionDirs must be an array of directories");
-      }
-      for (const dir of request.instructionDirs) validateWorkingDirectory(dir);
-    }
-    if (request.timeoutMs !== undefined) validateTimeout(request.timeoutMs);
-    if (this.getStdinInput(request) === null) {
-      if (request.prompt.includes("\0")) {
-        throw new Error(`${this.id} cannot pass a NUL byte in an argv prompt`);
-      }
-      if (Buffer.byteLength(request.prompt, "utf8") > MAX_ARGV_PROMPT_BYTES) {
-        throw new Error(
-          `${this.id} passes prompts in argv; prompt exceeds the ${MAX_ARGV_PROMPT_BYTES}-byte safe limit`
-        );
-      }
-    }
+    validateRunRequestFor(this, request);
   }
 
   validateTuiRequest(
@@ -442,53 +359,28 @@ export abstract class BaseAdapter {
     passthroughEnv: readonly string[] = [],
     enablePlaywrightMcp = false
   ): void {
-    const caps = this.capabilities();
-    if (!caps.supportsInteractive) {
-      throw new Error(`${this.id} does not support interactive execution`);
-    }
-    this.assertNoUnsupportedProviderOverride();
-    if (model !== undefined) {
-      validateModelName(model);
-      if (!this.supportsTuiModel()) {
-        throw new Error(`${this.id} does not support model selection in TUI mode`);
-      }
-    }
-    validateAutonomy(autonomy);
-    if (!this.supportsTuiAutonomy()) {
-      throw new Error(`${this.id} does not support autonomy in TUI mode`);
-    }
-    if (!caps.autonomyLevels.includes(autonomy)) {
-      throw new Error(`${this.id} does not support autonomy level '${autonomy}'`);
-    }
-    if (effort !== undefined) {
-      validateEffort(effort);
-      if (!this.supportsTuiEffort() || !caps.effortLevels.includes(effort)) {
-        throw new Error(
-          `${this.id} does not support reasoning effort '${effort}' in TUI mode`
-        );
-      }
-    }
-    validateWorkingDirectory(cwd);
-    validateEnvironmentNames(passthroughEnv);
-    if (typeof enablePlaywrightMcp !== "boolean") {
-      throw new Error("enablePlaywrightMcp must be a boolean");
-    }
+    validateTuiRequestFor(this, {
+      model,
+      cwd,
+      autonomy,
+      effort,
+      passthroughEnv,
+      enablePlaywrightMcp,
+    });
   }
 
   /**
-   * Runs one request directly, without a sandbox, by delegating to the one
-   * launch path (launch.ts): validation, beforeLaunch, the run context, the
-   * spawn, processRunResult, and cleanup all happen there. A standalone
-   * caller therefore gets the same post-processed result a launchRunRequest
-   * caller gets -- a `resultJson` run returns its envelope, never raw
-   * harness output, and the run's scratch is disposed before the result
-   * returns. The launch path refuses a request that claims a sandbox and
-   * one whose autonomy needs one, exactly as it does for its own callers.
+   * Runs one request directly, without a sandbox, through the one launch
+   * path (launch.ts): the same result and refusals as launchRunRequest —
+   * a request that claims a sandbox or needs one is refused.
    */
   async run(request: RunRequest): Promise<RunResult> {
+    // The request's own cwd, never an implicit process.cwd() (review round
+    // 16, edges 2): the launch's cwd guards compare options.cwd with it.
     return launchRunRequest(this, request, {
       sandbox: false,
       requestedAutonomy: request.autonomy ?? "read-only",
+      cwd: request.cwd,
     });
   }
 

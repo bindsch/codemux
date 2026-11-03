@@ -34,6 +34,7 @@ describe("CLI - result envelopes", () => {
       expect(envelope.codemux).toEqual({
         agent: "claude",
         model: "claude-opus-5",
+        served_model: "claude-opus-5",
         usage: {
           input_tokens: 24114,
           output_tokens: 98,
@@ -69,6 +70,7 @@ describe("CLI - result envelopes", () => {
       expect(envelope.codemux).toEqual({
         agent: "codex",
         model: null,
+        served_model: null,
         usage: {
           input_tokens: 200,
           output_tokens: 50,

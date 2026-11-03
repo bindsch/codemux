@@ -48,8 +48,13 @@ function boundedCodexEnvelope(envelope: Record<string, unknown>): { stdout: stri
   const originalResult = envelope.result;
   envelope.result = typeof originalResult === "string" ? TRUNCATION_NOTE : originalResult;
   const block = envelope.codemux as CodemuxResultBlock;
-  // A reroute event can put nearly the entire captured prefix in model metadata.
-  if (Buffer.byteLength(serialize()) > MAX_CAPTURE_BYTES) block.model = null;
+  // A reroute event can put nearly the entire captured prefix in model
+  // metadata, and served_model carries the same reroute string, so both
+  // are dropped together (review round 14, edges 7 symmetric case).
+  if (Buffer.byteLength(serialize()) > MAX_CAPTURE_BYTES) {
+    block.model = null;
+    block.served_model = null;
+  }
   envelope.result = originalResult;
   stdout = serialize();
   if (Buffer.byteLength(stdout) <= MAX_CAPTURE_BYTES) return { stdout, truncated: true };
@@ -67,8 +72,12 @@ function boundedCodexEnvelope(envelope: Record<string, unknown>): { stdout: stri
   envelope.result = typeof originalResult === "string" ? text.slice(0, low) + TRUNCATION_NOTE : originalResult;
   stdout = serialize();
   // Keep even oversized caller metadata from defeating the failure-output bound.
+  // The emergency envelope keeps every documented CodemuxResultBlock key
+  // (round 29, edges 5): a consumer reading `--result-json` gets the schema
+  // it was promised, with nulls where the oversized metadata is dropped.
   if (Buffer.byteLength(stdout) > MAX_CAPTURE_BYTES) stdout = JSON.stringify({ result: null,
-    codemux: { agent: "codex", failure_code: block.failure_code, recording: null } }) + "\n";
+    codemux: { agent: "codex", model: null, served_model: null, labels: null, usage: emptyUsage(),
+      session_id: null, recording: null, failure_code: block.failure_code } }) + "\n";
   return { stdout, truncated: true };
 }
 
@@ -113,7 +122,8 @@ export function experimentFailedResult(
     const existing = normalized.usage !== undefined ? envelope?.codemux : undefined;
     const block: CodemuxResultBlock = existing && typeof existing === "object" && !Array.isArray(existing)
       ? { ...existing as CodemuxResultBlock, recording, failure_code: failure.code }
-      : { agent: request.agent, model: servedModel ?? request.model ?? null, labels: request.labels ?? null,
+      : { agent: request.agent, model: servedModel ?? request.model ?? null, served_model: servedModel ?? null,
+          labels: request.labels ?? null,
           usage, session_id: null, recording, failure_code: failure.code };
     const output = { ...(existing ? envelope : { result: null }),
       ...(partial?.sawThreadStarted ? { result: partial.finalMessage, events: prefix!.events } : {}), codemux: block };

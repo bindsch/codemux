@@ -1,3 +1,4 @@
+import { featureFloor } from "../harness-contracts.js";
 /**
  * The kimi session wiring: the per-turn spawn command over kimi's own
  * session store, the honest capability matrix, and the stream-json line
@@ -60,7 +61,7 @@ import type { SessionCapabilities } from "./protocol.js";
 /** The session-only version floor (§4.3): 0.31.1, the audited build
  * whose stream-json line shapes, `--session` resume, and resume hint
  * the parser and command are pinned against. */
-export const KIMI_SESSION_FLOOR = "0.31.1";
+export const KIMI_SESSION_FLOOR = featureFloor("kimi", "sessions");
 
 /** The id shape `--session` accepts: `session_` plus a lowercase UUID —
  * the ids kimi's own store mints (verified on disk against 0.31.1:
@@ -131,6 +132,47 @@ export function kimiSessionCapabilities(): SessionCapabilities {
 export function kimiPromptIsCommand(text: string): boolean {
   const trimmed = text.trimStart();
   return trimmed.startsWith("!") || /^\/goal(\s|$)/.test(trimmed);
+}
+
+/** Whether one stdout line is shaped like the stream-json wire the launch
+ * asked for: an object that PARSES as JSON and carries a recognized
+ * `role` (assistant, tool, meta) or the error event's `type`. Anything
+ * else is plain text — other JSON values (a bare string, number, boolean,
+ * null, an array, an object with no recognized role) are values the wire
+ * never spells, and a `{`-shaped line that does not parse alone is one
+ * LINE of an indented, multi-line JSON object, the shape a binary that
+ * ignored `--output-format` prints. Classing that shape as wire failed
+ * such a run as a broken wire instead of returning its answer; it keeps
+ * the plain path (review round 20, edges finding 3; lane C30, item 3).
+ * The canary and shedding behavior of REAL wire lines is untouched: a
+ * first line that does parse with a recognized role still commits the
+ * stream to the wire. One spelling serves the plain hatch
+ * (result-envelope/kimi.ts's wireShapedStdout) and the streaming fold's
+ * regime decision (plain-unwrap/kimi-fold.ts), so the two cannot
+ * disagree about the same first line. */
+export function kimiWireShapedLine(line: string): boolean {
+  if (!line.trimStart().startsWith("{")) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return false;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return false;
+  }
+  const record = parsed as Record<string, unknown>;
+  // A wire line carries one of the three roles, the error type, or any
+  // string `type` at all: kimi's forward-compatible events (a roleless
+  // `system.*` meta line first of all) are typed, and parseKimiStreamLine
+  // accepts them as `unknown` events, so the regime decision agrees with it
+  // (round 33, edges 2). A JSON value with neither role nor type is the
+  // model's own plain answer (round 20, edges 3), and a pretty-printed
+  // object's bare `{` first line does not parse alone, so both stay plain.
+  return (
+    (typeof record.role === "string" && ["assistant", "tool", "meta"].includes(record.role)) ||
+    typeof record.type === "string"
+  );
 }
 
 export interface KimiSessionCommand {

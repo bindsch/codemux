@@ -1,45 +1,35 @@
-import { expect, spyOn, test } from "bun:test";
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
-import { AGENT_IDS } from "../src/types.js";
+// Option parsing, probe selection, and the probe matrix for the live
+// gate. The runner, probe orchestration, report, contract columns, and
+// main() subprocess tests live in the tests/live-gate-*.test.ts siblings;
+// scripts/live-gate.ts owns the gate under test.
+import { expect, test } from "bun:test";
+import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { AGENT_IDS, type AgentId } from "../src/types.js";
+import { assertExperimentMcpUnavailable } from "../src/experiment-mcp.js";
 import {
-  createReportDirectory,
-  formatReport,
+  DEFAULT_PROBES,
+  EXPERIMENT_HARNESSES,
+  PROBE_LETTERS,
+  liveSessionLeak,
   parseOptions,
-  ProbeRunner,
+  prepareExperimentProbe,
+  probeApplies,
+  providerOverridePreflight,
   runProbes,
-  runPool,
-  type HarnessResult,
+  sessionStartedId,
+  type ProbeLetter,
 } from "../scripts/live-gate.js";
-
-const ROOT = resolve(import.meta.dir, "..");
-
-function fixtureDirectory(): string {
-  const scratch = join(ROOT, "scratch");
-  mkdirSync(scratch, { recursive: true });
-  return mkdtempSync(join(scratch, "live-gate-test-"));
-}
-
-function completeProbe(command: string[], expected: string) {
-  if (command.includes("medium")) {
-    const cwd = command[command.indexOf("--cwd") + 1]!;
-    const child = Bun.spawnSync(["sh", "probe.sh"], { cwd });
-    expect(child.exitCode).toBe(0);
-    expect(child.stdout.toString().trim()).toBe(expected);
-    expect(readdirSync(cwd).sort()).toEqual(["nonce.txt", "probe.sh"]);
-  }
-  return { status: "PASS" as const, seconds: 0, stderr: "" };
-}
+import { ROOT, factsFor, fixtureDirectory } from "./helpers/live-gate.js";
 
 test("live gate validates limits and combines credential skips", () => {
   const options = parseOptions(["--timeout", "12", "--jobs", "2", "--skip", "qwen"], "gemini, goose");
   expect(options.timeout).toBe(12);
   expect(options.jobs).toBe(2);
   expect([...options.skip]).toEqual(["gemini", "goose", "qwen"]);
-  expect(parseOptions([], undefined).timeout).toBe(180);
+  expect(parseOptions([], undefined).timeout).toBe(600);
   expect(parseOptions([], undefined).jobs).toBe(4);
+  expect(parseOptions([], undefined).probes).toEqual([...DEFAULT_PROBES]);
   expect(parseOptions([], "").codemux).toBe(join(ROOT, "bin/codemux"));
   for (const args of [["--jobs", "5"], ["--jobs", "0"], ["--timeout", "NaN"], ["--timeout", "0"]]) {
     expect(() => parseOptions(args, undefined)).toThrow();
@@ -47,42 +37,109 @@ test("live gate validates limits and combines credential skips", () => {
   expect(() => parseOptions(["--skip", "unknown"], undefined)).toThrow();
 });
 
-test.each([false, true])("live gate passes the explicit binary to every probe (relative: %s)", async (useRelative) => {
-  const directory = fixtureDirectory();
-  const binary = join(directory, "installed codemux");
-  const stub = join(directory, "stub");
-  writeFileSync(stub, `#!${process.execPath}
-    const args = process.argv.slice(2);
-    if (args[args.indexOf("--auto") + 1] === "medium") {
-      const result = Bun.spawnSync(["sh", "probe.sh"], { cwd: args[args.indexOf("--cwd") + 1] });
-      process.stdout.write(result.stdout); process.exit(result.exitCode);
-    } else console.log("OK");
-  `, { mode: 0o700 });
-  symlinkSync(stub, binary);
-  const spawn = spyOn(Bun, "spawn");
-  try {
-    const options = parseOptions(["--codemux", useRelative ? relative(process.cwd(), binary) : binary], "");
-    const rows = await runProbes(["agy"], options, new ProbeRunner(), directory);
-    expect(options.codemux).toBe(binary);
-    expect(spawn.mock.calls.map(([command]) => (command as string[])[0])).toEqual([binary, binary]);
-    expect(formatReport(rows, options.only, options.codemux).split("\n")[0]).toBe(`Codemux: ${binary}`);
-    expect(formatReport(rows, options.only, options.codemux)).toContain(`live-gate (${binary}): 1 pass, 0 fail, 0 skip, 0 unsupported`);
-  } finally { spawn.mockRestore(); rmSync(directory, { recursive: true, force: true }); }
+test("live gate selects and excludes probes by letter or name", () => {
+  expect(parseOptions(["--probe", "A,B"], "").probes).toEqual(["A", "B"]);
+  expect(parseOptions(["--probe", "provider-override"], "").probes).toEqual(["H"]);
+  expect(parseOptions(["--probe", " a , result-json "], "").probes).toEqual(["A", "C"]);
+  expect(parseOptions(["--probe", "loopback-override,alias-effort,sandbox"], "").probes).toEqual(["H2", "I", "J"]);
+  expect(parseOptions(["--skip-probe", "B,D"], "").probes).toEqual(["A", "C", "E", "F", "G", "H2", "I", "J", "P"]);
+  expect(parseOptions(["--probe", "print-sandbox"], "").probes).toEqual(["P"]);
+  expect(parseOptions(["--probe", "A,H", "--skip-probe", "h"], "").probes).toEqual(["A"]);
+  expect(parseOptions(["--allow-stale-contracts"], "").allowStaleContracts).toBe(true);
+  expect(parseOptions([], "").allowStaleContracts).toBe(false);
+  expect(parseOptions(["--allow-known-breaks"], "").allowKnownBreaks).toBe(true);
+  expect(parseOptions([], "").allowKnownBreaks).toBe(false);
+  expect([...parseOptions(["--probe-anyway", "claude,goose"], "").probeAnyway]).toEqual(["claude", "goose"]);
+  expect(parseOptions([], "").probeAnyway.size).toBe(0);
+  for (const selection of ["--probe unknown", "--probe 0", "--probe ,", "--probe A --skip-probe A", "--skip-probe 0", "--probe-anyway unknown"]) {
+    expect(() => parseOptions(selection.split(" "), "")).toThrow();
+  }
 });
 
-test.each(["missing", "non-executable", "directory"])("live gate refuses a %s binary with exit 2 before probing", (kind) => {
+test("live gate refuses a provider-override opt-in that is not exactly 1", () => {
+  expect(() => parseOptions(["--probe", "H"], "", { LIVE_GATE_PROVIDER_OVERRIDE: "yes" })).toThrow();
+  expect(parseOptions(["--probe", "H"], "", { LIVE_GATE_PROVIDER_OVERRIDE: "1" }).probes).toEqual(["H"]);
+});
+
+test("the provider-override preflight refuses an opt-in with a missing override variable", () => {
+  // Review round 4, edges finding H: with a variable missing or empty the
+  // probe ran WITHOUT the override and verified the operator's default
+  // credentials instead. Refused before any probe spawns, naming it.
+  const options = {
+    probes: ["H"] as ProbeLetter[],
+    skip: new Set<AgentId>(),
+    only: undefined,
+  };
+  const complete = {
+    CODEMUX_CLAUDE_PROVIDER_BASE_URL: "http://127.0.0.1:8011/v1",
+    CODEMUX_CLAUDE_PROVIDER_API_KEY: "sk-test",
+    CODEMUX_CLAUDE_PROVIDER_MODEL: "glm-5.3",
+  };
+  // Without the opt-in the preflight is silent: probe H is skipped.
+  expect(providerOverridePreflight([factsFor("claude")], options, {})).toBeUndefined();
+  expect(providerOverridePreflight([factsFor("claude")], options, {
+    LIVE_GATE_PROVIDER_OVERRIDE: "1",
+    ...complete,
+  })).toBeUndefined();
+  for (const name of ["CODEMUX_CLAUDE_PROVIDER_BASE_URL", "CODEMUX_CLAUDE_PROVIDER_API_KEY", "CODEMUX_CLAUDE_PROVIDER_MODEL"]) {
+    const env: Record<string, string | undefined> = { LIVE_GATE_PROVIDER_OVERRIDE: "1", ...complete };
+    delete env[name];
+    expect(() => providerOverridePreflight([factsFor("claude")], options, env))
+      .toThrow(`${name} is missing or empty`);
+  }
+  // An empty value is as missing.
+  expect(() => providerOverridePreflight([factsFor("claude")], options, {
+    LIVE_GATE_PROVIDER_OVERRIDE: "1",
+    ...complete,
+    CODEMUX_CLAUDE_PROVIDER_API_KEY: "",
+  })).toThrow("CODEMUX_CLAUDE_PROVIDER_API_KEY is missing or empty");
+  // A harness that will not run H never trips the preflight: operator
+  // skip, --only exclusion, H unselected, or H unsupported for it.
+  expect(providerOverridePreflight([factsFor("claude")], { ...options, skip: new Set<AgentId>(["claude"]) }, {
+    LIVE_GATE_PROVIDER_OVERRIDE: "1",
+  })).toBeUndefined();
+  expect(providerOverridePreflight(
+    [factsFor("claude"), factsFor("gemini")],
+    { ...options, only: new Set<AgentId>(["gemini"]) },
+    { LIVE_GATE_PROVIDER_OVERRIDE: "1" }
+  )).toBeUndefined();
+  expect(providerOverridePreflight([factsFor("claude")], { ...options, probes: ["A"] as ProbeLetter[] }, {
+    LIVE_GATE_PROVIDER_OVERRIDE: "1",
+  })).toBeUndefined();
+  expect(providerOverridePreflight([factsFor("gemini")], options, {
+    LIVE_GATE_PROVIDER_OVERRIDE: "1",
+  })).toBeUndefined();
+});
+
+test("runProbes refuses the opt-in before any probe spawns", async () => {
+  // The preflight is wired into runProbes itself, so the refusal fires
+  // before the runner can spend a single request.
+  const options = {
+    codemux: "codemux",
+    timeout: 1,
+    jobs: 1,
+    skip: new Set<AgentId>(),
+    probes: ["H"] as ProbeLetter[],
+    allowStaleContracts: false,
+    allowKnownBreaks: false,
+    probeAnyway: new Set<AgentId>(),
+    codexModel: "worker",
+    allowVersionMismatch: false,
+  };
+  const runner = {
+    run: () => { throw new Error("no probe may spawn"); },
+    capture: () => { throw new Error("no probe may spawn"); },
+  };
   const directory = fixtureDirectory();
-  const binary = kind === "directory" ? directory : join(directory, "codemux");
-  if (kind === "non-executable") writeFileSync(binary, "", { mode: 0o600 });
   try {
-    const result = Bun.spawnSync([process.execPath, join(ROOT, "scripts/live-gate.ts"), "--codemux", binary], {
-      cwd: ROOT, env: { ...process.env, LIVE_GATE_SKIP: AGENT_IDS.join(",") },
-    });
-    expect(result.exitCode).toBe(2);
-    expect(result.stdout.toString()).toBe("");
-    expect(result.stderr.toString()).toContain("existing executable file");
-    expect(result.stderr.toString()).toContain(binary);
-  } finally { rmSync(directory, { recursive: true, force: true }); }
+    expect(runProbes([factsFor("claude")], options, runner, directory, {
+      LIVE_GATE_PROVIDER_OVERRIDE: "1",
+      CODEMUX_CLAUDE_PROVIDER_BASE_URL: "http://127.0.0.1:8011/v1",
+      CODEMUX_CLAUDE_PROVIDER_MODEL: "glm-5.3",
+    })).rejects.toThrow("CODEMUX_CLAUDE_PROVIDER_API_KEY is missing or empty");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("live gate validates and deduplicates the selected harnesses", () => {
@@ -95,325 +152,158 @@ test("live gate validates and deduplicates the selected harnesses", () => {
   }
 });
 
-test("live gate limits concurrent probes", async () => {
-  let running = 0;
-  let peak = 0;
-  let finished = 0;
-  await runPool(Array.from({ length: 9 }, () => async () => {
-    running++;
-    peak = Math.max(peak, running);
-    await Bun.sleep(5);
-    running--;
-    finished++;
-  }), 4);
-  expect(peak).toBe(4);
-  expect(finished).toBe(9);
-});
-
-test("live gate requires exact trimmed output and a zero exit", async () => {
-  const runner = new ProbeRunner();
-  const probe = (source: string) => runner.run([process.execPath, "-e", source], "OK", 5);
-  expect((await probe('console.log(" OK ")')).status).toBe("PASS");
-  const mismatch = await probe('console.log("secret unexpected output")');
-  expect(mismatch.status).toBe("FAIL");
-  expect(mismatch.stderr).toBe("exit 0; stdout: secret unexpected output\\u000a");
-  const failure = await probe('console.log("OK"); console.error("first\\tline"); console.error("secret second line"); process.exit(7)');
-  expect(failure.status).toBe("FAIL");
-  expect(failure.stderr).toBe("first\\tline");
-  expect(JSON.stringify(failure)).not.toContain("secret second line");
-});
-
-test("live gate skips banners, warnings, and blank stderr lines across chunks", async () => {
-  const source = 'process.stderr.write("\\nRunning with aider (sandboxed)...\\nWar"); await Bun.sleep(10); process.stderr.write("ning: " + "x".repeat(300) + "\\r\\n  \\nactual\\tproblem"); process.exit(7);';
-  const result = await new ProbeRunner().run([process.execPath, "-e", source], "OK", 5);
-  expect(result.status).toBe("FAIL");
-  expect(result.stderr).toBe("actual\\tproblem");
-});
-
-test("live gate falls back to the exit code and at most 80 stdout characters", async () => {
-  for (const output of ["", "x".repeat(100)]) {
-    const source = `process.stderr.write("Running with aider (sandboxed)...\\nWarning: version\\n\\n"); process.stdout.write(${JSON.stringify(output)}); process.exit(9);`;
-    const result = await new ProbeRunner().run([process.execPath, "-e", source], "OK", 5);
-    expect(result.stderr).toBe(output ? `exit 9; stdout: ${"x".repeat(80)}` : "exit 9");
-  }
-});
-
-test("live gate preserves complete raw stdout and stderr for passing and failing probes", async () => {
-  const directory = fixtureDirectory();
-  try {
-    for (const exit of [0, 7]) {
-      const prefix = join(directory, `agy-${exit === 0 ? "read-only" : "medium"}`);
-      const stdout = exit === 0 ? " OK \n" : `${"x".repeat(200)}\n`;
-      const stderr = "Running with aider (sandboxed)...\nWarning: version\nfirst\tproblem\nsecond problem\n";
-      const source = `process.stdout.write(${JSON.stringify(stdout)}); process.stderr.write(${JSON.stringify(stderr)}); process.exit(${exit});`;
-      const result = await new ProbeRunner().run([process.execPath, "-e", source], "OK", 5, prefix);
-      expect(result.status).toBe(exit === 0 ? "PASS" : "FAIL");
-      expect(readFileSync(`${prefix}.out`, "utf8")).toBe(stdout);
-      expect(readFileSync(`${prefix}.err`, "utf8")).toBe(stderr);
-    }
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
-
-test.each([0, 100])("live gate cancels failed capture and waits for child termination after %s ms", async (delay) => {
-  let controller: ReadableStreamDefaultController<Uint8Array>;
-  let canceled = false;
-  const stdout = new ReadableStream<Uint8Array>({
-    start(value) { controller = value; },
-    cancel() { canceled = true; },
-  });
-  const stderr = new ReadableStream<Uint8Array>({
-    start(value) { value.error(new Error("capture failed")); },
-  });
-  let childExited = false;
-  let killedBeforeExit = false;
-  let exitTimer: ReturnType<typeof setTimeout> | undefined;
-  let exitChild!: (code: number) => void;
-  const exited = new Promise<number>((resolve) => { exitChild = resolve; });
-  const child = { pid: 2147483647, stdout, stderr, exited } as Bun.Subprocess<"ignore", "pipe", "pipe">;
-  const spawn = spyOn(Bun, "spawn").mockReturnValueOnce(child);
-  const kill = spyOn(process, "kill").mockImplementation((_pid, signal) => {
-    if (signal === "SIGKILL" && !childExited) killedBeforeExit = true;
-    if (signal === "SIGTERM" && exitTimer === undefined) {
-      exitTimer = setTimeout(() => { childExited = true; exitChild(0); }, delay);
-    }
-    return true;
-  });
-  try {
-    const result = await new ProbeRunner().run(["stub-child"], "OK", 5);
-    expect(result.status).toBe("FAIL");
-    expect(result.stderr).toBe("could not capture probe output");
-    expect(childExited).toBe(true);
-    expect(killedBeforeExit).toBe(false);
-    expect(canceled).toBe(true);
-    expect(stdout.locked).toBe(false);
-  } finally {
-    clearTimeout(exitTimer);
-    if (!canceled) controller!.close();
-    spawn.mockRestore();
-    kill.mockRestore();
-  }
-});
-
-test("live gate creates report directories under scratch or the system temporary directory", () => {
-  const directory = fixtureDirectory();
-  const reports: string[] = [];
-  try {
-    for (const scratch of [directory, join(directory, "absent")]) {
-      const report = createReportDirectory(scratch);
-      reports.push(report);
-      expect(dirname(report)).toBe(existsSync(scratch) ? join(scratch, "live-gate") : tmpdir());
-      expect(readdirSync(report)).toEqual([]);
-    }
-    expect(createReportDirectory(directory)).not.toBe(reports[0]);
-  } finally {
-    for (const report of reports) rmSync(report, { recursive: true, force: true });
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
-
-test.each(["SIGINT", "SIGTERM", "SIGHUP"] as const)("live gate stops the process group and blocks new probes after %s", async (signal) => {
-  const runner = new ProbeRunner();
-  const kill = spyOn(process, "kill");
-  try {
-    const pending = runner.run([process.execPath, "-e", "setInterval(() => {}, 1000)"], "OK", 10);
-    runner.interrupt(signal);
-    expect((await pending).status).toBe("FAIL");
-    expect(runner.interrupted).toBe(signal);
-    expect(kill.mock.calls.some(([pid, sent]) => pid < 0 && sent === "SIGTERM")).toBe(true);
-    const next = await runner.run([process.execPath, "-e", 'console.log("OK")'], "OK", 5);
-    expect(next.status).toBe("FAIL");
-    expect(next.stderr).toContain("interrupted");
-  } finally {
-    kill.mockRestore();
-  }
-});
-
-test("live gate kills a process group that ignores termination on timeout", async () => {
-  const scratch = join(import.meta.dir, "../scratch");
-  mkdirSync(scratch, { recursive: true });
-  const directory = mkdtempSync(join(scratch, "live-gate-timeout-"));
-  const pidFile = join(directory, "pid");
-  const source = `process.on("SIGTERM", () => {}); console.error("earlier error"); await Bun.write(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`;
-  try {
-    const result = await new ProbeRunner().run([process.execPath, "-e", source], "OK", 1);
-    expect(result.status).toBe("FAIL");
-    expect(result.stderr).toBe("timeout");
-    const pid = Number(readFileSync(pidFile, "utf8"));
-    expect(() => process.kill(pid, 0)).toThrow();
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
-
-test("live gate reports harness totals and escapes failure details", () => {
-  const pass = { status: "PASS" as const, seconds: 1, stderr: "" };
-  const rows: HarnessResult[] = [
-    { agent: "codex", readOnly: pass, medium: pass },
-    { agent: "cursor", readOnly: { status: "FAIL", seconds: 2, stderr: "first | failure" }, medium: pass },
-    { agent: "gemini", readOnly: { status: "SKIP", seconds: 0, stderr: "" }, medium: { status: "SKIP", seconds: 0, stderr: "" } },
-    { agent: "kimi", readOnly: pass, medium: { status: "UNSUPPORTED", seconds: 0, stderr: "", note: "src/autonomy.ts: matrix note" } },
-  ];
-  const report = formatReport(rows);
-  expect(report.split("\n")[0]).toBe(`Codemux: ${join(ROOT, "bin/codemux")}`);
-  expect(report).toContain(`live-gate (${join(ROOT, "bin/codemux")}): 1 pass, 1 fail, 1 skip, 1 unsupported`);
-  expect(report).toContain("SKIP (no credentials; operator requested)");
-  expect(report).toContain("UNSUPPORTED (documented): src/autonomy.ts: matrix note");
-  expect(report).toContain("first &#124; failure");
-});
-
-test("live gate probes medium shell execution for every harness", async () => {
-  const reportDirectory = fixtureDirectory();
-  const calls: string[] = [];
-  try {
-    const rows = await runProbes(AGENT_IDS, parseOptions([], ""), {
-      async run(command, expected) { calls.push(`${command[3]}:${command[command.indexOf("--auto") + 1]}`); return completeProbe(command, expected); },
-    }, reportDirectory);
-    expect(calls.sort()).toEqual(AGENT_IDS.flatMap((agent) => [`${agent}:read-only`, `${agent}:medium`]).sort());
-    expect(rows.every((row) => row.readOnly.status === "PASS" && row.medium.status === "PASS")).toBe(true);
-  } finally { rmSync(reportDirectory, { recursive: true, force: true }); }
-});
-
-test("live gate prepares private nonce files and gives the outer deadline 30 extra seconds", async () => {
-  const calls: string[][] = [];
-  const directories: string[] = [];
-  const reportDirectory = fixtureDirectory();
-  const runner = {
-    async run(command: string[], expected: string, timeout: number, prefix?: string) {
-      calls.push(command);
-      expect(command[0]).toBe(join(ROOT, "bin/codemux"));
-      expect(timeout).toBe(210);
-      expect(command.slice(1, 3)).toEqual(["run", "-a"]);
-      expect(command).not.toContain("--no-sandbox");
-      expect(command).toContain("--timeout");
-      expect(command[command.indexOf("--timeout") + 1]).toBe("180");
-      const medium = command.includes("medium");
-      const prompt = command[command.indexOf("-p") + 1]!;
-      expect(prompt).toBe(medium
-        ? "Run the shell command: sh probe.sh and reply with exactly its output, nothing else."
-        : "Reply with exactly: OK");
-      expect(command).toContain("--cwd");
-      const cwd = command[command.indexOf("--cwd") + 1]!;
-      if (medium) {
-        expect(expected).toMatch(/^[0-9a-f]{16}$/);
-        expect(prompt).not.toContain(expected);
-        expect(readdirSync(cwd).sort()).toEqual(["nonce.txt", "probe.sh"]);
-        const nonce = readFileSync(join(cwd, "nonce.txt"), "utf8");
-        expect(nonce).toMatch(/^[0-9a-f]{12}$/);
-        expect(expected).toBe(createHash("sha256").update(nonce).digest("hex").slice(0, 16));
-        expect(statSync(join(cwd, "nonce.txt")).mode & 0o777).toBe(0o600);
-        expect(readFileSync(join(cwd, "probe.sh"), "utf8")).not.toContain(expected);
-        expect(statSync(join(cwd, "probe.sh")).mode & 0o777).toBe(0o700);
-      } else {
-        expect(expected).toBe("OK");
-        expect(readdirSync(cwd)).toEqual([]);
-      }
-      expect(dirname(cwd)).toBe(tmpdir());
-      expect(cwd.startsWith(`${ROOT}/`)).toBe(false);
-      directories.push(cwd);
-      expect(prefix).toBe(join(reportDirectory, `${command[3]}-${medium ? "medium" : "read-only"}`));
-      return completeProbe(command, expected);
-    },
+test("the probe matrix matches the adapters' declared capabilities", () => {
+  const expected: Record<ProbeLetter, string[]> = {
+    A: [...AGENT_IDS],
+    B: [...AGENT_IDS],
+    C: ["agy", "claude", "codex", "kimi", "opencode", "zai"],
+    D: ["agy", "claude", "codex", "kimi", "opencode", "zai"],
+    E: ["opencode"],
+    F: ["aider", "agy", "claude", "codex", "kimi", "opencode", "zai"],
+    G: ["claude", "codex", "kimi", "zai"],
+    // The override is asserted on the envelope's provider-reported
+    // served_model, so H needs the override and result-JSON capabilities
+    // and a wire that carries the evidence; opencode's and kimi's wires
+    // expose no served-model field, zai carries no provider override at
+    // all (review round 14, edges 2), and codex names a served model only
+    // in a reroute notice (round 26, edges 2).
+    H: ["claude"],
+    // H2 asserts the same override on the loopback fake's request log, so
+    // every override-capable harness runs it (audit D9).
+    H2: ["aider", "claude", "codex", "droid", "goose", "kimi", "openhands", "opencode", "pi"],
+    // I carries both -m and --effort, so the adapter must declare both
+    // (audit D7): a harness that declares model or effort without an I
+    // cell here is a matrix drift and fails this test.
+    I: ["agy", "aider", "claude", "cline", "codex", "copilot", "droid", "opencode", "pi", "zai"],
+    J: [...AGENT_IDS],
+    // P prints the sandbox argv for every harness and spends nothing.
+    P: [...AGENT_IDS],
   };
-  try {
-    const rows = await runProbes(["agy", "kimi", "gemini"], parseOptions(["--skip", "gemini"], ""), runner, reportDirectory);
-    expect(calls).toHaveLength(4);
-    expect(directories).toHaveLength(4);
-    expect(new Set(directories).size).toBe(4);
-    expect(directories.every((directory) => !existsSync(directory))).toBe(true);
-    expect(formatReport(rows)).toContain(`live-gate (${join(ROOT, "bin/codemux")}): 2 pass, 0 fail, 1 skip, 0 unsupported`);
-    expect(rows.every((row) => row.agent === "gemini" || (row.readOnly.status === "PASS" && row.medium.status === "PASS"))).toBe(true);
-  } finally {
-    rmSync(reportDirectory, { recursive: true, force: true });
+  for (const letter of PROBE_LETTERS) {
+    expect(AGENT_IDS.filter((id) => probeApplies(letter, factsFor(id))).sort().join(","))
+      .toBe([...expected[letter]].sort().join(","));
   }
 });
 
-test.each(["command", "sha256sum fallback", "echo nonce", "wrong stdout", "codemux-ok"])("live gate requires the nonce hash from command execution: %s", async (output) => {
-  const reportDirectory = fixtureDirectory();
-  const runner = new ProbeRunner();
+test("the experiment probe set matches the experiment validator", () => {
+  const directory = fixtureDirectory();
+  const spec = join(directory, "spec.json");
+  writeFileSync(spec, JSON.stringify({
+    name: "gateEcho", command: "/bin/echo", args: [], env: [],
+    accept_harness_prefix: ["codex-wall-time", "kimi-wall-time"],
+  }));
   try {
-    const rows = await runProbes(["agy"], parseOptions([], ""), {
-      run(command, expected, timeout, prefix) {
-        const cwd = command[command.indexOf("--cwd") + 1]!;
-        let probe = [process.execPath, "-e", 'console.log(" OK ")'];
-        if (command.includes("medium")) {
-          if (output === "command" || output === "wrong stdout") {
-            const script = output === "command" ? 'cd "$1" && sh probe.sh'
-              : 'cd "$1" && sh probe.sh >/dev/null && printf codemux-ok';
-            probe = ["sh", "-c", script, "sh", cwd];
-          } else if (output === "sha256sum fallback") {
-            const bin = join(reportDirectory, "bin");
-            mkdirSync(bin);
-            for (const utility of ["sh", "cat", "cut"]) symlinkSync(Bun.which(utility)!, join(bin, utility));
-            writeFileSync(join(bin, "sha256sum"), `#!${process.execPath}
-              const { createHash } = require("node:crypto");
-              console.log(createHash("sha256").update(await Bun.stdin.text()).digest("hex") + "  -");
-            `, { mode: 0o700 });
-            probe = [Bun.which("env")!, `PATH=${bin}`, "sh", "-c", 'cd "$1" && sh probe.sh', "sh", cwd];
-          } else if (output === "codemux-ok") {
-            probe = [process.execPath, "-e", 'console.log("codemux-ok")'];
-          } else {
-            const source = `const fs = require("node:fs"); const dir = process.argv[1];
-              process.stdout.write(fs.readFileSync(dir + "/nonce.txt", "utf8"));`;
-            probe = [process.execPath, "-e", source, cwd];
-          }
-        }
-        return runner.run(probe, expected, timeout, prefix);
-      },
-    }, reportDirectory);
-    expect(rows[0]!.readOnly.status).toBe("PASS");
-    expect(rows[0]!.medium.status).toBe(["command", "sha256sum fallback"].includes(output) ? "PASS" : "FAIL");
+    for (const id of AGENT_IDS) {
+      let accepted = true;
+      try {
+        assertExperimentMcpUnavailable(id, spec);
+      } catch {
+        accepted = false;
+      }
+      expect(accepted, `probe G and the validator disagree about ${id}`).toBe(EXPERIMENT_HARNESSES[id] !== undefined);
+    }
   } finally {
-    rmSync(reportDirectory, { recursive: true, force: true });
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
-test.each([undefined, "cursor", "other", ""])("live gate never adds pass-env from the ambient Cursor entry: %s", async (entry) => {
-  const previous = process.env.CODEMUX_CURSOR_ENTRY;
-  const reportDirectory = fixtureDirectory();
-  const calls: string[][] = [];
+test("experiment specs set accept_harness_prefix per harness", () => {
+  const directory = fixtureDirectory();
   try {
-    if (entry === undefined) delete process.env.CODEMUX_CURSOR_ENTRY;
-    else process.env.CODEMUX_CURSOR_ENTRY = entry;
-    const rows = await runProbes(["cursor", "agy"], parseOptions(["--timeout", "12"], ""), {
-      async run(command, expected, timeout) {
-        calls.push(command);
-        expect(timeout).toBe(42);
-        expect(command[command.indexOf("--timeout") + 1]).toBe("12");
-        const passEnv = command.indexOf("--pass-env");
-        expect(passEnv).toBe(-1);
-        expect(command).not.toContain("CODEMUX_CURSOR_ENTRY");
-        return completeProbe(command, expected);
-      },
-    }, reportDirectory);
-    expect(calls).toHaveLength(4);
-    expect(rows.every((row) => row.readOnly.status === "PASS" && row.medium.status === "PASS")).toBe(true);
+    for (const [agent, prefixes] of Object.entries(EXPERIMENT_HARNESSES)) {
+      const spec = prepareExperimentProbe(agent as (typeof AGENT_IDS)[number], directory, "/fixture/server.ts");
+      const parsed = JSON.parse(readFileSync(spec.path, "utf8"));
+      expect(parsed.command).toBe(process.execPath);
+      expect(parsed.args).toEqual(["/fixture/server.ts"]);
+      expect(parsed.name).toBe("gateEcho");
+      expect(parsed.recording).toBe(directory);
+      expect(parsed.accept_harness_prefix ?? []).toEqual([...(prefixes ?? [])]);
+      expect(spec.prompt).toContain("bash tool");
+    }
   } finally {
-    if (previous === undefined) delete process.env.CODEMUX_CURSOR_ENTRY;
-    else process.env.CODEMUX_CURSOR_ENTRY = previous;
-    rmSync(reportDirectory, { recursive: true, force: true });
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
-test("live gate forwards the explicit pass-env list verbatim to every probe", async () => {
-  const reportDirectory = fixtureDirectory();
-  const names = "CODEMUX_CURSOR_ENTRY, CUSTOM_VALUE";
-  const calls: string[][] = [];
+test("the session leak check blames only the probe's own record (round 10, contracts 8)", () => {
+  // The check used to count any live entry of the same agent since the
+  // probe started, so an operator's parallel session of that agent failed
+  // a healthy probe. The probe's record is matched by session id, or by
+  // working directory when the capture carries no session_started line.
+  const mkdtemp = Bun.spawnSync(["mktemp", "-d"]).stdout.toString().trim();
+  const registry = join(mkdtemp, "live-sessions.json");
+  const now = new Date().toISOString();
+  const entry = (overrides: Record<string, unknown>) => ({
+    id: "probe-session", agent: "claude", cwd: "/probe/cwd",
+    created_at: now, ended: null, ...overrides,
+  });
   try {
-    const rows = await runProbes(["cursor", "agy"], parseOptions(["--pass-env", names], ""), {
-      async run(command, expected) {
-        calls.push(command);
-        expect(command.filter((arg) => arg === "--pass-env")).toHaveLength(1);
-        expect(command[command.indexOf("--pass-env") + 1]).toBe(names);
-        return completeProbe(command, expected);
-      },
-    }, reportDirectory);
-    expect(calls).toHaveLength(4);
-    expect(rows.every((row) => row.readOnly.status === "PASS" && row.medium.status === "PASS")).toBe(true);
+    // An unrelated live claude session, started after the probe: not the
+    // probe's leak.
+    writeFileSync(registry, JSON.stringify({
+      version: 1,
+      sessions: [entry({ id: "operator-session", cwd: "/operator/cwd" })],
+    }));
+    expect(liveSessionLeak("claude", Date.now() - 60_000, registry, "probe-session")).toBeNull();
+
+    // The probe's own record still live: the leak is named.
+    writeFileSync(registry, JSON.stringify({
+      version: 1,
+      sessions: [
+        entry({ id: "operator-session", cwd: "/operator/cwd" }),
+        entry({}),
+      ],
+    }));
+    expect(liveSessionLeak("claude", Date.now() - 60_000, registry, "probe-session"))
+      .toContain("1 live registry entry left for claude");
+
+    // No session_started line in the capture: the working directory
+    // identifies the probe's record instead.
+    expect(liveSessionLeak("claude", Date.now() - 60_000, registry, undefined, "/probe/cwd"))
+      .toContain("1 live registry entry left for claude");
+    expect(liveSessionLeak("claude", Date.now() - 60_000, registry, undefined, "/operator/cwd"))
+      .toContain("1 live registry entry left for claude");
+    expect(liveSessionLeak("claude", Date.now() - 60_000, registry, undefined, "/unrelated/cwd")).toBeNull();
+
+    // The probe's record, ended: no leak.
+    writeFileSync(registry, JSON.stringify({
+      version: 1,
+      sessions: [entry({ ended: now })],
+    }));
+    expect(liveSessionLeak("claude", Date.now() - 60_000, registry, "probe-session")).toBeNull();
   } finally {
-    rmSync(reportDirectory, { recursive: true, force: true });
+    rmSync(mkdtemp, { recursive: true, force: true });
   }
+});
+
+test("an unreadable or malformed registry fails the leak check instead of reading as no leak (round 16, contracts-2 1)", () => {
+  // The end-state check used to catch every read or parse failure and
+  // answer null — a vacuous pass for a registry it never saw. Only an
+  // absent registry file is nothing to check.
+  const mkdtemp = Bun.spawnSync(["mktemp", "-d"]).stdout.toString().trim();
+  const registry = join(mkdtemp, "live-sessions.json");
+  try {
+    writeFileSync(registry, "{not json");
+    expect(liveSessionLeak("claude", Date.now() - 60_000, registry, "probe-session"))
+      .toContain("could not read the live-session registry");
+    chmodSync(registry, 0o000);
+    expect(liveSessionLeak("claude", Date.now() - 60_000, registry, "probe-session"))
+      .toContain("could not read the live-session registry");
+    expect(liveSessionLeak("claude", Date.now() - 60_000, join(mkdtemp, "absent.json"), "probe-session"))
+      .toBeNull();
+  } finally {
+    chmodSync(registry, 0o600);
+    rmSync(mkdtemp, { recursive: true, force: true });
+  }
+});
+
+test("sessionStartedId reads the first session_started line", () => {
+  const line = (event: Record<string, unknown>) => JSON.stringify(event);
+  expect(sessionStartedId(
+    `${line({ type: "turn_started" })}\n\n${line({ type: "session_started", session_id: "sess-7" })}\n${line({ type: "session_started", session_id: "sess-8" })}\n`
+  )).toBe("sess-7");
+  expect(sessionStartedId(`${line({ type: "session_started" })}\nnot json\n`)).toBeUndefined();
+  expect(sessionStartedId("")).toBeUndefined();
 });
 
 test("make live-gate forwards LIVE_GATE_ARGS", async () => {
@@ -422,123 +312,4 @@ test("make live-gate forwards LIVE_GATE_ARGS", async () => {
   // GNU make on CI prints "Entering directory" lines around the recipe.
   expect(result.stdout.toString().split("\n").map((line) => line.trim()))
     .toContain("bun run scripts/live-gate.ts --pass-env CODEMUX_CURSOR_ENTRY");
-});
-
-test("live gate registers and removes SIGHUP handling and exits 129", async () => {
-  const source = `
-    import { main, ProbeRunner } from ${JSON.stringify(join(ROOT, "scripts/live-gate.ts"))};
-    ProbeRunner.prototype.run = async () => { throw new Error("unexpected harness probe"); };
-    const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
-    const before = signals.map((signal) => process.listenerCount(signal));
-    const pending = main();
-    for (const [index, signal] of signals.entries()) {
-      if (process.listenerCount(signal) !== before[index] + 1) throw new Error("missing " + signal);
-    }
-    process.emit("SIGHUP");
-    await pending;
-    for (const [index, signal] of signals.entries()) {
-      if (process.listenerCount(signal) !== before[index]) throw new Error("leaked " + signal);
-    }
-    console.log("signal handlers removed");
-  `;
-  const proc = Bun.spawn([process.execPath, "-e", source], {
-    cwd: ROOT, env: { ...process.env, LIVE_GATE_SKIP: AGENT_IDS.join(",") },
-    stdin: "ignore", stdout: "pipe", stderr: "pipe",
-  });
-  const [exit, stdout, stderr] = await Promise.all([
-    proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text(),
-  ]);
-  const report = stdout.match(/^Report: (.+)$/m)?.[1];
-  try {
-    expect(stderr).toBe("");
-    expect(exit).toBe(129);
-    expect(stdout).toContain("signal handlers removed");
-  } finally {
-    if (report) rmSync(dirname(report), { recursive: true, force: true });
-  }
-});
-
-test("live gate cleans both probe directories when the runner rejects", async () => {
-  const reportDirectory = fixtureDirectory();
-  const directories: string[] = [];
-  try {
-    const rows = await runProbes(["agy"], parseOptions([], ""), {
-      async run(command) {
-        directories.push(command[command.indexOf("--cwd") + 1]!);
-        throw new Error("test failure");
-      },
-    }, reportDirectory);
-    expect(directories).toHaveLength(2);
-    expect(directories.every((directory) => !existsSync(directory))).toBe(true);
-    expect(formatReport(rows)).toContain(`live-gate (${join(ROOT, "bin/codemux")}): 0 pass, 1 fail, 0 skip, 0 unsupported`);
-  } finally {
-    rmSync(reportDirectory, { recursive: true, force: true });
-  }
-});
-
-test("live gate includes only selected harnesses in its probes, report, and totals", async () => {
-  const reportDirectory = fixtureDirectory();
-  const calls: string[] = [];
-  const options = parseOptions(["--only", "agy,kimi", "--skip", "kimi"], "");
-  try {
-    const rows = await runProbes(["agy", "kimi", "gemini"], options, {
-      async run(command, expected) {
-        const agent = command[3]!;
-        calls.push(agent);
-        if (agent === "gemini") return { status: "FAIL" as const, seconds: 0, stderr: "" };
-        return completeProbe(command, expected);
-      },
-    }, reportDirectory);
-    expect(calls).toEqual(["agy", "agy"]);
-    expect(rows.map((row) => row.agent)).toEqual(["agy", "kimi"]);
-    const report = formatReport(rows, options.only);
-    expect(report.split("\n")[1]).toBe("Scope: --only agy,kimi (installed harnesses only).");
-    expect(report).not.toContain("gemini");
-    expect(report).toContain(`live-gate (${join(ROOT, "bin/codemux")}): 1 pass, 0 fail, 1 skip, 0 unsupported`);
-  } finally {
-    rmSync(reportDirectory, { recursive: true, force: true });
-  }
-});
-
-test.each([
-  { label: "none installed", installed: [], args: ["--codemux", process.execPath], skip: "", skipped: false },
-  { label: "only uninstalled", installed: ["agy"], args: ["--only", "kimi"], skip: "", skipped: false },
-  { label: "only skipped or uninstalled", installed: ["agy"], args: ["--only", "agy,kimi", "--skip", "agy"], skip: "", skipped: true },
-  { label: "all skipped by environment", installed: ["agy", "kimi"], args: [], skip: "agy,kimi", skipped: true },
-  { label: "all skipped by flag", installed: ["agy", "kimi"], args: ["--skip", "agy,kimi"], skip: "", skipped: true },
-])("live gate fails when nothing was probed: $label", async ({ installed, args, skip, skipped }) => {
-  const source = `
-    import { mock } from "bun:test";
-    mock.module(${JSON.stringify(join(ROOT, "src/adapters/index.ts"))}, () => ({
-      AGENT_IDS: ${JSON.stringify(AGENT_IDS)},
-      getAvailableAdapters: () => ${JSON.stringify(installed)}.map((id) => ({ id })),
-    }));
-    const { main, ProbeRunner } = await import(${JSON.stringify(join(ROOT, "scripts/live-gate.ts"))});
-    ProbeRunner.prototype.run = async () => { throw new Error("unexpected harness probe"); };
-    process.argv = ["bun", "live-gate", ...${JSON.stringify(args)}];
-    await main();
-  `;
-  const proc = Bun.spawn([process.execPath, "-e", source], {
-    cwd: ROOT, env: { ...process.env, LIVE_GATE_SKIP: skip },
-    stdin: "ignore", stdout: "pipe", stderr: "pipe",
-  });
-  const [exit, stdout, stderr] = await Promise.all([
-    proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text(),
-  ]);
-  const report = stdout.match(/^Report: (.+)$/m)?.[1];
-  const message = `live-gate: nothing was probed${skipped ? " (all skipped)" : ""}`;
-  const binary = args[0] === "--codemux" ? process.execPath : join(ROOT, "bin/codemux");
-  try {
-    expect(stderr).toBe("");
-    expect(exit).toBe(1);
-    expect(stdout).toContain("| Agent | Read-only | Medium | Seconds | First stderr line on failure |");
-    expect(stdout).toContain(message);
-    expect(stdout.split("\n")[0]).toBe(`Codemux: ${binary}`);
-    expect(stdout).toContain(`live-gate (${binary}): 0 pass, 0 fail,`);
-    expect(stdout.indexOf(`live-gate (${binary}): 0 pass, 0 fail,`)).toBeLessThan(stdout.indexOf(message));
-    expect(report).toBeDefined();
-    expect(readFileSync(report!, "utf8")).toContain(message);
-  } finally {
-    if (report) rmSync(dirname(report), { recursive: true, force: true });
-  }
 });

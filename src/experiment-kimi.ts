@@ -18,7 +18,7 @@ export interface KimiEvidenceRelay {
   record: ExperimentRecord;
 }
 interface EvidenceOptions { kimiHome: string; onFailure?: (error: Error) => void; callIdTimeoutMs?: number }
-const WIRE_POLL_MS = 250;
+export const WIRE_POLL_MS = 250;
 const CALL_ID_TIMEOUT_MS = 5000;
 
 export class ExperimentKimiEvidence {
@@ -107,7 +107,7 @@ export class ExperimentKimiEvidence {
       if (earlier.relay_index >= call.relay_index) break;
       if (!this.identified.has(earlier.relay_index) && call.name === earlier.name && isDeepStrictEqual(call.input, earlier.input) && !this.matchCall(earlier)) return undefined;
     }
-    const matches = this.parser.calls.filter((candidate) => !candidate.modelToolError && !this.matchedNativeIds.has(candidate.callId) &&
+    const matches = this.parser.calls.filter((candidate) => !candidate.modelToolError && !candidate.harnessRejectedArgs && !this.matchedNativeIds.has(candidate.callId) &&
       call.name === candidate.name && isDeepStrictEqual(call.input, candidate.input));
     const peers = this.relay.calls.filter((other) => other !== call &&
       (other.call_id === undefined || other.result === undefined) && call.name === other.name && isDeepStrictEqual(call.input, other.input));
@@ -177,7 +177,17 @@ export class ExperimentKimiEvidence {
   private verifyResults(): void {
     if (this.stdoutCalls.size !== this.parser.calls.length || this.parser.calls.some((native) => {
       const stdout = this.stdoutCalls.get(native.callId);
-      return !stdout || stdout.name !== native.qualified || !isDeepStrictEqual(stdout.input, native.input);
+      // A call Kimi rejected for unparseable arguments carries the RAW
+      // string on stdout (parseToolArguments never guesses) and `{}` on
+      // the wire, so the inputs cannot be deeply equal; the parser's own
+      // finish() verified that raw string against the model message.
+      // A rejected call's stdout string must be the assistant message's own
+      // bytes (the parser kept them in nativeArguments), so two different
+      // malformed strings under one call id cannot both pass (round 24, edges 1).
+      return !stdout || stdout.name !== native.qualified ||
+        (native.harnessRejectedArgs
+          ? !rejectedArgumentsMatch(stdout.input, native.nativeArguments)
+          : !isDeepStrictEqual(stdout.input, native.input));
     })) {
       throw new ExperimentFailure(Code.Protocol, "Kimi stdout assistant tool calls do not match wire tool.call IDs, names, and arguments");
     }
@@ -193,7 +203,20 @@ export class ExperimentKimiEvidence {
         throw new ExperimentFailure(Code.ResultChanged, `Kimi unknown-tool error changed between loop, model, and stdout for ${call.callId}`);
       }
     }
-    if (this.parser.calls.filter((native) => !native.modelToolError).length !== this.relay.calls.length || this.stdoutResults.size !== this.parser.calls.length) {
+    // A call Kimi rejected for unparseable arguments was never dispatched,
+    // so it owes no relay call — but it still owes its loop result, model
+    // message, and stdout result, checked exactly like an unknown-tool
+    // error's (round 23, edges 3).
+    for (const call of this.parser.calls.filter((native) => native.harnessRejectedArgs)) {
+      if (!call.result || call.content === undefined || !this.stdoutResults.has(call.callId)) {
+        throw new ExperimentFailure(Code.HarnessLogMissing, `Missing Kimi model or stdout invalid-args error for ${call.callId}`);
+      }
+      if (this.stdoutResults.get(call.callId) !== call.result.output || !isDeepStrictEqual(kimiOutputParts(call.result.output), call.wireContent) ||
+          !isDeepStrictEqual(kimiWithoutHeader(call.content, call.header ?? null), kimiStatusParts([{ type: "text", text: call.result.output }], true))) {
+        throw new ExperimentFailure(Code.ResultChanged, `Kimi invalid-args error changed between loop, model, and stdout for ${call.callId}`);
+      }
+    }
+    if (this.parser.calls.filter((native) => !native.modelToolError && !native.harnessRejectedArgs).length !== this.relay.calls.length || this.stdoutResults.size !== this.parser.calls.length) {
       throw new ExperimentFailure(Code.HarnessLogMissing, "Kimi wire, stdout, and relay call counts do not agree");
     }
     let changed = false;
@@ -241,3 +264,18 @@ export class ExperimentKimiEvidence {
     for (const notify of [...this.waiters]) notify();
   }
 }
+
+/** The stdout spelling of a Kimi-rejected call's arguments against the
+ * assistant message's raw string: parseToolArguments hands over the parsed
+ * object when the string parses and the raw string otherwise, so both
+ * forms are the same bytes (round 35, contracts 1). */
+function rejectedArgumentsMatch(stdoutInput: unknown, nativeArguments: string | undefined): boolean {
+  if (nativeArguments === undefined) return false;
+  if (stdoutInput === nativeArguments) return true;
+  try {
+    return isDeepStrictEqual(stdoutInput, JSON.parse(nativeArguments));
+  } catch {
+    return false;
+  }
+}
+

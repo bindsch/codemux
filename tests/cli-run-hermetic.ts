@@ -228,7 +228,7 @@ describe("CLI - Hermetic runs", () => {
         ["check", "-a", "opencode", "--no-sandbox", "--auto", "high", "--hermetic", "--tools", "none"],
         fake.env
       );
-      expect(exitCode).toBe(1);
+      expect(exitCode).toBe(64);
       expect(stdout).toBe("");
       expect(stderr).toContain("check --hermetic --tools none cannot run for opencode");
       expect(stderr).toContain("plain --tools none run, which opencode refuses");

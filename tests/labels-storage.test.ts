@@ -76,13 +76,13 @@ describe("call ledger labels", () => {
     expect(JSON.parse(readFileSync(path, "utf8")).labels).toBeNull();
   });
 
-  test("check receipts write null even when their internal request carries labels", async () => {
+  test("check receipts keep the request's labels (doctor --spend selects its probes by one; review round 51)", async () => {
     const path = ledgerPath();
     process.env[CALL_LOG_ENV] = path;
     await launchRunRequest(new FakeAdapter(), { ...request, labels }, {
       sandbox: false, requestedAutonomy: "high", kind: "check",
     });
-    expect(JSON.parse(readFileSync(path, "utf8")).labels).toBeNull();
+    expect(JSON.parse(readFileSync(path, "utf8")).labels).toEqual(labels);
   });
 
   test("session helpers normalize absent labels to null", () => {
@@ -158,9 +158,11 @@ describe("call ledger labels", () => {
     )).join("\n") + "\n");
     const log = readCallLog(path);
     expect(log.malformed).toBe(1);
+    // The reader normalizes cost_source to null on records written before
+    // the field existed (audit round 2, B5).
     expect(log.entries.map((entry) => entry.record)).toEqual([
-      { ...BASE_RECORD, labels: { a: "ok" } },
-      { ...BASE_RECORD, labels: null },
+      { ...BASE_RECORD, labels: { a: "ok" }, cost_source: null },
+      { ...BASE_RECORD, labels: null, cost_source: null },
     ]);
   });
 });

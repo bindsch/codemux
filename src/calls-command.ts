@@ -1,13 +1,19 @@
 /**
  * `codemux calls`: reads the per-call usage ledger (call-log.ts) and shows
- * recent records — the last 20 in reverse append order by default. Filters
- * (`-a`, `--since`) apply before the limit, so the shown set is exactly
- * what the totals (`--sum`) cover. A `--since` window keeps a record whose
- * `ts` falls inside it, and a closing `session` record also when any turn
- * of the same session does — its `ts` is the session's start, so a session
- * that began before the cutoff can include cost from outside that interval.
- * Closing `session` records fold in per
- * field: a summary contributes a field only when no shown turn of the same
+ * recent records — the last 20 in reverse append order by default. The
+ * whole ledger streams through bounded passes (call-log-reader.ts
+ * `streamCallLog`): the agent and label filters, the `--since` window,
+ * and the `--sum` totals see every record, whatever the ledger has grown
+ * to. Retained memory is proportional to `-n` and to the number of
+ * distinct sessions, never to the ledger's length: a ring of `-n`
+ * records (at most 100000), raw lines only under `--json`, one closing
+ * record per session (calls-totals.ts), and — under `--since` — one
+ * session id per session with an in-window turn. A `--since` window
+ * keeps a record whose `ts` falls inside it, and a closing `session`
+ * record also when any turn of the same session fell inside — its `ts` is the
+ * session's start, so a session that began before the cutoff can include
+ * cost from outside that interval. Closing `session` records fold in per
+ * field: a summary contributes a field only when no matched turn of the same
  * session reported it, so its tokens are never counted beside the turns
  * that already carry them (review ul2) while the claude family's session
  * cost — null on every turn by wire design — still lands in the totals
@@ -15,8 +21,7 @@
  * newest one. Tokens restart per driver, so missing turn records can make
  * that fold omit earlier invocation usage. A summary with no session id
  * (null or empty) is excluded,
- * never merged under one key (review ul6). Reads are bounded to the
- * ledger's last 16 MiB; a corrupt
+ * never merged under one key (review ul6). A corrupt
  * or wrong-shaped line is skipped and counted, never fatal. Everything
  * informational goes to stderr; only the table, stored records (`--json`),
  * and the totals print on stdout. An unusable `--since` value — neither a
@@ -26,19 +31,18 @@
  */
 
 import type { Command } from "commander";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import {
   CALL_LOG_ENV,
   callLogPath,
-  readCallLog,
   sanitizeReportedString,
-  type CallLogEntry,
+  streamCallLog,
   type CallRecord,
 } from "./call-log.js";
-import { printTotals } from "./calls-totals.js";
+import { CallTotals } from "./calls-totals.js";
 import { collectLabel, escapeJsonControls, parseLabels, validateLabelKey } from "./labels.js";
 import { AGENT_IDS, type AgentId } from "./types.js";
-import { UsageRefusalError } from "./validation.js";
+import { UsageRefusalError, USAGE_REFUSAL_EXIT_CODE } from "./validation.js";
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100_000;
@@ -147,14 +151,95 @@ function printTable(records: readonly CallRecord[]): void {
   }
 }
 
+/** The listing's memory bound: a ring holding the newest `limit` records
+ * pushed. The streaming pass pushes every record it keeps and this discards
+ * the oldest beyond `limit`, so a ledger of any length leaves the listing
+ * holding `-n` records — never the matching history (review round 22). */
+export class ListingRing<T> {
+  private readonly slots: (T | undefined)[];
+  private next = 0;
+  private filled = 0;
+
+  constructor(private readonly limit: number) {
+    this.slots = new Array<T | undefined>(limit);
+  }
+
+  push(item: T): void {
+    this.slots[this.next] = item;
+    this.next = (this.next + 1) % this.limit;
+    if (this.filled < this.limit) this.filled++;
+  }
+
+  /** The newest records, oldest first — reverse for newest-first display. */
+  items(): T[] {
+    const start = this.filled < this.limit ? 0 : this.next;
+    const items: T[] = [];
+    for (let i = 0; i < this.filled; i++) {
+      items.push(this.slots[(start + i) % this.limit]!);
+    }
+    return items;
+  }
+}
+
+/** The `--since` window. A record whose own `ts` falls inside counts. A
+ * closing `session` record also counts when a turn of the same session
+ * fell inside: its `ts` is the session's START, so a session that began
+ * before the cutoff and ran turns inside the window would lose its
+ * summary — the claude family's only cost figure, reported by no turn —
+ * to a filter that never looked at its turns (review ul6). A resumed
+ * session appends its earlier closing BEFORE the turns its resume ran,
+ * so the set of sessions with an in-window turn must be COMPLETE before
+ * any closing is decided: `--since` runs a first pass that collects the
+ * set (collectSessionWithTurn below), and the listing pass then decides
+ * every closing against the full set (round 23, edges 4). Counted once:
+ * the fold in the totals keeps the summary beside its turns without
+ * counting either twice. The set of session ids is the only retained
+ * state, one entry per session with an in-window turn. */
+function recordInsideWindow(record: CallRecord, cutoff: Date): boolean {
+  const ts = new Date(record.ts);
+  return !Number.isNaN(ts.getTime()) && ts >= cutoff;
+}
+
+/** The first pass's one job: name every session with an in-window turn,
+ * after the agent and label filters — one id per such session, never one
+ * per turn. */
+export function collectSessionWithTurn(
+  record: CallRecord,
+  cutoff: Date,
+  sessionsWithTurnsInside: Set<string>
+): void {
+  if (
+    record.kind === "session_turn" &&
+    record.session_id !== null &&
+    recordInsideWindow(record, cutoff)
+  ) {
+    sessionsWithTurnsInside.add(record.session_id);
+  }
+}
+
+export function windowKeeps(
+  record: CallRecord,
+  cutoff: Date,
+  sessionsWithTurnsInside: ReadonlySet<string>
+): boolean {
+  if (recordInsideWindow(record, cutoff)) return true;
+  return (
+    record.kind === "session" &&
+    record.session_id !== null &&
+    sessionsWithTurnsInside.has(record.session_id)
+  );
+}
+
 /**
- * Registers `codemux calls`. The table covers the shown records only:
- * filters run first, the limit last, newest first. The totals cover the
- * shown records with closing `session` summaries folded per field — a
- * summary counts only what its shown turns left unreported, so turns are
- * never counted twice and the claude family's session cost is — and a
- * resumed session's closing summaries fold to the newest one. This avoids
- * duplicate lifetime cost but can omit tokens when earlier turns are absent.
+ * Registers `codemux calls`. The ledger streams once in bounded memory,
+ * end to end: the agent and label filters run during the pass, the window
+ * decides each record as it arrives, the listing keeps the newest `limit`
+ * of what the window kept, and the totals accumulate per record. The
+ * totals fold closing `session` summaries per field — a summary counts
+ * only what its matched turns left unreported, so turns are never counted
+ * twice and the claude family's session cost is — and a resumed session's
+ * closing summaries fold to the newest one. This avoids duplicate lifetime
+ * cost but can omit tokens when turns are absent.
  */
 export function registerCallsCommand(
   program: Command,
@@ -165,12 +250,12 @@ export function registerCallsCommand(
   program
     .command("calls")
     .description("Show recent records from the per-call usage ledger")
-    .option("-n, --limit <count>", "Records to show, newest ledger append first", String(DEFAULT_LIMIT))
+    .option("-n, --limit <count>", "Records to list, newest ledger append first; bounds the listing only", String(DEFAULT_LIMIT))
     .option("-a, --agent <id>", "Show only one agent's calls")
     .option("--label <KEY=VALUE>", "Filter by a label; repeat for AND matching", collectLabel, [])
     .option("--since <when>", "Cutoff as a duration (90m, 24h, 7d) or date accepted by JavaScript Date")
     .option("--json", "Print stored JSONL with controls escaped; --sum appends human-readable totals")
-    .option("--sum", "Append totals over selected records, not necessarily interval-attributable usage")
+    .option("--sum", "Append totals over every matching record in the whole ledger, not only the listed ones")
     .option("--by <key>", "Group --sum totals by this label; records without it form a separate group")
     .action(async (options) => {
       const fail = (message: string): Promise<void> => {
@@ -202,14 +287,14 @@ export function registerCallsCommand(
       }
       const limit = parseLimitOption(options.limit);
       if (limit === null) {
-        return fail(`--limit must be an integer from 1 to ${MAX_LIMIT}`);
+        return usageFail(`--limit must be an integer from 1 to ${MAX_LIMIT}`);
       }
       let agent: AgentId | undefined;
       if (options.agent !== undefined) {
         if (!AGENT_IDS.includes(options.agent as AgentId)) {
           console.error(`Error: Unknown agent '${options.agent}'`);
           console.error(`Available agents: ${AGENT_IDS.join(", ")}`);
-          setExitCode(1);
+          setExitCode(USAGE_REFUSAL_EXIT_CODE);
           return;
         }
         agent = options.agent as AgentId;
@@ -234,86 +319,88 @@ export function registerCallsCommand(
         return;
       }
 
-      let log;
+      // Streaming passes, bounded end to end. The ring keeps the newest
+      // `limit` windowed records — a raw line beside each only under
+      // `--json`, which prints those lines; the table needs the record
+      // alone. The totals see every windowed record, one at a time.
+      // Retained memory is proportional to `-n` and to the number of
+      // distinct sessions, never to the ledger's length: a ring of `-n`
+      // records, raw lines only under `--json`, one closing record per
+      // session, and — under `--since` — one session id per session with
+      // an in-window turn.
+      const keepLine = options.json === true;
+      const listing = new ListingRing<{ record: CallRecord; line: string | null }>(limit);
+      const totals = options.sum ? new CallTotals(by) : null;
+      const cutoff = since;
+      let malformed: number;
       try {
-        log = readCallLog(path);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return fail(`could not read the call ledger at ${path}: ${message}`);
-      }
-      if (log.truncated) {
-        console.error(
-          `codemux: ${path} is larger than 16 MiB; showing only the most recent 16 MiB`
-        );
-      }
-      if (log.malformed > 0) {
-        console.error(
-          `codemux: skipped ${log.malformed} unparseable line(s) or invalid label map(s) in ${path}`
-        );
-      }
-      const matching = log.entries.filter(
-        (entry): entry is CallLogEntry & { record: CallRecord } => {
-          if (entry.record === null) return false;
-          if (agent !== undefined && entry.record.agent !== agent) return false;
+        const passesFilters = (record: CallRecord): boolean => {
+          if (agent !== undefined && record.agent !== agent) return false;
           if (labels !== null) {
             for (const [key, value] of Object.entries(labels)) {
               if (
-                entry.record.labels === null || entry.record.labels === undefined ||
-                !Object.hasOwn(entry.record.labels, key) || entry.record.labels[key] !== value
+                record.labels === null || record.labels === undefined ||
+                !Object.hasOwn(record.labels, key) || record.labels[key] !== value
               ) {
                 return false;
               }
             }
           }
           return true;
-        }
-      );
-      // A window keeps a record whose `ts` falls inside it — and a closing
-      // `session` record also when any turn of the same session does. The
-      // closing record's `ts` is the session's START, so a session that
-      // began before the cutoff and ran turns inside the window would lose
-      // its summary — the claude family's only cost figure, reported by no
-      // turn — to a filter that never looked at its turns (review ul6).
-      // Counted once: the fold in the totals keeps the summary beside its
-      // turns without counting either twice.
-      let windowed = matching;
-      if (since !== null) {
-        const inWindow = (record: CallRecord): boolean => {
-          const ts = new Date(record.ts);
-          return !Number.isNaN(ts.getTime()) && ts >= since;
         };
         const sessionsWithTurnsInside = new Set<string>();
-        for (const { record } of matching) {
-          if (
-            record.kind === "session_turn" &&
-            record.session_id !== null &&
-            inWindow(record)
-          ) {
-            sessionsWithTurnsInside.add(record.session_id);
-          }
+        // Both passes stop at the size the ledger had here: a record
+        // appended while they run belongs to the next invocation, so the
+        // two passes cannot disagree about a session (round 28, edges 2).
+        const endAt = statSync(path).size;
+        if (cutoff !== null) {
+          // First pass, `--since` only: the complete set of sessions with
+          // an in-window turn, so a closing that PRECEDES a resumed
+          // session's in-window turns is kept like any other closing
+          // (round 23, edges 4).
+          streamCallLog(path, (entry) => {
+            const record = entry.record;
+            if (record === null || !passesFilters(record)) return;
+            collectSessionWithTurn(record, cutoff, sessionsWithTurnsInside);
+          }, { endAt });
         }
-        windowed = matching.filter(({ record }) => {
-          if (inWindow(record)) return true;
-          return (
-            record.kind === "session" &&
-            record.session_id !== null &&
-            sessionsWithTurnsInside.has(record.session_id)
-          );
-        });
+        // The second pass keeps adding to the same set, so a turn and its
+        // closing appended between the passes follow the one-pass rule: the
+        // closing comes after its turn in append order (round 26, edges 3).
+        const stream = streamCallLog(path, (entry) => {
+          const record = entry.record;
+          if (record === null || !passesFilters(record)) return;
+          if (cutoff !== null) {
+            collectSessionWithTurn(record, cutoff, sessionsWithTurnsInside);
+            if (!windowKeeps(record, cutoff, sessionsWithTurnsInside)) return;
+          }
+          listing.push({ record, line: keepLine ? entry.line : null });
+          totals?.add(record);
+        }, { endAt });
+        malformed = stream.malformed;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return fail(`could not read the call ledger at ${path}: ${message}`);
       }
-      // The ledger appends, so the tail is the newest: take the last
-      // `limit` matching records and reverse for newest-first display.
-      const shown = windowed.slice(-limit).reverse();
+      if (malformed > 0) {
+        console.error(
+          `codemux: skipped ${malformed} unparseable line(s) or invalid label map(s) in ${path}`
+        );
+      }
+      // The ledger appends, so the tail is the newest: the ring holds the
+      // last `limit` windowed records, reversed for newest-first display.
+      const shown = listing.items().reverse();
       if (shown.length === 0) {
         console.error(`codemux: no matching calls in ${path}`);
         return;
       }
 
       if (options.json) {
-        for (const entry of shown) console.log(escapeJsonControls(entry.line));
+        for (const entry of shown) console.log(escapeJsonControls(entry.line!));
       } else {
-        printTable(shown.map((entry) => entry.record!));
+        printTable(shown.map((entry) => entry.record));
       }
-      if (options.sum) printTotals(shown.map((entry) => entry.record!), by);
+      // The limit bounds the listing only; the totals have no bound.
+      totals?.print();
     });
 }

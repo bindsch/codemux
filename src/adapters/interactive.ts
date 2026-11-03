@@ -1,6 +1,7 @@
 import type { BaseAdapter } from "./base.js";
 import type { AutonomyLevel, ReasoningEffort } from "../types.js";
 import { guardedWait } from "../process-runner.js";
+import { assertExecutablesUnchanged } from "../executable-security.js";
 import { validateWorkingDirectory } from "../validation.js";
 
 export async function runInteractive(
@@ -47,6 +48,7 @@ export async function runInteractive(
     passthroughEnv
   );
 
+  assertExecutablesUnchanged(command, this.id);
   const proc = Bun.spawn(command, {
     cwd: workdir,
     stdout: "inherit",

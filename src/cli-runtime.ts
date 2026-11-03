@@ -1,47 +1,42 @@
-import { existsSync, realpathSync } from "node:fs";
-import { createHash } from "node:crypto";
-import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+import { isAbsolute } from "node:path";
 import { guardedWait, runCapturedCommand, type StdoutSink } from "./process-runner.js";
-import {
-  resolveTrustedCommand,
-  resolveTrustedExecutable,
-} from "./executable-security.js";
+import { assertExecutablesUnchanged, executableCheck, resolveTrustedCommand, resolveTrustedExecutable, trustCheckedCommandChecks, trustCheckedCommandPaths } from "./executable-security.js";
 import { activeRedirects, probeEnvironment } from "./environment.js";
-import {
-  ALLOW_UNTESTED_ENV,
-  assertSupportedHarnessVersion,
-} from "./harness-compatibility.js";
-import type { SandboxPolicyOverrides } from "./sandbox-policy.js";
-import {
-  SCODE_TRUST_LEVELS,
-  buildSandboxEnv,
-  buildScodeCommand,
-  type SandboxOptions,
-  type ScodeTrustLevel,
-} from "./sandbox.js";
-import {
-  AUTONOMY_LEVELS,
-  REASONING_EFFORT_LEVELS,
-  TOOL_SELECTIONS,
-  isAutonomyLevel,
-  isReasoningEffort,
-  isToolSelection,
-  type AdapterCapabilities,
-  type AgentId,
-  type AutonomyLevel,
-  type ReasoningEffort,
-  type RunResult,
-  type ToolSelection,
-} from "./types.js";
-import {
-  MAX_PASSTHROUGH_ENV_NAMES,
-  UsageRefusalError,
-  validateEnvironmentNames,
-  validateWorkingDirectory,
-} from "./validation.js";
+import { ALLOW_UNTESTED_ENV, assertSupportedHarnessVersion } from "./harness-compatibility.js";
+import { buildSandboxEnv, buildScodeCommand, type SandboxOptions } from "./sandbox.js";
+import type { AgentId, AutonomyLevel, RunResult } from "./types.js";
+import { UsageRefusalError, validateWorkingDirectory } from "./validation.js";
+import { escapeArgvForPrint } from "./usage-protocol.js";
+import { assertCompatibleScode, assertNoProjectScodePolicy, assertScodeSupportsAccounting, resolveKeepEnvSandboxOptions, resolveScodeExecutable, resolveScodeExecutableForEnv, warnIfSinkInsideWorkdir } from "./cli-runtime/scode.js";
 
-export const SCODE_MINIMUM_VERSION = "0.2.0";
-const SCODE_VERSION_TIMEOUT_MS = 5_000;
+export {
+  SCODE_MINIMUM_VERSION,
+  getScodeCompatibilityIssue,
+  getScodeCompatibilityStatus,
+  parseVersion,
+  isVersionAtLeast,
+  resolveKeepEnvSandboxOptions,
+  resolveScodeExecutable,
+  resolveScodeExecutableForEnv,
+  assertCompatibleScode,
+  assertScodeKeepEnvSupport,
+  assertNoProjectScodePolicy,
+} from "./cli-runtime/scode.js";
+export type {
+  ScodeCompatibilityStatus,
+  ScodeKeepEnvSupport,
+} from "./cli-runtime/scode.js";
+export {
+  parseAutonomyOption,
+  parseEffortOption,
+  parseToolsOption,
+  parseTimeoutOption,
+  parsePassthroughEnvOption,
+  parseSandboxPolicyOverrides,
+  resolveAutonomyForAdapter,
+  resolveEffortForAdapter,
+} from "./cli-runtime/options.js";
+export type { SandboxCliOptions } from "./cli-runtime/options.js";
 
 export function isScodeAvailable(): boolean {
   try {
@@ -49,401 +44,6 @@ export function isScodeAvailable(): boolean {
   } catch {
     return false;
   }
-}
-
-export interface ScodeCompatibilityStatus {
-  available: boolean;
-  issue: string | null;
-}
-
-export async function getScodeCompatibilityStatus(
-  workdir = process.cwd()
-): Promise<ScodeCompatibilityStatus> {
-  const binary = Bun.which("scode", { PATH: process.env.PATH });
-  if (!binary) return { available: false, issue: null };
-  try {
-    const scode = resolveTrustedExecutable(binary, "scode", workdir);
-    await assertCompatibleScode(
-      scode,
-      workdir,
-      process.env as Record<string, string>
-    );
-    return { available: true, issue: null };
-  } catch (error) {
-    return {
-      available: true,
-      issue: error instanceof Error ? error.message : String(error),
-    };
-  }
-}
-
-export async function getScodeCompatibilityIssue(
-  workdir = process.cwd()
-): Promise<string | null> {
-  return (await getScodeCompatibilityStatus(workdir)).issue;
-}
-
-/** Resolves the scode binary through the PATH of the environment the
- * child will be spawned with — the same PATH the trusted-command
- * resolution reads (the supplied environment, or the default shell) — so the run
- * runner, the session spawn, and the session start preflight (round
- * al14) all decide on the ONE scode the launch will use. The ambient
- * PATH alone can disagree with the launch environment's (a custom
- * adapter environment view carries its own), and a probe that found one
- * scode while the spawn runs another answers for the wrong binary. */
-export function resolveScodeExecutableForEnv(
-  env: Record<string, string> | undefined,
-  workdir?: string
-): string | null {
-  const binary = Bun.which("scode", { PATH: (env ?? process.env).PATH ?? "" });
-  if (!binary) return null;
-  return resolveTrustedExecutable(binary, "scode", workdir);
-}
-
-export function resolveScodeExecutable(workdir?: string): string | null {
-  return resolveScodeExecutableForEnv(undefined, workdir);
-}
-
-export function parseVersion(value: string): readonly [number, number, number] | null {
-  const match = value.match(/\b(\d+)\.(\d+)\.(\d+)\b/);
-  if (!match) return null;
-  return [Number(match[1]), Number(match[2]), Number(match[3])];
-}
-
-export function isVersionAtLeast(
-  actual: readonly [number, number, number],
-  minimum: readonly [number, number, number]
-): boolean {
-  for (let index = 0; index < actual.length; index++) {
-    const actualPart = actual[index]!;
-    const minimumPart = minimum[index]!;
-    if (actualPart !== minimumPart) return actualPart > minimumPart;
-  }
-  return true;
-}
-
-export async function assertCompatibleScode(
-  scode: string,
-  workdir: string,
-  extraEnv?: Record<string, string>,
-  minimumVersion = SCODE_MINIMUM_VERSION
-): Promise<void> {
-  const result = await runCapturedCommand([scode, "--version"], {
-    cwd: workdir,
-    env: buildSandboxEnv(extraEnv),
-    timeoutMs: SCODE_VERSION_TIMEOUT_MS,
-  });
-  const output = `${result.stdout}\n${result.stderr}`.trim();
-  if (!result.success) {
-    throw new Error(
-      `could not verify scode version (requires ${minimumVersion} or newer)${output ? `: ${output}` : ""}`
-    );
-  }
-  const actual = parseVersion(output);
-  const minimum = parseVersion(minimumVersion)!;
-  if (!actual) {
-    throw new Error(
-      `could not parse scode version '${output}' (requires ${minimumVersion} or newer)`
-    );
-  }
-  if (!isVersionAtLeast(actual, minimum)) {
-    throw new Error(
-      `scode ${actual.join(".")} is too old; ${minimumVersion} or newer is required`
-    );
-  }
-}
-
-// scode reports a version number for features it does not have (accounting
-// is opt-in and ships independently), so capability is probed from --help:
-// a scode with scratch accounting documents SCODE_ACCOUNT_FILE there. Run
-// only when accounting is requested, so unsandboxed-feature runs pay nothing.
-async function assertScodeSupportsAccounting(
-  scode: string,
-  workdir: string,
-  extraEnv?: Record<string, string>
-): Promise<void> {
-  const result = await runCapturedCommand([scode, "--help"], {
-    cwd: workdir,
-    env: buildSandboxEnv(extraEnv),
-    timeoutMs: SCODE_VERSION_TIMEOUT_MS,
-  });
-  if (!result.success) {
-    // A probe that cannot run proves nothing either way; launching would
-    // mean guessing about the one capability this run asked for.
-    throw new Error(
-      `could not probe the installed scode (--help did not exit cleanly); refusing to guess whether it supports scratch accounting`
-    );
-  }
-  const output = `${result.stdout}\n${result.stderr}`;
-  if (!output.includes("SCODE_ACCOUNT_FILE")) {
-    throw new Error(
-      "the installed scode has no scratch accounting; --sandbox-account and --sandbox-account-id need a scode whose --help documents SCODE_ACCOUNT_FILE"
-    );
-  }
-}
-
-// scode 0.6.0 grew --scrub-env into pattern-based scrubbing and paired it
-// with a --keep-env exemption for named variables; codemux's injected
-// environment must ride that exemption or the scrub strips it. The same
-// doctrine as accounting above: capability is probed from --help, never
-// guessed from a version, and only when something asked to be kept.
-export type ScodeKeepEnvSupport = "supported" | "unsupported" | "unprobeable";
-
-async function probeScodeKeepEnvSupportOnce(
-  scode: string,
-  workdir: string,
-  extraEnv?: Record<string, string>
-): Promise<ScodeKeepEnvSupport> {
-  let result;
-  try {
-    result = await runCapturedCommand([scode, "--help"], {
-      cwd: workdir,
-      env: buildSandboxEnv(extraEnv),
-      timeoutMs: SCODE_VERSION_TIMEOUT_MS,
-    });
-  } catch {
-    // A probe that cannot run at all proves nothing either way; whether
-    // that matters is the caller's call (an override run refuses on the
-    // doubt, a plain one proceeds as it always did).
-    return "unprobeable";
-  }
-  if (!result.success) {
-    return "unprobeable";
-  }
-  const output = `${result.stdout}\n${result.stderr}`;
-  return output.includes("--keep-env") ? "supported" : "unsupported";
-}
-
-// One probe per resolved scode AND its full probe environment per
-// process: a definite answer is a property of the binary's --help as
-// the probe's environment and working directory see it, not of the
-// launch asking. Repeated spawns reuse the answer only while that key
-// stays the same. An opencode override creates a fresh OPENCODE_CONFIG
-// directory each turn, so each turn probes again. The key names the
-// executable plus the two facts about the lookup that can change what
-// the probe actually runs: a digest of the WHOLE probe environment
-// (buildSandboxEnv of extraEnv, sorted name/value pairs — every variable
-// the probe runs with, not just PATH, so no environment-sensitive
-// wrapper can poison another environment's answer by dispatching on a
-// variable the key ignored; round al25, edges major, extending round
-// al24's PATH-only fix) and the working directory the probe runs in.
-// The executable path alone let one environment's answer poison
-// another's (round al24, edges minor): two launch environments
-// resolving the same wrapper path reused the first probe's capability
-// and misrefused or misconfigured the second.
-// "unprobeable" is not a definite answer — a probe that timed out or
-// died under load proved nothing about the binary — so it is never
-// cached: the entry is dropped and the next launch probes again rather
-// than inherit the failure for the rest of the process (round al3).
-// Concurrent callers share the in-flight probe; it never rejects.
-const scodeKeepEnvProbes = new Map<string, Promise<ScodeKeepEnvSupport>>();
-
-/** The cache key: the executable plus what identifies the lookup around
- * it — a sha256 digest of the whole probe environment (sorted, so the
- * key is stable across calls) and the working directory. */
-function scodeKeepEnvProbeKey(
-  scode: string,
-  workdir: string,
-  extraEnv?: Record<string, string>
-): string {
-  const env = buildSandboxEnv(extraEnv);
-  const digest = createHash("sha256");
-  for (const name of Object.keys(env).sort()) {
-    digest.update(name);
-    digest.update("\0");
-    digest.update(env[name] ?? "");
-    digest.update("\0");
-  }
-  return [scode, digest.digest("hex"), workdir].join("\0");
-}
-
-async function probeScodeKeepEnvSupport(
-  scode: string,
-  workdir: string,
-  extraEnv?: Record<string, string>
-): Promise<ScodeKeepEnvSupport> {
-  const key = scodeKeepEnvProbeKey(scode, workdir, extraEnv);
-  let probe = scodeKeepEnvProbes.get(key);
-  if (probe === undefined) {
-    probe = probeScodeKeepEnvSupportOnce(scode, workdir, extraEnv).then((support) => {
-      if (support === "unprobeable") scodeKeepEnvProbes.delete(key);
-      return support;
-    });
-    scodeKeepEnvProbes.set(key, probe);
-  }
-  return probe;
-}
-
-/** The refusal message both keep-env gates share — the run runner's
- * (runSandboxedWithStdin) and the session's (spawnSessionChild and the
- * session CLI's start gate) — so a session whose credential rides the
- * exemption (an override's key, zai's gateway token) plus
- * --sandbox-scrub-env refuses with the run path's words verbatim. Both
- * arms name the release that carries the flag (0.6.0): the probe judges
- * the capability, the message names the upgrade (round al12). The cause
- * names the spelling that turns the scrub on — the explicit flag, the
- * untrusted trust preset that implies it, or both (round al21) — so the
- * remedy names a flag the operator actually passed; and when BOTH
- * spellings are active the remedy names both (round al23): each alone
- * keeps the scrub on, so dropping either one alone repeats the
- * refusal. */
-function keepEnvRefusalMessage(
-  support: Exclude<ScodeKeepEnvSupport, "supported">,
-  cause: { scrubEnv: boolean; untrusted: boolean }
-): string {
-  const strip =
-    cause.scrubEnv && cause.untrusted
-      ? "--sandbox-scrub-env under --sandbox-trust untrusted"
-      : cause.untrusted
-        ? "--sandbox-trust untrusted (scode's untrusted preset scrubs the environment)"
-        : "--sandbox-scrub-env";
-  const drop =
-    cause.scrubEnv && cause.untrusted
-      ? "both --sandbox-scrub-env and --sandbox-trust untrusted"
-      : cause.untrusted
-        ? "--sandbox-trust untrusted"
-        : "--sandbox-scrub-env";
-  const remedy =
-    `upgrade scode to 0.6.0 or newer, whose --help documents --keep-env, ` +
-    `or drop ${drop} for this run`;
-  return support === "unsupported"
-    ? `the installed scode has no --keep-env, so ${strip} would strip the credentials codemux injected (a provider override's key, or zai's gateway token) from the child; ${remedy}`
-    : `could not probe the installed scode (--help did not exit cleanly); refusing to guess whether it can exempt the credentials codemux injected from ${strip}; ${remedy}`;
-}
-
-/** Resolves the --keep-env exemption against the installed scode: kept on
- * a scode whose --help documents the flag, dropped on one without it (an
- * unknown flag is a scode error, so a non-required exemption is dropped
- * and the launch keeps exactly its pre-0.6.0 behavior), and REFUSED when
- * required — a provider override's key is the run's only credential, the
- * operator's own having been omitted on purpose. The one resolver behind
- * run, tui, and session spawns (spawnSessionChild). */
-export async function resolveKeepEnvSandboxOptions(
-  scode: string,
-  workdir: string,
-  extraEnv: Record<string, string> | undefined,
-  sandboxOptions: SandboxOptions | undefined
-): Promise<SandboxOptions | undefined> {
-  if (
-    sandboxOptions === undefined ||
-    !sandboxOptions.keepEnv ||
-    sandboxOptions.keepEnv.length === 0
-  ) {
-    return sandboxOptions;
-  }
-  const support = await probeScodeKeepEnvSupport(scode, workdir, extraEnv);
-  if (support === "supported") {
-    return sandboxOptions;
-  }
-  if (sandboxOptions.keepEnvRequired) {
-    throw new Error(
-      keepEnvRefusalMessage(support, {
-        scrubEnv: sandboxOptions.scrubEnv === true,
-        untrusted: sandboxOptions.trust === "untrusted",
-      })
-    );
-  }
-  return { ...sandboxOptions, keepEnv: undefined };
-}
-
-/** The session start gate: a session under a provider override plus
- * --sandbox-scrub-env needs the exemption for whatever names its turns
- * will carry, so it refuses to START on a scode that cannot give it —
- * with the run path's message verbatim — rather than ack a caller input
- * first and die at the first turn spawn with its only credential
- * scrubbed. The probe runs with the LAUNCH environment (`extraEnv`), the
- * same environment the session's children spawn with — never an empty
- * one: the installed scode refuses to run without HOME, so an empty-env
- * probe answered "unprobeable" and refused valid sessions before launch
- * (round al14's blocker). Unconditional by design — the caller has
- * already established the need — so anything but "supported" throws
- * (round al20: the pass-through sentence that sat here described the
- * resolver above, which takes the options; this gate takes none). The
- * cause is the session caller's to state: sessions refuse untrusted
- * trust at their own gate (harness state a session must write), so the
- * scrub a session gate names is always the explicit flag. */
-export async function assertScodeKeepEnvSupport(
-  scode: string,
-  workdir: string,
-  extraEnv: Record<string, string> | undefined,
-  cause: { scrubEnv: boolean; untrusted: boolean }
-): Promise<void> {
-  const support = await probeScodeKeepEnvSupport(scode, workdir, extraEnv);
-  if (support !== "supported") {
-    throw new Error(keepEnvRefusalMessage(support, cause));
-  }
-}
-
-// The sink is only ever confidentiality. A sink the sandbox can write is a
-// sink the sandbox can forge, and crew's documented placement lives inside
-// the project, so this warns instead of refusing -- the caller may have
-// meant exactly that.
-function warnIfSinkInsideWorkdir(accountFile: string, workdir: string): void {
-  // Only a complete ".." segment escapes; a name that merely begins with two
-  // dots ("..acct.jsonl") is a real file inside the workdir, not traversal.
-  const isInside = (dir: string, candidate: string): boolean => {
-    const rel = relative(dir, candidate);
-    return rel.length > 0 && !isAbsolute(rel) && !rel.split(sep).includes("..");
-  };
-  // A purely lexical comparison misses alias paths -- on macOS /var/folders is
-  // a symlink to /private/var/folders, so a sink spelled inside the workdir
-  // looks outside. The sink usually does not exist yet (scode creates it at
-  // exit), and its parent directories may be missing too, so walk up to the
-  // nearest existing ancestor, resolve it, and keep the unresolved tail;
-  // fall back to the lexical form when nothing can be resolved.
-  const resolveBestEffort = (path: string): string => {
-    const tail: string[] = [];
-    let current = path;
-    for (;;) {
-      try {
-        return join(realpathSync(current), ...tail);
-      } catch {
-        const parent = dirname(current);
-        if (parent === current) {
-          return path;
-        }
-        tail.unshift(basename(current));
-        current = parent;
-      }
-    }
-  };
-  // Either spelling counts: the lexical check catches a sink that sits in
-  // the workdir but is itself a symlink pointing outside (the sandboxed
-  // command can replace such a link with a regular file), and the resolved
-  // check catches the alias case the lexical check cannot see.
-  if (isInside(workdir, accountFile) ||
-      isInside(resolveBestEffort(workdir), resolveBestEffort(accountFile))) {
-    // This warns rather than refuses on purpose: scode re-validates the sink
-    // when it writes, after the sandbox has exited and the command can no
-    // longer swap it, so the residual risk is forged records -- which is
-    // exactly what the warning discloses. The operator opted in explicitly;
-    // codemux surfaces the trade-off instead of second-guessing it.
-    console.warn(
-      `Warning: the accounting sink ${accountFile} is inside the sandbox working directory ${workdir}; the sandboxed command can write it, so treat its records as confidentiality, not integrity -- prefer a sink outside that area`
-    );
-  }
-}
-
-export function assertNoProjectScodePolicy(workdir: string): void {
-  const projectPolicy = join(workdir, ".scode.yaml");
-  if (existsSync(projectPolicy)) {
-    throw new Error(
-      `refusing sandbox execution because ${projectPolicy} can alter scode policy`
-    );
-  }
-}
-
-function failInvalidOption(
-  optionName: string,
-  value: string,
-  allowed: readonly string[]
-): never {
-  console.error(`Error: Invalid value '${value}' for ${optionName}`);
-  console.error(`Allowed values: ${allowed.join(", ")}`);
-  // EX_USAGE (sysexits): a bad option value is a usage error, not a
-  // runtime failure — the same 64 the session CLI's usageError exits
-  // with, so scripts see one code for one class (review live10).
-  process.exit(64);
 }
 
 /** The exit code a failed launch rejects with: a usage refusal is EX_USAGE
@@ -458,161 +58,6 @@ export function handleUnexpectedError(error: unknown): never {
   const message = error instanceof Error ? error.message : String(error);
   console.error(message.startsWith("Error:") ? message : `Error: ${message}`);
   process.exit(unexpectedErrorExitCode(error));
-}
-
-export function parseAutonomyOption(value: string | undefined): AutonomyLevel | undefined {
-  if (value === undefined) return undefined;
-  if (!isAutonomyLevel(value)) {
-    failInvalidOption("--auto", value, AUTONOMY_LEVELS);
-  }
-  return value;
-}
-
-export function parseEffortOption(value: string | undefined): ReasoningEffort | undefined {
-  if (value === undefined) return undefined;
-  if (!isReasoningEffort(value)) {
-    failInvalidOption("--effort", value, REASONING_EFFORT_LEVELS);
-  }
-  return value;
-}
-
-export function parseToolsOption(value: string | undefined): ToolSelection | undefined {
-  if (value === undefined) return undefined;
-  if (!isToolSelection(value)) {
-    failInvalidOption("--tools", value, TOOL_SELECTIONS);
-  }
-  return value;
-}
-
-export function parseTimeoutOption(value: string): number {
-  const seconds = Number(value);
-  if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 86_400) {
-    throw new Error(
-      "--timeout must be a number from 0 (exclusive) to 86400 seconds"
-    );
-  }
-  return Math.ceil(seconds * 1_000);
-}
-
-export function parsePassthroughEnvOption(value?: string): string[] {
-  if (value === undefined) return [];
-  const names = [...new Set(value.split(",").map((name) => name.trim()).filter(Boolean))];
-  if (names.length === 0 || names.length > MAX_PASSTHROUGH_ENV_NAMES) {
-    throw new Error(
-      `--pass-env requires 1 to ${MAX_PASSTHROUGH_ENV_NAMES} comma-separated names`
-    );
-  }
-  validateEnvironmentNames(names, "--pass-env");
-  return names;
-}
-
-function parseSandboxTrustOption(value: string | undefined): ScodeTrustLevel | undefined {
-  if (value === undefined) return undefined;
-  if (!(SCODE_TRUST_LEVELS as readonly string[]).includes(value)) {
-    failInvalidOption("--sandbox-trust", value, SCODE_TRUST_LEVELS);
-  }
-  return value as ScodeTrustLevel;
-}
-
-export interface SandboxCliOptions {
-  sandbox: boolean;
-  sandboxTrust?: string;
-  sandboxNoNet?: boolean;
-  sandboxScrubEnv?: boolean;
-  sandboxAccount?: string;
-  sandboxAccountId?: string;
-}
-
-export function parseSandboxPolicyOverrides(
-  options: SandboxCliOptions,
-  allowWithoutSandbox = false
-): SandboxPolicyOverrides | undefined {
-  const trust = parseSandboxTrustOption(options.sandboxTrust);
-  const overrides: SandboxPolicyOverrides = {
-    trust,
-    noNet: Boolean(options.sandboxNoNet),
-    scrubEnv: Boolean(options.sandboxScrubEnv),
-    accountFile: options.sandboxAccount,
-    accountId: options.sandboxAccountId,
-  };
-
-  if (overrides.accountFile !== undefined && !isAbsolute(overrides.accountFile)) {
-    throw new Error(
-      `--sandbox-account requires an absolute path, got '${overrides.accountFile}' (scode resolves a relative sink path against its own working directory, not the caller's intent)`
-    );
-  }
-
-  // scode records an id containing any character outside
-  // `[A-Za-z0-9._:-]` as null -- it does not strip the offenders -- so an
-  // id like `crew/job-42` would correlate nothing, silently. Refuse here,
-  // where the caller can still fix it, instead of at read time when the
-  // records no longer join.
-  if (
-    overrides.accountId !== undefined &&
-    !/^[A-Za-z0-9._:-]{1,128}$/.test(overrides.accountId)
-  ) {
-    throw new Error(
-      `--sandbox-account-id accepts 1-128 characters of letters, digits, and '. _ : -', got '${overrides.accountId}' (scode records any other id as null, which would silently break correlation)`
-    );
-  }
-  if (overrides.accountId !== undefined && !overrides.accountFile) {
-    throw new Error(
-      "--sandbox-account-id without --sandbox-account: the id only ever reaches a sink through an account file, so this request would be silently dropped"
-    );
-  }
-
-  if (!options.sandbox && !allowWithoutSandbox) {
-    if (
-      trust ||
-      overrides.noNet ||
-      overrides.scrubEnv ||
-      overrides.accountFile ||
-      overrides.accountId
-    ) {
-      console.warn("Warning: sandbox policy flags require --sandbox, ignoring");
-    }
-    return undefined;
-  }
-
-  return overrides;
-}
-
-export function resolveAutonomyForAdapter(
-  agentId: AgentId,
-  caps: AdapterCapabilities,
-  requested: AutonomyLevel
-): AutonomyLevel {
-  // Never undefined (review live10): an adapter that cannot enforce the
-  // requested level throws — the old `| undefined` arm was unreachable
-  // and forced every caller into a redundant truthiness guard.
-  if (!caps.supportsAutonomy) {
-    throw new Error(
-      `${agentId} cannot enforce requested autonomy '${requested}'; use an external sandbox`
-    );
-  }
-
-  if (!caps.autonomyLevels.includes(requested)) {
-    throw new Error(
-      `${agentId} does not support autonomy level '${requested}'`
-    );
-  }
-  return requested;
-}
-
-export function resolveEffortForAdapter(
-  agentId: AgentId,
-  caps: AdapterCapabilities,
-  requested?: ReasoningEffort
-): ReasoningEffort | undefined {
-  if (!requested) return undefined;
-  if (!caps.supportsEffort) {
-    if (requested === "none") return undefined;
-    throw new Error(`${agentId} does not support reasoning effort '${requested}'`);
-  }
-  if (!caps.effortLevels.includes(requested)) {
-    throw new Error(`${agentId} does not support reasoning effort '${requested}'`);
-  }
-  return requested;
 }
 
 /**
@@ -731,12 +176,24 @@ export async function runSandboxed(
   interactive = false,
   autonomy?: AutonomyLevel,
   sandboxOptions?: SandboxOptions,
-  envOmissions: readonly string[] = []
+  envOmissions: readonly string[] = [],
+  // --print-sandbox, the same contract runSandboxedWithStdin carries: print
+  // this runner's own scode argv (one argument per line, escaped per
+  // argument) and return 0 without spawning. Everything before this point
+  // has already run — the probes, trust checks, and option resolution — so
+  // the printed argv is the one a real launch would exec.
+  printSandbox?: boolean
 ): Promise<number> {
   const workdir = validateWorkingDirectory(cwd) ?? process.cwd();
   assertNoProjectScodePolicy(workdir);
   const scode = resolveScodeExecutableForEnv(extraEnv, workdir);
   if (!scode) throw new Error("scode is not installed");
+  // This launch's own scode identity, captured in the resolution's own
+  // synchronous block (round 20, minor 7): the probes below await, and a
+  // capture after them could read another launch's record for the same
+  // path — a replaced scode only that launch probed — so the check is
+  // carried to the spawn, not re-derived there.
+  const carriedScodeCheck = executableCheck(scode);
   await assertCompatibleScode(scode, workdir, extraEnv);
   if (sandboxOptions?.accountFile || sandboxOptions?.accountId) {
     await assertScodeSupportsAccounting(scode, workdir, extraEnv);
@@ -770,7 +227,25 @@ export async function runSandboxed(
   );
   const env = buildSandboxEnv(extraEnv, effectiveSandboxOptions);
   for (const name of envOmissions) delete env[name];
+  if (printSandbox) {
+    process.stdout.write(`${scodeCmd.map(escapeArgvForPrint).join("\n")}\n`);
+    return 0;
+  }
 
+  // The resolved command's own trust-checked positions are required, so
+  // a recording gap refuses the spawn instead of skipping the re-check
+  // (edges 2: the env prefix's returned path once had no identity), and
+  // each re-stat compares this launch's own resolution, never another
+  // launch's recorded identity for the same path (round 13, edges 2).
+  // scodeCmd[0] — this launch's own resolveScodeExecutableForEnv result —
+  // is pinned by the check carried from that resolution (round 19, edges
+  // 2; round 20, minor 7): without its check the re-stat falls back to
+  // the process-wide identity list, where another launch's probe of a
+  // replaced scode would let this one exec bytes it never probed.
+  assertExecutablesUnchanged(scodeCmd, "sandbox command", [
+    ...trustCheckedCommandPaths(resolvedCommand),
+    scode,
+  ], [...trustCheckedCommandChecks(resolvedCommand), ...(carriedScodeCheck === null ? [] : [carriedScodeCheck])]);
   const proc = Bun.spawn(scodeCmd, {
     cwd: workdir,
     stdout: "inherit",
@@ -794,12 +269,23 @@ export async function runSandboxedWithStdin(
   // The launch's receipt hook for a signal interrupt (runCapturedCommand's
   // onSignaled): the sandboxed run stops the same way, and the receipt
   // must be written before the runner's exit 143 (review ul6).
-  onSignaled?: () => void | Promise<void>
+  onSignaled?: () => void | Promise<void>,
+  // --print-sandbox: print the scode argv (this function's own scodeCmd,
+  // one argument per line, executable included) and return a synthetic
+  // zero exit without spawning anything. Everything before this point has
+  // already run — the probes, validation, and option resolution — so the
+  // printed argv is exactly the one a real launch would exec.
+  printSandbox?: boolean
 ): Promise<RunResult> {
   const workdir = validateWorkingDirectory(cwd) ?? process.cwd();
   assertNoProjectScodePolicy(workdir);
   const scode = resolveScodeExecutableForEnv(extraEnv, workdir);
   if (!scode) throw new Error("scode is not installed");
+  // This launch's own scode identity, captured in the resolution's own
+  // synchronous block (round 20, minor 7): the probes below await, and a
+  // capture after them could read another launch's record for the same
+  // path, so the check is carried to the spawn, not re-derived there.
+  const carriedScodeCheck = executableCheck(scode);
   await assertCompatibleScode(scode, workdir, extraEnv);
   if (sandboxOptions?.accountFile || sandboxOptions?.accountId) {
     await assertScodeSupportsAccounting(scode, workdir, extraEnv);
@@ -832,6 +318,25 @@ export async function runSandboxedWithStdin(
   );
   const env = buildSandboxEnv(extraEnv, effectiveSandboxOptions);
   for (const name of envOmissions) delete env[name];
+  if (printSandbox) {
+    // One argument per line, control characters escaped per argument
+    // (escapeArgvForPrint), so a multi-line prompt argument cannot read as
+    // several arguments.
+    process.stdout.write(`${scodeCmd.map(escapeArgvForPrint).join("\n")}\n`);
+    return { stdout: "", stderr: "", exitCode: 0, success: true };
+  }
+  // The resolved command's own trust-checked positions are required, so
+  // a recording gap refuses the spawn instead of skipping the re-check
+  // (edges 2: the env prefix's returned path once had no identity), and
+  // each re-stat compares this launch's own resolution, never another
+  // launch's recorded identity for the same path (round 13, edges 2).
+  // scodeCmd[0] is pinned by the check carried from that resolution
+  // (round 19, edges 2; round 20, minor 7): the same rule the
+  // inherited-stdio runner above applies.
+  assertExecutablesUnchanged(scodeCmd, "sandbox command", [
+    ...trustCheckedCommandPaths(resolvedCommand),
+    scode,
+  ], [...trustCheckedCommandChecks(resolvedCommand), ...(carriedScodeCheck === null ? [] : [carriedScodeCheck])]);
   return runCapturedCommand(scodeCmd, {
     cwd: workdir,
     env,
@@ -839,5 +344,11 @@ export async function runSandboxedWithStdin(
     timeoutMs,
     stdoutSink,
     onSignaled,
+    // The same pin the assert above applied: the runner's own pre-spawn
+    // re-stat compares this launch's resolutions, never the process-wide
+    // identity list another launch's probe may have widened (round 23,
+    // edges 1).
+    requiredPaths: [...trustCheckedCommandPaths(resolvedCommand), scode],
+    checks: [...trustCheckedCommandChecks(resolvedCommand), ...(carriedScodeCheck === null ? [] : [carriedScodeCheck])],
   });
 }

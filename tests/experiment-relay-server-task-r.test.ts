@@ -101,8 +101,10 @@ test.each([
     stdout.end(); stderr.end(); setImmediate(() => exit(naturalCode ?? 137));
     return true;
   });
-  const spawn = spyOn(Bun, "spawn").mockReturnValue(proc as unknown as ReturnType<typeof Bun.spawn>);
+  // The fixture is built before the process-wide mock: a throw in between
+  // would leak the mock into every later test (round 35, contracts 2).
   const relay = createRelay("");
+  const spawn = spyOn(Bun, "spawn").mockReturnValue(proc as unknown as ReturnType<typeof Bun.spawn>);
   try {
     await relay.start();
     expect((await list(relay)).status).toBe(200);

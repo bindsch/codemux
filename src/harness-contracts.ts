@@ -85,12 +85,14 @@ export interface HarnessContract {
 }
 
 /**
- * Audited 2026-08-15 against the binaries installed on the release machine.
- * `maxAudited` is the version actually exercised, not a guess at what works.
- * Bump it and docs/HARNESS-COMPATIBILITY.md together.
+ * `maxAudited` is the version actually exercised, not a guess at what works;
+ * each entry's comment names its own dated evidence. Bump an entry and the
+ * matching docs/harnesses.md table row together, with live-gate evidence.
  */
 export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract>>> = {
   agy: {
+    // Ceiling 1.4.12 from the 2026-11-02 live gate (read-only, medium
+    // shell, result JSON, hermetic check, one session turn; docs/harnesses.md).
     // Pinned 2026-10-04 against 1.2.14, the installed release, by probing
     // the binary's flag surface and the official docs
     // (https://antigravity.google/docs/cli/overview,
@@ -104,7 +106,7 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
     versionArgs: ["--version"],
     pattern: /^(\d+\.\d+\.\d+)/,
     min: "1.2.14",
-    maxAudited: "1.2.14",
+    maxAudited: "1.4.12",
   },
   aider: {
     scheme: "semver",
@@ -114,18 +116,20 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
     maxAudited: "0.86.2",
   },
   claude: {
+    // Ceiling 2.1.300 from the 2026-11-02 live gate (docs/harnesses.md names the probes).
     scheme: "semver",
     versionArgs: ["--version"],
     pattern: /^(\d+\.\d+\.\d+)/,
     min: "2.1.220",
-    maxAudited: "2.1.223",
+    maxAudited: "2.1.300",
   },
   codex: {
+    // Ceiling 0.165.0 from the 2026-11-02 live gate (docs/harnesses.md names the probes).
     scheme: "semver",
     versionArgs: ["--version"],
     pattern: /codex-cli (\d+\.\d+\.\d+)/,
     min: "0.146.0",
-    maxAudited: "0.147.0",
+    maxAudited: "0.165.0",
   },
   copilot: {
     // Added 2026-09-21 with the --effort to --reasoning-effort audit. Copilot dropped a flag alias
@@ -225,7 +229,8 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
       entryName === "cursor" ? ["agent", "--version"] : ["--version"],
     pattern: /^(\d{4}\.\d{2}\.\d{2})/,
     min: "2026.07.23",
-    maxAudited: "2026.08.11",
+    // Ceiling 2026.10.22 from the 2026-11-02 live gate (probes A and B; the others are unsupported by contract).
+    maxAudited: "2026.10.22",
   },
   droid: {
     scheme: "semver",
@@ -235,11 +240,12 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
     maxAudited: "0.186.0",
   },
   kimi: {
+    // Ceiling 2.4.0 from the 2026-11-02 live gate (docs/harnesses.md names the probes).
     scheme: "semver",
     versionArgs: ["--version"],
     pattern: /^(\d+\.\d+\.\d+)/,
     min: "0.31.0",
-    maxAudited: "0.31.1",
+    maxAudited: "2.4.0",
   },
   openhands: {
     scheme: "semver",
@@ -274,10 +280,70 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
     ],
   },
   zai: {
+    // Ceiling 2.1.300 from the 2026-11-02 live gate (docs/harnesses.md names the probes).
     scheme: "semver",
     versionArgs: ["--version"],
     pattern: /^(\d+\.\d+\.\d+)/,
     min: "2.1.220",
-    maxAudited: "2.1.223",
+    maxAudited: "2.1.300",
   },
 };
+
+/** A feature whose mechanism needs a harness release above the run
+ * contract's `min`. The run contract says when codemux may launch the
+ * binary at all; a feature floor says when one mechanism (the session
+ * wire, the experiment MCP capture) was recorded. `run` never consults
+ * these; `session`, the experiment path, and doctor do, and all three
+ * read this one table so their verdicts cannot disagree (audit D1: the
+ * session and experiment floors lived in separate constants while
+ * doctor reported only HARNESS_CONTRACTS, so a machine could print
+ * "Version contract: ok" for a binary every session refused). */
+export type FeatureFloorKind = "sessions" | "experiment-mcp" | "project-settings";
+
+export interface FeatureFloor {
+  kind: FeatureFloorKind;
+  /** The release the mechanism was recorded on. */
+  floor: string;
+}
+
+export const FEATURE_FLOORS: Readonly<
+  Partial<Record<AgentId, Partial<Record<FeatureFloorKind, string>>>>
+> = {
+  // Sessions: the floors design §4.3 pins (2.1.280 the
+  // --permission-prompt-tool stdio build, 0.159.3 the app-server method
+  // table, 1.2.14 agy's audited release, 0.31.1 kimi's session wire,
+  // 1.18.18 opencode's, 0.86.2 aider's). Experiment MCP: codex 0.165.0,
+  // kimi 2.3.2, claude and zai 2.1.280 (launch.ts's gate). Project
+  // settings: the same claude-family build the session wire and the
+  // experiment capture were recorded on.
+  claude: { sessions: "2.1.280", "experiment-mcp": "2.1.280", "project-settings": "2.1.280" },
+  zai: { sessions: "2.1.280", "experiment-mcp": "2.1.280" },
+  codex: { sessions: "0.159.3", "experiment-mcp": "0.165.0" },
+  kimi: { sessions: "0.31.1", "experiment-mcp": "2.3.2" },
+  agy: { sessions: "1.2.14" },
+  aider: { sessions: "0.86.2" },
+  opencode: { sessions: "1.18.18", "project-settings": "1.18.18" },
+};
+
+/** The scode release a harness's sandboxed launch needs, above the global
+ * SCODE_MINIMUM_VERSION. agy's sandboxed launch resolves its binary
+ * through scode's known-harness list, which learned agy in 0.6.0, and
+ * `--experiment-project-settings` under `--sandbox-scrub-env` needs
+ * 0.6.0's pattern-based --keep-env. Consumed by launch.ts and doctor
+ * (audit D2: doctor reported the global floor while every sandboxed agy
+ * run refused on 0.3.4). */
+export const SCODE_FLOORS: Readonly<Partial<Record<AgentId, string>>> = {
+  agy: "0.6.0",
+};
+
+/** The recorded floor for one harness feature. Throws when the table has
+ * no entry: a mechanism whose floor is unrecorded is a codemux bug, and
+ * every consumer (session, experiment, doctor) fails closed on it rather
+ * than launch on an unjudged binary. */
+export function featureFloor(agent: AgentId, kind: FeatureFloorKind): string {
+  const floor = FEATURE_FLOORS[agent]?.[kind];
+  if (floor === undefined) {
+    throw new Error(`no ${kind} feature floor is recorded for ${agent}`);
+  }
+  return floor;
+}

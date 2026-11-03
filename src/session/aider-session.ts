@@ -1,3 +1,4 @@
+import { featureFloor } from "../harness-contracts.js";
 /**
  * The aider session wiring: the per-turn spawn command over
  * `--restore-chat-history`, the honest capability matrix, and the
@@ -44,7 +45,7 @@ import type { SessionHold } from "./registry.js";
 /** The session-only version floor (§4.3): 0.86.2, the audited build the
  * flag set (the pinned config/env/history files, --restore-chat-history,
  * --message) and the history-file format are pinned against. */
-export const AIDER_SESSION_FLOOR = "0.86.2";
+export const AIDER_SESSION_FLOOR = featureFloor("aider", "sessions");
 
 /** The id shape codemux mints for an aider session (a plain lowercase
  * UUID — aider has no native session id, so codemux owns the identity

@@ -1,5 +1,5 @@
-import { closeSync, fsyncSync, ftruncateSync, mkdirSync, openSync, unlinkSync, writeSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, closeSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync, openSync, realpathSync, unlinkSync, writeSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { codemuxStateDir } from "./call-log.js";
 import type { ExperimentSpec } from "./experiment-mcp.js";
@@ -91,6 +91,67 @@ export function resultContentSha256(content: unknown): string {
   return createHash("sha256").update(canonical(content)).digest("hex");
 }
 
+/** Whether the path exists and is a symbolic link (never follows it). */
+function isSymbolicLink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/** Resolve a configured recording directory to the real path it denotes:
+ * the longest existing ancestor is realpath'ed, the missing tail stays
+ * literal so the caller's chosen name is kept. An ancestor that exists
+ * but cannot be resolved (permissions, a symlink loop) throws, naming
+ * the configured path. */
+function resolveRecordingDirectory(directory: string): string {
+  const tail: string[] = [];
+  let current = directory;
+  for (;;) {
+    try {
+      return join(realpathSync(current), ...tail);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new Error(
+          `experiment MCP recording directory cannot be resolved: ${directory} (` +
+            `${(error as NodeJS.ErrnoException).code ?? "realpath failed"})`
+        );
+      }
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      throw new Error(`experiment MCP recording directory cannot be resolved: ${directory}`);
+    }
+    tail.unshift(basename(current));
+    current = parent;
+  }
+}
+
+/**
+ * The recording directory is a placement guarantee, not a preference: a
+ * persistent recording (prompts, tool results, server stderr) must land
+ * where the run put it and stay readable by this user alone. `mkdirSync`
+ * alone does neither — it succeeds through a symlinked directory and never
+ * tightens a directory that already exists — so after creating it the path
+ * is lstat'ed: a symlink or a directory another user owns is refused, and
+ * the mode is set to 0700 (the call ledger's rule, src/call-log.ts).
+ */
+export function assertPrivateRecordingDirectory(directory: string): void {
+  const stat = lstatSync(directory);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error(`experiment MCP recording directory must be a real directory, not a link: ${directory}`);
+  }
+  if (
+    process.platform !== "win32" &&
+    typeof process.getuid === "function" &&
+    stat.uid !== process.getuid()
+  ) {
+    throw new Error(`experiment MCP recording directory must be owned by the current user: ${directory}`);
+  }
+  chmodSync(directory, 0o700);
+}
+
 /** The shared private, bounded JSONL recording for one experiment run. */
 export class ExperimentRecording {
   readonly runId = randomUUID();
@@ -103,8 +164,21 @@ export class ExperimentRecording {
   constructor(spec: ExperimentSpec, cwd: string, environment: NodeJS.ProcessEnv, startFields: JsonObject = {},
     private readonly write: RecordingWriter = writeSync) {
     const directory = spec.recording ?? join(codemuxStateDir(environment), "experiments");
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
-    this.recordingPath = join(directory, `${this.runId}${spec.control ? ".control" : ""}.jsonl`);
+    // The directory is resolved before it is created (review round 8,
+    // edges): a recursive mkdir follows a symlinked ancestor, so the
+    // recording and the 0700 chmod could land wherever that link points.
+    // A symlink at the configured leaf is still refused outright; an
+    // existing ancestor is resolved, so the recording, its mode, and
+    // `recordingPath` all name the real directory the configured
+    // spelling denotes, never a link along the way. An ancestor that
+    // exists but cannot be resolved refuses, naming the configured path.
+    if (isSymbolicLink(directory)) {
+      throw new Error(`experiment MCP recording directory must be a real directory, not a link: ${directory}`);
+    }
+    const resolved = resolveRecordingDirectory(directory);
+    mkdirSync(resolved, { recursive: true, mode: 0o700 });
+    assertPrivateRecordingDirectory(resolved);
+    this.recordingPath = join(resolved, `${this.runId}${spec.control ? ".control" : ""}.jsonl`);
     this.fd = openSync(this.recordingPath, "wx", 0o600);
     try {
       this.record("run_start", { server: spec.name, cwd, env_names: spec.env,

@@ -26,6 +26,8 @@ export const MAX_AUTHOR_CODEPOINTS = 64;
 export const MAX_REASON_CHARS = 4096;
 /** Harness-issued ids (`request_id`) bound. */
 export const MAX_ID_CHARS = 128;
+/** `permission_decision.message` bound, in UTF-16 code units. */
+export const MAX_DECISION_MESSAGE_UNITS = 2000;
 
 export type UserDuringTurn = "inject" | "queue" | false;
 
@@ -51,6 +53,9 @@ export type InputMessage =
       request_id: string;
       decision: "allow" | "deny";
       updated_input?: Record<string, unknown>;
+      /** The denial text the harness shows the model; a deny may carry
+       * one, an allow never does. */
+      message?: string;
     }
   | { type: "shutdown" };
 
@@ -117,6 +122,21 @@ function boundedText(value: unknown): { text?: string; reason?: InputRejectionRe
   if (value.includes("\0")) return { reason: "text_nul" };
   if (utf8ByteLength(value) > MAX_INPUT_TEXT_BYTES) return { reason: "text_too_long" };
   return { text: value };
+}
+
+/** A `permission_decision` denial message: 1..2000 UTF-16 code units,
+ * no NUL, no control character other than newline (the author rule's Cc
+ * set minus LF — the one break a rejection text may need). */
+function validDenialMessage(message: string): boolean {
+  if (message.length < 1 || message.length > MAX_DECISION_MESSAGE_UNITS) {
+    return false;
+  }
+  for (let index = 0; index < message.length; index += 1) {
+    const code = message.charCodeAt(index);
+    if (code === 0x0a) continue;
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return false;
+  }
+  return true;
 }
 
 /**
@@ -207,7 +227,12 @@ export function parseInputLine(
       }
       if (
         keys.some(
-          (key) => key !== "type" && key !== "request_id" && key !== "decision" && key !== "updated_input"
+          (key) =>
+            key !== "type" &&
+            key !== "request_id" &&
+            key !== "decision" &&
+            key !== "updated_input" &&
+            key !== "message"
         )
       ) {
         return { ok: false, reason: "malformed" };
@@ -237,11 +262,29 @@ export function parseInputLine(
       ) {
         return { ok: false, reason: "malformed" };
       }
+      const denialMessage = record["message"];
+      if (denialMessage !== undefined) {
+        // The message rides a deny only (§4.1): with an allow it is
+        // rejected the way an unknown key is, never silently dropped.
+        if (
+          decision !== "deny" ||
+          typeof denialMessage !== "string" ||
+          !validDenialMessage(denialMessage)
+        ) {
+          return { ok: false, reason: "malformed" };
+        }
+      }
       return {
         ok: true,
-        message: updatedInput === undefined
-          ? { type, request_id: requestId, decision }
-          : { type, request_id: requestId, decision, updated_input: updatedInput as Record<string, unknown> },
+        message: {
+          type,
+          request_id: requestId,
+          decision,
+          ...(updatedInput === undefined
+            ? {}
+            : { updated_input: updatedInput as Record<string, unknown> }),
+          ...(denialMessage === undefined ? {} : { message: denialMessage }),
+        },
       };
     }
     case "shutdown":
@@ -272,6 +315,7 @@ export type EventName =
   | "user_message"
   | "permission_request"
   | "permission_resolved"
+  | "permission_denied"
   | "unknown"
   | "turn_started"
   | "assistant_delta"
@@ -311,19 +355,23 @@ export function buildEvent(
   return JSON.stringify(envelope);
 }
 
-/** The `input_accepted`/`input_rejected` ack for one input line. */
+/** The `input_accepted`/`input_rejected` ack for one input line. The
+ * optional `message` is the denial text the harness was sent — present
+ * on `autonomy_escalation`, whose deny the caller never chose. */
 export function buildInputAck(
   seq: number,
   sessionId: string,
   inputSeq: number,
   accepted: boolean,
-  reason?: InputRejectionReason
+  reason?: InputRejectionReason,
+  message?: string
 ): string {
   return accepted
     ? buildEvent(seq, sessionId, "input_accepted", null, { input_seq: inputSeq })
     : buildEvent(seq, sessionId, "input_rejected", null, {
         input_seq: inputSeq,
         reason: reason ?? "malformed",
+        ...(message !== undefined ? { message } : {}),
       });
 }
 
@@ -345,16 +393,40 @@ export function buildUserMessage(
 }
 
 /** `permission_resolved` when a request leaves the pending set for any
- * reason (§4.2): allow, deny, timeout, superseded. */
+ * reason (§4.2): allow, deny, timeout, superseded. The optional
+ * `message` is the denial text the harness was sent — present whenever
+ * the resolution carried one, omitted on an allow and on a Codex decline
+ * (its wire answer carries no text). */
 export function buildPermissionResolved(
   seq: number,
   sessionId: string,
   requestId: string,
-  resolution: "allow" | "deny" | "timeout" | "superseded"
+  resolution: "allow" | "deny" | "timeout" | "superseded",
+  message?: string
 ): string {
   return buildEvent(seq, sessionId, "permission_resolved", null, {
     request_id: requestId,
     resolution,
+    ...(message !== undefined ? { message } : {}),
+  });
+}
+
+/** `permission_denied`: the `--permission-policy deny` mode's record of a
+ * request it answered the moment it arrived. The request never joins the
+ * pending set — no caller decision can arrive for it — so this, not
+ * `permission_resolved`, is the one record of how it left. `message` is
+ * the denial text the harness was sent. */
+export function buildPermissionDenied(
+  seq: number,
+  sessionId: string,
+  requestId: string,
+  tool: string,
+  message: string
+): string {
+  return buildEvent(seq, sessionId, "permission_denied", null, {
+    request_id: requestId,
+    tool,
+    message,
   });
 }
 

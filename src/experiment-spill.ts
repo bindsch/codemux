@@ -1,6 +1,22 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
-import type { ClaudeChildProject } from "./adapters/claude.js";
+import type { ClaudeChildProject } from "./claude-family.js";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  cappedPrefix,
+  escapeLeafName,
+  escapeRegExp,
+  matchesTemplate,
+  mcpName,
+  persistedCandidates,
+  persistedPreview,
+  persistedSizeLabel,
+  tokenCandidates,
+  tokenMessages,
+  type Guidance,
+} from "./experiment-spill/templates.js";
+
+export { localeSignatures } from "./experiment-spill/locale.js";
+export { persistedPreview, persistedSizeLabel } from "./experiment-spill/templates.js";
 
 // Claude Code 2.1.300 replaces an oversize MCP result in one of two forms,
 // both read from its binary and checked against recorded runs.
@@ -32,307 +48,12 @@ import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 // In both forms a capped file is the longest prefix of whole code points
 // whose UTF-8 fits in the cap, so the saved bytes must be consistent with
 // the cap label.
+// The templates themselves, the locale-digit reading, and the message
+// parsing live in experiment-spill/templates.ts and
+// experiment-spill/locale.ts; this module owns the comparison and the
+// saved-file verification.
 
-// Unicode encodes every decimal-digit set (Nd) as a complete, ordered run of
-// ten code points, so a digit's value is its position within the run of
-// consecutive Nd code points it belongs to, modulo ten.
-let digitValues: Map<number, number> | undefined;
-function digitValue(codePoint: number): number | undefined {
-  if (!digitValues) {
-    digitValues = new Map();
-    let run = 0;
-    for (let cp = 0; cp <= 0x1ffff; cp++) {
-      if (/\p{Nd}/u.test(String.fromCodePoint(cp))) digitValues.set(cp, run++ % 10);
-      else run = 0;
-    }
-  }
-  return digitValues.get(codePoint);
-}
-// A count is digits, or digits grouped by a locale's mark in a locale's
-// shape: groups of three, or the Indian shape of a final group of three
-// behind groups of two; no leading zero. Which marks, shapes, numeral sets,
-// and minimum groupings go together is not written down here: it is read
-// from this runtime's own locale data, once per process, as the set of
-// locale signatures below, and a message's counts must all fit one of them.
-type GroupingStyle = "western" | "indian";
-type LocaleSignature = { mark: string; style: GroupingStyle; ungroupedMax: number; zero: number };
-let signatures: LocaleSignature[] | undefined;
-/** The number formats this runtime's locales print: grouping mark, grouping
- * style, the longest integer left ungrouped, and the numeral set's zero. */
-export function localeSignatures(): LocaleSignature[] {
-  if (signatures) return signatures;
-  const letters = "abcdefghijklmnopqrstuvwxyz";
-  const bases: string[] = [];
-  for (const a of letters) for (const b of letters) { bases.push(a + b); for (const c of letters) bases.push(a + b + c); }
-  // Scripts that change a language's digits or marks (Adlam, Arabic, N'Ko,
-  // ...), and regions that change its grouping.
-  const scripts = ["Adlm", "Arab", "Latn", "Cyrl", "Deva", "Hans", "Hant", "Beng", "Tfng", "Vaii", "Mong", "Guru", "Thaa", "Olck", "Mtei", "Rohg",
-    "Nkoo", "Hebr", "Grek", "Ethi", "Khmr", "Mymr", "Tibt", "Taml", "Telu", "Knda", "Mlym", "Sinh", "Thai", "Laoo", "Cakm", "Java", "Hmnp", "Yiii", "Cher", "Orya", "Gujr"];
-  // A script variant counts only where it prints differently from its base:
-  // the runtime resolves an unknown script tag to the base, so the base's
-  // signature already covers it.
-  const differing = (base: string) => scripts.map((script) => `${base}-${script}`)
-    .filter((code) => { try { return (1234567).toLocaleString(code) !== (1234567).toLocaleString(base); } catch { return false; } });
-  const codes = Intl.NumberFormat.supportedLocalesOf(bases).flatMap((base) => [base, ...differing(base)]);
-  codes.push("en-IN", "hi-IN", "bn-IN", "ta-IN", "te-IN", "mr-IN", "gu-IN", "kn-IN", "ml-IN", "pa-IN", "de-CH", "fr-CH", "it-CH", "de-AT",
-    "es-MX", "es-US", "es-419", "pt-PT", "pt-BR", "fr-CA", "en-ZA", "en-CA", "en-GB", "en-AU", "ar-EG", "ar-SA", "ar-MA", "fa-IR", "ur-PK",
-    "zh-CN", "zh-TW", "ja-JP", "ko-KR", "ru-RU", "uk-UA", "tr-TR", "nl-BE", "nl-NL", "sv-SE", "nb-NO", "da-DK", "fi-FI", "pl-PL", "cs-CZ",
-    "hu-HU", "el-GR", "he-IL", "en-US");
-  const seen = new Set<string>();
-  const found: LocaleSignature[] = [];
-  const probes = [1000, 10000, 100000, 1000000, 10000000];
-  for (const code of codes) {
-    const printed = probes.map((n) => n.toLocaleString(code));
-    const marks = new Set(printed.flatMap((text) => [...text].filter((char) => digitValue(char.codePointAt(0)!) === undefined)));
-    if (marks.size !== 1) continue;
-    const mark = [...marks][0]!;
-    let ungroupedMax = 3;
-    probes.forEach((n, index) => { if (!printed[index]!.includes(mark)) ungroupedMax = Math.max(ungroupedMax, String(n).length); });
-    const groups = (123456789).toLocaleString(code).split(mark).map((group) => [...group].length);
-    const style: GroupingStyle = groups.length > 2 && groups.slice(1, -1).every((length) => length === 2) && groups.at(-1) === 3 ? "indian" : "western";
-    const zero = (0).toLocaleString(code).codePointAt(0)!;
-    const key = `${mark}|${style}|${ungroupedMax}|${zero}`;
-    if (!seen.has(key)) { seen.add(key); found.push({ mark, style, ungroupedMax, zero }); }
-  }
-  // Claude's bundled runtime may carry another CLDR release than this one:
-  // Swiss German moved from the apostrophe to the right single quotation
-  // mark, and French from the no-break space to the narrow one, so each
-  // signature with one of those marks also stands with its counterpart.
-  const twins: Record<string, string> = { "'": "\u2019", "\u2019": "'", "\u00A0": "\u202F", "\u202F": "\u00A0" };
-  for (const locale of [...found]) {
-    const twin = twins[locale.mark];
-    if (twin === undefined) continue;
-    const key = `${twin}|${locale.style}|${locale.ungroupedMax}|${locale.zero}`;
-    if (!seen.has(key)) { seen.add(key); found.push({ ...locale, mark: twin }); }
-  }
-  return (signatures = found);
-}
-/** The grouping marks the runtime's locales print, as a regular-expression class. */
-function groupMarkClass(): string {
-  return `[${[...new Set(localeSignatures().map((locale) => locale.mark))].map((mark) => mark.replace(/[\]\\^-]/g, "\\$&")).join("")}]`;
-}
-// The count's value is returned as its ASCII digits with the numeral set's
-// zero (one locale prints every count in one set): a span derived from a
-// huge passed-through read limit may exceed what a number holds exactly.
-type LocalizedCount = { digits: string; zero: number; mark?: string; styles?: GroupingStyle[] };
-/** A count fits a locale when its numeral set is the locale's and it is grouped exactly where the locale groups. */
-function fitsLocale(count: LocalizedCount, locale: LocaleSignature): boolean {
-  if (count.zero !== locale.zero) return false;
-  if (count.mark === undefined) return count.digits.length <= locale.ungroupedMax;
-  return count.mark === locale.mark && count.styles!.includes(locale.style) && count.digits.length > locale.ungroupedMax;
-}
-function localizedDigits(text: string): LocalizedCount | undefined {
-  const chars = [...text];
-  const marks = new Set(chars.filter((char) => digitValue(char.codePointAt(0)!) === undefined));
-  if (marks.size > 1) return undefined;
-  const mark = [...marks][0];
-  if (mark !== undefined && !localeSignatures().some((locale) => locale.mark === mark)) return undefined;
-  if (chars.length > 1 && digitValue(chars[0]!.codePointAt(0)!) === 0) return undefined;
-  // A grouped count's shape may fit one style or both ("57,000" is Western
-  // and Indian alike); the message's counts must share one.
-  let styles: GroupingStyle[] | undefined;
-  if (mark !== undefined) {
-    const groups = text.split(mark).map((group) => [...group].length);
-    if (groups.some((length) => length === 0)) return undefined;
-    const western = groups[0]! <= 3 && groups.slice(1).every((length) => length === 3);
-    const indian = groups.length >= 2 && groups[0]! <= 2 && groups.slice(1, -1).every((length) => length === 2) && groups.at(-1) === 3;
-    if (!western && !indian) return undefined;
-    styles = [...(western ? ["western" as const] : []), ...(indian ? ["indian" as const] : [])];
-  }
-  let digits = "";
-  let zero: number | undefined;
-  for (const char of chars) {
-    const codePoint = char.codePointAt(0)!;
-    const value = digitValue(codePoint);
-    if (value === undefined) continue;
-    if (zero === undefined) zero = codePoint - value;
-    else if (zero !== codePoint - value) return undefined;
-    digits += value;
-  }
-  return zero === undefined ? undefined : { digits, zero, mark, styles };
-}
-// toLocaleString() prints a number's shortest round-trip digits, expanded with
-// zeros past 1e21 where toString() switches to an exponent.
-function plainDigits(count: number): string {
-  const text = count.toString();
-  const exponent = /^(\d)(?:\.(\d+))?e\+(\d+)$/.exec(text);
-  if (!exponent) return text;
-  const mantissa = exponent[1]! + (exponent[2] ?? "");
-  return mantissa.padEnd(Number(exponent[3]) + 1, "0");
-}
-
-// A message template: literal text, localized counts, and Claude's own
-// numbers derived from its file-read limit (a span of characters, a chunk
-// of lines). The limit may come from the child's environment, a settings
-// file, or a flag, so those numbers are not predicted: a span is any count
-// (or the infinity sign) printed the same wherever it recurs, a chunk any
-// positive number as a template literal prints it (plain digits below 1e21,
-// an exponent form above, or "Infinity"), and the message's counts and span
-// share one numeral set.
-type Part = string | { count: number } | { span: true } | { chunk: true };
-const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-type TemplateMatch = { span?: bigint | "infinite" };
-function matchesTemplate(parts: Part[], actual: string): TemplateMatch | undefined {
-  const pattern = parts.map((part) => typeof part === "string" ? escapeRegExp(part)
-    : "count" in part ? `((?:\\p{Nd}|${groupMarkClass()}){1,512}?)`
-    : "span" in part ? `((?:\\p{Nd}|${groupMarkClass()}){1,512}?|\u221E)`
-    : "([0-9][0-9.e+]{0,30}|Infinity)").join("");
-  const match = new RegExp(`^${pattern}$`, "su").exec(actual);
-  if (!match) return undefined;
-  const slots = parts.filter((part): part is Exclude<Part, string> => typeof part !== "string");
-  const localized: LocalizedCount[] = [];
-  const seen: Partial<Record<"span" | "chunk", string>> = {};
-  let span: bigint | "infinite" | undefined;
-  for (const [index, slot] of slots.entries()) {
-    const captured = match[index + 1]!;
-    if (!("count" in slot)) {
-      const kind = "span" in slot ? "span" : "chunk";
-      if (seen[kind] === undefined) seen[kind] = captured;
-      else if (seen[kind] !== captured) return undefined;
-      // A chunk is a template literal's print of a floored number: exactly what String() gives back for an integer.
-      if (kind === "chunk") {
-        if (captured !== "Infinity" && (String(Number(captured)) !== captured || Number(captured) < 1 || !Number.isInteger(Number(captured)))) return undefined;
-        continue;
-      }
-      if (captured === "\u221E") { span = "infinite"; continue; }
-    }
-    const parsed = localizedDigits(captured);
-    if (parsed === undefined) return undefined;
-    localized.push(parsed);
-    if ("count" in slot) { if (parsed.digits !== plainDigits(slot.count)) return undefined; }
-    else span = BigInt(parsed.digits);
-  }
-  // One locale printed every count: its numeral set, mark, style, and minimum grouping fit them all.
-  if (!localeSignatures().some((locale) => localized.every((count) => fitsLocale(count, locale)))) return undefined;
-  return { span };
-}
-
-/** Claude Code's formatFileSize: KiB steps, one decimal, a trailing ".0" dropped. */
-export function persistedSizeLabel(chars: number): string {
-  const kb = chars / 1024;
-  if (kb < 1) return `${chars} bytes`;
-  const fixed = (n: number) => n.toFixed(1).replace(/\.0$/, "");
-  if (kb < 1024) return `${fixed(kb)}KB`;
-  const mb = kb / 1024;
-  return mb < 1024 ? `${fixed(mb)}MB` : `${fixed(mb / 1024)}GB`;
-}
-const PREVIEW_CHARS = 2000;
-/** Claude Code's preview: the first 2,000 characters, cut back to the last newline past the half-way point. */
-export function persistedPreview(file: string): { preview: string; hasMore: boolean } {
-  if (file.length <= PREVIEW_CHARS) return { preview: file, hasMore: false };
-  const newline = file.slice(0, PREVIEW_CHARS).lastIndexOf("\n");
-  return { preview: file.slice(0, newline > PREVIEW_CHARS * 0.5 ? newline : PREVIEW_CHARS), hasMore: true };
-}
-// Claude Code's leaf-name escaping of the tool_use_id: [A-Za-z0-9_-] and a
-// non-leading "." pass, everything else becomes %XX per UTF-8 byte (a lone
-// surrogate %uXXXX), and a Windows device name gets its first character escaped.
-function escapeLeafName(id: string): string {
-  const escapeChar = (char: string) => {
-    const code = char.charCodeAt(0);
-    if (char.length === 1 && code >= 0xd800 && code <= 0xdfff) return `%u${code.toString(16).toUpperCase()}`;
-    return Array.from(Buffer.from(char), (byte) => `%${byte.toString(16).toUpperCase().padStart(2, "0")}`).join("");
-  };
-  let name = "";
-  for (const char of id) name += /^[A-Za-z0-9_-]$/.test(char) || (char === "." && name !== "") ? char : escapeChar(char);
-  if (name === "") return "%";
-  const stem = name.slice(0, name.indexOf(".") === -1 ? undefined : name.indexOf(".")).replace(/ +$/, "");
-  return /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])$/i.test(stem) ? escapeChar(name.charAt(0)) + name.slice(1) : name;
-}
-/** Claude Code's MCP name sanitizer for file names (claude.ai servers also collapse runs of "_"). */
-function mcpName(name: string): string {
-  const sanitized = name.replace(/[^a-zA-Z0-9_-]/g, "_");
-  return name.startsWith("claude.ai ") ? sanitized.replace(/_+/g, "_").replace(/^_|_$/g, "") : sanitized;
-}
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/** The saved file of a capped spill is the longest prefix of whole code points
- * fitting in the cap; the cap is unknown beyond its label, so the saved byte
- * length must reach the label with the next code point left out. */
-function cappedPrefix(content: string, saved: string, label: string): boolean {
-  const last = saved.charCodeAt(saved.length - 1);
-  if (last >= 0xd800 && last <= 0xdbff) return false;
-  const savedBytes = Buffer.byteLength(saved);
-  const nextBytes = Buffer.byteLength(String.fromCodePoint(content.codePointAt(saved.length)!));
-  for (let cap = savedBytes; cap < savedBytes + nextBytes; cap++) if (persistedSizeLabel(cap) === label) return true;
-  return false;
-}
-
-// A spill path holds no line break: codemux refuses an experiment run whose
-// config root (a passed-through CLAUDE_CONFIG_DIR, else HOME) has one, and
-// the rest of the path is Claude's own naming. The path therefore ends at
-// the message's first line break, which the delimiter after it must follow.
-function splitAtLine(text: string, delimiter: string): [string, string] | undefined {
-  const line = text.indexOf("\n");
-  if (line <= 0) return undefined;
-  const start = line - (delimiter.indexOf("\n"));
-  return start > 0 && text.startsWith(delimiter, start) ? [text.slice(0, start), text.slice(start + delimiter.length)] : undefined;
-}
-type PersistedCandidate = { size?: string; cap?: string; path: string; body: string };
-function persistedCandidates(message: string): PersistedCandidate[] {
-  const header = /^<persisted-output>\n(?:Output too large \((\d+ bytes|\d+(?:\.\d)?[KMG]B)\)\. Full output saved to: |Output exceeded the (\d+ bytes|\d+(?:\.\d)?[KMG]B) persist limit; only the first (\d+ bytes|\d+(?:\.\d)?[KMG]B) were saved to: )/.exec(message);
-  if (!header) return [];
-  const cap = header[2];
-  if (cap !== undefined && cap !== header[3]) return [];
-  const split = splitAtLine(message.slice(header[0].length), "\n\nPreview (first 2KB):\n");
-  if (!split || !split[1].endsWith("\n</persisted-output>")) return [];
-  return [{ size: header[1], cap, path: split[0], body: split[1].slice(0, -"\n</persisted-output>".length) }];
-}
-
-// The token form's header and the note; the guidance between them is matched
-// as a whole template below.
-type TokenCandidate = { path: string; format: string; cap?: string };
-function tokenCandidates(message: string): TokenCandidate[] {
-  // Bounded, greedy captures and the single split keep this linear in the message; the template match decides the values.
-  const header = new RegExp(`^Error: result \\((?:\\p{Nd}|${groupMarkClass()}){1,512} characters(?: across (?:\\p{Nd}|${groupMarkClass()}){1,512} lines?)?\\) exceeds maximum allowed tokens\\. Output has been saved to `, "u").exec(message);
-  if (!header) return [];
-  const note = /\nNote: the output exceeded the persist byte limit; the saved file contains only the first (\d+ bytes|\d+(?:\.\d)?[KMG]B) of it and may end mid-structure \(a JSON parse of the whole file can fail\)\. Any line\/character counts or parsing recipes above describe the full output, not the truncated file\.$/.exec(message);
-  const split = splitAtLine(message.slice(header[0].length), ".\nFormat: ");
-  if (!split) return [];
-  const line = split[1].indexOf("\n");
-  return line > 0 ? [{ path: split[0], format: split[1].slice(0, line), cap: note?.[1] }] : [];
-}
-
-type Guidance = "default" | "subagent";
-type TokenTemplate = { guidance: Guidance; parts: Part[]; slicing: boolean };
-/** Claude Code's token-form messages for this text: each guidance template in
- * its chunked and slicing variants, since the read limit that picks one is not
- * known here. The chunked variants need more than one line; a slicing variant
- * for several lines needs a span below the longest line. */
-function tokenMessages(path: string, text: string, cap: string | undefined, child: ClaudeChildProject): { templates: TokenTemplate[]; count: number; maxLen: number } {
-  const lines = text.split("\n");
-  if (lines.length > 1 && lines.at(-1) === "") lines.pop();
-  const count = lines.length;
-  let maxLen = 0;
-  for (const line of lines) if (line.length > maxLen) maxLen = line.length;
-  const header: Part[] = ["Error: result (", { count: text.length }, " characters across ", { count }, ` ${count === 1 ? "line" : "lines"}) exceeds maximum allowed tokens. Output has been saved to ${path}.\nFormat: Plain text\n`];
-  const note = cap === undefined ? "" : `\nNote: the output exceeded the persist byte limit; the saved file contains only the first ${cap} of it and may end mid-structure (a JSON parse of the whole file can fail). Any line/character counts or parsing recipes above describe the full output, not the truncated file.`;
-  const requirements = (chunked: boolean) => `- You MUST read the content from the file at ${path} in sequential chunks until 100% of the content has been read.\n` +
-    (chunked ? "" : "- Note: this file's lines are too long for Read's offset/limit chunking. If a shell tool is available, slice by character range (e.g. python read()[A:B], dd, or cut -c) instead.\n") +
-    "- If you receive truncation warnings when reading the file, reduce the chunk size until you have read 100% of the content without truncation.\n" +
-    "- Before producing ANY summary or analysis, you MUST explicitly describe what portion of the content you have read. ***If you did not read the entire content, you MUST explicitly state this.***\n" +
-    "- If after a few attempts you cannot read the file (file not found, lines too long for Read's offset/limit, no shell access), STOP retrying. Summarize what you were able to read, explicitly state which portion you could not read and why, and proceed.\n";
-  const defaultGuidance = (chunked: boolean): Part[] => [...header, (chunked
-    ? "Use offset and limit parameters to read specific portions of the file, search within it for specific content, and jq to make structured queries.\n"
-    : "Search within the file for specific content, and use jq if the content is JSON.\n") + "REQUIREMENTS FOR SUMMARIZATION/ANALYSIS/REVIEW:\n" + requirements(chunked) + note];
-  const python = process.platform === "win32" ? "python" : "python3";
-  const quoted = path.replaceAll("\\", "/").replaceAll("'", "'\\''");
-  const chunk: Part = { chunk: true };
-  const span: Part = { span: true };
-  const subagentChunked: Part[] = [...header, `- For targeted searches (find a line, locate a string): use grep on the file directly.\n- For analysis or summarization that requires reading the full content: read ${path} in chunks of ~`, chunk, ` lines using offset/limit until you have read 100% of it.\n- If the Agent tool is available, do this inside a subagent so the full output stays out of your main context. Give it the instruction above verbatim, and be explicit about what it must return \u2014 e.g. "Read ${path} in chunks of ~`, chunk, " lines using offset/limit until you have read all ", { count }, ` lines, then summarize and quote any key findings verbatim." A vague "summarize this" may lose detail.\n${note}`];
-  const subagentSlicing: Part[] = [...header, `- For targeted searches (find a string): use grep on the file directly.\n- For analysis or summarization that requires reading the full content: the file's lines are too long for Read's offset/limit. Slice by character range via Bash instead \u2014 e.g. ${python} -c 'print(open("${quoted}").read()[A:B])' in ~`, span, `-char spans until you have read 100% of it.\n- If the Agent tool is available, do this inside a subagent so the full output stays out of your main context. Give it the instruction above verbatim, and be explicit about what it must return \u2014 e.g. "Slice ${path} in ~`, span, "-char spans via python (read()[A:B]) until you have read all ", { count: text.length }, ` characters, then summarize and quote any key findings verbatim." A vague "summarize this" may lose detail.\n${note}`];
-  // A passed-through MCP_TRUNCATION_PROMPT_OVERRIDE selects the template; otherwise a remote flag may.
-  const override = child.truncationPrompt;
-  const templates: TokenTemplate[] = [];
-  if (override === undefined || override === "legacy") {
-    if (count > 1) templates.push({ guidance: "default", parts: defaultGuidance(true), slicing: false });
-    templates.push({ guidance: "default", parts: defaultGuidance(false), slicing: true });
-  }
-  if (override === undefined || override !== "legacy") {
-    if (count > 1) templates.push({ guidance: "subagent", parts: subagentChunked, slicing: false });
-    templates.push({ guidance: "subagent", parts: subagentSlicing, slicing: true });
-  }
-  return { templates, count, maxLen };
-}
 
 type SpillKind = "token" | "persisted";
 type SpillComparison =

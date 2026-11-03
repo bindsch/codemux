@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { BaseAdapter, type RunContext } from "./base.js";
 import { assertNoCursorProjectExecutionConfig } from "../project-safety.js";
 import { appendDiagnostic } from "../result-envelope.js";
-import { validateWorkingDirectory } from "../validation.js";
+import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import type {
   AdapterCapabilities,
   AgentId,
@@ -12,6 +12,7 @@ import type {
   RunRequest,
   RunResult,
 } from "../types.js";
+import { fileStoreLoginState, loginHome, type LoginState } from "../harness-health.js";
 
 /**
  * The explicit opt-in for the desktop `cursor agent` entry point: the
@@ -169,7 +170,10 @@ export class CursorAdapter extends BaseAdapter {
   ): void {
     if (this.entry().name !== "cursor") return;
     if (passthroughEnv.includes(CURSOR_ENTRY_ENV)) return;
-    throw new Error(
+    // A caller mistake (the missing --pass-env opt-in), so the 64 every
+    // other pre-launch refusal of this class carries — a plain Error here
+    // read as a launch failure (exit 1) to any script following the docs.
+    throw new UsageRefusalError(
       `CODEMUX_CURSOR_ENTRY=cursor selects Cursor's desktop entry, whose wrapper may install or ` +
         `update the agent on first use; codemux runs it only when the operator names it: ` +
         `add --pass-env ${CURSOR_ENTRY_ENV}, or unset ${CURSOR_ENTRY_ENV} to use the standalone entries`
@@ -268,4 +272,12 @@ export class CursorAdapter extends BaseAdapter {
     return cmd;
   }
 
+
+  /** The cursor login read: the file store the sandbox needs. */
+  override loginState(): LoginState {
+    return fileStoreLoginState(
+      join(loginHome(this.environment), ".cursor", "auth.json"),
+      "~/.cursor/auth.json"
+    );
+  }
 }

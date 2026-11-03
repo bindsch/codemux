@@ -41,6 +41,20 @@ export interface PlantedCanary {
   cleanup: () => void;
 }
 
+/** Every planted marker's shape: this prefix followed by eight uppercase
+ * hex characters. Exported for the capture folds that drop payload lines
+ * from a stream (kimi-fold): they scan what they drop against this shape
+ * and keep the match, so a marker that appears only in a dropped tool
+ * result still reaches the canary verdict (evaluateCanary's full-output
+ * scan). */
+export const CANARY_MARKER_PATTERN = /CODEMUX-CANARY-[0-9A-F]{8}/;
+
+/** Mints one marker of CANARY_MARKER_PATTERN's shape (the spelling
+ * plantCanary and plantKimiCanary share). */
+export function mintCanaryMarker(): string {
+  return `CODEMUX-CANARY-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+}
+
 // Scratch directories planted for a check (canary fixtures, agy probe
 // evidence) are removed at exit — the ordinary end, a failure, and a signal's
 // exit alike. While a captured command is in flight the process runner owns
@@ -82,7 +96,7 @@ export function untrackScratchRemoval(dir: string): void {
 }
 
 export function plantCanary(experiment = false, parent = tmpdir()): PlantedCanary {
-  const marker = `CODEMUX-CANARY-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+  const marker = mintCanaryMarker();
   const cwd = mkdtempSync(join(parent, experiment ? ".codemux-experiment-check-" : "codemux-canary-"));
   // An empty .git ends the adapters' project-configuration walk here, so the
   // temp root's own harness state cannot make the check refuse to launch.

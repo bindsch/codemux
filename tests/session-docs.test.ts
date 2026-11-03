@@ -14,7 +14,7 @@ import { MAX_HARNESS_LINE_BYTES, MAX_INPUT_LINE_BYTES, MAX_PENDING_EVENTS, MAX_P
 const read = (path: string): string => readFileSync(join(import.meta.dir, "..", path), "utf8");
 const guide = read("docs/sessions.md");
 const protocol = read("docs/session-protocol.md");
-const historical = read("docs/LIVE-SESSIONS-DESIGN.md");
+const historical = read("docs/archive/LIVE-SESSIONS-DESIGN.md");
 
 const agents = [
   ["claude", CLAUDE_SESSION_FLOOR, claudeSessionCapabilities],
@@ -65,9 +65,15 @@ describe("published session contract", () => {
   });
 
   test("current entry points link the operational and wire references", () => {
-    for (const path of ["docs/architecture.md", "docs/LIVE-SESSIONS-DESIGN.md"]) {
-      expect(read(path)).toContain("(sessions.md)");
-      expect(read(path)).toContain("(session-protocol.md)");
+    // The archived design doc links one level deeper (../) after the move
+    // under docs/archive/, so each page expects its own relative form.
+    const pages: [string, string][] = [
+      ["docs/architecture.md", ""],
+      ["docs/archive/LIVE-SESSIONS-DESIGN.md", "../"],
+    ];
+    for (const [path, depth] of pages) {
+      expect(read(path)).toContain("(" + depth + "sessions.md)");
+      expect(read(path)).toContain("(" + depth + "session-protocol.md)");
     }
     expect(guide).toContain("(results-and-usage.md)");
     expect(protocol).toContain("(results-and-usage.md)");

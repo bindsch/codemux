@@ -1,3 +1,4 @@
+import { featureFloor } from "../harness-contracts.js";
 /**
  * The agy session wiring (design §4.7, plan step 8): the spawn command,
  * the honest capability matrix, and the `event`-keyed result parser under
@@ -26,7 +27,7 @@ import type { SessionCapabilities } from "./protocol.js";
 /** The session-only version floor (§4.3): the installed-and-audited 1.2.14,
  * the build whose help text and binary the input loop, the `=` flag forms,
  * and the result envelope were pinned against. */
-export const AGY_SESSION_FLOOR = "1.2.14";
+export const AGY_SESSION_FLOOR = featureFloor("agy", "sessions");
 
 /**
  * The id shape `--resume` accepts for agy. No live conversation id was
@@ -116,7 +117,16 @@ export function buildAgySessionCommand(command: AgySessionCommand): string[] {
   return argv;
 }
 
-export { buildHarnessUserMessage as buildAgyUserMessage } from "./claude-session.js";
+/** The stream-json input frame agy documents
+ * (antigravity.google/docs/cli/headless): an `event: "user"` object whose
+ * `message.content` is a string or a list of `{type: "text", text}`
+ * blocks. The claude-shaped `type: "user"` frame sent before 2.0.0 was
+ * never live-verified (the fixture's login had expired); agy 1.4.12
+ * answers it with an ERROR result, "stream input message is missing the
+ * \"event\" field" (live gate, 2026-11-02). */
+export function buildAgyUserMessage(text: string): string {
+  return JSON.stringify({ event: "user", message: { content: [{ type: "text", text }] } });
+}
 
 /** What one agy output line resolves to. The driver owns the FSM; these
  * are the parser's facts. */

@@ -4,7 +4,7 @@ read_when: Finding implementation boundaries or changing launch and session beha
 
 # Architecture
 
-Codemux v0.13.3 is a Bun CLI that translates a common request into a harness
+Codemux is a Bun CLI that translates a common request into a harness
 invocation. Harness adapters own command and environment differences.
 Launchers own process lifetime and cleanup. scode supplies the optional
 OS-level containment boundary. Codemux does not host a model or replace
@@ -12,7 +12,12 @@ the harness's login and session store.
 
 ## Entry points and adapters
 
-[bin/codemux](../bin/codemux) starts Bun with the runtime configuration.
+[bin/codemux](../bin/codemux) starts Bun with the runtime configuration; it
+resolves `bun` from the absolute PATH entries once, refuses a directory that
+is world-writable or not owned by this user or root (a group-writable
+directory such as a shared `/usr/local/bin` passes), refuses a bun file that
+is group- or world-writable, and keeps
+`NODE_OPTIONS` and `BUN_OPTIONS` unset.
 [index.ts](../src/index.ts) registers commands and validates configuration.
 [config.ts](../src/config.ts) resolves defaults and model aliases;
 [cli-runtime.ts](../src/cli-runtime.ts) provides shared validation, version
@@ -58,7 +63,9 @@ the provider modules translate operator login or explicit overrides into
 the selected harness's carriers. Provider overrides reuse these seams for
 sessions. [hermetic-home.ts](../src/hermetic-home.ts) manages isolated
 per-run homes and bounded cleanup. Hermetic runs and persistent sessions
-have different state lifetimes; sessions currently refuse `--hermetic`.
+have different state lifetimes; a plain `--hermetic` session is refused —
+the one hermetic session mode is `--hermetic --experiment-project-settings`
+(Claude/Z.AI, [isolation](isolation.md)).
 See [authentication](authentication.md) and [isolation](isolation.md).
 
 ## Sessions
@@ -104,7 +111,7 @@ settle before ownership is released.
 
 The [session guide](sessions.md) covers operational behavior. The
 [protocol reference](session-protocol.md) defines fields, ordering, limits,
-and failure delivery. The [original design summary](LIVE-SESSIONS-DESIGN.md)
+and failure delivery. The [original design summary](archive/LIVE-SESSIONS-DESIGN.md)
 is historical and does not override either reference.
 
 ## Accounting and verification

@@ -1,3 +1,4 @@
+import { featureFloor } from "../harness-contracts.js";
 /**
  * The opencode session wiring: the per-turn spawn command over `opencode run
  * --session`, the honest capability matrix, and the JSON run-output parser
@@ -34,7 +35,7 @@ import type { SessionCapabilities } from "./protocol.js";
 /** The session-only version floor (§4.3): 1.18.18, the build whose run wire
  * (the JSON line shapes, the stdin-to-EOF message, `--session` resume) the
  * parser and command are pinned against. */
-export const OPENCODE_SESSION_FLOOR = "1.18.18";
+export const OPENCODE_SESSION_FLOOR = featureFloor("opencode", "sessions");
 
 /** The id shape `--session` accepts: `ses_` plus mixed-case alphanumerics
  * (the observed ids run ~24 characters; the bound is loose so a longer
@@ -148,7 +149,8 @@ export function normalizeOpenCodeUsage(part: Record<string, unknown>): ResultUsa
 /** What one opencode run-output line resolves to. The driver owns the FSM;
  * these are the parser's facts. Every mapped or unknown kind carries the
  * validated `sessionId` — the one fact the driver adopts its identity from
- * (a fresh session's first line) and confirms a resume with. */
+ * (a fresh session's first line) and confirms a resume with. Payload grammar
+ * errors also retain a validated ID so run folds can enforce continuity. */
 export type OpenCodeParse =
   | { kind: "text"; sessionId: string; text: string }
   | {
@@ -164,7 +166,7 @@ export type OpenCodeParse =
   | { kind: "step_finish"; sessionId: string; usage: ResultUsageBlock }
   | { kind: "error"; sessionId: string; message: string }
   | { kind: "unknown"; sessionId: string }
-  | { kind: "grammar_error"; message: string }
+  | { kind: "grammar_error"; message: string; reason?: "session-mismatch"; sessionId?: string }
   | { kind: "unusable"; excerpt: string; bytes: number };
 
 export interface OpenCodeParseContext {
@@ -200,19 +202,20 @@ export function parseOpenCodeRunLine(
     return { kind: "unusable", ...unusableFacts(line) };
   }
   const event = parsed as Record<string, unknown>;
-  const type = event["type"];
-  if (typeof type !== "string" || type === "") {
-    return { kind: "grammar_error", message: "a run-output line carries no type" };
-  }
   const gate = checkSessionId(event, context);
   if (gate.error !== null) return gate.error;
   const sessionId = gate.sessionId;
+  const type = event["type"];
+  if (typeof type !== "string" || type === "") {
+    return { kind: "grammar_error", sessionId, message: "a run-output line carries no type" };
+  }
   switch (type) {
     case "text": {
       const part = event["part"];
       if (!isRecord(part) || typeof part["text"] !== "string") {
         return {
           kind: "grammar_error",
+          sessionId,
           message: "a text line carries no text part",
         };
       }
@@ -221,19 +224,19 @@ export function parseOpenCodeRunLine(
     case "tool_use": {
       const part = event["part"];
       if (!isRecord(part)) {
-        return { kind: "grammar_error", message: "a tool_use line carries no part" };
+        return { kind: "grammar_error", sessionId, message: "a tool_use line carries no part" };
       }
       const callId = part["id"];
       const tool = part["tool"];
       const state = part["state"];
       if (typeof callId !== "string" || callId === "") {
-        return { kind: "grammar_error", message: "a tool_use line carries no call id" };
+        return { kind: "grammar_error", sessionId, message: "a tool_use line carries no call id" };
       }
       if (typeof tool !== "string" || tool === "") {
-        return { kind: "grammar_error", message: "a tool_use line names no tool" };
+        return { kind: "grammar_error", sessionId, message: "a tool_use line names no tool" };
       }
       if (!isRecord(state)) {
-        return { kind: "grammar_error", message: "a tool_use line carries no state" };
+        return { kind: "grammar_error", sessionId, message: "a tool_use line carries no state" };
       }
       const status = state["status"];
       // The run command emits tool_use only on the completed and error
@@ -243,6 +246,7 @@ export function parseOpenCodeRunLine(
       if (status !== "completed" && status !== "error") {
         return {
           kind: "grammar_error",
+          sessionId,
           message: `a tool_use line carries the unreported status ${String(status)}`,
         };
       }
@@ -267,6 +271,7 @@ export function parseOpenCodeRunLine(
       if (!isRecord(part)) {
         return {
           kind: "grammar_error",
+          sessionId,
           message: "a step_finish line carries no part",
         };
       }
@@ -284,7 +289,7 @@ export function parseOpenCodeRunLine(
 function checkSessionId(
   event: Record<string, unknown>,
   context: OpenCodeParseContext
-): { sessionId: string; error: { kind: "grammar_error"; message: string } | null } {
+): { sessionId: string; error: Extract<OpenCodeParse, { kind: "grammar_error" }> | null } {
   const sessionId = event["sessionID"];
   if (typeof sessionId !== "string" || sessionId === "") {
     return {
@@ -303,6 +308,7 @@ function checkSessionId(
       sessionId,
       error: {
         kind: "grammar_error",
+        reason: "session-mismatch",
         message: `a run-output line names session ${sessionId}, not ${context.knownSessionId}`,
       },
     };

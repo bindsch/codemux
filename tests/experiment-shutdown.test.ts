@@ -3,6 +3,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ExperimentBridge } from "../src/experiment-bridge.js";
+import { trackFixtureProcess } from "./setup.ts";
 import { ExperimentServer, MAX_EXPERIMENT_MESSAGE_BYTES, type JsonObject } from "../src/experiment-server.js";
 import { FORCE_KILL_DELAY_MS, MAX_CAPTURE_BYTES, PIPE_GIVE_UP_MS, runCapturedCommand } from "../src/process-runner.js";
 
@@ -53,19 +54,34 @@ test.each(["stdout", "stderr"])("server cleanup abandons %s held by a real orpha
     stderr: ${JSON.stringify(pipe === "stderr" ? "inherit" : "ignore")} });
     await Bun.sleep(50); await Bun.write(${JSON.stringify(readyFile)}, "ready"); process.exit(0);`;
   const failures: string[] = [];
+  // The orphan is deliberately abandoned by the cleanup under test; it is
+  // still killed by the test itself, and a crash before that kill must not
+  // leak it onto the host (the fixture-leak guard, review round 14,
+  // edges 14).
+  let untrack: (() => void) | undefined;
   const server = new ExperimentServer({ ...spec, args: ["-e", parent] }, cwd, {}, () => {}, (error) => failures.push(error.message));
   try {
     server.start();
+    const deadlineForPid = performance.now() + 2000;
+    while (!Bun.file(pidFile).size && performance.now() < deadlineForPid) await Bun.sleep(20);
+    untrack = trackFixtureProcess({ label: "experiment-shutdown real orphan", pidFile });
     const deadline = performance.now() + 2000;
     while (!Bun.file(readyFile).size && performance.now() < deadline) await Bun.sleep(20);
     expect(await Bun.file(readyFile).text()).toBe("ready");
-    await Bun.sleep(100); // The leader exits before the first termination snapshot.
+    // The leader's settled exit code is the marker a fixed sleep guessed
+    // at (audit round 2, C-5): the first termination snapshot of close()
+    // must see the leader gone, and the orphan alone holding the pipe.
+    const leader = (server as unknown as { proc?: { exitCode: number | null } }).proc;
+    const exited = performance.now() + 2000;
+    while (leader?.exitCode !== 0 && performance.now() < exited) await Bun.sleep(10);
+    expect(leader?.exitCode).toBe(0);
     const started = performance.now();
     await server.close();
     expect(performance.now() - started).toBeLessThan(FORCE_KILL_DELAY_MS + PIPE_GIVE_UP_MS + 750);
     expect(failures.join("\n")).toContain("readers abandoned");
   } finally {
     try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch { /* Already exited. */ }
+    untrack?.();
     await server.close();
   }
 }, 8000);
@@ -73,14 +89,15 @@ test.each(["stdout", "stderr"])("server cleanup abandons %s held by a real orpha
 test("recording waits for both readers and rejects a partial frame queued during shutdown", async () => {
   const stdout = stream();
   const stderr = stream();
+  const cwd = directory();
+  const bridge = new ExperimentBridge({ ...spec, recording: cwd }, cwd, "probe");
+  const abort = mock(() => {});
+  // Mocks last, right before the try that restores them (round 35, contracts 2).
   const kill = spyOn(process, "kill").mockImplementation(() => true);
   const spawn = spyOn(Bun, "spawn").mockReturnValue({ pid: 2147483647,
     stdout: stdout.readable, stderr: stderr.readable, stdin: { write() {} }, kill() {},
     exited: new Promise(() => {}),
   } as unknown as ReturnType<typeof Bun.spawn>);
-  const cwd = directory();
-  const bridge = new ExperimentBridge({ ...spec, recording: cwd }, cwd, "probe");
-  const abort = mock(() => {});
   try {
     bridge.start(() => {}, () => {}, abort);
     const closing = bridge.closeProtocol();

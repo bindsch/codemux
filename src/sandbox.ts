@@ -1,4 +1,9 @@
 import type { AutonomyLevel } from "./types.js";
+import { UsageRefusalError } from "./validation.js";
+// From the format module, which owns the rule, rather than the registry
+// barrel: sandbox.ts sits below the session layer and imports only this
+// one helper from it.
+import { canonicalSandboxBlockPath } from "./session/registry/format.js";
 
 export type ScodeFsMode = "ro" | "rw";
 export const SCODE_TRUST_LEVELS = ["trusted", "standard", "untrusted"] as const;
@@ -33,6 +38,19 @@ export interface SandboxOptions {
   accountId?: string;
   /** Launcher-owned temporary harness state, outside the read-only project. */
   harnessStateDirs?: readonly string[];
+  /**
+   * Paths scode must make unreachable, read and write, even though the
+   * default profile allows them (an operator's harness config directory).
+   * Absolute non-NUL paths, emitted as repeated `--block`. A later
+   * harnessStateDirs allow can reopen a child of a blocked path — scode
+   * emits the block first and the child allow after it, and its final
+   * guards re-assert both, so exactly the allowed child stays reachable.
+   * A caller-supplied block that overlaps one of the launcher's
+   * harnessStateDirs — equal to it, an ancestor of it, or a path inside
+   * it, which scode's recursive allow would drop — is refused before
+   * that: see assertNoCallerBlockOverStateDirs.
+   */
+  blockPaths?: readonly string[];
 }
 
 export function mapAutonomyToScodeFsMode(autonomy?: AutonomyLevel): ScodeFsMode {
@@ -78,6 +96,13 @@ export function buildScodeCommand(
   }
   if (options?.keepEnv && options.keepEnv.length > 0) {
     scodeCmd.push("--keep-env", options.keepEnv.join(","));
+  }
+  const blockedPaths = options?.blockPaths ?? [];
+  for (const blocked of blockedPaths) {
+    if (!blocked.startsWith("/") || blocked.includes("\0")) {
+      throw new Error("sandbox block path must be an absolute non-NUL path");
+    }
+    scodeCmd.push("--block", blocked);
   }
   for (const directory of options?.harnessStateDirs ?? []) {
     if (!directory.startsWith("/") || directory.includes("\0")) {
@@ -144,6 +169,67 @@ export function withKeepEnvExemption(
       keepEnvRequired ||
       Object.keys(injectedEnv).some((name) => isCredentialEnvName(name)),
   };
+}
+
+/** Refuses a caller-supplied `--sandbox-block` path that overlaps — in
+ * EITHER direction — a directory the launcher itself must allow as
+ * harness state. A block that equals or contains the state directory
+ * loses to scode's ordering: scode emits the block first and the child
+ * allow after it, so the pair silently re-opens exactly the blocked tree
+ * (review round 9, edges finding 1). A block INSIDE the state directory
+ * loses to scode's resolution: the launcher's recursive `--allow` of the
+ * state directory covers its descendants, and scode drops a descendant
+ * block from its blocked set, so the block never reaches the child at all
+ * (review round 20, contracts-2 finding 1 — a block of the session's own
+ * `.credentials.json` was emitted and then silently discarded). The
+ * launcher's own project-settings blocks are the deliberate exception —
+ * the allow child of a block is that design — so the check runs where the
+ * caller's blocks are still alone, before the launcher appends its own
+ * (launch.ts, session/cli-launch.ts).
+ * Both sides are canonicalized with the registry's own rule
+ * (canonicalSandboxBlockPath) before the prefix tests: scode collapses
+ * `..` and trailing slashes and dereferences symlinks, so a raw-spelling
+ * comparison let `/tmp/state/`, `/tmp/state/../state`, and a symlink
+ * alias of a state directory through (review round 10, contracts 4,
+ * edges 2, contracts-2 1). The refusal names the caller's raw spelling
+ * and the state directory as given. */
+export function assertNoCallerBlockOverStateDirs(
+  callerBlockPaths: readonly string[],
+  harnessStateDirs: readonly string[]
+): void {
+  const stateDirs = harnessStateDirs.map(canonicalSandboxBlockPath);
+  for (const blocked of callerBlockPaths) {
+    const canonicalBlocked = canonicalSandboxBlockPath(blocked);
+    // The canonical form never ends in a slash except for the root, whose
+    // descendant prefix stays "/" — every absolute state directory starts
+    // with it — instead of "//", which matched nothing and let a caller
+    // block of "/" re-open every state tree (review round 11, edges 1).
+    const descendantPrefix = canonicalBlocked === "/" ? "/" : `${canonicalBlocked}/`;
+    for (let index = 0; index < stateDirs.length; index += 1) {
+      const directory = harnessStateDirs[index] as string;
+      const canonicalDirectory = stateDirs[index] as string;
+      if (
+        canonicalDirectory === canonicalBlocked ||
+        canonicalDirectory.startsWith(descendantPrefix)
+      ) {
+        throw new UsageRefusalError(
+          `--sandbox-block ${blocked} covers the launch's own harness state directory ${directory}, ` +
+            "which the launch must allow; scode would re-allow it after the block. Remove the block or narrow it."
+        );
+      }
+      // The reverse overlap, with the root's prefix spelled the same way:
+      // a state directory of "/" would recursively allow everything and
+      // drop every caller block beneath it.
+      const statePrefix = canonicalDirectory === "/" ? "/" : `${canonicalDirectory}/`;
+      if (canonicalBlocked.startsWith(statePrefix)) {
+        throw new UsageRefusalError(
+          `--sandbox-block ${blocked} sits inside the launch's own harness state directory ${directory}, ` +
+            "which the launch must allow recursively; scode drops a block beneath its own allow, so the block cannot be honored. " +
+            "Remove the block or move it outside the state directory."
+        );
+      }
+    }
+  }
 }
 
 export function buildSandboxEnv(

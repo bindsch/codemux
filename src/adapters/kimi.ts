@@ -1,6 +1,5 @@
-import { statSync } from "node:fs";
-import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import type { SandboxOptions, ScodeTrustLevel } from "../sandbox.js";
+import { join } from "node:path";
 import { BaseAdapter, type RunContext } from "./base.js";
 import { assertNoKimiProjectExecutionConfig } from "../project-safety.js";
 import { kimiPromptIsCommand } from "../session/kimi-session.js";
@@ -8,7 +7,11 @@ import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import { writeKimiNoToolsFile } from "../kimi-no-tools.js";
 import { createKimiHermeticHome, KIMI_HERMETIC_ENV_ASSIGNMENTS, KIMI_HERMETIC_ENV_OMISSIONS } from "../kimi-hermetic.js";
 import { assertNoKimiHermeticProjectConfig } from "../kimi-project-safety.js";
-import { kimiResult } from "../result-envelope/kimi.js";
+import { kimiPlainResult, kimiResult } from "../result-envelope/kimi.js";
+import { appendDiagnostic } from "../result-envelope.js";
+import { foldOverflowEvidence, foldScanEvidence, KimiPlainFold } from "../plain-unwrap/kimi-fold.js";
+import { kimiEffectiveHome, kimiRealBrandHome } from "./kimi-home.js";
+import { escapeForTerminal } from "../usage-protocol.js";
 import { parseVersionParts } from "../harness-compatibility.js";
 import { readExperimentRunSpec } from "../experiment-mcp.js";
 import { ExperimentKimiRun } from "../experiment-kimi-run.js";
@@ -24,16 +27,17 @@ import type {
   RunRequest,
   RunResult,
   AdapterCapabilities,
-} from "../types.js";
-
-const REPLY_BULLET_PREFIX = "• ";
-const REPLY_CONTINUATION_INDENT = "  ";
+ LaunchIntent } from "../types.js";
+import { kimiLoginState, loginHome, type LoginState } from "../harness-health.js";
 
 /**
- * Kimi Code CLI (`kimi`), installed 2.3.2; contract audited against 0.31.1.
- * Headless bullet blocks with two-space continuations were observed on 2.3.2.
- * processRunResult removes that formatting only for installed major versions
- * 2 and higher when all stdout matches. Older and unknown versions stay unchanged.
+ * Kimi Code CLI (`kimi`), installed 2.4.0; contract audited against 2.4.0
+ * (live gate 2026-11-02; the 0.31.1 flag audit below still holds).
+ * Every headless run asks for the stream-json wire; plain runs unwrap it
+ * (reply and wire-log usage, kimiPlainResult). Only a binary that ignored
+ * `--output-format` prints the 2.3.2 bullet blocks with two-space
+ * continuations, removed by processRunResult only for installed major
+ * versions 2 and higher when all stdout matches; older ones stay as-is.
  *
  * Autonomy maps onto three native switches in interactive sessions: the default
  * asks before acting, `--yolo` auto-approves tool calls while still asking
@@ -83,7 +87,7 @@ export class KimiAdapter extends BaseAdapter {
       effortLevels: [],
       // Verified live on 2026-09-17 through a provider override (GLM-5.3
       // via Z.AI): under --tools none the read and shell probes produced
-      // neither secret, while a plain run produced both (docs/HERMETIC.md).
+      // neither secret, while a plain run produced both (docs/isolation.md).
       supportsToolSelection: true,
       supportsHermetic: true,
       supportsResultJson: true,
@@ -109,7 +113,7 @@ export class KimiAdapter extends BaseAdapter {
     const override = this.validatedProvider();
     const resolved = model ?? override?.model;
     if (resolved === undefined && override !== null) {
-      throw new Error(
+      throw new UsageRefusalError(
         "kimi needs a model for the provider override; pass --model or set CODEMUX_KIMI_PROVIDER_MODEL"
       );
     }
@@ -143,86 +147,35 @@ export class KimiAdapter extends BaseAdapter {
   }
 
   /**
-   * The brand home whose `.codemux/` holds the generated agent file: the one
-   * a plain run of this request reads config.toml, skills and agents from.
-   * The sanitized child environment drops KIMI_CODE_HOME unless the operator
-   * passes it through with --pass-env, in which case both kinds of run use
-   * that directory. The value is read exactly as the child receives it --
-   * the session boundary's belief (round al11), applied to the run path
-   * (round al21, contracts-2 minor 7): kimi reads the variable without
-   * trimming, so a padded value names a real (differently spelled)
-   * directory to the child, and a trimmed copy here placed the generated
-   * agent file under a spelling the child never reads. An empty value is
-   * refused rather than treated as unset (round al16, the session's rule):
-   * kimi's own resolver preserves an empty KIMI_CODE_HOME and places its
-   * store under the working directory, so no default codemux could fall
-   * back to names the directory the child actually uses. A value that names
-   * no existing directory is refused too, on every run that passes the
-   * variable through (round al29, correctness major 5; the TUI path joined
-   * in round al30, contracts minor — validateTuiRequest ran the model and
-   * project checks but not this one, so `codemux tui -a kimi` launched with
-   * a typo'd home where the same run was refused): the child reads its
-   * config, skills and store from that directory whatever the run kind, so
-   * a passed-through value is the operator naming their real brand home,
-   * and a missing one is a typo kimi would paper over by creating a fresh,
-   * empty store. The DEFAULT home carries no such check: it legitimately
-   * does not exist before kimi's own first run.
+   * The brand home whose `.codemux/` holds the generated agent file. The
+   * whole rule — the exact-as-read value, the empty and relative and
+   * missing-directory refusals, the default home's exemption — lives with
+   * its grounding in kimi-home.ts (kimiRealBrandHome).
    */
   private realBrandHome(passthroughEnv?: readonly string[]): string {
-    const passedThrough = passthroughEnv?.includes("KIMI_CODE_HOME") ?? false;
-    const configured = this.environment.KIMI_CODE_HOME;
-    if (!passedThrough || configured === undefined) {
-      return join(this.effectiveHome(), ".kimi-code");
-    }
-    if (configured === "") {
-      throw new UsageRefusalError(
-        "KIMI_CODE_HOME must not be empty when passed through; kimi's own " +
-          "resolver preserves an empty value and places its store under the " +
-          "working directory — unset the variable or give it an absolute " +
-          "path"
-      );
-    }
-    if (!isAbsolute(configured)) {
-      throw new UsageRefusalError("KIMI_CODE_HOME must be an absolute path");
-    }
-    let stat: ReturnType<typeof statSync> | null;
-    try {
-      stat = statSync(configured);
-    } catch {
-      stat = null;
-    }
-    if (stat === null || !stat.isDirectory()) {
-      throw new UsageRefusalError(
-        "KIMI_CODE_HOME must be an existing directory when passed through; " +
-          "the value names no directory here — kimi would create a fresh, " +
-          "empty store under it instead of reading the brand home the " +
-          "operator meant, so the typo fails the launch rather than " +
-          "silently forking the store. Create the directory or unset the " +
-          "variable"
-      );
-    }
-    return configured;
+    return kimiRealBrandHome(this.environment, passthroughEnv, this.effectiveHome());
   }
 
   /** The user home a run sees: the seam, else $HOME, else the account home. */
   private effectiveHome(): string {
-    if (this.homeDirectory !== undefined && !isAbsolute(this.homeDirectory)) {
-      throw new Error("Kimi home directory must be an absolute path");
-    }
-    const home = this.homeDirectory ?? this.environment.HOME;
-    return home && isAbsolute(home) ? home : homedir();
+    return kimiEffectiveHome(this.environment, this.homeDirectory);
   }
 
-  override prepareRun(request: RunRequest): RunContext {
+  override prepareRun(request: RunRequest, _sandboxTrust?: ScodeTrustLevel, _sandboxOptions?: SandboxOptions, launch: LaunchIntent = {}): RunContext {
+    const printOnly = launch.printOnly === true;
     if (request.experimentMcp) {
       const spec = readExperimentRunSpec(request);
-      if (!request.hermetic && !spec.control) throw new Error("Kimi experiment requires a private hermetic home");
+      if (!request.hermetic && !spec.control) throw new UsageRefusalError("Kimi experiment requires a private hermetic home");
+      // The control probe's write target is the brand home carried on the
+      // request (the planted scratch home), never an environment hint the
+      // planted adapter happens to carry.
+      const controlBrandHome = request.kimiControlBrandHome ?? this.realBrandHome(request.passthroughEnv);
       const context: RunContext = request.hermetic
-        ? { kimiHermeticHome: createKimiHermeticHome(this.realBrandHome(), true) }
-        : { kimiNoToolsFile: writeKimiNoToolsFile(this.realBrandHome(request.passthroughEnv)) };
+        ? { kimiHermeticHome: createKimiHermeticHome(this.realBrandHome(), true, printOnly) }
+        : { kimiNoToolsFile: writeKimiNoToolsFile(controlBrandHome) };
       try {
         const experiment = new ExperimentKimiRun(spec, request.cwd ?? process.cwd(),
-          context.kimiHermeticHome?.kimiHome ?? this.realBrandHome(request.passthroughEnv),
+          context.kimiHermeticHome?.kimiHome ?? controlBrandHome,
           context.kimiHermeticHome?.agentFile ?? context.kimiNoToolsFile!.path, this.environment);
         context.experimentKimi = experiment;
         context.experimentRecording = experiment.recordingPath;
@@ -231,15 +184,22 @@ export class KimiAdapter extends BaseAdapter {
       } catch (error) { this.cleanupRunSync(context); throw error; }
     }
     if (request.hermetic) {
-      return { kimiHermeticHome: createKimiHermeticHome(this.realBrandHome(), request.tools === "none") };
+      const context: RunContext = {
+        kimiHermeticHome: createKimiHermeticHome(this.realBrandHome(), request.tools === "none", printOnly),
+      };
+      if (!request.resultJson) context.stdoutSink = new KimiPlainFold();
+      return context;
     }
     // One generated agent file per --tools none run, never shared and never
-    // recorded on the adapter: the launcher owns the returned context and
-    // finalizes the file in cleanupRun when this launch ends.
-    if (request.tools !== "none") return {};
-    return {
-      kimiNoToolsFile: writeKimiNoToolsFile(this.realBrandHome(request.passthroughEnv)),
-    };
+    // recorded on the adapter: the launcher owns the context, finalizing the
+    // file in cleanupRun when this launch ends.
+    if (request.tools !== "none") {
+      return request.resultJson ? {} : { stdoutSink: new KimiPlainFold() };
+    }
+    const noToolsFile = writeKimiNoToolsFile(this.realBrandHome(request.passthroughEnv));
+    const context: RunContext = { kimiNoToolsFile: noToolsFile };
+    if (!request.resultJson) context.stdoutSink = new KimiPlainFold();
+    return context;
   }
 
   override cleanupRunSync(context?: RunContext): void {
@@ -335,8 +295,16 @@ export class KimiAdapter extends BaseAdapter {
     }
 
     // 0.31.1 has no stdin transport: the prompt is an argv value. BaseAdapter
-    // bounds its length, the same as the other argv-only harnesses.
-    if (request.resultJson || request.experimentMcp) cmd.push("--output-format", "stream-json");
+    // bounds its length, the same as the other argv-only harnesses. Every run
+    // asks for the stream-json wire (0.31.1 prints it; the session driver
+    // rests on the same floor), not only --result-json ones: the plain path
+    // reads the reply and the wire-log usage off the same stream
+    // (kimiPlainResult), so a plain run records tokens like claude, zai, agy,
+    // codex, and opencode plain runs do. A plain run never captures that
+    // stream whole — prepareRun hangs KimiPlainFold on the context, which
+    // drops the tool payloads as they arrive, so tool volume cannot reach
+    // the capture bound (the opencode/codex rule).
+    cmd.push("--output-format", "stream-json");
     cmd.push("--prompt", request.prompt);
     return cmd;
   }
@@ -346,7 +314,8 @@ export class KimiAdapter extends BaseAdapter {
   }
 
   override processRunResult(result: RunResult, request: RunRequest, context?: RunContext, failure?: ExperimentFailure): RunResult {
-    result = { ...result, scanSurface: result.stdout + result.stderr };
+    // The leak scan covers the whole printed output, shed tool payloads included (round 17, contracts-2 1).
+    result = { ...result, scanSurface: result.stdout + result.stderr + foldScanEvidence(context?.stdoutSink) };
     if (request.resultJson || request.experimentMcp) {
       if (request.hermetic && !context?.kimiHermeticHome && !failure) {
         throw new Error("kimi hermetic home was not prepared before reading results");
@@ -365,26 +334,46 @@ export class KimiAdapter extends BaseAdapter {
       }
       return normalized;
     }
+    // Plain runs: the same structured launch, unwrapped. The reply and the
+    // wire-log usage come off the stream exactly as a --result-json run's
+    // do, while stdout keeps the plain contract (the reply, never the wire);
+    // a binary that ignored --output-format keeps its verbatim, bullet
+    // unwrapped text and records no usage (kimiPlainResult's hatch). When
+    // the launch streamed (the context's KimiPlainFold), result.stdout is
+    // already the folded subset — the hatch's raw bytes or the kept wire
+    // lines — and the unwrap below parses it unchanged.
+    if (result.captureLimitExceeded) {
+      // The 125 said only that a line passed 16 MiB; the fold held the
+      // offender's first bytes as it latched, so the failure names the
+      // line instead of leaving the run's killer nameless (lane C30,
+      // item 2). Controls escape with the helper the other stderr-bearing
+      // paths use, so a hostile line cannot repaint the terminal from the
+      // failure message itself.
+      const overflow = foldOverflowEvidence(context?.stdoutSink);
+      if (overflow !== null) {
+        const length = overflow.final
+          ? `${overflow.bytes} bytes`
+          : `at least ${overflow.bytes} streamed bytes`;
+        result = {
+          ...result,
+          stderr: appendDiagnostic(
+            result.stderr,
+            `kimi: the line that passed the capture limit is ${length} long and starts with ` +
+              `(first 512 bytes, controls escaped): ${JSON.stringify(escapeForTerminal(overflow.prefix))}`
+          ),
+        };
+      }
+    }
+    if (request.hermetic && !context?.kimiHermeticHome) {
+      throw new Error("kimi hermetic home was not prepared before reading results");
+    }
+    let model = request.model;
+    try { model = this.modelFor(model); } catch { /* validateRunRequest already refused it */ }
+    const brandHome = context?.kimiHermeticHome?.kimiHome ?? this.realBrandHome(request.passthroughEnv);
     const majorVersion = context?.harnessVersion
       ? parseVersionParts(context.harnessVersion)?.[0]
       : undefined;
-    if (majorVersion === undefined || majorVersion < 2) return result;
-    const blocks: string[] = [];
-    const stdout = result.stdout.replace(/\r\n/g, "\n");
-    for (const block of stdout.replace(/\n+$/, "").split(/\n+(?=• )/)) {
-      const [first, ...continuation] = block.split("\n");
-      if (
-        !first?.startsWith(REPLY_BULLET_PREFIX) ||
-        continuation.some((line) => line !== "" && !line.startsWith(REPLY_CONTINUATION_INDENT))
-      ) {
-        return result;
-      }
-      blocks.push([
-        first.slice(REPLY_BULLET_PREFIX.length),
-        ...continuation.map((line) => line.slice(REPLY_CONTINUATION_INDENT.length)),
-      ].join("\n").replace(/\n+$/, ""));
-    }
-    return { ...result, stdout: blocks.join("\n\n").replace(/\n+$/, "") + "\n" };
+    return kimiPlainResult(result, { ...request, model }, brandHome, context, majorVersion);
   }
 
   override validateRunRequest(request: RunRequest): void {
@@ -478,5 +467,10 @@ export class KimiAdapter extends BaseAdapter {
       cmd.push(...this.mapAutonomy(autonomy));
     }
     return cmd;
+  }
+
+  /** The kimi login read: the credential file's expiry and refresh token. */
+  override loginState(): LoginState {
+    return kimiLoginState(loginHome(this.environment), this.environment);
   }
 }

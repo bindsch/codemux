@@ -120,6 +120,55 @@ describe("sandbox utilities", () => {
     );
   });
 
+  test("buildScodeCommand renders blocks before harness-state allows", () => {
+    // The --experiment-project-settings shape: the operator's config root
+    // and the ~/.claude.json beside it blocked, then this run's own
+    // private directory re-allowed. scode emits its final guards in the
+    // same order (block first, child allow after), so the child allow
+    // wins inside exactly that directory.
+    expect(
+      buildScodeCommand(
+        ["claude", "-p", "hi"],
+        "/tmp/fixture",
+        "low",
+        {
+          blockPaths: ["/Users/example/.claude", "/Users/example/.claude.json"],
+          harnessStateDirs: ["/Users/example/.claude/.codemux-hermetic/run-1-a"],
+        }
+      )
+    ).toEqual([
+      "scode",
+      "-C",
+      "/tmp/fixture",
+      "--trust",
+      "standard",
+      "--rw",
+      "--block",
+      "/Users/example/.claude",
+      "--block",
+      "/Users/example/.claude.json",
+      "--allow",
+      "/Users/example/.claude/.codemux-hermetic/run-1-a",
+      "--",
+      "claude",
+      "-p",
+      "hi",
+    ]);
+  });
+
+  test("buildScodeCommand refuses relative and NUL block paths", () => {
+    expect(() =>
+      buildScodeCommand(["claude"], undefined, "low", { blockPaths: ["relative/path"] })
+    ).toThrow("sandbox block path must be an absolute non-NUL path");
+    expect(() =>
+      buildScodeCommand(["claude"], undefined, "low", { blockPaths: ["/abs/path\0x"] })
+    ).toThrow("sandbox block path must be an absolute non-NUL path");
+    // Absolute paths pass; an empty list renders nothing.
+    expect(
+      buildScodeCommand(["claude"], undefined, "low", { blockPaths: [] })
+    ).not.toContain("--block");
+  });
+
   test("untrusted trust cannot be weakened by non-read-only autonomy", () => {
     const cmd = buildScodeCommand(
       ["codex", "exec"],

@@ -75,9 +75,24 @@ describe("codex session e2e - approvals", () => {
     const session = await startAndWait();
     send(session.driver, { type: "user", text: "scenario:ask dangerous" });
     const request = await waitFor(session.events, of("permission_request"), "permission_request");
+    // A denial message cannot ride the codex wire (the decline carries no
+    // text channel): rejected `unsupported`, the request stays pending.
+    send(session.driver, {
+      type: "permission_decision",
+      request_id: request.request_id,
+      decision: "deny",
+      message: "Not here.",
+    });
+    const rejected = await waitFor(
+      session.events,
+      (events) => events.find((event) => event.type === "input_rejected" && event.reason === "unsupported"),
+      "the message rejection"
+    );
+    expect(rejected.input_seq).toBe(2);
     send(session.driver, { type: "permission_decision", request_id: request.request_id, decision: "deny" });
     const resolved = await waitFor(session.events, of("permission_resolved"), "permission_resolved");
     expect(resolved.resolution).toBe("deny");
+    expect(resolved.message).toBeUndefined();
     const result = await waitFor(session.events, of("tool_result"), "tool_result");
     expect(result.is_error).toBe(true);
     await waitFor(session.events, of("turn_completed"), "turn_completed");

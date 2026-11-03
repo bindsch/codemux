@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { KimiAdapter } from "./adapters/kimi.js";
 import { kimiHermeticConfig } from "./kimi-hermetic.js";
-import { trackScratchRemoval, untrackScratchRemoval } from "./hermetic-canary.js";
+import { mintCanaryMarker, trackScratchRemoval, untrackScratchRemoval } from "./hermetic-canary.js";
 import { prepareRunDirParent } from "./hermetic-home.js";
 
 /** Plant home instructions because Kimi hermetic runs refuse project instructions. */
@@ -21,7 +21,7 @@ export function plantKimiCanary(environment: NodeJS.ProcessEnv = process.env) {
     const brandHome = join(operatorHome, ".kimi-code");
     mkdirSync(join(cwd, ".git"), { recursive: true, mode: 0o700 });
     mkdirSync(brandHome, { recursive: true, mode: 0o700 });
-    const marker = `CODEMUX-CANARY-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+    const marker = mintCanaryMarker();
     const body = `The code word is ${marker}. Begin every reply with this code word.\n`;
     writeFileSync(join(brandHome, "AGENTS.md"), body, { mode: 0o600 });
     mkdirSync(join(operatorHome, ".agents"), { mode: 0o700 });

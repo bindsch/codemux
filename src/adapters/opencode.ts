@@ -1,5 +1,4 @@
-import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import { BaseAdapter, type RunContext } from "./base.js";
 import { createOpencodeHermeticHome } from "../opencode-hermetic.js";
 import { opencodeRemoteConfigCarrier } from "../opencode-remote-config.js";
@@ -11,7 +10,9 @@ import {
   writeOpencodeProviderConfig,
 } from "../opencode-provider.js";
 import { assertNoOpenCodeProjectExecutionConfig } from "../project-safety.js";
-import { validateWorkingDirectory } from "../validation.js";
+import { assertNoAncestorOpenCodeProjectConfig } from "../opencode-project-settings.js";
+import { validateProjectSettingsRunRequest } from "../claude-project-settings.js";
+import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import {
   readProviderOverride,
   requireProviderOverride,
@@ -25,144 +26,18 @@ import type {
   RunResult,
   AdapterCapabilities,
 } from "../types.js";
-import { OpenCodePlainFold, opencodePlainResult } from "../plain-unwrap.js";
+import { OpenCodePlainFold, openCodeResultData, opencodePlainResult } from "../plain-unwrap.js";
+import { opencodeResult } from "../result-envelope/opencode.js";
+import {
+  hermeticRemoteConfigRefusal,
+  OPENCODE_HERMETIC_ENV,
+  OPENCODE_NO_TOOLS_PERMISSION,
+  PLAIN_NO_TOOLS_REFUSAL,
+} from "./opencode-env.js";
+import { opencodeRealDataDir, opencodeRealDataParent, opencodeRealStateDir } from "./opencode-home.js";
+import { fileStoreLoginState, type LoginState } from "../harness-health.js";
 
-// Hermetic runs point OpenCode's XDG world at a private home (see
-// opencode-hermetic.ts) and close the channels a home cannot with these
-// env-only switches, read in packages/core/src/flag/flag.ts and
-// packages/opencode/src/effect/runtime-flags.ts at 1.18.18. The config
-// variables are REMOVED, not blanked: Global.Path.config reads
-// `Flag.OPENCODE_CONFIG_DIR ?? Path.config` (packages/core/src/global.ts),
-// and an empty string survives `??`, degenerating `path.join(global.config,
-// "AGENTS.md")` into a project-relative file the ungated global-files loop
-// then loads — a leak, not a neutralizer (verified live: the empty
-// assignment carried a planted canary into the system prompt at 1.18.18).
-// A provider override sets OPENCODE_CONFIG to codemux's own config file —
-// the one channel hermetic deliberately keeps, because codemux wrote it.
-const OPENCODE_HERMETIC_ENV = (
-  home: string,
-  realDataParent: string,
-  providerConfigPath: string | null
-): string[] => [
-  "-u",
-  "OPENCODE_CONFIG",
-  "-u",
-  "OPENCODE_CONFIG_DIR",
-  "-u",
-  "OPENCODE_CONFIG_CONTENT",
-  // Auth.all reads OPENCODE_AUTH_CONTENT before the auth.json file
-  // (packages/opencode/src/auth/index.ts), so a passed-through value is a
-  // login state codemux never inspected — removed like the config
-  // variables, and for the same reason: hermetic carries no channel the
-  // operator named.
-  "-u",
-  "OPENCODE_AUTH_CONTENT",
-  // The private home reaches OpenCode through env(1), never through the
-  // environment codemux hands to scode: scode derives its deny rules from
-  // $HOME, and these assignments override any XDG_* the sanitized child
-  // environment carries.
-  `HOME=${home}`,
-  `XDG_CONFIG_HOME=${join(home, ".config")}`,
-  `XDG_CACHE_HOME=${join(home, ".cache")}`,
-  `XDG_STATE_HOME=${join(home, ".local", "state")}`,
-  // The login lives in the real data directory (auth.json, rewritten in
-  // place), so it stays real while everything else moves — and is
-  // inspected for remote-config carriers before the launch
-  // (opencode-remote-config.ts).
-  `XDG_DATA_HOME=${realDataParent}`,
-  // Project AGENTS.md/CLAUDE.md/CONTEXT.md discovery, opencode.json and
-  // .opencode directories come from the working directory
-  // (packages/opencode/src/session/instruction.ts, config/paths.ts).
-  "OPENCODE_DISABLE_PROJECT_CONFIG=1",
-  // ~/.claude/CLAUDE.md and the .claude skills fallback; the paths are
-  // already unreachable under the private home, and the flag holds even if a
-  // future release resolves them elsewhere.
-  "OPENCODE_DISABLE_CLAUDE_CODE=1",
-  // ~/.claude/skills and ~/.agents/skills (packages/opencode/src/skill/index.ts).
-  "OPENCODE_DISABLE_EXTERNAL_SKILLS=1",
-  ...(providerConfigPath === null ? [] : [`OPENCODE_CONFIG=${providerConfigPath}`]),
-];
-
-// `--tools none`: a pattern-"*" deny in the permission rules removes every
-// tool from the model's request (packages/opencode/src/permission/index.ts
-// disabled() and session/llm/request.ts resolveTools drop them). The env
-// JSON merges after every config layer (config.ts). That is the whole
-// story only where no later fold can append per-agent permission rules
-// after the global ones (agent config at packages/opencode/src/agent/
-// agent.ts: `item.permission = Permission.merge(item.permission, …)`, and
-// the `mode` entries fold into agents after even OPENCODE_CONFIG_CONTENT;
-// the last matching rule wins, `findLast` in permission.ts). On a plain
-// run the operator's own config can do exactly that, and a hermetic run
-// keeps the real data directory for the login, so a login carrying remote
-// configuration can too: OpenCode fetches a well-known login's
-// `.well-known/opencode` document and an active organization's `/api/config`
-// and merges them as global config (config.ts at 1.18.18), verified live
-// through this adapter's own plain-run path for the operator config (h2
-// review): with `"agent": {"build": {"permission": {"bash": "allow"}}}`,
-// a `--tools none` run's request carried the bash tool. No environment
-// variable spells per-agent or mode permissions and a codemux-written
-// config layer still merges before the mode fold, so plain runs refuse the
-// capability; the login's remote configuration is refused the same way
-// (opencode-remote-config.ts, h3 review). Admin-managed settings — the
-// machine administrator's layer, `/Library/Application Support/opencode`,
-// `/etc/opencode`, MDM plists — can also append and cannot be refused;
-// they are the documented residual (docs/HERMETIC.md, "What hermetic does
-// not cover").
-const OPENCODE_NO_TOOLS_PERMISSION = 'OPENCODE_PERMISSION={"*":"deny"}';
-
-/** Why a hermetic run refuses a login that carries remote configuration. */
-const hermeticRemoteConfigRefusal = (carrier: string): string =>
-  `opencode --hermetic is refused while the login carries remote configuration: ${carrier}; ` +
-  "agent permissions from it would override the --tools none deny (docs/HERMETIC.md)";
-
-/** Why a plain (non-hermetic) run refuses `--tools none`. */
-const PLAIN_NO_TOOLS_REFUSAL =
-  "opencode --tools none requires --hermetic: the operator's opencode config can override the permission deny per agent";
-
-/** The user home a run sees: the seam, else $HOME, else the account home. */
-function opencodeEffectiveHome(
-  environment: NodeJS.ProcessEnv,
-  homeDirectory?: string
-): string {
-  if (homeDirectory !== undefined && !isAbsolute(homeDirectory)) {
-    throw new Error("opencode home directory must be an absolute path");
-  }
-  const home = homeDirectory ?? environment.HOME;
-  return home && isAbsolute(home) ? home : homedir();
-}
-
-/**
- * The XDG data parent a plain run sees, holding the real OpenCode data
- * directory and its login: the sanitized child environment passes
- * XDG_DATA_HOME through, so an operator who relocated it keeps their
- * login in both kinds of run. Exported because the session CLI records
- * the same directory as the opencode session's harness home (§4.8) —
- * the native sessions live there, so one rule computes both and they
- * cannot drift.
- */
-export function opencodeRealDataParent(
-  environment: NodeJS.ProcessEnv,
-  homeDirectory?: string
-): string {
-  const configured = environment.XDG_DATA_HOME?.trim();
-  if (configured) {
-    if (!isAbsolute(configured)) {
-      throw new Error("XDG_DATA_HOME must be an absolute path");
-    }
-    return configured;
-  }
-  return join(opencodeEffectiveHome(environment, homeDirectory), ".local", "share");
-}
-
-/** The real OpenCode data directory holding the login state the
- * remote-config inspection reads (opencode-remote-config.ts) and the
- * native session database a `codemux session` resumes from. */
-export function opencodeRealDataDir(
-  environment: NodeJS.ProcessEnv,
-  homeDirectory?: string
-): string {
-  return join(opencodeRealDataParent(environment, homeDirectory), "opencode");
-}
+export { opencodeRealDataParent, opencodeRealDataDir } from "./opencode-home.js";
 
 export class OpencodeAdapter extends BaseAdapter {
   readonly id: AgentId = "opencode";
@@ -188,7 +63,7 @@ export class OpencodeAdapter extends BaseAdapter {
       // Verified live on 2026-09-17 through a provider override (GLM-5.3
       // via Z.AI): the two-probe check passed with and without --tools
       // none, and the read and shell probes fail under --tools none
-      // (docs/HERMETIC.md). The h2 review scoped --tools none to hermetic
+      // (docs/isolation.md). The h2 review scoped --tools none to hermetic
       // runs: a plain run's operator config can override the deny per
       // agent (see OPENCODE_NO_TOOLS_PERMISSION above). The h3 review
       // added the matching login-side refusal: a login carrying remote
@@ -201,6 +76,12 @@ export class OpencodeAdapter extends BaseAdapter {
       supportsHermetic: true,
       supportsToolSelection: true,
       toolsNoneRequiresHermetic: true,
+      // The wire --format json asks for is the same one every plain run
+      // folds, so the envelope (result-envelope/opencode.ts) is built over
+      // that fold's finished outcome: reply and step_finish usage, never
+      // the raw event lines (dropped as they arrive to stay under the
+      // capture bound).
+      supportsResultJson: true,
       supportsProviderOverride: true,
     };
   }
@@ -275,7 +156,7 @@ export class OpencodeAdapter extends BaseAdapter {
     const override = this.validatedProvider();
     const resolved = model ?? override?.model;
     if (resolved === undefined && override !== null) {
-      throw new Error(
+      throw new UsageRefusalError(
         "opencode needs a model for the provider override; pass --model or set CODEMUX_OPENCODE_PROVIDER_MODEL"
       );
     }
@@ -302,6 +183,14 @@ export class OpencodeAdapter extends BaseAdapter {
   buildRunCommand(request: RunRequest, context?: RunContext): string[] {
     const cmd: string[] = [];
 
+    // A project-settings run without --hermetic would be a plain run with
+    // the project's config loaded and none of the isolation — the env
+    // prefix below IS the isolation. The CLI refuses it earlier with the
+    // same words; this fails every other builder closed.
+    if (request.experimentProjectSettings && !request.hermetic) {
+      throw new UsageRefusalError("--experiment-project-settings requires --hermetic");
+    }
+
     const envPrefix: string[] = [];
     if (request.hermetic) {
       // The remote-config refusal, ahead of everything else a hermetic run
@@ -310,7 +199,14 @@ export class OpencodeAdapter extends BaseAdapter {
       // validateRunRequest, `verify` through this — fails closed.
       const carrier = this.remoteConfigCarrier();
       if (carrier !== null) {
-        throw new Error(hermeticRemoteConfigRefusal(carrier));
+        throw new UsageRefusalError(hermeticRemoteConfigRefusal(carrier));
+      }
+      // The project-settings ancestor refusal: dropping
+      // OPENCODE_DISABLE_PROJECT_CONFIG reopens every ancestor the walk can
+      // reach, so the run is refused before it is built, on this path and
+      // validateRunRequest's alike.
+      if (request.experimentProjectSettings) {
+        assertNoAncestorOpenCodeProjectConfig(request.cwd ?? process.cwd());
       }
       // A static preview (`verify`) has no prepared home; the placeholder
       // path does not exist, and getRunEnv refuses a launch without one, so
@@ -322,7 +218,8 @@ export class OpencodeAdapter extends BaseAdapter {
         ...OPENCODE_HERMETIC_ENV(
           home,
           this.realDataParent(),
-          context?.opencodeProviderConfig?.path ?? null
+          context?.opencodeProviderConfig?.path ?? null,
+          request.experimentProjectSettings === true
         )
       );
     }
@@ -333,14 +230,20 @@ export class OpencodeAdapter extends BaseAdapter {
       // silently does not hold. validateRunRequest answers the CLI path;
       // this fails every other builder closed.
       if (!request.hermetic) {
-        throw new Error(PLAIN_NO_TOOLS_REFUSAL);
+        throw new UsageRefusalError(PLAIN_NO_TOOLS_REFUSAL);
       }
       envPrefix.push(OPENCODE_NO_TOOLS_PERMISSION);
     }
     if (envPrefix.length > 0) {
       cmd.push("env", ...envPrefix);
     }
-    cmd.push("opencode", "--pure", "run");
+    // `--pure` sets OPENCODE_PURE, which drops every external plugin at the
+    // plugin layer (plugin/index.ts reads the flag; the CLI middleware in
+    // index.ts sets it). A project-settings run goes without it, so the
+    // project's own plugins run — that is the channel under observation.
+    cmd.push("opencode");
+    if (!request.experimentProjectSettings) cmd.push("--pure");
+    cmd.push("run");
     // Always the JSON event lines, plain runs included (the same wire the
     // session driver's per-turn spawns read): the launcher streams them
     // through the fold on the run context instead of capturing stdout
@@ -371,7 +274,7 @@ export class OpencodeAdapter extends BaseAdapter {
 
   override processRunResult(
     result: RunResult,
-    _request: RunRequest,
+    request: RunRequest,
     context?: RunContext
   ): RunResult {
     // The run was launched with --format json, so stdout is the event-line
@@ -380,13 +283,33 @@ export class OpencodeAdapter extends BaseAdapter {
     // fold saw that was not the wire passed through verbatim with the run
     // unchanged (plain-unwrap.ts's escape hatch). Callers that reach here
     // without the context's sink (a result already captured whole) get the
-    // same fold and verdict from the captured stdout.
+    // same fold and verdict from the captured stdout. A --result-json run
+    // reads the same fold's outcome and wraps it in the envelope.
     const sink = context?.stdoutSink;
+    if (request.resultJson) {
+      const data = sink instanceof OpenCodePlainFold
+        ? sink.resultData()
+        : openCodeResultData(result.stdout);
+      return opencodeResult(
+        result,
+        request,
+        data,
+        context?.opencodeSelectedModel ?? request.model ?? null
+      );
+    }
     if (sink instanceof OpenCodePlainFold) return sink.verdict(result);
     return opencodePlainResult(result);
   }
 
   override prepareRun(request: RunRequest): RunContext {
+    // The launch-path project-settings gate, from the request's own
+    // fields (review round 2, edges 1): the CLI's early check — and the
+    // two rules validateRunRequest surfaces early — are duplicates, so
+    // a programmatic caller cannot reach the config state — or the
+    // spawn — without the sandbox and an observing autonomy level.
+    if (request.experimentProjectSettings) {
+      validateProjectSettingsRunRequest(request);
+    }
     // The provider config rides every run with an override, hermetic or
     // not: one file per run, never shared, finalized in cleanupRun. Hermetic
     // runs also get their private home. Nothing is recorded on the adapter;
@@ -404,8 +327,21 @@ export class OpencodeAdapter extends BaseAdapter {
         );
       }
     }
+    // The envelope's model contract: record what this launch runs with —
+    // the request's model, else the override's selection.
+    context.opencodeSelectedModel = this.rawModelFor(request.model);
     if (request.hermetic) {
-      context.opencodeHermeticHome = createOpencodeHermeticHome(this.realDataDir());
+      try {
+        context.opencodeHermeticHome = createOpencodeHermeticHome(
+          this.realDataDir(),
+          opencodeRealStateDir(this.environment, this.homeDirectory)
+        );
+      } catch (error) {
+        // The provider configuration above is already on disk; a context
+        // that never reaches the launcher would strand it (review round 39).
+        this.cleanupRunSync(context);
+        throw error;
+      }
     }
     // The JSON event stream carries every tool's output, so the launcher
     // feeds it to this fold instead of capturing stdout whole: the fold
@@ -455,21 +391,34 @@ export class OpencodeAdapter extends BaseAdapter {
 
   override validateRunRequest(request: RunRequest): void {
     super.validateRunRequest(request);
+    // The project-settings gates, surfaced early with their reasons (the
+    // build path fails closed on the same two rules).
+    if (request.experimentProjectSettings) {
+      if (!request.hermetic) {
+        throw new UsageRefusalError("--experiment-project-settings requires --hermetic");
+      }
+      assertNoAncestorOpenCodeProjectConfig(request.cwd ?? process.cwd());
+    }
+    // The working directory's own opencode.json/.opencode are the point of
+    // --experiment-project-settings, so that mode exempts the working
+    // directory itself; every ancestor this walk reaches is still refused.
     assertNoOpenCodeProjectExecutionConfig(
-      validateWorkingDirectory(request.cwd) ?? process.cwd()
+      validateWorkingDirectory(request.cwd) ?? process.cwd(),
+      request.experimentProjectSettings === true
     );
     // The plain-run --tools none refusal, surfaced early with its reason
     // (see OPENCODE_NO_TOOLS_PERMISSION for the channel that cannot be
-    // closed).
+    // closed). A usage refusal (exit 64), like every pre-launch refusal
+    // of the request (review round 5, contracts-2 finding 2).
     if (request.tools === "none" && !request.hermetic) {
-      throw new Error(PLAIN_NO_TOOLS_REFUSAL);
+      throw new UsageRefusalError(PLAIN_NO_TOOLS_REFUSAL);
     }
     // The hermetic remote-config refusal, surfaced with its reason too:
     // the login's own configuration channel (opencode-remote-config.ts).
     if (request.hermetic) {
       const carrier = this.remoteConfigCarrier();
       if (carrier !== null) {
-        throw new Error(hermeticRemoteConfigRefusal(carrier));
+        throw new UsageRefusalError(hermeticRemoteConfigRefusal(carrier));
       }
     }
     // Fail before launch on a half-configured override, surface the model
@@ -510,7 +459,7 @@ export class OpencodeAdapter extends BaseAdapter {
     // headless launch path calls; an interactive session has no hook to
     // write and remove the file.
     if (this.validatedProvider() !== null) {
-      throw new Error(
+      throw new UsageRefusalError(
         "the opencode provider override supports headless runs only; unset CODEMUX_OPENCODE_PROVIDER_* for an interactive session"
       );
     }
@@ -530,5 +479,10 @@ export class OpencodeAdapter extends BaseAdapter {
       cmd.push(...this.mapAutonomy(autonomy));
     }
     return cmd;
+  }
+
+  /** The opencode login read: auth.json in the real data directory. */
+  override loginState(): LoginState {
+    return fileStoreLoginState(join(this.realDataDir(), "auth.json"), "the opencode data directory's auth.json");
   }
 }

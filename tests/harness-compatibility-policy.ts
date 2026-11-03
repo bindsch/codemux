@@ -16,7 +16,8 @@ describe("current harness documentation and the version gate agree", () => {
       const agent = row[0] as typeof AGENT_IDS[number];
       // Adapter construction only resolves names; it does not launch a harness.
       const caps = getAdapter(agent, { PATH: "" }).capabilities();
-      expect(row[1], agent).toBe(agent === "qwen" ? "current binary only" : "yes");
+      // A cell may add a note after a semicolon (zai: non-catalog ids ride picker settings).
+      expect((row[1] ?? "").split(";")[0]?.trim(), agent).toBe(agent === "qwen" ? "current binary only" : "yes");
       expect(row[2], agent).toBe("all four");
       expect(caps.autonomyLevels, agent).toEqual(["read-only", "low", "medium", "high"]);
       expect(row[3], agent).toBe(caps.supportsEffort ? caps.effortLevels.join(", ") : "unsupported");
@@ -60,21 +61,12 @@ describe("current harness documentation and the version gate agree", () => {
       expect(rows.get(agent)?.[3], agent).toBe("none");
       expect(HARNESS_CONTRACTS[agent as keyof typeof HARNESS_CONTRACTS]).toBeUndefined();
     }
-    expect(rows.get("agy")?.[4]).toContain("1.3.3");
-    expect(rows.get("agy")?.[3]).toBe("1.2.14");
-    expect(rows.get("claude")?.[4]).toContain("2.1.280");
-    expect(rows.get("claude")?.[3]).toBe("2.1.223");
-  });
-
-  test("legacy entry points link to current contracts without duplicating version tables", async () => {
-    for (const [name, target] of [
-      ["HARNESS-COMPATIBILITY.md", "harnesses.md"],
-      ["HERMETIC.md", "isolation.md"],
-    ]) {
-      const document = await Bun.file(new URL(`../docs/${name}`, import.meta.url)).text();
-      expect(document).toContain(`(${target})`);
-      expect(document).not.toContain("| Harness |");
-    }
+    // Column 4 is the dated 2026-11-02 release-machine install; the dated
+    // installed evidence the gate relies on is the column after it.
+    expect(rows.get("agy")?.[5]).toContain("1.4.12");
+    expect(rows.get("agy")?.[3]).toBe("1.4.12");
+    expect(rows.get("claude")?.[5]).toContain("2.1.300");
+    expect(rows.get("claude")?.[3]).toBe("2.1.300");
   });
 });
 

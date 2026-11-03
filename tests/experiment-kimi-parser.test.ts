@@ -89,3 +89,37 @@ test("Kimi refuses invalid time on the first call before native ID resolution", 
   expect(() => f.accept(toolCall(), NaN)).toThrow(expect.objectContaining({ code: Code.Protocol }));
   expect(f.byKind("turn")).toEqual([]);
 });
+
+// The hold probe of 2026-11-02 (scratch recording 23a82a67): the model wrote a
+// 14 KB argument string it never terminated; Kimi recorded `args: {}`,
+// answered its own "Invalid args" error, and dispatched nothing. The run's
+// final check then failed the whole run on the unparseable native arguments.
+test("Kimi's own rejection of unparseable arguments is accepted and recorded", () => {
+  const f = fixture();
+  const output = `Invalid args for tool "${QUALIFIED}": must have required property 'query'`;
+  f.accept({ ...toolCall(), args: {} }, 1000);
+  f.accept({ type: "tool.result", parentUuid: "tool-call-1", toolCallId: "call-1", result: { output, isError: true, durationMs: 0 } }, 1050);
+  f.accept(stepEnd(), 1200);
+  f.parser.accept({ type: "agent.message.appended", message: { message: { role: "assistant", content: [],
+    toolCalls: [{ type: "function", id: "call-1", name: QUALIFIED, arguments: '{"query":"AAAA' }] },
+    meta: { messageId: "provider-1", usage: USAGE } } });
+  f.parser.finish();
+  expect(f.byKind("harness_invalid_args")).toEqual([{ kind: "harness_invalid_args", call_id: "call-1", name: QUALIFIED, output }]);
+  expect(f.byKind("native_arguments_malformed")).toEqual([
+    { kind: "native_arguments_malformed", call_id: "call-1", name: QUALIFIED, bytes: 14, parse_error: expect.any(String) },
+  ]);
+});
+
+test("unparseable native arguments on a call Kimi ran are still a protocol mismatch", () => {
+  const f = fixture();
+  f.accept(toolCall(), 1000);
+  f.accept({ type: "tool.result", parentUuid: "tool-call-1", toolCallId: "call-1", result: { output: "answer", durationMs: 5 } }, 1050);
+  f.accept(stepEnd(), 1200);
+  f.parser.accept({ type: "agent.message.appended", message: { message: { role: "assistant", content: [],
+    toolCalls: [{ type: "function", id: "call-1", name: QUALIFIED, arguments: '{"query":"AAAA' }] },
+    meta: { messageId: "provider-1", usage: USAGE } } });
+  let thrown: unknown;
+  try { f.parser.finish(); } catch (error) { thrown = error; }
+  expect((thrown as { code?: string }).code).toBe(Code.Protocol);
+  expect(String((thrown as Error).message)).toContain("does not match tool.call evidence");
+});

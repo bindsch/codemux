@@ -62,10 +62,12 @@ describe("the launched call ledger", () => {
         cost_usd: 0.12735,
       });
       // The record line carries no prompt text and no secrets: the fixed
-      // field set only.
+      // field set only. cost_source joined the set in audit round 2, B5
+      // (writer-computed; this claude run's figure is a harness estimate).
       expect(Object.keys(record).sort()).toEqual([
         "agent",
         "autonomy",
+        "cost_source",
         "cwd",
         "duration_ms",
         "exit_code",

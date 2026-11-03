@@ -46,12 +46,14 @@ export const AUTONOMY_EQUIVALENCE: Record<AgentId, AutonomyMapping> = {
   },
   codex: {
     byLevel: {
-      "read-only": "-s read-only -a never",
-      low: "-s workspace-write -a untrusted",
-      medium: "-s workspace-write -a never",
-      high: "-s danger-full-access -a never",
+      "read-only": '-s read-only -c approval_policy="never"',
+      low: '-s workspace-write -c approval_policy="untrusted"',
+      medium: '-s workspace-write -c approval_policy="never"',
+      high: '-s danger-full-access -c approval_policy="never"',
     },
-    notes: "read-only also uses -a never; under --sandbox, scode enforces boundaries",
+    notes:
+      'the approval policy rides the -c config override, not -a (codex\'s root parser drops -a before "exec", and "untrusted" was never a valid -a value); ' +
+      "under --sandbox, scode enforces boundaries",
   },
   copilot: {
     byLevel: {
@@ -64,7 +66,7 @@ export const AUTONOMY_EQUIVALENCE: Record<AgentId, AutonomyMapping> = {
   },
   cursor: {
     byLevel: {
-      "read-only": "--mode plan + required scode --ro",
+      "read-only": "--mode plan + required scode",
       low: "default approvals",
       medium: "--auto-review",
       high: "--force",

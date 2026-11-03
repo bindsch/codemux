@@ -1,3 +1,6 @@
+---
+read_when: "Checking the experiment MCP server contract, flags, or recordings."
+---
 # Experiment MCP
 
 `run --experiment-mcp <spec.json>` connects one experiment-owned stdio MCP server with `-a claude`, `-a zai`, `-a codex`, or `-a kimi`. It requires `--hermetic --tools none --auto read-only`, scode, and no Playwright MCP. Claude and Z.AI use Claude Code's SDK control bridge. Codex and Kimi use a loopback HTTP relay and require explicit result-header opt-ins. Other adapters refuse before reading the spec or starting a model.
@@ -15,7 +18,7 @@ exactly these supported fields. Unknown properties, including `control`, fail.
 | `command` | Yes | Absolute executable path, no NUL |
 | `args` | Yes | Array of strings without NUL; may be empty |
 | `env` | Yes | Array of unique names matching `[A-Za-z_][A-Za-z0-9_]*`; every named variable must be set |
-| `recording` | No | Nonempty directory path without NUL; relative to the spec's directory; existing non-directory rejected |
+| `recording` | No | Nonempty directory path without NUL; relative to the spec's directory; existing non-directory, symlinked leaf, or foreign-owned directory rejected; symlinked ancestors resolved before creation; mode forced to 0700 |
 | `tool_timeout_seconds` | No | Positive integer, default 7200, maximum 86400; private Codex and Kimi tool-call timeout |
 | `accept_harness_prefix` | No | Array of unique strings: `"codex-wall-time"` and `"kimi-wall-time"`. Each harness requires its own value; ignored on Claude/Z.AI |
 
@@ -112,8 +115,14 @@ An oversized body stops at the first chunk past the limit. Its recorded prefix h
 
 Codex experiments require an explicit `-m`; omission fails with `model_required`.
 Before launch, Codemux reads the real `CODEX_HOME/models_cache.json`, bounded
-at 2 MiB. The populated cache must contain the requested slug and match the
-detected Codex `client_version`. Defaults and bundled fallback slugs are not used.
+at 2 MiB. The populated cache must contain the requested slug. Defaults and
+bundled fallback slugs are not used. A cache whose `client_version` differs
+from the detected Codex version is served anyway, with a stderr warning and a
+`catalog_client_version_mismatch` record naming both versions: the cache is
+shared by every Codex client on the machine, and the ChatGPT desktop app's
+app-server daemon (0.166.0 on 2026-11-02) rewrites it about hourly while the
+CLI is 0.165.0, so an equality rule refused every experiment the daemon had
+touched. The served catalog body is recorded either way.
 A slug absent from the account's catalog fails with `model_unavailable`;
 the diagnostic names the cache path, `fetched_at`, and listed slugs.
 With `--result-json`, preflight failures `model_required`, `model_unavailable`, and `code_mode` return the failure envelope with `recording: null` because no recording has been created.
@@ -154,7 +163,7 @@ The resource trio is unavoidable when Codex has an MCP server. The relay answers
 A refused `exec` call fails with `unknown_tool` for either `function_call` or `custom_tool_call`; an inventory function named `exec` remains allowed.
 An override run also fails with `code_mode` if Codex has not fetched the catalog before call ID resolution and dispatch, including requests with `_meta.callId`.
 
-The preserved October 29, 2026 `gpt-6-astra` excerpt verifies delivery with an explicitly synthetic restricted world state. The unmodified preserved `8415a55b` rollout is rejected for its visible built-ins. Later that day, Atomix rig `brain18`, run `s105`, lock `lw`, case `A6`, twice exposed clock, collaboration, and `apply_patch` tools at Codemux `ee9f3d0`; `clock.sleep` failed with `unknown_tool`. This finding motivates the startup check. No new live probe was run for the fix. See [Codex catalog and delivery details](experiment-codex-catalog.md).
+The preserved October 29, 2026 `gpt-6-astra` excerpt verifies delivery with an explicitly synthetic restricted world state, and an unmodified preserved rollout is rejected for its visible built-ins; the same day a live Atomix run exposed restricted built-in tools, which motivates the startup check. The dated findings and preserved-rollout provenance are [delivery evidence](archive/experiment-evidence.md#codex-delivery-findings); see the [Codex catalog contract](experiment-codex-catalog.md).
 
 ### Kimi configuration and delivery evidence
 
@@ -204,6 +213,7 @@ Codemux matches each harness's qualified name and records the server's bare name
 Codemux tails the private session's `wire.jsonl` every 250 ms during the run. Each `tools/call` waits up to five seconds for an unmatched native `tool.call` with the same qualified name and deeply equal arguments. HTTP arrival order may differ.
 Kimi resolves an initial dispatch against the earliest unmatched native call. Ambiguous matches use `correlation: "fifo"` on `tool_call` and `tool_call_identified`; unambiguous matches use `correlation: "exact"`. These labels describe native attribution when the dispatch is identified. Retry attachments reuse that attribution and share its result, including after completion. Native evidence verification assigns each FIFO-group delivery one unused server result in that group. Separate groups cannot share results. An exact call must match its own result. `result_comparison.server_relay_index` identifies the matched server result for FIFO groups. Initial Claude and Codex dispatches retain native-ID correlation.
 The forwarded request carries its native `toolCallId` as `params._meta["codemux/callId"]`. Unresolved calls fail before server dispatch.
+A call Kimi rejects itself for arguments that fail the tool's schema never reaches the server: the wire records `args: {}`, the loop result is an `Invalid args for tool "<name>"` error, and the model receives that error. Codemux records it as `harness_invalid_args`, and the final native check accepts the assistant message's unparseable `arguments` string for that call only, recording `native_arguments_malformed` with the byte count and the parse error. The 2026-11-02 hold probe (recording `23a82a67-6520-4115-b126-e034b17b21d5`) saw Kimi 2.4.0 reject a 14 KB unterminated argument string 13 times before the model sent a shorter one; the run's two markers were correct, and the previous check failed the whole run on the first rejected call. Unparseable arguments on a call Kimi ran are still a `protocol` failure.
 The first `tool.call` emits a turn. Content-first turns retain the first `content.part` timestamp
 and wait for a call or successful `step.end`. `step.end` emits usage; `tool.result` emits delivery.
 An error step without usage and without calls records `harness_retry` with its UUID in `message_id`, including partial provider responses. It emits no turn and consumes no completed assistant message. An error step with calls emits a turn and fails later with `harness_log_missing` if usage is absent.
@@ -261,132 +271,14 @@ Every forwarded `tools/call` includes the native tool-use ID in
 `params._meta["codemux/callId"]`. Claude and Z.AI also retain
 `params._meta["claudecode/toolUseId"]` with that same ID.
 
-Claude Code 2.1.300 replaces an oversize result in one of two forms, both
-read from its binary and checked against recorded runs; a spill is accepted
-only when the delivered string is one of those forms exactly and the saved
-file equals the server result.
-
-The token form (the MCP tool's own token limit) applies to exactly one text
-block (Claude drops a truthy `_meta` first; a block keeping a falsy one goes
-to its JSON form) whose size could have spilled: Claude's estimate,
-`round(characters / 4)`, must exceed half of `MAX_MCP_OUTPUT_TOKENS`
-(a passed-through value, parsed as Claude parses its environment integers,
-otherwise 25,000; a limit the child takes from elsewhere, a remote flag
-included, is not seen, so a smaller spill is rejected: the check fails
-closed), and the tool must not carry
-`anthropic/maxResultSizeChars`, for which Claude skips the token form. Claude saves the text under
-`mcp-<server>-<tool>-<milliseconds>.txt` (server and tool names with every
-character outside `[A-Za-z0-9_-]` replaced by `_`; a server named
-`claude.ai ...` also has runs of `_` collapsed and leading or trailing `_`
-removed, as Claude names it). The delivered string must
-equal, character for character, Claude's header (`Error: result (N characters
-across L lines) exceeds maximum allowed tokens. Output has been saved to
-<path>.\nFormat: Plain text\n`, with N the text's length and L its line
-count, both formatted with Claude's unpinned `toLocaleString()`: the
-message's counts must all be what one locale prints, which codemux reads
-from its own runtime's locale data once per process as a set of locale
-signatures (grouping mark, grouping style of groups of three or the Indian
-shape, the longest integer left ungrouped, and the numeral set; the
-apostrophe and the right single quotation mark, and the no-break space and
-its narrow form, stand for each other because Claude's bundled runtime may
-carry another CLDR release), never with a leading zero; a count past 1e21 is matched as the full digits
-`toLocaleString()` prints, and a read limit that overflows the span to
-Infinity as the infinity sign and `Infinity`, as Claude prints them), one of its two
-guidance templates (the default one, or the subagent one behind a remote
-flag; a passed-through `MCP_TRUNCATION_PROMPT_OVERRIDE`, trimmed as Claude
-trims it, pins the default template when it is `legacy` and the subagent
-template for any other nonempty value), and, when the persist byte cap was
-hit, Claude's note naming the cap. Each template has a chunked variant and
-a slicing variant, which Claude picks by its file-read limit; that limit
-may come from the child's environment, a settings file, or a flag, so it
-is not modeled: the chunk size is any positive integer spelled exactly as a
-template literal prints it (what `String()` gives back, or `Infinity`), the span any
-count (or the infinity sign) printed alike wherever it recurs, the chunked variant needs more than one line, and the slicing
-variant for several lines needs a span below the longest line. The templates are reproduced from the binary, so a changed
-word, another path, or appended text fails the comparison. The token
-form's JSON variant (several blocks, `Format: JSON array ...`) is not
-accepted. A spill path holds no line
-break, so it ends at the message's first one: codemux refuses an experiment run whose config root contains a line break
-(a passed-through `CLAUDE_CONFIG_DIR`, even an empty one, otherwise HOME), and the rest of the path is Claude's own naming.
-
-The persisted form (the generic result cap, 50,000 characters unless a remote
-flag raises it; it fires when the token form did not) applies to any number of text blocks whose characters together exceed the tool's result cap
-(50,000 for a plain tool; for a tool whose definition carries
-`_meta["anthropic/maxResultSizeChars"]`, that value up to 500,000, as
-Claude applies it) and, unless the tool carries that annotation (Claude then never takes the token form), whose
-token estimate does not exceed four times the MCP output token limit, past
-which the token form fires first (a result outside that range could not
-have taken this form), which Claude rebuilds as `{type, text}` (annotations and
-key order are dropped; a block's `_meta` is kept by Claude's MCP client
-and dropped by its remote-tool path, so both spellings are accepted and
-the size label tells them apart) and writes as
-`JSON.stringify(blocks, null, 2)` to `<tool-results>/<tool_use_id>.json`
-(the id escaped as Claude escapes leaf names). The delivered string must be
-`<persisted-output>\nOutput too large (<size>). Full output saved to: <path>\n\nPreview (first 2KB):\n<preview>\n...\n</persisted-output>`
-with `<size>` Claude's file-size label of the JSON's length (KiB steps, one
-decimal, a trailing `.0` dropped, `N bytes` under 1 KiB) and the preview the
-saved file's first 2,000 characters cut back to the last newline past the
-half-way point (`\n...` exactly when the file is longer); the persist-cap header
-(`Output exceeded the <cap> persist limit; only the first <cap> were saved
-to: <path>`) is the capped variant. A save failure (`<truncated-output>`)
-is not a spill. A result with an image or document block is never a spill.
-
-For both forms the saved path must be absolute, spelled under either the
-configured `<configDir>/projects` or its symlink-resolved form (a sandbox
-may hand the child a resolved HOME), and its real path must lie under the
-real projects directory at `<project>/<session id>/tool-results/<name>`,
-with the session id a UUID and the project the slug names. configDir is
-the directory the child sees: `CLAUDE_CONFIG_DIR` only when it is passed
-through with `--pass-env`, otherwise `$HOME/.claude` (HOME always reaches the
-child; an ambient `CLAUDE_CONFIG_DIR` that is not passed through is ignored;
-a passed-through empty one leaves the binary's root empty and the directory
-unknown, so spills are rejected).
-A passed-through `CLAUDE_CODE_PROJECT_DIR_NAME` (Claude Code accepts
-`[A-Za-z0-9_-]{1,64}`, not a reserved Windows device name) replaces the slug
-as the project directory name, but only alongside a passed-through
-`CLAUDE_CONFIG_DIR`, as the binary applies it.
-The slug is taken from the canonical working directory (absolute, symlinks
-resolved, NFC-normalized, as Claude Code reads its own cwd; the bridge
-takes the directory the child was spawned in, which the launch helper
-resolved once before the spawn and the process runner hands over, so a
-working-directory symlink retargeted after that resolution does not move
-the project) and replaces every
-character outside `[A-Za-z0-9]` with `-` (a slug longer than 200 characters
-uses the first 200 plus `-` and the base-36 absolute value of Claude's
-32-bit string hash of the directory, computed the same way).
-Claude NFC-normalizes the projects path before writing; on macOS, where
-the filesystem ignores normalization and a resolved path comes back in its
-stored form, resolved paths are compared NFC-normalized, elsewhere exactly.
-The reported path must not itself be a symlink (Claude writes a regular
-file); the file is opened without following a final symlink and without
-blocking (a FIFO cannot stall the run; the filesystem calls themselves are
-synchronous, so a config directory on an unresponsive network filesystem
-would hold the comparison, and the run's timeout, until it answers), must be regular, must still resolve
-to the checked location after the open and be that location's inode (a
-parent directory swapped for a symlink around the open is rejected), and is
-read with a bound of the
-expected content's UTF-8 byte length, so a file that grows after the check
-is still rejected. Its UTF-8 content must equal the server text or JSON
-(in the well-formed form Claude's UTF-8 write produces: a lone surrogate
-becomes U+FFFD)
-exactly when the message names no cap, or, when it names one, be the
-longest prefix of whole code points that fits a byte cap with that label
-(Claude truncates at a code-point boundary and names the cap only when it
-cut the file), so a prefix inconsistent with the cap, a prefix without a
-cap, and a complete file with a cap are rejected.
-
-The `is_error` comparison remains unchanged. An accepted spill's
-`result_comparison` records `equal: true`, `spilled: true`, `spill_kind`
-(`token` or `persisted`), `chars` (the text's or the JSON's character
-count), `path`, `truncated` (whether the file is a capped prefix), and
-`guidance` (`default` or `subagent`) for the token form or `preview_chars`
-for the persisted form. A rejection records `equal: false`, `spilled: false`,
-`spill_rejected` naming the failed check, and `spill_kind` once the delivered
-string parsed as one of the two forms (header, path, and tail), whatever
-the server content (an error-flag mismatch after a verified spill keeps the
-kind; a string that parses as neither form, a save failure included, has none).
-Failed saves and other changed strings still fail. Plain matches have no
-`spilled` key. Comparison records never include the text.
+Claude Code 2.1.300 replaces an oversize result in one of two forms — a
+token-limit form for one text block and a persisted form for any number of
+text blocks — and a spill is accepted only when the delivered string equals
+Claude's message exactly and the saved file equals the server result.
+Accepted spills record `spill_kind` (`token` or `persisted`); rejected ones
+record `spill_rejected` naming the failed check. The exact message templates,
+locale-count rules, path and slug layout, and file-read bounds are
+[renderer evidence](archive/experiment-evidence.md#claude-and-zai-oversize-result-spills).
 
 ### Shared recordings
 
@@ -396,7 +288,7 @@ Raw server stdin/stdout/stderr records use `bytes_base64`; control frames, rollo
 
 The recording budget is 256 MiB, with failure/end records allowed afterward. A failed record write truncates the file to its previous length before rethrowing, so later records cannot append to a partial JSON fragment. Codex and Kimi use the runner's actual timeout state, tolerate only missing final usage, preserve unterminated stdout bytes in `harness_stdout_partial` without parsing them, and retain exit 124. Completed catalogs, results, and native call correlations are still checked. Ordinary completed runs with missing usage fail with `harness_log_missing`. Recordings survive cleanup. `CODEMUX_CALL_LOG=off` disables only the ledger, not evidence recordings. A relocated ledger changes the default recording state directory. `--result-json` reports the path as `codemux.recording`.
 
-Before private-home cleanup, successful and failed Codex/Kimi runs attempt to copy the native log beside the recording as `<run-id>.codex-rollout.jsonl` or `<run-id>.kimi-wire.jsonl`. Copies use mode 0600 and a 256 MiB cap. `harness_log_copy` contains exactly `{harness, path, bytes}` on success or `{harness, path, error}` on failure, besides the common record fields. `path` names the destination. A copy error preserves the run's existing verdict.
+Before private-home cleanup, successful and failed Codex/Kimi runs attempt to copy the native log beside the recording as `<run-id>.codex-rollout.jsonl` or `<run-id>.kimi-wire.jsonl`. Copies use mode 0600 and a 256 MiB cap. `harness_log_copy` contains exactly `{harness, path, bytes}` on success or `{harness, path, error}` on failure, besides the common record fields. `path` names the destination. A copy error preserves the run's existing verdict. Test runs scan every file the run produced in the recording directory (the JSONL recording and the harness-log copies) for the bytes `Bearer ` and the run's catalog nonce, so a harness that started logging its MCP transport would fail the test suite rather than persist the relay secret. A live check of a real recording greps the same two strings: `grep -F 'Bearer ' <recording>.jsonl <run-id>.codex-rollout.jsonl <run-id>.kimi-wire.jsonl` and the same with the nonce from the run's `model_catalog_url` (`/catalog/<nonce>`), expecting no match.
 
 ### Normalized records
 
@@ -431,7 +323,7 @@ Usage = {"input":int,"output":int,"cache_read":int,"cache_write":int}
 
 Claude and Z.AI emit `turn` on the first assistant frame for a native `message.id`; its `usage` is always null. Experiment launches include `--include-partial-messages`. Native `message_start` and `message_delta` events supply per-message counters. Assistant counters remain supported; zero placeholders never replace real values. `turn_usage` emits the final counters at `message_stop`, ID change, or `result`; its timestamp is the last usage frame's receipt time. A completed turn without real counters or a repeated completed `message.id` fails with `harness_log_missing`. Result-envelope usage is cumulative and does not replace per-message counters. Later assistant frames can add `turn_call` records. Legacy Claude frames without `message.id` remain raw-only for turns.
 
-Codex uses a native response message item ID or function-call item ID and never invents an ID. A response with neither fails with `message_id_missing`. Each `token_usage_record.response_id` identifies one response; overlapping IDs, repeated response IDs, or conflicting response counters fail with `harness_log_missing`. A new response ID or advanced cumulative totals means a new response, even with equal per-response counters. A `token_count` snapshot for the same completed response with equal counters and unchanged cumulative totals records `harness_retry` with that `response_id` and creates no turn or usage record. A pending response with different counters keeps waiting for its own snapshot. A conflicting idle snapshot fails with `harness_log_missing`. Codex 0.165.0 re-emits stored usage during rate-limit recovery; the [upstream path](experiment-codex-catalog.md#rollout-evidence) explains the retry sequence. Rate-limit-only events with `info: null` carry no usage. Codemux polls the rollout every 250 ms; turn and call emission does not wait for `token_count`. Usage arrives separately from that event. A nonempty `tools/call` request `_meta.callId` is used immediately, copied to `_meta["codemux/callId"]`, and recorded on `tool_call` with `native_call_id_source: "request_meta"`. Live and final rollout verification checks its ID, name, and arguments independently of HTTP arrival order. Without request metadata, resolution waits up to five seconds for matching native call evidence in arrival order, without waiting for usage. Unresolved calls fail before dispatch.
+Codex uses a native response message item ID or function-call item ID and never invents an ID. A response with neither fails with `message_id_missing`. Each `token_usage_record.response_id` identifies one response; overlapping IDs, repeated response IDs, or conflicting response counters fail with `harness_log_missing`. A new response ID or advanced cumulative totals means a new response, even with equal per-response counters. A `token_count` snapshot for the same completed response with equal counters and unchanged cumulative totals records `harness_retry` with that `response_id` and creates no turn or usage record. A pending response with different counters keeps waiting for its own snapshot. A conflicting idle snapshot fails with `harness_log_missing`. Codex 0.165.0 re-emits stored usage during rate-limit recovery; the [upstream path](archive/experiment-evidence.md#codex-rollout-evidence) explains the retry sequence. Rate-limit-only events with `info: null` carry no usage. Codemux polls the rollout every 250 ms; turn and call emission does not wait for `token_count`. Usage arrives separately from that event. A nonempty `tools/call` request `_meta.callId` is used immediately, copied to `_meta["codemux/callId"]`, and recorded on `tool_call` with `native_call_id_source: "request_meta"`. Live and final rollout verification checks its ID, name, and arguments independently of HTTP arrival order. Without request metadata, resolution waits up to five seconds for matching native call evidence in arrival order, without waiting for usage. Unresolved calls fail before dispatch.
 
 Kimi uses the stable native step UUID as `message_id`. The first `tool.call` emits the turn; content-first turns wait for a call or successful step end and retain the first-content timestamp. Provider retries emit no turn, including partial responses. Every call emits `turn_call`. `step.end` emits `turn_usage` with its own timestamp. A provider `messageId` remains optional raw evidence; a present malformed value fails with `protocol`. Kimi maps `inputOther`, `output`, `inputCacheRead`, and `inputCacheCreation` to the four counters. Native call resolution waits for wire evidence, without waiting for usage.
 
@@ -479,14 +371,14 @@ paired canary for Claude, Z.AI, and Kimi. Kimi plants its instruction in a
 scratch brand home and keeps the working directory clean. The hermetic
 probe keeps the experiment spec exactly as a run would. Its non-hermetic
 control keeps that spec and tools selection, reads the planted home instruction, and must reveal the code word.
-Kimi passes the planted `KIMI_CODE_HOME` to the control. Its experiment `mcp.json` stays in that home. After cleanup, the check verifies that the planted brand home is absent before reporting OK.
+Kimi passes the planted `KIMI_CODE_HOME` to the control and carries the planted brand home on the control request itself, so its experiment `mcp.json` and rewritten `config.toml` stay in that home by construction rather than through the planted adapter's environment. After cleanup, the check verifies that the planted brand home is absent before reporting OK.
 The operator's real brand home receives no experiment config. The existing canary verdict and control reporting apply. Recordings distinguish the control with a
 `.control.jsonl` suffix. Codex supports `run` only; its paired
 `check` is refused before installation checks or a model request because
 the control requires a non-hermetic run.
 The paired canary tests the specified channels against a positive control,
 not prompt-only reproducibility or every possible upstream customization.
-See the dated [experiment investigation](experiment-mcp-report.md) and
+See the dated [experiment investigation](archive/experiment-mcp-report.md) and
 [testing instructions](TESTING.md). The rebuild runs fixture tests only;
 it does not claim fresh live-provider evidence. Codex's relay and rollout
 contract is grounded in CLI 0.165.0 source and synthetic fixtures. Historical
@@ -494,4 +386,4 @@ Codex refusal evidence in the investigation predates the explicit header
 opt-in. Kimi's relay, naming, tool policy, and reconstructed projection are
 grounded in Kimi Code 2.3.2 source. The October 29 live probes established
 the Kimi header and Codex code-mode call. The 01:41 Codex probe called tool search;
-the 01:58 probe called the experiment tool directly and reached the relay, then failed while waiting for usage. The preserved `gpt-6-astra` excerpt verifies delivery with a synthetic restricted world state; the unmodified `8415a55b` rollout is rejected. No new live probe was run for these fixes.
+the 01:58 probe called the experiment tool directly and reached the relay, then failed while waiting for usage. The preserved `gpt-6-astra` excerpt verifies delivery with a synthetic restricted world state; the unmodified preserved rollout is rejected. No new live probe was run for these fixes.

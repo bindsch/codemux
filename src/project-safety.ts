@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { UsageRefusalError } from "./validation.js";
 
 const AIDER_EXECUTABLE_CONFIG_FILES = [
   ".aider.model.settings.yml",
@@ -185,7 +186,8 @@ function assertNoProjectExecutionConfig(
   directories: readonly string[],
   reason = "refuses repository executable configuration",
   inspectHome = false,
-  userHomeDirectory = homedir()
+  userHomeDirectory = homedir(),
+  skipStartDirectory = false
 ): void {
   // Both ends of the walk are compared as real paths: the working directory
   // arrives canonicalized, and a HOME under a symlinked temp root (macOS
@@ -193,6 +195,11 @@ function assertNoProjectExecutionConfig(
   let directory = realpathOr(cwd);
   const userHome = realpathOr(userHomeDirectory);
   cwd = directory;
+  // An OpenCode --experiment-project-settings run exempts the working
+  // directory itself (its own opencode.json/.opencode are the point) and
+  // covers the ancestors with a dedicated refusal instead
+  // (opencode-project-settings.ts); every other caller checks every level.
+  let skip = skipStartDirectory;
   while (true) {
     // Harness user configuration is trusted input, not repository input. A
     // non-Git working directory below $HOME must never make the walker treat
@@ -207,18 +214,24 @@ function assertNoProjectExecutionConfig(
     ) {
       return;
     }
-    for (const relativePath of files) {
-      const path = join(directory, relativePath);
-      if (existsSync(path)) {
-        throw new Error(`${tool} ${reason}: ${path}`);
+    if (!skip) {
+      // A refusal, not a crash: the caller asked for a launch this rule
+      // forbids, so the exit is 64 through UsageRefusalError (review
+      // round 10, contracts 7).
+      for (const relativePath of files) {
+        const path = join(directory, relativePath);
+        if (existsSync(path)) {
+          throw new UsageRefusalError(`${tool} ${reason}: ${path}`);
+        }
+      }
+      for (const relativePath of directories) {
+        const path = join(directory, relativePath);
+        if (existsSync(path) && containsEntries(path)) {
+          throw new UsageRefusalError(`${tool} ${reason}: ${path}`);
+        }
       }
     }
-    for (const relativePath of directories) {
-      const path = join(directory, relativePath);
-      if (existsSync(path) && containsEntries(path)) {
-        throw new Error(`${tool} ${reason}: ${path}`);
-      }
-    }
+    skip = false;
 
     if (directory === userHome || existsSync(join(directory, ".git"))) return;
     const parent = dirname(directory);
@@ -245,12 +258,23 @@ export function assertNoAiderProjectExecutionConfig(cwd: string): void {
   );
 }
 
-export function assertNoOpenCodeProjectExecutionConfig(cwd: string): void {
+/** `skipStartDirectory` exempts the working directory itself, for an
+ * OpenCode `--experiment-project-settings` run whose own project config is
+ * the point of the flag; the ancestors above it are still refused here
+ * within this walk's bounds. */
+export function assertNoOpenCodeProjectExecutionConfig(
+  cwd: string,
+  skipStartDirectory = false
+): void {
   assertNoProjectExecutionConfig(
     cwd,
     "OpenCode",
     OPENCODE_EXECUTABLE_CONFIG_FILES,
-    OPENCODE_EXECUTABLE_CONFIG_DIRECTORIES
+    OPENCODE_EXECUTABLE_CONFIG_DIRECTORIES,
+    "refuses repository executable configuration",
+    false,
+    homedir(),
+    skipStartDirectory
   );
 }
 

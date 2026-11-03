@@ -43,6 +43,12 @@ export interface AgyEnvelopeInfo {
  * `thinking_tokens` has no normalized counterpart and stays unmapped, and
  * `cost_usd` is null because the envelope carries no cost.
  */
+/** The field agy's --result-json envelope spells its answer text with;
+ * the envelope is the harness's own, re-emitted verbatim with the codemux
+ * block. The release gate's probe C verifies this exact field per agent,
+ * so the parser and the gate share one name (review round 16, edges 3). */
+export const AGY_ANSWER_FIELD = "response";
+
 export function parseAgyResultEnvelope(
   stdout: string
 ): AgyEnvelopeInfo | null {
@@ -70,7 +76,7 @@ export function parseAgyResultEnvelope(
   // named error -- may omit it, because that names the outcome (a
   // failure) and fails the run downstream. `{"status":"SUCCESS"}` says
   // nothing at all.
-  if (typeof envelope.response !== "string" && !isError) {
+  if (typeof envelope[AGY_ANSWER_FIELD] !== "string" && !isError) {
     return null;
   }
 
@@ -141,6 +147,9 @@ export function agyResult(result: RunResult, request: RunRequest): RunResult {
     agent,
     labels: request.labels ?? null,
     model: request.model ?? null,
+    // agy's envelope carries no served-model report, so `model` above is
+    // codemux's own selection.
+    served_model: null,
     usage: parsed.usage,
     session_id: null,
     recording: null,
@@ -169,8 +178,8 @@ export function agyResult(result: RunResult, request: RunRequest): RunResult {
   // belt check keeps the guarantee local rather than trusting the caller's
   // reading of it.
   const response =
-    typeof parsed.envelope.response === "string"
-      ? parsed.envelope.response
+    typeof parsed.envelope[AGY_ANSWER_FIELD] === "string"
+      ? parsed.envelope[AGY_ANSWER_FIELD]
       : "";
   if (response.trim() === "") {
     return {

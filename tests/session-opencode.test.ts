@@ -4,7 +4,7 @@
  * the `run --format json` line parser under the three tiers — each shape
  * pinned against the installed 1.18.18 binary's run wire
  * (opencode-session.ts names the sources). The driver round-trips are the
- * e2e suite (tests/session-opencode-e2e.test.ts).
+ * e2e suite (the tests/session-opencode-e2e-*.test.ts family).
  */
 
 import { describe, expect, test } from "bun:test";
@@ -265,6 +265,7 @@ describe("opencode session - parser tiers", () => {
     );
     expect(parse).toEqual({
       kind: "grammar_error",
+      sessionId: ID,
       message: "a step_finish line carries no part",
     });
   });

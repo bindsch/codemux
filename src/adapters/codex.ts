@@ -21,10 +21,12 @@ import {
   writeCodexProviderConfigInto,
 } from "../codex-provider.js";
 import { readExperimentRunSpec } from "../experiment-mcp.js";
+import { UsageRefusalError } from "../validation.js";
 import { ExperimentCodexRun } from "../experiment-codex-run.js";
 import { CodexPlainFold } from "../plain-unwrap.js";
-import type { ScodeTrustLevel } from "../sandbox.js";
-import type { AutonomyLevel, ReasoningEffort, RunRequest, RunResult } from "../types.js";
+import type { SandboxOptions, ScodeTrustLevel } from "../sandbox.js";
+import type { AutonomyLevel, ReasoningEffort, RunRequest, RunResult , LaunchIntent } from "../types.js";
+import { codexLoginState, loginHome, type LoginState } from "../harness-health.js";
 
 export class CodexAdapter extends CodexPolicy {
   buildRunCommand(request: RunRequest, context?: RunContext): string[] {
@@ -176,7 +178,7 @@ export class CodexAdapter extends CodexPolicy {
    * context, so two launches through this singleton -- even two through
    * the same request object -- each carry their own.
    */
-  override prepareRun(request: RunRequest, sandboxTrust?: ScodeTrustLevel): RunContext {
+  override prepareRun(request: RunRequest, sandboxTrust?: ScodeTrustLevel, _sandboxOptions?: SandboxOptions, launch: LaunchIntent = {}): RunContext {
     const context: RunContext = {};
     const override = this.validatedProvider();
     const experimentModel = request.experimentMcp ? this.experimentModel(request) : undefined;
@@ -188,9 +190,11 @@ export class CodexAdapter extends CodexPolicy {
       // override run never links the operator's auth.json either — the
       // provider key is the credential — so the home starts empty and holds
       // only the override's config.toml, written below.
+      // A print-only launch needs the home path for its argv and no login:
+      // the home starts empty, like an API-key run's (review round 55).
       context.hermeticHome = createCodexHermeticHome(
         this.realCodexHome(request),
-        this.apiKeyAuth() || override !== null
+        this.apiKeyAuth() || override !== null || launch.printOnly === true
       );
       if (override !== null) {
         writeCodexProviderConfigInto(
@@ -280,7 +284,7 @@ export class CodexAdapter extends CodexPolicy {
     }
     if (request.experimentMcp) {
       try {
-        if (!context.hermeticHome) throw new Error("Codex experiment requires a private hermetic home");
+        if (!context.hermeticHome) throw new UsageRefusalError("Codex experiment requires a private hermetic home");
         const experiment = new ExperimentCodexRun(readExperimentRunSpec(request),
           request.cwd ?? process.cwd(), context.hermeticHome.codexHome,
           Boolean(request.resultJson), this.environment, request.prompt, experimentModel,
@@ -430,5 +434,10 @@ export class CodexAdapter extends CodexPolicy {
       cmd.push(...this.mapEffort(effort));
     }
     return cmd;
+  }
+
+  /** The codex login read: auth.json's mode and refresh-token presence. */
+  override loginState(): LoginState {
+    return codexLoginState(loginHome(this.environment), this.environment);
   }
 }

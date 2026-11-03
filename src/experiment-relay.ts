@@ -8,6 +8,13 @@ import { ExperimentFailure, ExperimentFailureCode, experimentFailure, Experiment
 import { ExperimentServer, MAX_EXPERIMENT_MESSAGE_BYTES, type JsonObject } from "./experiment-server.js";
 import { PIPE_GIVE_UP_MS } from "./process-runner.js";
 import { ExperimentRelayResponse, RELAY_SSE_KEEPALIVE_MS, RELAY_SSE_SWITCH_MS } from "./experiment-relay-response.js";
+import {
+  parseRelayMessage,
+  readRelayBody,
+  rejectRelayOversized,
+  relayDeclaresBody,
+  respondRelay,
+} from "./experiment-relay-respond.js";
 
 const REQUEST_BODY_TIMEOUT_MS = 30_000;
 const HTTP_HEADERS_TIMEOUT_MS = 120_000;
@@ -116,65 +123,6 @@ export class ExperimentHttpRelay {
     return actual.length === expected.length && timingSafeEqual(actual, expected);
   }
 
-  private body(request: IncomingMessage, deadline: number): Promise<{ bytes: Buffer; rejectedStatus?: 408 | 413 }> {
-    return new Promise((resolve, reject) => {
-      const chunks: Buffer[] = [];
-      let length = 0;
-      let settled = false;
-      const complete = (rejectedStatus?: 408 | 413) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (rejectedStatus) request.pause();
-        resolve({ bytes: Buffer.concat(chunks), rejectedStatus });
-      };
-      const fail = (error: Error) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        reject(error);
-      };
-      const timer = setTimeout(() => complete(408), Math.max(0, deadline - Date.now()));
-      request.on("data", (chunk: Buffer) => {
-        if (settled) return;
-        const bytes = Buffer.from(chunk);
-        chunks.push(bytes);
-        length += bytes.length;
-        if (length > MAX_EXPERIMENT_MESSAGE_BYTES) complete(413);
-      });
-      request.once("end", () => complete());
-      request.once("error", fail);
-      request.once("aborted", () => fail(new Error("experiment HTTP request aborted")));
-    });
-  }
-
-  private respond(response: ServerResponse, status: number, bytes: Buffer = Buffer.alloc(0), allowedMethod = "POST"): void {
-    this.record("http_response", { status, bytes_base64: bytes.toString("base64") });
-    response.writeHead(status, { ...(status === 200 ? { "Content-Type": "application/json" } : {}),
-      ...(status === 405 ? { Allow: allowedMethod } : {}), ...(status === 413 || status === 408 ? { Connection: "close" } : {}), "Content-Length": bytes.length });
-    response.end(bytes);
-  }
-
-  private rejectOversized(request: IncomingMessage, response: ServerResponse, deadline: number): void {
-    this.record("http_response", { status: 413, bytes_base64: "" });
-    response.shouldKeepAlive = false;
-    response.writeHead(413, { Connection: "close", "Content-Length": 0 });
-    response.flushHeaders();
-    if (request.readableEnded || request.destroyed) { response.end(); return; }
-    // Flush the complete empty reply before closing an upload with pending writes.
-    // Draining shares the original body deadline, including time already spent reading.
-    const complete = () => {
-      clearTimeout(timer);
-      request.off("end", complete);
-      request.off("close", complete);
-      response.end();
-    };
-    const timer = setTimeout(complete, Math.max(0, deadline - Date.now()));
-    request.once("end", complete);
-    request.once("close", complete);
-    request.resume();
-  }
-
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const deadline = Date.now() + REQUEST_BODY_TIMEOUT_MS;
     let delivery: ExperimentRelayResponse | undefined;
@@ -191,8 +139,11 @@ export class ExperimentHttpRelay {
           token_matched: false, bytes_base64: "", body_complete: false });
         request.on("error", () => { /* Unauthenticated client disconnects do not fail the experiment. */ });
         request.resume();
-        // Rejected clients contribute only the request record.
-        response.writeHead(401, { "Content-Length": 0 });
+        // Rejected clients contribute only the request record. An
+        // unread declared body closes the connection (declaresBody).
+        const unauthorizedClose = relayDeclaresBody(request);
+        if (unauthorizedClose) response.shouldKeepAlive = false;
+        response.writeHead(401, { "Content-Length": 0, ...(unauthorizedClose ? { Connection: "close" } : {}) });
         response.end();
         return;
       }
@@ -202,22 +153,21 @@ export class ExperimentHttpRelay {
         this.record("http_request", { method: request.method ?? "", path: request.url ?? "",
           token_matched: true, bytes_base64: "", body_complete: false });
         request.on("error", () => { /* Rejected client disconnects do not fail the experiment. */ });
-        if (earlyStatus === 413) { this.rejectOversized(request, response, deadline); return; }
+        if (earlyStatus === 413) { rejectRelayOversized(this.record, request, response, deadline); return; }
         request.resume();
-        response.shouldKeepAlive = false;
-        this.respond(response, earlyStatus);
+        respondRelay(this.record, response, earlyStatus, Buffer.alloc(0), "POST", true);
         return;
       }
-      const body = await this.body(request, deadline);
+      const body = await readRelayBody(request, deadline);
       this.record("http_request", { method: request.method ?? "", path: request.url ?? "",
         token_matched: true, bytes_base64: body.bytes.toString("base64"), body_complete: body.rejectedStatus === undefined });
       if (body.rejectedStatus !== undefined) {
-        if (body.rejectedStatus === 413) { this.rejectOversized(request, response, deadline); return; }
+        if (body.rejectedStatus === 413) { rejectRelayOversized(this.record, request, response, deadline); return; }
         request.resume();
-        this.respond(response, body.rejectedStatus);
+        respondRelay(this.record, response, body.rejectedStatus);
         return;
       }
-      const message = parseMessage(body.bytes);
+      const message = parseRelayMessage(body.bytes);
       if (message.method === "tools/call" && message.id !== undefined) delivery = new ExperimentRelayResponse(
         response, message.id, this.record, this.options.sseSwitchMs ?? RELAY_SSE_SWITCH_MS,
         this.options.sseKeepaliveMs ?? RELAY_SSE_KEEPALIVE_MS);
@@ -230,7 +180,7 @@ export class ExperimentHttpRelay {
       if (delivery) delivered_t = await delivery.send(bytes, call?.relay_index);
       else {
         const written = finished(response, { readable: false, cleanup: true });
-        this.respond(response, reply === undefined ? 202 : 200, bytes);
+        respondRelay(this.record, response, reply === undefined ? 202 : 200, bytes);
         await written;
         delivered_t = Date.now() / 1000;
       }
@@ -248,7 +198,9 @@ export class ExperimentHttpRelay {
       }
     } catch (error) {
       this.fail(asError(error));
-      try { if (!response.headersSent) this.respond(response, 400); else response.destroy(); }
+      // The request's state is unknown after a throw: always close (a
+      // reused socket could carry whatever the handler stopped reading).
+      try { if (!response.headersSent) respondRelay(this.record, response, 400, Buffer.alloc(0), "POST", true); else response.destroy(); }
       catch { response.destroy(); }
     } finally { delivery?.close(); }
   }
@@ -260,12 +212,16 @@ export class ExperimentHttpRelay {
       authorization_present: request.headers.authorization !== undefined, bytes_base64: "", body_complete: true });
     const expected = Buffer.from(this.catalog ? `/catalog/${this.catalog.nonce}` : "");
     const actual = Buffer.from(path);
+    // None of the catalog answers read the request body; one that was
+    // declared closes the connection instead of leaving its bytes for
+    // the next request on the socket (declaresBody, lane C30, item 6).
+    const unreadBody = relayDeclaresBody(request);
     if (!this.catalog || actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
-      this.respond(response, 404);
+      respondRelay(this.record, response, 404, Buffer.alloc(0), "POST", unreadBody);
       return;
     }
-    if (request.method !== "GET") { this.respond(response, 405, Buffer.alloc(0), "GET"); return; }
-    this.respond(response, 200, this.catalog.body);
+    if (request.method !== "GET") { respondRelay(this.record, response, 405, Buffer.alloc(0), "GET", unreadBody); return; }
+    respondRelay(this.record, response, 200, this.catalog.body, "POST", unreadBody);
     this.catalogDelivered = true;
     this.record("catalog_served", { client_version: clientVersion, bytes: this.catalog.body.length });
   }
@@ -467,14 +423,3 @@ export class ExperimentHttpRelay {
 }
 
 function asError(error: unknown): Error { return error instanceof Error ? error : new Error(String(error)); }
-function parseMessage(bytes: Buffer): JsonObject {
-  const message = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-  if (!message || typeof message !== "object" || Array.isArray(message) || message.jsonrpc !== "2.0" ||
-      typeof message.method !== "string" || !message.method ||
-      (Object.hasOwn(message, "id") && typeof message.id !== "string" &&
-        !(typeof message.id === "number" && Number.isSafeInteger(message.id))) ||
-      (message.params !== undefined && (!message.params || typeof message.params !== "object" || Array.isArray(message.params)))) {
-    throw new Error("experiment HTTP body must be one JSON-RPC request or notification object");
-  }
-  return message;
-}

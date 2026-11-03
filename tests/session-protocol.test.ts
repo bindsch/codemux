@@ -3,10 +3,12 @@ import {
   applyAuthorPrefix,
   buildEvent,
   buildInputAck,
+  buildPermissionDenied,
   buildPermissionResolved,
   buildUnknownEvent,
   buildUserMessage,
   MAX_AUTHOR_CODEPOINTS,
+  MAX_DECISION_MESSAGE_UNITS,
   MAX_INPUT_TEXT_BYTES,
   parseInputLine,
   validateAuthor,
@@ -183,6 +185,83 @@ describe("input parsing", () => {
     ).toEqual({ ok: false, reason: "malformed" });
   });
 
+  test("permission_decision message: deny-only, bounded, no NUL, no controls but newline", () => {
+    const ctx = context({ pendingRequestIds: new Set(["req-1"]) });
+    expect(
+      parseInputLine(
+        '{"type":"permission_decision","request_id":"req-1","decision":"deny","message":"Not now."}',
+        ctx
+      )
+    ).toEqual({
+      ok: true,
+      message: {
+        type: "permission_decision",
+        request_id: "req-1",
+        decision: "deny",
+        message: "Not now.",
+      },
+    });
+    // Newline is the one control character a denial text may carry.
+    expect(
+      parseInputLine(
+        JSON.stringify({
+          type: "permission_decision",
+          request_id: "req-1",
+          decision: "deny",
+          message: "line one\nline two",
+        }),
+        ctx
+      ).ok
+    ).toBe(true);
+    // With an allow it is rejected the way an unknown key is.
+    expect(
+      parseInputLine(
+        '{"type":"permission_decision","request_id":"req-1","decision":"allow","message":"x"}',
+        ctx
+      )
+    ).toEqual({ ok: false, reason: "malformed" });
+    // Empty, over the bound, NUL, and every other control character
+    // (CR, TAB, DEL, NEL) are rejections too.
+    for (const bad of [
+      "",
+      "x".repeat(MAX_DECISION_MESSAGE_UNITS + 1),
+      "a\0b",
+      "a\rb",
+      "a\tb",
+      "a\x7fb",
+      "a\u0085b",
+    ]) {
+      expect(
+        parseInputLine(
+          JSON.stringify({
+            type: "permission_decision",
+            request_id: "req-1",
+            decision: "deny",
+            message: bad,
+          }),
+          ctx
+        )
+      ).toEqual({ ok: false, reason: "malformed" });
+    }
+    expect(
+      parseInputLine(
+        JSON.stringify({
+          type: "permission_decision",
+          request_id: "req-1",
+          decision: "deny",
+          message: "x".repeat(MAX_DECISION_MESSAGE_UNITS),
+        }),
+        ctx
+      ).ok
+    ).toBe(true);
+    expect(
+      parseInputLine(
+        '{"type":"permission_decision","request_id":"req-1","decision":"deny","message":5}',
+        ctx
+      )
+    ).toEqual({ ok: false, reason: "malformed" });
+  });
+
   test("everything but a second shutdown is rejected once shutting down", () => {
     const ctx = context({ shuttingDown: true });
     expect(parseInputLine('{"type":"user","text":"x"}', ctx)).toEqual({
@@ -223,13 +302,22 @@ describe("event envelope", () => {
       seq: 1, ts: expect.any(String), session_id: "s", type: "input_accepted", raw: null, input_seq: 2,
     });
     expect(JSON.parse(buildInputAck(1, "s", 2, false, "busy")).reason).toBe("busy");
+    expect(JSON.parse(buildInputAck(1, "s", 2, false, "busy")).message).toBeUndefined();
+    // The autonomy_escalation rejection names the text the harness got.
+    expect(JSON.parse(buildInputAck(1, "s", 2, false, "autonomy_escalation", "denied")).message).toBe("denied");
     const echo = JSON.parse(buildUserMessage(5, "s", 2, "hi", "ops", null));
     expect(echo.type).toBe("user_message");
     expect(echo.author).toBe("ops");
     expect(echo.turn_id).toBeUndefined();
-    const resolved = JSON.parse(buildPermissionResolved(6, "s", "r1", "superseded"));
+    const resolved = JSON.parse(buildPermissionResolved(6, "s", "r1", "superseded", "denied"));
     expect(resolved.resolution).toBe("superseded");
     expect(resolved.request_id).toBe("r1");
+    expect(resolved.message).toBe("denied");
+    expect(JSON.parse(buildPermissionResolved(7, "s", "r2", "allow")).message).toBeUndefined();
+    const deniedRecord = JSON.parse(buildPermissionDenied(8, "s", "r3", "Bash", "denied"));
+    expect(deniedRecord.type).toBe("permission_denied");
+    expect(deniedRecord.tool).toBe("Bash");
+    expect(deniedRecord.message).toBe("denied");
   });
 });
 

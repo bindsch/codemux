@@ -37,7 +37,7 @@
  */
 
 import type { AgentId } from "./types.js";
-import { validateModelName } from "./validation.js";
+import { UsageRefusalError, validateModelName } from "./validation.js";
 
 export interface ProviderOverride {
   baseUrl?: string;
@@ -106,7 +106,7 @@ export function readProviderOverride(
     // cap without one is a half-configured override, not a quiet no-op.
     const capName =
       maxOutputTokens !== undefined ? names.maxOutputTokens : names.maxContextTokens;
-    throw new Error(
+    throw new UsageRefusalError(
       `${capName} is set but no provider override is; a token cap applies only to ` +
         `a provider override, so also set ${names.baseUrl}, ${names.apiKey} and ${names.model}`
     );
@@ -120,7 +120,7 @@ export function readProviderOverride(
     // environment variable's value or a file's content into a config
     // codemux writes (h4 review).
     if (baseUrl.includes("{") || baseUrl.includes("}")) {
-      throw new Error(
+      throw new UsageRefusalError(
         `${names.baseUrl} must not contain braces: OpenCode substitutes ` +
           "{env:…}/{file:…} and droid and pi expand ${VAR} templates in the " +
           "config files this override writes, so a brace could splice " +
@@ -131,7 +131,7 @@ export function readProviderOverride(
     try {
       parsed = new URL(baseUrl);
     } catch {
-      throw new Error(
+      throw new UsageRefusalError(
         `${names.baseUrl} must be an absolute http(s) URL`
       );
     }
@@ -141,7 +141,7 @@ export function readProviderOverride(
       parsed.password !== "" ||
       parsed.hash !== ""
     ) {
-      throw new Error(
+      throw new UsageRefusalError(
         `${names.baseUrl} must be a plain http(s) URL without credentials or fragment`
       );
     }
@@ -149,7 +149,7 @@ export function readProviderOverride(
 
   if (apiKey !== undefined) {
     if (Buffer.byteLength(apiKey, "utf8") > MAX_API_KEY_BYTES || !API_KEY_PATTERN.test(apiKey)) {
-      throw new Error(
+      throw new UsageRefusalError(
         `${names.apiKey} must be 1 to ${MAX_API_KEY_BYTES} printable ASCII bytes without whitespace`
       );
     }
@@ -159,7 +159,7 @@ export function readProviderOverride(
     try {
       validateModelName(model);
     } catch {
-      throw new Error(`${names.model} is not a valid model name`);
+      throw new UsageRefusalError(`${names.model} is not a valid model name`);
     }
   }
 
@@ -189,11 +189,11 @@ function readTokenCap(raw: string | undefined, name: string): number | undefined
   // Digits only: no sign, no decimal point, no exponent — a cap the operator
   // cannot state as a whole number of tokens is a typo, not a rounding.
   if (!/^\d+$/.test(trimmed)) {
-    throw new Error(`${name} must be a positive integer number of tokens`);
+    throw new UsageRefusalError(`${name} must be a positive integer number of tokens`);
   }
   const value = Number(trimmed);
   if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`${name} must be a positive integer number of tokens`);
+    throw new UsageRefusalError(`${name} must be a positive integer number of tokens`);
   }
   return value;
 }
@@ -215,7 +215,7 @@ export function assertProviderCap(
 ): void {
   if (override === null || override[cap] === undefined || support === true) return;
   const names = providerOverrideEnvNames(agent);
-  throw new Error(`${names[cap]} cannot be honored: ${support}`);
+  throw new UsageRefusalError(`${names[cap]} cannot be honored: ${support}`);
 }
 
 /**
@@ -232,14 +232,14 @@ export function requireProviderOverride(
   if (override === null) {
     const names = providerOverrideEnvNames(agent);
     const missing = required.map((field) => names[field]).join(", ");
-    throw new Error(`provider override requires ${missing} in the environment`);
+    throw new UsageRefusalError(`provider override requires ${missing} in the environment`);
   }
   const names = providerOverrideEnvNames(agent);
   const missing = required
     .filter((field) => override[field] === undefined)
     .map((field) => names[field]);
   if (missing.length > 0) {
-    throw new Error(`provider override is missing ${missing.join(", ")}`);
+    throw new UsageRefusalError(`provider override is missing ${missing.join(", ")}`);
   }
   return override;
 }

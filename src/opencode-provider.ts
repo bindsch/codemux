@@ -36,6 +36,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import type { ProviderOverride } from "./provider-override.js";
+import { UsageRefusalError } from "./validation.js";
 
 export interface OpencodeProviderConfig {
   /** The value for `OPENCODE_CONFIG`: the file OpenCode merges in. */
@@ -89,7 +90,7 @@ export function opencodeLimit(
       override.maxContextTokens === undefined
         ? "CODEMUX_OPENCODE_PROVIDER_MAX_CONTEXT_TOKENS"
         : "CODEMUX_OPENCODE_PROVIDER_MAX_OUTPUT_TOKENS";
-    throw new Error(
+    throw new UsageRefusalError(
       "the opencode provider override cannot carry a one-sided token cap: " +
         "the config schema's model limit object requires both context and " +
         `output (opencode.ai/config.json, additionalProperties false); also set ${missing}`
@@ -114,10 +115,10 @@ export function opencodeBareModel(model: string): string {
     ? model.slice(OPENCODE_PROVIDER_ID.length + 1)
     : model;
   if (bare.length === 0) {
-    throw new Error("the opencode provider override model is empty after the provider prefix");
+    throw new UsageRefusalError("the opencode provider override model is empty after the provider prefix");
   }
   if (bare.includes("{") || bare.includes("}")) {
-    throw new Error(
+    throw new UsageRefusalError(
       "the opencode provider override model must not contain '{' or '}': OpenCode substitutes {env:…} and {file:…} inside config files"
     );
   }

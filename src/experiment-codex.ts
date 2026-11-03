@@ -7,7 +7,7 @@ import { ExperimentFailure, ExperimentFailureCode as Code, experimentFailure, ty
 import type { ExperimentRelayCall } from "./experiment-relay.js";
 import type { JsonObject } from "./experiment-server.js";
 
-const ROLLOUT_POLL_MS = 250;
+export const ROLLOUT_POLL_MS = 250;
 const CALL_ID_TIMEOUT_MS = 5000;
 
 export interface CodexEvidenceRelay {

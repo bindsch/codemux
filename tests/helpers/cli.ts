@@ -19,32 +19,39 @@ export async function runCli(
   envOverrides?: Record<string, string>,
   // `holdStdin` writes `stdin` but leaves the pipe open until the process
   // exits, for a session that must end on its own rather than on EOF.
-  options?: { stdin?: string | Uint8Array; holdStdin?: boolean }
+  // `cwd` overrides the repository root the CLI spawns from (the operator
+  // cwd a command like hermetic check validates against).
+  options?: { stdin?: string | Uint8Array; holdStdin?: boolean; cwd?: string }
 ): Promise<CliResult> {
   const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-cli-home-"));
   try {
+    const childEnv = {
+      ...process.env,
+      // Spawned CLI tests cannot inject the credential seams; disable
+      // the keychain sync so no spawned codemux reads the real Keychain
+      // and copies the live credential into this throwaway HOME.
+      CODEMUX_NO_KEYCHAIN_SYNC: "1",
+      HOME: isolatedHome,
+      XDG_CONFIG_HOME: join(isolatedHome, ".config"),
+      ...envOverrides,
+    } as Record<string, string>;
+    // The quota gate's in-process hermeticity switch stays behind:
+    // a spawned codemux runs the real gate against its own fake or
+    // absent usagemux (tests/setup.ts sets the variable).
+    delete childEnv.CODEMUX_TEST_NO_QUOTA_GATE;
     const proc = Bun.spawn(
       envOverrides?.CODEMUX_TEST_AGY_SECURITY
         ? [process.execPath, "--no-env-file", "--no-install", "--config=./bunfig.runtime.toml",
           "--preload", join(import.meta.dir, "../fixtures/agy-host.ts"), "src/index.ts", ...args]
         : [join(import.meta.dir, "..", "..", "bin", "codemux"), ...args],
       {
-        cwd: join(import.meta.dir, "..", ".."),
+        cwd: options?.cwd ?? join(import.meta.dir, "..", ".."),
         stdout: "pipe",
         stderr: "pipe",
         // "ignore" keeps a run that reads stdin (-f -) failing fast on EOF
         // rather than inheriting the test runner's terminal.
         stdin: options?.stdin === undefined ? "ignore" : "pipe",
-        env: {
-          ...process.env,
-          // Spawned CLI tests cannot inject the credential seams; disable
-          // the keychain sync so no spawned codemux reads the real Keychain
-          // and copies the live credential into this throwaway HOME.
-          CODEMUX_NO_KEYCHAIN_SYNC: "1",
-          HOME: isolatedHome,
-          XDG_CONFIG_HOME: join(isolatedHome, ".config"),
-          ...envOverrides,
-        } as Record<string, string>,
+        env: childEnv,
       }
     );
     const stdin = proc.stdin;

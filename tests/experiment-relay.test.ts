@@ -114,6 +114,38 @@ test("catalog non-GET methods receive 405 with Allow GET and never mark delivery
   expect(records(relay).some((record) => record.kind === "catalog_served" || record.kind === "server_stdin")).toBe(false);
 });
 
+test("a catalog 405 answered before the request body arrives closes the connection, never poisons the socket (lane C30, item 6)", async () => {
+  // The flake: the helper above sends chunked bodies over the agent's
+  // reused socket, and a 405 answered while the body was still in flight
+  // left the late chunks to be parsed as the next request's start — the
+  // next request then answered 400 (once in 24 full gates, under load).
+  // The split that reproduces it: headers first, body after a delay, on
+  // one raw socket. The 405 must carry Connection: close, and nothing
+  // else may follow it on the wire.
+  const relay = await setup(undefined, { catalog: { body: CATALOG_BODY } });
+  const catalog = new URL(relay.catalogUrl!);
+  const { connect } = await import("node:net");
+  const socket = connect({ port: Number(catalog.port), host: "127.0.0.1" });
+  socket.on("error", () => { /* the closed side of a cut upload; the reply already arrived */ });
+  const received: Buffer[] = [];
+  socket.on("data", (chunk) => received.push(Buffer.from(chunk)));
+  // Registered before the exchange: the relay may close the socket the
+  // moment its 405 is out, before the delayed body is even written.
+  const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+  await new Promise<void>((resolve) => socket.once("connect", () => resolve()));
+  socket.write(
+    `POST ${catalog.pathname} HTTP/1.1\r\nHost: 127.0.0.1:${catalog.port}\r\nTransfer-Encoding: chunked\r\n\r\n`
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  socket.end("19\r\nsynthetic-discarded-body\r\n0\r\n\r\n");
+  await closed;
+  const raw = Buffer.concat(received).toString("latin1");
+  expect(raw).toMatch(/^HTTP\/1\.1 405 /);
+  expect(raw).toContain("Connection: close");
+  // Exactly one reply: no 400 ever follows on the wire for the leftovers.
+  expect(raw.match(/HTTP\/1\.\d \d{3}/g)).toEqual(["HTTP/1.1 405"]);
+});
+
 test("catalog missing and incorrect nonces receive 404 without revealing them in recordings", async () => {
   const relay = await setup(undefined, { catalog: { body: CATALOG_BODY } });
   expect(typeof relay.catalogUrl).toBe("string");

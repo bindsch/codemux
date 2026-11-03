@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   mkdirSync,
   mkdtempSync,
@@ -171,21 +171,45 @@ describe("PiAdapter", () => {
       .toEqual(["pi", "--print", "--no-session", "--no-approve"]);
   });
 
+  test("autonomy mapping is silent at medium and high (audit round 2, A12)", () => {
+    // mapAutonomy used to console.warn at medium and high, so every launch
+    // and `codemux verify` repeated a note the capability table already
+    // carries. The mapping stays as documented; only the warn is gone.
+    const warnings: string[] = [];
+    const warn = spyOn(console, "warn").mockImplementation((line: string) => { warnings.push(line); });
+    try {
+      for (const level of ["medium", "high"] as const) {
+        expect(adapter.mapAutonomy(level)).toEqual([]);
+        adapter.buildRunCommand({ agent: "pi", prompt: "t", autonomy: level });
+      }
+    } finally {
+      warn.mockRestore();
+    }
+    expect(warnings).toEqual([]);
+  });
+
   test("getStdinInput returns prompt", () => {
     const request: RunRequest = { agent: "pi", prompt: "my prompt" };
     expect(adapter.getStdinInput(request)).toBe("my prompt");
   });
 
   test("buildTuiCommand basic", () => {
-    expect(adapter.buildTuiCommand()).toEqual(["pi", "--no-approve"]);
+    // No autonomy named: pi's native approvals stay on (--no-approve is
+    // the medium/high TUI flag, not a default).
+    expect(adapter.buildTuiCommand()).toEqual(["pi"]);
   });
 
   test("buildTuiCommand with model", () => {
-    expect(adapter.buildTuiCommand("pi-pro")).toEqual(["pi", "--no-approve", "--model", "pi-pro"]);
+    expect(adapter.buildTuiCommand("pi-pro")).toEqual(["pi", "--model", "pi-pro"]);
   });
 
   test("buildTuiCommand with autonomy", () => {
-    expect(adapter.buildTuiCommand(undefined, "read-only")).toEqual(["pi", "--no-approve", "--no-extensions", "--tools", "read,grep,find,ls"]);
+    // read-only and low keep pi's native approvals in the TUI; medium and
+    // high pass --no-approve (tools, not approvals, carry the lower
+    // levels' restrictions).
+    expect(adapter.buildTuiCommand(undefined, "read-only")).toEqual(["pi", "--no-extensions", "--tools", "read,grep,find,ls"]);
+    expect(adapter.buildTuiCommand(undefined, "low")).toEqual(["pi", "--no-extensions", "--tools", "read,grep,find,ls,edit,write"]);
+    expect(adapter.buildTuiCommand(undefined, "medium")).toEqual(["pi", "--no-approve"]);
     expect(adapter.buildTuiCommand("pi-pro", "high")).toEqual(["pi", "--no-approve", "--model", "pi-pro"]);
   });
 

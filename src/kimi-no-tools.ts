@@ -31,7 +31,7 @@
  * capability is claimed and verified live through the provider override:
  * under `--tools none` neither capability probe could produce its secret
  * while a plain run produced both (2026-09-17, re-run 2026-10-04; see
- * docs/HERMETIC.md).
+ * docs/isolation.md).
  */
 
 import { randomBytes } from "node:crypto";

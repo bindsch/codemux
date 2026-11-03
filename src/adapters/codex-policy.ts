@@ -21,7 +21,7 @@ import {
   assertNoCodexProjectExecutionConfig,
   assertNoCodexProjectSkills,
 } from "../project-safety.js";
-import { validateWorkingDirectory } from "../validation.js";
+import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -50,9 +50,19 @@ export abstract class CodexPolicy extends BaseAdapter {
       supportsAutonomy: true,
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
-      effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+      // `none` is absent on purpose: run once carried it as the config
+      // override `-c model_reasoning_effort="none"`, but the session's one
+      // verified carrier (turn/start's `effort`) has no audited `none`, so
+      // the same spelling meant three things across commands. Under the
+      // 2.0.0 rule `none` is the CLI's "send no effort flag" spelling on
+      // every adapter (resolveEffortForAdapter): run launches with no
+      // override and the model's default applies, the same behavior the
+      // session refusal used to send callers to by hand.
+      effortLevels: ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
       supportsHermetic: true,
       supportsToolSelection: true,
+      // The validator below refuses --tools none above read-only autonomy.
+      toolsNoneRequiresReadOnly: true,
       // `codex exec --json` prints its events as JSONL, which processRunResult
       // reduces to the result envelope.
       supportsResultJson: true,
@@ -106,10 +116,10 @@ export abstract class CodexPolicy extends BaseAdapter {
     const configured = this.environment.CODEX_HOME;
     if (passedThrough && configured) {
       if (!isAbsolute(configured)) {
-        throw new Error("CODEX_HOME must be an absolute path");
+        throw new UsageRefusalError("CODEX_HOME must be an absolute path");
       }
       if (configured.trim() !== configured) {
-        throw new Error(
+        throw new UsageRefusalError(
           `CODEX_HOME must not be whitespace-padded when passed through; ` +
             `'${configured}' carries leading or trailing whitespace, and ` +
             "codex reads the variable without trimming, so the harness state " +
@@ -177,7 +187,7 @@ export abstract class CodexPolicy extends BaseAdapter {
   private assertMultiAgentKnob(override: ProviderOverride | null): void {
     const setting = readCodexMultiAgent(this.environment);
     if (setting === null || override !== null) return;
-    throw new Error(
+    throw new UsageRefusalError(
       `${CODEX_MULTI_AGENT_ENV} is set but no provider override is; the ` +
         "knob rides the override's own config.toml, so also set " +
         "CODEMUX_CODEX_PROVIDER_BASE_URL, CODEMUX_CODEX_PROVIDER_API_KEY " +
@@ -195,7 +205,7 @@ export abstract class CodexPolicy extends BaseAdapter {
     const override = this.validatedProvider();
     const resolved = model ?? override?.model;
     if (resolved === undefined && override !== null) {
-      throw new Error(
+      throw new UsageRefusalError(
         "codex needs a model for the provider override; pass --model or set CODEMUX_CODEX_PROVIDER_MODEL"
       );
     }
@@ -259,7 +269,7 @@ export abstract class CodexPolicy extends BaseAdapter {
       assertNoCodexProjectSkills(cwd, this.effectiveHome());
     }
     if (request.tools === "none" && (request.autonomy ?? "read-only") !== "read-only") {
-      throw new Error(
+      throw new UsageRefusalError(
         "codex cannot remove its apply_patch tool; --tools none needs --auto read-only, " +
           "where the sandbox denies writes to the working directory"
       );
@@ -284,7 +294,7 @@ export abstract class CodexPolicy extends BaseAdapter {
     // operator's real CODEX_HOME would mean writing codemux's provider
     // table into the operator's config.
     if (this.validatedProvider() !== null) {
-      throw new Error(
+      throw new UsageRefusalError(
         "the codex provider override supports headless runs only; unset CODEMUX_CODEX_PROVIDER_* for an interactive session"
       );
     }

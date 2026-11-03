@@ -1,3 +1,5 @@
+import { isAbsolute } from "node:path";
+import { canonicalSandboxBlockPath } from "./session/registry/format.js";
 import type { AgentId, AutonomyLevel } from "./types.js";
 import type {
   SandboxOptions,
@@ -12,6 +14,8 @@ export interface SandboxPolicyOverrides {
   /** Request scode's per-run scratch accounting (see SandboxOptions). */
   accountFile?: string;
   accountId?: string;
+  /** Extra paths scode must block (see SandboxOptions). */
+  blockPaths?: readonly string[];
 }
 
 // These are security invariants, not defaults: callers cannot disable them.
@@ -36,5 +40,24 @@ export function resolveSandboxOptionsForAgent(
   if (overrides.scrubEnv) options.scrubEnv = true;
   if (overrides.accountFile) options.accountFile = overrides.accountFile;
   if (overrides.accountId) options.accountId = overrides.accountId;
+  if (overrides.blockPaths && overrides.blockPaths.length > 0) {
+    // Canonical here, at the boundary every caller crosses: a programmatic
+    // request could otherwise name a symlink and retarget it before scode
+    // reads --block (round 29, edges 2); the CLI's own canonicalization
+    // then becomes a duplicate, not the only gate.
+    options.blockPaths = overrides.blockPaths.map((path) => canonicalBlockPath(path));
+  }
   return options;
+}
+
+/** The canonical spelling of a block path: the one rule the session
+ * registry and the launch-time conflict check already apply
+ * (canonicalSandboxBlockPath), so a programmatic caller of
+ * resolveSandboxOptionsForAgent gets the same resolution the CLI's flag
+ * parser gives (round 30, edges 3; round 32, contracts 7). */
+export function canonicalBlockPath(path: string): string {
+  // Absolute only, as the CLI requires: a relative path would resolve
+  // against this process's cwd, not the run's (round 34, edges 1).
+  if (!isAbsolute(path)) throw new Error(`--sandbox-block requires absolute paths: ${path}`);
+  return canonicalSandboxBlockPath(path);
 }

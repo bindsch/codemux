@@ -1,7 +1,24 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { cleanupSessions, of, send, startAndWait, startSession, waitFor, refuseWrites } from "./session-codex-e2e-helpers.js";
+import {
+  cleanupMark,
+  cleanupSessions,
+  cleanupSessionsSince,
+  of,
+  send,
+  startAndWait,
+  startSession,
+  waitFor,
+  refuseWrites
+} from "./session-codex-e2e-helpers.js";
+import { registerNoLeakedSignals } from "./helpers/signal-listeners.js";
 
 afterAll(cleanupSessions);
+
+// Review round 4, session finding 8: every session a test built is ended
+// in that test's afterEach, not left for the file's afterAll — a driver
+// still holding the process's signal handlers would fire in any later
+// test that raises one.
+registerNoLeakedSignals(cleanupSessionsSince, cleanupMark);
 
 describe("codex session e2e - review live23 audit siblings", () => {
   test("a server request whose answer is refused mirrors first and claims no answer", async () => {

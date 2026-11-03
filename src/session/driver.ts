@@ -18,269 +18,100 @@
  * answers it and does not forward it.
  */
 
-import { existsSync } from "node:fs";
-import { isAbsolute } from "node:path";
-import type { AutonomyLevel, ResultUsageBlock } from "../types.js";
-import {
-  appendSessionCallRecord,
-  appendSessionTurnCallRecord,
-  providerHost,
-  type SessionCallContext,
-} from "../call-log.js";
+import { appendSessionCallRecord, appendSessionTurnCallRecord } from "../call-log.js";
 import { emptyUsage } from "../result-envelope.js";
-import { claudeCeiling } from "./ceiling.js";
-import {
-  buildControlErrorResponse,
-  buildControlResponse,
-  buildHarnessUserMessage,
-  buildInterruptRequest,
-  claudeSessionCapabilities,
-  ClaudeStreamParser,
-  type ClaudeParse,
-} from "./claude-session.js";
-import { SessionFsm } from "./fsm.js";
+import { buildInterruptRequest } from "./claude-session.js";
 import {
   awaitFinalFlush,
   buildSessionEnded,
-  harnessFailed,
-  shutdownRequested,
-  BoundedOutboundQueue,
-  callerStdinFailure,
-  codemuxFatalMessage,
   crashSynthesisReason,
   drainFailureMessage,
-  SESSION_SIGNAL_EXIT_CODE,
-  harnessLineDeliverable,
-  installSessionSignalHandlers,
-  type SessionFatal,
+  harnessFailed,
+  shutdownRequested,
   type SessionChildOutcome,
   type SessionProcess,
-  type SessionSignalGate,
 } from "./process.js";
-import {
-  applyAuthorPrefix,
-  buildEvent,
-  buildInputAck,
-  buildPermissionResolved,
-  buildUnknownEvent,
-  buildUserMessage,
-  parseInputLine,
-  type InputMessage,
-  type InputRejectionReason,
-} from "./protocol.js";
-import {
-  discardUnconfirmedRecord,
-  releaseSessionRecord,
-  recordSessionStart,
-  touchSession,
-  type SandboxTrust,
-  type UpdateOutcome,
-} from "./registry.js";
+import { buildEvent } from "./protocol.js";
+import { discardUnconfirmedRecord, releaseSessionRecord } from "./registry.js";
+import type { SessionEndReason } from "./driver-io.js";
+import { ClaudeDriverInput } from "./driver-input.js";
 
-export interface SessionDriverOptions {
-  agent: "claude" | "zai";
-  /** The id codemux asked the harness for (`--session-id`) or resumed. */
-  sessionId: string;
-  autonomy: AutonomyLevel;
-  model?: string;
-  /** The validated working directory — also the ceiling's launch scope. */
-  cwd: string;
-  sandboxed: boolean;
-  /** The trust the session actually runs at; recorded and reported as-is
-   * (the resume guard compares against exactly this value). */
-  sandboxTrust: SandboxTrust;
-  /** The containment flags this session actually runs with; recorded
-   * as-is, and the resume guard refuses a resume that clears either. */
-  sandboxNoNet: boolean;
-  sandboxScrubEnv: boolean;
-  /** The `--pass-env` names the child runs with; recorded for the
-   * resume guard (review live16). */
-  passEnv: readonly string[];
-  /** Whether the sandbox-scoped Playwright MCP is on; recorded for the
-   * resume guard (review live16). */
-  playwrightMcp: boolean;
-  /** Prefix harness-bound text with `[<author>] ` (§4.4, default on). */
-  authorPrefix: boolean;
-  permissionTimeoutMs: number;
-  turnTimeoutMs: number | null;
-  sessionTimeoutMs: number | null;
-  /** Null disables registry writes (unit tests); the CLI always passes one. */
-  registryPath: string | null;
-  /** The harness state home recorded for this session (§4.8). */
-  harnessHome: string;
-  /** The provider identity recorded for the resume guard (review D3):
-   * the override's base URL, or null for the operator's own login. */
-  providerBaseUrl: string | null;
-  /** Injectable event sink; defaults to codemux stdout, one line each. */
-  sink?: (line: string) => Promise<void> | void;
-}
+export type { SessionDriverOptions, SessionEndReason } from "./driver-io.js";
 
-export type SessionEndReason =
-  | "shutdown"
-  | "stdin-close"
-  | "signal"
-  | "timeout"
-  | "crash"
-  | "harness_failed";
+/** The pause between the two --final removal attempts: long enough for an
+ * ephemeral rmSync failure (a scanner holding the directory open) to pass. */
+const FINAL_REMOVE_RETRY_MS = 100;
 
-import { addTurnUsage } from "./usage.js";
+export class ClaudeSessionDriver extends ClaudeDriverInput {
+  private shutdownWasRequested = false;
 
-type Timer = ReturnType<typeof setTimeout>;
+  /** True once the end path ran the --final removal sequence (both
+   * attempts, whatever the outcome): the CLI's finally removes a --final
+   * directory only while this is false, so it never re-decides a directory
+   * the end path already decided (review round 15, major). */
+  finalRemovalRan = false;
+  /** A fresh unconfirmed record was discarded: the CLI removes the orphaned private directory (round 46). */
+  recordDiscarded = false;
 
-export class ClaudeSessionDriver {
-  private readonly fsm = new SessionFsm();
-  private readonly parser = new ClaudeStreamParser();
-  private readonly capabilities = claudeSessionCapabilities();
-  private readonly out: BoundedOutboundQueue;
-  private readonly pendingTimers = new Map<string, Timer>();
-  /** The request facts the ceiling judges; membership lives in the FSM. */
-  private readonly pendingRequests = new Map<
-    string,
-    { tool: string; input: Record<string, unknown> }
-  >();
-  /** Derived file-change candidates waiting on their tool's result
-   * (§4.3): stashed when the tool_use frame arrives — before the
-   * permission round-trip — and emitted as `file_change` only when the
-   * matching tool_result reports success. A denied or failed call
-   * changed nothing, so its candidate is dropped silently; entries left
-   * behind at session end (a tool that never reported) stay unreported
-   * the same way — an unknown outcome is not a change (review live10). */
-  private readonly pendingFileChanges = new Map<
-    string,
-    { path: string; action: "add" | "edit"; rawLine: string }
-  >();
-  private proc: SessionProcess | null = null;
-  private readonly earlyLines: string[] = [];
-  private readonly signals: SessionSignalGate;
-  private seq = 0;
-  private turnCounter = 0;
-  // Interrupt request ids live in their own namespace: turns are named
-  // t1, t2, … for the caller, and an interrupt must never shift that
-  // numbering.
-  private interruptCounter = 0;
-  /** A `user` line accepted and forwarded before the init frame: its turn
-   * opens codemux-side when that frame arrives. While it is set the
-   * session counts as mid-turn, so a second line is rejected `busy`
-   * rather than handed to a harness that may fold both into one result
-   * (review live21). */
-  private openerPending = false;
-  /** The pending opener was already forwarded when the end began: the
-   * harness may still run it inside the drain, where no turn can open
-   * for it (review live16). */
-  private forwardedAtEnd = false;
-  private interruptPending = false;
-  /** The request id of the outstanding interrupt, caller or end path: a
-   * refusal clears the pending interrupt only when it answers this id
-   * (review live23: the end path's `interrupt-end-N` never matched a
-   * comparison rebuilt from the caller spelling). */
-  private interruptId: string | null = null;
-  private interruptFromTimeout = false;
-  /** Starts unknown (all-null), not zero: a counter a turn never reports
-   * must stay null rather than be guessed as 0 (§4.2). */
-  private cumulative: ResultUsageBlock = emptyUsage();
-  private registryRecorded = false;
-  /** The CLI claimed this session's record for a resume before the spawn
-   * (`adoptResumeClaim`). The claim makes this process the record's
-   * owner before the init frame, which arrives only after the caller's
-   * first input, so every end path must release it and report the
-   * session resumable even when no turn ever ran (review live20). */
-  private resumeClaimed = false;
-  /** The session's record was written before the spawn
-   * (`recordBeforeSpawn`), fresh and resumed alike. The init frame
-   * arrives only after the caller's first input reached the harness, so
-   * recording there let a turn run in a session the registry could not
-   * track (review live22). The init frame then only confirms the
-   * session; it writes nothing. */
-  private recordedBeforeSpawn = false;
-  /** Whether a failed turn-path registry stamp already warned: the touch
-   * is best-effort and never waits (review live13), so sustained
-   * contention would otherwise repeat the same stderr line every turn. */
-  private touchWarned = false;
-  private finished = false;
-  /** The end path's exit code, updatable while cleanup drains: a failure
-   * arriving inside the grace window (a tier-3 fatal, a handler exception,
-   * a registry failure) must still cost success — `finish` stays
-   * idempotent, the verdict does not freeze until the child settles
-   * (review live7). Monotone: only a higher code ever wins. */
-  private endExitCode = 0;
-  /** True only once the end path has settled the child: harness lines
-   * keep flowing (and keep being parsed and emitted) through the whole
-   * shutdown drain, because the grace window exists precisely so the
-   * harness can finish persisting and say so — its final result,
-   * messages, and usage arrive during it and must reach the caller
-   * (review live5). `finished` alone is the end path's re-entry guard
-   * and flips at its start. */
-  private settled = false;
-  /** An `interrupt` the caller sent while the forwarded first input's
-   * turn could not open yet (the FSM still `starting`, waiting for the
-   * init frame). It is delivered the moment that turn opens, so the ack
-   * the caller got is honored (review live18 — it was a no-op and the
-   * turn ran to completion). */
-  private interruptBeforeInit = false;
-  /** The input_seq of the caller interrupt held for the init frame, so a
-   * delivery the harness refuses then names the line it acked (review
-   * live23). */
-  private interruptBeforeInitSeq: number | null = null;
-  private stdinClosed = false;
-  /** The first fatal the session reported: the reason a crash end's
-   * synthesized turn completion carries, so it names the failure that
-   * ended the session rather than assuming the process died (review
-   * live17 — an outbound overflow or a registry failure is a crash end
-   * with the harness alive). */
-  private firstFatal: string | null = null;
-  /** Whether the open turn's `--turn-timeout` already fired its
-   * interrupt; a second expiry on the same turn ends the session. */
-  private turnTimeoutFired = false;
-  private turnTimer: Timer | null = null;
-  private sessionTimer: Timer | null = null;
-  /** The wall clock each open turn started at, keyed by turn id: the
-   * ledger's session_turn records carry each turn's own duration. */
-  private readonly turnStartedAt = new Map<string, number>();
-  /** The session's own start, for the closing ledger record's duration. */
-  private readonly sessionStartedAt = Date.now();
-  /** The launch facts the call ledger records on every turn and at the
-   * end (call-log.ts); the provider is the override's host or "default". */
-  private readonly callLedger: SessionCallContext;
-  private readonly done: Promise<number>;
-  private resolveDone!: (code: number) => void;
+  /** Set between spawnPending() and attach()/spawnAbandoned(): an end path
+   * that begins inside that window holds at the late-child wait in finish
+   * until one of them answers (review round 18, edges 1). */
+  private lateChild: Promise<SessionProcess | null> | null = null;
+  private resolveLateChild: ((proc: SessionProcess | null) => void) | null = null;
 
-  constructor(private readonly options: SessionDriverOptions) {
-    this.done = new Promise<number>((resolve) => {
-      this.resolveDone = resolve;
+  /** The CLI calls this immediately before its spawn, after which the first
+   * await is the spawn itself: a signal delivered while that spawn is still
+   * in its preflight (the scode compatibility probe is async) starts the
+   * end path with no child to stop, and the end path's --final removal
+   * would otherwise delete the private directory before the child that
+   * needs killing even exists — a child that then reads or recreates the
+   * removed directory after the session reported completion (review round
+   * 18, edges 1). */
+  spawnPending(): void {
+    this.lateChild = new Promise((resolve) => {
+      this.resolveLateChild = resolve;
     });
-    this.callLedger = {
-      agent: options.agent,
-      model: options.model ?? null,
-      provider: providerHost(options.providerBaseUrl),
-      autonomy: options.autonomy,
-      hermetic: false,
-      sandboxed: options.sandboxed,
-      cwd: options.cwd,
-    };
-    this.out = new BoundedOutboundQueue(
-      options.sink ?? defaultEventSink(),
-      (failure) => {
-        // Both failure classes end the session (§4.2): the caller stopped
-        // reading (overflow) or the sink itself failed (a closed pipe). A
-        // codemux failure, not a harness one, but the end path is the same
-        // and the final events may not fit — the diagnostic rides on
-        // stderr.
-        if (failure.kind === "overflow") {
-          console.error(
-            `codemux: event output overran its bounds (${failure.events} events, ` +
-              `${failure.bytes} bytes pending); ending the session`
-          );
-        } else {
-          console.error(
-            `codemux: event output failed (${failure.error instanceof Error ? failure.error.message : String(failure.error)}); ending the session`
-          );
-        }
-        void this.finish("crash", 1);
-      }
+  }
+
+  /** The CLI's spawn ended without a child (it threw): an end path waiting
+   * on the late child proceeds with none and preserves a resumed session's
+   * private directory, because this invocation never ran its harness. */
+  spawnAbandoned(): void {
+    this.resolveLateChild?.(null);
+    this.resolveLateChild = null;
+  }
+
+  /** True once an end path has begun (a signal or a timeout during the
+   * spawn's preflight among them): the CLI's spawn-throw catch hands the
+   * ending to that path (round 20, minor 8). */
+  endPathStarted(): boolean {
+    return this.finished;
+  }
+
+  /** The spawn-throw catch's exit once endPathStarted() is true: the end
+   * path owns the ending — it emits session_ended and releases or
+   * discards the record inside its own ordering — so await its verdict
+   * and leave through the session's exit code; a rethrow instead exits
+   * the process hard first. A FRESH --final directory the end path
+   * decided nothing about still gets the CLI tail's own removal. */
+  async finishAfterSpawnThrow(error: unknown): Promise<void> {
+    console.error(
+      `codemux: the session child could not be spawned (${
+        error instanceof Error ? error.message : String(error)
+      }); ending through the session's already-begun end path`
     );
-    this.signals = installSessionSignalHandlers(() => {
-      void this.finish("signal", SESSION_SIGNAL_EXIT_CODE);
-    });
+    let code = await this.done;
+    if ( // --final, or a fresh record discarded as unconfirmed (nothing points at the directory; round 47)
+      (this.options.final || this.recordDiscarded) &&
+      !this.finalRemovalRan &&
+      !this.resumeClaimed &&
+      !(this.options.removeFinalProjectDir?.() ?? true)
+    ) {
+      code = Math.max(code, 1);
+    }
+    this.dispose();
+    process.stdin.destroy();
+    process.exitCode = code;
   }
 
   /** Hand the driver the spawned process; lines that arrived before this
@@ -290,14 +121,39 @@ export class ClaudeSessionDriver {
     // A signal between construction and this call finished the driver with
     // no child to stop (the CLI's spawn runs an async compatibility probe
     // before it attaches); the child arriving now must be stopped at once
-    // or it outlives the session it was spawned for.
-    if (this.finished) proc.requestStop();
+    // or it outlives the session it was spawned for. An end path already
+    // waiting holds until this child settles, so the --final removal runs
+    // only over a dead child (review round 18, edges 1).
+    if (this.finished) {
+      proc.requestStop();
+      void proc.settled.then(() => {
+        this.resolveLateChild?.(proc);
+        this.resolveLateChild = null;
+      });
+      return;
+    }
+    this.resolveLateChild?.(proc);
+    this.resolveLateChild = null;
   }
 
   /** The CLI's resume claim succeeded: this process owns the record from
    * now on, whether or not the harness ever reaches its init frame. */
   adoptResumeClaim(): void {
     this.resumeClaimed = true;
+  }
+
+  /** The --final removal settles here, inside the end path: one attempt,
+   * a short pause on failure, one retry with the same helper. By the time
+   * it answers, the directory is gone (either attempt) or both attempts
+   * failed — so the end stamp, the resumable verdict, and the exit code
+   * that follow all describe the directory the process actually leaves
+   * behind (review round 15, major). */
+  private async removeFinalProjectDirSettled(): Promise<boolean> {
+    this.finalRemovalRan = true;
+    const remove = this.options.removeFinalProjectDir;
+    if (remove === undefined || remove()) return true;
+    await new Promise((resolve) => setTimeout(resolve, FINAL_REMOVE_RETRY_MS));
+    return remove();
   }
 
   /** The start record, written by the CLI before the spawn: codemux
@@ -314,44 +170,12 @@ export class ClaudeSessionDriver {
     return null;
   }
 
-  /** The main wait: resolves with codemux's exit code when the session
-   * has fully ended (every end path funnels through `finish`). */
-  async run(): Promise<number> {
-    const proc = this.proc;
-    if (proc === null) throw new Error("attach() must be called before run()");
-    if (this.finished) return this.done;
-    void proc.exited.then((outcome) => {
-      // An exit codemux did not initiate: the crash path (§4.6).
-      if (this.finished) return;
-      this.emitError(
-        true,
-        "harness",
-        `the ${this.options.agent} process exited unexpectedly ` +
-          `(code ${outcome.code ?? "null"}, signal ${outcome.signal ?? "none"}; ` +
-          "its stderr is passed through on codemux's stderr)"
-      );
-      void this.finish("crash", 1);
-    });
-    if (this.options.sessionTimeoutMs !== null) {
-      this.sessionTimer = setTimeout(
-        () => void this.finish("timeout", 1),
-        this.options.sessionTimeoutMs
-      );
-      this.sessionTimer.unref?.();
-    }
-    while (this.earlyLines.length > 0) {
-      const line = this.earlyLines.shift() as string;
-      this.handleHarnessLine(line);
-    }
-    return this.done;
-  }
-
   /** One line from the harness stdout. Never throws. Lines are parsed and
    * emitted until the end path settles (`settled`): the shutdown grace
    * window is exactly the interval in which the harness's last output —
    * the interrupted turn's result, its usage — is still arriving, and
    * dropping it there would report a session that ended mid-sentence. */
-  handleHarnessLine(line: string): void {
+  override handleHarnessLine(line: string): void {
     if (this.proc === null) {
       this.earlyLines.push(line);
       return;
@@ -370,768 +194,9 @@ export class ClaudeSessionDriver {
     }
   }
 
-  /** A fatal from the process layer: tier-3 harness output (non-UTF-8,
-   * line overflow) or a handler exception, which is codemux's own defect
-   * and is reported as such, never as unusable harness output. */
-  handleFatal(fatal: SessionFatal): void {
-    if (this.settled) return;
-    if (fatal.kind === "handler" || fatal.kind === "read-error") {
-      console.error(`codemux: ${codemuxFatalMessage(fatal)}`, fatal.error);
-      this.emitError(true, "codemux", codemuxFatalMessage(fatal));
-      void this.finish("crash", 1);
-      return;
-    }
-    this.emitError(
-      true,
-      "harness",
-      `unusable harness output (${fatal.kind}, ${fatal.bytes} bytes): ${fatal.excerpt}`
-    );
-    void this.finish("crash", 1);
-  }
-
-  /** One framed line from the caller's stdin. Never throws. */
-  handleCallerLine(line: string): void {
-    if (line.trim() === "") return;
-    if (this.finished) {
-      // The input contract (§4.1): every line is answered, an end path
-      // included — during the drain window (`finished` and not yet
-      // `settled`) the answer is the `shutting_down` rejection, the same
-      // reason the protocol layer's gate specifies (review live9: the
-      // gate was unreachable dead code while this guard dropped lines
-      // unacknowledged). Once `settled`, `session_ended` is already on
-      // the stream and nothing may follow it, so later lines are dropped.
-      if (!this.settled) this.ack(this.fsm.nextInputSeq(), false, "shutting_down");
-      return;
-    }
-    const inputSeq = this.fsm.nextInputSeq();
-    const parsed = parseInputLine(line, {
-      capabilities: this.capabilities,
-      hasActiveTurn: this.fsm.state === "turn_active" || this.openerPending,
-      pendingRequestIds: new Set(this.fsm.pendingIds),
-      shuttingDown: this.stdinClosed || this.fsm.state === "shutting_down" || this.fsm.state === "ended",
-    });
-    if (!parsed.ok) {
-      this.ack(inputSeq, false, parsed.reason);
-      return;
-    }
-    const message = parsed.message;
-    switch (message.type) {
-      case "user": {
-        // `steer` never reaches this arm (the claude-family capability is
-        // false, rejected `unsupported` above), and neither does a `user`
-        // line while a turn runs (`user_during_turn: false`, rejected
-        // `busy`): every line here opens a turn, now or at init.
-        const harnessText = applyAuthorPrefix(
-          message.text,
-          message.author,
-          this.options.authorPrefix
-        );
-        const harnessLine = buildHarnessUserMessage(harnessText);
-        // Deliverability is checked on the exact frame BEFORE the ack: the
-        // frame's JSON-escaping can push a text that passed the protocol's
-        // 16 MiB bound past the harness write cap, and an accepted line
-        // that cannot reach the harness would hang its turn open with the
-        // caller told it went through.
-        if (!harnessLineDeliverable(harnessLine)) {
-          this.ack(inputSeq, false, "text_too_long");
-          return;
-        }
-        this.ack(inputSeq, true);
-        const turnId = this.fsm.state === "idle" ? this.startTurn() : null;
-        if (turnId === null) this.openerPending = true;
-        this.emit(
-          buildUserMessage(
-            ++this.seq,
-            this.options.sessionId,
-            inputSeq,
-            message.text,
-            message.author,
-            turnId
-          )
-        );
-        this.writeToHarness(harnessLine);
-        return;
-      }
-      case "interrupt": {
-        if (this.fsm.state === "starting" && this.openerPending) {
-          // A `user` line was already forwarded, so the harness runs that
-          // turn as soon as it starts; the turn opens codemux-side with the
-          // init frame, and the interrupt rides that moment.
-          this.ack(inputSeq, true);
-          this.interruptBeforeInit = true;
-          this.interruptBeforeInitSeq = inputSeq;
-          return;
-        }
-        // No active turn: an acknowledged no-op (§4.1).
-        if (this.fsm.state !== "turn_active") {
-          this.ack(inputSeq, true);
-          return;
-        }
-        // §4.1: a pending request is answered deny on interrupt, before
-        // the turn closes (permission_resolved: "superseded") — it must
-        // not keep a timer running against a turn that is ending.
-        this.supersedePendingDeny("codemux: denied: the turn was interrupted");
-        // Written before the ack: a refused write started the crash end,
-        // and an accepted ack would report an interrupt the harness never
-        // got (review live23, the codex sibling's finding). A refused
-        // deny above already started that end, whose own interrupt must
-        // stay the pending one, so nothing more is written.
-        if (!this.finished) this.sendInterrupt();
-        if (this.finished) {
-          this.rejectUndelivered(inputSeq);
-          return;
-        }
-        this.ack(inputSeq, true);
-        return;
-      }
-      case "permission_decision": {
-        this.applyPermissionDecision(inputSeq, message);
-        return;
-      }
-      case "shutdown": {
-        this.ack(inputSeq, true);
-        void this.finish("shutdown", 0);
-        return;
-      }
-    }
-  }
-
-  /** The caller closed stdin: the graceful end (§4.6), exit 0. A read
-   * error is not a close: the same end path runs, but the failure is
-   * reported and costs success (review live17 — it used to exit 0). */
-  handleCallerEnd(error?: unknown): void {
-    this.stdinClosed = true;
-    // `session_ended` is already on the stream once settled, and nothing
-    // may follow it: a read error landing during the final flush goes to
-    // stderr only (review live18).
-    if (this.settled) {
-      if (error !== undefined) console.error(`codemux: ${callerStdinFailure(error)}`);
-      return;
-    }
-    if (this.finished) {
-      // An end already began and owns the exit code: stdin is no longer
-      // read, so a read error now loses nothing and is reported without
-      // turning that end into a failure (review live22).
-      if (error !== undefined) this.emitError(false, "codemux", callerStdinFailure(error));
-      return;
-    }
-    if (error !== undefined) {
-      this.emitError(true, "codemux", callerStdinFailure(error));
-      void this.finish("stdin-close", 1);
-      return;
-    }
-    void this.finish("stdin-close", 0);
-  }
-
   dispose(): void {
     this.signals.dispose();
     this.clearTimers();
-  }
-
-  // --- harness side -----------------------------------------------------
-
-  private applyParse(parse: ClaudeParse, rawLine: string): void {
-    switch (parse.kind) {
-      case "unusable":
-        // Tier 3 (§4.2): the fatal report carries the excerpt; the line
-        // itself is not mirrored (there is no event to preserve).
-        this.emitError(
-          true,
-          "harness",
-          `unusable harness output (not JSON, ${parse.bytes} bytes): ${parse.excerpt}`
-        );
-        void this.finish("crash", 1);
-        return;
-      case "grammar_error":
-        // Tier 2: the raw event still goes out, then the fatal end.
-        this.emit(buildUnknownEvent(++this.seq, this.options.sessionId, rawLine));
-        this.emitError(true, "harness", parse.message);
-        void this.finish("crash", 1);
-        return;
-      case "init": {
-        const error = this.fsm.transition({ kind: "session_started" });
-        if (error !== null) {
-          this.emitGrammarViolation(rawLine, error.message);
-          void this.finish("crash", 1);
-          return;
-        }
-        this.recordStart();
-        // The announcement follows the record's verdict: a required
-        // record that failed must not announce — §4.8's fail-closed rule,
-        // nothing is vouchable (and `settled` alone would let the drained
-        // init of a registry-failed start announce) — while a record that
-        // succeeded announces even while an end path drains, so the
-        // registry and the caller agree the session existed. A null
-        // registryPath records nothing and always announces.
-        if (
-          this.settled ||
-          (this.options.registryPath !== null && !this.registryRecorded)
-        ) {
-          return;
-        }
-        this.emit(
-          buildEvent(++this.seq, this.options.sessionId, "session_started", null, {
-            agent: this.options.agent,
-            model: this.options.model ?? null,
-            autonomy: this.options.autonomy,
-            cwd: this.options.cwd,
-            sandboxed: this.options.sandboxed,
-            sandbox_trust: this.options.sandboxTrust,
-            capabilities: this.capabilities,
-            protocol: "codemux-live-session/1",
-          })
-        );
-        // Input accepted before the init frame arrived was forwarded but
-        // only counted; opening the session must also open that turn, or
-        // the first result meets an idle FSM and ends the session
-        // fatally. This is the pre-init-arrival path (the CLI spawns the
-        // harness and immediately relays caller stdin).
-        if (this.openerPending && !this.finished) {
-          this.openerPending = false;
-          const opened = this.startTurn();
-          if (opened !== null && this.interruptBeforeInit) {
-            this.interruptBeforeInit = false;
-            if (!this.sendInterrupt()) {
-              this.emitError(
-                false,
-                "codemux",
-                `the interrupt accepted before the session started (input_seq ${this.interruptBeforeInitSeq}) could not be delivered`
-              );
-            }
-          }
-        }
-        return;
-      }
-      case "assistant_delta":
-        this.emit(
-          buildEvent(++this.seq, this.options.sessionId, "assistant_delta", rawLine, {
-            delta: parse.text,
-            turn_id: this.fsm.activeTurn,
-          })
-        );
-        return;
-      case "assistant_text":
-        this.emit(
-          buildEvent(++this.seq, this.options.sessionId, "assistant_message", rawLine, {
-            text: parse.text,
-            turn_id: this.fsm.activeTurn,
-          })
-        );
-        return;
-      case "tool_call":
-        this.emit(
-          buildEvent(++this.seq, this.options.sessionId, "tool_call", rawLine, {
-            call_id: parse.callId,
-            name: parse.name,
-            input: parse.input,
-          })
-        );
-        return;
-      case "tool_result": {
-        this.emit(
-          buildEvent(++this.seq, this.options.sessionId, "tool_result", rawLine, {
-            call_id: parse.callId,
-            output: parse.output,
-            is_error: parse.isError,
-          })
-        );
-        // The derived change confirms here, not at the tool_use frame:
-        // only a successful result proves the write happened (review
-        // live10 — the frame arrives before the permission round-trip,
-        // so emitting there reported changes that were then denied).
-        const candidate = this.pendingFileChanges.get(parse.callId);
-        if (candidate !== undefined) {
-          this.pendingFileChanges.delete(parse.callId);
-          if (!parse.isError) {
-            this.emit(
-              buildEvent(
-                ++this.seq,
-                this.options.sessionId,
-                "file_change",
-                candidate.rawLine,
-                {
-                  path: candidate.path,
-                  action: candidate.action,
-                  derived: true,
-                }
-              )
-            );
-          }
-        }
-        return;
-      }
-      case "file_change":
-        // Stash, not emit: the tool_use frame only names a candidate.
-        // The Write add/edit split reads the workspace now — before the
-        // tool runs — because after a successful write the file always
-        // exists; the frame order preserves correctness, each call
-        // arriving after the previous tool's result. The existsSync
-        // resolves a relative target against the SESSION cwd — the same
-        // literal join the ceiling uses — not codemux's own working
-        // directory, which the harness never runs in (review live15).
-        this.pendingFileChanges.set(parse.callId, {
-          path: parse.path,
-          action: this.writeAction(parse),
-          rawLine,
-        });
-        return;
-      case "permission_request": {
-        const error = this.fsm.addPending(parse.requestId);
-        if (error !== null) {
-          this.emitGrammarViolation(rawLine, error.message);
-          void this.finish("crash", 1);
-          return;
-        }
-        this.pendingRequests.set(parse.requestId, {
-          tool: parse.tool,
-          input: parse.input,
-        });
-        this.emit(
-          buildEvent(
-            ++this.seq,
-            this.options.sessionId,
-            "permission_request",
-            rawLine,
-            {
-              request_id: parse.requestId,
-              tool: parse.tool,
-              input: parse.input,
-              options: ["allow", "deny"],
-            }
-          )
-        );
-        if (this.finished) {
-          // A request landing inside the shutdown drain can never be
-          // decided: caller input is already refused once an end request
-          // began, and the expiry timer is cleared with every other on
-          // the end path — it could only fire at a session that is gone.
-          // Deny it at once with the same supersede treatment `finish`
-          // gave the requests it found pending (review live8), so the
-          // harness never waits on a permission the ending session
-          // cannot grant.
-          this.supersedePendingDeny("codemux: denied: the session is ending");
-          return;
-        }
-        const timer = setTimeout(
-          () => this.expirePermission(parse.requestId),
-          this.options.permissionTimeoutMs
-        );
-        timer.unref?.();
-        this.pendingTimers.set(parse.requestId, timer);
-        return;
-      }
-      case "unparseable_permission": {
-        // A can_use_tool whose payload cannot be read (§4.1's opaque
-        // rule): answered deny keyed by request_id so the harness never
-        // hangs, the raw frame passes through, and a non-fatal error
-        // tells the caller what was denied. Never fatal on shape alone.
-        // The raw line goes out before the answer: a refused write ends
-        // the session, and its fatal must follow the line, with no
-        // "answered" notice after it (review live23).
-        this.emit(buildUnknownEvent(++this.seq, this.options.sessionId, rawLine));
-        const denied = this.writeToHarness(
-          buildControlResponse(
-            parse.requestId,
-            "deny",
-            undefined,
-            "codemux: denied: the permission request could not be parsed"
-          )
-        );
-        if (!denied) return;
-        this.emitError(
-          false,
-          "harness",
-          "a can_use_tool request could not be parsed; answered deny"
-        );
-        return;
-      }
-      case "unsupported_control_request": {
-        // A control request codemux does not implement: answered with the
-        // control protocol's error response when its id can be echoed, so
-        // the harness never waits on it, then passed through raw with a
-        // non-fatal error (review live18; codex answers its unknown server
-        // requests with -32601 the same way). Never fatal on shape alone.
-        // Raw line first, then the answer (review live23, as above).
-        this.emit(buildUnknownEvent(++this.seq, this.options.sessionId, rawLine));
-        if (
-          parse.requestId !== null &&
-          !this.writeToHarness(
-            buildControlErrorResponse(
-              parse.requestId,
-              `codemux does not implement the ${parse.subtype} control request`
-            )
-          )
-        ) {
-          return;
-        }
-        this.emitError(
-          false,
-          "harness",
-          parse.requestId !== null
-            ? `the harness sent a control request codemux does not implement (${parse.subtype}); it was answered with an error`
-            : `the harness sent a control request with no usable request id (${parse.subtype}); it could not be answered`
-        );
-        return;
-      }
-      case "turn_completed":
-        this.completeTurn(parse, rawLine);
-        return;
-      case "control_error":
-        this.emit(buildUnknownEvent(++this.seq, this.options.sessionId, rawLine));
-        if (
-          this.interruptPending &&
-          parse.requestId === this.interruptId
-        ) {
-          // The harness refused the interrupt: it never happened, so it
-          // must not label the turn's own error result interrupted (or
-          // turn-timeout), excuse a drain exit, or hold the end path's
-          // grace window open (review live22; the codex driver's
-          // rejected-interrupt rule).
-          this.interruptPending = false;
-          this.interruptFromTimeout = false;
-          this.emitError(false, "harness", `the harness rejected the interrupt: ${parse.error}`);
-        }
-        return;
-      case "unknown":
-        this.emit(buildUnknownEvent(++this.seq, this.options.sessionId, rawLine));
-        return;
-    }
-  }
-
-  private completeTurn(
-    parse: Extract<ClaudeParse, { kind: "turn_completed" }>,
-    rawLine: string
-  ): void {
-    if (this.finished && this.fsm.state !== "turn_active" && this.forwardedAtEnd) {
-      // The harness ran the forwarded pre-init input inside the drain
-      // (see finish): its result answers no turn the caller saw open, so
-      // it is mirrored, never fatal and never silently dropped.
-      this.forwardedAtEnd = false;
-      // Its usage is real and the caller sees it raw, so it folds into
-      // the session total (review live22).
-      this.cumulative = addTurnUsage(this.cumulative, parse.usage);
-      this.emit(buildUnknownEvent(++this.seq, this.options.sessionId, rawLine));
-      return;
-    }
-    if (this.fsm.state === "starting") {
-      // A result with no init frame before it: the harness answered the
-      // forwarded first line without starting a session. A refused
-      // `--resume` (a transcript that no longer exists) ends this way,
-      // then exits 1 (review live21, recorded live). The line was
-      // answered, so the end path's "may still run it" notice would be
-      // false; the result goes out raw, its `errors` naming the reason.
-      this.openerPending = false;
-      this.cumulative = addTurnUsage(this.cumulative, parse.usage);
-      this.emitGrammarViolation(
-        rawLine,
-        `the ${this.options.agent} process sent a result before its init frame, so no session started ` +
-          "(a refused --resume ends this way; the result's errors and codemux's stderr carry the reason)"
-      );
-      void this.finish("crash", 1);
-      return;
-    }
-    const turnId = this.fsm.activeTurn;
-    const error = this.fsm.transition({
-      kind: "turn_completed",
-      turnId: turnId ?? "none",
-    });
-    if (error !== null) {
-      this.emitGrammarViolation(rawLine, error.message);
-      void this.finish("crash", 1);
-      return;
-    }
-    // Interrupt labeling is decided here, not in the parser: an
-    // interrupted turn arrives as an ERROR result by convention (step-0
-    // probe 4), so an error result with an interrupt outstanding is the
-    // interrupt striking — interrupted. A CLEAN result with an interrupt
-    // outstanding means the interrupt missed: the result was already in
-    // flight when the interrupt was written, so the turn ends honestly
-    // (review live12). The missed interrupt is spent with it: the harness
-    // reads it idle and drops it, because no later turn can be waiting
-    // harness-side — a mid-turn `user` line is rejected `busy`, so the
-    // next turn's line is written only after this result. (Review live12
-    // kept it pending for one more turn, and live20 narrowed that roll to
-    // the interrupted shape; both modeled a forwarded mid-turn line the
-    // harness had queued, which review live21 removed.)
-    const struck = parse.isError && this.interruptPending;
-    const finish = struck ? "interrupted" : parse.isError ? "failed" : "end";
-    const reason = struck && this.interruptFromTimeout ? "turn-timeout" : parse.reason;
-    this.interruptPending = false;
-    this.interruptFromTimeout = false;
-    this.clearTurnTimer();
-    // A turn the harness ended by itself may still hold permission
-    // requests open: they belong to a turn that no longer exists, and a
-    // later decision would be acked for a request the harness no longer
-    // holds while the expiry timer writes a stray deny into whatever
-    // turn runs next — the same supersede every other turn-closing path
-    // applies (review live11, the codex sibling's finding).
-    this.supersedePendingDeny("codemux: denied: the turn completed before the decision");
-    // Cost rides outside the token sums: the result's `total_cost_usd`
-    // is the harness's own session-lifetime figure (each turn's already
-    // includes the earlier ones), so the cumulative adopts it rather
-    // than adding it (usage.ts, review live8).
-    this.cumulative = addTurnUsage(this.cumulative, parse.usage);
-    // The per-turn event carries no cost (review live10): the only cost
-    // figure the wire reports (`total_cost_usd`) is session-lifetime —
-    // each turn's already includes the earlier ones — so mirroring it
-    // next to per-turn token counts invited callers to sum overlapping
-    // figures. The cumulative fold above keeps the real figure for
-    // `session_ended.usage.cost_usd`, where the wire's own number
-    // belongs.
-    this.emit(
-      buildEvent(++this.seq, this.options.sessionId, "turn_completed", rawLine, {
-        turn_id: turnId,
-        finish,
-        ...(reason !== null ? { reason } : {}),
-        usage: { ...parse.usage, cost_usd: null },
-      })
-    );
-    // The ledger's turn record mirrors the event the caller just saw; the
-    // session's closing record carries the cumulative cost this turn's
-    // fold adopted, so the per-turn line stays cost-free like the event.
-    appendSessionTurnCallRecord(
-      this.callLedger,
-      this.options.sessionId,
-      turnId ?? "none",
-      this.turnStartedAt.get(turnId ?? "") ?? Date.now(),
-      finish,
-      { ...parse.usage, cost_usd: null }
-    );
-    this.turnStartedAt.delete(turnId ?? "");
-    if (this.registryRecorded && this.options.registryPath !== null) {
-      // Best-effort stamp, and never a wait: the lock's retry sleep is a
-      // synchronous Atomics.wait on the main thread, and this runs inside
-      // harness-line handling on every turn — waiting behind another
-      // codemux process's write would freeze stdout reads, caller events
-      // and signal handlers for the lock's full budget (~10 s), so the
-      // stamp takes a single-attempt lock: one sweep, fail fast (review
-      // live13). A failed stamp costs pruning freshness, not correctness
-      // (the owner-liveness guard carries the real safety), and the first
-      // failure says so once on stderr — silently swallowing it was the
-      // live13 defect.
-      const outcome = touchSession(this.options.registryPath, this.options.sessionId, {
-        attempts: 1,
-      });
-      if (!outcome.ok && !this.touchWarned) {
-        this.touchWarned = true;
-        console.error(
-          `codemux: cannot stamp the session registry for ${this.options.sessionId} ` +
-            `(${outcome.error}); activity tracking may lag`
-        );
-      }
-    }
-  }
-
-  private startTurn(): string | null {
-    this.turnCounter += 1;
-    const turnId = `t${this.turnCounter}`;
-    const error = this.fsm.transition({ kind: "turn_started", turnId });
-    if (error !== null) {
-      this.emitError(true, "harness", error.message);
-      void this.finish("crash", 1);
-      return null;
-    }
-    this.emit(
-      buildEvent(++this.seq, this.options.sessionId, "turn_started", null, {
-        turn_id: turnId,
-      })
-    );
-    this.turnStartedAt.set(turnId, Date.now());
-    this.turnTimeoutFired = false;
-    this.armTurnTimer();
-    return turnId;
-  }
-
-  /** `--turn-timeout` (§4.5): the first expiry interrupts the turn and
-   * re-arms; a second expiry on the same turn means the interrupt did not
-   * end it (refused, lost, or ignored), so the cap ends the session
-   * instead of letting the turn run uncapped (review live17 — the timer
-   * fired once and never re-armed). */
-  private armTurnTimer(): void {
-    // An end path clears every timer once; a timer armed after it began
-    // would fire into the drain (review live22: a refused timeout
-    // interrupt started the crash end, and the re-arm below then raised a
-    // second, false "--turn-timeout" fatal).
-    if (this.options.turnTimeoutMs === null || this.finished) return;
-    this.clearTurnTimer();
-    this.turnTimer = setTimeout(() => {
-      this.turnTimer = null;
-      if (this.finished || this.fsm.state !== "turn_active" || !this.capabilities.interrupt) {
-        return;
-      }
-      if (this.turnTimeoutFired) {
-        this.emitError(
-          true,
-          "codemux",
-          "the turn did not end within --turn-timeout after its timeout interrupt; ending the session"
-        );
-        void this.finish("timeout", 1);
-        return;
-      }
-      this.turnTimeoutFired = true;
-      // §4.1: the turn timeout denies pending requests too, then
-      // interrupts the turn; the session continues. The timeout label
-      // rides only an interrupt that was written (review live23).
-      this.supersedePendingDeny("codemux: denied: the turn timed out");
-      if (this.finished) return;
-      if (this.sendInterrupt()) this.interruptFromTimeout = true;
-      this.armTurnTimer();
-    }, this.options.turnTimeoutMs);
-    this.turnTimer.unref?.();
-  }
-
-  /** A refused write marks nothing pending (review live23): the crash
-   * end it started must not read a drained error result as interrupted. */
-  private sendInterrupt(): boolean {
-    this.interruptCounter += 1;
-    const interruptId = `interrupt-${this.interruptCounter}`;
-    if (!this.writeToHarness(buildInterruptRequest(interruptId))) return false;
-    this.interruptId = interruptId;
-    this.interruptPending = true;
-    return true;
-  }
-
-  private expirePermission(requestId: string): void {
-    if (this.finished || !this.fsm.isPending(requestId)) return;
-    this.writeToHarness(
-      buildControlResponse(
-        requestId,
-        "deny",
-        undefined,
-        "codemux: denied: the permission timeout elapsed with no decision"
-      )
-    );
-    this.resolvePending(requestId, "timeout");
-  }
-
-  /** The add/edit split for a derived file-change candidate (§4.3): a
-   * Write over an existing target is an edit, over a missing one an add
-   * — read at stash time, before the tool runs. The target resolves
-   * against the session cwd the harness runs in (the ceiling's literal
-   * join: absolute kept, relative prefixed), because a relative
-   * `file_path` is relative to THAT directory, never to codemux's own
-   * process cwd (review live15). Edit and NotebookEdit only ever
-   * modify, so they are edits regardless. */
-  private writeAction(parse: Extract<ClaudeParse, { kind: "file_change" }>): "add" | "edit" {
-    if (!parse.write) return "edit";
-    const target = isAbsolute(parse.path)
-      ? parse.path
-      : `${this.options.cwd}/${parse.path}`;
-    return existsSync(target) ? "edit" : "add";
-  }
-
-  private applyPermissionDecision(
-    inputSeq: number,
-    message: Extract<InputMessage, { type: "permission_decision" }>
-  ): void {
-    const request = this.pendingRequests.get(message.request_id);
-    if (request === undefined) {
-      this.ack(inputSeq, false, "unknown_request");
-      return;
-    }
-    if (message.decision === "allow") {
-      // The ceiling judges the action that will actually run: the
-      // substituted arguments when the answer carries them (§4.1). The
-      // same object is what the allow sends: the harness runs the tool
-      // with the answer's `updatedInput`, so a plain allow carries the
-      // request's own input (review live18).
-      const effective = message.updated_input ?? request.input;
-      const verdict = claudeCeiling(
-        this.options.autonomy,
-        request.tool,
-        effective,
-        this.options.cwd
-      );
-      if (!verdict.allowable) {
-        this.writeToHarness(
-          buildControlResponse(
-            message.request_id,
-            "deny",
-            undefined,
-            `codemux: denied by the autonomy ceiling: ${verdict.reason}`
-          )
-        );
-        this.resolvePending(message.request_id, "deny");
-        this.ack(inputSeq, false, "autonomy_escalation");
-        return;
-      }
-      const answer = buildControlResponse(message.request_id, "allow", effective);
-      if (!harnessLineDeliverable(answer)) {
-        // An `updated_input` too large for the harness write cap cannot be
-        // delivered; acking it would report an answer the write then
-        // refuses, crashing the session (review live18). The request stays
-        // pending, so the caller can answer again within the bound.
-        this.ack(inputSeq, false, "text_too_long");
-        return;
-      }
-      if (!this.writeToHarness(answer)) {
-        this.rejectUndelivered(inputSeq);
-        return;
-      }
-      this.resolvePending(message.request_id, "allow");
-      this.ack(inputSeq, true);
-      return;
-    }
-    if (!this.writeToHarness(buildControlResponse(message.request_id, "deny"))) {
-      this.rejectUndelivered(inputSeq);
-      return;
-    }
-    this.resolvePending(message.request_id, "deny");
-    this.ack(inputSeq, true);
-  }
-
-  /** A decision whose answer never reached the harness: the refused
-   * write already started the crash end, which superseded the request,
-   * so the decision is rejected `shutting_down` rather than acked as
-   * accepted (review live20). */
-  private rejectUndelivered(inputSeq: number): void {
-    this.ack(inputSeq, false, "shutting_down");
-  }
-
-  private resolvePending(
-    requestId: string,
-    resolution: "allow" | "deny" | "timeout" | "superseded"
-  ): void {
-    const timer = this.pendingTimers.get(requestId);
-    if (timer !== undefined) {
-      clearTimeout(timer);
-      this.pendingTimers.delete(requestId);
-    }
-    this.pendingRequests.delete(requestId);
-    const error = this.fsm.removePending(requestId);
-    if (error !== null) return; // Raced with another resolution path.
-    this.emit(
-      buildPermissionResolved(
-        ++this.seq,
-        this.options.sessionId,
-        requestId,
-        resolution
-      )
-    );
-  }
-
-  // --- end path ----------------------------------------------------------
-
-  /** Answer every pending request deny and emit `superseded` (§4.1): turn
-   * completion, interrupt, `--turn-timeout`, and every end path close the
-   * permission channel first — a request whose turn is closing must not
-   * keep a timer running against a session that moved on. */
-  private supersedePendingDeny(message: string): void {
-    for (const requestId of this.fsm.supersedePending()) {
-      this.writeToHarness(buildControlResponse(requestId, "deny", undefined, message));
-      const timer = this.pendingTimers.get(requestId);
-      if (timer !== undefined) clearTimeout(timer);
-      this.pendingTimers.delete(requestId);
-      this.pendingRequests.delete(requestId);
-      this.emit(
-        buildPermissionResolved(
-          ++this.seq,
-          this.options.sessionId,
-          requestId,
-          "superseded"
-        )
-      );
-    }
   }
 
   /** Every end path funnels here (§4.6): pending requests are answered
@@ -1139,9 +204,7 @@ export class ClaudeSessionDriver {
    * harness can persist, the tree is killed after the grace, harness
    * output is drained until the child settles, and `session_ended` is
    * the last event on the stream. */
-  private shutdownWasRequested = false;
-
-  private async finish(reason: SessionEndReason, exitCode: number): Promise<void> {
+  protected override async finish(reason: SessionEndReason, exitCode: number): Promise<void> {
     this.shutdownWasRequested ||= shutdownRequested(reason);
     if (this.finished) {
       // Idempotent cleanup, honest verdict: a failure calling in during
@@ -1176,7 +239,7 @@ export class ClaudeSessionDriver {
     // the end began decides whether an unanswered turn is synthesized
     // (below); the verdict's wording reads the turn state after the drain.
     const turnOpenAtFinish = this.fsm.state === "turn_active";
-    this.supersedePendingDeny("codemux: denied: the session is ending");
+    this.supersedePendingDeny();
     let interruptWritten = false;
     if (
       this.fsm.state === "turn_active" &&
@@ -1214,7 +277,18 @@ export class ClaudeSessionDriver {
     // SIGINT/SIGTERM during the grace window must hit the gate's
     // fire-once latch, not the default disposition, or codemux dies
     // mid-drain and the tree it was about to kill survives it.
-    const proc = this.proc;
+    let proc = this.proc;
+    if (proc === null && this.lateChild !== null) {
+      // The end began while the CLI's spawn was still in its preflight
+      // (review round 18, edges 1): hold here until that spawn answers.
+      // attach() has already asked the child it produced to stop, and
+      // resolves only at its settlement, so everything below — the drain,
+      // the --final removal, the end stamp, session_ended — runs over a
+      // child that is dead, never one that could read or recreate the
+      // private directory this end is about to remove. A spawn that threw
+      // resolves with no child at all.
+      proc = await this.lateChild;
+    }
     // The closing event carries both the child code and its full outcome,
     // preserving the signal when the child code is null.
     let childOutcome: SessionChildOutcome | null = null;
@@ -1323,13 +397,45 @@ export class ClaudeSessionDriver {
     this.fsm.transition({ kind: "ended" });
     const ownsRecord =
       this.registryRecorded || this.resumeClaimed || this.recordedBeforeSpawn;
+    // Whether a --final removal actually removed the private directory;
+    // decided inside the release below, read by the resumable verdict.
+    let finalRemoved = false;
     if (ownsRecord && this.options.registryPath !== null) {
       if (this.recordedBeforeSpawn && !this.registryRecorded && !this.resumeClaimed) {
         // A fresh record the harness never confirmed names no transcript.
-        discardUnconfirmedRecord(this.options.registryPath, this.options.sessionId);
+        discardUnconfirmedRecord(this.options.registryPath, this.options.sessionId); this.recordDiscarded = true;
       } else {
-        // A lost stamp rides stderr (releaseSessionRecord, review live13).
-        releaseSessionRecord(this.options.registryPath, this.options.sessionId);
+        // A --final session leaves nothing claimable (review round 10,
+        // edges 4): the private directory is removed first — while this
+        // process still owns the record, so no resume can be running in
+        // it — and the end stamp then writes `final: true` with `ended`
+        // in one atomic update, so the record is never ended-and-
+        // claimable for a resume that would reopen a deleted directory.
+        // The CLI's removal closure reports a failure on stderr instead
+        // of throwing, so a removal that fails cannot skip the release,
+        // the end stamp, and session_ended below (review round 11,
+        // contracts-2 4). The whole removal sequence runs here, before
+        // any of those (review round 15, major): one attempt, a short
+        // pause, one retry, and only then the verdict — a directory the
+        // CLI's finally deleted after a failed first attempt left the
+        // record and the already-emitted session_ended promising a
+        // resume into a directory that no longer existed. The stamp
+        // follows the removal's settled outcome (review round 14,
+        // edges 3): a directory that survived both attempts still holds
+        // the token copy and transcript, and a final record refuses
+        // every future resume, so the record stays ended and resumable
+        // and the exit code says the removal failed.
+        // A resume whose spawn failed keeps its existing transcript.
+        // Remove it only after a child attached in this invocation.
+        finalRemoved = this.options.final && proc !== null
+          ? await this.removeFinalProjectDirSettled()
+          : false;
+        if (this.options.final && proc !== null && !finalRemoved) {
+          this.endExitCode = Math.max(this.endExitCode, 1);
+        }
+        // A lost stamp rides stderr (live13); after a --final removal it also fails the exit code (round 56).
+        const stamped = releaseSessionRecord(this.options.registryPath, this.options.sessionId, this.options.final === true && finalRemoved);
+        if (!stamped && finalRemoved) this.endExitCode = Math.max(this.endExitCode, 1);
       }
     }
     // Resumable means the harness confirmed the session (the start was
@@ -1345,7 +451,14 @@ export class ClaudeSessionDriver {
     const resumable =
       this.capabilities.resume &&
       (this.registryRecorded ||
-        (this.resumeClaimed && this.endExitCode === 0));
+        (this.resumeClaimed && this.endExitCode === 0)) &&
+      // --final removed the private config directory before the end
+      // stamp above, so the verdict must not promise a resume that would
+      // open a fresh, transcript-less directory. A --final removal that
+      // failed BOTH attempts kept the directory and the record
+      // non-final, so the retry the verdict promises is real (review
+      // round 14, edges 3; round 15 moved the retry into the end path).
+      !(this.options.final && finalRemoved);
     const sent = this.out.enqueue(
       buildSessionEnded(++this.seq, this.options.sessionId, childOutcome, {
         reason,
@@ -1381,150 +494,4 @@ export class ClaudeSessionDriver {
     this.signals.dispose();
     this.resolveDone(delivered ? this.endExitCode : Math.max(this.endExitCode, 1));
   }
-
-  // --- helpers -----------------------------------------------------------
-
-  private recordStart(): void {
-    if (this.recordedBeforeSpawn) {
-      // The record exists and this process owns it; the init frame is
-      // the harness's confirmation, and no write waits on the lock here.
-      this.registryRecorded = true;
-      return;
-    }
-    const outcome = this.writeStartRecord();
-    if (outcome === null) return;
-    if (!outcome.ok) {
-      // An untracked live session must not run (§4.8): the registry is
-      // what makes resume's guards answerable, so failing to record it
-      // fails the session closed.
-      this.emitError(
-        true,
-        "codemux",
-        `cannot record the session in the registry: ${outcome.error}`
-      );
-      void this.finish("crash", 1);
-      return;
-    }
-    this.registryRecorded = true;
-  }
-
-  /** The start record's one write; null when no registry is configured. */
-  private writeStartRecord(): UpdateOutcome | null {
-    if (this.options.registryPath === null) return null;
-    return recordSessionStart(this.options.registryPath, {
-      id: this.options.sessionId,
-      agent: this.options.agent,
-      cwd: this.options.cwd,
-      hermetic: false,
-      harness_home: this.options.harnessHome,
-      model: this.options.model ?? null,
-      autonomy: this.options.autonomy,
-      sandboxed: this.options.sandboxed,
-      sandbox_trust: this.options.sandboxTrust,
-      sandbox_no_net: this.options.sandboxNoNet,
-      sandbox_scrub_env: this.options.sandboxScrubEnv,
-      pass_env: [...this.options.passEnv],
-      playwright_mcp: this.options.playwrightMcp,
-      provider_base_url: this.options.providerBaseUrl,
-    });
-  }
-
-  /** Queue one event line. The session's end events (the option) ride
-   * the queue's terminal lane (round al32): session_ended and the fatals
-   * that end the session reach the caller even when the ordinary bounds
-   * refuse everything else, while turn_completed and the input acks are
-   * ordinary entries that drop with the rest. Two terminal classes
-   * (round al35, edges major 4): `terminal: true` is session_ended
-   * alone, and `terminal: "fatal"` is a fatal, so the lane reserves its
-   * last slot for the end event and a flood of fatals cannot take it.
-   * The enqueue's boolean is deliberately ignored — a refused line has
-   * already fired the queue's own failure callback, which starts the
-   * crash end; a terminal line is refused only when its lane class is
-   * full, and the overflow that reports starts the same end. */
-  private emit(line: string, options?: { terminal?: boolean | "fatal" }): void {
-    this.out.enqueue(line, options);
-  }
-
-  private ack(inputSeq: number, accepted: boolean, reason?: InputRejectionReason): void {
-    this.emit(
-      buildInputAck(++this.seq, this.options.sessionId, inputSeq, accepted, reason)
-    );
-  }
-
-  /** Tier 2 (§4.2): a harness line that breaks the stream's grammar
-   * still goes out raw, then the fatal names the violation (review
-   * live21 — the FSM-rejected lines were reported but not mirrored, so
-   * a refused resume's result frame never reached the caller). */
-  private emitGrammarViolation(rawLine: string, message: string): void {
-    this.emit(buildUnknownEvent(++this.seq, this.options.sessionId, rawLine));
-    this.emitError(true, "harness", message);
-  }
-
-  private emitError(fatal: boolean, source: "codemux" | "harness", message: string): void {
-    if (fatal && this.firstFatal === null) this.firstFatal = message;
-    this.emit(
-      buildEvent(++this.seq, this.options.sessionId, "error", null, {
-        fatal,
-        source,
-        message,
-      }),
-      // A fatal rides the lane's fatal class (capped one slot short of
-      // the lane), so the slot the end event needs survives a flood of
-      // them (round al35, edges major 4).
-      { terminal: fatal ? "fatal" : undefined }
-    );
-  }
-
-  /** Write one line; whether it was delivered. A refused write has
-   * already started the crash end when this returns false. */
-  private writeToHarness(line: string): boolean {
-    const proc = this.proc;
-    if (proc === null) return false;
-    const result = proc.writeLine(line);
-    if (!result.ok) {
-      // A line that cannot reach the harness after its ack is a codemux
-      // failure, not a diagnostic: the turn or permission it belongs to
-      // would hang open with no way for the caller to know. Writes that
-      // land after `finished` (an already-ending session) stay silent —
-      // the end path owns that window.
-      if (this.finished) return false;
-      this.emitError(
-        true,
-        "codemux",
-        `could not deliver a line to the harness (${result.reason ?? "unknown"})`
-      );
-      void this.finish("crash", 1);
-      return false;
-    }
-    return true;
-  }
-
-  private clearTurnTimer(): void {
-    if (this.turnTimer !== null) {
-      clearTimeout(this.turnTimer);
-      this.turnTimer = null;
-    }
-  }
-
-  private clearTimers(): void {
-    this.clearTurnTimer();
-    if (this.sessionTimer !== null) {
-      clearTimeout(this.sessionTimer);
-      this.sessionTimer = null;
-    }
-    for (const timer of this.pendingTimers.values()) clearTimeout(timer);
-    this.pendingTimers.clear();
-  }
-}
-
-/** The default event sink: one JSONL line per write on stdout. */
-function defaultEventSink(): (line: string) => Promise<void> {
-  return async (line: string): Promise<void> => {
-    await new Promise<void>((resolve, reject) => {
-      process.stdout.write(`${line}\n`, (error) => {
-        if (error !== null && error !== undefined) reject(error);
-        else resolve();
-      });
-    });
-  };
 }

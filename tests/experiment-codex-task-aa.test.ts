@@ -197,7 +197,24 @@ test.each(["pass", "leak", "missing"])(
       expect(await post(1, "tools/list")).toBe(200);
       evidence.accept({ type: "thread.started", thread_id: THREAD });
       const pending = post(2, "tools/call", { name: "lookup", arguments: {}, _meta: { callId: "native" } });
-      await Bun.sleep(30);
+      // Observable barrier, not a fixed sleep: the assertion runs only after
+      // the relay has recorded the authenticated tools/call request
+      // (http_request precedes the inventory gate in the handler), so a
+      // dispatch-first regression would have called the spy by then, under
+      // any load, while a held dispatch stays at zero.
+      const recordedCall = async (): Promise<void> => {
+        const deadline = Date.now() + 2_000;
+        for (;;) {
+          const seen = readFileSync(relay.recordingPath, "utf8").split("\n")
+            .filter((line) => line.includes('"kind":"http_request"'))
+            .some((line) => Buffer.from((JSON.parse(line).bytes_base64 ?? "") as string, "base64")
+              .toString().includes('"method":"tools/call"'));
+          if (seen) return;
+          if (Date.now() > deadline) throw new Error("relay never recorded the tools/call request");
+          await Bun.sleep(5);
+        }
+      };
+      await recordedCall();
       expect(dispatches).toBe(0);
       if (mode !== "missing") appendFileSync(rollout, JSON.stringify(world(mode === "leak"
         ? { ...TOOLS, "clock.sleep": "hash" } : TOOLS)) + "\n");

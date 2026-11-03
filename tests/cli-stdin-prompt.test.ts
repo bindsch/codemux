@@ -37,7 +37,7 @@ describe("CLI - stdin prompt", () => {
         fake.env,
         { stdin: "" }
       );
-      expect(exitCode).toBe(1);
+      expect(exitCode).toBe(64);
       expect(stderr).toContain("-f - read an empty prompt from stdin");
     } finally {
       fake.cleanup();
@@ -56,7 +56,7 @@ describe("CLI - stdin prompt", () => {
         // "a", a lone continuation byte, "b": invalid UTF-8.
         { stdin: new Uint8Array([0x61, 0xff, 0x62]) }
       );
-      expect(exitCode).toBe(1);
+      expect(exitCode).toBe(64);
       expect(stderr).toContain("-f - prompt must contain valid UTF-8");
     } finally {
       fake.cleanup();
@@ -71,7 +71,7 @@ describe("CLI - stdin prompt", () => {
         fake.env,
         { stdin: "  \n\t\n" }
       );
-      expect(exitCode).toBe(1);
+      expect(exitCode).toBe(64);
       expect(stderr).toContain("empty prompt from stdin");
     } finally {
       fake.cleanup();
@@ -86,7 +86,7 @@ describe("CLI - stdin prompt", () => {
         fake.env,
         { stdin: "from stdin" }
       );
-      expect(exitCode).toBe(1);
+      expect(exitCode).toBe(64);
       expect(stderr).toContain("--prompt and --file cannot be used together");
     } finally {
       fake.cleanup();
@@ -133,7 +133,7 @@ describe("CLI - stdin prompt", () => {
         new Response(proc.stdout).text(),
         proc.exited,
       ]);
-      expect(exitCode).toBe(1);
+      expect(exitCode).toBe(64);
       expect(output).toContain("stdin is a terminal");
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -149,7 +149,7 @@ describe("CLI - stdin prompt", () => {
         fake.env,
         { stdin: "a".repeat(16 * 1024 * 1024 + 1) }
       );
-      expect(exitCode).toBe(1);
+      expect(exitCode).toBe(64);
       expect(stderr).toContain("exceeds the 16777216-byte limit");
     } finally {
       fake.cleanup();
@@ -166,7 +166,9 @@ describe("CLI - stdin prompt", () => {
         fake.env,
         { stdin: "a".repeat(33 * 1024) }
       );
-      expect(exitCode).toBe(1);
+      // A pre-launch refusal of a CLI request: exit 64 like every other
+      // (review round 11, contracts-2 2), never the old 1.
+      expect(exitCode).toBe(64);
       expect(stderr).toContain("prompt exceeds the 32768-byte safe limit");
     } finally {
       fake.cleanup();
@@ -296,7 +298,7 @@ describe("CLI - stdin prompt", () => {
         proc.exited,
       ]);
       const elapsed = Date.now() - startedAt;
-      expect(exitCode).toBe(1);
+      expect(exitCode).toBe(64);
       expect(stderr).toContain("no verified hermetic mode");
       // It never reached the stdin read, so no timeout fired.
       expect(stderr).not.toContain("before --timeout elapsed");

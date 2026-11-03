@@ -47,8 +47,10 @@ async function checkWithPassedNames(names: string[], syntheticValidation = false
     spyOn(process.stdout, "write").mockImplementation((chunk) => { output.push(String(chunk)); return true; }),
   ];
   if (syntheticValidation) {
-    // Isolate control generation from Kimi's separate hermetic home opt-in refusal.
-    mocks.push(spyOn(adapter, "validateRunRequest").mockImplementation((request) => {
+    // Isolate control generation from Kimi's separate hermetic home opt-in
+    // refusal — on the prototype, so the command's own preflight adapter
+    // (round 12, edges 3) and the planted canary adapter are covered alike.
+    mocks.push(spyOn(KimiAdapter.prototype, "validateRunRequest").mockImplementation((request) => {
       BaseAdapter.prototype.validateRunRequest.call(adapter, request);
     }));
   }

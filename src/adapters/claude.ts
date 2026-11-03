@@ -1,6 +1,12 @@
-import { join } from "node:path";
 import type { RunContext } from "./base.js";
+import { UsageRefusalError } from "../validation.js";
 import { ClaudeCredentialAdapter } from "./claude-credentials.js";
+import { PROJECT_SETTING_SOURCES, validateProjectSettingsRunRequest } from "../claude-project-settings.js";
+import {
+  copyClaudeCredentialMirror,
+  createProjectSettingsConfigDir,
+  projectSettingsRunEnv,
+} from "../claude-project-config.js";
 import { ExperimentBridge } from "../experiment-bridge.js";
 import { readExperimentRunSpec } from "../experiment-mcp.js";
 import { getPlaywrightSandboxMcpArgs } from "../mcp.js";
@@ -13,9 +19,11 @@ import {
 } from "../claude-autonomy.js";
 import {
   assertAbsoluteClaudeConfigDir,
+  assertExperimentConfigRootSingleLine,
+  claudeChildProject,
   claudeGatewayEnv,
   claudeGatewayOmissions,
-  claudeProviderPickerSettings,
+  claudeModelArgv,
 } from "../claude-family.js";
 import {
   assertProviderCap,
@@ -31,67 +39,14 @@ import type {
   RunResult,
   AdapterCapabilities,
 } from "../types.js";
+import { claudeLoginState, loginHome, type LoginState } from "../harness-health.js";
 
 /**
  * What the CHILD Claude sees that shapes an oversize-result spill, for the
  * experiment bridge's check: its config directory, a project-directory
  * override, its MCP output token limit, and its MCP truncation prompt
- * choice. HOME is inherited by every child (environment.ts INERT_ENV),
- * while an ambient CLAUDE_CONFIG_DIR, CLAUDE_CODE_PROJECT_DIR_NAME,
- * MAX_MCP_OUTPUT_TOKENS, or MCP_TRUNCATION_PROMPT_OVERRIDE reaches it only
- * under --pass-env. The binary parses the token limit as its environment
- * integers (trimmed; an exponent form, a grouped form such as 4,000, else
- * parseInt; positive). The
- * 2.1.300 binary honors the project-directory override, only alongside a
- * CLAUDE_CONFIG_DIR, when it matches /^[A-Za-z0-9_-]{1,64}$/ and is not a
- * reserved Windows device name, and trims the prompt override. configDir
- * is undefined when nothing names one, or when a passed-through
- * CLAUDE_CONFIG_DIR is empty (the binary keeps the empty root and places
- * projects relative to its cwd); the bridge then rejects spills.
+ * choice (claudeChildProject, claude-family.ts).
  */
-export interface ClaudeChildProject { configDir?: string; projectDirName?: string; tokenLimit?: number; truncationPrompt?: string }
-export function claudeChildProject(environment: NodeJS.ProcessEnv, passthroughEnv: readonly string[] = []): ClaudeChildProject {
-  const passed = (name: string) => (passthroughEnv.includes(name) ? environment[name] : undefined);
-  const passedConfigDir = passed("CLAUDE_CONFIG_DIR");
-  const configDir = passedConfigDir === undefined ? (environment.HOME ? join(environment.HOME, ".claude") : undefined) : passedConfigDir || undefined;
-  // The binary applies the override only together with CLAUDE_CONFIG_DIR;
-  // with the default config directory it keeps the cwd slug.
-  const override = passed("CLAUDE_CONFIG_DIR") ? passed("CLAUDE_CODE_PROJECT_DIR_NAME") : undefined;
-  const projectDirName = override && /^[A-Za-z0-9_-]{1,64}$/.test(override) &&
-    !/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(override) ? override : undefined;
-  const limit = claudeEnvironmentInteger(passed("MAX_MCP_OUTPUT_TOKENS"));
-  const tokenLimit = limit !== undefined && limit > 0 ? limit : undefined;
-  const truncationPrompt = passed("MCP_TRUNCATION_PROMPT_OVERRIDE")?.trim() || undefined;
-  return { configDir, projectDirName, tokenLimit, truncationPrompt };
-}
-
-/** Claude Code's oversize-result messages end the spill path at a line break,
- * so an experiment run needs its config root without one: a passed-through
- * CLAUDE_CONFIG_DIR (the binary keeps even an empty one as its root), or
- * else HOME, under which .claude lies. */
-export function assertExperimentConfigRootSingleLine(environment: NodeJS.ProcessEnv, passthroughEnv: readonly string[] = []): void {
-  const configured = passthroughEnv.includes("CLAUDE_CONFIG_DIR") ? environment.CLAUDE_CONFIG_DIR : undefined;
-  const [name, value] = configured !== undefined ? ["CLAUDE_CONFIG_DIR", configured] : ["HOME", environment.HOME];
-  if (value?.includes("\n")) {
-    throw new Error(`--experiment-mcp needs a ${name} without a line break: Claude Code's oversize-result ` +
-      "messages end the spill path at a line break, so such a path could not be verified");
-  }
-}
-
-/** Claude Code 2.1.300's environment integer: trimmed, then an exponent form,
- * a grouped form (one separator kind: _ , NBSP NNBSP space), or parseInt. */
-export function claudeEnvironmentInteger(value: string | undefined): number | undefined {
-  if (value === undefined) return undefined;
-  const text = value.trim();
-  let parsed: number;
-  if (text.length <= 32 && /^[+-]?(\d+(\.\d*)?|\.\d+)[eE][+-]?\d+$/.test(text)) {
-    const exponent = Number(text);
-    parsed = Number.isInteger(exponent) ? exponent : NaN;
-  } else if (text.length <= 32 && /^[+-]?\d{1,3}([_,\u00A0\u202F ])\d{3}(?:\1\d{3})*$/.test(text)) {
-    parsed = parseInt(text.replace(/[_,\u00A0\u202F ]/g, ""), 10);
-  } else parsed = parseInt(text, 10);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
 
 export class ClaudeAdapter extends ClaudeCredentialAdapter {
   readonly id: AgentId = "claude";
@@ -140,9 +95,8 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
     const override = this.validatedProvider();
     const resolved = model ?? override?.model;
     if (resolved === undefined && override !== null) {
-      throw new Error(
-        "claude needs a model for the provider override; pass --model or set CODEMUX_CLAUDE_PROVIDER_MODEL"
-      );
+      throw new UsageRefusalError(
+        "claude needs a model for the provider override; pass --model or set CODEMUX_CLAUDE_PROVIDER_MODEL");
     }
     return resolved;
   }
@@ -242,30 +196,79 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
     super.validateTuiRequest(model, cwd, autonomy, effort, passthroughEnv, enablePlaywrightMcp);
     assertAbsoluteClaudeConfigDir(passthroughEnv, this.environment);
     // The override is environment-only, so an interactive session carries
-    // it too -- but the model requirement holds for the same reason as a
-    // headless run.
+    // it too -- with the same model requirement as a headless run.
     this.modelFor(model);
   }
 
   override prepareRun(request: RunRequest): RunContext {
-    if (!request.experimentMcp) return {};
-    const experimentBridge = new ExperimentBridge(readExperimentRunSpec(request),
-      request.cwd ?? process.cwd(), request.prompt, this.environment,
-      claudeChildProject(this.environment, request.passthroughEnv));
-    return { experimentBridge, experimentRecording: experimentBridge.recordingPath, stdoutSink: experimentBridge };
+    const context: RunContext = {};
+    if (request.experimentProjectSettings) {
+      // The launch-path gate, from the request's own fields (review
+      // round 2, edges 1): a programmatic caller cannot reach the config
+      // directory or the spawn without sandbox and low autonomy.
+      validateProjectSettingsRunRequest(request);
+      // The private config directory must exist before anything else this
+      // run prepares reads the child's config root (the bridge below).
+      context.claudeProjectConfigDir =
+        createProjectSettingsConfigDir(request.cwd ?? process.cwd(), this.environment);
+    }
+    if (!request.experimentMcp) return context;
+    // A bridge that fails to build (a spec it refuses, a recording root it
+    // cannot create) must not strand the private config directory created
+    // above: cleanup first, then rethrow (review round 14, edges 12).
+    try {
+      context.experimentBridge = new ExperimentBridge(readExperimentRunSpec(request),
+        request.cwd ?? process.cwd(), request.prompt, this.environment,
+        claudeChildProject(this.environment, request.passthroughEnv, context.claudeProjectConfigDir?.dir));
+      context.stdoutSink = context.experimentBridge;
+      context.experimentRecording = context.experimentBridge.recordingPath;
+    } catch (error) { this.cleanupRunSync(context); throw error; }
+    return context;
   }
 
-  override cleanupRun(context?: RunContext): void | Promise<void> {
-    return context?.experimentBridge?.close();
+  /**
+   * The per-run environment of an --experiment-project-settings launch:
+   * CLAUDE_CONFIG_DIR pointed at the private directory, plus the
+   * credential copy made here — after prepareSandbox refreshed the
+   * default mirror, before the child reads <private>/.credentials.json —
+   * unless the context defers the copy (deferCredentialCopy: a pre-claim
+   * probe or print answers the environment without writing). A provider
+   * override authenticates with its own token, so nothing of the
+   * operator's login is copied; Z.AI rides its gateway token (zai.ts).
+   */
+  override getRunEnv(request: RunRequest, context?: RunContext): Record<string, string> {
+    if (!request.experimentProjectSettings) return {};
+    const env = projectSettingsRunEnv(context?.claudeProjectConfigDir);
+    if (
+      readProviderOverride("claude", this.environment) === null &&
+      context?.claudeProjectConfigDir?.deferCredentialCopy !== true
+    ) {
+      copyClaudeCredentialMirror(env.CLAUDE_CONFIG_DIR, this.credentialTarget());
+    }
+    return env;
+  }
+
+  override async cleanupRun(context?: RunContext): Promise<void> {
+    try {
+      await context?.experimentBridge?.close();
+    } finally {
+      // The token copy dies with the directory.
+      context?.claudeProjectConfigDir?.finalize();
+    }
   }
 
   override cleanupRunSync(context?: RunContext): void {
-    context?.experimentBridge?.closeSync();
+    try {
+      context?.experimentBridge?.closeSync();
+    } finally {
+      context?.claudeProjectConfigDir?.finalize();
+    }
   }
 
   buildRunCommand(request: RunRequest, context?: RunContext): string[] {
     const cmd = ["claude", "-p"];
-    if (request.hermetic) {
+    // Project settings replace --safe-mode, which would ignore their rules.
+    if (request.hermetic && !request.experimentProjectSettings) {
       // --safe-mode starts with every customization disabled: CLAUDE.md
       // (user and project), skills, plugins, hooks, MCP servers, custom
       // commands and agents. Auth, model selection, built-in tools and
@@ -273,6 +276,9 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
       // the OAuth login, so a subscription run would silently bill an API
       // key instead.
       cmd.push("--safe-mode");
+    }
+    if (request.experimentProjectSettings) {
+      cmd.push("--disable-slash-commands");
     }
     // Kept under --safe-mode too: it costs nothing and settles whether a
     // repository's own settings file could still reach the run. Project
@@ -287,7 +293,7 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
     const cwdIsInstructionDir = instructionDirs.includes(request.cwd ?? process.cwd());
     cmd.push(
       "--setting-sources",
-      cwdIsInstructionDir ? "user,project" : "user",
+      request.experimentProjectSettings ? PROJECT_SETTING_SOURCES : cwdIsInstructionDir ? "user,project" : "user",
       "--strict-mcp-config"
     );
     // No run of this adapter persists a session, so the harness is told so
@@ -344,20 +350,16 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
   /**
    * The model flags every launch shares: `--model` (always explicit under
    * an override — modelFor's rule), plus the modelPicker `--settings`
-   * payload when an override is active, without which 2.1.280's client
-   * catalog check rejects a provider-format id before any request leaves
-   * the binary (claude-family.ts). No model resolved: no flags.
+   * payload when the id needs it — a provider-format id under an override,
+   * without which 2.1.280's client catalog check rejects it before any
+   * request leaves the binary. The needs-it predicate is the family's one
+   * rule (claudeModelArgv in claude-family.ts), shared with zai and the
+   * session builder. No model resolved: no flags.
    */
   private modelFlags(model: string | undefined): string[] {
     const resolved = this.modelFor(model);
     if (resolved === undefined) return [];
-    if (this.validatedProvider() === null) return ["--model", resolved];
-    return [
-      "--model",
-      resolved,
-      "--settings",
-      claudeProviderPickerSettings(resolved),
-    ];
+    return claudeModelArgv(resolved);
   }
 
   override getStdinInput(request: RunRequest): string | null {
@@ -409,6 +411,12 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
     enablePlaywrightMcp?: boolean,
     cwd?: string
   ): string[] {
+    // The TUI's default launch carries --safe-mode: the same every-
+    // customization-off baseline as a hermetic run (see buildRunCommand),
+    // and the only verified way to keep an interactive session from
+    // loading the operator's own hooks and MCP servers. The Playwright
+    // branch needs the user settings source instead, so the MCP client
+    // configuration is reachable.
     const cmd = enablePlaywrightMcp
       ? ["claude", "--setting-sources", "user", "--strict-mcp-config"]
       : ["claude", "--safe-mode"];
@@ -431,5 +439,10 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
       cmd.push(...this.mapEffort(effort));
     }
     return cmd;
+  }
+
+  /** The claude login read: the mirror's expiry (see harness-health). */
+  override loginState(): LoginState {
+    return claudeLoginState(loginHome(this.environment));
   }
 }

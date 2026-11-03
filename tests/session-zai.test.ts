@@ -8,7 +8,7 @@
  * the registry's agent match, not a split path, is the cross-agent
  * guard. The round-trips themselves are the claude-family e2e suite;
  * the CLI-level zai tests (key check, cross-agent resume refusal, the
- * happy path) live in tests/session-cli.test.ts.
+ * happy path) live in the tests/session-cli-zai-*.test.ts pair.
  */
 
 import { describe, expect, test } from "bun:test";

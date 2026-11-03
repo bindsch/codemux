@@ -47,8 +47,18 @@ describe("Config", () => {
 
   test("loadConfig returns config with defaults", () => {
     const config = withTempHome({}, (configPath) => loadConfig(configPath));
-    expect(config.defaultAgent).toBeDefined();
-    expect(config.models).toBeDefined();
+    expect(config.defaultAgent).toBe("claude");
+    expect(config.models["sonnet"]?.claude).toBe("sonnet");
+    expect(config.models["gpt5"]?.codex).toBe("gpt-5.6");
+  });
+
+  test("the claude-family built-in aliases cover zai", () => {
+    // zai runs the same binary and accepts the same catalog aliases raw;
+    // `-m opus -a zai` used to refuse ("alias not configured for agent")
+    // while `-a zai` with no -m ran opus by default.
+    for (const alias of ["sonnet", "opus", "haiku"] as const) {
+      expect(resolveModel(alias, "zai", getDefaultConfig())).toBe(alias);
+    }
   });
 
   test("loadConfig fails closed for invalid configured defaultAgent", () => {
@@ -76,6 +86,168 @@ describe("Config", () => {
     )).toThrow("unknown configuration key: default_agent");
   });
 
+  test("an absent quota key means the default gate policy", () => {
+    const config = withTempHome({}, (configPath) => loadConfig(configPath));
+    expect(config.quota).toEqual({
+      minRemainingPercent: 10,
+      weeklyWarnUsedPercent: 50,
+      // 60 s, not 15: the slowest measured client (claude) answered in
+      // 31 s, so 15 timed out and the gate protected nothing (audit
+      // round 2, B2).
+      timeoutSeconds: 60,
+    });
+  });
+
+  test("quota: false disables the gate globally", () => {
+    const config = withTempHome(
+      { ".config/codemux/config.yaml": "quota: false\n" },
+      (configPath) => loadConfig(configPath)
+    );
+    expect(config.quota).toBe(false);
+  });
+
+  test("quota settings merge over the defaults per field", () => {
+    const config = withTempHome(
+      {
+        ".config/codemux/config.yaml":
+          "quota:\n  minRemainingPercent: 25\n  timeoutSeconds: 30\n",
+      },
+      (configPath) => loadConfig(configPath)
+    );
+    expect(config.quota).toEqual({
+      minRemainingPercent: 25,
+      weeklyWarnUsedPercent: 50,
+      timeoutSeconds: 30,
+    });
+  });
+
+  test("quota rejects unknown settings and out-of-range values", () => {
+    expect(() => withTempHome(
+      { ".config/codemux/config.yaml": "quota:\n  ceiling: 5\n" },
+      (configPath) => loadConfig(configPath)
+    )).toThrow("unknown quota setting: ceiling");
+    expect(() => withTempHome(
+      { ".config/codemux/config.yaml": "quota:\n  minRemainingPercent: 101\n" },
+      (configPath) => loadConfig(configPath)
+    )).toThrow("quota minRemainingPercent must be a number from 0 to 100");
+    expect(() => withTempHome(
+      { ".config/codemux/config.yaml": "quota:\n  timeoutSeconds: 301\n" },
+      (configPath) => loadConfig(configPath)
+    )).toThrow("quota timeoutSeconds must be an integer from 1 to 300");
+    expect(() => withTempHome(
+      { ".config/codemux/config.yaml": "quota: banana\n" },
+      (configPath) => loadConfig(configPath)
+    )).toThrow("'quota' must be false or a mapping of quota gate settings");
+  });
+
+  test("quota timeoutSeconds rejects zero and fractional values", () => {
+    // 0 disabled the gate through the runner's own validation firing inside
+    // the gate's fail-open catch; a fraction produced a non-integer
+    // millisecond timeout the same way. Both are refused at load now.
+    for (const value of ["0", "0.5", "0.0001", "1000000"]) {
+      expect(() => withTempHome(
+        { ".config/codemux/config.yaml": `quota:\n  timeoutSeconds: ${value}\n` },
+        (configPath) => loadConfig(configPath)
+      ), `timeoutSeconds: ${value}`).toThrow(
+        "quota timeoutSeconds must be an integer from 1 to 300"
+      );
+    }
+  });
+
+  test("quota timeoutSeconds accepts a per-agent map anchored by default (audit round 2, B2)", () => {
+    // One agent may answer slower than the rest: {default: 60, claude: 90}
+    // covers the named agents and leaves everyone else on the default.
+    const config = withTempHome(
+      {
+        ".config/codemux/config.yaml":
+          "quota:\n  timeoutSeconds:\n    default: 60\n    claude: 90\n",
+      },
+      (configPath) => loadConfig(configPath)
+    );
+    expect(config.quota).toEqual({
+      minRemainingPercent: 10,
+      weeklyWarnUsedPercent: 50,
+      timeoutSeconds: { default: 60, claude: 90 },
+    });
+    expect(() => withTempHome(
+      { ".config/codemux/config.yaml": "quota:\n  timeoutSeconds:\n    default: 60\n    claude: banana\n" },
+      (configPath) => loadConfig(configPath)
+    )).toThrow("quota timeoutSeconds for claude must be an integer from 1 to 300");
+    expect(() => withTempHome(
+      { ".config/codemux/config.yaml": "quota:\n  timeoutSeconds:\n    default: 301\n" },
+      (configPath) => loadConfig(configPath)
+    )).toThrow("quota timeoutSeconds must be an integer from 1 to 300");
+    // A map without a default, and an empty map, would both fall back
+    // mid-gate for the agents they do not name.
+    expect(() => withTempHome(
+      { ".config/codemux/config.yaml": "quota:\n  timeoutSeconds:\n    claude: 90\n" },
+      (configPath) => loadConfig(configPath)
+    )).toThrow("quota timeoutSeconds mapping must name a default");
+    expect(() => withTempHome(
+      { ".config/codemux/config.yaml": "quota:\n  timeoutSeconds: {}\n" },
+      (configPath) => loadConfig(configPath)
+    )).toThrow("quota timeoutSeconds mapping must name a default");
+    expect(() => withTempHome(
+      { ".config/codemux/config.yaml": "quota:\n  timeoutSeconds:\n    default: 60\n    notreal: 90\n" },
+      (configPath) => loadConfig(configPath)
+    )).toThrow("unknown quota timeoutSeconds agent 'notreal'");
+  });
+
+  test("quota spendsFrom maps agents to the client they spend from (audit round 2, B4)", () => {
+    const config = withTempHome(
+      {
+        ".config/codemux/config.yaml":
+          "quota:\n  spendsFrom:\n    opencode: claude\n",
+      },
+      (configPath) => loadConfig(configPath)
+    );
+    expect(config.quota).toEqual({
+      minRemainingPercent: 10,
+      weeklyWarnUsedPercent: 50,
+      timeoutSeconds: 60,
+      spendsFrom: { opencode: "claude" },
+    });
+    expect(() => withTempHome(
+      { ".config/codemux/config.yaml": "quota:\n  spendsFrom: claude\n" },
+      (configPath) => loadConfig(configPath)
+    )).toThrow("quota spendsFrom must be a mapping of agent ids to usagemux client names");
+    expect(() => withTempHome(
+      { ".config/codemux/config.yaml": "quota:\n  spendsFrom:\n    notreal: claude\n" },
+      (configPath) => loadConfig(configPath)
+    )).toThrow("unknown quota spendsFrom agent 'notreal'");
+    expect(() => withTempHome(
+      { ".config/codemux/config.yaml": "quota:\n  spendsFrom:\n    opencode: not a client\n" },
+      (configPath) => loadConfig(configPath)
+    )).toThrow("quota spendsFrom for opencode must name a usagemux client");
+    // A typo that looks like a name is refused too: it would reach usagemux,
+    // come back unreadable, and let the gate proceed (review round 41).
+    expect(() => withTempHome(
+      { ".config/codemux/config.yaml": "quota:\n  spendsFrom:\n    opencode: cluade\n" },
+      (configPath) => loadConfig(configPath)
+    )).toThrow("quota spendsFrom for opencode must name a usagemux client");
+  });
+
+  test("quota percents reject non-finite and fractional-out-of-range values", () => {
+    expect(() => withTempHome(
+      { ".config/codemux/config.yaml": "quota:\n  minRemainingPercent: -1\n" },
+      (configPath) => loadConfig(configPath)
+    )).toThrow("quota minRemainingPercent must be a number from 0 to 100");
+    expect(() => withTempHome(
+      { ".config/codemux/config.yaml": "quota:\n  weeklyWarnUsedPercent: 100.5\n" },
+      (configPath) => loadConfig(configPath)
+    )).toThrow("quota weeklyWarnUsedPercent must be a number from 0 to 100");
+    // In-range fractions stay valid: a percent needs no integer rule.
+    const config = withTempHome(
+      { ".config/codemux/config.yaml": "quota:\n  weeklyWarnUsedPercent: 12.5\n" },
+      (configPath) => loadConfig(configPath)
+    );
+    expect(config.quota).toEqual({
+      minRemainingPercent: 10,
+      weeklyWarnUsedPercent: 12.5,
+      timeoutSeconds: 60,
+    });
+  });
+
   test("loadConfig deep-merges model mappings instead of replacing defaults", () => {
     const config = withTempHome(
       {
@@ -94,15 +266,20 @@ describe("Config", () => {
     expect(config.models["sonnet"]?.codex).toBeUndefined();
   });
 
-  test("default config has expected model aliases", () => {
+  test("default config has the exact model alias table", () => {
+    // A golden table, not key-existence checks: any single wrong target
+    // (the audit's worked example was a renamed sonnet target) fails here.
     const config = getDefaultConfig();
-    expect(config.models["sonnet"]).toBeDefined();
-    expect(config.models["opus"]).toBeDefined();
-    expect(config.models["haiku"]).toBeDefined();
-    expect(config.models["gpt5"]).toBeDefined();
-    expect(config.models["gpt5-codex"]).toBeDefined();
-    expect(config.models["gemini-pro"]).toBeDefined();
-    expect(config.models["gemini-flash"]).toBeDefined();
+    expect(config.models).toEqual({
+      sonnet: { claude: "sonnet", zai: "sonnet", droid: "claude-sonnet-5", copilot: "claude-sonnet-5", cursor: "claude-sonnet-5-high" },
+      opus: { claude: "opus", zai: "opus", droid: "claude-opus-5", copilot: "claude-opus-4.8", cursor: "claude-opus-5-high" },
+      haiku: { claude: "haiku", zai: "haiku", droid: "claude-haiku-4-5-20251001", copilot: "claude-haiku-4.5" },
+      gpt5: { droid: "gpt-5.6-sol", codex: "gpt-5.6", copilot: "gpt-5.6-sol", cursor: "gpt-5.6-sol-medium" },
+      "gpt5-codex": { droid: "gpt-5.3-codex", codex: "gpt-5.3-codex", copilot: "gpt-5.3-codex", cursor: "gpt-5.3-codex" },
+      gpt53: { droid: "gpt-5.3-codex", codex: "gpt-5.3-codex", copilot: "gpt-5.3-codex", cursor: "gpt-5.3-codex" },
+      "gemini-pro": { droid: "gemini-3.1-pro-preview", gemini: "gemini-3.1-pro-preview", copilot: "gemini-3.1-pro-preview", cursor: "gemini-3.1-pro" },
+      "gemini-flash": { droid: "gemini-3.6-flash", gemini: "gemini-3.6-flash", copilot: "gemini-3.6-flash", cursor: "gemini-3.6-flash-high" },
+    });
   });
 
   test("default config callers cannot mutate shared defaults", () => {

@@ -1,8 +1,15 @@
 import { afterAll, describe, expect, test, spyOn } from "bun:test";
 import { readRegistry, recordSessionStart } from "../src/session/registry.js";
-import { cleanupSessions, type Event, fakeRecord, of, send, startAndWait, startSession, waitFor } from "./session-codex-e2e-helpers.js";
+import { cleanupMark, cleanupSessions, cleanupSessionsSince, type Event, fakeRecord, of, send, startAndWait, startSession, waitFor } from "./session-codex-e2e-helpers.js";
+import { registerNoLeakedSignals } from "./helpers/signal-listeners.js";
 
 afterAll(cleanupSessions);
+
+// Review round 4, session finding 8: every session a test built is ended
+// in that test's afterEach, not left for the file's afterAll — a driver
+// still holding the process's signal handlers would fire in any later
+// test that raises one.
+registerNoLeakedSignals(cleanupSessionsSince, cleanupMark);
 
 describe("codex session e2e - review live20", () => {
   test("a late usage update and delta from the previous turn do not end the session once the next turn is named", async () => {
@@ -87,6 +94,7 @@ describe("codex session e2e - review live20", () => {
         agent: "codex",
         cwd: session.options.cwd,
         hermetic: false,
+        project_settings: false,
         harness_home: session.options.harnessHome,
         provider_base_url: null,
         model: null,
@@ -95,6 +103,7 @@ describe("codex session e2e - review live20", () => {
         sandbox_trust: "standard",
         sandbox_no_net: false,
         sandbox_scrub_env: false,
+        sandbox_block: [],
         pass_env: [],
         playwright_mcp: false,
       }).ok
@@ -123,6 +132,7 @@ describe("codex session e2e - review live20", () => {
         agent: "codex",
         cwd: session.options.cwd,
         hermetic: false,
+        project_settings: false,
         harness_home: session.options.harnessHome,
         provider_base_url: null,
         model: null,
@@ -131,6 +141,7 @@ describe("codex session e2e - review live20", () => {
         sandbox_trust: "standard",
         sandbox_no_net: false,
         sandbox_scrub_env: false,
+        sandbox_block: [],
         pass_env: [],
         playwright_mcp: false,
       }).ok

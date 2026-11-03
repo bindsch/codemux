@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   CodexEventReducer,
+  applyCodexFinalMessageFallback,
   codexResult,
   codexStreamVerdict,
   parseCodexEventStream,
@@ -361,5 +362,76 @@ describe("parseCodexEventStream grammar and model attribution", () => {
     expect(stream).not.toBeNull();
     expect(stream.servedModel).toBeNull();
     expect(stream.failure).toBeNull();
+  });
+});
+
+describe("the reroute note through codexResult", () => {
+  function reroutedStream(): string {
+    return codexStream([
+      { type: "thread.started", thread_id: "0192b8d4-4d4f-7c4a-9d0e-6f5a4b3c2d1e" },
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "item_0", type: "error", message: "model rerouted: gpt-5.3 -> gpt-5.3-mini (Unavailable)" } },
+      { type: "item.completed", item: { id: "item_1", type: "agent_message", text: "the reply" } },
+      { type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 5 } },
+    ]);
+  }
+
+  test("a run without a requested model names only the serving model", () => {
+    const out = codexResult(finished(reroutedStream()), {
+      agent: "codex", prompt: "p", resultJson: true,
+    });
+    expect(out.success).toBe(true);
+    expect(out.stderr).toContain("codemux: codex rerouted the model, so this run was served by gpt-5.3-mini");
+    expect(out.stderr).not.toContain("not the requested");
+  });
+
+  test("a run whose request named a different model says which was asked for", () => {
+    const out = codexResult(finished(reroutedStream()), {
+      agent: "codex", prompt: "p", resultJson: true, model: "gpt-5.3",
+    });
+    expect(out.stderr).toContain(", not the requested gpt-5.3");
+  });
+
+  test("a startup warning the stream retained reaches the run's notes", () => {
+    const out = codexResult(finished(codexStream([
+      { type: "thread.started", thread_id: "0192b8d4-4d4f-7c4a-9d0e-6f5a4b3c2d1e" },
+      { type: "item.completed", item: { id: "item_0", type: "error", message: "mcp server telemetry failed to start" } },
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "item_1", type: "agent_message", text: "the reply" } },
+      { type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 5 } },
+    ])), { agent: "codex", prompt: "p", resultJson: true });
+    expect(out.success).toBe(true);
+    expect(out.stderr).toContain("codemux: codex warning: mcp server telemetry failed to start");
+  });
+
+  test("a request already served by the rerouted model needs no clause", () => {
+    const out = codexResult(finished(reroutedStream()), {
+      agent: "codex", prompt: "p", resultJson: true, model: "gpt-5.3-mini",
+    });
+    expect(out.stderr).toContain("served by gpt-5.3-mini");
+    expect(out.stderr).not.toContain("not the requested");
+  });
+});
+
+describe("the final-message fallback gate", () => {
+  function parsed(overrides: Record<string, unknown>): Record<string, unknown> {
+    return {
+      failure: null,
+      finalMessage: null,
+      ...overrides,
+    };
+  }
+
+  test("a fallback fills only an empty, successful result", () => {
+    const stream = parsed({}) as { finalMessage: string | null };
+    expect(applyCodexFinalMessageFallback(stream as never, "fallback text")).toBe(true);
+    expect(stream.finalMessage).toBe("fallback text");
+  });
+
+  test("a null fallback, a failure, or an existing message keeps the result", () => {
+    const nullFallback = parsed({}) as never;
+    expect(applyCodexFinalMessageFallback(nullFallback, null)).toBe(false);
+    expect(applyCodexFinalMessageFallback(parsed({ failure: "Usage limit reached" }) as never, "fallback text")).toBe(false);
+    expect(applyCodexFinalMessageFallback(parsed({ finalMessage: "the reply" }) as never, "fallback text")).toBe(false);
   });
 });

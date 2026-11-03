@@ -24,6 +24,7 @@ import type {
   RunRequest,
   RunResult,
 } from "../types.js";
+import { envKeyLoginState, type LoginState } from "../harness-health.js";
 
 export const AIDER_EMPTY_CONFIG_PATH = fileURLToPath(
   new URL("../../resources/aider-empty.yml", import.meta.url)
@@ -197,7 +198,7 @@ export class AiderAdapter extends BaseAdapter {
     const resolved = model ?? override?.model;
     if (resolved === undefined) {
       if (override !== null) {
-        throw new Error(
+        throw new UsageRefusalError(
           "aider needs a model for the provider override; pass --model or set CODEMUX_AIDER_PROVIDER_MODEL"
         );
       }
@@ -232,7 +233,7 @@ export class AiderAdapter extends BaseAdapter {
       // inside the aider process, where the sanitizer's AIDER_* block
       // cannot see it. The check's canary never rode those channels, which
       // is why the live pass certified what the flags do not close; see
-      // docs/HERMETIC.md.
+      // docs/isolation.md.
       supportsHermetic: false,
       supportsProviderOverride: true,
     };
@@ -266,7 +267,7 @@ export class AiderAdapter extends BaseAdapter {
       // tokens to use for repo map, use 0 to disable", aider 0.86.2 --help)
       // -- but the .aider.conf.yml/.env/.aider.model.settings.yml searches
       // from the home, git root and working directory have no flag at all
-      // (docs/HERMETIC.md).
+      // (docs/isolation.md).
       cmd.push("--map-tokens", "0");
     } else if (request.instructionDirs) {
       // Aider discovers no instruction files of its own, so an instruction
@@ -337,7 +338,9 @@ export class AiderAdapter extends BaseAdapter {
       );
     }
     if (Buffer.byteLength(request.prompt, "utf8") > MAX_ARGV_PROMPT_BYTES) {
-      throw new Error(
+      // Usage like the base adapter's own cap (review round 11,
+      // contracts-2 2): a request only the caller can fix, exit 64.
+      throw new UsageRefusalError(
         `aider passes prompts in argv; prompt exceeds the ${MAX_ARGV_PROMPT_BYTES}-byte safe limit`
       );
     }
@@ -386,5 +389,10 @@ export class AiderAdapter extends BaseAdapter {
       cmd.push(...this.mapEffort(effort));
     }
     return cmd;
+  }
+
+  /** The aider login read: a credential variable in the environment. */
+  override loginState(): LoginState {
+    return envKeyLoginState(this.id, this.environment);
   }
 }

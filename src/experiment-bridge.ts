@@ -5,7 +5,7 @@ import { PIPE_GIVE_UP_MS, type StdoutSink } from "./process-runner.js";
 import type { ExperimentSpec } from "./experiment-mcp.js";
 import { ExperimentServer, MAX_EXPERIMENT_MESSAGE_BYTES, type JsonObject } from "./experiment-server.js";
 import { canonicalWorkingDirectory, compareSpill } from "./experiment-spill.js";
-import type { ClaudeChildProject } from "./adapters/claude.js";
+import type { ClaudeChildProject } from "./claude-family.js";
 import { ExperimentFailure, ExperimentFailureCode, experimentFailure, ExperimentRecording, resultContentSha256, toolResultDeliveredRecord, turnCallRecord, type ExperimentRecord, type ExperimentRecordFields } from "./experiment-records.js";
 import { ExperimentInventory } from "./experiment-inventory.js";
 import { ClaudeExperimentUsage } from "./experiment-claude-usage.js";

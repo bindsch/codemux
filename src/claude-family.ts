@@ -1,4 +1,5 @@
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { UsageRefusalError } from "./validation.js";
 
 /**
  * What the `claude` and `zai` adapters share: they run the same binary, so
@@ -92,6 +93,26 @@ export function claudeProviderPickerSettings(model: string): string {
   });
 }
 
+/** The model ids the binary's own catalog accepts without help: the three
+ * aliases and every full `claude-*` id. Everything else — a provider-format
+ * id such as `glm-5.3`, or any gateway name — needs the picker settings
+ * above or the 2.1.280+ catalog check rejects it client-side. Shared by
+ * both adapters and the session builder, so the rule lives once. */
+const CLAUDE_CATALOG_MODEL = /^(?:opus|sonnet|haiku|claude-.+)$/;
+
+export function claudeModelNeedsPickerSettings(model: string): boolean {
+  return !CLAUDE_CATALOG_MODEL.test(model);
+}
+
+/** The model argv every claude-family launch shares: `--model`, plus the
+ * picker `--settings` exactly when the id needs them (the predicate
+ * above). `opus`, the family default, carries none. */
+export function claudeModelArgv(model: string): string[] {
+  return claudeModelNeedsPickerSettings(model)
+    ? ["--model", model, "--settings", claudeProviderPickerSettings(model)]
+    : ["--model", model];
+}
+
 /**
  * Refuses a passed-through `CLAUDE_CONFIG_DIR` that is relative, or one
  * with surrounding whitespace. Claude Code resolves the variable against
@@ -119,7 +140,7 @@ export function assertAbsoluteClaudeConfigDir(
   const configured = environment.CLAUDE_CONFIG_DIR;
   if (configured === undefined || configured === "") return;
   if (!isAbsolute(configured)) {
-    throw new Error(
+    throw new UsageRefusalError(
       `CLAUDE_CONFIG_DIR must be an absolute path when passed through; ` +
         `'${configured}' is relative, and the harness would resolve it ` +
         "against the run's working directory, so codemux cannot say where " +
@@ -127,11 +148,78 @@ export function assertAbsoluteClaudeConfigDir(
     );
   }
   if (configured.trim() !== configured) {
-    throw new Error(
+    throw new UsageRefusalError(
       `CLAUDE_CONFIG_DIR must not be whitespace-padded when passed through; ` +
         `'${configured}' carries leading or trailing whitespace, and the ` +
         "harness reads the variable without trimming, so the config store " +
         "would live in a directory whose name still carries the padding"
     );
   }
+}
+
+/**
+ * What the CHILD Claude sees that shapes an oversize-result spill, for the
+ * experiment bridge's check: its config directory, a project-directory
+ * override, its MCP output token limit, and its MCP truncation prompt
+ * choice. HOME is inherited by every child (environment.ts INERT_ENV),
+ * while an ambient CLAUDE_CONFIG_DIR, CLAUDE_CODE_PROJECT_DIR_NAME,
+ * MAX_MCP_OUTPUT_TOKENS, or MCP_TRUNCATION_PROMPT_OVERRIDE reaches it only
+ * under --pass-env. The binary parses the token limit as its environment
+ * integers (trimmed; an exponent form, a grouped form such as 4,000, else
+ * parseInt; positive). The
+ * 2.1.300 binary honors the project-directory override, only alongside a
+ * CLAUDE_CONFIG_DIR, when it matches /^[A-Za-z0-9_-]{1,64}$/ and is not a
+ * reserved Windows device name, and trims the prompt override. configDir
+ * is undefined when nothing names one, or when a passed-through
+ * CLAUDE_CONFIG_DIR is empty (the binary keeps the empty root and places
+ * projects relative to its cwd); the bridge then rejects spills. A
+ * prepared --experiment-project-settings run passes its private config
+ * directory as configDirOverride, which counts as the child's config root
+ * exactly as a passed-through one does.
+ */
+export interface ClaudeChildProject { configDir?: string; projectDirName?: string; tokenLimit?: number; truncationPrompt?: string }
+export function claudeChildProject(environment: NodeJS.ProcessEnv, passthroughEnv: readonly string[] = [], configDirOverride?: string): ClaudeChildProject {
+  const passed = (name: string) => (passthroughEnv.includes(name) ? environment[name] : undefined);
+  const passedConfigDir = passed("CLAUDE_CONFIG_DIR");
+  const configDir = configDirOverride ?? (passedConfigDir === undefined ? (environment.HOME ? join(environment.HOME, ".claude") : undefined) : passedConfigDir || undefined);
+  // The binary applies the override only together with a CLAUDE_CONFIG_DIR;
+  // with the default config directory it keeps the cwd slug. The private
+  // directory of a project-settings run is delivered as one, so a
+  // passed-through name would relocate state inside it.
+  const override = configDirOverride !== undefined || passed("CLAUDE_CONFIG_DIR")
+    ? passed("CLAUDE_CODE_PROJECT_DIR_NAME") : undefined;
+  const projectDirName = override && /^[A-Za-z0-9_-]{1,64}$/.test(override) &&
+    !/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(override) ? override : undefined;
+  const limit = claudeEnvironmentInteger(passed("MAX_MCP_OUTPUT_TOKENS"));
+  const tokenLimit = limit !== undefined && limit > 0 ? limit : undefined;
+  const truncationPrompt = passed("MCP_TRUNCATION_PROMPT_OVERRIDE")?.trim() || undefined;
+  return { configDir, projectDirName, tokenLimit, truncationPrompt };
+}
+
+/** Claude Code's oversize-result messages end the spill path at a line break,
+ * so an experiment run needs its config root without one: a passed-through
+ * CLAUDE_CONFIG_DIR (the binary keeps even an empty one as its root), or
+ * else HOME, under which .claude lies. */
+export function assertExperimentConfigRootSingleLine(environment: NodeJS.ProcessEnv, passthroughEnv: readonly string[] = []): void {
+  const configured = passthroughEnv.includes("CLAUDE_CONFIG_DIR") ? environment.CLAUDE_CONFIG_DIR : undefined;
+  const [name, value] = configured !== undefined ? ["CLAUDE_CONFIG_DIR", configured] : ["HOME", environment.HOME];
+  if (value?.includes("\n")) {
+    throw new Error(`--experiment-mcp needs a ${name} without a line break: Claude Code's oversize-result ` +
+      "messages end the spill path at a line break, so such a path could not be verified");
+  }
+}
+
+/** Claude Code 2.1.300's environment integer: trimmed, then an exponent form,
+ * a grouped form (one separator kind: _ , NBSP NNBSP space), or parseInt. */
+export function claudeEnvironmentInteger(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const text = value.trim();
+  let parsed: number;
+  if (text.length <= 32 && /^[+-]?(\d+(\.\d*)?|\.\d+)[eE][+-]?\d+$/.test(text)) {
+    const exponent = Number(text);
+    parsed = Number.isInteger(exponent) ? exponent : NaN;
+  } else if (text.length <= 32 && /^[+-]?\d{1,3}([_,\u00A0\u202F ])\d{3}(?:\1\d{3})*$/.test(text)) {
+    parsed = parseInt(text.replace(/[_,\u00A0\u202F ]/g, ""), 10);
+  } else parsed = parseInt(text, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }

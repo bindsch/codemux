@@ -66,6 +66,10 @@
  *                     assistant message and re-confirmed the session
  *                     through the late hint (round al22, edges 2)
  *   garbage         — a non-JSON line, then nothing (tier 3)
+ *   badbytes        — bytes no UTF-8 decoder accepts, then nothing:
+ *                     the process layer's fatal channel (unlike
+ *                     garbage, whose line arrives intact and fails at
+ *                     the driver's own parser)
  *
  * FAKE_SIGTERM_PERSIST covers the shutdown drain: =1 survives the
  * shutdown SIGTERM and answers the open turn (text + hint) before
@@ -263,6 +267,9 @@ const runTurn = (scenario: string): number | null => {
       return 0;
     case "garbage":
       process.stdout.write("this is not json\n");
+      return null;
+    case "badbytes":
+      process.stdout.write(Buffer.from([0xff, 0xfe, 0x0a]));
       return null;
     default:
       write({ role: "assistant", content: `Done: ${prompt}` });

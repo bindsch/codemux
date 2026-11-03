@@ -55,6 +55,23 @@ describe("ZaiAdapter", () => {
     expect(cmd).toEqual([...safeHeadlessArgs, "--model", "sonnet"]);
   });
 
+  test("a non-catalog model id rides the picker --settings; a catalog alias carries none", () => {
+    // Claude Code 2.1.280+ validates --model against its own catalog and
+    // rejects a provider id (glm-5.3 — the worker/judge tiers) client-side,
+    // with zero requests sent, unless a modelPicker row maps it onto a
+    // catalog tier (claude-family.ts). The regression: zai passed the bare
+    // --model the claude adapter's override never does.
+    const cmd = adapter.buildRunCommand({ agent: "zai", prompt: "t", model: "glm-5.3" });
+    expect(cmd[cmd.indexOf("--model") + 1]).toBe("glm-5.3");
+    const settings = cmd[cmd.indexOf("--settings") + 1] ?? "";
+    expect(JSON.parse(settings).modelPicker.options[0].model).toBe("glm-5.3");
+    // Catalog aliases and the default need no settings.
+    expect(adapter.buildRunCommand({ agent: "zai", prompt: "t", model: "opus" }))
+      .toEqual([...safeHeadlessArgs, "--model", "opus"]);
+    expect(adapter.buildRunCommand({ agent: "zai", prompt: "t", model: "claude-opus-5" }))
+      .toEqual([...safeHeadlessArgs, "--model", "claude-opus-5"]);
+  });
+
   test("buildRunCommand with effort rides claude's flag; none adds nothing", () => {
     // Claude's mapping verbatim (same binary): a level rides --effort,
     // and `none` is the adapter's "no flag", not a value the binary takes.
@@ -147,6 +164,7 @@ describe("ZaiAdapter", () => {
     expect(parsed.codemux).toEqual({
       agent: "zai",
       model: "glm-5.3",
+      served_model: "glm-5.3",
       usage: {
         input_tokens: 5,
         output_tokens: 2,
@@ -165,6 +183,14 @@ describe("ZaiAdapter", () => {
 
   test("buildTuiCommand defaults to opus", () => {
     expect(adapter.buildTuiCommand()).toEqual(["claude", "--safe-mode", "--model", "opus"]);
+  });
+
+  test("buildTuiCommand carries the picker settings for a non-catalog model id only", () => {
+    const cmd = adapter.buildTuiCommand("glm-4.5-air");
+    expect(cmd[cmd.indexOf("--model") + 1]).toBe("glm-4.5-air");
+    expect(JSON.parse(cmd[cmd.indexOf("--settings") + 1] ?? "").modelPicker.options[0].model)
+      .toBe("glm-4.5-air");
+    expect(adapter.buildTuiCommand("opus")).toEqual(["claude", "--safe-mode", "--model", "opus"]);
   });
 
   test("buildTuiCommand with model and autonomy", () => {
@@ -256,7 +282,8 @@ describe("ZaiAdapter", () => {
     const env = homeAdapter.getEnv();
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe("test-key-123");
     expect(env.ANTHROPIC_BASE_URL).toBe("https://api.z.ai/api/anthropic");
-    expect(env.API_TIMEOUT_MS).toBeDefined();
+    // The exact default, not existence: zai's 50-minute API timeout.
+    expect(env.API_TIMEOUT_MS).toBe("3000000");
   });
 
   test("getEnv points zai at no private state; the shared store is the child's own", () => {

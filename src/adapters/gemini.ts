@@ -9,6 +9,7 @@ import type {
   RunRequest,
   AdapterCapabilities,
 } from "../types.js";
+import { geminiLoginState, loginHome, type LoginState } from "../harness-health.js";
 
 export const GEMINI_SYSTEM_SETTINGS_PATH = fileURLToPath(
   new URL("../../resources/gemini-system-settings.json", import.meta.url)
@@ -43,7 +44,7 @@ export class GeminiAdapter extends BaseAdapter {
       // system-settings layer, which never loads on a user-owned prefix
       // (the file and every ancestor must be root-owned), so the
       // capability is refused rather than claimed on a layer that cannot
-      // load; see docs/HERMETIC.md.
+      // load; see docs/isolation.md.
       supportsHermetic: false,
       supportsToolSelection: false,
     };
@@ -114,5 +115,10 @@ export class GeminiAdapter extends BaseAdapter {
       cmd.push(...this.mapAutonomy(autonomy));
     }
     return cmd;
+  }
+
+  /** The gemini login read: the oauth creds file, or an API key. */
+  override loginState(): LoginState {
+    return geminiLoginState(loginHome(this.environment), this.environment);
   }
 }

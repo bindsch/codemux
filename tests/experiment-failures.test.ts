@@ -144,7 +144,7 @@ function syntheticLaunch(options: { captureFailure?: unknown; processFailure?: u
       if (options.processFailure) throw options.processFailure;
       return claudeFamilyResult(raw, effective, "claude", "/synthetic/recording.jsonl");
     }),
-    spyOn(adapter, "cleanupRun").mockImplementation(() => {
+    spyOn(adapter, "cleanupRun").mockImplementation(async () => {
       if (options.cleanupFailure) throw options.cleanupFailure;
     }),
   ];

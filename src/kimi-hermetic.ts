@@ -97,8 +97,10 @@ export function kimiHermeticConfig(sourceBrandHome: string): string {
 }
 
 /** Each private brand home shares the credential directory, including atomic token renames. */
-export function createKimiHermeticHome(sourceBrandHome: string, toolsNone = false): KimiHermeticHome {
-  const config = kimiHermeticConfig(sourceBrandHome);
+export function createKimiHermeticHome(sourceBrandHome: string, toolsNone = false, printOnly = false): KimiHermeticHome {
+  // A print-only launch needs the home path for its argv and nothing of the
+  // operator's: no configuration read, no credential link (review round 55).
+  const config = printOnly ? "" : kimiHermeticConfig(sourceBrandHome);
   const parent = prepareRunDirParent(sourceBrandHome, ".codemux-hermetic");
   const home = mkdtempSync(join(parent, `run-${process.pid}-`));
   const kimiHome = join(home, ".kimi-code");
@@ -115,9 +117,9 @@ export function createKimiHermeticHome(sourceBrandHome: string, toolsNone = fals
     mkdirSync(kimiHome, { mode: 0o700 });
     mkdirSync(skillsDir, { mode: 0o700 });
     writeFileSync(join(kimiHome, "config.toml"), config, { mode: 0o600 });
-    symlinkSync(resolve(sourceBrandHome, "credentials"), join(kimiHome, "credentials"), "dir");
+    if (!printOnly) symlinkSync(resolve(sourceBrandHome, "credentials"), join(kimiHome, "credentials"), "dir");
     for (const name of ["region", "device_id"]) {
-      if (existsSync(join(sourceBrandHome, name))) {
+      if (!printOnly && existsSync(join(sourceBrandHome, name))) {
         copyFileSync(join(sourceBrandHome, name), join(kimiHome, name));
       }
     }

@@ -69,9 +69,21 @@ export class ExperimentCodexRun implements StdoutSink {
 
   async prepare(version?: string | null): Promise<void> {
     if (this.started) return;
-    if (this.selection && (!version || version !== this.selection.clientVersion)) {
+    if (this.selection && !version) {
       throw new ExperimentFailure(Code.CodeMode,
-        `Codex model cache ${this.selection.sourcePath} client_version does not match the detected Codex version; refresh the cache with this Codex version`);
+        `Codex model cache ${this.selection.sourcePath} cannot be served: the Codex version was not detected`);
+    }
+    // The cache is shared by every Codex client on the machine (the ChatGPT
+    // desktop app's app-server daemon rewrites it about hourly with its own
+    // client_version), so a version other than the CLI's is a fact to record
+    // and warn about, not a refusal: the served catalog body is recorded
+    // either way (live gate, 2026-11-02).
+    const cacheVersionMismatch = this.selection && version !== this.selection.clientVersion
+      ? { cache_client_version: this.selection.clientVersion, codex_version: version!, source_path: this.selection.sourcePath }
+      : null;
+    if (cacheVersionMismatch) {
+      console.error(`Warning: codex model cache ${this.selection!.sourcePath} was written by Codex client ${this.selection!.clientVersion}; ` +
+        `the experiment runs codex ${version} and serves that cache's catalog`);
     }
     assertTrustedDirectory(this.codexHome);
     const path = join(this.codexHome, "config.toml");
@@ -85,6 +97,7 @@ export class ExperimentCodexRun implements StdoutSink {
     this.onRecording?.(relay.recordingPath);
     relay.resolveCallId = (call, request) => evidence.resolveCallId(call, request);
     if (this.selection?.catalog) relay.record("catalog_override", this.selection.catalog.override);
+    if (cacheVersionMismatch) relay.record("catalog_client_version_mismatch", cacheVersionMismatch);
     await relay.start();
     this.started = true;
     const table = [

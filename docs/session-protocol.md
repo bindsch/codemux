@@ -4,7 +4,7 @@ read_when: Implementing or debugging a codemux session JSONL client.
 
 # Session protocol
 
-This specifies `codemux-live-session/1` as shipped in v0.13.3. See
+This specifies `codemux-live-session/1`. See
 [sessions](sessions.md) for commands, capability availability, and resume.
 The implementation is [protocol.ts](../src/session/protocol.ts), the
 [drivers](architecture.md#sessions), and [process.ts](../src/session/process.ts).
@@ -37,7 +37,7 @@ operation can return `unsupported` before its fields are inspected.
 | `user` | `text: string` | `author: string` | Open a turn, or follow `user_during_turn` while busy |
 | `steer` | `text: string` | `author: string` | Adjust an active turn; supported only by Codex |
 | `interrupt` | none | `reason: string` | Interrupt the active turn; supported idle interrupt is an acknowledged no-op |
-| `permission_decision` | `request_id: string`, `decision: "allow" \| "deny"` | `updated_input: object` | Resolve one pending request within the launch ceiling |
+| `permission_decision` | `request_id: string`, `decision: "allow" \| "deny"` | `updated_input: object`, `message: string` (deny only) | Resolve one pending request within the launch ceiling |
 | `shutdown` | none | none | End the session with the configured grace period |
 
 `text` may be empty, cannot contain NUL, and is at most 16 MiB of UTF-8.
@@ -53,6 +53,18 @@ reason has at most 4096 UTF-16 code units and no NUL. A request ID has
 1–128 UTF-16 code units and no NUL. `updated_input` must be a non-null JSON
 object, not an array. It substitutes Claude/ZAI tool arguments and is
 checked against the ceiling; Codex rejects it as `unsupported`.
+
+A denial `message` has 1–2000 UTF-16 code units, no NUL, and no control
+characters other than newline. It is valid only with `decision: "deny"`:
+with `allow`, or outside those rules, the line is rejected `malformed`.
+Claude/ZAI send it to the harness as the rejection text the model sees.
+Codex rejects it as `unsupported`, since its decline carries no text. When
+no message is given, every deny codemux sends — a caller deny, the session
+permission policy, the autonomy ceiling, the permission and turn timeouts,
+supersession, and shutdown — uses the text Claude Code itself gives the
+model when the user rejects a prompt (it begins "The user doesn't want to
+proceed with this tool use."), so the agent reads the denial as its own
+harness's answer, never as an outside wrapper's.
 
 ```json
 {"type":"user","text":"Explain the failing assertion.","author":"reviewer"}
@@ -112,7 +124,7 @@ no extra length guarantee beyond the framing and queue bounds below.
 |---|---|
 | `session_started` | `agent: string`; `model: string \| null`; `autonomy: "read-only" \| "low" \| "medium" \| "high"`; `cwd: string`; `sandboxed: boolean`; `sandbox_trust: "trusted" \| "standard" \| "untrusted"`; `capabilities: object` below; `protocol: "codemux-live-session/1"` |
 | `input_accepted` | `input_seq: positive integer` |
-| `input_rejected` | `input_seq: positive integer`; `reason: string` from the rejection table |
+| `input_rejected` | `input_seq: positive integer`; `reason: string` from the rejection table; optional `message: string` — the denial text sent to the harness, present on `autonomy_escalation` |
 | `user_message` | `input_seq: positive integer`; `text: string`; optional `author: string`; optional `turn_id: string` |
 | `turn_started` | `turn_id: string` |
 | `assistant_delta` | `delta: string`; `turn_id: string \| null` |
@@ -122,7 +134,8 @@ no extra length guarantee beyond the framing and queue bounds below.
 | `file_change` | `path: string`; `action: "add" \| "edit" \| "delete"`; optional `derived: true` |
 | `usage` | `turn_id: string \| null`; `usage: Usage` below |
 | `permission_request` | `request_id: string`; `tool: string`; `input: object`; `options: ["allow", "deny"] \| ["deny"]` |
-| `permission_resolved` | `request_id: string`; `resolution: "allow" \| "deny" \| "timeout" \| "superseded"` |
+| `permission_resolved` | `request_id: string`; `resolution: "allow" \| "deny" \| "timeout" \| "superseded"`; optional `message: string` — the denial text sent to the harness, omitted when none was (an allow, or a Codex decline, whose wire answer carries no text) |
+| `permission_denied` | `request_id: string`; `tool: string`; `message: string` — the `--permission-policy deny` record of a request codemux answered the moment it arrived, with the denial text it sent; such a request never joins the pending set, so a caller decision for it receives `unknown_request` and no `permission_resolved` follows |
 | `turn_completed` | `turn_id: string \| null`; `finish: "end" \| "interrupted" \| "failed"`; optional `reason: string`; `usage: Usage` |
 | `unknown` | No additional fields; `raw` carries the unmapped line |
 | `error` | `fatal: boolean`; `source: "codemux" \| "harness"`; `message: string` |
@@ -195,7 +208,10 @@ A successful derived Claude/ZAI file change follows its matching successful
 tool result. Its raw line is the earlier tool-call line. Native Codex file
 changes omit `derived`. Permissions are resolved once, including expiry and
 supersession on completion, interrupt, or shutdown. Requests arriving during
-the shutdown drain are denied immediately.
+the shutdown drain are denied immediately. On Claude/ZAI every deny — a
+caller's, the policy's, the ceiling's, a timeout's, a supersede's, the end
+path's — carries the same default rejection text unless the caller's
+decision supplied `message`, so the model cannot tell which side refused.
 
 Pending unacknowledged input is rejected when shutdown starts. Previously
 accepted input that cannot run gets a nonfatal error rather than a second

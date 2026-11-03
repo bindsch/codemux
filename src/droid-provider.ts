@@ -39,6 +39,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import type { ProviderOverride } from "./provider-override.js";
+import { UsageRefusalError } from "./validation.js";
 
 export interface DroidProviderSettings {
   /** The value for `--settings`: the file droid merges in. */
@@ -73,7 +74,7 @@ export const DROID_PROVIDER_KEY_ENV = "CODEMUX_DROID_PROVIDER_API_KEY";
  */
 export function droidProviderModelId(model: string): string {
   if (model.includes("{") || model.includes("}")) {
-    throw new Error(
+    throw new UsageRefusalError(
       "the droid provider override model must not contain '{' or '}': droid expands ${VAR} templates inside the settings file, so a brace could splice another value into it"
     );
   }

@@ -27,6 +27,8 @@ Before removing an existing refresh token, codemux backs up the original file in
 
 Unsandboxed Claude reads its own login directly. Z.AI uses its gateway token rather than the Claude subscription. A provider override removes ambient `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` from the child environment.
 
+An `--experiment-project-settings` run points the harness at a private config directory (see [isolation](isolation.md)). On a Claude run without a provider override, codemux copies the refreshed mirror's content into that directory as `.credentials.json`, mode 0600, after the refresh above and never with a refresh token: a mirror that still carries one refuses the run. The copy is removed with the directory when the run ends. Z.AI and provider-override runs copy nothing; their gateway token is the credential.
+
 Implementation: [credential synchronization](../src/credentials.ts), [Claude sandbox preparation](../src/adapters/claude.ts), and [Z.AI adapter](../src/adapters/zai.ts).
 
 ## Z.AI
@@ -124,11 +126,13 @@ An API key skips all file-token inspection and copying. API-key and file-token a
 
 The file token source is the login home's `.gemini/antigravity-cli/antigravity-oauth-token`, never an instruction/configuration home supplied for a canary. The private copy is never linked or written back. Token refresh stays private and is lost at cleanup.
 
+This is the one path where a refresh token leaves its origin store, and it is an accepted residual risk: the whole token file, refresh credentials included, sits in the private HOME for the run's lifetime, mode 0600, and the Keychain path mirrors the full item the same way. Cleanup removes both. A SIGKILL leaves the copies until the next recovery run.
+
 On macOS, codemux keeps one empty template and a random password file, both mode 0600, in the fixed login user's codemux state directory. A lock serializes template creation and search-list recovery. Neither relocated HOME nor `CODEMUX_CALL_LOG` moves this location.
 
 Each sandboxed macOS run copies and unlocks the template and disables auto-lock. Keychain login also inserts the selected item. API-key and file-token runs start with an empty private Keychain. The trusted `/usr/bin/security` receives commands, passphrases, and credentials on interactive stdin; credentials do not enter argv. Insertion grants access to security and the resolved agy executable. Failure rebuilds the template and retries once. For Keychain login, the private mirror contains the full token, including refresh credentials, for that run.
 
-When the real default keychain is readable, codemux makes the private Keychain the default for the private HOME, regardless of the login source. A successful selection gives agy's token refresh a default and prevents the storage prompt. If both attempts to read the real default fail, codemux skips private-default selection and warns; agy may still prompt to store its token. Measurement confirmed that `security default-keychain -d user -s <mirror>` under the private HOME changes only that HOME's default; the real user's default is unchanged and the real preferences file does not mention the mirror. Restoration is a safeguard: if private selection unexpectedly changes the real default and the process is killed before restoration, the real default remains on the mirror.
+When the real default keychain is readable, codemux makes the private Keychain the default for the private HOME, regardless of the login source. A successful selection gives agy's token refresh a default and prevents the storage prompt. If both attempts to read the real default fail, codemux refuses the run: without a private default, agy's token refresh raises the macOS "a keychain cannot be found to store antigravity" prompt on the operator's screen, and a sandboxed run must never do that. Measurement confirmed that `security default-keychain -d user -s <mirror>` under the private HOME changes only that HOME's default; the real user's default is unchanged and the real preferences file does not mention the mirror. Restoration is a safeguard: if private selection unexpectedly changes the real default and the process is killed before restoration, the real default remains on the mirror.
 
 Plain runs share existing state entries individually from `.gemini` and its `antigravity-cli` subdirectory. They exclude `.codemux-isolation-probes` and `antigravity-oauth-token`; the whole directory is never linked. Conversations and project state can therefore remain shared while auth stays private. Medium runs use a private settings copy with the headless command grant; other levels can share settings. Hermetic, tools-none, and probe runs retain private state. Controls copy only planted instruction/settings files.
 

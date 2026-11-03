@@ -1,3 +1,6 @@
+---
+read_when: "Checking config keys, defaults, aliases, or environment precedence."
+---
 # Configuration
 
 Codemux reads `$XDG_CONFIG_HOME/codemux/config.yaml` when XDG_CONFIG_HOME is
@@ -11,12 +14,18 @@ models:
   my-alias:
     claude: sonnet
     droid: claude-sonnet-5
+quota:
+  minRemainingPercent: 10
+  weeklyWarnUsedPercent: 50
+  timeoutSeconds: 60
+  spendsFrom:
+    opencode: claude
 ```
 
 The UTF-8 YAML file is limited to 1 MiB. Its only top-level keys are
-`defaultAgent` and `models`. An empty file uses defaults. The default agent is
-`claude`. Unknown keys, invalid types, invalid agents, malformed YAML, and
-oversized files fail commands that need configuration. Help, version, and
+`defaultAgent`, `models`, and `quota`. An empty file uses defaults. The default
+agent is `claude`. Unknown keys, invalid types, invalid agents, malformed YAML,
+and oversized files fail commands that need configuration. Help, version, and
 `doctor` remain available for recovery.
 
 An alias matches `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`. Its value maps supported
@@ -25,6 +34,30 @@ and agent. Model names must have 1–256 UTF-8 bytes, no surrounding whitespace,
 and no control, format, or surrogate characters. A recognized alias without a
 mapping for the requested agent is an error; an unrecognized alias is treated
 as a literal model name. `codemux doctor` lists effective alias names and agents.
+
+## Quota gate policy
+
+The `quota` key configures the pre-launch quota gate
+([results and usage](results-and-usage.md#quota-gate)) that `run`, `check`,
+`tui`, and `session` apply. An absent key means the defaults below;
+`quota: false` disables the gate globally. Settings merge over the defaults
+per field. `minRemainingPercent` and `weeklyWarnUsedPercent` are numbers from
+0 to 100. `timeoutSeconds` is an integer number of seconds from 1 to 300
+(0 and fractions are refused: the gate hands the value to the process runner
+as milliseconds, and an invalid one must fail the launch, not disable the
+gate); it is one number for every agent or a per-agent map whose `default`
+key carries the fallback and whose other keys are agent IDs. The default is
+60 seconds: a provider that answers slower than that is treated as unreadable,
+and slow providers have measured around 31 seconds. `spendsFrom` maps an
+agent to the usagemux client whose subscription its launches actually spend
+from — `spendsFrom: { opencode: claude }` gates an opencode launch on
+claude's windows — with unknown agents or invalid clients refused at load.
+Per-invocation flags `--quota-ceiling` and `--no-quota-gate` override
+the config for one launch. The gate measures the agent's native account; a
+validated provider override in force for the agent
+(`CODEMUX_<AGENT>_PROVIDER_*` with a base URL, on a harness that carries
+overrides) routes the spend elsewhere, so the gate does not apply and codemux
+prints one stderr line saying so.
 
 ## Defaults and precedence
 

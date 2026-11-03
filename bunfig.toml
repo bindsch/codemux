@@ -1,5 +1,9 @@
 [test]
 coverageSkipTestFiles = true
+# Discovery is limited to tests/: a bare `bun test` otherwise picks up any
+# `*.test.ts` in the checkout, scratch directories included, and counts it
+# in the gate (a probe file under scratch/ did exactly that once).
+root = "tests"
 # The test-run ledger redirect (review ul6): bun reads this for every
 # `bun test` in the repo, not only the package.json scripts, so a bare
 # `bun test` loads tests/setup.ts and its CODEMUX_TEST_LEDGER before any

@@ -1,23 +1,17 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
-  lstatSync,
   mkdirSync,
   mkdtempSync,
-  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
   statSync,
-  symlinkSync,
-  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getAdapter } from "../src/adapters/index.js";
 import { ClaudeAdapter } from "../src/adapters/claude.js";
-import { CodexAdapter } from "../src/adapters/codex.js";
-import type { RunContext } from "../src/adapters/base.js";
 import { ZaiAdapter } from "../src/adapters/zai.js";
 import { createCodexHermeticHome } from "../src/hermetic-home.js";
 import { evaluateCanary, plantCanary } from "../src/hermetic-canary.js";
@@ -26,8 +20,8 @@ import { AGENT_IDS, type RunRequest } from "../src/types.js";
 // The verified harnesses (claude, zai, codex, opencode) and the shared
 // refusal, canary and env-prefix machinery live here. The harnesses that
 // claim --tools none only — droid, kimi, pi and goose, each verified live
-// through a provider override — are in hermetic-harness-mappings.test.ts;
-// the per-harness provider-override suites in their own files.
+// through a provider override — are in the hermetic-harness-mappings-*.test.ts
+// files; the per-harness provider-override suites in their own files.
 
 // --output-format json rides on every run: the envelope is what the
 // plain-run unwrap consumes, hermetic or not.
@@ -68,357 +62,6 @@ describe("hermetic runs: claude and zai", () => {
     // directory's own settings file.
     expect(new ClaudeAdapter().buildRunCommand({ agent: "claude", prompt: "p", cwd: "/tmp/repo", instructionDirs: ["/tmp/a"] }))
       .toEqual([...PLAIN_CLAUDE, "--add-dir", "/tmp/a"]);
-  });
-});
-
-describe("hermetic runs: codex", () => {
-  const scratch: string[] = [];
-  // Every context this describe prepares, disposed per launch -- the same
-  // ownership rule the launcher follows, never a whole-adapter sweep.
-  const prepared: { adapter: CodexAdapter; context: RunContext }[] = [];
-  const signalListeners = () =>
-    process.listenerCount("SIGINT") + process.listenerCount("SIGTERM") + process.listenerCount("SIGHUP");
-  const baseline = signalListeners();
-  afterEach(() => {
-    for (const { adapter, context } of prepared.splice(0)) adapter.cleanupRun(context);
-    for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true });
-    // No home may leave a signal handler behind: a later synthetic signal
-    // in another test would otherwise end the whole test process.
-    expect(signalListeners()).toBe(baseline);
-  });
-  const codexAdapter = (env: NodeJS.ProcessEnv, home?: string): CodexAdapter =>
-    new CodexAdapter(env, home);
-  const prepare = (adapter: CodexAdapter, request: RunRequest): RunContext => {
-    const context = adapter.prepareRun(request);
-    prepared.push({ adapter, context });
-    return context;
-  };
-
-  function fakeHome(): string {
-    const home = mkdtempSync(join(tmpdir(), "codemux-codex-home-"));
-    scratch.push(home);
-    mkdirSync(join(home, ".codex"));
-    writeFileSync(join(home, ".codex", "auth.json"), '{"tokens":{"access_token":"a"}}\n', { mode: 0o600 });
-    return home;
-  }
-
-  test("hermetic flags disable project docs, account and disk customizations", () => {
-    const adapter = codexAdapter({}, fakeHome());
-    const request: RunRequest = { agent: "codex", prompt: "p", hermetic: true, sandboxed: true };
-    const context = prepare(adapter, request);
-    const cmd = adapter.buildRunCommand(request, context);
-    // The private home reaches Codex through env(1), never through the
-    // environment scode itself runs with.
-    expect(cmd[0]).toBe("env");
-    expect(cmd[1]).toMatch(/^HOME=.*\.codex\/\.codemux-hermetic\/run-\d+-/);
-    expect(cmd[2]).toBe(`CODEX_HOME=${cmd[1]!.slice("HOME=".length)}/.codex`);
-    expect(cmd.slice(3, 5)).toEqual(["codex", "-c"]);
-    expect(cmd).toContain('cli_auth_credentials_store="file"');
-    expect(cmd).toContain("project_doc_max_bytes=0");
-    expect(cmd).toContain("include_apps_instructions=false");
-    for (const feature of ["apps", "plugins", "hooks", "memories", "shell_snapshot"]) {
-      expect(cmd[cmd.indexOf(feature) - 1]).toBe("--disable");
-    }
-    // Every run asks for the event stream, then names its fallback file
-    // (round al29: a plain run names it too, its verdict scoped to the
-    // Plan-only turn's messageless stream — the prepared hermetic path
-    // sits at the private HOME's root), then the hermetic config closer
-    // and the stdin marker; a plain run streams the events through a
-    // fold (0.12.0) instead of capturing them.
-    expect(cmd[cmd.length - 1]).toBe("-");
-    expect(cmd[cmd.length - 2]).toBe("--ignore-user-config");
-    expect(cmd[cmd.length - 3]).toBe(`${cmd[1]!.slice("HOME=".length)}/last-message`);
-    expect(cmd[cmd.length - 4]).toBe("--output-last-message");
-    expect(cmd[cmd.length - 5]).toBe("--json");
-    // No tools flag unless asked.
-    expect(cmd).not.toContain("shell_tool");
-  });
-
-  test("--tools none disables every tool that reaches the machine or network", () => {
-    const home = fakeHome();
-    const cmd = codexAdapter({}, home).buildRunCommand({ agent: "codex", prompt: "p", tools: "none" });
-    expect(cmd[0]).toBe("codex");
-    for (const feature of ["shell_tool", "unified_exec", "view_image", "multi_agent", "browser_use", "computer_use"]) {
-      expect(cmd[cmd.indexOf(feature) - 1]).toBe("--disable");
-    }
-    // The top-level mode; Codex drops a boolean tools.web_search.
-    expect(cmd).toContain('web_search="disabled"');
-    expect(cmd).not.toContain("tools.web_search=false");
-    expect(cmd).not.toContain("--ignore-user-config");
-    // The stream flag rides every run, and the fallback file with it
-    // (round al29): a plain run names the file, its verdict scoped to
-    // the Plan-only turn. Without a prepared context the static shape is
-    // the fail-closed placeholder.
-    expect(cmd.slice(-7)).toEqual([
-      "--skip-git-repo-check",
-      "--ephemeral",
-      "--ignore-rules",
-      "--json",
-      "--output-last-message",
-      join(home, ".codex", ".codemux-scratch", "unprepared", "last-message"),
-      "-",
-    ]);
-    expect(cmd[cmd.length - 1]).toBe("-");
-  });
-
-  test("--tools none is accepted only at read-only autonomy (apply_patch cannot be removed)", () => {
-    const adapter = codexAdapter({}, fakeHome());
-    const cwd = mkdtempSync(join(tmpdir(), "codemux-codex-ro-"));
-    scratch.push(cwd);
-    mkdirSync(join(cwd, ".git"));
-    expect(() => adapter.validateRunRequest({ agent: "codex", prompt: "p", cwd, tools: "none" })).not.toThrow();
-    expect(() => adapter.validateRunRequest({ agent: "codex", prompt: "p", cwd, tools: "none", autonomy: "read-only" })).not.toThrow();
-    for (const autonomy of ["low", "medium", "high"] as const) {
-      expect(() => adapter.validateRunRequest({ agent: "codex", prompt: "p", cwd, tools: "none", autonomy }))
-        .toThrow("needs --auto read-only");
-    }
-  });
-
-  test("a static hermetic command without prepareRun points at a home that does not exist", () => {
-    const cmd = codexAdapter({}, fakeHome()).buildRunCommand({ agent: "codex", prompt: "p", hermetic: true });
-    expect(cmd[1]).toMatch(/^HOME=.*\.codemux-hermetic\/unprepared$/);
-    expect(() => statSync(cmd[1]!.slice("HOME=".length))).toThrow();
-  });
-
-  test("plain commands are unchanged by the hermetic machinery", () => {
-    // No env(1) prefix and no hermetic home. The event stream flag and
-    // the bounded fallback file ride the run anyway (0.12.0, round al29):
-    // a plain run streams the events through a fold and names the file
-    // its verdict consults only for the Plan-only turn, so nothing
-    // hermetic varies with the machinery.
-    const home = fakeHome();
-    expect(codexAdapter({}, home).buildRunCommand({ agent: "codex", prompt: "p" }))
-      .toEqual([
-        "codex",
-        "exec",
-        "--skip-git-repo-check",
-        "--ephemeral",
-        "--ignore-rules",
-        "--json",
-        "--output-last-message",
-        join(home, ".codex", ".codemux-scratch", "unprepared", "last-message"),
-        "-",
-      ]);
-  });
-
-  function privateHome(cmd: string[]): { home: string; codexHome: string } {
-    return { home: cmd[1]!.slice("HOME=".length), codexHome: cmd[2]!.slice("CODEX_HOME=".length) };
-  }
-
-  test("prepareRun creates a private HOME and CODEX_HOME inside the real one, holding only the linked login", () => {
-    const home = fakeHome();
-    const adapter = codexAdapter({}, home);
-    expect(adapter.buildRunCommand({ agent: "codex", prompt: "p" })[0]).toBe("codex");
-    const request: RunRequest = { agent: "codex", prompt: "p", hermetic: true };
-    const context = prepare(adapter, request);
-    const cmd = adapter.buildRunCommand(request, context);
-    const priv = privateHome(cmd);
-    expect(priv.home.startsWith(join(home, ".codex", ".codemux-hermetic", `run-${process.pid}-`))).toBe(true);
-    expect(readdirSync(priv.home)).toEqual([".codex"]);
-    expect(readdirSync(priv.codexHome)).toEqual(["auth.json"]);
-    expect(priv.codexHome).toBe(join(priv.home, ".codex"));
-    const link = join(priv.codexHome, "auth.json");
-    expect(statSync(link).ino).toBe(statSync(join(home, ".codex", "auth.json")).ino);
-    expect(adapter.getRunEnv(request, context)).toEqual({});
-    // Repeated builds for the same prepared run agree.
-    expect(adapter.buildRunCommand(request, context).slice(0, 3)).toEqual(cmd.slice(0, 3));
-  });
-
-  test("the real login is the one a plain run sees: ~/.codex, or CODEX_HOME only when passed through", () => {
-    const home = fakeHome();
-    const profile = fakeHome();
-    const adapter = codexAdapter({ CODEX_HOME: join(profile, ".codex") }, home);
-    // Not passed through: the sanitized child environment drops it.
-    const request: RunRequest = { agent: "codex", prompt: "p", hermetic: true };
-    const priv = privateHome(adapter.buildRunCommand(request, prepare(adapter, request)));
-    expect(priv.home.startsWith(join(home, ".codex", ".codemux-hermetic"))).toBe(true);
-    expect(lstatSync(join(priv.codexHome, "auth.json")).isFile()).toBe(true);
-    // Passed through: the plain run uses that profile, so the hermetic run
-    // links that profile's login.
-    const profiledRequest: RunRequest = { agent: "codex", prompt: "p", hermetic: true, passthroughEnv: ["CODEX_HOME"] };
-    const profiled = privateHome(
-      adapter.buildRunCommand(profiledRequest, prepare(adapter, profiledRequest))
-    );
-    expect(profiled.home.startsWith(join(profile, ".codex", ".codemux-hermetic"))).toBe(true);
-  });
-
-  test("refuses a missing file login and explains the Keychain case", () => {
-    const home = mkdtempSync(join(tmpdir(), "codemux-codex-nologin-"));
-    scratch.push(home);
-    expect(() => codexAdapter({}, home).prepareRun({ agent: "codex", prompt: "p", hermetic: true }))
-      .toThrow(/need a file login.*Keychain.*CODEX_API_KEY/s);
-  });
-
-  test("CODEX_API_KEY makes the run API-key-only: no login is linked, with or without a login file", () => {
-    const withoutLogin = mkdtempSync(join(tmpdir(), "codemux-codex-apikey-"));
-    scratch.push(withoutLogin);
-    mkdirSync(join(withoutLogin, ".codex"));
-    for (const home of [withoutLogin, fakeHome()]) {
-      const adapter = codexAdapter({ CODEX_API_KEY: "sk-test" }, home);
-      const request: RunRequest = { agent: "codex", prompt: "p", hermetic: true };
-      const context = prepare(adapter, request);
-      const priv = privateHome(adapter.buildRunCommand(request, context));
-      expect(readdirSync(priv.codexHome)).toEqual([]);
-      expect(adapter.getRunEnv(request, context)).toEqual({});
-    }
-  });
-
-  test("a stray OPENAI_API_KEY does not switch a hermetic run away from the account login", () => {
-    // Codex 0.154 ignores OPENAI_API_KEY, so a plain run uses the file
-    // login; the hermetic run must use the very same credential.
-    const home = fakeHome();
-    const adapter = codexAdapter({ OPENAI_API_KEY: "sk-old" }, home);
-    const request: RunRequest = { agent: "codex", prompt: "p", hermetic: true };
-    const context = prepare(adapter, request);
-    const priv = privateHome(adapter.buildRunCommand(request, context));
-    expect(readdirSync(priv.codexHome)).toEqual(["auth.json"]);
-    expect(adapter.getRunEnv(request, context)).toEqual({});
-  });
-
-  test("every hermetic run gets a fresh home; an earlier run's home stays until its context is cleaned up", () => {
-    const adapter = codexAdapter({}, fakeHome());
-    const firstRequest: RunRequest = { agent: "codex", prompt: "p", hermetic: true };
-    const first = privateHome(
-      adapter.buildRunCommand(firstRequest, prepare(adapter, firstRequest))
-    );
-    writeFileSync(join(first.home, "leftover"), "x");
-    const secondRequest: RunRequest = { agent: "codex", prompt: "p", hermetic: true };
-    const second = privateHome(
-      adapter.buildRunCommand(secondRequest, prepare(adapter, secondRequest))
-    );
-    expect(second.home).not.toBe(first.home);
-    // Still there: the first run's context has not been cleaned up, and a
-    // run started earlier may still be using its home.
-    expect(statSync(join(first.home, "leftover")).isFile()).toBe(true);
-    expect(readdirSync(second.home)).toEqual([".codex"]);
-  });
-
-  test("two concurrent hermetic runs each launch in their own home", () => {
-    // The round6 finding: the prepared home was a shared adapter field, so
-    // run B's prepareRun overwrote run A's and A's command would have
-    // pointed at B's home. The home is this run's own context now, so an
-    // in-flight run keeps its own.
-    const adapter = codexAdapter({}, fakeHome());
-    const first: RunRequest = { agent: "codex", prompt: "p", hermetic: true };
-    const firstContext = prepare(adapter, first);
-    const firstHome = privateHome(adapter.buildRunCommand(first, firstContext));
-    writeFileSync(join(firstHome.home, "marker"), "first");
-    const second: RunRequest = { agent: "codex", prompt: "q", hermetic: true };
-    const secondHome = privateHome(
-      adapter.buildRunCommand(second, prepare(adapter, second))
-    );
-    expect(secondHome.home).not.toBe(firstHome.home);
-    // A's command still names A's home after B prepared its own, and A's
-    // launch path still finds its prepared home.
-    expect(adapter.buildRunCommand(first, firstContext)[1]).toBe(`HOME=${firstHome.home}`);
-    expect(adapter.getRunEnv(first, firstContext)).toEqual({});
-    expect(statSync(join(firstHome.home, "marker")).isFile()).toBe(true);
-  });
-
-  test("a symlinked hermetic parent directory is refused", () => {
-    const home = fakeHome();
-    const elsewhere = mkdtempSync(join(tmpdir(), "codemux-elsewhere-"));
-    scratch.push(elsewhere);
-    symlinkSync(elsewhere, join(home, ".codex", ".codemux-hermetic"));
-    expect(() => createCodexHermeticHome(join(home, ".codex")))
-      .toThrow("must be a directory owned by the current user");
-  });
-
-  test("launching without prepareRun is refused on the codemux side", () => {
-    const adapter = codexAdapter({}, fakeHome());
-    expect(() => adapter.getRunEnv({ agent: "codex", prompt: "p", hermetic: true }))
-      .toThrow("was not prepared before launch");
-    expect(adapter.getRunEnv({ agent: "codex", prompt: "p" })).toEqual({});
-  });
-
-  test("an in-place token rewrite reaches the real login; a replaced private file is discarded", () => {
-    const home = fakeHome();
-    const real = join(home, ".codex", "auth.json");
-    const hermetic = createCodexHermeticHome(join(home, ".codex"));
-    const link = join(hermetic.codexHome, "auth.json");
-    writeFileSync(link, '{"tokens":{"access_token":"rotated"}}');
-    expect(readFileSync(real, "utf8")).toContain("rotated");
-    // A rename-style replacement breaks the link; nothing is ever written
-    // back over the real file.
-    rmSync(link);
-    writeFileSync(link, '{"tokens":{"access_token":"replaced"}}');
-    hermetic.finalize();
-    expect(readFileSync(real, "utf8")).toContain("rotated");
-    expect(() => statSync(hermetic.home)).toThrow();
-  });
-
-  test("finalize never restores a login the operator removed or replaced", () => {
-    const home = fakeHome();
-    const real = join(home, ".codex", "auth.json");
-    const removed = createCodexHermeticHome(join(home, ".codex"));
-    rmSync(real); // codex logout while the run is in flight
-    removed.finalize();
-    expect(() => statSync(real)).toThrow();
-
-    writeFileSync(real, '{"tokens":{"access_token":"a"}}', { mode: 0o600 });
-    const replaced = createCodexHermeticHome(join(home, ".codex"));
-    rmSync(real);
-    writeFileSync(real, '{"tokens":{"access_token":"fresh-login"}}', { mode: 0o600 });
-    writeFileSync(join(replaced.codexHome, "auth.json"), '{"tokens":{"access_token":"stale-session"}}');
-    replaced.finalize();
-    expect(readFileSync(real, "utf8")).toContain("fresh-login");
-  });
-
-  test("old homes of dead codemux processes are swept; recent ones may still host a child", () => {
-    const home = fakeHome();
-    const parent = join(home, ".codex", ".codemux-hermetic");
-    const old = join(parent, "run-999999999-old");
-    const recent = join(parent, "run-999999998-recent");
-    mkdirSync(join(old, ".codex"), { recursive: true });
-    mkdirSync(join(recent, ".codex"), { recursive: true });
-    const threeDaysAgo = new Date(Date.now() - 3 * 86_400_000);
-    // Age the whole tree (review D2, security 2): the sweep measures the
-    // NEWEST write anywhere inside, so seeding an old top directory alone
-    // no longer makes a home stale.
-    utimesSync(join(old, ".codex"), threeDaysAgo, threeDaysAgo);
-    utimesSync(old, threeDaysAgo, threeDaysAgo);
-    const hermetic = createCodexHermeticHome(join(home, ".codex"));
-    const left = readdirSync(parent).filter((entry) => entry.startsWith("run-9999"));
-    expect(left).toEqual(["run-999999998-recent"]);
-    hermetic.finalize();
-  });
-
-  test("hermetic runs refuse repository skills found in HOME itself, but not from a directory below it", () => {
-    const home = fakeHome();
-    mkdirSync(join(home, ".agents", "skills", "x"), { recursive: true });
-    const below = join(home, "Downloads", "work");
-    mkdirSync(below, { recursive: true });
-    // The adapter's effective home (seam, else $HOME) is the user home for
-    // the skills walk.
-    const adapter = codexAdapter({ HOME: home });
-    expect(() => adapter.validateRunRequest({ agent: "codex", prompt: "p", cwd: home }))
-      .not.toThrow();
-    expect(() => adapter.validateRunRequest({ agent: "codex", prompt: "p", cwd: home, hermetic: true }))
-      .toThrow("refuses repository skills in a hermetic run");
-    // User-level skills under HOME are hidden by the private home; only
-    // HOME as the working directory makes them repository skills.
-    expect(() => adapter.validateRunRequest({ agent: "codex", prompt: "p", cwd: below, hermetic: true }))
-      .not.toThrow();
-    expect(() => codexAdapter({}, home).validateRunRequest({ agent: "codex", prompt: "p", cwd: home, hermetic: true }))
-      .toThrow("refuses repository skills in a hermetic run");
-    // A HOME that is itself a Git root is Codex's project root for any
-    // directory below it without another root in between.
-    mkdirSync(join(home, ".git"));
-    expect(() => adapter.validateRunRequest({ agent: "codex", prompt: "p", cwd: below, hermetic: true }))
-      .toThrow("refuses repository skills in a hermetic run");
-  });
-
-  test("hermetic runs refuse repository skills", () => {
-    const home = fakeHome();
-    const repo = mkdtempSync(join(tmpdir(), "codemux-codex-repo-"));
-    scratch.push(repo);
-    mkdirSync(join(repo, ".git"));
-    mkdirSync(join(repo, ".agents", "skills", "x"), { recursive: true });
-    const adapter = codexAdapter({}, home);
-    expect(() => adapter.validateRunRequest({ agent: "codex", prompt: "p", cwd: repo }))
-      .not.toThrow();
-    expect(() => adapter.validateRunRequest({ agent: "codex", prompt: "p", cwd: repo, hermetic: true }))
-      .toThrow("refuses repository skills in a hermetic run");
   });
 });
 
@@ -513,6 +156,31 @@ describe("hermetic canary", () => {
     // An OK line beside a name is not a pass.
     expect(evaluateCanary("Some Owner\nOK\n", "CODEMUX-CANARY-1"))
       .toEqual({ kind: "leak", what: "other", answer: "Some Owner\nOK" });
+  });
+
+  test("a marker the capture fold shed still reports a leak (round 17, contracts-2 1)", async () => {
+    // The full-output scan contract covers output a bounded fold drops:
+    // a kimi plain run sheds tool results to hold the capture bound, so
+    // the scan surface is the kept bytes plus the fold's evidence of
+    // what it shed. A marker only in a tool result must fail the check.
+    const { KimiPlainFold } = await import("../src/plain-unwrap/kimi-fold.js");
+    const { mintCanaryMarker } = await import("../src/hermetic-canary.js");
+    const marker = mintCanaryMarker();
+    expect(marker).toMatch(/^CODEMUX-CANARY-[0-9A-F]{8}$/);
+    const fold = new KimiPlainFold();
+    fold.push(
+      `${JSON.stringify({ role: "tool", tool_call_id: "call_1", content: `code word ${marker}` })}\n` +
+      `${JSON.stringify({ role: "assistant", content: "OK" })}\n`
+    );
+    const kept = fold.finish();
+    expect(kept).not.toContain(marker);
+    // The kept bytes alone would pass — the leak lives only in what was
+    // shed, which is exactly the case the evidence channel exists for.
+    // (The model's answer "OK" is what the plain unwrap extracts from the
+    // kept wire; the scan runs on the whole surface.)
+    expect(evaluateCanary(kept, marker, "OK")).toEqual({ kind: "clean" });
+    expect(evaluateCanary(kept + fold.droppedMarkerEvidence(), marker, "OK"))
+      .toEqual({ kind: "leak", what: "marker", answer: marker });
   });
 });
 

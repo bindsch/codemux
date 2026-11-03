@@ -3,7 +3,12 @@ import type { ProbeEnvironment } from "./environment.js";
 import { runCapturedCommand } from "./process-runner.js";
 import type { AgentId, AutonomyLevel } from "./types.js";
 
-import { ALLOW_UNTESTED_ENV, HARNESS_CONTRACTS, type HarnessContract } from "./harness-contracts.js";
+import {
+  ALLOW_UNTESTED_ENV,
+  HARNESS_CONTRACTS,
+  type HarnessBreak,
+  type HarnessContract,
+} from "./harness-contracts.js";
 
 export {
   ALLOW_UNTESTED_ENV,
@@ -41,11 +46,32 @@ export const extractHarnessVersion = (
 
 export type HarnessVerdictKind = "supported" | "unaudited" | "refuse";
 
+/** Which rule produced the verdict. Two refusals share `kind: "refuse"`
+ * (the launch gate treats them the same) and mean different things: a
+ * release below `min`, and a `breaks` entry scoped to some autonomy
+ * levels. Report surfaces (doctor, the live gate) label them differently,
+ * so they read this field, never the message text. */
+export type HarnessVerdictReason =
+  | "supported"
+  | "unaudited"
+  | "below-minimum"
+  | "breakage";
+
 export interface HarnessVerdict {
   kind: HarnessVerdictKind;
+  reason: HarnessVerdictReason;
   version: string;
   message: string | null;
+  /** Set when `reason === "breakage"`: the contract entry that fired, so
+   * report surfaces can name the affected levels and the mitigation. */
+  breakage?: HarnessBreak;
 }
+
+/** The one-line breakage label every reporting surface prints, so doctor
+ * and the live gate agree without reusing the launch gate's message. */
+export const describeHarnessBreakage = (breakage: HarnessBreak): string =>
+  `known break at ${breakage.affects.join(" and ")} autonomy from ${breakage.from} ` +
+  `(${breakage.mitigatedBySandbox ? "sandbox mitigates" : "no mitigation"}): ${breakage.note}`;
 
 /**
  * Decides whether this version may run at the requested autonomy.
@@ -77,6 +103,7 @@ export const evaluateHarnessVersion = (
   if (compareVersions(version, minimum) < 0) {
     return {
       kind: "refuse",
+      reason: "below-minimum",
       version,
       message:
         `${agent} ${version} is older than the ${minimum} this Codemux enforces. ` +
@@ -91,6 +118,8 @@ export const evaluateHarnessVersion = (
     const levels = breakage.affects.join(" and ");
     return {
       kind: "refuse",
+      reason: "breakage",
+      breakage,
       version,
       message:
         `${agent} ${version} cannot enforce ${levels} autonomy: ${breakage.note}. ` +
@@ -109,6 +138,7 @@ export const evaluateHarnessVersion = (
   if (compareVersions(version, auditedCeiling) > 0) {
     return {
       kind: "unaudited",
+      reason: "unaudited",
       version,
       message:
         `${agent} ${version} is newer than the ${auditedCeiling} this Codemux audited. ` +
@@ -117,7 +147,7 @@ export const evaluateHarnessVersion = (
     };
   }
 
-  return { kind: "supported", version, message: null };
+  return { kind: "supported", reason: "supported", version, message: null };
 };
 
 /**
@@ -166,21 +196,35 @@ export const binaryChanged = (
  * `OPENCODE_BIN_PATH` made the gate read one executable while the launch ran another, and a
  * case-insensitive allowlist let `https_proxy` reach the probe but not the launch.
  */
-export const probeHarnessVersion = async (
+export const DEFAULT_VERSION_PROBE_TIMEOUT_MS = 30_000;
+
+export interface VersionProbeResult {
+  version: string | null;
+  /** True when the probe's own timeout fired, so `version` is null because
+   * the binary never answered, not because its output was unparseable. */
+  timedOut: boolean;
+}
+
+export const probeHarnessVersionDetailed = async (
   binary: string,
   contract: HarnessContract,
   workdir: string,
   environment: ProbeEnvironment,
-  entryName: string
-): Promise<string | null> => {
+  entryName: string,
+  options?: { timeoutMs?: number }
+): Promise<VersionProbeResult> => {
   const read = async (args: readonly string[], pattern: RegExp) => {
     const result = await runCapturedCommand([binary, ...args], {
       cwd: workdir,
       env: environment,
-      timeoutMs: 30_000,
+      timeoutMs: options?.timeoutMs ?? DEFAULT_VERSION_PROBE_TIMEOUT_MS,
     });
-    if (result.exitCode !== 0) return null;
-    return pattern.exec(`${result.stdout}\n${result.stderr}`.trim())?.[1] ?? null;
+    if (result.timedOut) return { version: null, timedOut: true };
+    if (result.exitCode !== 0) return { version: null, timedOut: false };
+    return {
+      version: pattern.exec(`${result.stdout}\n${result.stderr}`.trim())?.[1] ?? null,
+      timedOut: false,
+    };
   };
 
   // One flag, no fallback: a release whose version this cannot read warns
@@ -196,6 +240,18 @@ export const probeHarnessVersion = async (
     contract.pattern
   );
 };
+
+/** The launch gate's probe: the same read at the launch timeout, reduced to
+ * the version (a timeout and an unparseable answer are both null there). */
+export const probeHarnessVersion = async (
+  binary: string,
+  contract: HarnessContract,
+  workdir: string,
+  environment: ProbeEnvironment,
+  entryName: string
+): Promise<string | null> =>
+  (await probeHarnessVersionDetailed(binary, contract, workdir, environment, entryName))
+    .version;
 
 /** Everything the version gate needs, named rather than positional.
  *

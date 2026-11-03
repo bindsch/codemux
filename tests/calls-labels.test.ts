@@ -30,6 +30,9 @@ function record(spec: RecordSpec): string {
     finish: null,
     duration_ms: 10,
     cwd: "/repo",
+    // A figure here is a billed one; the legacy (no cost_source) case lives
+    // in tests/calls-sum.test.ts.
+    cost_source: typeof spec.cost === "number" ? "billed" : null,
     ...(spec.labels === undefined ? {} : { labels: spec.labels }),
     usage: {
       input_tokens: spec.input ?? null,
@@ -263,7 +266,9 @@ describe("codemux calls labels", () => {
     expect(beta).toContain("unreported");
   });
 
-  test("grouping applies after filters and limit", async () => {
+  test("grouping applies after filters, over every matching record", async () => {
+    // -n 1 lists one record while the totals still group both task=build
+    // records: the limit bounds the listing only, never the totals.
     const result = await callsWith([
       { model: "old", labels: { project: "alpha", task: "build" }, input: 100 },
       { model: "selected", labels: { project: "beta", task: "build" }, input: 7 },
@@ -271,9 +276,11 @@ describe("codemux calls labels", () => {
     ], ["--label", "task=build", "-n", "1", "--sum", "--by", "project"]);
     expect(result.exitCode).toBe(0);
     const totals = result.stdout.split("\n").filter((line) => line.startsWith("Totals"));
-    expect(totals).toHaveLength(1);
-    expect(totals[0]).toContain("project=beta");
-    expect(totals[0]).toContain("input=7");
+    expect(totals).toHaveLength(2);
+    const beta = totals.find((line) => line.includes("project=beta"))!;
+    expect(beta).toContain("input=7");
+    const alpha = totals.find((line) => line.includes("project=alpha"))!;
+    expect(alpha).toContain("input=100");
   });
 
   test("--by requires --sum and a valid label key", async () => {

@@ -9,6 +9,7 @@ import type {
   ReasoningEffort,
   RunRequest,
 } from "../types.js";
+import { copilotLoginState, loginHome, type LoginState } from "../harness-health.js";
 
 const PKG_CACHE_ENV = "COPILOT_PKG_CACHE_HOME";
 const CACHE_ENV = "COPILOT_CACHE_HOME";
@@ -19,7 +20,7 @@ const CACHE_ENV = "COPILOT_CACHE_HOME";
 // instructions from AGENTS.md and related files", 1.0.85 `--help`) rides
 // every codemux run — dropping the flag from plain runs to let the control
 // leak would un-harden them, so the two-probe check has no way to verify
-// any candidate mechanism (docs/HERMETIC.md records the control's answer
+// any candidate mechanism (docs/isolation.md records the control's answer
 // "Peter" on the 2026-09-17 live pass, a leak of the user-skill channel).
 // A private-home mechanism the branch implemented behind the refusal was
 // removed in 0.7.0 as dead surface; the refusal stands.
@@ -30,7 +31,7 @@ const CACHE_ENV = "COPILOT_CACHE_HOME";
 // tools — verified live at 1.0.85 through the provider override, where a
 // bare `--available-tools`, `--available-tools=`, and `--available-tools ""`
 // all left the read and shell tools armed (the probes produced the planted
-// secret and a true byte count under every spelling). See docs/HERMETIC.md.
+// secret and a true byte count under every spelling). See docs/isolation.md.
 
 export class CopilotAdapter extends BaseAdapter {
   // The environment the adapter sees is the one its factory was handed:
@@ -56,7 +57,7 @@ export class CopilotAdapter extends BaseAdapter {
       // planted code word, because --no-custom-instructions rides every
       // codemux run — and dropping the flag from plain runs to let the
       // control leak would un-harden them, so the two-probe check has no
-      // way to verify the private-home mechanism (docs/HERMETIC.md records
+      // way to verify the private-home mechanism (docs/isolation.md records
       // the control's answer "Peter", a live leak of the user-skill
       // channel, which the check cannot credit because it plants its code
       // word elsewhere). Tools: no argv spelling of an empty
@@ -211,5 +212,10 @@ export class CopilotAdapter extends BaseAdapter {
       cmd.push(...this.mapEffort(effort));
     }
     return cmd;
+  }
+
+  /** The copilot login read: a GitHub token in the environment or its config. */
+  override loginState(): LoginState {
+    return copilotLoginState(loginHome(this.environment), this.environment);
   }
 }

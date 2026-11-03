@@ -153,7 +153,10 @@ test.each([false, true])("Codex interruption before thread.started records proto
   expect(existsSync(context.hermeticHome!.home)).toBe(false);
 });
 
-test.each(["direct", "code"].flatMap((model) => [null, undefined, "0.166.0"].map((version) => ({ model, version }))))(
+// A cache from another client version is served with a warning
+// (tests/experiment-codex-cache-version.test.ts); the undetected version is
+// the preflight refusal that stays.
+test.each(["direct", "code"].flatMap((model) => [null, undefined].map((version) => ({ model, version }))))(
   "Codex version preflight creates no recording for %j", async ({ model, version }) => {
     const { adapter, context, experiment, recording } = fixture(model);
     expect(existsSync(recording)).toBe(false);

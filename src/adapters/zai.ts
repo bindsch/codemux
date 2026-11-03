@@ -1,7 +1,8 @@
+import { PROJECT_SETTING_SOURCES, validateProjectSettingsRunRequest } from "../claude-project-settings.js";
+import { createProjectSettingsConfigDir, projectSettingsRunEnv } from "../claude-project-config.js";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { BaseAdapter, type RunContext } from "./base.js";
-import { assertExperimentConfigRootSingleLine, claudeChildProject } from "./claude.js";
 import { ExperimentBridge } from "../experiment-bridge.js";
 import { readExperimentRunSpec } from "../experiment-mcp.js";
 import { getPlaywrightSandboxMcpArgs } from "../mcp.js";
@@ -15,8 +16,11 @@ import { appendDiagnostic, claudeFamilyResult } from "../result-envelope.js";
 import { claudeFamilyPlainResult } from "../plain-unwrap.js";
 import {
   assertAbsoluteClaudeConfigDir,
+  assertExperimentConfigRootSingleLine,
+  claudeChildProject,
   claudeGatewayEnv,
   claudeGatewayOmissions,
+  claudeModelArgv,
 } from "../claude-family.js";
 import type {
   AgentId,
@@ -26,6 +30,7 @@ import type {
   RunResult,
   AdapterCapabilities,
 } from "../types.js";
+import { zaiLoginState, loginHome, type LoginState } from "../harness-health.js";
 
 const ZAI_BASE_URL = "https://api.z.ai/api/anthropic";
 const MAX_KEY_FILE_BYTES = 16 * 1024;
@@ -55,20 +60,13 @@ export class ZaiAdapter extends BaseAdapter {
       supportsModel: true,
       supportsAutonomy: true,
       autonomyLevels: ["read-only", "low", "medium", "high"],
-      // Same binary as claude, so the same --effort flag (verified live
-      // against the Z.AI endpoint 2026-10-10, glm-5.3 replying under
-      // --effort low): the levels the binary's own help lists, plus
-      // `none` — the adapter's "no flag" spelling mapEffort maps to
-      // nothing. The list must carry it or every CLI path refuses
-      // (`resolveEffortForAdapter`) what the mapper accepts: before
-      // 0.12.0 a non-supporting zai dropped `none` silently, so the
-      // enabled flag alone regressed `--effort none` (review al11).
-      // Divergence from the claude adapter, on purpose (round al21,
-      // contracts-2 minor 4): claude's own effortLevels omits `none`, so
-      // `-a claude --effort none` refuses at the CLI gate while the same
-      // spelling on this same binary through `-a zai` is accepted. Each
-      // adapter keeps the surface its callers had — claude never took
-      // `none`, zai always did.
+      // Same binary as claude, so the same --effort flag: the levels the
+      // binary's own help lists, plus `none`, the "no flag" spelling
+      // mapEffort maps to nothing. The live evidence behind the mapping
+      // (2026-10-10, glm-5.3 replying under --effort low) predates the
+      // 2.1.280 client-side model-catalog check: a non-catalog id now
+      // rides the picker settings of claude-family.ts or the run dies
+      // before any request leaves the binary.
       supportsEffort: true,
       effortLevels: ["none", "low", "medium", "high", "xhigh", "max"],
       supportsHermetic: true,
@@ -216,21 +214,60 @@ export class ZaiAdapter extends BaseAdapter {
   }
 
   // The experiment bridge as claude's: same binary, same SDK control
-  // protocol, same recordings and result envelope.
+  // protocol, same recordings and result envelope. The private config
+  // directory of a project-settings run is the same mechanism too.
   override prepareRun(request: RunRequest): RunContext {
-    if (!request.experimentMcp) return {};
-    const experimentBridge = new ExperimentBridge(readExperimentRunSpec(request),
-      request.cwd ?? process.cwd(), request.prompt, this.environment,
-      claudeChildProject(this.environment, request.passthroughEnv));
-    return { experimentBridge, experimentRecording: experimentBridge.recordingPath, stdoutSink: experimentBridge };
+    const context: RunContext = {};
+    if (request.experimentProjectSettings) {
+      // The launch-path gate, from the request's own fields (review
+      // round 2, edges 1): the CLI's early check is a duplicate, so a
+      // programmatic caller cannot reach the config directory — or the
+      // spawn — without the sandbox, low autonomy, and hermetic mode.
+      validateProjectSettingsRunRequest(request);
+      context.claudeProjectConfigDir = createProjectSettingsConfigDir(
+        request.cwd ?? process.cwd(),
+        this.environment
+      );
+    }
+    if (!request.experimentMcp) return context;
+    // A bridge that fails to build (a spec it refuses, a recording root it
+    // cannot create) must not strand the private config directory created
+    // above: cleanup first, then rethrow (review round 14, edges 12).
+    try {
+      context.experimentBridge = new ExperimentBridge(readExperimentRunSpec(request),
+        request.cwd ?? process.cwd(), request.prompt, this.environment,
+        claudeChildProject(this.environment, request.passthroughEnv, context.claudeProjectConfigDir?.dir));
+      context.stdoutSink = context.experimentBridge;
+      context.experimentRecording = context.experimentBridge.recordingPath;
+    } catch (error) { this.cleanupRunSync(context); throw error; }
+    return context;
   }
 
-  override cleanupRun(context?: RunContext): void | Promise<void> {
-    return context?.experimentBridge?.close();
+  /**
+   * The per-run environment of an --experiment-project-settings launch:
+   * CLAUDE_CONFIG_DIR pointed at the private directory. No credential is
+   * copied into it — the gateway token (getEnv) is this run's credential,
+   * so the operator's Claude login stays out of a Z.AI run entirely.
+   */
+  override getRunEnv(request: RunRequest, context?: RunContext): Record<string, string> {
+    if (!request.experimentProjectSettings) return {};
+    return projectSettingsRunEnv(context?.claudeProjectConfigDir);
+  }
+
+  override async cleanupRun(context?: RunContext): Promise<void> {
+    try {
+      await context?.experimentBridge?.close();
+    } finally {
+      context?.claudeProjectConfigDir?.finalize();
+    }
   }
 
   override cleanupRunSync(context?: RunContext): void {
-    context?.experimentBridge?.closeSync();
+    try {
+      context?.experimentBridge?.closeSync();
+    } finally {
+      context?.claudeProjectConfigDir?.finalize();
+    }
   }
 
   override validateTuiRequest(
@@ -247,7 +284,8 @@ export class ZaiAdapter extends BaseAdapter {
 
   buildRunCommand(request: RunRequest, context?: RunContext): string[] {
     const cmd = ["claude", "-p"];
-    if (request.hermetic) {
+    // Project settings replace --safe-mode, which would ignore their rules.
+    if (request.hermetic && !request.experimentProjectSettings) {
       // --safe-mode starts with every customization disabled: CLAUDE.md
       // (user and project), skills, plugins, hooks, MCP servers, custom
       // commands and agents. Auth, model selection, built-in tools and
@@ -255,6 +293,9 @@ export class ZaiAdapter extends BaseAdapter {
       // the OAuth login, so a subscription run would silently bill an API
       // key instead.
       cmd.push("--safe-mode");
+    }
+    if (request.experimentProjectSettings) {
+      cmd.push("--disable-slash-commands");
     }
     // Kept under --safe-mode too: it costs nothing and settles whether a
     // repository's own settings file could still reach the run. Project
@@ -273,7 +314,7 @@ export class ZaiAdapter extends BaseAdapter {
     const cwdIsInstructionDir = instructionDirs.includes(request.cwd ?? process.cwd());
     cmd.push(
       "--setting-sources",
-      cwdIsInstructionDir ? "user,project" : "user",
+      request.experimentProjectSettings ? PROJECT_SETTING_SOURCES : cwdIsInstructionDir ? "user,project" : "user",
       "--strict-mcp-config"
     );
     // No run of this adapter persists a session (same binary and rule as
@@ -303,7 +344,11 @@ export class ZaiAdapter extends BaseAdapter {
       enabled: request.enablePlaywrightMcp,
       forbiddenRoot: request.cwd ?? process.cwd(),
     }));
-    cmd.push("--model", this.resultModel(request));
+    // Non-catalog ids (glm-5.3, glm-4.5-air — the clerk/worker/judge
+    // tiers) need the picker --settings or the 2.1.280+ catalog check
+    // rejects them client-side (claude-family.ts); the default `opus`
+    // carries none.
+    cmd.push(...claudeModelArgv(this.resultModel(request)));
 
     if (request.autonomy) {
       // scode enforces read-only for the harness; the host authorizes only
@@ -369,6 +414,11 @@ export class ZaiAdapter extends BaseAdapter {
     enablePlaywrightMcp?: boolean,
     cwd?: string
   ): string[] {
+    // The TUI's default launch carries --safe-mode, the same every-
+    // customization-off baseline as a hermetic run (claude.ts's
+    // buildRunCommand records why --bare is not used instead); the
+    // Playwright branch needs the user settings source for the MCP client
+    // configuration.
     const cmd = enablePlaywrightMcp
       ? ["claude", "--setting-sources", "user", "--strict-mcp-config"]
       : ["claude", "--safe-mode"];
@@ -376,7 +426,10 @@ export class ZaiAdapter extends BaseAdapter {
       enabled: enablePlaywrightMcp,
       forbiddenRoot: cwd ?? process.cwd(),
     }));
-    cmd.push("--model", model || ZAI_DEFAULT_MODEL);
+    // Same rule as the run path: a non-catalog model id rides the picker
+    // --settings (claude-family.ts) or the binary rejects it before any
+    // request.
+    cmd.push(...claudeModelArgv(model || ZAI_DEFAULT_MODEL));
     if (autonomy) {
       // The TUI has a human to approve; write grants ride only on
       // headless runs.
@@ -388,4 +441,9 @@ export class ZaiAdapter extends BaseAdapter {
     return cmd;
   }
 
+
+  /** The zai login read: the key file's existence and mode, or the env key. */
+  override loginState(): LoginState {
+    return zaiLoginState(loginHome(this.environment), this.environment);
+  }
 }

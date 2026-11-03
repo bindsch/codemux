@@ -3,6 +3,7 @@ import type { StdoutSink } from "./process-runner.js";
 import type { ExperimentBridge } from "./experiment-bridge.js";
 import type { ExperimentCodexRun } from "./experiment-codex-run.js";
 import type { ExperimentKimiRun } from "./experiment-kimi-run.js";
+import type { ClaudeProjectConfigDir } from "./claude-project-config.js";
 import type { CodexProviderHome } from "./codex-provider.js";
 import type { AiderHistoryFile } from "./aider-history.js";
 import type { OpencodeHermeticHome } from "./opencode-hermetic.js";
@@ -30,12 +31,22 @@ export interface RunContext {
   /** Installed version from the compatibility probe; absent or null when unknown. */
   harnessVersion?: string | null;
   /** Agy private HOME for every sandboxed run; mode also selects native stream handling. */
-  agyProbe?: { mode: string; home?: string; operatorHome?: string; diagnostic?: boolean };
+  // printOnly: a --print-sandbox preparation that created no Keychain state,
+  // so cleanup invokes no `security` command either.
+  agyProbe?: { mode: string; home?: string; operatorHome?: string; diagnostic?: boolean; printOnly?: boolean };
   experimentBridge?: ExperimentBridge;
   experimentCodex?: ExperimentCodexRun;
   experimentKimi?: ExperimentKimiRun;
   /** Per-run experiment recording, independent of the harness transport. */
   experimentRecording?: string;
+  /**
+   * Claude/Z.AI: this run's private CLAUDE_CONFIG_DIR, when
+   * --experiment-project-settings is set. Holds the generated
+   * `.claude.json` (onboarding complete, the working directory trusted)
+   * and, on a run that authenticates through the operator's Claude login,
+   * an access-token-only credential copy. cleanupRun removes it.
+   */
+  claudeProjectConfigDir?: ClaudeProjectConfigDir;
   /**
    * Codex: this run's `--output-last-message` file, on every launch that can
    * have one (every `--json` launch — which is all of them — except an
@@ -74,7 +85,7 @@ export interface RunContext {
    * `--chat-history-file /dev/null` and write no history at all (h6
    * review), and cleanupRun removes it. The hermetic check that would
    * consume the extraction is refused for now (aider's own config layers
-   * have no switch; src/aider-history.ts, docs/HERMETIC.md), so nothing
+   * have no switch; src/aider-history.ts, docs/isolation.md), so nothing
    * reads it today.
    */
   aiderHistoryFile?: AiderHistoryFile;
@@ -88,6 +99,12 @@ export interface RunContext {
    * override is configured. Rides hermetic and plain runs alike.
    */
   opencodeProviderConfig?: OpencodeProviderConfig;
+  /** OpenCode: the model this run launches with — the request's, else the
+   * override's CODEMUX_OPENCODE_PROVIDER_MODEL (the adapter's own
+   * selection). The --result-json envelope reports this, so an override
+   * run without --model still records the model that ran (review round
+   * 3, contracts-2 finding 5). */
+  opencodeSelectedModel?: string;
   /** Droid: this run's private settings file, when a provider override is configured. */
   droidProviderSettings?: DroidProviderSettings;
   /** Kimi: this run's generated `tools: []` agent file, when the run asks for `--tools none`. */

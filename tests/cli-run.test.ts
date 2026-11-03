@@ -408,6 +408,7 @@ describe("CLI - kimi run-path command refusal (review al11, narrowed al17)", () 
     const fake = createFakeBinaryEnv({
       kimi: `
 if [ "$1" = "--version" ]; then printf '0.31.1\\n'; exit 0; fi
+printf 'OK\\n'
 exit 0
 `,
     });

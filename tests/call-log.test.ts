@@ -153,4 +153,33 @@ describe("appendLedgerPath", () => {
       cleanup();
     }
   });
+
+  test("a record whose line exceeds the shared bound is refused with one stderr note (round 23, edges 6)", () => {
+    const { env, dir, cleanup } = tempEnv();
+    const errors: string[] = [];
+    const error = console.error;
+    console.error = (line: string) => void errors.push(line);
+    try {
+      const path = join(dir, "calls.jsonl");
+      const withPath = { ...env, [CALL_LOG_ENV]: path };
+      // 17 MiB of model string: over the 16 MiB line bound, inside nothing.
+      // Before the shared bound the writer appended any length while the
+      // reader skipped lines over 1 MiB — the record was written and then
+      // invisible to every reader, a silent gap.
+      appendCallRecord({ ...BASE_RECORD, model: "x".repeat(17 * 1024 * 1024) }, withPath);
+      expect(errors).toEqual([
+        "codemux: call record not written: line exceeds 16777216 bytes",
+      ]);
+      // Nothing was written: the ledger file was never opened.
+      expect(() => statSync(path)).toThrow();
+      // A record inside the bound still lands after the refusal.
+      appendCallRecord({ ...BASE_RECORD, model: "fits" }, withPath);
+      const lines = readFileSync(path, "utf8").split("\n").filter((line) => line !== "");
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0]!).model).toBe("fits");
+    } finally {
+      console.error = error;
+      cleanup();
+    }
+  });
 });

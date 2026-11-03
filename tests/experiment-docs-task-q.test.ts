@@ -5,15 +5,15 @@ import { resolve } from "node:path";
 const read = (file: string) => readFileSync(resolve(file), "utf8").replace(/\s+/g, " ");
 
 test("usage guarantees exclude interrupted and timed-out recordings in the guide and changelog", () => {
-  for (const file of ["docs/results-and-usage.md", "CHANGELOG.md"]) {
+  for (const file of ["docs/results-and-usage.md", "docs/archive/changelog-2.0.0-details.md"]) {
     const text = read(file);
     expect(text).toContain("Every turn in a complete recording has exactly one usage record");
     expect(text).toContain("Interrupted or timed-out recordings can omit usage records");
   }
 });
 
-test("usage table documents the plain Kimi experiment ledger exception", () => {
+test("usage table documents every plain Kimi run reading the wire log", () => {
   const row = read("docs/results-and-usage.md").match(/\| Kimi \|([^|]+)\| Unknown \|/)?.[1];
-  expect(row).toContain("Plain experiment runs also read wire-log usage for the call ledger");
-  expect(row).toContain("Other plain runs report unknown usage");
+  expect(row).toContain("Result-json and plain runs sum wire-log usage");
+  expect(row).toContain("A binary that ignores the stream wire keeps its plain text and records unknown usage");
 });

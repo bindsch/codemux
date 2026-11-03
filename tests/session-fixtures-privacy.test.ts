@@ -10,7 +10,7 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 
 const FIXTURES = join(import.meta.dir, "fixtures", "live");
 const REPO = resolve(import.meta.dir, "..");
@@ -46,9 +46,12 @@ function escapeRegExp(text: string): string {
 /** Every spelling of the operator's identity a fixture must not carry:
  * the home path and its slug, the username, the home's components below
  * the top-level root, and each checkout's path below the home in both
- * spellings, with its directory components. The checkout's own directory
- * name is the project's name and legitimately appears in the wire
- * (`codemux-probe`), so it is excluded as a lone component. */
+ * spellings. The checkout path's single directory components are not
+ * words on their own: a clone under `~/scratch/codemux` or a release
+ * archive unpacked under `~/work/` would otherwise fail on words the
+ * fixtures carry legitimately (`scratch`, `work`, the project's own
+ * name), while the full relative path and its slug still catch the
+ * spelling the review found. */
 function forbiddenSpellings(): string[] {
   const home = homedir();
   const words = new Set<string>();
@@ -62,9 +65,6 @@ function forbiddenSpellings(): string[] {
     if (below === "" || below.startsWith("..")) continue;
     strings.add(below);
     strings.add(slug(below));
-    for (const part of below.split(sep)) {
-      if (part !== basename(checkout) && part.length >= 3) words.add(part);
-    }
   }
   return [
     ...[...strings].map((text) => escapeRegExp(text)),

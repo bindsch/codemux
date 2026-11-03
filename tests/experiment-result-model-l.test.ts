@@ -23,7 +23,7 @@ test.each([
     spyOn(adapter, "prepareRun").mockReturnValue({ experimentRecording: "/synthetic/recording.jsonl" }),
     spyOn(adapter, "getRunEnv").mockReturnValue({}),
     spyOn(adapter, "buildRunCommand").mockReturnValue(["synthetic"]),
-    spyOn(adapter, "cleanupRun").mockImplementation(() => {}),
+    spyOn(adapter, "cleanupRun").mockImplementation(async () => {}),
     spyOn(runtime, "assertHarnessSupported").mockResolvedValue("2.1.280"),
     spyOn(runtime, "runSandboxedWithStdin").mockRejectedValue(new Error("synthetic capture failure")),
   ];

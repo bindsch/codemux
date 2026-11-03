@@ -33,6 +33,8 @@
  *   asknumeric — the same approval under a numeric JSON-RPC id: the
  *                reply must echo the id numerically to correlate
  *   askpatch   — a fileChange approval; same continuation rule
+ *   askperms   — a permissions approval; the reply echoes the granted
+ *                subset, or an empty object when declined
  *   wait       — one commentary message, then nothing until steered or
  *                interrupted
  *   steer      — waits for the steer request, then answers with the
@@ -108,16 +110,24 @@
  * With FAKE_TURNSTART_DELAY=<ms> the turn/start response is delayed by a
  * timer, so steers sent right behind the user line buffer in codemux
  * until it lands (review live14).
+ *
+ * The scenario bodies live in fake-codex-app-server-parts/scenarios.ts,
+ * the wire writers and shared state in ...-parts/wire.ts, the item and
+ * approval emitters in ...-parts/items.ts, and the request handlers in
+ * ...-parts/requests.ts; this file owns the scenario switch and the
+ * process lifecycle.
  */
 
-import { mkdirSync, appendFileSync } from "node:fs";
-import { join } from "node:path";
-
-const stateDir = process.env.FAKE_STATE_DIR ?? "/tmp/fake-codex-app-server";
-mkdirSync(stateDir, { recursive: true });
-const record = (name: string, value: unknown): void => {
-  appendFileSync(join(stateDir, name), `${JSON.stringify(value)}\n`);
-};
+import * as scenarios from "./fake-codex-app-server-parts/scenarios.js";
+import { THREAD_ID, notify, record, respond, respondError, state, stateDir } from "./fake-codex-app-server-parts/wire.js";
+import { usage } from "./fake-codex-app-server-parts/items.js";
+import {
+  handleDecisionResponse,
+  handleInitialize,
+  handleInterrupt,
+  handleSteer,
+  startThread,
+} from "./fake-codex-app-server-parts/requests.js";
 
 const args = process.argv.slice(2);
 
@@ -132,413 +142,103 @@ record("argv.jsonl", { args, pid: process.pid });
 // un-overridden spawn has none).
 record("env.jsonl", { codexHome: process.env.CODEX_HOME ?? null, pid: process.pid });
 
-// FAKE_THREAD_ID bends the id the fake starts (review live16: an id
-// `--resume` would refuse must never reach the registry).
-const THREAD_ID = process.env.FAKE_THREAD_ID ?? "0123456789abcdef";
-const FAKE_CWD = process.env.FAKE_CWD ?? process.cwd();
-
-const write = (value: unknown): void => {
-  process.stdout.write(`${JSON.stringify(value)}\n`);
-};
-const respond = (id: unknown, result: unknown): void => {
-  write({ id, result });
-};
-const respondError = (id: unknown, message: string): void => {
-  write({ id, error: { code: -1, message } });
-};
-const notify = (method: string, params: Record<string, unknown>): void => {
-  write({ method, params });
-};
-const serverRequest = (
-  method: string,
-  id: string | number,
-  params: Record<string, unknown>
-): void => {
-  write({ method, id, params });
-};
-
-let turnCounter = 0;
-let currentTurn: string | null = null;
-let currentScenario = "";
-/** The approval waiting on a decision response, and the turn it froze.
- * The id keeps its wire type: numeric ids must be answered numerically. */
-let pendingApproval: {
-  id: string | number;
-  kind: "command" | "patch";
-  callId: string;
-  command: string;
-  turnId: string;
-} | null = null;
-// FAKE_SIGTERM_PERSIST=ask state: the drain-window approval is NOT
-// tracked in pendingApproval — resumeAfterApproval would complete the
-// turn "completed", while the held end-interrupt must complete it
-// "interrupted" once the decline lands.
-let drainApprovalPending = false;
-let heldInterruptId: string | number | undefined;
-// FAKE_HOLD_TURNSTART=1 state: the turn/start request held until the
-// shutdown SIGTERM releases it inside the drain window.
-let heldTurnStart: { id: unknown; params: Record<string, unknown> } | null = null;
-// staleinterrupt state: the interrupt whose response is held until a
-// later interrupt flushes the rejection first.
-let staleInterruptId: string | number | undefined;
-// FAKE_STALL_INIT=release/rejectrelease state: the initialize held until
-// the shutdown SIGTERM answers it inside codemux's drain window.
-let heldInitId: unknown = undefined;
-// laggard state: the completed turn whose stragglers the next
-// turn/start releases.
-let laggardTurnId: string | null = null;
-// Turn starts to let pass before the laggard's stragglers go out.
-let laggardSkip = 0;
-/** Steer texts the current wait/steer turn has absorbed. */
-const steeredTexts: string[] = [];
-
-const usage = (input: number, cached: number, cacheWrite: number, output: number) => ({
-  totalTokens: input + output,
-  inputTokens: input,
-  cachedInputTokens: cached,
-  cacheWriteInputTokens: cacheWrite,
-  outputTokens: output,
-  reasoningOutputTokens: 0,
-});
-
-const itemParams = (turnId: string, item: Record<string, unknown>) => ({
-  threadId: THREAD_ID,
-  turnId,
-  ...item,
-});
-
-const agentMessageCompleted = (turnId: string, id: string, text: string, phase = "final_answer"): void => {
-  notify("item/completed", itemParams(turnId, {
-    completedAtMs: Date.now(),
-    item: { type: "agentMessage", id, text, phase, memoryCitation: null, delivery: null, questions: null },
-  }));
-};
-
-const completeTurn = (turnId: string, status: string, error: { message: string } | null = null): void => {
-  currentTurn = null;
-  currentScenario = "";
-  notify("turn/completed", {
-    threadId: THREAD_ID,
-    turn: { id: turnId, items: [], itemsView: "notLoaded", status, error },
-  });
-};
-
-/** A commandExecution approval request under any JSON-RPC id type. The
- * decision list is a parameter: the acceptless scenario sends one without
- * a plain "accept" (review live15). */
-const askApproval = (
-  turnId: string,
-  id: string | number,
-  callId: string,
-  command: string,
-  availableDecisions: string[] = ["accept", "decline", "cancel"]
-): void => {
-  notify("item/started", itemParams(turnId, {
-    startedAtMs: Date.now(),
-    item: { type: "commandExecution", id: callId, command, cwd: FAKE_CWD, status: "inProgress", commandActions: [], aggregatedOutput: "", exitCode: null, durationMs: null },
-  }));
-  pendingApproval = { id, kind: "command", callId, command, turnId };
-  serverRequest("item/commandExecution/requestApproval", id, {
-    threadId: THREAD_ID,
-    turnId,
-    callId,
-    command,
-    cwd: FAKE_CWD,
-    availableDecisions,
-  });
-};
-
 const runScenario = (turnId: string, scenario: string): void => {
   switch (scenario) {
-    case "basic": {
-      const itemId = "msg-basic";
-      notify("item/started", itemParams(turnId, {
-        startedAtMs: Date.now(),
-        item: { type: "agentMessage", id: itemId, text: "", phase: "final_answer", memoryCitation: null, delivery: null, questions: null },
-      }));
-      notify("item/agentMessage/delta", itemParams(turnId, { itemId, delta: "Hel" }));
-      notify("item/agentMessage/delta", itemParams(turnId, { itemId, delta: "lo." }));
-      agentMessageCompleted(turnId, itemId, "Hello.");
-      notify("thread/tokenUsage/updated", {
-        threadId: THREAD_ID,
-        turnId,
-        tokenUsage: { total: usage(18974, 12288, 0, 5), last: usage(18974, 12288, 0, 5), modelContextWindow: 258400 },
-      });
-      completeTurn(turnId, "completed");
+    case "basic":
+      scenarios.basic(turnId);
       return;
-    }
-    case "lateusage": {
-      agentMessageCompleted(turnId, "msg-late", "Late.");
-      completeTurn(turnId, "completed");
-      notify("thread/tokenUsage/updated", {
-        threadId: THREAD_ID,
-        turnId,
-        tokenUsage: { total: usage(1000, 0, 0, 7), last: usage(1000, 0, 0, 7), modelContextWindow: 258400 },
-      });
+    case "lateusage":
+      scenarios.lateusage(turnId);
       return;
-    }
     case "laggard":
-    case "laggard2": {
-      agentMessageCompleted(turnId, "msg-laggard", "Laggard.");
-      completeTurn(turnId, "completed");
-      laggardTurnId = turnId;
-      laggardSkip = scenario === "laggard2" ? 1 : 0;
+    case "laggard2":
+      scenarios.laggard(turnId, scenario);
       return;
-    }
-    case "tools": {
-      notify("item/started", itemParams(turnId, {
-        startedAtMs: Date.now(),
-        item: { type: "commandExecution", id: "cmd-1", command: "echo hi", cwd: FAKE_CWD, status: "inProgress", commandActions: [], aggregatedOutput: "", exitCode: null, durationMs: null },
-      }));
-      notify("item/completed", itemParams(turnId, {
-        completedAtMs: Date.now(),
-        item: { type: "commandExecution", id: "cmd-1", command: "echo hi", cwd: FAKE_CWD, status: "completed", commandActions: [], aggregatedOutput: "hi\n", exitCode: 0, durationMs: 12 },
-      }));
-      notify("item/completed", itemParams(turnId, {
-        completedAtMs: Date.now(),
-        item: {
-          type: "fileChange",
-          id: "fc-1",
-          status: "completed",
-          changes: [
-            { diff: "+new\n", kind: { type: "add" }, path: join(FAKE_CWD, "new.txt") },
-            { diff: "-a\n+b\n", kind: { type: "update" }, path: join(FAKE_CWD, "file.txt") },
-            { diff: "", kind: { type: "delete" }, path: join(FAKE_CWD, "old.txt") },
-          ],
-        },
-      }));
-      agentMessageCompleted(turnId, "msg-tools", "Edited.");
-      notify("thread/tokenUsage/updated", {
-        threadId: THREAD_ID,
-        turnId,
-        tokenUsage: { total: usage(100, 0, 0, 10), last: usage(100, 0, 0, 10), modelContextWindow: 258400 },
-      });
-      notify("thread/tokenUsage/updated", {
-        threadId: THREAD_ID,
-        turnId,
-        tokenUsage: { total: usage(150, 20, 5, 15), last: usage(50, 20, 5, 5), modelContextWindow: 258400 },
-      });
-      completeTurn(turnId, "completed");
+    case "tools":
+      scenarios.tools(turnId);
       return;
-    }
     case "ask":
-      askApproval(turnId, "appr-1", "cmd-ask", "rm -rf /");
+      scenarios.ask(turnId);
       return;
     case "asknumeric":
-      askApproval(turnId, 42, "cmd-num", "echo numeric");
+      scenarios.asknumeric(turnId);
       return;
     case "dupask":
-      // Two approvals under one JSON-RPC id: a grammar violation whose
-      // second line must still go out raw (review live21).
-      askApproval(turnId, "appr-dup", "cmd-dup-1", "echo one");
-      askApproval(turnId, "appr-dup", "cmd-dup-2", "echo two");
+      scenarios.dupask(turnId);
       return;
-    case "askpatch": {
-      pendingApproval = { id: "appr-2", kind: "patch", callId: "fc-ask", command: "", turnId };
-      serverRequest("item/fileChange/requestApproval", "appr-2", {
-        threadId: THREAD_ID,
-        turnId,
-        callId: "fc-ask",
-        changes: [{ diff: "-a\n+b\n", kind: { type: "update" }, path: join(FAKE_CWD, "file.txt") }],
-        cwd: FAKE_CWD,
-      });
+    case "askpatch":
+      scenarios.askpatch(turnId);
       return;
-    }
+    case "askperms":
+      scenarios.askperms(turnId);
+      return;
     case "wait":
     case "refusesteer":
-    case "refusehold": {
-      notify("item/started", itemParams(turnId, {
-        startedAtMs: Date.now(),
-        item: { type: "agentMessage", id: "msg-wait", text: "", phase: "commentary", memoryCitation: null, delivery: null, questions: null },
-      }));
-      agentMessageCompleted(turnId, "msg-wait", "Working...", "commentary");
+    case "refusehold":
+      scenarios.wait(turnId);
       return;
-    }
-    case "deaf": {
-      notify("item/started", itemParams(turnId, {
-        startedAtMs: Date.now(),
-        item: { type: "agentMessage", id: "msg-deaf", text: "", phase: "commentary", memoryCitation: null, delivery: null, questions: null },
-      }));
-      agentMessageCompleted(turnId, "msg-deaf", "Working...", "commentary");
+    case "deaf":
+      scenarios.deaf(turnId);
       return;
-    }
-    case "refuseinterrupt": {
-      notify("item/started", itemParams(turnId, {
-        startedAtMs: Date.now(),
-        item: { type: "agentMessage", id: "msg-refuse", text: "", phase: "commentary", memoryCitation: null, delivery: null, questions: null },
-      }));
-      agentMessageCompleted(turnId, "msg-refuse", "Uninterruptible...", "commentary");
+    case "refuseinterrupt":
+      scenarios.refuseinterrupt(turnId);
       return;
-    }
-    case "failoninterrupt": {
-      // Held like wait, but the interrupt completes the turn FAILED with
-      // an error message: the harness's own failure must outrank the
-      // driver's interrupt label (review live11).
-      notify("item/started", itemParams(turnId, {
-        startedAtMs: Date.now(),
-        item: { type: "agentMessage", id: "msg-failint", text: "", phase: "commentary", memoryCitation: null, delivery: null, questions: null },
-      }));
-      agentMessageCompleted(turnId, "msg-failint", "Failing...", "commentary");
+    case "failoninterrupt":
+      scenarios.failoninterrupt(turnId);
       return;
-    }
-    case "staleinterrupt": {
-      // Held like wait. The interrupt is never answered here: the turn
-      // completes on its own first (the timer in the turn/interrupt
-      // branch), and the rejection is flushed only when a LATER
-      // interrupt arrives — the stale-rejection shape the driver must
-      // not let clear the next turn's interrupt state (review live11).
-      notify("item/started", itemParams(turnId, {
-        startedAtMs: Date.now(),
-        item: { type: "agentMessage", id: "msg-stale", text: "", phase: "commentary", memoryCitation: null, delivery: null, questions: null },
-      }));
-      agentMessageCompleted(turnId, "msg-stale", "Working...", "commentary");
+    case "staleinterrupt":
+      scenarios.staleinterrupt(turnId);
       return;
-    }
-    case "latecomplete": {
-      // Held like wait. The interrupt races a turn the server completes
-      // cleanly anyway: the interrupt response is held, the turn
-      // completes "completed" on its own, and the rejection lands only
-      // afterwards — the shape the driver must report by the wire's own
-      // verdict, never recast interrupted from its pending interrupt
-      // (review live14).
-      notify("item/started", itemParams(turnId, {
-        startedAtMs: Date.now(),
-        item: { type: "agentMessage", id: "msg-late", text: "", phase: "commentary", memoryCitation: null, delivery: null, questions: null },
-      }));
-      agentMessageCompleted(turnId, "msg-late", "Working...", "commentary");
+    case "latecomplete":
+      scenarios.latecomplete(turnId);
       return;
-    }
-    case "asklose": {
-      // The approval surfaces, then the app-server ends the turn by
-      // itself while the decision is still out: the driver must
-      // supersede the approval rather than leave it pending (review
-      // live11).
-      askApproval(turnId, "appr-lose", "cmd-lose", "echo lose");
-      setTimeout(() => {
-        if (currentTurn !== null) {
-          const turnId2 = currentTurn;
-          agentMessageCompleted(turnId2, "msg-asklose", "Ended by itself.");
-          completeTurn(turnId2, "completed");
-        }
-      }, 200);
+    case "asklose":
+      scenarios.asklose(turnId);
       return;
-    }
     case "steer":
-      // Nothing until the steer request lands.
+      scenarios.steer();
       return;
     case "usagewait":
-      notify("thread/tokenUsage/updated", {
-        threadId: THREAD_ID,
-        turnId,
-        tokenUsage: { total: usage(300, 0, 0, 11), last: usage(300, 0, 0, 11), modelContextWindow: 258400 },
-      });
+      scenarios.usagewait(turnId);
       return;
     case "failstart":
-      // The turn/start response itself is an error; the driver fails the
-      // open turn. (Handled at the request site, which has the id.)
+      scenarios.failstart();
       return;
     case "crash":
-      agentMessageCompleted(turnId, "msg-crash", "About to crash.");
-      setTimeout(() => process.exit(1), 100);
+      scenarios.crash(turnId);
       return;
     case "garbage":
-      process.stdout.write("this is not json\n");
+      scenarios.garbage();
       return;
-    case "rawnewline": {
-      // One frame, split by a raw newline inside the delta string: the
-      // driver must buffer the first line and rejoin with an escaped
-      // newline to parse the whole frame.
-      process.stdout.write(
-        `{"method":"item/agentMessage/delta","params":{"threadId":"${THREAD_ID}","turnId":"${turnId}","itemId":"msg-raw","delta":"split\n`
-      );
-      process.stdout.write(`line"} }\n`);
-      agentMessageCompleted(turnId, "msg-raw", "split\nline");
-      completeTurn(turnId, "completed");
+    case "rawnewline":
+      scenarios.rawnewline(turnId);
       return;
-    }
     case "fragment":
-      // The stream ends inside a raw-newline fragment: half a delta frame,
-      // no newline, then the process exits (review live25).
-      process.stdout.write(
-        `{"method":"item/agentMessage/delta","params":{"threadId":"${THREAD_ID}","turnId":"${turnId}","itemId":"msg-cut","delta":"cut off`
-      );
-      setTimeout(() => process.exit(0), 100);
+      scenarios.fragment(turnId);
       return;
     case "badthread":
-      notify("item/started", {
-        threadId: "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb",
-        turnId,
-        startedAtMs: Date.now(),
-        item: { type: "agentMessage", id: "msg-foreign", text: "", phase: "final_answer" },
-      });
+      scenarios.badthread(turnId);
       return;
     case "secondthread":
-      notify("thread/started", { thread: { id: "99999999-8888-7777-6666-555555555555" } });
+      scenarios.secondthread();
       return;
     case "unknownreq":
-      serverRequest("fs/readFileText", "req-x", { path: "/etc/hosts" });
-      agentMessageCompleted(turnId, "msg-unknown", "Went on.");
-      completeTurn(turnId, "completed");
+      scenarios.unknownreq(turnId);
       return;
     case "badapproval":
-      // No threadId/turnId: the driver cannot judge it and must decline.
-      serverRequest("item/commandExecution/requestApproval", "appr-bad", {
-        callId: "cmd-bad",
-        command: "true",
-        cwd: FAKE_CWD,
-      });
-      agentMessageCompleted(turnId, "msg-badapproval", "Declined and moved on.");
-      completeTurn(turnId, "completed");
+      scenarios.badapproval(turnId);
       return;
     case "acceptless":
-      // Review live15: no plain "accept" in the decision list — codemux
-      // never answers acceptForSession, so an allow cannot be delivered
-      // and must be answered deny on the wire.
-      askApproval(turnId, "appr-nos", "cmd-nos", "echo acceptless", ["acceptForSession", "decline"]);
+      scenarios.acceptless(turnId);
       return;
     case "refusalless":
-      askApproval(turnId, "appr-norefuse", "cmd-norefuse", "echo norefuse", ["accept", "acceptForSession"]);
+      scenarios.refusalless(turnId);
       return;
     case "badstatus":
-      // Review live15: turn/completed with a status the driver does not
-      // recognize — the turn must complete failed, not stay open.
-      agentMessageCompleted(turnId, "msg-badstatus", "Stalled?");
-      completeTurn(turnId, "expired");
+      scenarios.badstatus(turnId);
       return;
     default:
-      agentMessageCompleted(turnId, "msg-default", "Done.");
-      completeTurn(turnId, "completed");
-  }
-};
-
-const startThread = (id: unknown, announce: boolean): void => {
-  if (process.env.FAKE_ANNOUNCE_OTHER_THREAD === "1" && announce) {
-    // Review live15: the notification names a DIFFERENT id first — the
-    // driver adopts and announces it — and the thread/start response then
-    // contradicts it. One session cannot run under two ids: the mismatch
-    // must fail closed naming both.
-    notify("thread/started", { thread: { id: "99999999-8888-7777-6666-555555555555" } });
-    respond(id, { thread: { id: THREAD_ID }, model: "gpt-fake" });
-    return;
-  }
-  // FAKE_RESUME_WRONG_THREAD=1: a thread/resume answered with a
-  // DIFFERENT thread id than the one requested — a server that resumed
-  // into another thread. No thread/started follows (the real server
-  // does not send one on resume), so the wrong id rides the response
-  // alone and the driver must reject it (review live12).
-  const answeredId =
-    !announce && process.env.FAKE_RESUME_WRONG_THREAD === "1"
-      ? "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb"
-      : THREAD_ID;
-  respond(id, { thread: { id: answeredId }, model: "gpt-fake" });
-  // A fresh thread/start is followed by thread/started — the shape the
-  // recorded fixture pins. thread/resume is NOT: the reference clients
-  // of the same app-server validate the response's thread.id and never
-  // wait for a notification there (review live11's resume probe).
-  // FAKE_RESUME_ANNOUNCES=1 models the opposite server for the benign
-  // late-notification passthrough test.
-  if (announce || process.env.FAKE_RESUME_ANNOUNCES === "1") {
-    notify("thread/started", { thread: { id: THREAD_ID } });
+      scenarios.defaultArm(turnId);
   }
 };
 
@@ -546,10 +246,10 @@ const handleTurnStart = (id: unknown, params: Record<string, unknown>): void => 
   const input = Array.isArray(params["input"]) ? (params["input"] as Record<string, unknown>[]) : [];
   const text = typeof input[0]?.["text"] === "string" ? (input[0]["text"] as string) : "";
   const scenario = /^scenario:([a-z0-9-]+)/.exec(text)?.[1] ?? "basic";
-  turnCounter += 1;
-  const turnId = `turn-fake-${turnCounter}`;
-  currentTurn = turnId;
-  currentScenario = scenario;
+  state.turnCounter += 1;
+  const turnId = `turn-fake-${state.turnCounter}`;
+  state.currentTurn = turnId;
+  state.currentScenario = scenario;
   if (scenario === "failstart") {
     respondError(id, "the turn was refused");
     return;
@@ -573,7 +273,7 @@ const handleTurnStart = (id: unknown, params: Record<string, unknown>): void => 
     // harness turn id is still unknown — the response lands inside the
     // drain, which is where the buffered end-interrupt must ride it
     // (review live11, major 1's window).
-    heldTurnStart = { id, params };
+    state.heldTurnStart = { id, params };
     return;
   }
   const turnStartDelayMs = Number(process.env.FAKE_TURNSTART_DELAY ?? "0");
@@ -597,12 +297,12 @@ const releaseTurnStart = (id: unknown, scenario: string, turnId: string): void =
     threadId: THREAD_ID,
     turn: { id: turnId, items: [], itemsView: "notLoaded", status: "inProgress", error: null, startedAt: Math.floor(Date.now() / 1000), completedAt: null, durationMs: null },
   });
-  if (laggardTurnId !== null && laggardSkip > 0) {
-    laggardSkip -= 1;
-  } else if (laggardTurnId !== null) {
+  if (state.laggardTurnId !== null && state.laggardSkip > 0) {
+    state.laggardSkip -= 1;
+  } else if (state.laggardTurnId !== null) {
     // The laggard turn's stragglers, after this turn is named.
-    const late = laggardTurnId;
-    laggardTurnId = null;
+    const late = state.laggardTurnId;
+    state.laggardTurnId = null;
     notify("item/agentMessage/delta", { threadId: THREAD_ID, turnId: late, itemId: "msg-laggard", delta: "straggler" });
     notify("thread/tokenUsage/updated", {
       threadId: THREAD_ID,
@@ -611,41 +311,6 @@ const releaseTurnStart = (id: unknown, scenario: string, turnId: string): void =
     });
   }
   runScenario(turnId, scenario);
-};
-
-/** Resume the turn an approval froze, once its decision landed. */
-const resumeAfterApproval = (decision: string): void => {
-  const approval = pendingApproval;
-  pendingApproval = null;
-  if (approval === null || currentTurn === null) return;
-  if (approval.kind === "command") {
-    notify("item/completed", itemParams(approval.turnId, {
-      completedAtMs: Date.now(),
-      item: {
-        type: "commandExecution",
-        id: approval.callId,
-        command: approval.command,
-        cwd: FAKE_CWD,
-        status: decision === "accept" ? "completed" : "declined",
-        commandActions: [],
-        aggregatedOutput: decision === "accept" ? "gone\n" : "",
-        exitCode: decision === "accept" ? 0 : null,
-        durationMs: 5,
-      },
-    }));
-  } else if (decision === "accept") {
-    notify("item/completed", itemParams(approval.turnId, {
-      completedAtMs: Date.now(),
-      item: {
-        type: "fileChange",
-        id: "fc-ask",
-        status: "completed",
-        changes: [{ diff: "-a\n+b\n", kind: { type: "update" }, path: join(FAKE_CWD, "file.txt") }],
-      },
-    }));
-  }
-  agentMessageCompleted(approval.turnId, "msg-ask", decision === "accept" ? "Allowed." : "Denied.");
-  completeTurn(approval.turnId, "completed");
 };
 
 const handleLine = (line: string): void => {
@@ -667,31 +332,7 @@ const handleLine = (line: string): void => {
     record("requests.jsonl", { id, method, params });
     switch (method) {
       case "initialize":
-        if (process.env.FAKE_STALL_INIT === "1") {
-          // Recorded above, never answered: the handshake stalls.
-          return;
-        }
-        if (
-          process.env.FAKE_STALL_INIT === "release" ||
-          process.env.FAKE_STALL_INIT === "rejectrelease"
-        ) {
-          // Recorded above, held: the shutdown SIGTERM answers it (the
-          // handler at the bottom), so the response lands inside codemux's
-          // drain window (review live15).
-          heldInitId = id;
-          return;
-        }
-        respond(
-          // FAKE_STRING_ID_RESPONSE: echo the id as a string — a reply no
-          // numbered request ever made (review live15).
-          process.env.FAKE_STRING_ID_RESPONSE === "1" ? String(id) : id,
-          {
-            userAgent: `codemux-fake/0.159.3 (${process.platform}; ${process.arch})`,
-            codexHome: process.env.FAKE_CODEX_HOME ?? `${stateDir}/codex-home`,
-            platformFamily: "unix",
-            platformOs: process.platform === "darwin" ? "macos" : "linux",
-          }
-        );
+        handleInitialize(id);
         return;
       case "notifications/initialized":
         return;
@@ -702,155 +343,12 @@ const handleLine = (line: string): void => {
       case "turn/start":
         handleTurnStart(id, params);
         return;
-      case "turn/steer": {
-        if (currentScenario === "refusesteer") {
-          record("steers.jsonl", { expectedTurnId: params["expectedTurnId"], refused: true });
-          respondError(id, "the turn already completed");
-          return;
-        }
-        respond(id, {});
-        const input = Array.isArray(params["input"]) ? (params["input"] as Record<string, unknown>[]) : [];
-        for (const piece of input) {
-          if (typeof piece["text"] === "string") steeredTexts.push(piece["text"] as string);
-        }
-        record("steers.jsonl", { expectedTurnId: params["expectedTurnId"], texts: [...steeredTexts] });
-        if (currentTurn !== null && (currentScenario === "steer" || currentScenario === "wait")) {
-          agentMessageCompleted(currentTurn, "msg-steer", `Steered: ${steeredTexts.join(" | ")}`);
-          completeTurn(currentTurn, "completed");
-        }
+      case "turn/steer":
+        handleSteer(id, params);
         return;
-      }
-      case "turn/interrupt": {
-        record("interrupts.jsonl", { turnId: params["turnId"] });
-        if (currentScenario === "refusehold") {
-          respondError(id, "the turn cannot be interrupted");
-          return;
-        }
-        if (currentScenario === "refuseinterrupt") {
-          // The rejection the driver must survive: the interrupt did not
-          // happen, and the turn's own completion is the truth of it.
-          respondError(id, "the turn cannot be interrupted");
-          if (currentTurn !== null) {
-            const turnId = currentTurn;
-            pendingApproval = null;
-            agentMessageCompleted(turnId, "msg-refuse", "Refused and finished.");
-            completeTurn(turnId, "completed");
-          }
-          return;
-        }
-        if (currentScenario === "deaf" || currentScenario === "usagewait") {
-          // Accepted and ignored: the turn stays open (review live17).
-          respond(id, {});
-          return;
-        }
-        if (currentScenario === "failoninterrupt") {
-          // The interrupt is accepted, and the turn completes FAILED with
-          // an error message: the harness's own failure must outrank the
-          // driver's interrupt label (review live11).
-          respond(id, {});
-          if (currentTurn !== null) {
-            const turnId = currentTurn;
-            pendingApproval = null;
-            agentMessageCompleted(turnId, "msg-failint", "Failing.", "commentary");
-            completeTurn(turnId, "failed", { message: "rate limit exceeded" });
-          }
-          return;
-        }
-        if (currentScenario === "latecomplete") {
-          // Hold the response: the turn completes cleanly on its own
-          // (the driver sees a "completed" wire status while its own
-          // interrupt is still in flight — a --turn-timeout's or a
-          // caller's), and the interrupt is only then rejected, too late
-          // to change what the turn already said (review live14).
-          const heldId = id;
-          setTimeout(() => {
-            if (currentTurn !== null) {
-              const turnId = currentTurn;
-              pendingApproval = null;
-              agentMessageCompleted(turnId, "msg-late", "Finished anyway.");
-              completeTurn(turnId, "completed");
-            }
-            respondError(heldId, "the turn is no longer running");
-          }, 150);
-          return;
-        }
-        if (currentScenario === "staleinterrupt") {
-          // Hold the response: the turn completes on its own (the driver
-          // sees its own interrupted completion with the interrupt still
-          // pending), and the rejection is flushed only by the NEXT
-          // interrupt request — the stale rejection the driver must not
-          // let clear that next turn's interrupt state (review live11).
-          staleInterruptId = typeof id === "string" || typeof id === "number" ? id : undefined;
-          setTimeout(() => {
-            if (currentTurn !== null) {
-              const turnId = currentTurn;
-              pendingApproval = null;
-              completeTurn(turnId, "interrupted");
-            }
-          }, 150);
-          return;
-        }
-        if (staleInterruptId !== undefined) {
-          // A later interrupt arrived: flush the stale rejection first,
-          // then answer this one normally.
-          respondError(staleInterruptId, "the turn cannot be interrupted");
-          staleInterruptId = undefined;
-        }
-        if (process.env.FAKE_SIGTERM_PERSIST === "ask" && currentTurn !== null) {
-          // The end-interrupt arrives after codemux's finish() began
-          // (the driver writes it inside the end path), so an approval
-          // the app-server still had in flight surfaces HERE — inside
-          // the shutdown drain, after finish() declined everything it
-          // found pending. Ask it and hold the interrupt response plus
-          // the turn completion until the decision comes back; the
-          // live8 regression pins that the driver declines this one
-          // rather than leaving it pending forever. The turn must stay
-          // open while the approval is out (the classifier requires the
-          // turn id to match the driver's open harness turn).
-          drainApprovalPending = true;
-          heldInterruptId = typeof id === "string" || typeof id === "number" ? id : undefined;
-          const turnId = currentTurn;
-          askApproval(turnId, "appr-drain", "cmd-drain", "echo drain");
-          return;
-        }
-        if (
-          process.env.FAKE_SIGTERM_PERSIST === "exit42" ||
-          process.env.FAKE_SIGTERM_PERSIST === "exit143"
-        ) {
-          // The app-server dies without ever answering the end-interrupt:
-          // the turn stays open and the process exits nonzero inside the
-          // grace window. 42 is the live9 shape the driver must report as
-          // a failure; 143 is the wrapper answering the SIGTERM with an
-          // exit code (the scode spelling), which must NOT be read as one.
-          // The interrupt above is recorded either way, so the test can
-          // pin that it was received and left unanswered.
-          return;
-        }
-        respond(id, {});
-        if (currentTurn !== null) {
-          const turnId = currentTurn;
-          pendingApproval = null;
-          // Under FAKE_SIGTERM_PERSIST the interrupt lands inside the
-          // shutdown grace window; a last usage update rides the
-          // completion so the drain tests can pin that it is folded.
-          if (process.env.FAKE_SIGTERM_PERSIST === "1") {
-            notify("thread/tokenUsage/updated", {
-              threadId: THREAD_ID,
-              turnId,
-              tokenUsage: { total: usage(14, 0, 0, 2), last: usage(14, 0, 0, 2), modelContextWindow: 258400 },
-            });
-          }
-          completeTurn(turnId, "interrupted");
-          if (process.env.FAKE_HOLD_TURNSTART === "1") {
-            // The held turn/start was released by the shutdown SIGTERM
-            // and the buffered end-interrupt completed the turn inside
-            // the drain; exit cleanly once the completion is on the
-            // wire (the grace window's SIGKILL is the backstop).
-            setTimeout(() => process.exit(0), 50);
-          }
-        }
+      case "turn/interrupt":
+        handleInterrupt(id, params);
         return;
-      }
       default:
         // A method the fake does not know: nothing codemux should send.
         respondError(id, `the fake does not implement ${method}`);
@@ -860,26 +358,7 @@ const handleLine = (line: string): void => {
   // A response to one of the fake's server requests: the approval
   // decision (or the -32601 error answer to an unimplemented request).
   if (id !== undefined) {
-    const result = (typeof frame["result"] === "object" && frame["result"] !== null
-      ? frame["result"]
-      : {}) as Record<string, unknown>;
-    const error = frame["error"];
-    record("decisions.jsonl", { id, result, error: error ?? null });
-    if (drainApprovalPending && String(id) === "appr-drain") {
-      // The decline the drain-window approval owed: the command never
-      // runs, and the held interrupt is answered and the turn completed
-      // exactly as the plain persist path does.
-      drainApprovalPending = false;
-      pendingApproval = null;
-      const turnId = currentTurn;
-      respond(heldInterruptId, {});
-      if (turnId !== null) completeTurn(turnId, "interrupted");
-      return;
-    }
-    if (pendingApproval !== null && String(id) === String(pendingApproval.id)) {
-      const decision = typeof result["decision"] === "string" ? result["decision"] : "decline";
-      resumeAfterApproval(decision);
-    }
+    handleDecisionResponse(frame);
   }
 };
 
@@ -951,9 +430,9 @@ if (
   process.env.FAKE_STALL_INIT === "rejectrelease"
 ) {
   process.on("SIGTERM", () => {
-    if (heldInitId !== undefined) {
-      const id = heldInitId;
-      heldInitId = undefined;
+    if (state.heldInitId !== undefined) {
+      const id = state.heldInitId;
+      state.heldInitId = undefined;
       if (process.env.FAKE_STALL_INIT === "rejectrelease") {
         respondError(id, "the server changed its mind");
       } else {
@@ -976,10 +455,10 @@ if (
 // anything stalls.
 if (process.env.FAKE_HOLD_TURNSTART === "1") {
   process.on("SIGTERM", () => {
-    if (heldTurnStart !== null) {
-      const held = heldTurnStart;
-      heldTurnStart = null;
-      releaseTurnStart(held.id, currentScenario, currentTurn ?? "turn-fake-held");
+    if (state.heldTurnStart !== null) {
+      const held = state.heldTurnStart;
+      state.heldTurnStart = null;
+      releaseTurnStart(held.id, state.currentScenario, state.currentTurn ?? "turn-fake-held");
     }
     setTimeout(() => process.exit(0), 1900);
   });

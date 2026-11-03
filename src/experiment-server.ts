@@ -1,7 +1,7 @@
 import { createTerminationTarget, type TerminationTarget } from "./process-tree.js";
 import { FORCE_KILL_DELAY_MS, PIPE_GIVE_UP_MS, signalProcess } from "./process-runner.js";
 import type { ExperimentSpec } from "./experiment-mcp.js";
-import { resolveTrustedExecutable } from "./executable-security.js";
+import { resolveTrustedExecutable, assertExecutablesUnchanged, executableCheck } from "./executable-security.js";
 import { ExperimentFailure, ExperimentFailureCode, experimentFailure } from "./experiment-records.js";
 
 export type JsonObject = Record<string, any>;
@@ -39,6 +39,12 @@ export class ExperimentServer {
       env[name] = value;
     }
     const command = resolveTrustedExecutable(this.spec.command, "experiment MCP server", this.cwd);
+    // This spawn's own resolution (review round 13, edges 2): the re-stat
+    // compares this identity alone, never one another launch in this
+    // process recorded for the same path.
+    const commandCheck = executableCheck(command);
+    assertExecutablesUnchanged([command], "experiment MCP server", undefined,
+      commandCheck === null ? undefined : [commandCheck]);
     const proc = Bun.spawn([command, ...this.spec.args], {
       cwd: this.cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe", detached: true,
     });

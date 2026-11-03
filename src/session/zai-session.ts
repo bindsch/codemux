@@ -1,3 +1,4 @@
+import { featureFloor } from "../harness-contracts.js";
 /**
  * The zai session wiring (design §4.7, plan step 7): the Z.AI mode of
  * the claude-family path. Zai is not a second harness — it is the same
@@ -19,7 +20,6 @@
 
 import type { SessionCapabilities } from "./protocol.js";
 import {
-  CLAUDE_SESSION_FLOOR,
   buildClaudeSessionCommand,
   claudeSessionCapabilities,
   type ClaudeSessionCommand,
@@ -27,8 +27,9 @@ import {
 
 /** The session-only version floor (§4.3): the claude floor verbatim,
  * because zai sessions run the same installed binary the claude
- * contract probes — one floor, one gate. */
-export const ZAI_SESSION_FLOOR = CLAUDE_SESSION_FLOOR;
+ * contract probes — one floor, one gate. Both values live in
+ * FEATURE_FLOORS (harness-contracts.ts). */
+export const ZAI_SESSION_FLOOR = featureFloor("zai", "sessions");
 
 /** Capability flags for zai sessions (§3.4's "same" column): the
  * claude-family matrix unchanged — a mid-turn `user` line is rejected

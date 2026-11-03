@@ -1,3 +1,6 @@
+---
+read_when: "Checking run envelopes, quotas, the ledger, or usage reporting."
+---
 # Results and usage
 
 ## Run results
@@ -8,8 +11,12 @@ normalization. Claude/Z.AI retain their JSON envelope. Agy normally uses
 `--output-format=json`; its isolation/probe paths use
 `--output-format=stream-json` and normalize the terminal result.
 Codex JSONL is reduced into a codemux-built envelope.
-Kimi selects `--output-format stream-json` for result-json runs and builds
-an envelope from the parsed events and session wire log.
+Kimi selects `--output-format stream-json` on every run and builds
+an envelope from the parsed events and session wire log; plain runs unwrap
+the reply and wire-log usage off the same stream. OpenCode's `--format json`
+event stream — the same wire every plain run folds — becomes a codemux-built
+envelope carrying the folded reply and step usage; the raw event lines are
+never re-emitted, and stdout that never used the wire fails the run.
 
 The codemux-owned block contains:
 
@@ -17,6 +24,7 @@ The codemux-owned block contains:
 {
   "agent": "codex",
   "model": "gpt-5.3-codex",
+  "served_model": "gpt-5.3-codex",
   "labels": {
     "wf": "review",
     "step": "scan"
@@ -60,6 +68,14 @@ and the applicable `model_required`, `model_unavailable`, or `code_mode` code.
 The [failure code table](experiment-mcp.md#failure-codes) defines every code.
 Model is the served model when reported, otherwise the
 selected model, otherwise null. A reported multi-model result has null model.
+`served_model` is the model the provider reported serving the run, and null
+when the harness's wire exposes no provider-reported model: Claude and Z.AI
+report it from their model usage key, Codex when a reroute notice names the
+model (reported, but not evidence that an override was honored — only
+Claude and Z.AI report serve evidence), and Agy,
+OpenCode, and Kimi report null on their pinned wires (Aider has no
+result-JSON envelope at all; OpenCode's run wire carries no model field;
+Kimi's stream JSON and wire log carry none).
 Kimi's selected model includes `CODEMUX_KIMI_PROVIDER_MODEL` when `--model`
 is omitted. A later experiment cleanup failure preserves an already
 normalized model, including Z.AI's default `opus` selection. Codex normalizes its captured reply and reads `--output-last-message` before rollout verification, so a verification failure preserves that reply before private-home cleanup. Experiment failure diagnostics appear once on stderr.
@@ -102,8 +118,9 @@ recorded in `failure` and `run_end` and changes the result to a failure. Kimi in
 
 Every Codex experiment `run_start` records a `catalog_override` boolean. Codex
 override runs also record `catalog_override` with `slug`, `source_path`,
-`source_fetched_at`, `served_models`, `served_bytes`, `removed: ["tool_mode"]`,
-and `requested_only`. The last field is true when the 1 MiB response cap
+`source_fetched_at`, `served_models`, `served_bytes`, `removed: ["tool_mode",
+"experimental_supported_tools.clock", "multi_agent_version",
+"apply_patch_tool_type"]`, and `requested_only`. The last field is true when the 1 MiB response cap
 requires serving only the requested model. A successful fetch records
 `catalog_served` with `client_version` and `bytes`. Catalog `http_request`
 records contain only the method, `path: "/catalog"`, `client_version`,
@@ -135,7 +152,7 @@ Content-first turns wait for a call or successful end and retain their first-con
 `inputSchema` to `parameters` mapping as well as qualified names.
 
 Plain launches also select structured output for Claude/Z.AI, Agy, OpenCode,
-and Codex, then unwrap the reply. OpenCode trims each text part onto its own
+Codex, and Kimi, then unwrap the reply. OpenCode trims each text part onto its own
 line. Codex preserves the final assistant message and appends one newline,
 as its human-mode printer does. Other adapters currently collect plain text
 or their adapter-specific transcript without extracting structured usage;
@@ -154,7 +171,7 @@ Recovered Codex failure envelopes remove only the final completed
 contains that message. Earlier events with identical text remain. The
 serialized envelope stays within 16 MiB, including JSON escapes and the final
 newline. It drops events before truncating the reply with a note.
-Plain Claude and Z.AI experiment capture-limit failures extract the captured result envelope's reply and keep exit 125. Early Claude and Z.AI experiment failure envelopes retain the adapter's effective model, including its configured default. Kimi result JSON always returns an envelope on parsing, session-hint, or wire-log errors. It names the error, preserves complete events before a malformed or truncated line, and reports `failure_code: null` for non-experiment runs.
+Plain Claude and Z.AI experiment capture-limit failures extract the captured result envelope's reply and keep exit 125. Early Claude and Z.AI experiment failure envelopes retain the adapter's effective model, including its configured default. Kimi result JSON always returns an envelope on parsing, session-hint, or wire-log errors. A plain run whose first stdout line is a one-line JSON object carrying a string `type` is read as the stream-json wire (the wire's forward-compatible events are typed), so a plain JSON answer of that shape fails as a broken wire instead of passing through; an untyped JSON value passes through as the answer. It names the error, preserves complete events before a malformed or truncated line, and reports `failure_code: null` for non-experiment runs.
 
 Discarded tool events do not accumulate against retained-output capacity.
 They can still exceed the individual-line limit. For example, many 1 KiB
@@ -195,7 +212,7 @@ never zero. Reported zero remains zero.
 | `cached_input_tokens` | Cache reads and, where reported, cache writes |
 | `output_tokens` | Reported output tokens |
 | `total_tokens` | Sum only when all components are known, or an explicitly reported total |
-| `cost_usd` | Reported dollar cost; never estimated from token prices |
+| `cost_usd` | Reported dollar cost; never estimated from token prices. Claude and Z.AI figures are session-lifetime amounts the harness folded, not per-call bills; the ledger marks them `harness-estimate` |
 
 | Harness | Run usage | Session usage |
 |---|---|---|
@@ -203,7 +220,7 @@ never zero. Reported zero remains zero.
 | Codex | Structured token snapshot, no cost; plain fallback total only | Reported turn tokens and driver-invocation accumulation; no cost |
 | Agy | Input/output/cache-read counts, computed total; no cost | Turn counts and driver-invocation accumulation; no cost |
 | OpenCode | Sum of step usage and reported step costs | Steps summed per turn, turns summed within the driver invocation |
-| Kimi | Result-json sums wire-log usage; no cost. Plain experiment runs also read wire-log usage for the call ledger. Other plain runs report unknown usage | Unknown |
+| Kimi | Result-json and plain runs sum wire-log usage; no cost. A binary that ignores the stream wire keeps its plain text and records unknown usage | Unknown |
 | Aider | Unknown | Unknown |
 | Other adapters | Unknown | Sessions unsupported |
 
@@ -237,6 +254,16 @@ Each record contains:
 | `finish` | End/turn reason string or null |
 | `duration_ms` | Nonnegative elapsed time from the record's start |
 | `usage` | The five-field object above |
+| `cost_source` | `billed`, `harness-estimate`, `subscription-zero`, or null; written by the ledger from the agent and the figure, never taken from the caller |
+
+`cost_source` says where the dollar figure came from. Claude and Z.AI report
+session-lifetime cost, so every figure they report is a `harness-estimate`,
+never a per-call bill. A reported zero on a subscription-covered harness is
+`subscription-zero`: the call was covered, not free-of-charge-by-measure —
+OpenCode reports 0 this way. Any other reported cost is `billed`. A null cost
+carries a null source. The writer computes the field; a caller-supplied value
+is overwritten. Records from older ledgers have no field and count as billed
+in totals. A wrong-shaped value makes the reader skip the line as malformed.
 
 Every new record includes `labels`. A labeled run stores its key/value pairs;
 an unlabeled run, check, session turn, or closing session stores null.
@@ -262,8 +289,13 @@ existing operator-owned directory. Permission-tightening failure does not undo
 an append. Final symlinks and nonregular files are refused. Append failures
 warn once and do not fail the model run.
 
-Readers inspect only the newest 16 MiB, discard a leading partial line, and
-skip/count malformed or wrong-shaped records. `CODEMUX_TEST_LEDGER` is the
+Readers stream the whole ledger line by line in bounded memory and
+skip/count malformed or wrong-shaped records. Direct tail readers inspect
+only the newest 16 MiB and discard a leading partial line.
+The writer refuses a record whose serialized line would exceed 16 MiB, with one
+stderr note, so no written line is ever skipped by the reader; the two bounds
+are one constant.
+`CODEMUX_TEST_LEDGER` is the
 test preload's explicit redirect; NODE_ENV does not redirect operator records.
 
 ## Ledger selection and totals
@@ -279,15 +311,31 @@ Repeat `--label KEY=VALUE` to require every supplied pair. For example,
 both labels. A missing label does not match, including a filter with an empty
 value. `calls` does not read `CODEMUX_LABELS`.
 
+The whole ledger streams past the filters, the `--since` window, and the
+`--sum` totals: every record is seen, whatever the ledger has grown to.
+Retained memory is proportional to `-n` and to the number of distinct
+sessions, never to the ledger's length — a ring of `-n` records (at most
+100000 rows, raw lines only under `--json`), one closing record per
+session, and one session id per session with an in-window turn under
+`--since`.
+
 A matching turn also selects closing summaries of that session even when
-their start timestamps precede the cutoff. `--sum` covers shown records:
-for each session and field, shown turn values take precedence over the closing
-summary. With several closings, only the newest shown closing contributes.
+their start timestamps precede the cutoff, whichever side of the summary
+the turn falls on — a resumed session's first closing is selected by the
+turns its resume ran after it. `--sum` covers every matching
+record: for each session and field, matched turn values take precedence over
+the closing summary. With several closings, only the newest closing
+contributes. Cost sums `billed` and `subscription-zero` figures only; a
+`harness-estimate` never enters the total. When matching records carry
+estimates, the totals line is followed by one line of its own — `harness
+estimate $X — claude and zai report session-lifetime figures, not per-call
+bills` — so a lifetime figure is never read as money this window spent.
 Closings without a nonempty session ID are excluded. Unknown fields are
-reported with missing-value counts. `--json --sum` emits stored JSONL followed
+reported with missing-value counts.
+`--json --sum` emits stored JSONL followed
 by human-readable totals; it is not a pure JSONL stream.
 
-Use `codemux calls --sum --by wf` to group shown-record totals by the value
+Use `codemux calls --sum --by wf` to group matching-record totals by the value
 of the `wf` label. Records without that label appear under
 `Totals for records without label wf`. Headings render C0, DEL, and C1 controls
 as visible lowercase Unicode escapes such as `\u001b`. Literal backslashes
@@ -326,8 +374,85 @@ fields, or oversized output fail. Results report quota windows, credits,
 account/plan information, and subscription timestamps when available.
 Usagemux owns credential lookup, provider compatibility, and caching.
 
-The executable must pass codemux's trust checks. A missing installation exits
-69 without affecting other commands. A provider query can read credential
+The executable must pass codemux's trust checks. A missing or untrusted
+installation exits 69 without affecting other commands; a usagemux that
+exits nonzero is an unreadable query and exits 1 whatever its stdout held. A provider query can read credential
 stores and contact billing/usage APIs, but sends no model prompt. Usagemux must
 support the requested agents; an older version lacking newer agents can make
-the default all-agent query fail. Use `-a` for a supported client or upgrade.
+an all-agent query fail. Use `-a` for a supported client or upgrade.
+
+With no `-a`, `codemux usage` queries every agent except agy, mirroring
+usagemux's own default client set: agy's probe can take up to 90 seconds, and
+a bare `codemux usage` stays fast. `-a agy` and `--all` include it. The full
+invocation codemux makes is one usagemux call per command:
+
+```
+usagemux snapshot --client <agent> [--client <agent> ...] --format json --timeout <seconds>
+```
+
+## Quota gate
+
+`run`, `check`, `tui`, and `session` ask usagemux about the one agent a
+launch will spend from and refuse (exit 64) when a bounding usage window is
+below the configured ceiling. The check runs after request validation (the
+experiment and agy canary checks build their own request and validate it
+after the gate) and before anything spawns, so a refused launch spends
+nothing and records
+nothing in the call ledger. It uses the same trust checks as
+`codemux usage`.
+
+The `quota` config key carries the policy; an absent key means the defaults.
+`quota: false` disables the gate globally. Per invocation, `--no-quota-gate`
+skips it and `--quota-ceiling <percent>` overrides the ceiling for that one
+launch. See [configuration.md](configuration.md).
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `minRemainingPercent` | 10 | Refuse when a bounding window has less than this percent remaining |
+| `weeklyWarnUsedPercent` | 50 | Warn (stderr) when a weekly window is more than this percent used. A window counts as weekly when its kind names a week or its span is one week (10 080 minutes) within an hour of provider rounding; a longer window, such as a monthly cap, never triggers this warning |
+| `timeoutSeconds` | 60 | Per-launch bound on the usagemux query. One number applies to every agent; a per-agent map `{default: 60, claude: 90}` keys by agent ID with `default` required |
+| `spendsFrom` | none | Maps an agent to the usagemux client its launches spend from, for agents whose account is another provider's subscription (an opencode install on Claude credentials: `spendsFrom: { opencode: claude }`). The gate asks usagemux about the mapped client and names it in messages |
+
+Decision table, per launch:
+
+| usagemux answer | Gate action |
+|---|---|
+| Not installed, or untrusted | Warn once on stderr, proceed |
+| Query timeout, unparseable output, a snapshot older than 10 minutes, or no result for the agent | Warn on stderr with the reason, proceed |
+| A snapshot dated in the future, beyond the 60-second clock tolerance | Warn on stderr with the reason, proceed |
+| Status `not-applicable` | Print one stderr line — the agent's usage is not measured; it spends from its configured provider — and proceed |
+| Status `error` or `unavailable` | Warn on stderr with the provider's message, proceed: an unreadable provider is not an exhausted one |
+| Status `ok`, but no window that bounds model calls reports a remaining percent | Warn on stderr, proceed |
+| Status `ok`, the result reports credits with zero or fewer remaining | Warn on stderr (`credits exhausted (0 credits left); proceeding`), whatever the windows say |
+| Status `ok`, the `primary` window below the ceiling, or a `secondary`/`tertiary` window whose span is one week below the ceiling | Refuse, naming the window kind, percent left, reset time, and ceiling |
+| Status `ok`, another bounding window below the ceiling (a third-party model pool, a model-tier pool, a window that names weekly but is not a week long) | Warn on stderr, naming it and `(not the primary window)`, proceed |
+| Status `ok`, a weekly window more than `weeklyWarnUsedPercent` used | Warn on stderr, proceed |
+| An invalid `quota:` block in the config | Config error at load, exit 1 (before any launch, like every other config key) |
+| A policy that reaches the gate and fails its own launch-time validation (a timeout the process runner refuses) | Refuse, exit 64 |
+| A validated provider override with a base URL in force for the agent, on a harness that carries overrides | Skip the native gate, print one stderr line naming the override host |
+
+Windows whose kind matches `mcp` (per-window MCP budgets) never gate: an
+MCP tool budget does not bound model calls. A `scoped` window does gate:
+it is a real pool, and it warns below the ceiling like any window that is
+not the primary one. A fetched snapshot
+is reused for 60 seconds inside one process, so a batch or a resumed session
+does not pay the usagemux query per launch.
+
+The gate is fail-open for an unreadable snapshot by design: an interactive
+launch must not hang or die on a slow provider query, and a provider whose
+usage cannot be read (a usage backend that answers too late, a provider that
+needs browser cookies the machine lacks) is not one whose quota is spent.
+Only the usagemux-side failures above fail open; an error from codemux's own
+validation — a `timeoutSeconds` the process runner refuses — means the gate
+itself is misconfigured and the launch is refused instead. A refusal needs
+the `primary` window (every provider's main pool) or a `secondary`/
+`tertiary` window whose span is one week: those bound every call the launch
+can make. Window names never decide a refusal, because providers name the
+same pool differently — a weekly-named third-party pool (cursor's
+third-party model usage, agy's antigravity pools) warns, and a week-long
+tier window refuses whatever the provider calls it. Reset times in refusal
+and warning messages print in local time with a relative span —
+`2026-11-07 09:00:00 (in 2 d 3 h)` — so no operator converts a raw UTC
+timestamp by hand. Batch callers get the
+strict fail-closed behavior from cmx (codemux-workflows), which keeps its own
+policy and pauses on a quota refusal instead of proceeding.

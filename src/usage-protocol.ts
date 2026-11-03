@@ -97,12 +97,19 @@ const parseWindow = (value: unknown): UsageWindow => {
   if (typeof value.kind !== "string" || value.kind.length === 0) {
     throw new Error("kind must be a non-empty string");
   }
-  const windowMinutes = value.windowMinutes === null
-    ? null
-    : requireFiniteNumber(value.windowMinutes, "windowMinutes");
-  if (windowMinutes !== null && windowMinutes < 0) {
-    throw new Error("windowMinutes must be non-negative or null");
+  // usagemux's protocol guarantees "a finite duration value … no
+  // positivity or integer constraint" (its PROTOCOL.md): a non-number or a
+  // non-finite number (JSON `1e999` parses to Infinity) is a protocol
+  // violation that fails the snapshot (review round 53: an exhausted weekly
+  // window read as an unbounded pool); a negative value becomes null.
+  if (
+    value.windowMinutes !== null &&
+    (typeof value.windowMinutes !== "number" || !Number.isFinite(value.windowMinutes))
+  ) {
+    throw new Error("windowMinutes must be a finite number or null");
   }
+  const windowMinutes =
+    value.windowMinutes === null || value.windowMinutes < 0 ? null : value.windowMinutes;
   const resetsAt = requireNullableString(value.resetsAt, "resetsAt");
   if (resetsAt !== null) requireTimestamp(resetsAt, "resetsAt");
   return {
@@ -211,7 +218,9 @@ export const parseUsageSnapshot = (text: string): UsageSnapshot => {
 // usagemux relays provider-supplied strings, and these reach a terminal. Escape
 // C0/C1 control characters and DEL so a hostile or compromised upstream response
 // cannot move the cursor, clear the screen, or drive terminal reporting
-// sequences. The --json path needs no equivalent: JSON.stringify escapes them.
+// sequences. JSON.stringify escapes C0 only; the --json path layers
+// escapeJsonControls (labels.ts) on top for DEL and C1, exactly as
+// `calls --json` does.
 const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F-\u009F]/g;
 
 export const escapeForTerminal = (value: string): string =>
@@ -219,6 +228,58 @@ export const escapeForTerminal = (value: string): string =>
     CONTROL_CHARACTERS,
     (character) => `\\x${character.charCodeAt(0).toString(16).padStart(2, "0")}`
   );
+
+/** One argv argument as one printable line (`--print-sandbox`): the output
+ * is one argument per line, so a control character inside an argument — a
+ * newline in a multi-line `-p` prompt is the common one — must print as an
+ * escape sequence, never as a line of its own that reads as an argument
+ * separator. Newline, carriage return, and tab use their familiar
+ * spellings; every other control takes escapeForTerminal's `\xNN` form. */
+const ARGUMENT_ESCAPES = new Map([
+  ["\n", "\\n"],
+  ["\r", "\\r"],
+  ["\t", "\\t"],
+]);
+export const escapeArgvForPrint = (argument: string): string =>
+  argument.replace(
+    CONTROL_CHARACTERS,
+    (character) =>
+      ARGUMENT_ESCAPES.get(character) ??
+      `\\x${character.charCodeAt(0).toString(16).padStart(2, "0")}`
+  );
+
+/** At most two decimals, matching usagemux's own text format (16.434343
+ * renders 16.43). Display only; --json keeps full precision. */
+export const formatUsagePercent = (value: number): string =>
+  String(Math.round(value * 100) / 100);
+
+/** A reset instant for a human reading a terminal: local time plus a
+ * relative span ("in 5 d 11 h"), so nobody converts UTC in their head
+ * (audit round 2, B13 — the `calls` table already printed local time).
+ * A null, unparseable, or past instant answers null and the caller
+ * prints its own placeholder. */
+export const formatResetTime = (iso: string | null, now = new Date()): string | null => {
+  if (iso === null) return null;
+  const when = Date.parse(iso);
+  if (!Number.isFinite(when)) return null;
+  const date = new Date(when);
+  const two = (value: number): string => String(value).padStart(2, "0");
+  const local =
+    `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())} ` +
+    `${two(date.getHours())}:${two(date.getMinutes())}:${two(date.getSeconds())}`;
+  const until = when - now.getTime();
+  if (until <= 0) return `${local} (now)`;
+  const minutes = Math.floor(until / 60_000);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  const span =
+    days > 0
+      ? `${days} d ${hours % 24} h`
+      : hours > 0
+        ? `${hours} h ${minutes % 60} m`
+        : `${minutes} m`;
+  return `${local} (in ${span})`;
+};
 
 export const formatUsageSnapshot = (snapshot: UsageSnapshot): string => {
   const lines: string[] = [];
@@ -235,10 +296,17 @@ export const formatUsageSnapshot = (snapshot: UsageSnapshot): string => {
     );
     if (result.account) lines.push(`  account: ${escapeForTerminal(result.account)}`);
     for (const window of result.windows) {
-      const remaining = window.remainingPercent === null
-        ? "remaining unknown"
-        : `${window.remainingPercent}% left`;
-      const reset = window.resetsAt ? `; resets ${window.resetsAt}` : "";
+      // A window may report only what it knows: remaining when the provider
+      // exposes it, otherwise the used percent, otherwise nothing.
+      const remaining =
+        window.remainingPercent !== null
+          ? `${formatUsagePercent(window.remainingPercent)}% left`
+          : window.usedPercent !== null
+            ? `${formatUsagePercent(window.usedPercent)}% used`
+            : "remaining unknown";
+      const reset = window.resetsAt
+        ? `; resets ${formatResetTime(window.resetsAt) ?? window.resetsAt}`
+        : "";
       lines.push(`  ${escapeForTerminal(window.kind)}: ${remaining}${reset}`);
     }
     if (result.credits) {
@@ -247,10 +315,14 @@ export const formatUsageSnapshot = (snapshot: UsageSnapshot): string => {
       );
     }
     if (result.subscriptionRenewsAt) {
-      lines.push(`  subscription renews: ${result.subscriptionRenewsAt}`);
+      lines.push(
+        `  subscription renews: ${formatResetTime(result.subscriptionRenewsAt) ?? result.subscriptionRenewsAt}`
+      );
     }
     if (result.subscriptionExpiresAt) {
-      lines.push(`  subscription expires: ${result.subscriptionExpiresAt}`);
+      lines.push(
+        `  subscription expires: ${formatResetTime(result.subscriptionExpiresAt) ?? result.subscriptionExpiresAt}`
+      );
     }
   }
   return lines.join("\n");

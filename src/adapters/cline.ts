@@ -32,7 +32,7 @@ export class ClineAdapter extends BaseAdapter {
       // provider override this tree no longer ships: the non-hermetic
       // control probe leaked the planted code word through the workspace
       // AGENTS.md channel, and no flag or environment variable can close
-      // it (docs/HERMETIC.md).
+      // it (docs/isolation.md).
       supportsHermetic: false,
       supportsToolSelection: false,
     };

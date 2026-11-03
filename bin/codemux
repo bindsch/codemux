@@ -1,6 +1,153 @@
 #!/bin/sh
 set -eu
 
+# The Homebrew formula pins the keg's bun at install time by rewriting the
+# assignment below (its inreplace target); empty means resolve bun from
+# PATH. scripts/check-installed-layout.ts asserts this line exists exactly
+# once and applies the same rewrite to its own copy.
+codemux_pinned_bun=
+
+# The trust-checking tools this launcher needs (readlink, id, stat) come
+# from the fixed list of system locations below, never from PATH: a
+# planted PATH entry cannot substitute them, and distributions whose
+# coreutils are not under /usr/bin — NixOS resolves them through
+# /run/current-system/sw/bin — still run (review round 17, edges 3).
+# System-managed directories first: the bootstrap below runs the FIRST
+# existing stat and id before the full trust rule can judge them, so a
+# planted copy under /usr/local/bin must never shadow a system's own
+# (NixOS keeps coreutils under /run/current-system/sw/bin; review round 26).
+tool_dirs='/usr/bin /bin /run/current-system/sw/bin /usr/local/bin /opt/homebrew/bin'
+
+# stat_uid_mode <path>: prints "<uid> <mode string>" for the path's TARGET
+# when it is a symlink. The dialect is decided ONCE per stat binary,
+# before any path is checked: the two variants share no flags. On GNU
+# coreutils stat, -f means --file-system and the BSD format string is read
+# as a file operand, so running the BSD form there prints a filesystem
+# block and fails on the fake operand — output a fallback's clean line
+# would be appended to inside a captured variable (review round 11,
+# contracts blocker). GNU stat answers --version with "GNU coreutils".
+# BusyBox stat (Alpine) rejects --version but names itself in the usage
+# text --help prints, and takes the GNU -c format (review round 25, edges
+# 1: it was read as BSD and every stat candidate was refused). A BSD stat
+# rejects both flags with a usage line naming neither. Toybox stat
+# (Android, Termux) names itself the same way and takes the GNU form too
+# (round 28, contracts 3). An unrecognized
+# stat falls to the BSD form and is then refused by the output-shape
+# validation below, never guessed at. Both variants need -L: a PATH entry
+# that is a link to a directory must be judged by the target's owner and
+# mode (a symlink's own mode is always 0777, which would read as
+# world-writable).
+define_stat_uid_mode() {
+  case $("$stat_tool" --version 2>/dev/null || "$stat_tool" --help 2>&1 || true) in
+    *"GNU coreutils"*|*BusyBox*|*oybox*)
+      stat_uid_mode() {
+        "$stat_tool" -L -c '%u %A' "$1" 2>/dev/null
+      }
+      ;;
+    *)
+      stat_uid_mode() {
+        "$stat_tool" -L -f '%u %Sp' "$1" 2>/dev/null
+      }
+      ;;
+  esac
+}
+
+# Bootstrap: stat and id by existence alone, because the ownership and
+# mode checks below read stat's output and compare id's answer. Every
+# tool — these two included — is then re-resolved through the full rule.
+first_existing_tool() {
+  for first_dir in $tool_dirs; do
+    if [ -f "$first_dir/$1" ]; then
+      printf '%s\n' "$first_dir/$1"
+      return 0
+    fi
+  done
+  return 1
+}
+stat_probe=$(first_existing_tool stat) || {
+  echo "codemux: no stat found in $tool_dirs; cannot verify the runtime" >&2
+  exit 1
+}
+id_probe=$(first_existing_tool id) || {
+  echo "codemux: no id found in $tool_dirs; cannot verify the runtime" >&2
+  exit 1
+}
+stat_tool=$stat_probe
+define_stat_uid_mode
+owner_uid=$("$id_probe" -u)
+
+# trusted_tool <name>: prints the first candidate from the fixed list that
+# is a regular file owned by this user or root and carries no group or
+# world write bit — the same rule the bun file is held to below. A symlink
+# is judged through stat -L, so a link's always-0777 mode cannot fail it
+# while its target passes, nor the reverse. Refuses when no candidate
+# passes; never falls back to PATH.
+trusted_tool() {
+  trusted_name=$1
+  for trusted_dir in $tool_dirs; do
+    trusted_path=$trusted_dir/$trusted_name
+    [ -f "$trusted_path" ] || continue
+    if ! trusted_stat=$(stat_uid_mode "$trusted_path"); then
+      continue
+    fi
+    # The captured line must be exactly "<uid digits><space><10 mode
+    # characters>" — anything else (another dialect's output, a
+    # filesystem block, extra tokens) skips the candidate.
+    set -f
+    set -- $trusted_stat
+    set +f
+    if [ "$#" -ne 2 ] || [ "${#2}" -ne 10 ]; then continue; fi
+    case $1 in
+      "" | *[!0-9]*) continue ;;
+    esac
+    if [ "$1" != "$owner_uid" ] && [ "$1" != "0" ]; then continue; fi
+    case $2 in
+      ?????w????* | ????????w?*) continue ;;
+    esac
+    # The containing directory is held to the ancestor rule as well: a
+    # world-writable directory without the sticky bit lets another
+    # principal swap the tool between this check and its use (round 28,
+    # contracts 4). Group-writable directories pass, like the bun rule.
+    if ! trusted_dir_stat=$(stat_uid_mode "$trusted_dir"); then
+      continue
+    fi
+    set -f
+    set -- $trusted_dir_stat
+    set +f
+    if [ "$#" -ne 2 ] || [ "${#2}" -ne 10 ]; then continue; fi
+    if [ "$1" != "$owner_uid" ] && [ "$1" != "0" ]; then continue; fi
+    case $2 in
+      ????????w[!tT]) continue ;;
+    esac
+    printf '%s\n' "$trusted_path"
+    return 0
+  done
+  echo "codemux: no trusted $trusted_name found in $tool_dirs" >&2
+  exit 1
+}
+stat_tool=$(trusted_tool stat)
+# A stat resolved past the existence probe (the probe failed the rule)
+# redecides the dialect BEFORE id and readlink are judged with it: GNU and
+# BSD stat share no flags, and a trusted stat of the other dialect would
+# otherwise fail every id and readlink candidate's output-shape check
+# (review round 28, contracts 2).
+if [ "$stat_tool" != "$stat_probe" ]; then
+  define_stat_uid_mode
+fi
+id_tool=$(trusted_tool id)
+# The ownership baseline every owned-by-user-or-root judgment uses is
+# re-taken from the validated id, not left at the existence probe's answer
+# (round 32, contracts 1); a non-numeric answer refuses.
+owner_uid=$("$id_tool" -u) || owner_uid=
+case $owner_uid in
+  "" | *[!0-9]*)
+    echo "codemux: $id_tool -u did not answer a numeric uid; cannot verify the runtime" >&2
+    exit 1
+    ;;
+esac
+readlink_tool=$(trusted_tool readlink)
+
+
 # Bun otherwise trusts bunfig.toml and .env from the caller's working tree.
 # Resolve this launcher through package-manager symlinks, then use only the
 # package-owned runtime configuration.
@@ -10,11 +157,19 @@ case "$script_path" in
   *) script_path=$(command -v -- "$script_path") ;;
 esac
 
+# 32 hops is far beyond any real package-manager chain; a symlink cycle
+# would otherwise spin forever (the same cap the bun resolution applies).
+script_hops=0
 while [ -L "$script_path" ]; do
+  script_hops=$((script_hops + 1))
+  if [ "$script_hops" -gt 32 ]; then
+    echo "codemux: refusing to resolve the launcher: $0 is a symlink chain longer than 32 hops; it does not resolve to a real file" >&2
+    exit 1
+  fi
   script_dir=${script_path%/*}
   [ "$script_dir" = "$script_path" ] && script_dir=.
   script_dir=$(CDPATH='' cd -P -- "$script_dir" && pwd)
-  link_target=$(/usr/bin/readlink "$script_path")
+  link_target=$("$readlink_tool" "$script_path")
   case "$link_target" in
     /*) script_path=$link_target ;;
     *) script_path=$script_dir/$link_target ;;
@@ -25,6 +180,196 @@ script_dir=${script_path%/*}
 [ "$script_dir" = "$script_path" ] && script_dir=.
 package_root=$(CDPATH='' cd -P -- "$script_dir/.." && pwd)
 
+# Resolve bun once and exec the absolute path. A pinned path (the Homebrew
+# install contract above) skips the search; otherwise the first absolute
+# PATH entry holding an executable bun is the candidate; "." and every other
+# relative entry are skipped. The candidate is refused unless the directory
+# it was found in (PATH resolution only), the directory the resolved binary
+# sits in, and the binary itself are owned by this user or root. A directory
+# is refused when world-writable (sticky or not) — a group-writable
+# directory such as a shared /usr/local/bin (admin group) passes, the rule
+# usagemux applies to its backends — while the bun file itself must carry no
+# group or world write bit: the trust rule codemux applies to every harness
+# binary, so a planted PATH cannot choose the runtime.
 unset BUN_OPTIONS NODE_OPTIONS
-exec bun --no-env-file --no-install --config="$package_root/bunfig.runtime.toml" \
+bun_path=
+if [ -n "$codemux_pinned_bun" ]; then
+  # The pin is a path the formula wrote; a relative one would make the
+  # ancestor walk below spin on a slashless name (review round 25).
+  case $codemux_pinned_bun in
+    /*) ;;
+    *)
+      echo "codemux: codemux_pinned_bun must be an absolute path: $codemux_pinned_bun" >&2
+      exit 1
+      ;;
+  esac
+  bun_path=$codemux_pinned_bun
+else
+  old_ifs=$IFS
+  IFS=:
+  # set -f for the word split: an unquoted ${PATH:-} would pathname-expand
+  # an entry holding *, ?, or [ to directories no PATH entry literally
+  # names, and the first such match's bun would run instead of the entry's
+  # own. A PATH entry is a literal string, matched or not.
+  set -f
+  for entry in ${PATH:-}; do
+    IFS=$old_ifs
+    case $entry in
+      /*) ;;
+      *) continue ;;
+    esac
+    # A link itself passes discovery even when following it fails (a cycle
+    # or a dangling target): resolution below owns those refusals, so every
+    # bun spelling on PATH gets its specific verdict instead of a generic
+    # "no bun executable" — and its hop cap stays reachable.
+    if [ ! -L "$entry/bun" ] && [ ! -x "$entry/bun" ]; then
+      continue
+    fi
+    bun_path=$entry/bun
+    break
+  done
+  set +f
+  IFS=$old_ifs
+fi
+if [ -z "$bun_path" ]; then
+  echo "codemux: no bun executable in any absolute PATH entry; install bun or fix PATH" >&2
+  exit 1
+fi
+bun_found_in=${bun_path%/*}
+
+# 32 hops is far beyond any real package-manager chain; a symlink cycle
+# (a link pointing to a link pointing back) would otherwise spin forever.
+symlink_hops=0
+while [ -L "$bun_path" ]; do
+  symlink_hops=$((symlink_hops + 1))
+  if [ "$symlink_hops" -gt 32 ]; then
+    echo "codemux: refusing to resolve bun from $bun_found_in: its path is a symlink chain longer than 32 hops; it does not resolve to a real file" >&2
+    exit 1
+  fi
+  bun_dir=${bun_path%/*}
+  [ "$bun_dir" = "$bun_path" ] && bun_dir=.
+  bun_dir=$(CDPATH='' cd -P -- "$bun_dir" && pwd)
+  link_target=$("$readlink_tool" "$bun_path")
+  case "$link_target" in
+    /*) bun_path=$link_target ;;
+    *) bun_path=$bun_dir/$link_target ;;
+  esac
+done
+bun_dir=${bun_path%/*}
+if [ ! -f "$bun_path" ]; then
+  echo "codemux: refusing to run bun from $bun_found_in: $bun_path is not a regular file" >&2
+  exit 1
+fi
+# The execute bit is re-checked on the resolved target: discovery applies
+# it only to a non-symlink PATH entry, and a pin skips discovery entirely,
+# so a non-executable target would otherwise pass every check and die at
+# exec with the shell's exit 126 instead of this refusal (review round 16,
+# edges 5).
+if [ ! -x "$bun_path" ]; then
+  echo "codemux: refusing to run bun from $bun_found_in: $bun_path is not executable" >&2
+  exit 1
+fi
+
+# check_trusted <kind> <what> <path>: kind is "ancestor", "directory", or
+# "file". The PATH entry directory, the resolved binary's directory, every
+# ancestor of it up to /, and the binary itself must each be owned by this
+# user or root. Mode positions are stated for the 10-character mode string
+# stat prints (-rwxrwxrwx): position 6 is the group write bit, position 9
+# the world write bit, position 10 the sticky bit. A DIRECTORY is refused
+# when world-writable (position 9; sticky or not); a group-writable
+# directory passes. An ANCESTOR is refused only when world-writable
+# without the sticky bit (position 9 without t/T at position 10): a sticky
+# world-writable ancestor (the /tmp rule) protects the trusted name below
+# it. The bun FILE is refused when group- or world-writable (position 6 or
+# position 9).
+check_trusted() {
+  check_kind=$1
+  check_what=$2
+  check_path=$3
+  if ! check_stat=$(stat_uid_mode "$check_path"); then
+    echo "codemux: refusing to run bun from $bun_found_in: its $check_what $check_path has unreadable ownership or mode" >&2
+    exit 1
+  fi
+  # The captured line must be exactly "<uid digits><space><10 mode
+  # characters>" — anything else (another dialect's output, a filesystem
+  # block, extra tokens) refuses. Validated with the shell alone: split
+  # into exactly two words, the first all digits, the second ten
+  # characters long.
+  set -f
+  set -- $check_stat
+  set +f
+  if [ "$#" -ne 2 ] || [ "${#2}" -ne 10 ]; then
+    echo "codemux: refusing to run bun from $bun_found_in: its $check_what $check_path has unreadable ownership or mode" >&2
+    exit 1
+  fi
+  case $1 in
+    "" | *[!0-9]*)
+      echo "codemux: refusing to run bun from $bun_found_in: its $check_what $check_path has unreadable ownership or mode" >&2
+      exit 1
+      ;;
+  esac
+  check_owner=$1
+  check_mode=$2
+  if [ "$check_owner" != "$owner_uid" ] && [ "$check_owner" != "0" ]; then
+    echo "codemux: refusing to run bun from $bun_found_in: its $check_what $check_path is owned by uid $check_owner, not this user or root" >&2
+    exit 1
+  fi
+  check_reason=
+  case $check_kind in
+    ancestor)
+      case $check_mode in
+        ????????w*)
+          # World-writable: sticky (t or T in the final position) passes.
+          case $check_mode in
+            ?????????[tT]) ;;
+            *) check_reason="world-writable without the sticky bit" ;;
+          esac
+          ;;
+      esac
+      ;;
+    directory)
+      case $check_mode in
+        ????????w?*) check_reason=world-writable ;;
+      esac
+      ;;
+  esac
+  if [ "$check_kind" = file ]; then
+    case $check_mode in
+      ?????w????* | ????????w?*) check_reason="group- or world-writable" ;;
+    esac
+  fi
+  if [ -n "$check_reason" ]; then
+    echo "codemux: refusing to run bun from $bun_found_in: its $check_what $check_path is $check_reason" >&2
+    exit 1
+  fi
+}
+if [ -z "$codemux_pinned_bun" ]; then
+  check_trusted directory "PATH entry directory" "$bun_found_in"
+fi
+check_trusted directory "directory" "$bun_dir"
+check_trusted file "file" "$bun_path"
+# The directory checks above say nothing about bun_dir's parents: a
+# trusted directory beneath a world-writable non-sticky parent can be
+# renamed and replaced by any other user between the check and the exec.
+# Every ancestor up to / is held to the ancestor rule in check_trusted,
+# on both spellings of the directory: bun_dir as spelled (whose ancestors
+# can rename the spelled path) and bun_dir as resolved (the real
+# directory the exec reaches through a symlinked component, whose own
+# ancestors the spelled walk never visits — checked once more when the
+# two spellings differ, the doubled ancestors being harmless re-stats).
+walk_ancestors() {
+  walk_dir=$1
+  while [ "$walk_dir" != "/" ]; do
+    walk_dir=${walk_dir%/*}
+    [ -z "$walk_dir" ] && walk_dir=/
+    check_trusted ancestor "ancestor directory" "$walk_dir"
+  done
+}
+walk_ancestors "$bun_dir"
+bun_resolved_dir=$(CDPATH='' cd -P -- "$bun_dir" && pwd)
+if [ "$bun_resolved_dir" != "$bun_dir" ]; then
+  walk_ancestors "$bun_resolved_dir"
+fi
+
+exec "$bun_path" --no-env-file --no-install --config="$package_root/bunfig.runtime.toml" \
   "$package_root/src/index.ts" "$@"

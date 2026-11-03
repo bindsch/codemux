@@ -1,3 +1,6 @@
+---
+read_when: "Diagnosing a refusal or a failed run."
+---
 # Troubleshooting
 
 Start with `codemux --version`, `codemux doctor`, and
@@ -6,8 +9,8 @@ Start with `codemux --version`, `codemux doctor`, and
 
 | Symptom | Action |
 |---|---|
-| scode missing/incompatible | Install the [required version](harnesses.md); ordinary launches use sandboxing by default |
-| Unknown option or missing argument | Check `<command> --help`; parser errors exit 1 |
+| scode missing/incompatible | Install the [required version](autonomy-and-sandboxing.md#conditional-scode-requirements); ordinary launches use sandboxing by default |
+| Unknown option or missing argument | Check `<command> --help`; parser errors exit 1, pre-launch refusals of the request itself exit 64 |
 | Invalid configuration | Correct the YAML at the path in the diagnostic; help/version/doctor remain available |
 | Model rejected before network request | Check the harness's supported models and [provider routing](provider-overrides.md) |
 | 401 or expired Claude access token | Refresh the operator login and read [credential mirror behavior](authentication.md); mirror access tokens cannot refresh |

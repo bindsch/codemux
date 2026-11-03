@@ -8,6 +8,13 @@ import { experimentToolTimeoutSeconds } from "./experiment-mcp.js";
 export interface KimiNativeCall {
   callId: string; name: string; input: unknown; qualified: string; item: JsonObject;
   modelToolError?: boolean;
+  /** Kimi rejected the call itself for arguments that failed its schema
+   * (`args: {}` on the wire, an `Invalid args for tool` error result,
+   * nothing dispatched to the server). */
+  harnessRejectedArgs?: boolean;
+  /** The assistant message's raw `arguments` string of a rejected call, so
+   * the stdout evidence can be held to the same bytes (round 24, edges 1). */
+  nativeArguments?: string;
   result?: JsonObject; content?: JsonObject[]; wireContent?: JsonObject[]; header?: string | null;
 }
 export interface KimiAssistantFrame { text: string; callIds: string[] }
@@ -109,6 +116,19 @@ export class KimiWireParser {
           throw new ExperimentFailure(Code.UnknownTool, `Kimi unknown tool lacks its own missing-tool error: ${call.qualified}`);
         }
         call.result = event.result;
+        if (!call.modelToolError && event.result.isError === true && typeof event.result.output === "string" &&
+            event.result.output.startsWith(`Invalid args for tool "${call.qualified}"`) && isDeepStrictEqual(call.input, {}) &&
+            !this.isServerError(call, event.result)) {
+          // Kimi's own schema rejection of a call whose arguments it could not
+          // parse: the wire carries `args: {}`, the server never sees the call,
+          // and the model gets this error. The hold probe of 2026-11-02 saw a
+          // 14 KB unterminated argument string rejected this way 13 times. A
+          // server that answered an empty-argument call with the same words is
+          // a dispatched server error (isServerError) and keeps its relay
+          // match (round 24, edges 2).
+          call.harnessRejectedArgs = true;
+          this.record("harness_invalid_args", { call_id: call.callId, name: call.qualified, output: event.result.output });
+        }
         if (call.modelToolError) this.record("model_tool_error", { call_id: call.callId, name: call.qualified,
           input: call.input, harness_output: event.result.output });
         this.record("tool_result_delivered", toolResultDeliveredRecord(call.callId, timestamp(line.time)));
@@ -244,10 +264,29 @@ export class KimiWireParser {
       }
       for (const [callIndex, call] of step.calls.entries()) {
         const native = kimiObject(toolCalls[callIndex]);
-        let input: unknown;
-        try { input = JSON.parse(native?.arguments); } catch { /* The comparison below rejects invalid arguments. */ }
-        if (native?.type !== "function" || native.id !== call.callId || native.name !== call.qualified || !isDeepStrictEqual(input, call.input)) {
+        // The wire carries `arguments` as a JSON string always; an absent or
+        // non-string field is a protocol break, not malformed arguments
+        // (review round 43: `String(undefined)` matched stdout "undefined").
+        if (typeof native?.arguments !== "string") {
+          throw new ExperimentFailure(Code.Protocol, "Kimi assistant native tool call carries no string arguments field");
+        }
+        let input: unknown, parseError: string | null = null;
+        try { input = JSON.parse(native.arguments); } catch (error) { parseError = error instanceof Error ? error.message : String(error); }
+        // Native arguments Kimi itself could not parse match the `{}` it
+        // recorded only when Kimi also rejected the call (harnessRejectedArgs);
+        // unparseable arguments on a call Kimi ran are still a mismatch.
+        const rejectedMalformed = parseError !== null && call.harnessRejectedArgs === true;
+        if (native?.type !== "function" || native.id !== call.callId || native.name !== call.qualified ||
+            (!rejectedMalformed && !isDeepStrictEqual(input, call.input))) {
           throw new ExperimentFailure(Code.Protocol, "Kimi assistant native tool call does not match tool.call evidence");
+        }
+        // Every harness-rejected call keeps its raw argument string for the
+        // stdout comparison, parseable or not (round 34, contracts 1); only
+        // the unparseable case is recorded as malformed.
+        if (call.harnessRejectedArgs) call.nativeArguments = String(native.arguments);
+        if (rejectedMalformed) {
+          this.record("native_arguments_malformed", { call_id: call.callId, name: call.qualified,
+            bytes: Buffer.byteLength(call.nativeArguments!), parse_error: parseError });
         }
       }
     }
