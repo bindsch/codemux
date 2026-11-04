@@ -23,8 +23,8 @@ export abstract class KimiDriverFinalize extends KimiDriverIo {
    * (cut_waits resolves the race; the drain's predicate reads the
    * machine's cause log). */
   protected async runEndPath(): Promise<void> {
-    if (this.endPathStarted) return;
-    this.endPathStarted = true;
+    if (this.endPathBegun) return;
+    this.endPathBegun = true;
     const spawn = this.spawnPromise;
     if (
       this.state.child === null &&

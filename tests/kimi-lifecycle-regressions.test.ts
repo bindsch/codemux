@@ -140,6 +140,44 @@ test.each([false, true])("Kimi records private-home cleanup failure before run_e
   } finally { home.finalize = finalize; await context.experimentKimi!.close().catch(() => {}); finalize(); f.cleanup(); }
 });
 
+test("Kimi evidence-preservation failure still finalizes the private home (review round 64)", () => {
+  const f = fixture();
+  const spec = join(f.home, "spec.json");
+  writeFileSync(spec, JSON.stringify({ name: "experiment", command: process.execPath,
+    args: [resolve("tests/fixtures/experiment-mcp.ts")], env: [], recording: join(f.home, "recordings"),
+    accept_harness_prefix: ["kimi-wall-time"] }));
+  const context = f.adapter.prepareRun({ ...f.request, hermetic: true, experimentMcp: spec });
+  const home = context.kimiHermeticHome!;
+  // The copy helper records its own destination failures instead of
+  // throwing, so the ordering pin forces the one thrower directly:
+  // whatever makes preserveHarnessLog fail, the private home must not
+  // survive it, and the failure must still be relayed. Before the fix
+  // the throw skipped the finalizer entirely.
+  const experiment = context.experimentKimi!;
+  const preserve = experiment.preserveHarnessLog;
+  let thrown = false;
+  experiment.preserveHarnessLog = () => {
+    if (thrown) return preserve.call(experiment);
+    thrown = true;
+    throw new Error("synthetic evidence preservation failure");
+  };
+  const realHomeFinalize = home.finalize.bind(home);
+  let homeFinalized = 0;
+  home.finalize = () => { homeFinalized += 1; return realHomeFinalize(); };
+  try {
+    expect(() => f.adapter.cleanupRunSync(context)).toThrow("synthetic evidence preservation failure");
+    expect(homeFinalized).toBe(1);
+    expect(existsSync(home.home)).toBe(false);
+    const records = readFileSync(context.experimentRecording!, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(records.find((record) => record.kind === "failure" &&
+      record.message === "synthetic evidence preservation failure")).toBeDefined();
+    expect(records.at(-1)).toMatchObject({ kind: "run_end", error: "synthetic evidence preservation failure" });
+  } finally {
+    home.finalize = realHomeFinalize;
+    f.cleanup();
+  }
+});
+
 test("Kimi synchronous exit cleanup records interruption before any harness evidence", () => {
   const f = fixture();
   const spec = join(f.home, "spec.json");
@@ -186,3 +224,40 @@ writeFileSync(${JSON.stringify(ready)},"ready");setInterval(() => {},1000);`);
     expect(log.at(-1)).toMatchObject({ kind: "run_end", code: "protocol", error: "interrupted before harness evidence" });
   } finally { child.kill(); await child.exited; await output; fake.cleanup(); f.cleanup(); }
 }, 15000);
+
+test("two Kimi cleanup failures reach the recording as one failure naming both (review round 69)", () => {
+  const f = fixture();
+  const spec = join(f.home, "spec.json");
+  writeFileSync(spec, JSON.stringify({ name: "experiment", command: process.execPath,
+    args: [resolve("tests/fixtures/experiment-mcp.ts")], env: [], recording: join(f.home, "recordings"),
+    accept_harness_prefix: ["kimi-wall-time"] }));
+  const context = f.adapter.prepareRun({ ...f.request, hermetic: true, experimentMcp: spec });
+  const home = context.kimiHermeticHome!;
+  const experiment = context.experimentKimi!;
+  // closeSync preserves the log once more in cleanupRunSync's finally, so
+  // the stub throws only the first time, as the round-64 test does.
+  const preserve = experiment.preserveHarnessLog;
+  let thrown = false;
+  experiment.preserveHarnessLog = () => {
+    if (thrown) return preserve.call(experiment);
+    thrown = true;
+    throw new Error("evidence failure");
+  };
+  const realHomeFinalize = home.finalize.bind(home);
+  home.finalize = () => { throw new Error("home failure"); };
+  try {
+    let caught: unknown;
+    try { f.adapter.cleanupRunSync(context); } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as Error).message).toContain("evidence failure");
+    expect((caught as Error).message).toContain("home failure");
+    const records = readFileSync(context.experimentRecording!, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    const failure = records.find((record) => record.kind === "failure");
+    expect(failure?.message).toContain("evidence failure");
+    expect(failure?.message).toContain("home failure");
+  } finally {
+    home.finalize = realHomeFinalize;
+    realHomeFinalize();
+    f.cleanup();
+  }
+});

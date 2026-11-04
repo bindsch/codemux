@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { CodexSessionDriver, MAX_HELD_INPUT_LINES } from "../src/session/codex-driver.js";
 import { SessionProcess } from "../src/session/process.js";
-import { cleanupSessions, FAKE, type Event, type Session, workRoot, fakeRecord, of, send, startAndWait, startSession, waitFor, waitForRecord } from "./session-codex-e2e-helpers.js";
+import { readRegistry, recordSessionStart } from "../src/session/registry.js";
+import { cleanupSessions, HOLD, type Event, type Session, workRoot, fakeRecord, of, send, startAndWait, startSession, waitFor, waitForRecord } from "./session-codex-e2e-helpers.js";
 
 afterAll(cleanupSessions);
 
@@ -77,12 +78,22 @@ describe("codex session e2e - lifecycle", () => {
     // no child to stop, and the child then ran on, never stopped.
     // handleCallerEnd() is the same public pre-attach end a signal
     // produces, deterministically — no real signal is needed.
+    // Review round 64: the CLI arms spawnPending() before that spawn, so
+    // the end path now holds its completion — the resume record's release,
+    // session_ended, run()'s resolution — behind the late child's
+    // settlement, and a rival resume in that window still reads a live
+    // session. FAKE_SIGTERM_PERSIST keeps the child alive past the stop
+    // request, so the held window is observable.
     const dir = mkdtempSync(join(workRoot(), "s-"));
     const stateDir = join(dir, "state");
+    const registryDir = join(dir, "registry");
     mkdirSync(stateDir);
+    mkdirSync(registryDir, { mode: 0o700 });
+    const registryPath = join(registryDir, "live-sessions.json");
+    const threadId = "0123456789abcdef";
     const events: Event[] = [];
     const driver = new CodexSessionDriver({
-      resumeThreadId: null,
+      resumeThreadId: threadId,
       autonomy: "high",
       cwd: dir,
       sandboxed: true,
@@ -94,36 +105,93 @@ describe("codex session e2e - lifecycle", () => {
       permissionTimeoutMs: 300_000,
       turnTimeoutMs: null,
       sessionTimeoutMs: null,
-      registryPath: null,
+      registryPath,
       harnessHome: join(dir, "home"),
       providerBaseUrl: null,
       sink: (line) => {
         events.push(JSON.parse(line) as Event);
       },
     });
-    // The pre-attach end: the driver finishes with no child to stop.
+    // The claimed resume record the CLI owns from its claim until the end
+    // path releases it.
+    expect(
+      recordSessionStart(registryPath, {
+        id: threadId,
+        agent: "codex",
+        cwd: dir,
+        hermetic: false,
+        project_settings: false,
+        harness_home: join(dir, "home"),
+        provider_base_url: null,
+        model: null,
+        autonomy: "high",
+        sandboxed: true,
+        sandbox_trust: "standard",
+        sandbox_no_net: false,
+        sandbox_scrub_env: false,
+        sandbox_block: [],
+        pass_env: [],
+        playwright_mcp: false,
+      }).ok
+    ).toBe(true);
+    driver.adoptResumeClaim();
+    // The CLI's pre-spawn arm, then the pre-attach end: the driver
+    // finishes with no child to stop and holds on the pending spawn.
+    driver.spawnPending();
     driver.handleCallerEnd();
+    // A child that survives its stop request (its SIGTERM handler is up —
+    // the READY line — before the test attaches), so the held window is
+    // observable: a plain child dies to the immediate SIGTERM during its
+    // own boot, settling at once.
+    let childReady: () => void = () => {};
+    const ready = new Promise<void>((resolve) => {
+      childReady = resolve;
+    });
     const proc = new SessionProcess({
-      command: ["bun", FAKE],
+      command: ["bun", HOLD],
       cwd: dir,
       env: {
         PATH: process.env.PATH ?? "/usr/bin:/bin",
-        FAKE_STATE_DIR: stateDir,
         HOME: dir,
       },
-      onLine: (line) => driver.handleHarnessLine(line),
+      onLine: (line) => {
+        if (line === "READY") childReady();
+      },
       onFatal: (fatal) => driver.handleFatal(fatal),
       graceMs: 500,
     });
+    await ready;
     driver.attach(proc);
-    // Already finished: resolves without handshaking, and the child that
-    // arrived after the end is stopped by attach itself.
-    expect(await driver.run()).toBe(0);
+    const code = driver.run();
+    // The child is still alive (FAKE_SIGTERM_PERSIST survives the stop
+    // request for a moment): the end path must not have completed. A
+    // resolved run() here is exactly the round 64 bug — the record
+    // released and session_ended emitted while the child lived on.
+    const held = await Promise.race([
+      code.then(() => "resolved" as const),
+      Bun.sleep(150).then(() => "held" as const),
+    ]);
+    expect(held).toBe("held");
+    expect(of("session_ended")(events)).toBeUndefined();
+    const owned = readRegistry(registryPath);
+    expect(owned.outcome === "ok" && owned.file.sessions[0]?.ended).toBeNull();
+    // The child that arrived after the end is stopped by attach itself,
+    // and only its settlement lets the end path finish.
     const outcome = await Promise.race([
       proc.exited,
       Bun.sleep(4_000).then(() => null),
     ]);
     expect(outcome).not.toBeNull();
+    expect(await code).toBe(0);
+    const ended = events[events.length - 1] as Event;
+    expect(ended.type).toBe("session_ended");
+    // handleCallerEnd() is the pre-attach end a closed caller stdin
+    // produces; a real signal maps to "signal" on the same held path.
+    expect(ended.reason).toBe("stdin-close");
+    const released = readRegistry(registryPath);
+    expect(
+      released.outcome === "ok" && released.file.sessions[0]?.ended !== null
+    ).toBe(true);
     driver.dispose();
     await proc.settled;
   });

@@ -70,6 +70,8 @@
  *                end mid-turn keeps the usage already reported)
  *   noturnid   — answers turn/start with a success that names no turn,
  *                then holds (review live22)
+ *   otherturnid — a delta naming another turn before the turn/start
+ *                response names the real one (review round 67)
  *   crash      — one agentMessage, then exit 1
  *   garbage    — a non-JSON line, then nothing (tier-3 fatal)
  *   rawnewline — one JSON frame split by a raw newline inside a string
@@ -265,6 +267,13 @@ const handleTurnStart = (id: unknown, params: Record<string, unknown>): void => 
   }
   if (scenario === "noturnid") {
     respond(id, { turn: { items: [], status: "inProgress" } });
+    return;
+  }
+  if (scenario === "otherturnid") {
+    // Early output names one turn, then the response names another
+    // (review round 67): the window's provisional id is contradicted.
+    notify("item/agentMessage/delta", { threadId: THREAD_ID, turnId: `${turnId}-early`, itemId: "m-early", delta: "early" });
+    releaseTurnStart(id, "wait", turnId);
     return;
   }
   if (process.env.FAKE_HOLD_TURNSTART === "1") {

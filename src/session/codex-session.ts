@@ -98,6 +98,15 @@ export interface CodexParseContext {
    * Every closed turn counts, not only the last one: a straggler can
    * outlive the next turn's whole lifetime (review live23). */
   closedTurnIds?: ReadonlySet<string>;
+  /** True while a turn/start response is still in flight: a turn is open
+   * codemux-side but the harness has not named it yet, so scoped
+   * notifications arriving in that window cannot be identity-checked
+   * against a turn id (review round 64). */
+  turnPending?: boolean;
+  /** The turn id the first scoped notification of the pending window
+   * named: every later one in that window must name it, and the
+   * turn/start response must confirm it (review round 67). */
+  pendingTurnId?: string | null;
 }
 
 export {

@@ -125,6 +125,23 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 64, whole tree: a session that shuts down before its harness attaches waits for the late child before
+  releasing the resume record and emitting the end; an initial stdin write failure stops and awaits the spawned child
+  instead of escaping past it; a sandboxed launch whose options disagree with the request (autonomy, working
+  directory) is refused before anything spawns; experiment cleanup finalizes the private hermetic home even when
+  evidence preservation fails, reporting both failures; the Codex stream parser's rejoin bound covers the first
+  fragment and counts UTF-8 bytes, not UTF-16 code units; a scoped Codex notification for an unknown turn while no
+  turn is open is a grammar error; experiment evidence refuses calendar timestamps JavaScript would silently
+  normalize (2026-02-30); an out-of-order Claude usage delta is recorded as evidence, never as a turn's usage; a
+  delivery sink that rejects with `null` still poisons the session's outbound queue. Round 65 on that diff: a stdin
+  write whose promise rejects under backpressure fails the run and stops the child, even when the rejection settles after
+  the child exited or a protocol sink issued the write after the captures started (a synchronous throw from that writer included), and never replaces an earlier
+  capture failure's diagnosis; the Codex parser holds the turn/start window to the first turn id it saw and the
+  response must confirm it, and a scoped notification without a turn id in that window is a grammar error; a child that attaches after the end path began gets the orderly shutdown (EOF, grace, stop)
+  instead of an immediate SIGTERM that reported a clean harness as failed; several experiment cleanup failures are
+  relayed as one failure naming each; a Claude usage delta after its stream's message_stop is evidence, never the
+  turn's usage; and a codex or agy spawn that
+  throws after a signal ends through the driver's already-begun end path, as claude's did.
 - Review rounds 41 to 47 on the machine check and the live gate: a tokenless codex `auth.json` still logs in through
   an environment key; a fresh session's unreferenced private directory is removed on every end path; the OpenCode
   result envelope is bounded once JSON-escaped; the live gate's signal handlers cover the probe pool only; the

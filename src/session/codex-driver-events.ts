@@ -32,14 +32,31 @@ export abstract class CodexDriverEvents extends CodexDriverResponses {
       threadId: this.threadId,
       activeTurnId: this.harnessTurnId,
       closedTurnIds: this.closedHarnessTurnIds,
+      // The window between sending turn/start and its response naming
+      // the harness turn: scoped events there belong to that turn and
+      // cannot be checked against an id (review round 64).
+      turnPending: this.harnessTurnId === null && this.turnStartInFlight(),
+      pendingTurnId: this.pendingTurnId,
     });
     for (const parse of parses) {
+      this.noteProvisionalTurn(parse);
       this.applyParse(parse, line);
       // A parse that started the end path ends this line's application;
       // parses that arrive while an already-running end path drains still
       // apply, all the way to settlement.
       if (this.settled || (!wasEnding && this.finished)) return;
     }
+  }
+
+  /** The first turn id a scoped notification names while the turn/start
+   * response is in flight is the starting turn's provisional id (round
+   * 67); the parser holds the window to it and the response must confirm
+   * it. Stragglers of closed turns name nothing new. */
+  private noteProvisionalTurn(parse: CodexParse): void {
+    if (this.harnessTurnId !== null || this.pendingTurnId !== null) return;
+    if (!("turnId" in parse) || typeof parse.turnId !== "string") return;
+    if (this.closedHarnessTurnIds.has(parse.turnId)) return;
+    if (this.turnStartInFlight()) this.pendingTurnId = parse.turnId;
   }
 
   // --- harness side -----------------------------------------------------

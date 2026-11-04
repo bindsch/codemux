@@ -6,6 +6,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { reportSpawnThrow } from "./stdin-frame.js";
 import type { AutonomyLevel, ReasoningEffort, ResultUsageBlock } from "../types.js";
 import { providerHost, type SessionCallContext } from "../call-log.js";
 import { emptyUsage } from "../result-envelope.js";
@@ -192,15 +193,82 @@ export abstract class AgyDriverIo {
    * (src/session/agy-finalize.ts). */
   protected abstract announceSessionStarted(): void;
 
+  /** Set between spawnPending() and attach()/spawnAbandoned(): an end
+   * path that begins inside that window holds at the late-child wait in
+   * finish until one of them answers, so the record release,
+   * session_ended, and run()'s resolution never report the session ended
+   * while its child is still being born (review round 64; the claude
+   * driver's round 18 rule). */
+  private lateChild: Promise<SessionProcess | null> | null = null;
+  private resolveLateChild: ((proc: SessionProcess | null) => void) | null = null;
+
+  /** The CLI calls this immediately before its spawn, whose preflight is
+   * async: a signal delivered there starts the end path with no child to
+   * stop, and the end path must not release the resume record and emit
+   * session_ended before the child that needs stopping exists. */
+  spawnPending(): void {
+    this.lateChild = new Promise((resolve) => {
+      this.resolveLateChild = resolve;
+    });
+  }
+
+  /** The CLI's spawn ended without a child (it threw): an end path
+   * waiting on the late child proceeds with none — this invocation never
+   * ran its harness. */
+  spawnAbandoned(): void {
+    this.resolveLateChild?.(null);
+    this.resolveLateChild = null;
+  }
+
+  /** True once an end path has begun: the CLI's spawn-throw catch hands
+   * the ending to that path (round 20, minor 8; review round 65). */
+  endPathStarted(): boolean {
+    return this.finished;
+  }
+
+  /** The spawn-throw catch's exit once endPathStarted() is true: the end
+   * path owns the ending — session_ended and the record's release inside
+   * its own ordering, over the late child spawnAbandoned() answered with
+   * none — so await its verdict and leave through the session's exit
+   * code; a rethrow would release the record a second time and exit the
+   * process hard first (review round 65). */
+  async finishAfterSpawnThrow(error: unknown): Promise<void> {
+    reportSpawnThrow(error);
+    const code = await this.done;
+    this.dispose();
+    process.stdin.destroy();
+    process.exitCode = code;
+  }
+
+  /** The pending-spawn wait an end path holds when it begins before
+   * attach(): resolves with the child once it has settled (attach()
+   * stopped it first), with null when the spawn abandoned, and is null
+   * when no spawn was pending. */
+  protected awaitLateChild(): Promise<SessionProcess | null> | null {
+    return this.lateChild;
+  }
+
   /** Hand the driver the spawned process; lines that arrived before this
    * run are replayed in order. */
   attach(proc: SessionProcess): void {
     this.proc = proc;
     // A signal between construction and this call finished the driver with
     // no child to stop (the CLI's spawn runs an async compatibility probe
-    // before it attaches); the child arriving now must be stopped at once
-    // or it outlives the session it was spawned for.
-    if (this.finished) proc.requestStop();
+    // before it attaches). The end path waiting on this child drains it
+    // the way every shutdown does, EOF first, the grace, then the stop
+    // request, and awaits its settlement before the record release and
+    // session_ended (review round 64); an immediate SIGTERM here turned a
+    // child that would have exited on EOF into a harness failure (round
+    // 69).
+    if (this.finished && this.resolveLateChild === null) {
+      // No end path waits for this child (the end completed with no spawn
+      // pending): nothing will drain it, so it is stopped at once or it
+      // outlives the session it was spawned for.
+      proc.requestStop();
+      return;
+    }
+    this.resolveLateChild?.(proc);
+    this.resolveLateChild = null;
   }
 
   /** The main wait: resolves with codemux's exit code when the session

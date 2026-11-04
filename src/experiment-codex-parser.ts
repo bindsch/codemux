@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { calendarValid } from "./calendar.js";
 import { object } from "./experiment-codex-content.js";
 import { assertCodexToolDefinition } from "./experiment-codex-catalog.js";
 import { CodexTopLevelInventory, isCodexResourceCall } from "./experiment-codex-inventory.js";
@@ -90,6 +91,15 @@ export class CodexRolloutParser {
 
   accept(line: JsonObject): void {
     const payload = line.payload as JsonObject;
+    // The rollout cursor validates the same field before a line reaches
+    // here, but this parser is exported and driven directly: Date.parse
+    // alone normalizes a nonexistent calendar date (2026-02-30 reads as
+    // March 2), recording evidence under a different instant (review
+    // round 64).
+    if (typeof line.timestamp !== "string" || !Number.isFinite(Date.parse(line.timestamp)) ||
+        !calendarValid(line.timestamp)) {
+      throw new ExperimentFailure(Code.HarnessLogMissing, `Invalid Codex rollout timestamp '${String(line.timestamp)}'`);
+    }
     const t = Date.parse(line.timestamp) / 1000;
     if (line.type === "world_state") { this.inventory.accept(payload, t); return; }
     if (line.type === "token_usage_record") {

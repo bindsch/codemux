@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { combinedCleanupFailure } from "../experiment-records.js";
 import { dirname, join } from "node:path";
 import type { RunContext } from "./base.js";
 import { CodexPolicy } from "./codex-policy.js";
@@ -389,12 +390,28 @@ export class CodexAdapter extends CodexPolicy {
   private cleanupExperimentHome(context: RunContext): void {
     const experiment = context.experimentCodex!;
     experiment.interruptBeforeEvidence();
+    // The hermetic home holds copied credentials and configuration, so it
+    // is finalized even when evidence preservation fails: a full or
+    // unwritable recording destination must not leave per-run state
+    // behind (review round 64). One failure rethrows as itself, several
+    // as one AggregateError naming each.
+    const failures: unknown[] = [];
     try {
       experiment.preserveHarnessLog();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
       context.hermeticHome?.finalize();
     } catch (error) {
-      if (experiment.startedRecordingPath) experiment.relay.fail(error);
-      throw error;
+      failures.push(error);
+    }
+    if (failures.length > 0) {
+      // The relay latches its first failure, so several are relayed as
+      // one error whose message names each of them (review round 69).
+      const failure = combinedCleanupFailure(failures);
+      if (experiment.startedRecordingPath) experiment.relay.fail(failure);
+      throw failure;
     }
   }
 

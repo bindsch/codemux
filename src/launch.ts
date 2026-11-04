@@ -153,6 +153,21 @@ export async function launchRunRequest(
         "experiment project-settings launch must run in the request's working directory"
       );
     }
+    if (
+      options.sandbox &&
+      (options.requestedAutonomy !== (request.autonomy ?? "read-only") ||
+        effectiveWorkingDirectory(options.cwd) !== effectiveWorkingDirectory(request.cwd))
+    ) {
+      // The sandboxed branch validates the REQUEST but the scode spawn
+      // executes with the OPTIONS, so two different sets could validate a
+      // read-only request in one directory and execute with high autonomy
+      // in another (review round 64). Refuse before anything spawns; the
+      // special modes above already pin the same agreement with their own
+      // messages, so only matching pairs reach here.
+      throw new UsageRefusalError(
+        "sandboxed launch options must match the request: the scode spawn must run the validated autonomy in the validated working directory"
+      );
+    }
     if (!options.sandbox) {
       // A direct launch has no sandbox it could attest, so a request that
       // claims one is refused: the sandboxed branch below is the only launch

@@ -166,6 +166,27 @@ describe("bounded outbound queue", () => {
     await expect(queue.flush()).rejects.toThrow("sink broke");
   });
 
+  test("a sink that rejects with null still poisons the queue (review round 64)", async () => {
+    // `null` is a legal rejection value and doubled as the queue's "no
+    // error" marker: after Promise.reject(null), later entries stayed
+    // accepted and flush() resolved — a final session event reported
+    // delivered by a sink that refused it. A distinct sentinel carries
+    // the no-error state now, so the null rejection latches like any
+    // other failure.
+    const failures: { kind: string; error?: unknown }[] = [];
+    const queue = new BoundedOutboundQueue(
+      () => Promise.reject(null),
+      (failure) => failures.push(failure)
+    );
+    expect(queue.enqueue("final")).toBe(true);
+    await waitUntil(() => failures.length === 1, 5_000);
+    expect(queue.enqueue("later")).toBe(false);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.kind).toBe("sink");
+    expect(failures[0]?.error).toBeNull();
+    await expect(queue.flush()).rejects.toBe(null);
+  });
+
   test("abandon drops the entries and releases a flush waiting on a stalled sink", async () => {
     // Review live3, correctness 1: a sink that neither resolves nor
     // throws left flush()'s poll loop spinning forever. abandon() is the

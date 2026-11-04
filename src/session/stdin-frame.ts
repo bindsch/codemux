@@ -12,6 +12,27 @@ export interface SessionDriver {
    * (opencode, aider, kimi) have none — they spawn per caller input
    * through their spawnTurn closure instead. */
   attach?(proc: SessionProcess): void;
+  /** The CLI calls this immediately before its spawn and answers it with
+   * attach() (a child) or spawnAbandoned() (a throw): an end path that
+   * begins inside that window — a signal during the spawn's async
+   * preflight — holds its completion until the answer settles, so the
+   * resume record, the session_ended event, and run() never report the
+   * session ended while the child is still being born (review round
+   * 64). Long-lived-child drivers implement it; turn-per-process agents
+   * have no child to track. */
+  spawnPending?(): void;
+  /** The CLI's spawn ended without a child: an end path waiting on the
+   * pending spawn proceeds with none. */
+  spawnAbandoned?(): void;
+  /** True once an end path has begun (a signal or a timeout during the
+   * spawn's preflight among them): the CLI's spawn-throw catch hands the
+   * ending to that path instead of releasing the record itself and
+   * rethrowing past it (round 20, minor 8; round 65 for every
+   * long-lived-child driver). */
+  endPathStarted?(): boolean;
+  /** The spawn-throw catch's exit once endPathStarted() is true: awaits
+   * the end path's verdict and leaves through the session's exit code. */
+  finishAfterSpawnThrow?(error: unknown): Promise<void>;
   run(): Promise<number>;
   handleHarnessLine(line: string): void;
   handleFatal(fatal: SessionFatal): void;
@@ -21,6 +42,16 @@ export interface SessionDriver {
    * releases it on every end path (review live20). */
   adoptResumeClaim(): void;
   dispose(): void;
+}
+
+/** The notice every driver's finishAfterSpawnThrow prints: the spawn
+ * failure is still reported, and the ending is the end path's. */
+export function reportSpawnThrow(error: unknown): void {
+  console.error(
+    `codemux: the session child could not be spawned (${
+      error instanceof Error ? error.message : String(error)
+    }); ending through the session's already-begun end path`
+  );
 }
 
 /** The stdin-shaped surface frameCallerStdin attaches to — injectable so

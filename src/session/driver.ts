@@ -19,6 +19,7 @@
  */
 
 import { appendSessionCallRecord, appendSessionTurnCallRecord } from "../call-log.js";
+import { reportSpawnThrow } from "./stdin-frame.js";
 import { emptyUsage } from "../result-envelope.js";
 import { buildInterruptRequest } from "./claude-session.js";
 import {
@@ -95,11 +96,7 @@ export class ClaudeSessionDriver extends ClaudeDriverInput {
    * the process hard first. A FRESH --final directory the end path
    * decided nothing about still gets the CLI tail's own removal. */
   async finishAfterSpawnThrow(error: unknown): Promise<void> {
-    console.error(
-      `codemux: the session child could not be spawned (${
-        error instanceof Error ? error.message : String(error)
-      }); ending through the session's already-begun end path`
-    );
+    reportSpawnThrow(error);
     let code = await this.done;
     if ( // --final, or a fresh record discarded as unconfirmed (nothing points at the directory; round 47)
       (this.options.final || this.recordDiscarded) &&
@@ -120,16 +117,16 @@ export class ClaudeSessionDriver extends ClaudeDriverInput {
     this.proc = proc;
     // A signal between construction and this call finished the driver with
     // no child to stop (the CLI's spawn runs an async compatibility probe
-    // before it attaches); the child arriving now must be stopped at once
-    // or it outlives the session it was spawned for. An end path already
-    // waiting holds until this child settles, so the --final removal runs
-    // only over a dead child (review round 18, edges 1).
-    if (this.finished) {
+    // before it attaches). The end path waiting on this child drains it
+    // the way every shutdown does, EOF first, the grace, then the stop
+    // request, and awaits its settlement before the --final removal
+    // (review round 18, edges 1); an immediate SIGTERM here turned a child
+    // that would have exited on EOF into a harness failure (round 69).
+    if (this.finished && this.resolveLateChild === null) {
+      // No end path waits for this child (the end completed with no spawn
+      // pending): nothing will drain it, so it is stopped at once or it
+      // outlives the session it was spawned for.
       proc.requestStop();
-      void proc.settled.then(() => {
-        this.resolveLateChild?.(proc);
-        this.resolveLateChild = null;
-      });
       return;
     }
     this.resolveLateChild?.(proc);

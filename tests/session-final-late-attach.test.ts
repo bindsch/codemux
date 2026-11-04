@@ -126,8 +126,10 @@ test("a --final end during the spawn preflight removes the directory only after 
     });
     driver.attach(proc);
     // run() resolves only after the end path completes: the late child
-    // settled, the removal ran, the record was stamped.
-    expect(await driver.run()).toBe(1);
+    // settled, the removal ran, the record was stamped. The child got the
+    // orderly shutdown (EOF, then the stop request) and exited 0 on EOF;
+    // an immediate SIGTERM used to make this a harness failure (round 69).
+    expect(await driver.run()).toBe(0);
     await proc.settled;
     expect(childSettled).toBe(true);
     // One removal sequence, started after the child settled — the defect
@@ -145,6 +147,7 @@ test("a --final end during the spawn preflight removes the directory only after 
     const ended = events.at(-1);
     expect(ended?.type).toBe("session_ended");
     expect(ended?.resumable).toBe(false);
+    expect(ended?.reason).toBe("stdin-close");
   } finally {
     driver.dispose();
     rmSync(root, { recursive: true, force: true });

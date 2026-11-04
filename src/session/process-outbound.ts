@@ -5,6 +5,12 @@
  * the lifecycle and re-exports these.
  */
 
+/** The queue's "no sink failure yet" state. `null` cannot carry it: a sink
+ * that rejects with `null` is a real failure — JavaScript allows any
+ * rejection value — and an equality check against `null` would read that
+ * rejection as successful delivery (review round 64, finding 9). */
+const NO_SINK_ERROR = Symbol("no sink error");
+
 /** A caller input line over this is rejected before it reaches the wire. */
 export const MAX_INPUT_LINE_BYTES = 17 * 1024 * 1024;
 /** Outbound queue bounds to the caller (design §4.2). */
@@ -280,7 +286,7 @@ export class BoundedOutboundQueue {
   private queuedFatal = 0;
   private pendingBytes = 0;
   private flushing = false;
-  private sinkError: unknown = null;
+  private sinkError: unknown = NO_SINK_ERROR;
   private overflowed = false;
   private abandoned = false;
 
@@ -309,7 +315,7 @@ export class BoundedOutboundQueue {
    * live `turn_completed` is ordinary; a final synthesized completion
    * uses the fatal class, preserving the end event's last slot. */
   enqueue(line: string, options?: { terminal?: boolean | "fatal" }): boolean {
-    if (this.sinkError !== null || this.abandoned) return false;
+    if (this.sinkError !== NO_SINK_ERROR || this.abandoned) return false;
     const bytes = utf8ByteLength(line) + 1;
     const laneClass: "end" | "fatal" | null =
       options?.terminal === true
@@ -369,7 +375,7 @@ export class BoundedOutboundQueue {
       // polling here cannot miss a refill that happened mid-flush.
       await Bun.sleep(1);
     }
-    if (this.sinkError !== null) throw this.sinkError;
+    if (this.sinkError !== NO_SINK_ERROR) throw this.sinkError;
   }
 
   /** Abandon delivery (the final-flush give-up): the entries are dropped
@@ -392,7 +398,7 @@ export class BoundedOutboundQueue {
   /** Latch the sink failure and report it exactly once: delivery is dead,
    * so the entries are dropped and the driver hears why. */
   private fail(error: unknown): void {
-    if (this.sinkError !== null) return;
+    if (this.sinkError !== NO_SINK_ERROR) return;
     this.sinkError = error;
     this.entries = [];
     this.queuedTerminal = 0;

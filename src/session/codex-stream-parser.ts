@@ -6,21 +6,24 @@
 
 import { normalizeCodexTokenUsage, type RequestId } from "./codex-protocol-builders.js";
 import { CODEX_APPROVAL_METHODS, fileChangePaths } from "./codex-session-approvals.js";
-import { bufferable, isRecord, type PendingParse } from "./codex-parse-facts.js";
-import { CODEX_THREAD_ID_PATTERN, PARSE_BUFFER_MAX_BYTES, PARSE_BUFFER_MAX_LINES } from "./codex-parse-facts.js";
+import { bufferable, CODEX_THREAD_ID_PATTERN, isRecord, PARSE_BUFFER_MAX_BYTES, PARSE_BUFFER_MAX_LINES, type PendingParse } from "./codex-parse-facts.js";
 import { unusableFacts } from "./process.js";
 import type { CodexParse, CodexParseContext } from "./codex-session.js";
 
+const UTF8 = new TextEncoder();
+/** The rejoin bounds are byte bounds: a string's `.length` counts UTF-16
+ * code units and under-reports text outside basic Latin (review round 64). */
+const utf8Bytes = (text: string): number => UTF8.encode(text).byteLength;
+
+type ScopedParams = { params: Record<string, unknown> | null; threadId: string; turnId: string | null; error: CodexParse | null };
+
 /**
  * Parse the app-server NDJSON stream, one line at a time, under the §4.2
- * tiers. Never throws. The one codex-specific tolerance is openclaw's
- * raw-newline quirk: codex has emitted JSON with raw newlines inside
- * string values, so a line that starts an object and fails with
- * "Unterminated string" or "Unexpected end of JSON input" is buffered and
- * rejoined with an escaped newline once its continuation lines arrive —
- * bounded, and fatal once the bounds are passed. Responses are keyed on
- * id-without-method and notifications on method-without-id, exactly as
- * the recorded wire frames them.
+ * tiers. Never throws. One tolerance: codex has emitted JSON with raw
+ * newlines inside string values, so a line that starts an object and
+ * fails as unterminated is buffered and rejoined with an escaped newline
+ * once its continuation arrives (bounded; fatal past the bounds).
+ * Responses are keyed on id-without-method, notifications on method.
  */
 export class CodexStreamParser {
   private threadStartedSeen = false;
@@ -34,7 +37,9 @@ export class CodexStreamParser {
     try {
       parsed = JSON.parse(line);
     } catch (error) {
-      if (bufferable(line, error)) {
+      // The first fragment is bounded like its continuations: an opener
+      // past the bound is the tier-3 fatal, never a growing buffer (round 64).
+      if (bufferable(line, error) && utf8Bytes(line) <= PARSE_BUFFER_MAX_BYTES) {
         this.pendingParse = { text: line, lines: 1 };
         return [];
       }
@@ -70,7 +75,7 @@ export class CodexStreamParser {
       const lines = pending.lines + 1;
       if (
         bufferable(candidate, error) &&
-        candidate.length <= PARSE_BUFFER_MAX_BYTES &&
+        utf8Bytes(candidate) <= PARSE_BUFFER_MAX_BYTES &&
         lines <= PARSE_BUFFER_MAX_LINES
       ) {
         this.pendingParse = { text: candidate, lines };
@@ -459,31 +464,36 @@ export class CodexStreamParser {
   private scopedParams(
     params: Record<string, unknown> | null,
     context: CodexParseContext
-  ): { params: Record<string, unknown> | null; threadId: string; turnId: string | null; error: CodexParse | null } {
-    if (params === null) {
-      return { params: null, threadId: "", turnId: null, error: { kind: "grammar_error", message: "a scoped notification carries no params" } };
-    }
+  ): ScopedParams {
+    const grammar = (message: string): ScopedParams =>
+      ({ params: null, threadId: "", turnId: null, error: { kind: "grammar_error", message } });
+    if (params === null) return grammar("a scoped notification carries no params");
     const threadId = params["threadId"];
-    if (typeof threadId !== "string") {
-      return { params: null, threadId: "", turnId: null, error: { kind: "grammar_error", message: "a scoped notification carries no thread id" } };
-    }
+    if (typeof threadId !== "string") return grammar("a scoped notification carries no thread id");
     const threadError = this.checkThread(threadId, context);
-    if (threadError !== null) {
-      return { params: null, threadId: "", turnId: null, error: threadError };
-    }
+    if (threadError !== null) return { params: null, threadId: "", turnId: null, error: threadError };
     const turnId = params["turnId"];
-    const straggler =
-      typeof turnId === "string" && context.closedTurnIds?.has(turnId) === true;
-    if (context.activeTurnId !== null && turnId !== context.activeTurnId && !straggler) {
-      return {
-        params: null,
-        threadId: "",
-        turnId: null,
-        error: {
-          kind: "grammar_error",
-          message: `an event references turn ${String(turnId)} but the open turn is ${context.activeTurnId}`,
-        },
-      };
+    const straggler = typeof turnId === "string" && context.closedTurnIds?.has(turnId) === true;
+    if (context.turnPending === true && context.activeTurnId === null) {
+      // The turn/start window: the first id seen is provisional; a second
+      // id, a missing id, or a response naming a third is a grammar error
+      // (rounds 67 and 70).
+      const pending = context.pendingTurnId;
+      if (typeof turnId !== "string") {
+        return grammar("a scoped notification with no turn id arrived while a turn was starting");
+      }
+      if (typeof pending === "string" && turnId !== pending && !straggler) {
+        return grammar(`a scoped notification for turn ${turnId} arrived while the starting turn's notifications name ${pending}`);
+      }
+    } else if (turnId !== context.activeTurnId && !straggler) {
+      // A scoped notification while idle names no turn this session owns
+      // (round 64); stragglers of closed turns stay accepted (real codex
+      // sends usage after turn/completed).
+      return grammar(context.activeTurnId === null
+        ? typeof turnId === "string"
+          ? `a scoped notification for turn ${turnId} arrived with no open turn`
+          : "a scoped notification with no turn id arrived while no turn is open"
+        : `an event references turn ${String(turnId)} but the open turn is ${context.activeTurnId}`);
     }
     return { params, threadId, turnId: typeof turnId === "string" ? turnId : null, error: null };
   }

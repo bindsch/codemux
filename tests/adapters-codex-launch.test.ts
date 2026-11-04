@@ -48,7 +48,8 @@ describe("CodexAdapter", () => {
 
       // Rejection before prepareRun: a request validation refuses, so the
       // second launch never prepares a context and has nothing of its own
-      // -- or of A's -- to clean.
+      // -- or of A's -- to clean. The launch options carry the same
+      // autonomy the request names (review round 64's agreement rule).
       await expect(
         launchRunRequest(
           adapter,
@@ -56,7 +57,7 @@ describe("CodexAdapter", () => {
           {
             sandbox: true,
             sandboxPolicyOverrides: { trust: "untrusted" },
-            requestedAutonomy: "read-only",
+            requestedAutonomy: "medium",
             cwd: workdir,
           }
         )
@@ -123,6 +124,88 @@ describe("CodexAdapter", () => {
     } finally {
       if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
       else process.env.CLAUDE_CONFIG_DIR = prev;
+    }
+  });
+
+  test("a sandboxed launch whose options disagree with the request is refused before anything spawns (review round 64)", async () => {
+    // The sandboxed branch validates the request (adapter checks read
+    // request.autonomy and request.cwd) but the scode spawn executes with
+    // the options, so a caller passing two different sets could validate a
+    // read-only request in one directory and execute with high autonomy in
+    // another. The launcher now refuses the disagreement itself, before
+    // any adapter preparation.
+    const workdirA = mkdtempSync(join(tmpdir(), "codemux-launch-a-"));
+    const workdirB = mkdtempSync(join(tmpdir(), "codemux-launch-b-"));
+    class ProbeAdapter extends BaseAdapter {
+      readonly id = "claude" as const;
+      readonly binaryName = "claude";
+      prepared = 0;
+      capabilities(): AdapterCapabilities {
+        return {
+          supportsNonInteractive: true,
+          supportsInteractive: true,
+          supportsModel: false,
+          supportsAutonomy: true,
+          autonomyLevels: ["read-only", "low", "medium", "high"],
+          supportsEffort: false,
+          effortLevels: [],
+          supportsHermetic: false,
+          supportsToolSelection: false,
+          supportsResultJson: false,
+        };
+      }
+      buildRunCommand(): string[] {
+        return [process.execPath, "-e", "process.exit(0)"];
+      }
+      buildTuiCommand(): string[] {
+        return ["claude"];
+      }
+      override validateRunRequest(): void {
+        throw new Error("probe: request refused after the guard");
+      }
+      override prepareRun(): RunContext {
+        this.prepared++;
+        return {};
+      }
+    }
+    try {
+      const adapter = new ProbeAdapter();
+      const base: RunRequest = { agent: "claude", prompt: "t", sandboxed: true, cwd: workdirA };
+      // Autonomy disagreement: the request says read-only, the spawn would
+      // run high.
+      await expect(
+        launchRunRequest(adapter, base, {
+          sandbox: true,
+          requestedAutonomy: "high",
+          cwd: workdirA,
+        })
+      ).rejects.toThrow(
+        "sandboxed launch options must match the request: the scode spawn must run the validated autonomy in the validated working directory"
+      );
+      // Working-directory disagreement: the request was validated for one
+      // directory, the spawn would run in another.
+      await expect(
+        launchRunRequest(adapter, base, {
+          sandbox: true,
+          requestedAutonomy: "read-only",
+          cwd: workdirB,
+        })
+      ).rejects.toThrow("sandboxed launch options must match the request");
+      // Neither refusal prepared anything or reached the adapter.
+      expect(adapter.prepared).toBe(0);
+      // The control: an agreeing pair passes the guard and fails at the
+      // adapter's own validation instead.
+      await expect(
+        launchRunRequest(adapter, base, {
+          sandbox: true,
+          requestedAutonomy: "read-only",
+          cwd: workdirA,
+        })
+      ).rejects.toThrow("probe: request refused after the guard");
+      expect(adapter.prepared).toBe(0);
+    } finally {
+      rmSync(workdirA, { recursive: true, force: true });
+      rmSync(workdirB, { recursive: true, force: true });
     }
   });
 

@@ -15,6 +15,9 @@ export class ClaudeExperimentUsage {
   private seen = new Set<string>();
   private completed = new Set<string>();
   private streamId?: string;
+  /** True from the stream's message_stop until the next message_start:
+   * a delta there names no open stream (review round 69). */
+  private streamClosed = false;
   private streamUsage = empty();
   private streamUsageTime = 0;
   private streamHasUsage = false;
@@ -54,6 +57,7 @@ export class ClaudeExperimentUsage {
         "Claude repeated a completed stream message.id");
       if (this.turn?.message_id !== event.message.id) this.complete();
       this.streamId = event.message.id;
+      this.streamClosed = false;
       this.streamUsage = empty();
       this.streamHasUsage = this.merge(this.streamUsage, event.message.usage);
       this.streamUsageTime = t;
@@ -62,16 +66,26 @@ export class ClaudeExperimentUsage {
         this.usageTime = t;
       }
     } else if (event?.type === "message_delta" && event.usage) {
+      if (this.streamId === undefined || this.streamClosed) {
+        // A delta with no stream start, or after its stream's message_stop,
+        // names no message, so merging it would attribute another
+        // message's usage to the current turn and let the next
+        // message_stop finalize that turn from it (review rounds 64 and
+        // 69). The event is kept as raw evidence, never as usage.
+        this.record("uncorrelated_delta", { t, usage: event.usage });
+        return;
+      }
       if (this.merge(this.streamUsage, event.usage)) {
         this.streamHasUsage = true;
         this.streamUsageTime = t;
       }
-      if (this.turn && (!this.streamId || this.streamId === this.turn.message_id) &&
+      if (this.turn && this.streamId === this.turn.message_id &&
           this.merge(this.usage, event.usage)) {
         this.hasUsage = true;
         this.usageTime = t;
       }
     } else if (event?.type === "message_stop") {
+      this.streamClosed = true;
       this.complete();
     }
   }

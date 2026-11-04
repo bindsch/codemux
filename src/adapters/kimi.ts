@@ -1,4 +1,5 @@
 import type { SandboxOptions, ScodeTrustLevel } from "../sandbox.js";
+import { combinedCleanupFailure } from "../experiment-records.js";
 import { join } from "node:path";
 import { BaseAdapter, type RunContext } from "./base.js";
 import { assertNoKimiProjectExecutionConfig } from "../project-safety.js";
@@ -213,11 +214,32 @@ export class KimiAdapter extends BaseAdapter {
 
   private cleanupHome(context?: RunContext): void {
     const experiment = context?.experimentKimi;
+    // The hermetic home (copied credentials) and the no-tools file (in the
+    // real brand home) are finalized even when evidence preservation
+    // fails (review round 64). One failure rethrows as itself, several as
+    // one AggregateError naming each.
+    const failures: unknown[] = [];
     try {
       experiment?.preserveHarnessLog();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
       context?.kimiHermeticHome?.finalize();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
       context?.kimiNoToolsFile?.finalize();
-    } catch (error) { experiment?.relay.fail(error); throw error; }
+    } catch (error) {
+      failures.push(error);
+    }
+    if (failures.length > 0) {
+      // The relay latches its first failure: one combined error (round 69).
+      const failure = combinedCleanupFailure(failures);
+      experiment?.relay.fail(failure);
+      throw failure;
+    }
   }
 
   override cleanupRun(context?: RunContext): void | Promise<void> {

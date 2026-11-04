@@ -35,6 +35,15 @@ export function experimentFailure(error: unknown): ExperimentFailure {
     ExperimentFailureCode.Protocol, error instanceof Error ? error.message : String(error));
 }
 
+/** Several cleanup failures as one error: the relay records a single
+ * failure per run, so the combined message names each of them (review
+ * round 69); a single failure stays itself. */
+export function combinedCleanupFailure(failures: unknown[]): unknown {
+  if (failures.length === 1) return failures[0];
+  const messages = failures.map((failure) => failure instanceof Error ? failure.message : String(failure));
+  return new AggregateError(failures, `codemux: experiment cleanup failed ${failures.length} times: ${messages.join("; ")}`);
+}
+
 export type ExperimentUsage = { input: number; output: number; cache_read: number; cache_write: number };
 export interface ExperimentRecordFields {
   [kind: string]: JsonObject;
@@ -42,6 +51,10 @@ export interface ExperimentRecordFields {
   run_end: JsonObject & { code: ExperimentFailureCode | null; error: string | null };
   turn: { message_id: string; t: number; usage: ExperimentUsage | null; tool_calls: { call_id: string; name: string }[] };
   turn_usage: { message_id: string; usage: ExperimentUsage; t: number };
+  /** A usage delta that arrived with no matching stream start: names no
+   * message, so it is kept as raw evidence instead of usage (review
+   * round 64). */
+  uncorrelated_delta: { t: number; usage: JsonObject };
   turn_call: { message_id: string; call_id: string; name: string; t: number };
   harness_log_copy: { harness: "codex" | "kimi"; path: string; bytes: number } |
     { harness: "codex" | "kimi"; path: string; error: string };

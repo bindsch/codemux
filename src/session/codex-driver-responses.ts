@@ -199,6 +199,18 @@ export abstract class CodexDriverResponses extends CodexDriverTurns {
         void this.finish("crash", 1);
         return;
       }
+      if (this.pendingTurnId !== null && this.pendingTurnId !== turnId) {
+        // The window's notifications were charged to the starting turn on
+        // the strength of their id; a response naming another turn means
+        // they belonged to a turn this session never started (round 67).
+        this.emitGrammarViolation(
+          rawLine,
+          `the turn/start response names turn ${turnId} but the notifications that arrived while it was in flight named ${this.pendingTurnId}`
+        );
+        void this.finish("crash", 1);
+        return;
+      }
+      this.pendingTurnId = null;
       this.harnessTurnId = turnId;
       // An interrupt buffered while the harness turn id was unknown.
       if (this.interruptQueued) {

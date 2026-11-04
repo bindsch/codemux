@@ -86,6 +86,52 @@ test("Claude retains stream usage received before an assistant placeholder snaps
   }]);
 });
 
+test("a delta after its stream's message_stop is evidence, never the turn's usage (review round 69)", async () => {
+  const p = peer();
+  await p.ready();
+  // One complete stream, then a delta with no new message_start: the
+  // stale stream id used to correlate it and merge it into the counters.
+  p.push({ type: "stream_event", event: { type: "message_start", message: { id: "done-stream",
+    usage: { input_tokens: 10, output_tokens: 1 } } } });
+  p.push({ type: "stream_event", event: { type: "message_stop" } });
+  p.push({ type: "assistant", message: { id: "done-stream", role: "assistant", content: [],
+    usage: { input_tokens: 10, output_tokens: 5 } } });
+  p.push({ type: "stream_event", event: { type: "message_delta", usage: { input_tokens: 999, output_tokens: 999 } } });
+  expect(p.records().filter((record) => record.kind === "uncorrelated_delta")).toMatchObject([{
+    usage: { input_tokens: 999, output_tokens: 999 },
+  }]);
+  p.push({ type: "stream_event", event: { type: "message_stop" } });
+  expect(p.records().filter((record) => record.kind === "turn_usage")).toMatchObject([{
+    message_id: "done-stream", usage: { input: 10, output: 5, cache_read: 0, cache_write: 0 },
+  }]);
+  p.result();
+  expect(p.bridge.finish()).toContain('"result":"OK"');
+});
+
+test("an out-of-order delta with no stream start is evidence, never the turn's usage (review round 64)", async () => {
+  const p = peer();
+  await p.ready();
+  p.push({ type: "assistant", message: { id: "live-turn", role: "assistant", content: [],
+    usage: { input_tokens: 10, output_tokens: 5 } } });
+  // A message_delta whose message_start never arrived: with no stream id
+  // to correlate it, the old code merged it into the open turn and the
+  // following message_stop finalized that turn with another message's
+  // counters. It is now kept as raw evidence (an uncorrelated_delta
+  // note) and the turn keeps its own snapshot's usage.
+  p.push({ type: "stream_event", event: { type: "message_delta", usage: {
+    input_tokens: 999, output_tokens: 999,
+  } } });
+  expect(p.records().filter((record) => record.kind === "uncorrelated_delta")).toMatchObject([{
+    usage: { input_tokens: 999, output_tokens: 999 },
+  }]);
+  p.push({ type: "stream_event", event: { type: "message_stop" } });
+  expect(p.records().filter((record) => record.kind === "turn_usage")).toMatchObject([{
+    message_id: "live-turn", usage: { input: 10, output: 5, cache_read: 0, cache_write: 0 },
+  }]);
+  p.result();
+  expect(p.bridge.finish()).toContain('"result":"OK"');
+});
+
 test.each(["initial", "recheck", "later-recheck"])("inventory stops after an awaited page becomes inactive: %s", async (phase) => {
   let active = true;
   let requests = 0;

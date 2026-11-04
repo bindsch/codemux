@@ -190,6 +190,21 @@ describe("codex session e2e - review live22", () => {
     expect(await session.code).toBe(0);
   });
 
+  test("a turn/start response contradicting the window's provisional turn id ends the session (review round 67)", async () => {
+    // Early output named turn-fake-1-early; the response names
+    // turn-fake-1. The window's events would have been charged to a turn
+    // the session never started, so the session ends on the crash path.
+    const session = await startAndWait();
+    send(session.driver, { type: "user", text: "scenario:otherturnid one" });
+    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
+    expect(ended.reason).toBe("crash");
+    expect(await session.code).toBe(1);
+    const fatal = session.events.find((event) => event.type === "error" && event.fatal === true);
+    expect(fatal?.message).toBe(
+      "the turn/start response names turn turn-fake-1 but the notifications that arrived while it was in flight named turn-fake-1-early"
+    );
+  });
+
   test("a turn/start success that names no turn ends the session at once", async () => {
     // Correctness minor 6: the codemux turn was failed but the server's
     // turn could still be running, and the next queued turn/start went to

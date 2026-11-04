@@ -18,6 +18,13 @@ export const FAKE = fileURLToPath(
   new URL("../fixtures/live/fake-agy-session.ts", import.meta.url)
 );
 
+/** A session child that survives its stop request for a moment: the
+ * fixture prints READY once its SIGTERM handler is installed and then
+ * holds the signal FAKE_HOLD_MS (default 400) before exiting 0. */
+export const HOLD = fileURLToPath(
+  new URL("../fixtures/live/fake-hold-then-exit.ts", import.meta.url)
+);
+
 export type Event = Record<string, any>;
 
 export interface Session {

@@ -93,7 +93,7 @@ export abstract class KimiDriverIo {
   protected childDelivery: Promise<void> = Promise.resolve();
   /** True once the end-path procedure has started (the end_path effect
    * fires exactly once; a later one would be spurious). */
-  protected endPathStarted = false;
+  protected endPathBegun = false;
   /** The hold's resolution: resolved once an abandoned spawn can no
    * longer create a child (its rejection, or its late landing stopped
    * and settled). finishDone awaits it — past done, by design — before

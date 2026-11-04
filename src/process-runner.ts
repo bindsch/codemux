@@ -2,6 +2,7 @@ import { signalProcess } from "./process-signal.js";
 export { signalProcess } from "./process-signal.js";
 import { assertExecutablesUnchanged, type ExecutableCheck } from "./executable-security.js";
 import { OutputLimitError, readBounded } from "./process-capture.js";
+import { trackStdinDelivery } from "./process-stdin.js";
 export { MAX_CAPTURE_BYTES } from "./process-capture.js";
 import {
   createTerminationTarget,
@@ -152,11 +153,6 @@ export async function runCapturedCommand(
     detached: useProcessGroup,
   });
 
-  if (!options.stdoutSink?.start && options.stdinInput !== null && options.stdinInput !== undefined) {
-    proc.stdin.write(options.stdinInput);
-  }
-  if (!options.stdoutSink?.start) proc.stdin.end();
-
   const target = createTerminationTarget(proc, useProcessGroup);
   // Counted only once everything that can throw synchronously is done, so
   // the decrement in the finally block below always balances it.
@@ -165,11 +161,9 @@ export async function runCapturedCommand(
   let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
   let forceKillDeadline = 0;
   let giveUpTimer: ReturnType<typeof setTimeout> | null = null;
-  // The child runs in its own process group, so a Ctrl-C or SIGTERM aimed
-  // at codemux would end this process and leave the agent running with
-  // its request in flight. Forward the signal to the whole tree instead
-  // and let the run complete normally, so exit handlers (a hermetic home's
-  // cleanup) still see the child gone.
+  // A Ctrl-C or SIGTERM aimed at codemux is forwarded to the child's whole
+  // process group and the run completes normally, so exit handlers (a
+  // hermetic home's cleanup) still see the child gone.
   let signaled = false;
   let captureFailed = false;
   let protocolAborted = false;
@@ -207,8 +201,7 @@ export async function runCapturedCommand(
   const giveUp = new Promise<void>((resolve) => {
     giveUpReads = resolve;
   });
-  // Canceling capture after a failure must not release the child exit wait.
-  // Only the bounded termination deadline can abandon that wait.
+  // Only the bounded termination deadline abandons the child exit wait.
   let giveUpExit: () => void = () => {};
   const exitGiveUp = new Promise<void>((resolve) => { giveUpExit = resolve; });
   const timeoutTimer = setTimeout(() => {
@@ -217,9 +210,8 @@ export async function runCapturedCommand(
   }, timeoutMs);
 
   const abortCapture = (): void => {
-    const firstFailure = !captureFailed;
+    if (!captureFailed) terminateRun();
     captureFailed = true;
-    if (firstFailure) terminateRun();
     giveUpReads();
   };
 
@@ -248,19 +240,34 @@ export async function runCapturedCommand(
     }
   };
 
+  // Stdin failures after the spawn are the run's (rounds 64 to 67): see
+  // process-stdin.ts for the rules.
+  const stdin = trackStdinDelivery({
+    exited: proc.exited,
+    superseded: () => captureFailed || timedOut || signaled,
+    abort: abortCapture,
+  });
+  const trackStdin = stdin.track;
+
   try {
     try {
+      // A protocol sink owns stdin itself: only the plain path writes here.
+      if (!options.stdoutSink?.start) {
+        if (options.stdinInput !== null && options.stdinInput !== undefined) {
+          trackStdin(proc.stdin.write(options.stdinInput));
+        }
+        trackStdin(proc.stdin.end());
+      }
       options.stdoutSink?.start?.(
-        (line) => { proc.stdin.write(line); },
-        () => { proc.stdin.end(); },
+        (line) => { stdin.attempt(() => proc.stdin.write(line)); },
+        () => { stdin.attempt(() => proc.stdin.end()); },
         () => { protocolAborted = true; abortCapture(); },
         options.cwd
       );
     } catch (error) {
-      // start() ran after the spawn, so the child is live: a throw must not
-      // leave it running. Give it the same termination a signal gets --
-      // SIGTERM now, the promised grace, a tree-wide SIGKILL, and bounded
-      // pipe abandonment -- wait for the exit, then fail the run.
+      // The child is live when the write or start() throws: the same
+      // termination a signal gets (SIGTERM, the promised grace, a
+      // tree-wide SIGKILL), wait for the exit, then fail the run.
       abortCapture();
       await waitForDescendantsGrace(target, forceKillDeadline);
       signalProcess(target, "SIGKILL", "tree");
@@ -270,12 +277,17 @@ export async function runCapturedCommand(
     const [stdoutResult, stderrResult, exitCode] = await Promise.all([
       capture(proc.stdout as ReadableStream<Uint8Array>, "stdout"),
       capture(proc.stderr as ReadableStream<Uint8Array>, "stderr"),
-      // Bun can retain the exit promise while inherited stdio is open.
-      // Duplex callbacks keep the subprocess alive, so canceling the readers
-      // alone is insufficient: abandonment must release this wait as well.
+      // Bun can retain the exit promise while inherited stdio is open, so
+      // abandonment must release this wait as well as the readers.
       Promise.race([proc.exited, exitGiveUp.then(() => TIMEOUT_EXIT_CODE)]),
     ]);
+    // Every write issued before the exit is in stdin's chain by now, so
+    // the wait starts only here: started with the captures it could drain
+    // an empty chain before a protocol sink's first write (round 68).
+    await Promise.race([stdin.settled(), exitGiveUp]);
 
+    // A stdin failure that came first is the diagnosis.
+    if (stdin.failed()) throw new CapturedRunFailure(stdin.error());
     const captureError = firstCaptureError;
     if (captureError instanceof OutputLimitError) {
       firstError = new CapturedRunFailure(captureError);
@@ -331,19 +343,15 @@ export async function runCapturedCommand(
     clearTimeout(timeoutTimer);
     if (forceKillTimer) clearTimeout(forceKillTimer);
     if (giveUpTimer) clearTimeout(giveUpTimer);
-    // The process-group leader may exit on SIGTERM while a descendant ignores
-    // it and closes the captured pipes, which resolves the capture before the
-    // grace timer fires. Give the descendants the rest of the grace period
-    // they were promised, then kill the tree unconditionally: the group
-    // SIGKILL reaches a member the pid walk never saw (or could not see), as
-    // it did in 0.5.0, so none can escape the timeout.
+    // The leader may exit on SIGTERM while a descendant closes the pipes
+    // early: give the descendants the rest of the promised grace, then kill
+    // the whole group, which reaches members the pid walk never saw.
     if (timedOut || signaled || captureFailed) {
       await waitForDescendantsGrace(target, forceKillDeadline);
       signalProcess(target, "SIGKILL", "tree");
     }
-    // Protocol cleanup can fail (for example, a full recording disk). Finish
-    // the runner's own cleanup first so that failure cannot strand its timers.
-    // A protocol abort predates cleanup, too. Never replace its diagnosis.
+    // Protocol cleanup can fail (a full recording disk): the runner's own
+    // timers are cleared first. A protocol abort's diagnosis is never replaced.
     firstError ??= protocolAborted ? new CapturedRunFailure("protocol capture aborted") : undefined;
     let cleanupNote: string | undefined;
     try { await options.stdoutSink?.closeProtocol?.(); }
@@ -382,12 +390,9 @@ export async function runCapturedCommand(
       if (signaled) console.error(`Note: ${terminationNote}`);
     }
     if (signaled) {
-      // The signal meant "stop codemux", not "skip this step": a version
-      // probe interrupted here must not fall through to the launch. The
-      // tree is dead, so the exit handlers (a hermetic home's cleanup)
-      // run against a finished run. The launch's own receipt is written
-      // first: the tokens were spent, and this exit means the launch's
-      // recordCompletedLaunch never runs (review ul6).
+      // The signal meant "stop codemux", not "skip this step": an
+      // interrupted version probe must not fall through to the launch. The
+      // launch's receipt is written first: recordCompletedLaunch never runs.
       if (cleanupNote) console.error(`Note: ${cleanupNote}`);
       console.error("codemux: interrupted; the agent's process tree was terminated");
       process.exit(SIGNAL_EXIT_CODE);

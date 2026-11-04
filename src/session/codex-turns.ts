@@ -37,6 +37,10 @@ export abstract class CodexDriverTurns extends CodexDriverApprovals {
    * null while no turn is open and while a turn/start request is still
    * in flight (steers and interrupts buffer until it is named). */
   protected harnessTurnId: string | null = null;
+  /** The id the first scoped notification named while the turn/start
+   * response was still in flight (review round 67): later notifications
+   * in that window must match it, and the response must confirm it. */
+  protected pendingTurnId: string | null = null;
   /** The harness ids of turns that closed: a usage, item, or delta
    * notification naming one after its `turn/completed` is late, not the
    * open turn's (review live18), even once a later turn is named (the
@@ -399,7 +403,7 @@ export abstract class CodexDriverTurns extends CodexDriverApprovals {
     return this.deliverInterrupt();
   }
 
-  private turnStartInFlight(): boolean {
+  protected turnStartInFlight(): boolean {
     for (const pending of this.pendingCalls.values()) {
       if (typeof pending === "object" && pending.kind === "turn_start") return true;
     }
@@ -428,6 +432,7 @@ export abstract class CodexDriverTurns extends CodexDriverApprovals {
       }
     }
     this.harnessTurnId = null;
+    this.pendingTurnId = null;
   }
 
   /** The caller-facing turn a translated notification belongs to: none

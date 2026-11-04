@@ -344,9 +344,11 @@ export function registerSessionCommand(
         if (argv !== null) {
           spawnBegan.value = true;
           // A signal during the spawn's preflight starts the end path
-          // with no child; spawnPending holds the --final removal until
-          // the child this spawn produces settles (round 18, edges 1).
-          claudeDriver?.spawnPending();
+          // with no child; spawnPending holds the end path — the --final
+          // removal on the claude family, the resume-record release and
+          // session_ended on every long-lived child — until the child
+          // this spawn produces settles (round 18, edges 1; round 64).
+          driver.spawnPending?.();
           try {
             // The session home's config.toml, written only now — after
             // the claim, before anything spawns (review D5, correctness
@@ -377,12 +379,13 @@ export function registerSessionCommand(
           } catch (error) {
             // No child came: release the late-child hold or the end path
             // never exits (round 18, edges 1).
-            claudeDriver?.spawnAbandoned();
+            driver.spawnAbandoned?.();
             // An end path a signal or timeout began during the preflight
-            // owns this ending (round 20, minor 8): await it and leave
-            // through its exit code, never rethrow past it.
-            if (claudeDriver !== null && claudeDriver.endPathStarted()) {
-              await claudeDriver.finishAfterSpawnThrow(error);
+            // owns this ending (round 20, minor 8; every long-lived-child
+            // driver since round 65): await it and leave through its exit
+            // code, never release the record here or rethrow past it.
+            if (driver.endPathStarted?.() === true && driver.finishAfterSpawnThrow) {
+              await driver.finishAfterSpawnThrow(error);
               return;
             }
             // No driver end path runs for a spawn that threw, so the claim

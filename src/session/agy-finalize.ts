@@ -124,7 +124,16 @@ export abstract class AgyFinalize extends AgyDriverIo {
     // SIGINT/SIGTERM during the grace window must hit the gate's
     // fire-once latch, not the default disposition, or codemux dies
     // mid-drain and the tree it was about to kill survives it.
-    const proc = this.proc;
+    let proc = this.proc;
+    if (proc === null) {
+      // An end path that began while the CLI's spawn was still pending —
+      // a signal during the spawn's async preflight — has no child yet.
+      // Holding here keeps everything below (the record release,
+      // session_ended, run()'s resolution) behind the child's
+      // settlement: attach() answers with the stopped child once it
+      // settles, a spawn throw with none (review round 64).
+      proc = await this.awaitLateChild();
+    }
     let childOutcome: SessionChildOutcome | null = null;
     if (proc !== null) {
       // agy has no interrupt; the stdin close is its only end carrier.

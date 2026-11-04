@@ -2,6 +2,7 @@ import { closeSync, constants, fstatSync, openSync, readSync, readdirSync } from
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { readUtf8FileBounded } from "./file-io.js";
+import { calendarValid } from "./calendar.js";
 import { object } from "./experiment-codex-content.js";
 import { ExperimentFailure, ExperimentFailureCode as Code } from "./experiment-records.js";
 import type { JsonObject } from "./experiment-server.js";
@@ -100,8 +101,14 @@ export class CodexRolloutCursor {
       this.lineCount++;
       const value = object(JSON.parse(raw));
       if (!value || typeof value.type !== "string" || !object(value.payload) ||
-          typeof value.timestamp !== "string" || !Number.isFinite(Date.parse(value.timestamp))) {
+          typeof value.timestamp !== "string") {
         throw new Error(`invalid RolloutLine at line ${this.lineCount}`);
+      }
+      // Date.parse alone normalizes a nonexistent calendar date to the
+      // next real one, recording evidence under a different instant
+      // (review round 64).
+      if (!Number.isFinite(Date.parse(value.timestamp)) || !calendarValid(value.timestamp)) {
+        throw new Error(`RolloutLine timestamp '${value.timestamp}' at line ${this.lineCount} is not a real calendar instant`);
       }
       if (value.type === "session_meta") {
         if (this.sessionSeen || value.payload.id !== this.threadId) throw new Error("session_meta does not match the exec thread id");

@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { PARSE_BUFFER_MAX_BYTES } from "../src/session/codex-parse-facts.js";
 import { CODEX_APPROVAL_METHODS, CodexStreamParser } from "../src/session/codex-session.js";
 import { CWD } from "./helpers/session-codex.js";
 
@@ -393,6 +394,73 @@ describe("codex session - stream parser", () => {
     const over = p.feed(`more"}`, ctx);
     expect(over).toHaveLength(1);
     expect(over[0]!.kind).toBe("unusable");
+  });
+
+  test("the rejoin byte bound covers the first fragment too (review round 64)", () => {
+    const { parser: p, ctx } = parser();
+    // An unterminated opener one byte past the bound: the initial branch
+    // used to buffer it silently, since the bound applied only from the
+    // second line on.
+    const head = `{"method":"item/agentMessage/delta","params":{"threadId":"${THREAD}","turnId":"${TURN}","delta":"`;
+    const over = head + "a".repeat(PARSE_BUFFER_MAX_BYTES - head.length + 1);
+    expect(Buffer.byteLength(over, "utf8")).toBe(PARSE_BUFFER_MAX_BYTES + 1);
+    const parses = p.feed(over, ctx);
+    expect(parses).toHaveLength(1);
+    expect(parses[0]!.kind).toBe("unusable");
+    expect((parses[0] as any).bytes).toBe(PARSE_BUFFER_MAX_BYTES + 1);
+    // At the bound exactly, the fragment still buffers: 8 MiB is allowed.
+    const atBound = new CodexStreamParser();
+    expect(atBound.feed(head + "a".repeat(PARSE_BUFFER_MAX_BYTES - head.length), ctx)).toEqual([]);
+  });
+
+  test("the rejoin byte bound counts UTF-8 bytes, not UTF-16 code units (review round 64)", () => {
+    const { parser: p, ctx } = parser();
+    // Two-byte characters held just under the byte bound: the UTF-16
+    // length is about half the size, so the old .length check kept
+    // buffering the joined continuation past the bound.
+    const head = `{"delta":"`;
+    const fill = "é".repeat(Math.floor((PARSE_BUFFER_MAX_BYTES - 32 - head.length) / 2));
+    const fragment = head + fill;
+    expect(Buffer.byteLength(fragment, "utf8")).toBeLessThanOrEqual(PARSE_BUFFER_MAX_BYTES);
+    expect(fragment.length).toBeLessThan(PARSE_BUFFER_MAX_BYTES / 2);
+    expect(p.feed(fragment, ctx)).toEqual([]);
+    // Sixty-four continuation bytes push the joined UTF-8 size past the
+    // bound while its UTF-16 length stays near half of it.
+    const joined = p.feed("x".repeat(64), ctx);
+    expect(joined).toHaveLength(1);
+    expect(joined[0]!.kind).toBe("unusable");
+  });
+
+  test("a scoped notification for an unknown turn while idle is a grammar error (review round 64)", () => {
+    // While no turn is open, an item, delta, or usage notification for an
+    // arbitrary turn id used to pass as valid session output. Only a
+    // straggler of a closed turn and a turn/start still in flight stay
+    // accepted without an id to check against.
+    const idle: { threadId: string | null; activeTurnId: string | null } = { threadId: THREAD, activeTurnId: null };
+    const delta = feed({ method: "item/agentMessage/delta", params: { threadId: THREAD, turnId: "unknown-turn", delta: "x" } }, idle);
+    expect(delta).toEqual([
+      { kind: "grammar_error", message: "a scoped notification for turn unknown-turn arrived with no open turn" },
+    ]);
+    const usage = feed({ method: "thread/tokenUsage/updated",
+      params: { threadId: THREAD, turnId: "unknown-turn", tokenUsage: { last: { totalTokens: 3 } } } }, idle);
+    expect(usage[0]!.kind).toBe("grammar_error");
+    const item = feed({ method: "item/completed",
+      params: { threadId: THREAD, turnId: "unknown-turn", item: { id: "m1", type: "agentMessage", text: "x" } } }, idle);
+    expect(item[0]!.kind).toBe("grammar_error");
+    // A scoped notification with no turn id at all is the same error.
+    const missing = feed({ method: "item/agentMessage/delta", params: { threadId: THREAD, delta: "x" } }, idle);
+    expect(missing[0]!.kind).toBe("grammar_error");
+    // A straggler of a closed turn stays accepted, labeled with its turn.
+    const stragglerCtx = { threadId: THREAD, activeTurnId: null, closedTurnIds: new Set([TURN]) };
+    expect(
+      feed({ method: "item/agentMessage/delta", params: { threadId: THREAD, turnId: TURN, delta: "x" } }, stragglerCtx)
+    ).toEqual([{ kind: "assistant_delta", threadId: THREAD, turnId: TURN, text: "x" }]);
+    // A turn/start still in flight: the turn is open codemux-side but
+    // unnamed, so its early events cannot be identity-checked.
+    const pendingCtx = { threadId: THREAD, activeTurnId: null, turnPending: true };
+    expect(
+      feed({ method: "item/agentMessage/delta", params: { threadId: THREAD, turnId: "turn-being-started", delta: "x" } }, pendingCtx)
+    ).toEqual([{ kind: "assistant_delta", threadId: THREAD, turnId: "turn-being-started", text: "x" }]);
   });
 
   test("a non-bufferable parse failure never buffers", () => {
