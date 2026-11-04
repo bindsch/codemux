@@ -8,11 +8,12 @@ import { ExperimentFailure, ExperimentFailureCode, experimentFailure, Experiment
 import { ExperimentServer, MAX_EXPERIMENT_MESSAGE_BYTES, type JsonObject } from "./experiment-server.js";
 import { PIPE_GIVE_UP_MS } from "./process-runner.js";
 import { ExperimentRelayResponse, RELAY_SSE_KEEPALIVE_MS, RELAY_SSE_SWITCH_MS } from "./experiment-relay-response.js";
-import {
+import { MAX_NATIVE_CALL_ID_CHARS, nativeCallIdBytes,
   parseRelayMessage,
   readRelayBody,
   rejectRelayOversized,
   relayDeclaresBody,
+  RelayRequestOversized,
   respondRelay,
 } from "./experiment-relay-respond.js";
 
@@ -197,11 +198,18 @@ export class ExperimentHttpRelay {
         this.fail(new ExperimentFailure(ExperimentFailureCode.ServerError, `experiment MCP ${message.method} returned a JSON-RPC error${detail}`));
       }
     } catch (error) {
-      this.fail(asError(error));
-      // The request's state is unknown after a throw: always close (a
-      // reused socket could carry whatever the handler stopped reading).
-      try { if (!response.headersSent) respondRelay(this.record, response, 400, Buffer.alloc(0), "POST", true); else response.destroy(); }
-      catch { response.destroy(); }
+      if (error instanceof RelayRequestOversized) {
+        // The client's upload fit the bound; the relay's own framing did
+        // not. Answer exactly like the body reader's refusal — 413, the
+        // connection closed, nothing forwarded — and keep the run alive.
+        rejectRelayOversized(this.record, request, response, deadline);
+      } else {
+        this.fail(asError(error));
+        // The request's state is unknown after a throw: always close (a
+        // reused socket could carry whatever the handler stopped reading).
+        try { if (!response.headersSent) respondRelay(this.record, response, 400, Buffer.alloc(0), "POST", true); else response.destroy(); }
+        catch { response.destroy(); }
+      }
     } finally { delivery?.close(); }
   }
 
@@ -279,6 +287,19 @@ export class ExperimentHttpRelay {
         const forwarded = await dispatch.response;
         return { ...forwarded, reply: forwarded.reply && { ...forwarded.reply, id: message.id }, correlation };
       }
+      // The final wire body, not the uploaded one, must fit the bound: the
+      // dispatch injects a call id the client never sent, and
+      // re-serialization can outgrow the raw body. Measured here with the
+      // longest id the resolver may answer, BEFORE the call is registered,
+      // resolved, or recorded, so a refusal consumes no relay index and
+      // leaves no correlation state (review rounds 73 and 74); the
+      // refusal itself is evidence. A retry of an earlier dispatch is never
+      // forwarded, so it is matched first and never measured (round 76).
+      const probe = { ...message, params: { ...message.params, _meta: { ...meta, "codemux/callId": "x".repeat(MAX_NATIVE_CALL_ID_CHARS) } } };
+      if (Buffer.byteLength(JSON.stringify(probe)) > MAX_EXPERIMENT_MESSAGE_BYTES) {
+        this.record("request_refused", { rpc_id: message.id, method: message.method, reason: "oversized" });
+        throw new RelayRequestOversized("experiment MCP forwarded request exceeds 1 MiB");
+      }
       call = { relay_index: this.calls.length, name, input, rpc_ids: [message.id] };
       this.calls.push(call);
       const dispatch = { response: this.dispatch(message, call), completed: false, delivery, nativeId };
@@ -295,6 +316,7 @@ export class ExperimentHttpRelay {
         if (!this.resolveCallId) throw new Error("experiment MCP call has no native call ID resolver");
         const callId = await this.nativeCallId(call, message);
         if (typeof callId !== "string" || !callId.trim()) throw new Error("experiment MCP native call ID must be nonempty");
+        if (nativeCallIdBytes(callId) > MAX_NATIVE_CALL_ID_CHARS) throw new Error(`experiment MCP native call ID exceeds ${MAX_NATIVE_CALL_ID_CHARS} bytes in its JSON spelling`);
         if (this.calls.some((other) => other !== call && other.call_id === callId)) throw new Error("experiment MCP native call ID is duplicated");
         call.call_id = callId;
       } catch (error) {
@@ -307,6 +329,13 @@ export class ExperimentHttpRelay {
       if (meta !== undefined && (!meta || typeof meta !== "object" || Array.isArray(meta))) throw new Error("experiment MCP request metadata must be an object");
       message.params._meta = { ...meta, "codemux/callId": call.call_id };
       this.record("tool_call", { ...call, relay_request_seq: call.relay_index });
+    }
+    // The forwarder's own rule, the serialized body alone. The acceptance
+    // probe above measured the worst case for a tools/call and the HTTP
+    // reader bounds every other body, so this cannot trigger; it stays as
+    // the invariant that nothing over the bound reaches the server.
+    if (Buffer.byteLength(JSON.stringify(message)) > MAX_EXPERIMENT_MESSAGE_BYTES) {
+      throw new ExperimentFailure(ExperimentFailureCode.Protocol, "experiment MCP forwarded request exceeds 1 MiB");
     }
     this.record("mcp_request", { rpc_id: message.id ?? null,
       ...(call ? { relay_index: call.relay_index, relay_request_seq: call.relay_index } : {}), message });

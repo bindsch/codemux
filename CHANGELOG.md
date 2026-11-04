@@ -125,6 +125,30 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 73, whole tree: an opencode or aider turn whose process spawn rejects after a graceful end began
+  (shutdown or stdin close) is reported failed with the spawn error and exits nonzero instead of interrupted with
+  exit 0; a Codex experiment inventory is checked only when the tool map carries the experiment namespace and every
+  experiment tool, so a map of only `functions` no longer passes evidence validation; every read of the Claude
+  credential mirror is bounded at 1 MiB and refuses oversized or non-regular files; the experiment message bound
+  counts the JSON body alone on both the HTTP relay and the stdio forwarder, and a request whose relay-injected
+  call id pushes it past the bound is refused 413 instead of killing the run, so a boundary-size request succeeds
+  end to end; Codex approvals under JSON-RPC ids that differ only by type (1 and "1") stay distinct and separately
+  answerable, with the caller-facing request id carrying the id's JSON spelling; a session registry holding one
+  session id twice is corrupt, naming the id, instead of silently resuming the first record. Round 74 on that diff: a
+  caller's `request_id` may be the JSON spelling of a 128-character harness id (up to 770 code units) and Codex string
+  ids are bounded at 128 like every harness id; a tools/call is measured in its final forwarded form (the injected
+  call id at its 512-character cap) before it is registered, so a refusal consumes no relay index, leaves no
+  correlation state, and is recorded as `request_refused`. Round 75: the native call id cap counts the bytes of its
+  JSON spelling, so an id of quotes or multibyte characters cannot outgrow the probe; a server response body of
+  exactly the bound is accepted (the framing newline never counted on the request side and now counts on neither),
+  and a reader failure answers every pending request with the failure instead of leaving it unresolved until close.
+  Round 76: a credential mirror codemux refused on its content (oversized, invalid UTF-8) is `unsafe` when a Keychain
+  entry exists, since the child could still read a refresh token from it; a mirror that would exceed the bound is
+  never written; a retry of an earlier dispatch is matched before the size probe; the protocol doc says which
+  harnesses present a raw request id and which present the JSON spelling. Round 77: a scrub whose conflict re-read is
+  refused on content is `unsafe` too, and an oversized mirror write is refused before any refresh-token backup exists.
+  Round 78: the writer's conflict re-read is the same bounded, no-follow read, so a file or FIFO swapped in mid-write
+  is refused unread.
 - Review round 64, whole tree: a session that shuts down before its harness attaches waits for the late child before
   releasing the resume record and emitting the end; an initial stdin write failure stops and awaits the spawned child
   instead of escaping past it; a sandboxed launch whose options disagree with the request (autonomy, working

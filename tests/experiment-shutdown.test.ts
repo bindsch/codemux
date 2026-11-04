@@ -132,7 +132,7 @@ test.each(["writable", "inside cwd"])("experiment server refuses an untrusted ex
   } finally { spawn.mockRestore(); }
 });
 
-test.each([0, 1])("both inbound transports count the delimiter at the frame limit + %i", async (extra) => {
+test.each([0, 1])("the bridge counts the delimiter and a server reply counts its body alone at the limit + %i", async (extra) => {
   const cwd = directory();
   const bridge = new ExperimentBridge({ ...spec, recording: cwd }, cwd, "probe");
   const frame = { type: "system", subtype: "status", padding: "" };
@@ -142,20 +142,28 @@ test.each([0, 1])("both inbound transports count the delimiter at the frame limi
     if (extra) expect(() => bridge.push(JSON.stringify(frame) + "\n")).toThrow("exceeds 1 MiB");
     else expect(() => bridge.push(JSON.stringify(frame) + "\n")).not.toThrow();
   } finally { await bridge.close(); }
+  // A server reply's bound is its JSON body alone; the framing newline
+  // never counts (review round 75), and a refused reply answers the
+  // pending request with the failure instead of leaving it unresolved.
   const fail = mock(() => {});
   const received = mock(() => {});
+  const rejected = mock(() => {});
   const server = new ExperimentServer(spec, cwd, {}, () => {}, fail);
   const internals = server as unknown as { pending: Map<string, unknown>;
     read(stream: ReadableStream<Uint8Array>, kind: string): Promise<void> };
   const reply: JsonObject = { jsonrpc: "2.0", id: 1, result: "" };
-  reply.result = "x".repeat(MAX_EXPERIMENT_MESSAGE_BYTES - Buffer.byteLength(JSON.stringify(reply) + "\n") + extra);
-  internals.pending.set("1", { resolve: received });
+  reply.result = "x".repeat(MAX_EXPERIMENT_MESSAGE_BYTES - Buffer.byteLength(JSON.stringify(reply)) + extra);
+  expect(Buffer.byteLength(JSON.stringify(reply))).toBe(MAX_EXPERIMENT_MESSAGE_BYTES + extra);
+  internals.pending.set("1", { resolve: received, reject: rejected });
   server.terminate();
   await internals.read(new ReadableStream({ start(controller) {
     controller.enqueue(Buffer.from(JSON.stringify(reply) + "\n")); controller.close();
   } }), "server_stdout");
-  if (extra) { expect(fail).toHaveBeenCalledTimes(1); expect(received).not.toHaveBeenCalled(); }
-  else { expect(fail).not.toHaveBeenCalled(); expect(received).toHaveBeenCalledTimes(1); }
+  if (extra) {
+    expect(fail).toHaveBeenCalledTimes(1);
+    expect(received).not.toHaveBeenCalled();
+    expect(rejected).toHaveBeenCalledTimes(1);
+  } else { expect(fail).not.toHaveBeenCalled(); expect(received).toHaveBeenCalledTimes(1); expect(rejected).not.toHaveBeenCalled(); }
 });
 
 test.each(["timeout", "signal", "abort", "parse", "UTF-8", "limit"])("%s terminates the external server group before harness cleanup", async (reason) => {

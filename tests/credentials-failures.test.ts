@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -43,6 +43,75 @@ describe("syncKeychainCredential — a mirror of an existing file", () => {
       writeFileSync(real, `${JSON.stringify({ claudeAiOauth: { accessToken: "a", refreshToken: "" } })}\n`, { mode: 0o600 });
       expect(syncKeychainCredential("svc", target, gives(SECRET), BACKUPS(target))).toBe("failed");
     }, "");
+  });
+
+  test("an oversized mirror is refused before any read or write (review rounds 73, 76)", () => {
+    // The mirror directory is child-writable, so a previous sandboxed run
+    // can have enlarged the file. The bound refuses it unread, the bytes
+    // untouched, nothing written. With a Keychain entry behind it the file
+    // is a mirror whose refresh token cannot be ruled out, so the launch is
+    // refused ("unsafe"); with no entry it is Claude Code's own store and
+    // proceeds as "failed".
+    const oversized = `${JSON.stringify({
+      claudeAiOauth: { accessToken: "stale", refreshToken: "LIVE", expiresAt: FUTURE, scopes: [] },
+      padding: "x".repeat(1024 * 1024),
+    })}\n`;
+    withTarget((target, dir) => {
+      writeFileSync(target, oversized, { mode: 0o600 });
+      expect(syncKeychainCredential("svc", target, gives(SECRET), BACKUPS(target))).toBe("unsafe");
+      expect(syncKeychainCredential("svc", target, errors, BACKUPS(target))).toBe("unsafe");
+      expect(syncKeychainCredential("svc", target, missing, BACKUPS(target))).toBe("failed");
+      expect(readFileSync(target, "utf8")).toBe(oversized);
+      expect(readdirSync(dir)).toEqual([".credentials.json"]);
+    }, "");
+  });
+
+  test("a refused oversized write leaves no backup behind, and the scrub keeps exactly one (review round 77)", () => {
+    // The file carries a refresh token, so a write would back it up first;
+    // the oversized result is judged before the backup exists. The scrub
+    // that follows makes the one legitimate copy.
+    const huge = gives(JSON.stringify({ claudeAiOauth: { accessToken: "a".repeat(1024 * 1024), refreshToken: "r", expiresAt: FUTURE, scopes: [] } }));
+    const carrying = JSON.stringify({ claudeAiOauth: { accessToken: "small", refreshToken: "LIVE", expiresAt: FUTURE - 1 } });
+    withTarget((target, dir) => {
+      expect(syncKeychainCredential("svc", target, huge, BACKUPS(target))).toBe("failed");
+      expect(readFileSync(target, "utf8")).not.toContain("LIVE");
+      expect(readdirSync(join(dir, "backups"))).toHaveLength(1);
+    }, carrying);
+  });
+
+  test("a scrub whose conflict re-read is refused on content is unsafe (review round 77)", () => {
+    // The Keychain entry holds no usable credential, so the file's refresh
+    // token is scrubbed locally. Another writer changes the file under the
+    // scrub (a conflict), and what it wrote is oversized: its refresh
+    // token cannot be ruled out, so the launch is refused.
+    const carrying = JSON.stringify({ claudeAiOauth: { accessToken: "a", refreshToken: "LIVE", expiresAt: FUTURE } });
+    const fileIo = require("../src/file-io.js") as typeof import("../src/file-io.js");
+    const original = fileIo.readUtf8FileBounded;
+    let reads = 0;
+    const spy = spyOn(fileIo, "readUtf8FileBounded").mockImplementation((path: string, options: Parameters<typeof original>[1]) => {
+      reads += 1;
+      if (reads === 1) return `${original(path, options).trimEnd()} \n`; // differs from disk: the write conflicts
+      throw new fileIo.FileContentError("the Claude credential mirror exceeds 1048576 bytes");
+    });
+    try {
+      withTarget((target) => {
+        expect(syncKeychainCredential("svc", target, gives(JSON.stringify({ mcpOAuth: {} })), BACKUPS(target))).toBe("unsafe");
+        expect(readFileSync(target, "utf8").trim()).toBe(carrying);
+      }, carrying);
+    } finally { spy.mockRestore(); }
+  });
+
+  test("a mirror that would exceed the bound is never written (review round 76)", () => {
+    // A Keychain credential large enough to push the mirror past 1 MiB is
+    // not written: the next launch could not read it back. The file keeps
+    // its content and the stale mirror is reported ("failed").
+    const huge = gives(JSON.stringify({ claudeAiOauth: { accessToken: "a".repeat(1024 * 1024), refreshToken: "r", expiresAt: FUTURE, scopes: [] } }));
+    const before = JSON.stringify({ claudeAiOauth: { accessToken: "small", refreshToken: "", expiresAt: FUTURE - 1 } });
+    withTarget((target, dir) => {
+      expect(syncKeychainCredential("svc", target, huge, BACKUPS(target))).toBe("failed");
+      expect(readFileSync(target, "utf8").trim()).toBe(before);
+      expect(readdirSync(dir)).toEqual([".credentials.json"]);
+    }, before);
   });
 
   test("an expired mirror token with nothing usable in the Keychain fails loudly", () => {
@@ -256,6 +325,29 @@ describe("writeMirror's vanished and conflict outcomes (C-8)", () => {
       // The redundant pre-scrub copy is removed again, so refusals cannot
       // pile up backups.
       expect(existsSync(backups) ? readdirSync(backups) : []).toEqual([]);
+    });
+  });
+
+  test("a mirror swapped for an oversized file or a FIFO mid-write reports error, unread (review round 78)", () => {
+    // The conflict re-read is bounded and refuses non-regular files like
+    // every other read of the mirror: a huge file is not read whole and a
+    // FIFO never blocks the launch. Nothing is staged and no backup stays.
+    const oversized = `${JSON.stringify({ claudeAiOauth: { accessToken: "x".repeat(1024 * 1024), refreshToken: "" } })}\n`;
+    withTarget((target, dir) => {
+      const backups = join(dir, "backups");
+      writeFileSync(target, oversized, { mode: 0o600 });
+      expect(writeMirror(target, `${SECRET}\n`, scrubbed, backups)).toBe("error");
+      expect(readFileSync(target, "utf8")).toBe(oversized);
+      expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+      expect(existsSync(backups) ? readdirSync(backups) : []).toEqual([]);
+    });
+    if (process.platform === "win32") return;
+    withTarget((target, dir) => {
+      rmSync(target, { force: true });
+      require("node:child_process").execFileSync("mkfifo", [target]);
+      const started = Date.now();
+      expect(writeMirror(target, `${SECRET}\n`, scrubbed, join(dir, "backups"))).toBe("error");
+      expect(Date.now() - started).toBeLessThan(2_000);
     });
   });
 });

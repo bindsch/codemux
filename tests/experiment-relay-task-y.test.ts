@@ -4,6 +4,8 @@ import { request as httpRequest, type ClientRequest, type IncomingMessage, type 
 import { join, resolve } from "node:path";
 import { ExperimentHttpRelay } from "../src/experiment-relay.js";
 import { ExperimentFailureCode, resultContentSha256 } from "../src/experiment-records.js";
+import { MAX_NATIVE_CALL_ID_CHARS } from "../src/experiment-relay-respond.js";
+import { MAX_EXPERIMENT_MESSAGE_BYTES } from "../src/experiment-server.js";
 import { readRelayHttpResponse, type RelayHttpResponse } from "./experiment-relay-http.js";
 import { MARKER } from "./fixtures/experiment-mcp.js";
 
@@ -321,6 +323,28 @@ test("a disconnected original request does not fail its attached retry", async (
   const deliveryFailure = records(relay).find((entry) => entry.kind === "relay_delivery_failed" && entry.rpc_id === "abandoned");
   expect(deliveryFailure).toMatchObject({ relay_request_seq: 0, message: expect.any(String) });
   expect(records(relay).filter((entry) => entry.kind === "failure")).toEqual([]);
+  relay.finish();
+});
+
+test("a retry whose hypothetical forwarded form crosses the bound still recovers the original dispatch (review round 76)", async () => {
+  // The original just fits the acceptance probe. The retry carries a
+  // longer JSON-RPC id, so measured as a fresh dispatch it would not fit;
+  // a retry is never forwarded, so it is matched before it is measured.
+  const relay = await setup();
+  let resolutions = 0;
+  relay.resolveCallId = async () => `native-${++resolutions}`;
+  const probe = { jsonrpc: "2.0", id: "x", method: "tools/call", params: { name: "bash",
+    arguments: { command: "hold:200", pad: "" }, _meta: { "codemux/callId": "x".repeat(MAX_NATIVE_CALL_ID_CHARS) } } };
+  const pad = "p".repeat(MAX_EXPERIMENT_MESSAGE_BYTES - Buffer.byteLength(JSON.stringify(probe)));
+  const first = call(relay, "x", { command: "hold:200", pad });
+  await until(() => dispatched(relay).length === 1, "original tool call was not dispatched");
+  await abandon(first);
+  const retryId = "x".repeat(40);
+  const retry = call(relay, retryId, { command: "hold:200", pad });
+  expectResult(await retry.response, retryId);
+  expect(records(relay).filter((entry) => entry.kind === "request_refused")).toEqual([]);
+  expect(dispatched(relay)).toHaveLength(1);
+  expect(relay.failureCode).toBeNull();
   relay.finish();
 });
 

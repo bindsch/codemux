@@ -272,6 +272,37 @@ export const handleDecisionResponse = (frame: Record<string, unknown>): void => 
     if (turnId !== null) completeTurn(turnId, "interrupted");
     return;
   }
+  if (state.mixedApprovals.length > 0) {
+    // Typed matching (review round 73): numeric 1 and string "1" are two
+    // different approvals. Each decision completes its own command item;
+    // the turn ends only once every approval was answered.
+    const mixed = state.mixedApprovals.find(
+      (entry) => !entry.decided && JSON.stringify(id) === JSON.stringify(entry.approval.id)
+    );
+    if (mixed === undefined) return;
+    mixed.decided = true;
+    const decision = typeof result["decision"] === "string" ? result["decision"] : "decline";
+    notify("item/completed", itemParams(mixed.approval.turnId, {
+      completedAtMs: Date.now(),
+      item: {
+        type: "commandExecution",
+        id: mixed.approval.callId,
+        command: mixed.approval.command,
+        cwd: FAKE_CWD,
+        status: decision === "accept" ? "completed" : "declined",
+        commandActions: [],
+        aggregatedOutput: decision === "accept" ? "gone\n" : "",
+        exitCode: decision === "accept" ? 0 : null,
+        durationMs: 5,
+      },
+    }));
+    if (state.mixedApprovals.every((entry) => entry.decided)) {
+      state.mixedApprovals = [];
+      agentMessageCompleted(mixed.approval.turnId, "msg-mix", "Both answered.");
+      completeTurn(mixed.approval.turnId, "completed");
+    }
+    return;
+  }
   if (state.pendingApproval !== null && String(id) === String(state.pendingApproval.id)) {
     // A permissions reply carries the echoed grant instead of a decision
     // string: an empty echo is a decline, a non-empty one an accept.

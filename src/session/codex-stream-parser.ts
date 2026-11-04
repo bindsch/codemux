@@ -5,6 +5,7 @@
  */
 
 import { normalizeCodexTokenUsage, type RequestId } from "./codex-protocol-builders.js";
+import { MAX_ID_CHARS } from "./protocol.js";
 import { CODEX_APPROVAL_METHODS, fileChangePaths } from "./codex-session-approvals.js";
 import { bufferable, CODEX_THREAD_ID_PATTERN, isRecord, PARSE_BUFFER_MAX_BYTES, PARSE_BUFFER_MAX_LINES, type PendingParse } from "./codex-parse-facts.js";
 import { unusableFacts } from "./process.js";
@@ -124,8 +125,7 @@ export class CodexStreamParser {
       }
       return [{ kind: "response", id, result: frame["result"] }];
     }
-    // A JSON object with neither method nor id is not a JSON-RPC frame.
-    return [{ kind: "unknown" }];
+    return [{ kind: "unknown" }]; // neither method nor id: not JSON-RPC
   }
 
   private classifyServerRequest(
@@ -136,6 +136,9 @@ export class CodexStreamParser {
     const id = frame["id"] as RequestId;
     if (typeof id !== "number" && typeof id !== "string") {
       return [{ kind: "grammar_error", message: `server request ${method} carries a non-scalar id` }];
+    }
+    if (typeof id === "string" && (id.length === 0 || id.length > MAX_ID_CHARS || id.includes("\0"))) {
+      return [{ kind: "grammar_error", message: `server request ${method} carries an id outside the bound` }];
     }
     const kindOfApproval = CODEX_APPROVAL_METHODS[method];
     if (kindOfApproval === undefined) {
@@ -179,12 +182,11 @@ export class CodexStreamParser {
     return [
       {
         kind: "permission_request",
-        // The reply must echo the id with its original type (JSON-RPC
-        // correlation): numeric ids stay numeric, and the caller-facing
-        // `request_id` is its string spelling (§4.2's pending set is
-        // string-keyed).
+        // The reply echoes the id with its original type; the caller-facing
+        // `request_id` is its JSON spelling, so 1 and "1" stay distinct
+        // pending-set keys (§4.2; review round 73).
         id,
-        requestId: String(id),
+        requestId: JSON.stringify(id),
         kindOfApproval,
         input: params,
       },
@@ -476,8 +478,7 @@ export class CodexStreamParser {
     const straggler = typeof turnId === "string" && context.closedTurnIds?.has(turnId) === true;
     if (context.turnPending === true && context.activeTurnId === null) {
       // The turn/start window: the first id seen is provisional; a second
-      // id, a missing id, or a response naming a third is a grammar error
-      // (rounds 67 and 70).
+      // or missing id is a grammar error (rounds 67 and 70).
       const pending = context.pendingTurnId;
       if (typeof turnId !== "string") {
         return grammar("a scoped notification with no turn id arrived while a turn was starting");
@@ -486,9 +487,8 @@ export class CodexStreamParser {
         return grammar(`a scoped notification for turn ${turnId} arrived while the starting turn's notifications name ${pending}`);
       }
     } else if (turnId !== context.activeTurnId && !straggler) {
-      // A scoped notification while idle names no turn this session owns
-      // (round 64); stragglers of closed turns stay accepted (real codex
-      // sends usage after turn/completed).
+      // Idle: no turn to own the event (round 64); closed turns' stragglers
+      // stay accepted (real codex sends usage after turn/completed).
       return grammar(context.activeTurnId === null
         ? typeof turnId === "string"
           ? `a scoped notification for turn ${turnId} arrived with no open turn`

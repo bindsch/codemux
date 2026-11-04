@@ -147,7 +147,7 @@ describe("codex session e2e - stream tiers", () => {
         ),
       "superseded resolution"
     );
-    expect(String(superseded.request_id)).toBe("appr-lose");
+    expect(String(superseded.request_id)).toBe("\"appr-lose\"");
     // The decline reached the app-server, keyed to the lost approval.
     const decisions = await waitForRecord(session, "decisions.jsonl");
     expect(decisions.find((entry) => String(entry.id) === "appr-lose")?.result?.decision).toBe(
@@ -163,7 +163,7 @@ describe("codex session e2e - stream tiers", () => {
     expect(second.finish).toBe("end");
     // A decision for the dead request is rejected, not applied — and no
     // second decline ever reaches the harness for it.
-    send(session.driver, { type: "permission_decision", request_id: "appr-lose", decision: "allow" });
+    send(session.driver, { type: "permission_decision", request_id: "\"appr-lose\"", decision: "allow" });
     const rejected = await waitFor(
       session.events,
       (events) =>

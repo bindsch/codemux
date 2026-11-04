@@ -54,6 +54,23 @@ describe("failure policy", () => {
     expect(readRegistry(otherPath).outcome).toBe("corrupt");
   });
 
+  test("a duplicated session id is corrupt, naming the id (review round 73)", () => {
+    // Resume lookup returns only the first record for an id and pruning
+    // collapses sizes by id, so a file holding the same id twice would
+    // select stale resume metadata and undercount the registry's size.
+    // It reads as corrupt — the resume fails closed — with the reason
+    // naming the id.
+    const path = registryIn(makeRoot());
+    seedRegistry(path, [
+      craftEntry({ id: "dup-sess", cwd: "/first" }),
+      craftEntry({ id: "dup-sess", cwd: "/second" }),
+    ]);
+    const read = readRegistry(path);
+    expect(read.outcome).toBe("corrupt");
+    if (read.outcome === "corrupt") expect(read.reason).toContain("duplicate session id dup-sess");
+    expect(lookupForResume(path, "dup-sess", probe()).outcome).toBe("untrusted");
+  });
+
   test("the next new session backs the corrupt file up and starts fresh", () => {
     const path = registryIn(makeRoot());
     mkdirSync(join(path, ".."), { recursive: true });

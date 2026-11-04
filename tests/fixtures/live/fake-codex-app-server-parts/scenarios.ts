@@ -4,7 +4,7 @@
  * scenario switch that dispatches into them.
  */
 import { join } from "node:path";
-import { FAKE_CWD, THREAD_ID, notify, serverRequest, state } from "./wire.js";
+import { FAKE_CWD, THREAD_ID, notify, serverRequest, state, type CodexPendingApproval } from "./wire.js";
 import { agentMessageCompleted, askApproval, completeTurn, itemParams, usage } from "./items.js";
 
 export const basic = (turnId: string): void => {
@@ -90,6 +90,32 @@ export const dupask = (turnId: string): void => {
   // second line must still go out raw (review live21).
   askApproval(turnId, "appr-dup", "cmd-dup-1", "echo one");
   askApproval(turnId, "appr-dup", "cmd-dup-2", "echo two");
+};
+
+export const askmixed = (turnId: string): void => {
+  // Two approvals out at once under JSON-RPC ids that differ only by
+  // type: numeric 1 and string "1" (review round 73). The driver must
+  // surface both, keep them separately addressable, and answer each with
+  // its own wire type. Neither pendingApproval nor its single-slot
+  // resume path applies: both are tracked in mixedApprovals, and the
+  // turn completes only once both decisions landed.
+  const first: CodexPendingApproval = { id: 1, kind: "command", callId: "cmd-mix-1", command: "echo numeric", turnId };
+  const second: CodexPendingApproval = { id: "1", kind: "command", callId: "cmd-mix-2", command: "echo stringy", turnId };
+  state.mixedApprovals = [{ approval: first, decided: false }, { approval: second, decided: false }];
+  for (const { approval } of state.mixedApprovals) {
+    notify("item/started", itemParams(turnId, {
+      startedAtMs: Date.now(),
+      item: { type: "commandExecution", id: approval.callId, command: approval.command, cwd: FAKE_CWD, status: "inProgress", commandActions: [], aggregatedOutput: "", exitCode: null, durationMs: null },
+    }));
+    serverRequest("item/commandExecution/requestApproval", approval.id, {
+      threadId: THREAD_ID,
+      turnId,
+      callId: approval.callId,
+      command: approval.command,
+      cwd: FAKE_CWD,
+      availableDecisions: ["accept", "decline"],
+    });
+  }
 };
 
 export const askpatch = (turnId: string): void => {

@@ -24,8 +24,13 @@ export const MAX_INPUT_TEXT_BYTES = 16 * 1024 * 1024;
 export const MAX_AUTHOR_CODEPOINTS = 64;
 /** Diagnostic string fields (`interrupt.reason`) bound. */
 export const MAX_REASON_CHARS = 4096;
-/** Harness-issued ids (`request_id`) bound. */
+/** Harness-issued ids bound (the raw id a harness assigns). */
 export const MAX_ID_CHARS = 128;
+/** A caller-facing `request_id` is the harness id's JSON spelling (codex:
+ * string ids keep their quotes, every character may be escaped as
+ * \uXXXX), so the decision's bound is that spelling's longest form
+ * (review round 74). */
+export const MAX_REQUEST_ID_CHARS = MAX_ID_CHARS * 6 + 2;
 /** `permission_decision.message` bound, in UTF-16 code units. */
 export const MAX_DECISION_MESSAGE_UNITS = 2000;
 
@@ -241,7 +246,7 @@ export function parseInputLine(
       if (
         typeof requestId !== "string" ||
         requestId.length === 0 ||
-        requestId.length > MAX_ID_CHARS ||
+        requestId.length > MAX_REQUEST_ID_CHARS ||
         requestId.includes("\0")
       ) {
         return { ok: false, reason: "malformed" };

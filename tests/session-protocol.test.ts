@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
+import { MAX_ID_CHARS, MAX_REQUEST_ID_CHARS,
   applyAuthorPrefix,
   buildEvent,
   buildInputAck,
@@ -166,6 +166,15 @@ describe("input parsing", () => {
     expect(
       parseInputLine('{"type":"permission_decision","request_id":"req-1","decision":"deny"}', ctx)
     ).toEqual({ ok: true, message: { type: "permission_decision", request_id: "req-1", decision: "deny" } });
+    // A request_id is the harness id's JSON spelling, so the longest valid
+    // one is a MAX_ID_CHARS id with every character escaped, plus quotes
+    // (review round 74); one more character is malformed.
+    const longest = `"${"\\u0041".repeat(MAX_ID_CHARS)}"`;
+    expect(longest).toHaveLength(MAX_REQUEST_ID_CHARS);
+    const longCtx = context({ pendingRequestIds: new Set([longest]) });
+    expect(parseInputLine(JSON.stringify({ type: "permission_decision", request_id: longest, decision: "deny" }), longCtx).ok).toBe(true);
+    expect(parseInputLine(JSON.stringify({ type: "permission_decision", request_id: `${longest}x`, decision: "deny" }), longCtx))
+      .toEqual({ ok: false, reason: "malformed" });
     expect(
       parseInputLine('{"type":"permission_decision","request_id":"req-2","decision":"allow"}', ctx)
     ).toEqual({ ok: false, reason: "unknown_request" });

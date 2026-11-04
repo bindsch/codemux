@@ -7,6 +7,25 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { MAX_EXPERIMENT_MESSAGE_BYTES, type JsonObject } from "./experiment-server.js";
 import type { ExperimentRecord } from "./experiment-records.js";
 
+/** Raised when an accepted HTTP request's FORWARDED form crosses the
+ * message bound: the tools/call dispatch injects the native call id the
+ * client never sent, so a body inside the bound can serialize past it.
+ * The handler answers 413 (the same answer the body reader gives) and
+ * never forwards the request; the client's own upload was within the
+ * advertised bound, so the run itself does not fail (review round 73). */
+export class RelayRequestOversized extends Error {}
+
+/** The longest native call id the relay injects into a forwarded
+ * tools/call (`_meta["codemux/callId"]`), measured as the UTF-8 bytes of
+ * its JSON spelling between the quotes (escapes and multibyte characters
+ * count, round 75). The HTTP acceptance probe measures the final form
+ * with an id of this size, so a request the HTTP side accepted never
+ * outgrows the forwarder's bound; a resolver answering a larger id is a
+ * harness protocol failure (review round 74). */
+export const MAX_NATIVE_CALL_ID_CHARS = 512;
+/** The JSON spelling's byte length of a native call id, quotes excluded. */
+export const nativeCallIdBytes = (id: string): number => Buffer.byteLength(JSON.stringify(id)) - 2;
+
 /** Whether the request declared a body (a nonzero Content-Length or a
  * Transfer-Encoding). The catalog and rejection routes answer without
  * reading such a body, and its unread bytes are exactly what a reused

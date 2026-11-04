@@ -76,6 +76,10 @@ export interface CodexFakeState {
   laggardSkip: number;
   /** Steer texts the current wait/steer turn has absorbed. */
   steeredTexts: string[];
+  // askmixed state: two approvals out at once under ids that differ only
+  // by JSON type (numeric 1 and string "1", review round 73). The turn
+  // completes once every one of them has its decision.
+  mixedApprovals: { approval: CodexPendingApproval; decided: boolean }[];
 }
 
 export const state: CodexFakeState = {
@@ -91,4 +95,5 @@ export const state: CodexFakeState = {
   laggardTurnId: null,
   laggardSkip: 0,
   steeredTexts: [],
+  mixedApprovals: [],
 };

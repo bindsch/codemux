@@ -217,8 +217,31 @@ export abstract class OpenCodeDriverCore {
       let late: SessionProcess | null = null;
       try {
         late = await spawn;
-      } catch {
-        late = null; // the spawn's own failure — no child to stop
+      } catch (error) {
+        late = null; // no child to stop
+        // A graceful end owes this turn its run (review D11), and a
+        // spawn that rejects here means that run can never happen:
+        // report it exactly as startTurn's pre-end path does (review
+        // round 73). The fatal makes the open turn's synthesized
+        // completion failed rather than interrupted, and the crash's
+        // code raises the session's exit code to at least 1 — finish
+        // is already in flight, so its idempotent arm only raises the
+        // code; session_ended still follows this path's own ordering.
+        // A signal, timeout, or crash end already carries a nonzero
+        // verdict and owes no run, so the rejection stays absorbed
+        // there.
+        if (
+          (reason === "stdin-close" || reason === "shutdown") &&
+          this.fsm.state === "turn_active"
+        ) {
+          this.emitError(
+            true,
+            "codemux",
+            "could not spawn the opencode turn process " +
+              `(${error instanceof Error ? error.message : String(error)})`
+          );
+          void this.finish("crash", 1);
+        }
       }
       if (late !== null) {
         if (

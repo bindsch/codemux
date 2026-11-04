@@ -336,13 +336,13 @@ describe("codex session e2e - stream tiers", () => {
       of("permission_request"),
       "drain permission_request"
     );
-    expect(String(request.request_id)).toBe("appr-drain");
+    expect(String(request.request_id)).toBe("\"appr-drain\"");
     const resolved = await waitFor(
       session.events,
       (events) =>
         events.find(
           (event) =>
-            event.type === "permission_resolved" && String(event.request_id) === "appr-drain"
+            event.type === "permission_resolved" && String(event.request_id) === "\"appr-drain\""
         ),
       "drain permission_resolved"
     );

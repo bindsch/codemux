@@ -30,6 +30,8 @@
  *                after the decision response (records it)
  *   dupask     — two approvals under one JSON-RPC id (tier 2, review
  *                live21)
+ *   askmixed   — two approvals at once under ids 1 and "1": distinct
+ *                JSON types, separately answerable (review round 73)
  *   asknumeric — the same approval under a numeric JSON-RPC id: the
  *                reply must echo the id numerically to correlate
  *   askpatch   — a fileChange approval; same continuation rule
@@ -167,6 +169,9 @@ const runScenario = (turnId: string, scenario: string): void => {
       return;
     case "dupask":
       scenarios.dupask(turnId);
+      return;
+    case "askmixed":
+      scenarios.askmixed(turnId);
       return;
     case "askpatch":
       scenarios.askpatch(turnId);

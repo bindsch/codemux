@@ -31,16 +31,33 @@ export class CodexTopLevelInventory {
     const sanitized = sanitizeCodexToolName(this.server);
     const namespace = sanitized.startsWith("mcp__") ? sanitized : `mcp__${sanitized}`;
     const allowed = new Set([namespace, "functions"]);
+    const expectedTools: string[][] = [];
     for (const name of this.names()) {
       const tool = sanitizeCodexToolName(name);
-      allowed.add(`${namespace}.${tool}`);
-      allowed.add(`${namespace}__${tool}`);
-      allowed.add(`functions.${namespace}__${tool}`);
+      // The dot spelling is the one the recorded rollout carries; the
+      // others stay accepted spellings of the same tool.
+      const spellings = [`${namespace}.${tool}`, `${namespace}__${tool}`, `functions.${namespace}__${tool}`];
+      for (const spelling of spellings) allowed.add(spelling);
+      expectedTools.push(spellings);
     }
     for (const name of CODEX_RESOURCE_TOOLS) { allowed.add(name); allowed.add(`functions.${name}`); }
     const extra = Object.keys(tools).filter((name) => !allowed.has(name));
     if (extra.length) throw new ExperimentFailure(Code.InventoryMismatch,
       `Codex top_level_tools contains tools outside the experiment set: ${extra.join(", ")}`);
+    // The catalog defines the experiment's tools as the namespace's own
+    // function entries (the additional_tools payload): a checked map
+    // must carry the namespace and every one of them, under any accepted
+    // spelling. Rejecting extras alone let a map holding only
+    // `functions` count as checked, so an experiment whose Codex never
+    // exposed a single experiment tool passed evidence validation
+    // (review round 73).
+    const missing: string[] = [];
+    if (expectedTools.length > 0 && !Object.hasOwn(tools, namespace)) missing.push(namespace);
+    for (const spellings of expectedTools) {
+      if (!spellings.some((spelling) => Object.hasOwn(tools, spelling))) missing.push(spellings[0]!);
+    }
+    if (missing.length) throw new ExperimentFailure(Code.InventoryMismatch,
+      `Codex top_level_tools is missing the experiment tools: ${missing.join(", ")}`);
     this.checked = true;
   }
 }

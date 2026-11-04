@@ -49,8 +49,10 @@ author prefix, because they pass the prompt in argv.
 An author has 1–64 Unicode code points. It cannot contain `[` or `]`, an
 unpaired surrogate, or characters in Unicode categories Cc, Cf, Zl, or Zp
 (controls, format characters, line and paragraph separators). An interrupt
-reason has at most 4096 UTF-16 code units and no NUL. A request ID has
-1–128 UTF-16 code units and no NUL. `updated_input` must be a non-null JSON
+reason has at most 4096 UTF-16 code units and no NUL. A harness request ID
+has 1–128 UTF-16 code units and no NUL; a Codex `request_id` is that id's
+JSON spelling and may be longer (up to 770 code units), while Claude and
+ZAI request ids are the raw string. `updated_input` must be a non-null JSON
 object, not an array. It substitutes Claude/ZAI tool arguments and is
 checked against the ceiling; Codex rejects it as `unsupported`.
 
@@ -140,6 +142,12 @@ no extra length guarantee beyond the framing and queue bounds below.
 | `unknown` | No additional fields; `raw` carries the unmapped line |
 | `error` | `fatal: boolean`; `source: "codemux" \| "harness"`; `message: string` |
 | `session_ended` | `reason: "shutdown" \| "stdin-close" \| "signal" \| "timeout" \| "crash" \| "harness_failed"`; `exit_code: integer`; `harness_exit: {code: integer \| null, signal: string \| null} \| null`; `shutdown_requested: boolean`; `usage: Usage`; `resumable: boolean` |
+
+A `request_id` is the harness request's id as codemux presents it, and the
+decision echoes it back verbatim. Claude and ZAI present the raw id string.
+Codex presents the JSON-RPC id's JSON spelling: numeric ids as their digits
+(`42`), string ids with their quotes (`"appr-1"`), so two Codex requests
+whose ids differ only by JSON type never collide.
 
 `model` is the requested/resolved selection, or null when none was selected;
 it is not a guarantee of the model actually served. Session CLI launches

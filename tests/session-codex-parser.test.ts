@@ -274,7 +274,7 @@ describe("codex session - stream parser", () => {
       {
         kind: "permission_request",
         id: "appr-1",
-        requestId: "appr-1",
+        requestId: "\"appr-1\"",
         kindOfApproval: "commandExecution",
         input: { threadId: THREAD, turnId: TURN, callId: "cmd-1", command: "true", cwd: CWD, availableDecisions: ["accept", "decline"] },
       },
@@ -288,8 +288,9 @@ describe("codex session - stream parser", () => {
       ctx,
       p
     );
-    // The wire id keeps its type; the caller-facing id is its string
-    // spelling (the pending set is string-keyed).
+    // The wire id keeps its type; the caller-facing id is its JSON
+    // spelling, so numeric 1 and string "1" stay distinct pending-set
+    // keys (review round 73).
     expect(numeric).toEqual([
       {
         kind: "permission_request",

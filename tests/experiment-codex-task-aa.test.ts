@@ -48,6 +48,28 @@ test.each([undefined, null, [], "invalid", { "mcp__experiment.lookup": 42 }].map
     expect(() => parser.accept(entry)).toThrow(expect.objectContaining({ code: "harness_log_missing" }));
   });
 
+test("Codex refuses a top_level_tools map without the experiment tools (review round 73)", () => {
+  // Only `functions` and the resource trio — every entry allowed, yet the
+  // experiment's namespace and tool never exposed: the inventory must not
+  // count this as checked.
+  const functionsOnly = Object.fromEntries(["functions",
+    ...RESOURCE_NAMES.map((name) => `functions.${name}`)].map((name) => [name, "hash"]));
+  const bare = parserFixture();
+  expect(() => bare.parser.accept(world(functionsOnly)))
+    .toThrow(expect.objectContaining({ code: "inventory_mismatch" }));
+  expect(bare.parser.inventoryChecked).toBe(false);
+  // A map carrying the namespace but missing one expected tool fails too,
+  // naming the tool.
+  const noTool = parserFixture();
+  expect(() => noTool.parser.accept(world({ functions: "hash", "mcp__experiment": "hash" })))
+    .toThrow(/missing the experiment tools: mcp__experiment\.lookup/);
+  expect(noTool.parser.inventoryChecked).toBe(false);
+  // The full map still passes.
+  const full = parserFixture();
+  expect(() => full.parser.accept(world())).not.toThrow();
+  expect(full.parser.inventoryChecked).toBe(true);
+});
+
 test("Codex rechecks a changed top-level inventory after the initial full snapshot", () => {
   const { parser, records } = parserFixture();
   parser.accept(world());

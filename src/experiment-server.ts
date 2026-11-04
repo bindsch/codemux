@@ -6,6 +6,14 @@ import { ExperimentFailure, ExperimentFailureCode, experimentFailure } from "./e
 
 export type JsonObject = Record<string, any>;
 export type ExperimentRecord = (kind: string, fields: JsonObject) => void;
+/** The bound on one experiment JSON-RPC message, measured on the JSON
+ * body ALONE everywhere (review round 73): the HTTP relay's body reader
+ * and its Content-Length gate count the body, and so does the forwarder
+ * below — the newline the frame writers append for line framing is
+ * transport, not message, and never counts. The relay measures the same
+ * quantity on the FINAL form it forwards (its tools/call dispatch
+ * injects a call id the client never sent) and refuses at HTTP, so a
+ * body accepted on one side never dies in the other's hands. */
 export const MAX_EXPERIMENT_MESSAGE_BYTES = 1024 * 1024;
 const MAX_PENDING_REQUESTS = 256;
 
@@ -67,8 +75,11 @@ export class ExperimentServer {
 
   request(message: JsonObject): Promise<JsonObject | undefined> {
     if (!this.proc || this.closed) return Promise.reject(new ExperimentFailure(ExperimentFailureCode.ServerError, "experiment MCP server is closed"));
-    const line = JSON.stringify(message) + "\n";
-    if (Buffer.byteLength(line) > MAX_EXPERIMENT_MESSAGE_BYTES) throw new Error("experiment MCP request exceeds 1 MiB");
+    // The bound counts the serialized body alone; the appended newline
+    // is framing and does not count (MAX_EXPERIMENT_MESSAGE_BYTES).
+    const body = JSON.stringify(message);
+    const line = `${body}\n`;
+    if (Buffer.byteLength(body) > MAX_EXPERIMENT_MESSAGE_BYTES) throw new Error("experiment MCP request exceeds 1 MiB");
     const id = message.id;
     let key: string | undefined;
     if (id !== undefined) {
@@ -121,7 +132,8 @@ export class ExperimentServer {
         this.buffer = Buffer.concat([this.buffer, bytes]);
         let newline: number;
         while ((newline = this.buffer.indexOf(10)) !== -1) {
-          if (newline + 1 > MAX_EXPERIMENT_MESSAGE_BYTES) throw new Error("experiment MCP response exceeds 1 MiB");
+          // The body alone counts; the framing newline never does (round 75).
+          if (newline > MAX_EXPERIMENT_MESSAGE_BYTES) throw new Error("experiment MCP response exceeds 1 MiB");
           const line = this.buffer.subarray(0, newline);
           this.buffer = this.buffer.subarray(newline + 1);
           if (line.length === 0) continue;
@@ -141,18 +153,29 @@ export class ExperimentServer {
           this.pending.delete(key);
           pending.resolve(message);
         }
-        if (this.buffer.length >= MAX_EXPERIMENT_MESSAGE_BYTES) throw new Error("experiment MCP response exceeds 1 MiB");
+        if (this.buffer.length > MAX_EXPERIMENT_MESSAGE_BYTES) throw new Error("experiment MCP response exceeds 1 MiB");
       }
       if (kind === "server_stdout") {
         this.validatePartial();
         if (!this.closed) throw new ExperimentFailure(ExperimentFailureCode.ServerError, "experiment MCP stdout closed before run completion");
       }
     } catch (error) {
-      if (!this.abandoned) this.fail(experimentFailure(error));
+      if (this.abandoned) return;
+      const failure = experimentFailure(error);
+      // The reader is dead, so no reply will ever settle a pending request:
+      // each caller is answered with the failure instead of waiting until
+      // close (review round 75).
+      this.rejectPending(failure);
+      this.fail(failure);
     } finally {
       // Cancellation itself need not settle if a descendant retains the pipe.
       void reader.cancel().catch(() => {});
     }
+  }
+
+  private rejectPending(failure: ExperimentFailure): void {
+    for (const pending of this.pending.values()) pending.reject(failure);
+    this.pending.clear();
   }
 
   validatePartial(): void {
@@ -201,7 +224,6 @@ export class ExperimentServer {
     } finally { if (timer) clearTimeout(timer); }
     process.off("exit", this.onExit);
     this.validatePartial();
-    for (const pending of this.pending.values()) pending.reject(new ExperimentFailure(ExperimentFailureCode.ServerError, "experiment MCP run ended"));
-    this.pending.clear();
+    this.rejectPending(new ExperimentFailure(ExperimentFailureCode.ServerError, "experiment MCP run ended"));
   }
 }

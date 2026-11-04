@@ -3,7 +3,7 @@
 // it, and which outcome the adapter acts on. src/credentials.ts owns the
 // mirror lifecycle and re-exports this.
 
-import { lstatSync, readFileSync, statSync } from "node:fs";
+import { lstatSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 
 import {
@@ -18,7 +18,40 @@ import {
   type SecretReadResult,
   type SecretReader,
 } from "./oauth.js";
-import { defaultCredentialBackupDir, writeMirror } from "./backups.js";
+import { defaultCredentialBackupDir, MAX_CREDENTIAL_MIRROR_BYTES, writeMirror } from "./backups.js";
+import { FileContentError, readUtf8FileBounded } from "../file-io.js";
+
+/** The bound on every read of the mirror file (review round 73): the file
+ * sits under `~/.claude`, a directory the sandboxed child can write, so a
+ * previous run can have enlarged it — an unbounded read would let that
+ * file consume arbitrary memory or stall the next launch's preparation.
+ * One mebibyte is orders of magnitude over any real credential file; a
+ * regular file past it is refused (the shared bounded reader,
+ * src/file-io.ts, which also refuses non-regular files the same way the
+ * lstat above does). */
+
+/** One bounded read of the mirror. The direct-path reads refuse a
+ * final-component symlink at open time (the lstat above already refused
+ * one, so a link seen here is a swap); the one read behind a link passes
+ * `noFollow: false` deliberately, after stat confirmed a regular file. */
+function readMirror(target: string, noFollow: boolean): string {
+  return readUtf8FileBounded(target, {
+    maxBytes: MAX_CREDENTIAL_MIRROR_BYTES,
+    label: "the Claude credential mirror",
+    noFollow,
+  });
+}
+
+/** The outcome of a mirror read that threw. A file codemux refused on its
+ * content (oversized, invalid UTF-8) is one the child can still read, and
+ * its refresh token cannot be ruled out: with a Keychain entry behind it
+ * the file is a mirror of unknown content and the launch is refused
+ * ("unsafe"); with no entry it is Claude Code's own store and proceeds as
+ * "failed" (review round 76). A file the operating system refused
+ * (vanished, unreadable) is one the child cannot read either: "failed". */
+function refusedRead(error: unknown, entryExists: boolean): "failed" | "unsafe" {
+  return error instanceof FileContentError && entryExists ? "unsafe" : "failed";
+}
 
 /** Every key Claude Code writes under `claudeAiOauth` in the on-disk stub.
  * A stub carrying any other key is not overwritten: it is either some other
@@ -155,19 +188,19 @@ export function syncKeychainCredential(
     try {
       // Only a regular file behind the link is read (a FIFO would block).
       if (!statSync(target).isFile()) return "failed";
-      const behind = claudeOauthObject(readFileSync(target, "utf8"));
+      const behind = claudeOauthObject(readMirror(target, false));
       return behind !== null && carriesRefreshToken(behind) ? "unsafe" : "failed";
-    } catch {
-      return "failed";
+    } catch (error) {
+      return refusedRead(error, true);
     }
   }
 
   // Read the file as late as possible, then decide against THAT snapshot.
   let current: string;
   try {
-    current = readFileSync(target, "utf8");
-  } catch {
-    return "failed";
+    current = readMirror(target, true);
+  } catch (error) {
+    return refusedRead(error, read.kind !== "missing");
   }
   // A file that does not parse as a Claude credential mirror is not ours to
   // manage (an API-key setup's file, or corrupt): report "foreign" so the
@@ -219,9 +252,9 @@ export function syncKeychainCredential(
       // Judge what is on disk now, not the copy read before the scrub (a
       // concurrent writer may have changed it).
       try {
-        own = claudeOauthObject(readFileSync(target, "utf8")) ?? own;
-      } catch {
-        return "failed";
+        own = claudeOauthObject(readMirror(target, true)) ?? own;
+      } catch (error) {
+        return refusedRead(error, true);
       }
     }
     // The mirror stands alone only while its own access token is live; an
@@ -246,9 +279,9 @@ export function syncKeychainCredential(
   // report it, so the operator hears about it; the next launch retries.
   let live: string;
   try {
-    live = readFileSync(target, "utf8");
-  } catch {
-    return "failed";
+    live = readMirror(target, true);
+  } catch (error) {
+    return refusedRead(error, true);
   }
   const liveFile = classifyMirror(live);
   if (liveFile.kind !== "mirror") return "failed";
@@ -283,10 +316,12 @@ function scrubRefreshToken(
     if (written === "vanished") return "failed";
     if (written === "error") return "unsafe";
     // conflict: another writer changed the file; judge what is there now.
+    // A Keychain entry exists on every scrub path, so content codemux
+    // cannot judge is unsafe (review round 77).
     try {
-      content = readFileSync(target, "utf8");
-    } catch {
-      return "failed";
+      content = readMirror(target, true);
+    } catch (error) {
+      return refusedRead(error, true);
     }
     const live = claudeOauthObject(content);
     if (live === null || !carriesRefreshToken(live)) return "clean";

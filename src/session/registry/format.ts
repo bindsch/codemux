@@ -226,6 +226,25 @@ function validRecord(value: unknown): value is SessionRecord {
   return true;
 }
 
+/** The first session id that appears twice in a parsed file's sessions
+ * array (each entry read for its id alone), or null. Resume lookup
+ * returns only the first record for an id and pruning collapses sizes by
+ * id, so a duplicated id is a file no reader can interpret one way —
+ * invalid like any other shape failure (review round 73). */
+export function duplicateRegistrySessionId(value: unknown): string | null {
+  if (typeof value !== "object" || value === null) return null;
+  const sessions = (value as Record<string, unknown>)["sessions"];
+  if (!Array.isArray(sessions)) return null;
+  const seen = new Set<string>();
+  for (const entry of sessions) {
+    const id = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>)["id"] : undefined;
+    if (typeof id !== "string") continue;
+    if (seen.has(id)) return id;
+    seen.add(id);
+  }
+  return null;
+}
+
 export function validRegistryFile(value: unknown): RegistryFile | null {
   if (typeof value !== "object" || value === null) return null;
   const file = value as Record<string, unknown>;
@@ -233,6 +252,7 @@ export function validRegistryFile(value: unknown): RegistryFile | null {
   if (!Array.isArray(file["sessions"])) return null;
   if (file["sessions"].length > REGISTRY_MAX_ENTRIES) return null;
   if (!file["sessions"].every(validRecord)) return null;
+  if (duplicateRegistrySessionId(file) !== null) return null;
   // Normalize the legacy shape: a 0.9.0 record that predates
   // `provider_base_url` (valid above) reads as operator login, a
   // pre-2.0.0 record that predates `project_settings` reads as a plain
@@ -404,6 +424,10 @@ export function readRegistry(path: string): RegistryRead {
   }
   const file = validRegistryFile(parsed);
   if (file === null) {
+    const duplicate = duplicateRegistrySessionId(parsed);
+    if (duplicate !== null) {
+      return { outcome: "corrupt", reason: `the session registry holds duplicate session id ${duplicate}` };
+    }
     return { outcome: "corrupt", reason: "the session registry does not match the expected shape" };
   }
   return { outcome: "ok", file };

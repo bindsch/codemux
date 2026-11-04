@@ -47,4 +47,17 @@ describe("codex session - stream parser, pending turn", () => {
     }
   });
 
+
+  test("a string request id is bounded like every harness id; its JSON spelling is the request_id (review round 74)", () => {
+    const { MAX_ID_CHARS } = require("../src/session/protocol.js") as { MAX_ID_CHARS: number };
+    const ctx = { threadId: THREAD, activeTurnId: TURN };
+    const approval = (id: unknown) => feed({ id, method: "item/commandExecution/requestApproval",
+      params: { threadId: THREAD, turnId: TURN, itemId: "c1", command: ["ls"], cwd: "/" } }, ctx)[0]!;
+    const longest = "a".repeat(MAX_ID_CHARS);
+    const accepted = approval(longest) as { kind: string; requestId?: string };
+    expect(accepted.kind).toBe("permission_request");
+    expect(accepted.requestId).toBe(JSON.stringify(longest));
+    expect(approval("a".repeat(MAX_ID_CHARS + 1)).kind).toBe("grammar_error");
+    expect(approval("").kind).toBe("grammar_error");
+  });
 });

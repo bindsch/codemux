@@ -133,6 +133,38 @@ describe("codex session e2e - approvals", () => {
     expect(await session.code).toBe(0);
   });
 
+  test("approvals under ids 1 and \"1\" stay distinct and separately answerable (review round 73)", async () => {
+    const session = await startAndWait();
+    send(session.driver, { type: "user", text: "scenario:askmixed probe" });
+    const requests = await waitFor(session.events, (events) =>
+      events.filter((event) => event.type === "permission_request").length >= 2 ? events : undefined,
+      "both permission_requests");
+    const byCommand = (command: string): Record<string, any> =>
+      requests.filter((event) => event.type === "permission_request")
+        .find((event) => event.input?.arguments?.command === command || event.input?.command === command)!;
+    const numeric = byCommand("echo numeric");
+    const stringy = byCommand("echo stringy");
+    // The caller-facing request_id is the id's JSON spelling: numeric 1
+    // is 1, string "1" keeps its quotes, so neither the pending set nor
+    // the caller can confuse the two.
+    expect(numeric.request_id).toBe("1");
+    expect(stringy.request_id).toBe("\"1\"");
+    // Each decision reaches its own approval, echoed with its wire type.
+    send(session.driver, { type: "permission_decision", request_id: "1", decision: "deny" });
+    send(session.driver, { type: "permission_decision", request_id: "\"1\"", decision: "deny" });
+    const resolved = await waitFor(session.events, (events) =>
+      events.filter((event) => event.type === "permission_resolved").length >= 2 ? events : undefined,
+      "both permission_resolved");
+    expect(resolved.filter((event) => event.type === "permission_resolved").map((event) => event.request_id).sort())
+      .toEqual(["\"1\"", "1"]);
+    await waitFor(session.events, of("turn_completed"), "turn_completed");
+    const decisions = await waitForRecord(session, "decisions.jsonl");
+    expect(decisions.map((decision: Record<string, unknown>) => decision.id)).toEqual([1, "1"]);
+    for (const decision of decisions) expect(decision.result).toEqual({ decision: "decline" });
+    send(session.driver, { type: "shutdown" });
+    expect(await session.code).toBe(0);
+  });
+
   test("an interrupt declines a pending approval as superseded and the session continues", async () => {
     const session = await startAndWait();
     send(session.driver, { type: "user", text: "scenario:ask dangerous" });
@@ -143,7 +175,7 @@ describe("codex session e2e - approvals", () => {
       (events) => events.find((event) => event.type === "permission_resolved" && event.resolution === "superseded"),
       "superseded resolution"
     );
-    expect(superseded.request_id).toBe("appr-1");
+    expect(superseded.request_id).toBe("\"appr-1\"");
     const completed = await waitFor(session.events, of("turn_completed"), "turn_completed");
     // Review live14: the wire's status is the verdict. The supersede
     // decline reaches the app-server before the interrupt, and its answer
@@ -177,7 +209,7 @@ describe("codex session e2e - approvals", () => {
       "superseded resolution",
       5_000
     );
-    expect(superseded.request_id).toBe("appr-1");
+    expect(superseded.request_id).toBe("\"appr-1\"");
     const completed = await waitFor(session.events, of("turn_completed"), "turn_completed");
     // Review live14, same shape as the caller-interrupt variant above: the
     // supersede decline's answer completes the turn "completed" on the

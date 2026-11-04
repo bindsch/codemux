@@ -270,7 +270,13 @@ export class AiderSessionDriver extends AiderCallerInput {
       this.turnSpawn = spawn;
       proc = await spawn;
     } catch (error) {
-      if (this.finished) return; // the end path owns the verdict
+      // The end path owns the verdict once it began — and it awaited
+      // this same spawn, so a rejection that lands after it began is
+      // reported THERE (the graceful-end arm in finish, review round
+      // 73); reporting it here too would only duplicate the fatal. A
+      // spawn failure before any end is codemux's own failure to run
+      // the turn.
+      if (this.finished) return;
       this.emitError(
         true,
         "codemux",

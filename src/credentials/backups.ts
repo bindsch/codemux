@@ -7,7 +7,6 @@ import {
   chmodSync,
   mkdirSync,
   readdirSync,
-  readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -16,6 +15,7 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
+import { readUtf8FileBounded } from "../file-io.js";
 import { carriesRefreshToken, claudeOauthObject } from "./oauth.js";
 
 /** The file's contents with only its `claudeAiOauth` field replaced by the
@@ -37,6 +37,12 @@ function mergedCredential(current: string, claudeAiOauth: Record<string, unknown
  * itself failed. The residual window between the re-check and the rename is
  * microseconds, and a lost write self-heals on the next launch; nothing in
  * that window can reach the Keychain or the grant. */
+/** The mirror's size bound, read and written alike: a file over it is
+ * refused unread (a child-writable directory can have enlarged it), and a
+ * mirror that would exceed it is never written, or the next launch could
+ * not read what this one wrote (review rounds 73 and 76). */
+export const MAX_CREDENTIAL_MIRROR_BYTES = 1024 * 1024;
+
 export function writeMirror(
   target: string,
   current: string,
@@ -48,13 +54,17 @@ export function writeMirror(
   // child reads): that token may be the operator's only working login, and
   // codemux never destroys a credential it cannot prove superseded. A
   // failed backup fails the write, which the callers turn into "unsafe".
+  const merged = mergedCredential(current, claudeAiOauth);
+  // The file is written with a trailing newline; the next launch reads the
+  // whole file against the same bound. Judged before any backup exists, so
+  // a refused write leaves no copy behind (review round 77).
+  if (Buffer.byteLength(merged) + 1 > MAX_CREDENTIAL_MIRROR_BYTES) return "error";
   const existing = claudeOauthObject(current);
   let backup: string | null = null;
   if (existing !== null && carriesRefreshToken(existing)) {
     backup = backupCredential(backupDir, current);
     if (backup === null) return "error";
   }
-  const merged = mergedCredential(current, claudeAiOauth);
   const staging = `${target}.${process.pid}.tmp`;
   // The backup exists for the rewrite. When the rewrite does not happen and
   // the file still holds its token (conflict, error), the copy is redundant
@@ -82,11 +92,18 @@ export function writeMirror(
     }
     let live: string;
     try {
-      live = readFileSync(target, "utf8");
-    } catch {
+      // The same bounded, no-follow read as every other read of the mirror:
+      // a huge file or a FIFO swapped in since the first read is refused,
+      // never read whole or blocked on (review round 78).
+      live = readUtf8FileBounded(target, { maxBytes: MAX_CREDENTIAL_MIRROR_BYTES, label: "the Claude credential mirror", noFollow: true });
+    } catch (error) {
       removeQuietly(staging);
-      kept("vanished");
-      return "vanished";
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+        kept("vanished");
+        return "vanished";
+      }
+      kept("error");
+      return "error";
     }
     if (live !== current) {
       removeQuietly(staging);

@@ -69,6 +69,10 @@ export interface ExperimentRecordFields {
   relay_ping: { rpc_id: string | number };
   relay_reinitialize: { rpc_id: string | number };
   relay_resources: { method: string; rpc_id: string | number | null };
+  /** A tools/call the relay refused before registering it (413): its
+   * final wire form would exceed the message bound. It consumed no relay
+   * index and was never forwarded (review round 74). */
+  request_refused: { rpc_id: string | number; method: string; reason: "oversized" };
   harness_top_level_tools: { tools: JsonObject; t: number };
   harness_builtin_call: { call_id: string; name: string; input: unknown; harness_output: unknown };
   relay_sse: { rpc_id: string | number; keepalives: number };
