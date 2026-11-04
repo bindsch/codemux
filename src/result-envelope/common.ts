@@ -1,4 +1,5 @@
 import type { ResultUsageBlock } from "../types.js";
+import { markOverflowed } from "../usage-overflow.js";
 
 export function emptyUsage(): ResultUsageBlock {
   return {
@@ -55,6 +56,9 @@ export function normalizeClaudeUsage(
     const cacheWrite = reportedTokenCount(counts.cache_creation_input_tokens);
     if (cacheRead !== null && cacheWrite !== null) {
       usage.cached_input_tokens = safeTokenSum(cacheRead, cacheWrite);
+      // An overflowed cache sum is not an unreported field: marked, so a
+      // session fold never revives it with a later count (round 85).
+      if (usage.cached_input_tokens === null) markOverflowed(usage, ["cached_input_tokens"]);
     }
   }
   if (

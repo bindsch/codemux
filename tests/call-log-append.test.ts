@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { chmodSync, lstatSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { appendCallRecord, appendSessionCallRecord, appendSessionTurnCallRecord, CALL_LOG_ENV, callLogPath, readCallLog, resetCallLogWarningForTests, sanitizeReportedString } from "../src/call-log.js";
@@ -224,6 +225,94 @@ describe("appendCallRecord", () => {
       expect(warnings).toHaveLength(1);
     } finally {
       console.error = original;
+      cleanup();
+    }
+  });
+
+  test("a short write is reported; the partial line is the reader's to mark malformed (rounds 80, 83, 84)", () => {
+    // A short regular-file write (storage pressure, a signal) leaves part
+    // of the line without its newline, and nothing reported it. The append
+    // now checks writeSync's count and takes the same one-warning path
+    // every other append failure takes. No lock is held, so nothing
+    // repairs the file: a truncation or a fresh-line probe would race a
+    // concurrent writer. The partial line stays, and the next record,
+    // which lands on the same line, is reported malformed with it.
+    const { env, dir, cleanup } = tempEnv();
+    try {
+      const path = join(dir, "calls.jsonl");
+      writeFileSync(path, "sentinel\n");
+      const warnings: string[] = [];
+      const originalError = console.error;
+      console.error = (message: string) => warnings.push(message);
+      const realWrite = fs.writeSync;
+      // Ten bytes of the line land; the count the stub returns says ten of
+      // the whole record — a short write.
+      const write = spyOn(fs, "writeSync").mockImplementation(((
+        fd: number,
+        data: Uint8Array | string
+      ) => {
+        const bytes = Buffer.from(data);
+        return realWrite(fd, bytes.subarray(0, Math.min(10, bytes.byteLength)));
+      }) as typeof fs.writeSync);
+      try {
+        appendCallRecord(BASE_RECORD, { ...env, [CALL_LOG_ENV]: path });
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toContain("could not append to the call log");
+        expect(warnings[0]).toContain("short write");
+      } finally {
+        write.mockRestore();
+        console.error = originalError;
+      }
+      // The partial bytes stay, as one line without its newline.
+      const partial = readFileSync(path, "utf8");
+      expect(partial.startsWith("sentinel\n")).toBe(true);
+      expect(partial.length).toBe("sentinel\n".length + 10);
+      // The next record shares that line and the reader marks the pair
+      // malformed; the one after it is whole again.
+      appendCallRecord({ ...BASE_RECORD, agent: "zai" }, { ...env, [CALL_LOG_ENV]: path });
+      appendCallRecord({ ...BASE_RECORD, agent: "codex" }, { ...env, [CALL_LOG_ENV]: path });
+      const lines = readFileSync(path, "utf8").split("\n");
+      expect(lines).toHaveLength(4);
+      expect(() => JSON.parse(lines[1]!)).toThrow();
+      expect(JSON.parse(lines[2]!).agent).toBe("codex");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("a short write never cuts off a record another process appended meanwhile (rounds 80, 83, 84)", () => {
+    // No lock is held across the append, so nothing is ever truncated: the
+    // stub writes ten bytes of the line and another record lands behind
+    // them; the failure is reported, both stay.
+    const { env, dir, cleanup } = tempEnv();
+    try {
+      const path = join(dir, "calls.jsonl");
+      writeFileSync(path, "sentinel\n");
+      const warnings: string[] = [];
+      const originalError = console.error;
+      console.error = (message: string) => warnings.push(message);
+      const realWrite = fs.writeSync;
+      const write = spyOn(fs, "writeSync").mockImplementation(((
+        fd: number,
+        data: Uint8Array | string
+      ) => {
+        const bytes = Buffer.from(data);
+        const written = realWrite(fd, bytes.subarray(0, 10));
+        fs.appendFileSync(path, "other-process\n");
+        return written;
+      }) as typeof fs.writeSync);
+      try {
+        appendCallRecord(BASE_RECORD, { ...env, [CALL_LOG_ENV]: path });
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toContain("short write");
+      } finally {
+        write.mockRestore();
+        console.error = originalError;
+      }
+      const content = readFileSync(path, "utf8");
+      expect(content.startsWith("sentinel\n")).toBe(true);
+      expect(content.endsWith("other-process\n")).toBe(true);
+    } finally {
       cleanup();
     }
   });

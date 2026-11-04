@@ -6,7 +6,9 @@
  */
 
 import { readFileSync } from "node:fs";
+import { markOverflowed } from "./usage.js";
 import type { AutonomyLevel, ReasoningEffort, ResultUsageBlock } from "../types.js";
+import { reportedTokenCount, safeTokenSum } from "../result-envelope/common.js";
 import { isRecord } from "./codex-parse-facts.js";
 
 export type CodexSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
@@ -242,30 +244,37 @@ export function buildJsonRpcErrorResponse(
  * that total), so the uncached input subtracts both — the same unfolding
  * the `--result-json` code applies (src/result-envelope.ts). Each
  * normalized field is null when the raw fields it needs are unreported,
- * never guessed; cost is null because the app-server carries none.
+ * never guessed; cost is null because the app-server carries none. Counts
+ * and sums follow the envelope's rule exactly (reportedTokenCount and
+ * safeTokenSum, src/result-envelope/common.ts): a count is a whole
+ * non-negative safe integer, and a sum that would leave the safe range —
+ * input at the ceiling plus two output tokens — is null, never the
+ * rounded number the float addition produces (review round 80), so
+ * session accounting cannot disagree with an equivalent non-session run.
  */
 export function normalizeCodexTokenUsage(raw: unknown): ResultUsageBlock {
-  const count = (value: unknown): number | null =>
-    typeof value === "number" && Number.isFinite(value) && value >= 0
-      ? Math.floor(value)
-      : null;
   const record = isRecord(raw) ? raw : {};
-  const input = count(record["inputTokens"]);
-  const cached = count(record["cachedInputTokens"]);
-  const cacheWrite = count(record["cacheWriteInputTokens"]);
-  const output = count(record["outputTokens"]);
-  return {
-    input_tokens:
-      input !== null && cached !== null && cacheWrite !== null
-        ? Math.max(0, input - cached - cacheWrite)
-        : null,
+  const input = reportedTokenCount(record["inputTokens"]);
+  const cached = reportedTokenCount(record["cachedInputTokens"]);
+  const cacheWrite = reportedTokenCount(record["cacheWriteInputTokens"]);
+  const output = reportedTokenCount(record["outputTokens"]);
+  // Subtraction of safe integers stays inside the safe range; Math.max
+  // keeps a breakdown that overshoots at zero instead of going negative.
+  const uncachedInput =
+    input !== null && cached !== null && cacheWrite !== null
+      ? Math.max(0, input - cached - cacheWrite)
+      : null;
+  const cachedSum = cached !== null && cacheWrite !== null ? safeTokenSum(cached, cacheWrite) : null;
+  // A cache pair whose sum left the safe range is an overflow, not an
+  // unreported field: marked, so no later fold revives it (round 84).
+  return markOverflowed({
+    input_tokens: uncachedInput,
     output_tokens: output,
-    cached_input_tokens:
-      cached !== null && cacheWrite !== null ? cached + cacheWrite : null,
+    cached_input_tokens: cachedSum,
     total_tokens:
-      input !== null && cached !== null && cacheWrite !== null && output !== null
-        ? Math.max(0, input - cached - cacheWrite) + cached + cacheWrite + output
+      uncachedInput !== null && cached !== null && cacheWrite !== null && output !== null
+        ? safeTokenSum(uncachedInput, cached, cacheWrite, output)
         : null,
     cost_usd: null,
-  };
+  }, cached !== null && cacheWrite !== null && cachedSum === null ? ["cached_input_tokens"] : []);
 }

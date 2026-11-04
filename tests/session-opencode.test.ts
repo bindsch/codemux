@@ -8,6 +8,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { overflowedFields } from "../src/session/usage.js";
 import { getAdapter } from "../src/adapters/index.js";
 import {
   buildOpenCodeSessionCommand,
@@ -144,17 +145,38 @@ describe("opencode session - usage normalization", () => {
     });
   });
 
-  test("fractional and negative counts floor or null, never round up a lie", () => {
+  test("fractional and negative counts are unknown, never floored into a report (round 80)", () => {
+    // The envelope's rule (reportedTokenCount): a count is a whole
+    // non-negative safe integer. A fractional report is unknown, not
+    // floored — 10.9 floored to 10 reported a count no wire sent, and a
+    // floored cache read made the pair sum certify a guess.
     expect(
       normalizeOpenCodeUsage({ tokens: { input: 10.9, output: -1, cache: { read: 2.5, write: 1 } } })
     ).toEqual({
-      input_tokens: 10,
+      input_tokens: null,
       output_tokens: null,
-      // 2.5 floors to a valid count of 2, so the cache pair still sums.
-      cached_input_tokens: 3,
+      cached_input_tokens: null,
       total_tokens: null,
       cost_usd: null,
     });
+  });
+
+  test("counts past the safe range and cache sums that leave it are unknown (round 80)", () => {
+    // 2^53 is an integer but not a safe one: unreported.
+    expect(
+      normalizeOpenCodeUsage({ tokens: { input: 1, output: 1, total: 2 ** 53 } }).total_tokens
+    ).toBe(null);
+    // A cache read at the ceiling plus two written tokens leaves the safe
+    // range: null, never the rounded sum.
+    expect(
+      normalizeOpenCodeUsage({
+        tokens: { cache: { read: Number.MAX_SAFE_INTEGER, write: 2 } },
+      }).cached_input_tokens
+    ).toBe(null);
+    // The overflowed cache sum is marked, so no later fold revives it (round 84).
+    const marked = normalizeOpenCodeUsage({ tokens: { cache: { read: Number.MAX_SAFE_INTEGER, write: 2 } } });
+    expect(marked.cached_input_tokens).toBe(null);
+    expect(overflowedFields(marked)).toEqual(["cached_input_tokens"]);
   });
 });
 

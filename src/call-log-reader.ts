@@ -49,11 +49,15 @@ const COST_SOURCES: ReadonlySet<string> = new Set([
   "subscription-zero",
 ]);
 
-// Token counts are whole and never negative; a cost is finite and never
-// negative. A record outside that is malformed, not a line to subtract from
-// a total (review round 45).
+// Token counts are whole, never negative, and inside the safe-integer
+// range; a cost is finite and never negative. A record outside that is
+// malformed, not a line to subtract from a total (review round 45). The
+// safe bound matters on the read side because JSON parsing rounds: a count
+// such as 9007199254740993 arrives as 9007199254740992, an integer whose
+// value is no longer the one the writer named, so it is refused rather
+// than stored as its rounded neighbor (review round 80).
 function isCount(value: unknown): boolean {
-  return value === null || (typeof value === "number" && Number.isInteger(value) && value >= 0);
+  return value === null || (typeof value === "number" && Number.isSafeInteger(value) && value >= 0);
 }
 
 function isCost(value: unknown): boolean {

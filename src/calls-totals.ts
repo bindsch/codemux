@@ -1,6 +1,7 @@
 import type { AgentId } from "./types.js";
 import type { CallRecord, CostSource } from "./call-log.js";
 import { costSourceFor } from "./call-log.js";
+import { safeTokenSum } from "./result-envelope/common.js";
 import { escapeForTerminal } from "./usage-protocol.js";
 import type { ResultUsageBlock } from "./types.js";
 
@@ -14,12 +15,17 @@ const USAGE_FIELDS = [
 
 type UsageField = (typeof USAGE_FIELDS)[number]["field"];
 
+/** The count fields safeTokenSum guards; cost is money, not a token count. */
+type TokenField = Exclude<UsageField, "cost_usd">;
+
 /** A record's session key: null when the record keys nothing. A session
  * id of null — or "", which older ledgers wrote where a session had no
  * native id — matches no session and is never merged under one shared
  * key (review ul6); the writers key by a codemux-owned id every session
- * has. */
-const sessionKey = (record: CallRecord): string | null =>
+ * has. The `--since` window keys by the same rule (review round 80): an
+ * empty id is unkeyed legacy data, never a session identity, so a
+ * recent empty-id turn cannot admit an old empty-id closing record. */
+export const sessionKey = (record: CallRecord): string | null =>
   record.session_id === null || record.session_id === "" ? null : record.session_id;
 
 /**
@@ -31,7 +37,10 @@ const sessionKey = (record: CallRecord): string | null =>
  * and one closing record per session, the newest. A null sum is the
  * honest "unknown", never a zero, and `unknown` counts the records that
  * did not report the field, so a partial picture says which part is
- * missing.
+ * missing. Token sums follow the envelope's safe rule (safeTokenSum):
+ * a count past the safe-integer range never enters a sum, and a running
+ * sum that would leave the range is unknown and stays unknown (review
+ * round 80).
  */
 class GroupTotals {
   private readonly sums: Record<UsageField, number | null> = {
@@ -57,8 +66,24 @@ class GroupTotals {
   private nonSessionRecords = 0;
   private keyedClosings = 0;
   private excludedSummaries = 0;
+  // A token field whose running sum has left the safe-integer range: the
+  // field stays unknown for the rest of the pass, because a later count
+  // landing in it would report a number the true total has already
+  // overflowed past (review round 80).
+  private readonly overflowed = new Set<TokenField>();
   private readonly turnsReported = new Map<string, Set<UsageField>>();
   private readonly newestClosing = new Map<string, CallRecord>();
+
+  /** One token count into its field's running sum, under the envelope's
+   * safe-sum rule (safeTokenSum): a sum that would leave the safe-integer
+   * range is unknown — printed as `unknown` — never the rounded number
+   * the float addition produces (review round 80). */
+  private addCount(field: TokenField, value: number, sums: Record<UsageField, number | null>): void {
+    if (this.overflowed.has(field)) return;
+    const next = safeTokenSum(sums[field] ?? 0, value);
+    if (next === null) this.overflowed.add(field);
+    sums[field] = next;
+  }
 
   /** One cost figure into its bucket: an estimate stays out of the billed
    * sum; billed and subscription-covered zeros (which add nothing) land in
@@ -98,7 +123,7 @@ class GroupTotals {
         }
         const value = pick(record.usage);
         if (value === null) this.unknowns[field]++;
-        else this.sums[field] = (this.sums[field] ?? 0) + value;
+        else this.addCount(field, value, this.sums);
       }
       return;
     }
@@ -154,7 +179,7 @@ class GroupTotals {
         }
         const value = pick(closing.usage);
         if (value === null) unknowns[field]++;
-        else sums[field] = (sums[field] ?? 0) + value;
+        else this.addCount(field, value, sums);
       }
     }
     const foldedSummaries = this.newestClosing.size;

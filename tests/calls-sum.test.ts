@@ -199,4 +199,28 @@ describe("codemux calls --sum", () => {
     expect(totals).toContain("cost=unknown");
     expect(totals).toContain("2 session summaries with no session id excluded");
   });
+
+  test("--sum prints unknown for a total that leaves the safe-integer range (round 80)", async () => {
+    // Two individually valid records — a count at the ceiling and a count
+    // of two — summed to the rounded 9007199254740992 before round 80;
+    // the safe-sum rule makes the overflowing field unknown, the same
+    // word an unreported field prints, and a later small count cannot
+    // resurrect it.
+    const { stdout } = await callsWith(
+      [
+        record({ ts: iso(3 * MINUTE), agent: "codex", input: Number.MAX_SAFE_INTEGER }),
+        record({ ts: iso(2 * MINUTE), agent: "codex", input: 2 }),
+        record({ ts: iso(MINUTE), agent: "codex", input: 5 }),
+      ],
+      ["--sum"]
+    );
+    const totals = stdout.split("\n").find((line) => line.startsWith("Totals"))!;
+    expect(totals).toBeDefined();
+    expect(totals).toContain("input=unknown");
+    expect(totals).not.toContain("input=9,007,199,254,740,992");
+    expect(totals).not.toContain("input=5");
+    // A field that never overflows keeps its plain sum.
+    expect(totals).toContain("output=unknown");
+    expect(totals).toContain("Totals over 3 record(s)");
+  });
 });

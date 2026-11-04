@@ -8,7 +8,9 @@
  * distinct sessions, never to the ledger's length: a ring of `-n`
  * records (at most 100000), raw lines only under `--json`, one closing
  * record per session (calls-totals.ts), and — under `--since` — one
- * session id per session with an in-window turn. A `--since` window
+ * session id per session with an in-window turn, never an empty one
+ * (an empty session id is unkeyed legacy data, review round 80). A
+ * `--since` window
  * keeps a record whose `ts` falls inside it, and a closing `session`
  * record also when any turn of the same session fell inside — its `ts` is the
  * session's start, so a session that began before the cutoff can include
@@ -39,7 +41,7 @@ import {
   streamCallLog,
   type CallRecord,
 } from "./call-log.js";
-import { CallTotals } from "./calls-totals.js";
+import { CallTotals, sessionKey } from "./calls-totals.js";
 import { collectLabel, escapeJsonControls, parseLabels, validateLabelKey } from "./labels.js";
 import { AGENT_IDS, type AgentId } from "./types.js";
 import { UsageRefusalError, USAGE_REFUSAL_EXIT_CODE } from "./validation.js";
@@ -194,7 +196,9 @@ export class ListingRing<T> {
  * every closing against the full set (round 23, edges 4). Counted once:
  * the fold in the totals keeps the summary beside its turns without
  * counting either twice. The set of session ids is the only retained
- * state, one entry per session with an in-window turn. */
+ * state, one entry per session with an in-window turn; an empty session
+ * id keys nothing (calls-totals.ts sessionKey), so an old empty-id
+ * closing record stays behind the cutoff (review round 80). */
 function recordInsideWindow(record: CallRecord, cutoff: Date): boolean {
   const ts = new Date(record.ts);
   return !Number.isNaN(ts.getTime()) && ts >= cutoff;
@@ -202,18 +206,22 @@ function recordInsideWindow(record: CallRecord, cutoff: Date): boolean {
 
 /** The first pass's one job: name every session with an in-window turn,
  * after the agent and label filters — one id per such session, never one
- * per turn. */
+ * per turn. The key is the totals' session key (calls-totals.ts): an
+ * empty session id is unkeyed legacy data and never a key, so a recent
+ * empty-id turn cannot pull an old empty-id closing record past the
+ * cutoff (review round 80). */
 export function collectSessionWithTurn(
   record: CallRecord,
   cutoff: Date,
   sessionsWithTurnsInside: Set<string>
 ): void {
+  const key = sessionKey(record);
   if (
     record.kind === "session_turn" &&
-    record.session_id !== null &&
+    key !== null &&
     recordInsideWindow(record, cutoff)
   ) {
-    sessionsWithTurnsInside.add(record.session_id);
+    sessionsWithTurnsInside.add(key);
   }
 }
 
@@ -223,11 +231,8 @@ export function windowKeeps(
   sessionsWithTurnsInside: ReadonlySet<string>
 ): boolean {
   if (recordInsideWindow(record, cutoff)) return true;
-  return (
-    record.kind === "session" &&
-    record.session_id !== null &&
-    sessionsWithTurnsInside.has(record.session_id)
-  );
+  const key = sessionKey(record);
+  return record.kind === "session" && key !== null && sessionsWithTurnsInside.has(key);
 }
 
 /**

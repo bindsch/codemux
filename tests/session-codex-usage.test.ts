@@ -5,6 +5,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { overflowedFields } from "../src/session/usage.js";
 import { normalizeCodexTokenUsage } from "../src/session/codex-session.js";
 
 describe("codex session - usage normalization", () => {
@@ -65,5 +66,34 @@ describe("codex session - usage normalization", () => {
       normalizeCodexTokenUsage({ inputTokens: Number.POSITIVE_INFINITY, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 1 })
         .input_tokens
     ).toBe(null);
+  });
+
+  test("counts past the safe range and sums that leave it are unknown (round 80)", () => {
+    // The finding's example: input at the ceiling plus two output tokens
+    // summed to 9007199254740992 — a rounded number, not the mathematical
+    // 9007199254740993. The envelope's rule (reportedTokenCount,
+    // safeTokenSum) applies here too: the parts that stay inside the range
+    // keep their values, the total that leaves it is null.
+    const usage = normalizeCodexTokenUsage({
+      inputTokens: Number.MAX_SAFE_INTEGER,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      outputTokens: 2,
+    });
+    expect(usage.input_tokens).toBe(Number.MAX_SAFE_INTEGER);
+    expect(usage.output_tokens).toBe(2);
+    expect(usage.total_tokens).toBe(null);
+    // 2^53 itself is an integer but not a safe one: unreported, never
+    // stored as a count.
+    expect(normalizeCodexTokenUsage({ inputTokens: 2 ** 53 }).input_tokens).toBe(null);
+    // A cache pair whose sum leaves the range is unknown too, and marked
+    // as an overflow so no later fold revives it (round 84).
+    const cacheOverflow = normalizeCodexTokenUsage({
+      cachedInputTokens: Number.MAX_SAFE_INTEGER,
+      cacheWriteInputTokens: 2,
+    });
+    expect(cacheOverflow.cached_input_tokens).toBe(null);
+    expect(overflowedFields(cacheOverflow)).toEqual(["cached_input_tokens"]);
+    expect(overflowedFields(normalizeCodexTokenUsage({ cachedInputTokens: 1, cacheWriteInputTokens: 2 }))).toEqual([]);
   });
 });

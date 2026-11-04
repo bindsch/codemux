@@ -1,4 +1,5 @@
 import { featureFloor } from "../harness-contracts.js";
+import { markOverflowed } from "./usage.js";
 /**
  * The opencode session wiring: the per-turn spawn command over `opencode run
  * --session`, the honest capability matrix, and the JSON run-output parser
@@ -29,6 +30,7 @@ import { featureFloor } from "../harness-contracts.js";
  */
 
 import type { AutonomyLevel, ReasoningEffort, ResultUsageBlock } from "../types.js";
+import { reportedTokenCount, safeTokenSum } from "../result-envelope/common.js";
 import { unusableFacts } from "./process.js";
 import type { SessionCapabilities } from "./protocol.js";
 
@@ -113,11 +115,6 @@ export function buildOpenCodeSessionCommand(command: OpenCodeSessionCommand): st
   return argv;
 }
 
-const USAGE_COUNT = (value: unknown): number | null =>
-  typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? Math.floor(value)
-    : null;
-
 const COST = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 
@@ -129,21 +126,27 @@ const COST = (value: unknown): number | null =>
  * cached_input_tokens (the run path's convention when a harness reports the
  * two apart). Each field is null when the raw fields it needs are
  * unreported, never guessed; `reasoning` has no ResultUsageBlock slot and is
- * dropped.
+ * dropped. Counts and the cache sum follow the envelope's rule
+ * (reportedTokenCount and safeTokenSum, src/result-envelope/common.ts): a
+ * count is a whole non-negative safe integer, and a cache read at the
+ * ceiling plus two written tokens is null, never a rounded number (review
+ * round 80).
  */
 export function normalizeOpenCodeUsage(part: Record<string, unknown>): ResultUsageBlock {
   const tokens = isRecord(part["tokens"]) ? (part["tokens"] as Record<string, unknown>) : {};
   const cache = isRecord(tokens["cache"]) ? (tokens["cache"] as Record<string, unknown>) : {};
-  const read = USAGE_COUNT(cache["read"]);
-  const write = USAGE_COUNT(cache["write"]);
-  return {
-    input_tokens: USAGE_COUNT(tokens["input"]),
-    output_tokens: USAGE_COUNT(tokens["output"]),
-    cached_input_tokens:
-      read !== null && write !== null ? read + write : null,
-    total_tokens: USAGE_COUNT(tokens["total"]),
+  const read = reportedTokenCount(cache["read"]);
+  const write = reportedTokenCount(cache["write"]);
+  const cached = read !== null && write !== null ? safeTokenSum(read, write) : null;
+  // A cache pair whose sum left the safe range is an overflow, not an
+  // unreported field: marked, so no later fold revives it (round 84).
+  return markOverflowed({
+    input_tokens: reportedTokenCount(tokens["input"]),
+    output_tokens: reportedTokenCount(tokens["output"]),
+    cached_input_tokens: cached,
+    total_tokens: reportedTokenCount(tokens["total"]),
     cost_usd: COST(part["cost"]),
-  };
+  }, read !== null && write !== null && cached === null ? ["cached_input_tokens"] : []);
 }
 
 /** What one opencode run-output line resolves to. The driver owns the FSM;

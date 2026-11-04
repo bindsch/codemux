@@ -185,6 +185,34 @@ describe("codemux calls in-process", () => {
     }
   });
 
+  test("an empty session id keys nothing: a recent empty-id turn never admits an old empty-id closing (round 80)", async () => {
+    // "" is unkeyed legacy data (calls-totals.ts sessionKey), which the
+    // totals already refuse to merge under. Before round 80 the window
+    // collected it as a session key anyway, so one recent empty-id turn
+    // made every old empty-id closing record pass the cutoff — unrelated
+    // sessions mixed into the window, records outside it listed.
+    const lines = [
+      // An old closing record with an empty id, its start far outside the
+      // window; its tokens must stay behind the cutoff.
+      record({ ts: iso(3 * 60 * MINUTE), kind: "session", sessionId: "", input: 999, total: 999 }),
+      // A recent turn with an empty id: inside the window on its own ts.
+      record({ ts: iso(10 * MINUTE), kind: "session_turn", sessionId: "", input: 5, total: 5 }),
+    ];
+    const { captured, done } = await runCommand(lines, ["--since", "1h", "--json", "--sum"]);
+    try {
+      // One stored line (the turn) plus the totals line.
+      expect(captured.out).toHaveLength(2);
+      expect(JSON.parse(captured.out[0]!).kind).toBe("session_turn");
+      expect(JSON.parse(captured.out[0]!).session_id).toBe("");
+      const totals = captured.out[1]!;
+      expect(totals).toContain("Totals over 1 record(s)");
+      expect(totals).toContain("input=5");
+      expect(totals).not.toContain("999");
+    } finally {
+      done();
+    }
+  });
+
   test("a label filter with no match says so instead of an empty table", async () => {
     const labeled = JSON.stringify({
       ...JSON.parse(record({ ts: iso(MINUTE) })),

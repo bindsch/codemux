@@ -125,6 +125,16 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 80, whole tree: `calls --since` no longer treats an empty session id as a session key, so a recent
+  empty-id turn cannot pull old empty-id closing records past the cutoff; session usage (codex, opencode, and the
+  cumulative fold) applies the envelope's safe-integer rule, so a count past the safe range or a sum that would
+  leave it reports null in usage events and the ledger summary instead of a rounded number; `calls --sum` prints
+  `unknown` for a token total that would leave the safe range and keeps it unknown; the ledger reader refuses a
+  count JSON parsing has rounded past the safe range instead of accepting its rounded neighbor; and a short ledger
+  append write is reported (no lock is held, so nothing repairs the file afterwards: the reader marks the partial line
+  malformed, together with any record that lands on it). Round 81 on that diff: a field the cumulative fold
+  lost to overflow stays unknown through every later turn instead of reviving with the next count, a normalizer's
+  own cache-sum overflow included.
 - Review round 73, whole tree: an opencode or aider turn whose process spawn rejects after a graceful end began
   (shutdown or stdin close) is reported failed with the spawn error and exits nonzero instead of interrupted with
   exit 0; a Codex experiment inventory is checked only when the tool map carries the experiment namespace and every

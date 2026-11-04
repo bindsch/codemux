@@ -45,6 +45,32 @@ describe("readCallLog", () => {
     }
   });
 
+  test("a count past the safe-integer range is malformed, never its rounded neighbor (round 80)", () => {
+    const { dir, cleanup } = tempEnv();
+    try {
+      const path = join(dir, "calls.jsonl");
+      // The count is written as raw JSON text: the literal 9007199254740993
+      // is not representable, and JSON.parse rounds it to 9007199254740992 —
+      // an integer, so Number.isInteger accepted it while the value on disk
+      // named a different number. Number.isSafeInteger refuses it.
+      const rounded = JSON.stringify({ ...BASE_RECORD, usage: { ...BASE_RECORD.usage } }).replace(
+        '"input_tokens":null',
+        '"input_tokens":9007199254740993'
+      );
+      const ceiling = JSON.stringify({
+        ...BASE_RECORD,
+        usage: { ...BASE_RECORD.usage, input_tokens: Number.MAX_SAFE_INTEGER },
+      });
+      writeFileSync(path, `${rounded}\n${ceiling}\n`);
+      const read = readCallLog(path);
+      expect(read.malformed).toBe(1);
+      expect(read.entries[0]!.record).toBeNull();
+      expect(read.entries[1]!.record!.usage.input_tokens).toBe(Number.MAX_SAFE_INTEGER);
+    } finally {
+      cleanup();
+    }
+  });
+
   test("a line without the record's full shape is malformed, never a record (ul2)", () => {
     const { dir, cleanup } = tempEnv();
     try {

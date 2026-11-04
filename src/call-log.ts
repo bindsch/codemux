@@ -13,7 +13,10 @@
  * ledger (appendLedgerPath).
  *
  * Records are appended with one `write` of one line on an `O_APPEND`
- * descriptor, so concurrent codemux processes never interleave half-lines.
+ * descriptor, so concurrent codemux processes never interleave half-lines;
+ * the write's returned byte count is checked and a short write is
+ * reported (review round 80); with no lock held nothing repairs the
+ * file, so the reader marks the partial line malformed.
  * The file is created 0600 and tightened when it arrives with wider
  * permissions, and the append opens it without following a final symlink
  * (O_NOFOLLOW) and only after fstat confirms a regular file on the open
@@ -324,13 +327,27 @@ export function appendCallRecord(
       throw error;
     }
     try {
-      if (!fstatSync(fd).isFile()) {
+      const target = fstatSync(fd);
+      if (!target.isFile()) {
         warnOnce(
           `codemux: refusing to write the call log at ${path}: it is not a regular file`
         );
         return;
       }
-      writeSync(fd, line);
+      // The append is one writeSync of one staged buffer, and the count it
+      // returns is checked (review round 80): a short regular-file write —
+      // storage pressure, a signal — leaves part of the line without its
+      // newline. A short count fails the append through the usual warning.
+      // No lock is held, so nothing repairs the file afterwards: a
+      // truncation could cut a record another process appended meanwhile,
+      // and a fresh-line probe before the write races the same way (rounds
+      // 83 and 84). The partial line stays; the reader reports it, and any
+      // record that lands on that same line with it, as malformed.
+      const payload = Buffer.from(line, "utf8");
+      const written = writeSync(fd, payload);
+      if (written < payload.byteLength) {
+        throw new Error(`short write: ${written} of ${payload.byteLength} bytes`);
+      }
     } finally {
       closeSync(fd);
     }

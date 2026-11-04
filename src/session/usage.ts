@@ -6,12 +6,32 @@
  * is null only when no report has ever named it, and the computed
  * `total_tokens` is null whenever any folded turn left a token part
  * unreported — the missing figure is not counted as zero (review
- * live15). Cost is the one exception a session-lifetime wire forces:
- * `addTurnUsage` adopts the harness's latest figure rather than summing
- * per-turn ones.
+ * live15). Token sums follow the envelope's safe rule (safeTokenSum,
+ * src/result-envelope/common.ts): a sum that would leave the
+ * safe-integer range is null — unknown — never the rounded number the
+ * float addition produces (review round 80). An unknown total stays
+ * unknown downstream: the usage events and the ledger's closing summary
+ * carry null for it, the same field the envelope reports null. Cost is
+ * the one exception a session-lifetime wire forces: `addTurnUsage`
+ * adopts the harness's latest figure rather than summing per-turn ones.
  */
 
 import type { ResultUsageBlock } from "../types.js";
+import { safeTokenSum } from "../result-envelope/common.js";
+
+import { markOverflowed, overflowMarks, overflowedFields, TOKEN_FIELDS, type TokenField } from "../usage-overflow.js";
+
+export { markOverflowed, overflowedFields };
+
+/** A copy of `block` with `changes` applied that keeps the source's
+ * marks: the one way a block is rebuilt here (a plain spread would drop
+ * them, review round 82). */
+function derive(source: ResultUsageBlock, changes: Partial<ResultUsageBlock>): ResultUsageBlock {
+  const result = { ...source, ...changes };
+  const marks = overflowMarks.get(source);
+  if (marks) overflowMarks.set(result, marks);
+  return result;
+}
 
 /** Sum two usage blocks field-wise: a null side yields the other side,
  * two nulls stay null. A partially-reporting turn therefore cannot wipe
@@ -27,16 +47,39 @@ import type { ResultUsageBlock } from "../types.js";
  * count was missing counted that figure as zero — the live10 rule
  * matched the components but the value was still a guess (review
  * live15). A token-empty addend (all parts null) certifies nothing and
- * voids nothing: the running total stands as it was. */
+ * voids nothing: the running total stands as it was.
+ *
+ * Token sums are safe sums (safeTokenSum): a sum that would leave the
+ * safe-integer range is null — unknown — never the rounded number the
+ * float addition produces, the envelope's rule, so a session cannot
+ * report a total the equivalent non-session run would call unknown
+ * (review round 80). Cost still sums as a plain float: it is money, not
+ * a count, and its accuracy is the cent-level float's, not the integer
+ * range's. */
 export function addUsage(
   total: ResultUsageBlock,
   addend: ResultUsageBlock
 ): ResultUsageBlock {
-  const sum = (a: number | null, b: number | null): number | null =>
+  const overflowed = new Set<TokenField>(overflowMarks.get(total) ?? []);
+  for (const field of TOKEN_FIELDS) {
+    if (overflowMarks.get(addend)?.has(field)) overflowed.add(field);
+  }
+  // An overflowed field stays unknown whatever later turns report.
+  const sum = (field: TokenField): number | null => {
+    if (overflowed.has(field)) return null;
+    const a = total[field];
+    const b = addend[field];
+    if (a === null) return b;
+    if (b === null) return a;
+    const result = safeTokenSum(a, b);
+    if (result === null) overflowed.add(field);
+    return result;
+  };
+  const sumCost = (a: number | null, b: number | null): number | null =>
     a === null ? b : b === null ? a : a + b;
-  const input_tokens = sum(total.input_tokens, addend.input_tokens);
-  const output_tokens = sum(total.output_tokens, addend.output_tokens);
-  const cached_input_tokens = sum(total.cached_input_tokens, addend.cached_input_tokens);
+  const input_tokens = sum("input_tokens");
+  const output_tokens = sum("output_tokens");
+  const cached_input_tokens = sum("cached_input_tokens");
   const addendReportsTokens =
     addend.input_tokens !== null ||
     addend.output_tokens !== null ||
@@ -54,7 +97,7 @@ export function addUsage(
     (total.input_tokens === null &&
       total.output_tokens === null &&
       total.cached_input_tokens === null);
-  return {
+  const result: ResultUsageBlock = {
     input_tokens,
     output_tokens,
     cached_input_tokens,
@@ -65,10 +108,12 @@ export function addUsage(
           input_tokens !== null &&
           output_tokens !== null &&
           cached_input_tokens !== null
-        ? input_tokens + cached_input_tokens + output_tokens
+        ? safeTokenSum(input_tokens, cached_input_tokens, output_tokens)
         : null,
-    cost_usd: sum(total.cost_usd, addend.cost_usd),
+    cost_usd: sumCost(total.cost_usd, addend.cost_usd),
   };
+  if (overflowed.size > 0) overflowMarks.set(result, overflowed);
+  return result;
 }
 
 /** Fold one reported delta into a per-turn accumulator that starts
@@ -97,8 +142,6 @@ export function addTurnUsage(
   total: ResultUsageBlock,
   addend: ResultUsageBlock
 ): ResultUsageBlock {
-  return {
-    ...addUsage(total, { ...addend, cost_usd: null }),
-    cost_usd: addend.cost_usd ?? total.cost_usd,
-  };
+  const folded = addUsage(total, derive(addend, { cost_usd: null }));
+  return derive(folded, { cost_usd: addend.cost_usd ?? total.cost_usd });
 }

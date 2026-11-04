@@ -187,6 +187,10 @@ native file changes, or streaming usage. The remaining values are listed in
 `output_tokens`, `cached_input_tokens`, `total_tokens`, and `cost_usd`.
 Null means unreported, never zero. Input excludes cache-served tokens;
 cached input includes cache reads and writes; total requires all token parts.
+An unknown or overflowing count is null: token counts are whole non-negative
+safe integers, and a count past that range — or a fold whose sum would
+leave it — reports null in the event and in the ledger's closing summary,
+never a rounded number.
 See [results and usage](results-and-usage.md) for normalization details.
 
 `usage` events exist only for Codex. They contain notification deltas, not

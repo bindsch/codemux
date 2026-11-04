@@ -204,7 +204,10 @@ upstream success behavior.
 ## Usage fields
 
 Every usage object has five nullable numeric fields. Null means unreported,
-never zero. Reported zero remains zero.
+never zero. Reported zero remains zero. Token counts are whole non-negative
+safe integers everywhere — run envelopes, session usage events, and the
+ledger: a count past the safe-integer range is null, and so is any sum that
+would leave the range, never the rounded number a float addition produces.
 
 | Field | Meaning |
 |---|---|
@@ -322,7 +325,9 @@ session, and one session id per session with an in-window turn under
 A matching turn also selects closing summaries of that session even when
 their start timestamps precede the cutoff, whichever side of the summary
 the turn falls on — a resumed session's first closing is selected by the
-turns its resume ran after it. `--sum` covers every matching
+turns its resume ran after it. A session id of `""` keys nothing here
+either: it is unkeyed legacy data, so a recent turn with an empty id never
+selects an old closing record that carries one. `--sum` covers every matching
 record: for each session and field, matched turn values take precedence over
 the closing summary. With several closings, only the newest closing
 contributes. Cost sums `billed` and `subscription-zero` figures only; a
@@ -331,7 +336,9 @@ estimates, the totals line is followed by one line of its own — `harness
 estimate $X — claude and zai report session-lifetime figures, not per-call
 bills` — so a lifetime figure is never read as money this window spent.
 Closings without a nonempty session ID are excluded. Unknown fields are
-reported with missing-value counts.
+reported with missing-value counts, and a token field whose running sum
+would leave the safe-integer range prints `unknown` — the same word an
+unreported field prints — and stays unknown for the rest of the total.
 `--json --sum` emits stored JSONL followed
 by human-readable totals; it is not a pure JSONL stream.
 

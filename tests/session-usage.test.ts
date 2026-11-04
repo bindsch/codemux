@@ -6,9 +6,19 @@
  * the cumulative field for the whole session).
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { emptyUsage, normalizeClaudeUsage } from "../src/result-envelope/common.js";
+import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import type { ResultUsageBlock } from "../src/types.js";
-import { addTurnUsage, addUsage, accumulateUsage } from "../src/session/usage.js";
+import { markOverflowed, overflowedFields, addTurnUsage, addUsage, accumulateUsage } from "../src/session/usage.js";
+import { appendSessionCallRecord, CALL_LOG_ENV, readCallLog, resetCallLogWarningForTests } from "../src/call-log.js";
+import { buildEvent } from "../src/session/protocol.js";
+import { tempEnv } from "./helpers/call-log.js";
+
+afterEach(() => {
+  resetCallLogWarningForTests();
+});
 
 const block = (
   overrides: Partial<ResultUsageBlock> = {}
@@ -167,6 +177,134 @@ describe("usage arithmetic", () => {
     ).toEqual(
       block({ input_tokens: 11, output_tokens: 6, cached_input_tokens: 4, total_tokens: 21, cost_usd: 0.03 })
     );
+  });
+
+  test("a token sum that would leave the safe-integer range is unknown, never rounded (round 80)", () => {
+    // The finding's example, in the cumulative fold: a block reporting
+    // input at the ceiling joined by one reporting two more summed to
+    // 9007199254740992 — a rounded number, not the mathematical
+    // 9007199254740993. The safe-sum rule (safeTokenSum) makes the
+    // overflowing field null; the parts that stay inside the range keep
+    // their sums; the computed total certifies nothing while a part is
+    // unknown.
+    const huge = block({
+      input_tokens: Number.MAX_SAFE_INTEGER,
+      output_tokens: 0,
+      cached_input_tokens: 0,
+      total_tokens: Number.MAX_SAFE_INTEGER,
+      cost_usd: null,
+    });
+    const small = block({
+      input_tokens: 2,
+      output_tokens: 0,
+      cached_input_tokens: 0,
+      total_tokens: 2,
+      cost_usd: null,
+    });
+    const folded = addUsage(huge, small);
+    expect(folded.input_tokens).toBe(null);
+    expect(folded.output_tokens).toBe(0);
+    expect(folded.cached_input_tokens).toBe(0);
+    expect(folded.total_tokens).toBe(null);
+    // The turn fold inherits the same rule.
+    expect(addTurnUsage(huge, small).input_tokens).toBe(null);
+    // Cost is money, not a count: it keeps its plain float sum.
+    expect(addUsage(block({ cost_usd: 0.01 }), block({ cost_usd: 0.02 })).cost_usd).toBe(0.03);
+  });
+
+  test("an overflowed field stays unknown through every later fold (round 81)", () => {
+    // After MAX_SAFE_INTEGER + 2 overflowed input_tokens to null, a later
+    // turn reporting 5 must not revive it as 5: the null of an overflow
+    // is not the null of "never reported".
+    const at = (input_tokens: number): ResultUsageBlock => block({
+      input_tokens, output_tokens: 1, cached_input_tokens: 0, total_tokens: input_tokens + 1, cost_usd: null,
+    });
+    let running = addUsage(at(Number.MAX_SAFE_INTEGER), at(2));
+    expect(running.input_tokens).toBe(null);
+    expect(overflowedFields(running)).toEqual(["input_tokens"]);
+    running = addUsage(running, at(5));
+    expect(running.input_tokens).toBe(null);
+    expect(running.output_tokens).toBe(3);
+    expect(running.total_tokens).toBe(null);
+    // The turn fold and the per-turn accumulator carry the mark too.
+    running = addTurnUsage(running, { ...at(7), cost_usd: 0.5 });
+    expect(running.input_tokens).toBe(null);
+    expect(running.cost_usd).toBe(0.5);
+    expect(overflowedFields(running)).toEqual(["input_tokens"]);
+    expect(accumulateUsage(running, at(1)).input_tokens).toBe(null);
+    // A marked addend marks the result as well.
+    expect(addUsage(at(1), running).input_tokens).toBe(null);
+    // A turn whose own accumulator overflowed (two deltas inside one turn)
+    // carries the mark through the turn fold's copy of the addend, so the
+    // next turn cannot revive the cumulative field (round 82).
+    const turn = accumulateUsage(accumulateUsage(null, at(Number.MAX_SAFE_INTEGER)), at(2));
+    expect(overflowedFields(turn)).toEqual(["input_tokens"]);
+    let cumulative = addTurnUsage(block({ input_tokens: 1, output_tokens: 1, cached_input_tokens: 0, total_tokens: 2, cost_usd: null }), turn);
+    expect(cumulative.input_tokens).toBe(null);
+    expect(overflowedFields(cumulative)).toEqual(["input_tokens"]);
+    cumulative = addTurnUsage(cumulative, at(5));
+    expect(cumulative.input_tokens).toBe(null);
+    // A normalizer's own overflow (a cache pair past the range) is marked
+    // the same way, so the fold never revives the field (round 84).
+    const cacheOverflow = markOverflowed(block({ input_tokens: 1, output_tokens: 1, cached_input_tokens: null, total_tokens: null, cost_usd: null }), ["cached_input_tokens"]);
+    const later = block({ input_tokens: 1, output_tokens: 1, cached_input_tokens: 5, total_tokens: 7, cost_usd: null });
+    expect(addUsage(cacheOverflow, later).cached_input_tokens).toBe(null);
+    expect(addUsage(later, cacheOverflow).cached_input_tokens).toBe(null);
+    // The Claude and Z.AI normalizer marks its own cache-sum overflow, so
+    // a later turn's cache count cannot revive the cumulative (round 85).
+    const claudeTurn = normalizeClaudeUsage({ input_tokens: 1, output_tokens: 1,
+      cache_read_input_tokens: Number.MAX_SAFE_INTEGER, cache_creation_input_tokens: 2 }, null);
+    expect(claudeTurn.cached_input_tokens).toBe(null);
+    expect(overflowedFields(claudeTurn)).toEqual(["cached_input_tokens"]);
+    const nextTurn = normalizeClaudeUsage({ input_tokens: 1, output_tokens: 1,
+      cache_read_input_tokens: 5, cache_creation_input_tokens: 0 }, null);
+    expect(overflowedFields(nextTurn)).toEqual([]);
+    const session = addTurnUsage(addTurnUsage(emptyUsage(), claudeTurn), nextTurn);
+    expect(session.cached_input_tokens).toBe(null);
+    expect(session.input_tokens).toBe(2);
+  });
+
+  test("an unknown total carries null into the session event and the ledger summary (round 80)", () => {
+    // What the surfaces carry was decided with the fix: null, the field
+    // the envelope itself reports for an unknown count — never a rounded
+    // number and never zero.
+    const unknown: ResultUsageBlock = {
+      input_tokens: null,
+      output_tokens: 3,
+      cached_input_tokens: null,
+      total_tokens: null,
+      cost_usd: null,
+    };
+    const event = buildEvent(7, "sess-1", "session_ended", null, { usage: unknown });
+    expect(event).toContain('"total_tokens":null');
+    expect(JSON.parse(event).usage.total_tokens).toBe(null);
+    const { env, dir, cleanup } = tempEnv();
+    try {
+      const path = join(dir, "calls.jsonl");
+      appendSessionCallRecord(
+        {
+          agent: "codex",
+          model: null,
+          provider: "default",
+          autonomy: "low",
+          hermetic: false,
+          sandboxed: true,
+          cwd: "/repo",
+        },
+        "sess-1",
+        Date.now() - 1000,
+        "stdin-close",
+        0,
+        unknown,
+        { ...env, [CALL_LOG_ENV]: path }
+      );
+      expect(readFileSync(path, "utf8")).toContain('"total_tokens":null');
+      const record = readCallLog(path).entries[0]!.record!;
+      expect(record.usage.total_tokens).toBe(null);
+      expect(record.usage.input_tokens).toBe(null);
+    } finally {
+      cleanup();
+    }
   });
 
   describe("addTurnUsage — the per-turn fold into the session cumulative", () => {
