@@ -178,6 +178,12 @@ describe("usage protocol", () => {
         subscriptionRenewsAt: "next month",
       }],
     }))).toThrow("subscriptionRenewsAt must be an RFC 3339 timestamp");
+    // A nonexistent calendar date is not a timestamp, however Date.parse
+    // normalizes it (review round 59).
+    expect(() => parseUsageSnapshot(JSON.stringify({ ...VALID_SNAPSHOT, generatedAt: "2026-02-30T00:00:00.000Z" })))
+      .toThrow("generatedAt must be an RFC 3339 timestamp");
+    // Early years are valid timestamps: Date.UTC would read 0001 as 1901 (review round 61).
+    expect(() => parseUsageSnapshot(JSON.stringify({ ...VALID_SNAPSHOT, generatedAt: "0001-01-01T00:00:00.000Z" }))).not.toThrow();
   });
 
   test("requires exactly one result for every requested client", () => {

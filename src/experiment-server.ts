@@ -12,6 +12,9 @@ const MAX_PENDING_REQUESTS = 256;
 /** A single experiment-owned stdio process, outside the harness sandbox.
  * No shell, ambient environment, sampling, or elicitation is supplied.
  */
+/** A notification resolves to nothing once its write settled. */
+const settledNotification = (): undefined => undefined;
+
 export class ExperimentServer {
   private proc?: ReturnType<typeof Bun.spawn>;
   private target?: TerminationTarget;
@@ -75,9 +78,25 @@ export class ExperimentServer {
       }
     }
     this.record("server_stdin", { bytes_base64: Buffer.from(line).toString("base64"), rpc_id: id ?? null });
-    (this.proc.stdin as Bun.FileSink).write(line);
+    // Under backpressure Bun's sink returns a promise that can reject
+    // (EPIPE): a notification is acknowledged only once it settled, and a
+    // rejection ends the server instead of going unhandled (review round 59).
+    const written = (this.proc.stdin as Bun.FileSink).write(line);
+    const flushed: Promise<unknown> = written instanceof Promise ? written : Promise.resolve(written);
+    flushed.catch((error) => {
+      const failure = new ExperimentFailure(ExperimentFailureCode.ServerError,
+        `experiment MCP server stdin write failed (${error instanceof Error ? error.message : String(error)})`);
+      // An id-bearing request never reaches the server: its caller is
+      // answered and its pending slot released (review round 60).
+      if (key !== undefined) {
+        const entry = this.pending.get(key);
+        this.pending.delete(key);
+        entry?.reject(failure);
+      }
+      this.fail(failure);
+    });
     // No await occurs before registration, so a response cannot overtake it.
-    return key === undefined ? Promise.resolve(undefined) :
+    return key === undefined ? flushed.then(settledNotification) :
       new Promise((resolve, reject) => this.pending.set(key!, { resolve, reject }));
   }
 

@@ -76,11 +76,28 @@ const requirePercentage = (value: unknown, field: string): number | null => {
   return number;
 };
 
+/** Date.parse normalizes a nonexistent date (2026-02-30 reads as March 2),
+ * so the calendar fields must round-trip through Date.UTC exactly
+ * (review round 59). */
+const calendarValid = (value: string): boolean => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/.exec(value);
+  if (match === null) return false;
+  const [year, month, day, hour, minute, second] = match.slice(1).map(Number) as [number, number, number, number, number, number];
+  // setUTCFullYear, not Date.UTC: Date.UTC reads years 0 to 99 as 1900 to
+  // 1999 and would reject valid early timestamps (review round 61).
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(hour, minute, second, 0);
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day &&
+    date.getUTCHours() === hour && date.getUTCMinutes() === minute && date.getUTCSeconds() === second;
+};
+
 const requireTimestamp = (value: unknown, field: string): string => {
   if (
     typeof value !== "string" ||
     !RFC3339_TIMESTAMP.test(value) ||
-    !Number.isFinite(Date.parse(value))
+    !Number.isFinite(Date.parse(value)) ||
+    !calendarValid(value)
   ) {
     throw new Error(`${field} must be an RFC 3339 timestamp`);
   }

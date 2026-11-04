@@ -1,6 +1,6 @@
 import type { ResultUsageBlock } from "../types.js";
 import type { CodexEventStream } from "./codex-stream.js";
-import { emptyUsage, reportedCount } from "./common.js";
+import { emptyUsage, reportedTokenCount, safeTokenSum } from "./common.js";
 
 /**
  * The one spelling of the stderr note a retained warning prints (the plain
@@ -315,10 +315,10 @@ export class CodexEventReducer {
           break;
         }
         const u = reported as Record<string, unknown>;
-        const input = reportedCount(u.input_tokens);
-        const cached = reportedCount(u.cached_input_tokens);
-        const cacheWrite = reportedCount(u.cache_write_input_tokens);
-        const output = reportedCount(u.output_tokens);
+        const input = reportedTokenCount(u.input_tokens);
+        const cached = reportedTokenCount(u.cached_input_tokens);
+        const cacheWrite = reportedTokenCount(u.cache_write_input_tokens);
+        const output = reportedTokenCount(u.output_tokens);
         if (input === null && cached === null && cacheWrite === null && output === null) {
           this.usage = emptyUsage();
           this.usageReported = false;
@@ -355,7 +355,7 @@ export class CodexEventReducer {
           output_tokens: output,
           // Cache reads and writes join into the one cached count.
           cached_input_tokens:
-            cached !== null && cacheWrite !== null ? cached + cacheWrite : null,
+            cached !== null && cacheWrite !== null ? safeTokenSum(cached, cacheWrite) : null,
           // The total is computed, not reported: the sum of the three
           // normalized components above, and only when every component of
           // the documented sum is known -- which takes all four raw counts,
@@ -368,7 +368,7 @@ export class CodexEventReducer {
           // to (round19).
           total_tokens:
             input !== null && cached !== null && cacheWrite !== null && output !== null
-              ? Math.max(0, input - cached - cacheWrite) + cached + cacheWrite + output
+              ? safeTokenSum(Math.max(0, input - cached - cacheWrite), cached, cacheWrite, output)
               : null,
           cost_usd: null,
         };

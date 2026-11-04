@@ -1,5 +1,5 @@
 import type { CodemuxResultBlock, ResultUsageBlock, RunRequest, RunResult } from "../types.js";
-import { appendDiagnostic, emptyUsage, reportedCount } from "./common.js";
+import { appendDiagnostic, emptyUsage, reportedTokenCount, safeTokenSum } from "./common.js";
 
 export interface AgyEnvelopeInfo {
   envelope: Record<string, unknown>;
@@ -83,13 +83,13 @@ export function parseAgyResultEnvelope(
   const usage = emptyUsage();
   if (typeof envelope.usage === "object" && envelope.usage !== null) {
     const reported = envelope.usage as Record<string, unknown>;
-    const input = reportedCount(reported.input_tokens);
-    const output = reportedCount(reported.output_tokens);
+    const input = reportedTokenCount(reported.input_tokens);
+    const output = reportedTokenCount(reported.output_tokens);
     // A reported zero stays zero: the harness did report the count, and
     // null would drop a known number. The raw input includes the cache
     // reads, so uncached input is their difference and needs both counts:
     // one-sided reports stay null rather than guessing the missing half.
-    const cacheRead = reportedCount(reported.cache_read_tokens);
+    const cacheRead = reportedTokenCount(reported.cache_read_tokens);
     if (input !== null && cacheRead !== null) {
       usage.input_tokens = Math.max(0, input - cacheRead);
     }
@@ -105,8 +105,7 @@ export function parseAgyResultEnvelope(
       usage.cached_input_tokens !== null &&
       usage.output_tokens !== null
     ) {
-      usage.total_tokens =
-        usage.input_tokens + usage.cached_input_tokens + usage.output_tokens;
+      usage.total_tokens = safeTokenSum(usage.input_tokens, usage.cached_input_tokens, usage.output_tokens);
     }
   }
 
