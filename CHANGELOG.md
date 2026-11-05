@@ -125,6 +125,10 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 93, whole tree: a session registry record's `created_at` and `last_activity` must be the UTC stamps
+  the writers make, so a malformed value can no longer outrank real stamps in pruning and evict a valid session; an
+  `owner_pid` outside the range a kernel assigns is invalid, and the liveness probe treats such a pid as dead instead
+  of answering `session_busy` forever.
 - Review round 90, whole tree: a credential scrub that ends on another writer's replacement is judged
   against the file on disk, not the pre-scrub snapshot, so a sandboxed launch can no longer proceed as
   current on a stale access token; a cost total that would leave the finite range prints `unknown` — on the

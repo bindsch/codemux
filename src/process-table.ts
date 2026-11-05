@@ -9,6 +9,9 @@ import { readdirSync, readFileSync } from "node:fs";
  * `ProcessEntry.start`).
  */
 
+/** The largest process id a kernel assigns (a 32-bit signed pid_t). */
+export const MAX_PID = 0x7fffffff;
+
 export interface ProcessEntry {
   ppid: number;
   /** Process group id, so a signal already delivered to a whole group is not

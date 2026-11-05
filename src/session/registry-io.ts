@@ -30,7 +30,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { FileContentError, readUtf8FileBounded } from "../file-io.js";
-import { readProcessTable, type ProcessTable } from "../process-table.js";
+import { MAX_PID, readProcessTable, type ProcessTable } from "../process-table.js";
 
 export const REGISTRY_DIR_MODE = 0o700;
 export const REGISTRY_FILE_MODE = 0o600;
@@ -48,15 +48,16 @@ function sleepSync(ms: number): void {
  * recorded null because the table was unreadable at record time — or
  * wherever the table is unreadable at check time, it degrades to bare
  * pid existence (a signal-0 probe, where only ESRCH means dead); either
- * way the residual is the pid-reuse window. A caller that checks many identities in one pass
- * (prune) may hand in one snapshot: each unread table costs a process
- * enumeration, and a thousand of those inside the held writer lock is
- * its own contention defect (review live13). */
+ * way the residual is the pid-reuse window. A caller that checks many
+ * identities in one pass (prune) may hand in one snapshot instead of one
+ * process enumeration each inside the writer lock (review live13). */
 export function processIdentityAlive(
   pid: number,
   start: string | null,
   table?: ProcessTable
 ): boolean {
+  // A pid no kernel assigns is never live (the probe would read it as alive, round 93).
+  if (!Number.isSafeInteger(pid) || pid <= 0 || pid > MAX_PID) return false;
   const snapshot = table ?? readProcessTable();
   if (snapshot.size > 0) {
     const entry = snapshot.get(pid);
@@ -67,10 +68,8 @@ export function processIdentityAlive(
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    // Only ESRCH proves the pid is gone. EPERM means it exists under
-    // another identity or a sandbox denies the probe, and reading that as
-    // dead let a live lock holder or owner be stolen (review live16) —
-    // the same rule every other `processAlive` in codemux follows.
+    // Only ESRCH proves the pid is gone: EPERM means it exists under
+    // another identity or a sandbox denies the probe (review live16).
     return (error as NodeJS.ErrnoException).code !== "ESRCH";
   }
 }

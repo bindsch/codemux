@@ -8,6 +8,7 @@ import { calendarValid } from "../../calendar.js";
 import type { AutonomyLevel } from "../../types.js";
 import { MAX_PASSTHROUGH_ENV_NAMES, UsageRefusalError } from "../../validation.js";
 import { MAX_ID_CHARS } from "../protocol.js";
+import { MAX_PID } from "../../process-table.js";
 import { registryPlacementProblem, resolveRegistryPath } from "../registry-io.js";
 
 export type SandboxTrust = "untrusted" | "standard" | "trusted";
@@ -177,8 +178,10 @@ function validRecord(value: unknown): value is SessionRecord {
   }
   if (!isNonEmptyString(record["id"], MAX_ID_CHARS)) return false;
   if (!isNonEmptyString(record["agent"], 64)) return false;
-  if (!isNonEmptyString(record["created_at"], 64)) return false;
-  if (!isNonEmptyString(record["last_activity"], 64)) return false;
+  // The writers stamp new Date().toISOString(); pruning orders
+  // last_activity as text, so any other string would sort wherever its
+  // characters put it and evict a valid session in its place (round 93).
+  if (!canonicalStamp(record["created_at"]) || !canonicalStamp(record["last_activity"])) return false;
   if (typeof record["cwd"] !== "string" || record["cwd"].length === 0) return false;
   if (typeof record["hermetic"] !== "boolean") return false;
   if (typeof record["harness_home"] !== "string" || record["harness_home"].length === 0) return false;
@@ -221,7 +224,8 @@ function validRecord(value: unknown): value is SessionRecord {
   const provider = record["provider_base_url"];
   if (provider !== undefined && provider !== null && typeof provider !== "string") return false;
   if (typeof provider === "string" && provider.length === 0) return false;
-  if (!Number.isInteger(record["owner_pid"]) || (record["owner_pid"] as number) <= 0) return false;
+  const ownerPid = record["owner_pid"];
+  if (!Number.isSafeInteger(ownerPid) || (ownerPid as number) <= 0 || (ownerPid as number) > MAX_PID) return false;
   if (record["owner_start"] !== null && typeof record["owner_start"] !== "string") return false;
   // `ended` is null while the session is open, and resume checks owner
   // liveness only while it is null, so any string the old check accepted
@@ -229,15 +233,22 @@ function validRecord(value: unknown): value is SessionRecord {
   // The writer stamps new Date().toISOString(); nothing but null or that
   // calendar shape is a record a writer makes (review round 90).
   const ended = record["ended"];
-  if (ended !== null && (typeof ended !== "string" || !ENDED_STAMP.test(ended) || !calendarValid(ended))) return false;
+  if (ended !== null && !validStamp(ended)) return false;
   return true;
 }
 
-/** The whole `ended` value: a UTC ISO stamp, with or without a fraction,
- * and nothing after it. calendarValid checks the calendar fields but only
- * the prefix, so a trailing `garbage` or an impossible offset would pass
- * without this (review round 91). */
-const ENDED_STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
+/** A whole registry timestamp: a UTC ISO stamp, with or without a
+ * fraction, and nothing after it. calendarValid checks the calendar fields
+ * but only the prefix, so a trailing `garbage` or an impossible offset
+ * would pass without the pattern (review round 91). */
+const REGISTRY_STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
+const validStamp = (value: unknown): boolean =>
+  typeof value === "string" && REGISTRY_STAMP.test(value) && calendarValid(value);
+/** The writers' exact form, `YYYY-MM-DDTHH:mm:ss.sssZ`: the stamps pruning
+ * orders as text must all have one width, or `.1Z` sorts after the later
+ * `.11Z` and a bare `Z` after `.999Z` (review round 94). */
+const canonicalStamp = (value: unknown): boolean =>
+  validStamp(value) && (value as string).length === 24 && (value as string)[19] === ".";
 
 /** The first session id that appears twice in a parsed file's sessions
  * array (each entry read for its id alone), or null. Resume lookup

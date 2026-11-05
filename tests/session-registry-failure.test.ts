@@ -2,7 +2,7 @@ import { describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import { chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
+import { processIdentityAlive,
   claimForResume,
   lookupForResume,
   probeRegistryForStart,
@@ -79,6 +79,29 @@ describe("failure policy", () => {
     const plain = registryIn(makeRoot());
     seedRegistry(plain, [craftEntry({ id: "ended-plain", ended: "2026-10-05T11:00:00Z" })]);
     expect(readRegistry(plain).outcome).toBe("ok");
+  });
+
+  test("activity stamps and the owner pid are validated like the values writers make (review round 93)", () => {
+    // Pruning orders last_activity as text: "zzzz" sorted after every real
+    // stamp and survived while a valid session was evicted.
+    // They must also have the writers' one width: a shorter or longer
+    // fraction orders wrongly as text (round 94).
+    for (const bad of [{ created_at: "zzzz" }, { last_activity: "zzzz" }, { last_activity: "2026-10-05T10:00:00+99:99" },
+      { last_activity: "2026-10-05T10:00:00Z" }, { last_activity: "2026-10-05T10:00:00.1Z" }, { created_at: "2026-10-05T10:00:00.1234Z" },
+      { owner_pid: 1e100 }, { owner_pid: 2 ** 31 }, { owner_pid: 1.5 }]) {
+      const path = registryIn(makeRoot());
+      seedRegistry(path, [craftEntry({ id: "bad-field", ...bad })]);
+      expect(readRegistry(path).outcome).toBe("corrupt");
+    }
+    const ok = registryIn(makeRoot());
+    seedRegistry(ok, [craftEntry({ id: "ok-fields", owner_pid: 2 ** 31 - 1 })]);
+    expect(readRegistry(ok).outcome).toBe("ok");
+    // A pid no kernel assigns is never a live owner: the signal-0 probe
+    // rejected it as an invalid argument, which read as alive.
+    expect(processIdentityAlive(1e100, null, new Map())).toBe(false);
+    expect(processIdentityAlive(2 ** 31, null, new Map())).toBe(false);
+    expect(processIdentityAlive(0, null, new Map())).toBe(false);
+    expect(processIdentityAlive(process.pid, null, new Map())).toBe(true);
   });
 
   test("a duplicated session id is corrupt, naming the id (review round 73)", () => {
