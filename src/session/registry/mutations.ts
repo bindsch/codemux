@@ -162,6 +162,9 @@ export function updateRegistry(
   } catch (error) {
     return { ok: false, error: `cannot update the session registry: ${error instanceof Error ? error.message : String(error)}`, kind: "unavailable" };
   } finally {
+    // A release that cannot remove the lock file reports the leftover and
+    // never throws: this update already wrote the registry file, so its
+    // outcome stays `ok` (registry-io's release, review round 115).
     lock?.release();
   }
 }

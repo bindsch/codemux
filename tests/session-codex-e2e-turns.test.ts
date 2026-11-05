@@ -20,6 +20,8 @@ describe("codex session e2e - lifecycle", () => {
     // finish()'s own drain of the same buffer makes the pair
     // idempotent.
     const session = await startSession({}, { FAKE_STALL_INIT: "1" });
+    // The fake is up before the end begins (session-codex-e2e-review.test.ts).
+    await waitForRecord(session, "requests.jsonl", 1);
     send(session.driver, { type: "user", text: "scenario:basic hello" });
     send(session.driver, { type: "shutdown" });
     expect(await session.code).toBe(0);

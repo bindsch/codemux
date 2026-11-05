@@ -9,16 +9,8 @@
 
 import { lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { pidProbeAlive } from "./process-table.js";
 import { sessionHoldState, sessionRegistryPath, type SessionHold } from "./session/registry.js";
-
-function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
-  }
-}
 
 // A codemux that died without its exit handler may leave a Codex child
 // running in its home for as long as a run is allowed to last; a run
@@ -197,7 +189,7 @@ function sweepStaleRunDirs(
       // for nothing here on every prepareRunDirParent call (review D7,
       // correctness-2 2).
       const pid = Number(runMatch[1]);
-      if (pid === process.pid || processAlive(pid)) continue;
+      if (pid === process.pid || pidProbeAlive(pid)) continue;
       // The walk's null must not spare a DEAD run forever: nothing owns
       // the tree anymore, so an over-budget walk falls back to the
       // directory's own mtime (review D9, correctness-2) and the crash

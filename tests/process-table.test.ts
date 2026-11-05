@@ -1,11 +1,14 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   isStillOurs,
   listDescendants,
+  MAX_PID,
   parsePsOutput,
+  pidProbeAlive,
   processTableReadable,
   psEnvironment,
   readProcTable,
@@ -123,4 +126,45 @@ describe("process table", () => {
       expect(self?.start.length).toBeGreaterThan(0);
     }
   );
+});
+
+describe("the shared pid liveness probe", () => {
+  test("a value no kernel assigns is not alive and is never probed (review round 115)", () => {
+    // 0 and negatives address process groups — a probe of 0 succeeds for
+    // the caller's whole group and reads as "alive"; past MAX_PID the
+    // probe throws a non-ESRCH error that also read as alive. Non-integers
+    // are never pids at all.
+    const kill = spyOn(process, "kill").mockImplementation(() => {
+      throw new Error("an out-of-range pid must not be probed");
+    });
+    try {
+      for (const pid of [0, -1, 1.5, NaN, MAX_PID + 1, 4294967297, 1e30]) {
+        expect(pidProbeAlive(pid)).toBe(false);
+      }
+      expect(kill).toHaveBeenCalledTimes(0);
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
+  test("this process is alive; a spawned and reaped child's pid is not", () => {
+    expect(pidProbeAlive(process.pid)).toBe(true);
+    const child = spawnSync(process.execPath, ["--no-env-file", "--no-install", "-e", ""]);
+    expect(child.status).toBe(0);
+    expect(child.pid).toBeGreaterThan(0);
+    expect(pidProbeAlive(child.pid!)).toBe(false);
+  });
+
+  test("EPERM means alive: the process exists under another identity", () => {
+    const realKill = process.kill.bind(process);
+    const kill = spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (pid === 4242) throw Object.assign(new Error("not permitted"), { code: "EPERM" });
+      return realKill(pid, signal);
+    });
+    try {
+      expect(pidProbeAlive(4242)).toBe(true);
+    } finally {
+      kill.mockRestore();
+    }
+  });
 });

@@ -256,6 +256,11 @@ describe("codex session e2e - lifecycle", () => {
     // The fake records the initialize and never responds
     // (FAKE_STALL_INIT), and the shutdown must still take effect.
     const session = await startSession({}, { FAKE_STALL_INIT: "1" });
+    // The fake is up and its stalled initialize is on record before the
+    // end begins. An end that raced the fake's own startup let the stop
+    // grace run out on a process that had not read stdin yet, and its
+    // SIGTERM exit failed the session (seen once under load).
+    await waitForRecord(session, "requests.jsonl", 1);
     send(session.driver, { type: "shutdown" });
     // The regression: this await used to hang until a turn-timeout or an
     // external kill; the acked shutdown ends the session at once.
@@ -263,10 +268,8 @@ describe("codex session e2e - lifecycle", () => {
     const ended = session.events[session.events.length - 1] as Event;
     expect(ended.type).toBe("session_ended");
     expect(ended.reason).toBe("shutdown");
-    // The session never existed: no session_started, and whatever the fake
-    // managed to record before the SIGTERM is handshake-only — never any
-    // turn traffic (the fake's bun startup races the kill, so the file may
-    // also be empty).
+    // The session never existed: no session_started, and what the fake
+    // recorded is handshake-only, never any turn traffic.
     expect(of("session_started")(session.events)).toBeUndefined();
     const requests = fakeRecord(session, "requests.jsonl");
     expect(requests.every((r) => r.method === "initialize")).toBe(true);
@@ -408,6 +411,11 @@ describe("codex session e2e - lifecycle", () => {
     // FAKE_STALL_INIT holds the initialize; handleCallerEnd is the
     // stdin-close the trigger produces.
     const session = await startSession({}, { FAKE_STALL_INIT: "1" });
+    // The fake is up and its stalled initialize is on record before the
+    // end begins. An end that raced the fake's own startup let the stop
+    // grace run out on a process that had not read stdin yet, and its
+    // SIGTERM exit failed the session (seen once under load).
+    await waitForRecord(session, "requests.jsonl", 1);
     send(session.driver, { type: "user", text: "hi" });
     session.driver.handleCallerEnd();
     expect(await session.code).toBe(0);

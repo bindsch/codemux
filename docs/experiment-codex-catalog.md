@@ -298,8 +298,15 @@ contains no token.
 `source_path` and `source_fetched_at` identify the real cache used.
 `served_models` counts model entries; `served_bytes` and `bytes` count the
 serialized response's UTF-8 bytes. `removed` names sanitation operations;
-`apply_patch_tool_type` is set to null rather than deleted. `catalog_served` establishes a successful
-fetch. If Codex produces its first `function_call` before fetching the override,
+`apply_patch_tool_type` is set to null rather than deleted. `catalog_served` is recorded only when the
+catalog response finished. If the client then resets the connection with the body unread, before it sends another
+request on that connection or closes it in order, the relay records `catalog_fetch_reset` and the fetch no longer
+counts, so a later complete fetch is still needed. A request pipelined behind the catalog request, before its response finished, does not
+count as that later request. The relay cannot see the client read the body; the connection is the evidence it has. A client that lets the
+response finish and then, without reading it, sends another request or closes the connection in order is counted as
+served: nothing on the connection separates it from a client that read the catalog. In the other direction, a client
+that read the catalog and then closes the connection abortively, before using it again, produces the same reset as
+an unread body and loses the fetch; the relay fails closed there, and another complete fetch counts. If Codex produces its first `function_call` before fetching the override,
 the run fails with `code_mode` before dispatching that call.
 
 ## Rollout evidence and correlation

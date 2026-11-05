@@ -12,6 +12,38 @@ import { readdirSync, readFileSync } from "node:fs";
 /** The largest process id a kernel assigns (a 32-bit signed pid_t). */
 export const MAX_PID = 0x7fffffff;
 
+/** The owner pid a file names: a decimal in 1..MAX_PID, or null for any
+ * other content (empty, not a number, past the ceiling). */
+export function parseOwnerPid(text: string): number | null {
+  if (!/^[1-9]\d*$/.test(text)) return null;
+  const pid = Number(text);
+  return Number.isSafeInteger(pid) && pid <= MAX_PID ? pid : null;
+}
+
+/** How old an artifact whose owner pid is unreadable must be before a
+ * sweeper removes it: longer than any run lasts. An unreadable owner is
+ * not proof of a dead run when the run's own child can rewrite the file,
+ * so only age removes it (review round 116). */
+export const UNREADABLE_OWNER_STALE_MS = 2 * 86_400_000;
+
+/** The one liveness probe for pids read from names or files: a signal-0
+ * `process.kill` where success and EPERM mean alive and only ESRCH means
+ * gone; any other error on an in-range pid also reads as alive, the
+ * conservative answer for a sweeper (it only delays a deletion). A value
+ * no kernel assigns is never probed at all: 0 and negatives address
+ * process groups — a probe of 0 succeeds for the caller's whole group —
+ * and values past MAX_PID are rejected by `process.kill` itself with a
+ * non-ESRCH error that would otherwise read as alive. */
+export function pidProbeAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0 || pid > MAX_PID) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
 export interface ProcessEntry {
   ppid: number;
   /** Process group id, so a signal already delivered to a whole group is not

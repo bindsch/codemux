@@ -62,6 +62,7 @@ import {
   type Stats,
 } from "node:fs";
 import { join } from "node:path";
+import { pidProbeAlive } from "./process-table.js";
 import {
   recordTrustedParent,
   removeUnderTrustedParentOrThrow,
@@ -79,15 +80,6 @@ export interface AiderHistoryFile {
 const PARENT_DIR_NAME = ".codemux";
 const FILE_PREFIX = "history-";
 
-function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
-  }
-}
-
 // A codemux that died without its exit handler leaves the file behind; it is
 // swept only once older than any run could still be reading it.
 const STALE_FILE_MS = 2 * 86_400_000;
@@ -104,7 +96,7 @@ function sweepStaleFiles(parent: string): void {
     const match = /^history-(\d+)-/.exec(entry);
     if (!match) continue;
     const pid = Number(match[1]);
-    if (pid === process.pid || processAlive(pid)) continue;
+    if (pid === process.pid || pidProbeAlive(pid)) continue;
     const path = join(parent, entry);
     let age: number;
     try {

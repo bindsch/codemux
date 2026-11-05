@@ -121,8 +121,10 @@ override runs also record `catalog_override` with `slug`, `source_path`,
 `source_fetched_at`, `served_models`, `served_bytes`, `removed: ["tool_mode",
 "experimental_supported_tools.clock", "multi_agent_version",
 "apply_patch_tool_type"]`, and `requested_only`. The last field is true when the 1 MiB response cap
-requires serving only the requested model. A successful fetch records
-`catalog_served` with `client_version` and `bytes`. Catalog `http_request`
+requires serving only the requested model. A finished fetch records
+`catalog_served` with `client_version` and `bytes`; a transfer that closes
+before it finishes records nothing, and a client that resets the connection
+with the body unread adds `catalog_fetch_reset` with the same fields. Catalog `http_request`
 records contain only the method, `path: "/catalog"`, `client_version`,
 `authorization_present`, `body_complete: true`, and an empty body. They omit request headers,
 authorization values, and the nonce. See [Codex catalog details](experiment-codex-catalog.md).

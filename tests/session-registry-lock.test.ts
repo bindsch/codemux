@@ -239,8 +239,7 @@ describe("the writer lock", () => {
     expect(listHeldLocks(lockPath)).toEqual([{ path: junkPath, holder: null }]);
   });
 
-  test("a held file a dead acquirer left unjudgeable is stolen, not a permanent block", () => {
-    // Review live14: the lock create writes the file before the payload,
+  test("a held file a dead acquirer left unjudgeable is stolen, not a permanent block", () => {    // Review live14: the lock create writes the file before the payload,
     // so a process killed between the two (or a write that died on
     // ENOSPC) left a corpse whose payload cannot be judged. Pre-fix it
     // read as `unknown` forever — never stolen — and every later
@@ -262,6 +261,110 @@ describe("the writer lock", () => {
     expect(held).toHaveLength(1);
     expect(held[0]!.holder?.pid).toBe(process.pid);
     handle.release();
+    expect(listHeldLocks(lockPath)).toHaveLength(0);
+  });
+
+  // The second row is a failure with no errno code (review round 121): it
+  // used to read as a removed file, so the leftover was never remembered.
+  test.each([
+    ["EACCES", (): Error => Object.assign(new Error("denied"), { code: "EACCES" })],
+    ["UNKNOWN", (): Error => new Error("no code")],
+  ] as const)("a release the unlink fails with %s reports one leftover line; the update itself still succeeds (review round 115)", (label, failure) => {
+    const root = makeRoot();
+    const path = registryIn(root);
+    const lockPath = `${path}.lock`;
+    const realUnlink = fs.unlinkSync;
+    // Fail the unlink of the FIRST held file this process creates, for
+    // both attempts of the release's one retry; every later call passes.
+    let denied: string | undefined;
+    let misses = 0;
+    const unlink = spyOn(fs, "unlinkSync").mockImplementation(((target: fs.PathLike) => {
+      const name = String(target);
+      if (name.endsWith(".held")) {
+        denied ??= name;
+        if (name === denied && misses < 2) {
+          misses += 1;
+          throw failure();
+        }
+      }
+      return realUnlink(target);
+    }) as typeof fs.unlinkSync);
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(recordSessionStart(path, newRecord()).ok).toBe(true);
+      // One diagnostic line, the basename only — never the full path.
+      expect(errors).toHaveBeenCalledTimes(1);
+      expect(String(errors.mock.calls[0]![0])).toMatch(
+        new RegExp(`^codemux: could not remove the session registry lock [^/]+\\.held \\(${label}\\); it is retried on the next registry update$`)
+      );
+      expect(String(errors.mock.calls[0]![0])).not.toContain(root);
+      // The registry file was written, so the update stays ok, and the
+      // unremovable lock file is still there.
+      expect(existsSync(path)).toBe(true);
+      expect(listHeldLocks(lockPath)).toHaveLength(1);
+      // The next update in the same process retries the leftover at
+      // acquisition instead of waiting behind its own file.
+      const began = Date.now();
+      expect(touchSession(path, "sess-1", { attempts: 1 }).ok).toBe(true);
+      expect(Date.now() - began).toBeLessThan(1_000);
+      expect(errors).toHaveBeenCalledTimes(1);
+      expect(listHeldLocks(lockPath)).toHaveLength(0);
+    } finally {
+      unlink.mockRestore();
+      errors.mockRestore();
+    }
+  });
+
+  test("this process's own leftover lock never blocks its later updates (review round 115)", () => {
+    const root = makeRoot();
+    const path = registryIn(root);
+    const lockPath = `${path}.lock`;
+    const realUnlink = fs.unlinkSync;
+    // The directory refuses every held-file removal: the leftover stays,
+    // and both updates must still go through without waiting behind it.
+    const unlink = spyOn(fs, "unlinkSync").mockImplementation(((target: fs.PathLike) => {
+      if (String(target).endsWith(".held")) {
+        throw Object.assign(new Error("denied"), { code: "EACCES" });
+      }
+      return realUnlink(target);
+    }) as typeof fs.unlinkSync);
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(recordSessionStart(path, newRecord()).ok).toBe(true);
+      const began = Date.now();
+      expect(touchSession(path, "sess-1", { attempts: 1 }).ok).toBe(true);
+      expect(Date.now() - began).toBeLessThan(1_000);
+      // Both releases failed, so one line each; both files stayed.
+      expect(errors).toHaveBeenCalledTimes(2);
+      for (const call of errors.mock.calls) {
+        expect(String(call[0])).toMatch(
+          /^codemux: could not remove the session registry lock [^/]+\.held \(EACCES\); it is retried on the next registry update$/
+        );
+      }
+      expect(listHeldLocks(lockPath)).toHaveLength(2);
+    } finally {
+      unlink.mockRestore();
+      errors.mockRestore();
+    }
+    // With the denial gone, a later update cleans both leftovers up.
+    expect(touchSession(path, "sess-1", { attempts: 1 }).ok).toBe(true);
+    expect(listHeldLocks(lockPath)).toHaveLength(0);
+  });
+
+  test("a release whose lock file is already gone prints nothing (review round 115)", () => {
+    const root = makeRoot();
+    const lockPath = join(root, "live-sessions.json.lock");
+    const handle = acquireLock(lockPath, { attempts: 1 });
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      fs.unlinkSync(handle.path);
+      handle.release();
+      expect(errors).toHaveBeenCalledTimes(0);
+      expect(listHeldLocks(lockPath)).toHaveLength(0);
+    } finally {
+      errors.mockRestore();
+    }
+    acquireLock(lockPath, { attempts: 1 }).release();
     expect(listHeldLocks(lockPath)).toHaveLength(0);
   });
 });

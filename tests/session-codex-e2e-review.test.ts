@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test, spyOn } from "bun:test";
 import { readRegistry, recordSessionStart } from "../src/session/registry.js";
-import { cleanupMark, cleanupSessions, cleanupSessionsSince, type Event, fakeRecord, of, send, startAndWait, startSession, waitFor } from "./session-codex-e2e-helpers.js";
+import { cleanupMark, cleanupSessions, cleanupSessionsSince, type Event, fakeRecord, of, send, startAndWait, startSession, waitFor, waitForRecord } from "./session-codex-e2e-helpers.js";
 import { registerNoLeakedSignals } from "./helpers/signal-listeners.js";
 
 afterAll(cleanupSessions);
@@ -147,6 +147,11 @@ describe("codex session e2e - review live20", () => {
       }).ok
     ).toBe(true);
     session.driver.adoptResumeClaim();
+    // The fake is up and its stalled initialize is on record before the
+    // end begins. An end that raced the fake's own startup let the stop
+    // grace run out on a process that had not read stdin yet, and its
+    // SIGTERM exit failed the session (seen once under load).
+    await waitForRecord(session, "requests.jsonl", 1);
     session.driver.handleCallerEnd();
     expect(await session.code).toBe(0);
     const ended = session.events.at(-1) as Event;

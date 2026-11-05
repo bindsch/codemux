@@ -46,6 +46,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { pidProbeAlive } from "./process-table.js";
 import { recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
 
 export interface OpencodeHermeticHome {
@@ -57,15 +58,6 @@ export interface OpencodeHermeticHome {
 
 const PARENT_DIR_NAME = ".codemux-hermetic";
 const RUN_PREFIX = "run-";
-
-function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
-  }
-}
 
 // A codemux that died without its exit handler may leave an OpenCode child
 // running in its home for as long as a run is allowed to last; a home is
@@ -84,7 +76,7 @@ function sweepStaleHomes(parent: string): void {
     const match = /^run-(\d+)-/.exec(entry);
     if (!match) continue;
     const pid = Number(match[1]);
-    if (pid === process.pid || processAlive(pid)) continue;
+    if (pid === process.pid || pidProbeAlive(pid)) continue;
     const path = join(parent, entry);
     let age: number;
     try {

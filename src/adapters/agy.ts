@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import type { AgyProbeMode } from "../agy-isolation-probe.js";
 import { summarizeAgyStream } from "../agy-stream.js";
+import { UNREADABLE_OWNER_STALE_MS, parseOwnerPid, pidProbeAlive } from "../process-table.js";
 import { AGY_MIRROR_PATH, agyKeychainHost, agyProbeRoots, insertAgyKeychainItem, prepareAgyPrivateKeychain, recoverAgyKeychainSearchList, verifyAgyKeychainSearchList } from "../agy-keychain.js";
 import { assertNoAgyProjectExecutionConfig } from "../project-safety.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
@@ -50,10 +51,9 @@ function sweepStaleHomes(root: string): void {
           !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(readFileSync(marker, "utf8"))) continue;
       const pidPath = join(home, PROBE_PID);
       if (!lstatSync(pidPath, { throwIfNoEntry: false })?.isFile()) continue;
-      const owner = readFileSync(pidPath, "utf8");
-      if (!/^[1-9]\d*$/.test(owner) || !Number.isSafeInteger(Number(owner))) continue;
-      try { process.kill(Number(owner), 0); continue; }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") continue; }
+      const pid = parseOwnerPid(readFileSync(pidPath, "utf8"));
+      // A dead owner is swept. An unreadable one (the child can rewrite the file) only once the file is old.
+      if (pid === null ? Date.now() - lstatSync(pidPath).mtimeMs <= UNREADABLE_OWNER_STALE_MS : pidProbeAlive(pid)) continue;
       // Never follow a replacement introduced during the owner check.
       if (sameDirectory(root, rootStat) && sameDirectory(home, identity)) rmSync(home, { recursive: true, force: true });
     } catch (error) {

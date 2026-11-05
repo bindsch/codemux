@@ -55,6 +55,29 @@ test.each([
   expect(existsSync(join(agyKeychainStateDir(), AGY_TEMPLATE_NAME))).toBe(true);
 });
 
+test.each([
+  "4294967297", // 2^32+1: a safe integer past the 32-bit pid ceiling.
+])("an out-of-range lock owner is malformed, not live: %j old is taken over", (content) => {
+  // Review round 115: the owner pid is now range-checked before any
+  // probe (pidProbeAlive), so a pid no kernel assigns follows the age
+  // rule for malformed content instead of reaching `process.kill`.
+  const { adapter, request } = setup();
+  const lock = plantLock(content, 61_000);
+  const context = adapter.prepareRun(request);
+  cleanup.push(() => adapter.cleanupRun(context));
+  expect(existsSync(lock)).toBe(false);
+});
+
+test("a fresh out-of-range lock owner waits out the lock wait, not forever", () => {
+  const { adapter, request } = setup();
+  shortenLockWait(250);
+  const lock = plantLock("4294967297", 0);
+  expect(() => adapter.prepareRun(request)).toThrow(
+    "timed out waiting for agy template keychain lock"
+  );
+  expect(existsSync(lock)).toBe(true);
+});
+
 test("a fresh malformed lock blocks until the wait expires, not forever", () => {
   const { adapter, request } = setup();
   shortenLockWait(250);

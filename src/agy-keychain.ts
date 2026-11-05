@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, sep } from "node:path";
 import { assertExecutablesUnchanged, executableCheck, resolveTrustedExecutable } from "./executable-security.js";
 import { callLogPath } from "./call-log.js";
+import { MAX_PID, pidProbeAlive } from "./process-table.js";
 
 export const AGY_MIRROR_PATH = "Library/Keychains/login.keychain-db";
 const SECURITY_TIMEOUT_MS = 10_000;
@@ -303,20 +304,16 @@ function templateLock(path: string): () => void {
       // (kill succeeds, or EPERM — a process exists that this uid may not
       // signal) holds the lock; a dead owner (ESRCH) is stale at any age;
       // everything else — empty content, a value that is not a decimal
-      // pid, content past the byte bound, or a pid `process.kill` itself
-      // rejects (EINVAL, a RangeError above the platform's range) — is
-      // malformed in the empty case's sense: stale once its mtime is
-      // older than EMPTY_LOCK_STALE_MS, so an abandoned or corrupted lock
-      // recovers instead of failing every later launch (review round 110).
-      let stale = ageMs() > EMPTY_LOCK_STALE_MS;
-      if (facts.owner !== null && LOCK_PID_PATTERN.test(facts.owner)) {
-        try { process.kill(Number(facts.owner), 0); stale = false; }
-        catch (error) {
-          const code = (error as NodeJS.ErrnoException).code;
-          if (code === "ESRCH") stale = true;
-          else if (code !== "EPERM") stale = ageMs() > EMPTY_LOCK_STALE_MS;
-        }
-      }
+      // pid, content past the byte bound, or a pid outside 1..MAX_PID
+      // (0 and below are process groups; above the ceiling no kernel
+      // assigns) — is malformed in the empty case's sense: stale once its
+      // mtime is older than EMPTY_LOCK_STALE_MS, so an abandoned or
+      // corrupted lock recovers instead of failing every later launch
+      // (review round 110; the shared range gate, round 115).
+      const ownerPid = facts.owner !== null && LOCK_PID_PATTERN.test(facts.owner)
+        ? Number(facts.owner) : null;
+      const stale = ownerPid !== null && ownerPid <= MAX_PID ? !pidProbeAlive(ownerPid)
+        : ageMs() > EMPTY_LOCK_STALE_MS;
       if (stale) {
         const current = lstatSync(path);
         if (current.ino === identity.ino && current.dev === identity.dev) unlinkSync(path);

@@ -4,6 +4,7 @@ import { finished } from "node:stream/promises";
 import { isDeepStrictEqual } from "node:util";
 import { experimentToolTimeoutSeconds, type ExperimentSpec } from "./experiment-mcp.js";
 import { ExperimentInventory } from "./experiment-inventory.js";
+import { CatalogDelivery } from "./experiment-relay-catalog.js";
 import { ExperimentFailure, ExperimentFailureCode, experimentFailure, ExperimentRecording, resultContentSha256, type ExperimentRecord } from "./experiment-records.js";
 import { ExperimentServer, MAX_EXPERIMENT_MESSAGE_BYTES, type JsonObject } from "./experiment-server.js";
 import { PIPE_GIVE_UP_MS } from "./process-runner.js";
@@ -44,7 +45,8 @@ export class ExperimentHttpRelay {
   private http?: Server;
   private endpoint?: string;
   private catalog?: { nonce: string; body: Buffer };
-  private catalogDelivered = false;
+  private catalogDelivery = new CatalogDelivery((kind, fields) => this.record(kind, fields),
+    (error) => this.fail(asError(error)), () => !this.closed && !this.failure);
   private modelToolErrors = 0;
   private callsDelivered = 0;
   private initializeReply?: JsonObject;
@@ -80,7 +82,7 @@ export class ExperimentHttpRelay {
   get catalogUrl(): string | undefined {
     return this.catalog && this.endpoint ? new URL(`/catalog/${this.catalog.nonce}`, this.endpoint).href : undefined;
   }
-  get catalogServed(): boolean { return this.catalogDelivered; }
+  get catalogServed(): boolean { return this.catalogDelivery.served; }
   get url(): string {
     if (!this.endpoint) throw new Error("experiment HTTP relay has not started");
     return this.endpoint;
@@ -98,6 +100,7 @@ export class ExperimentHttpRelay {
     try {
       this.server.start();
       const http = this.http = createServer((request, response) => {
+        this.catalogDelivery.requestArrived(request.socket);
         const operation = this.handle(request, response);
         this.requests.add(operation);
         // `finally` here would derive a new promise that rejects whenever
@@ -243,9 +246,11 @@ export class ExperimentHttpRelay {
       return;
     }
     if (request.method !== "GET") { respondRelay(this.record, response, 405, Buffer.alloc(0), "GET", unreadBody); return; }
-    respondRelay(this.record, response, 200, this.catalog.body, "POST", unreadBody);
-    this.catalogDelivered = true;
-    this.record("catalog_served", { client_version: clientVersion, bytes: this.catalog.body.length });
+    const body = this.catalog.body;
+    // Registered before `respondRelay` ends the response: a small body
+    // can finish inside `end` (experiment-relay-catalog.ts has the rule).
+    this.catalogDelivery.track(response, clientVersion, body.length);
+    respondRelay(this.record, response, 200, body, "POST", unreadBody);
   }
 
   private async forward(message: JsonObject, delivery?: ExperimentRelayResponse): Promise<ForwardedResponse> {

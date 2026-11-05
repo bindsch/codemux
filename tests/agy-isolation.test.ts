@@ -122,6 +122,19 @@ test("stale sweeping retains live, unknown, and symlinked homes", () => {
   } finally { kill.mockRestore(); }
 });
 
+test("a probe home with an unreadable owner pid is swept only once its pid file is old (review rounds 115, 116)", () => {
+  const { adapter, request, home } = setup(); // The agy child can rewrite the pid file: unreadable is not dead.
+  const root = join(home, ".gemini/.codemux-isolation-probes");
+  for (const [name, owner, ageMs] of [["fresh-range", "4294967297", 0], ["fresh-bad", "bad pid", 0], ["old-range", "4294967297", 3 * 86_400_000], ["old-bad", "", 3 * 86_400_000]] as const) {
+    mkdirSync(join(root, `run-${name}`), { recursive: true });
+    writeFileSync(join(root, `run-${name}`, ".codemux-probe-owner"), crypto.randomUUID());
+    writeFileSync(join(root, `run-${name}`, ".codemux-probe-pid"), owner);
+    fs.utimesSync(join(root, `run-${name}`, ".codemux-probe-pid"), new Date(Date.now() - ageMs), new Date(Date.now() - ageMs));
+  }
+  adapter.cleanupRun(adapter.prepareRun(request));
+  expect(readdirSync(root).filter((name) => /^run-(fresh|old)-/.test(name)).sort()).toEqual(["run-fresh-bad", "run-fresh-range"]);
+});
+
 test("a concurrent stale-home removal does not refuse the next launch", () => {
   const { adapter, request, home } = setup();
   const stale = join(home, ".gemini/.codemux-isolation-probes/run-stale");

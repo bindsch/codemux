@@ -125,6 +125,14 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 115, whole tree: the experiment MCP relay records `catalog_served` only when the catalog response
+  finished, and records `catalog_fetch_reset` and stops counting the fetch when the client then resets the
+  connection with the body unread, so a transfer the client abandons leaves the catalog unserved; a session registry
+  lock release that cannot remove its file (any error but ENOENT) reports one diagnostic naming the basename, retries
+  on the next update, and never blocks its own process's later writes; and the shared pid probe refuses to probe 0,
+  negative, and out-of-range values, so artifacts named with such pids, and agy locks owned by them, are swept or
+  taken over under each existing age rule, and an agy probe home whose owner pid is unreadable is swept once its pid
+  file is two days old.
 - Review round 110, whole tree: credential backups walk the backup directory from the filesystem root one component
   at a time, so a symbolic link anywhere in the path is refused (only a link owned by root, such as macOS's `/var`,
   is accepted) and the refresh-token copy is never written through a link; the opencode and aider end paths bound

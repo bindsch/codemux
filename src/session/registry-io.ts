@@ -17,23 +17,22 @@ import { randomBytes } from "node:crypto";
 import {
   closeSync,
   fsyncSync,
-  lstatSync,
   openSync,
   readdirSync,
-  realpathSync,
   renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
   writeSync,
-  type Stats,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { FileContentError, readUtf8FileBounded } from "../file-io.js";
-import { MAX_PID, readProcessTable, type ProcessTable } from "../process-table.js";
+import { MAX_PID, pidProbeAlive, readProcessTable, type ProcessTable } from "../process-table.js";
+
+export { REGISTRY_FILE_MODE, registryPlacementProblem, resolveRegistryPath } from "./registry-placement.js";
+import { REGISTRY_FILE_MODE } from "./registry-placement.js";
 
 export const REGISTRY_DIR_MODE = 0o700;
-export const REGISTRY_FILE_MODE = 0o600;
 const LOCK_RETRY_MS = 250;
 const LOCK_ATTEMPTS = 40;
 
@@ -64,123 +63,16 @@ export function processIdentityAlive(
     if (entry === undefined) return false;
     return start === null || entry.start === start;
   }
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    // Only ESRCH proves the pid is gone: EPERM means it exists under
-    // another identity or a sandbox denies the probe (review live16).
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
-  }
+  // The shared probe: success or EPERM is alive, only ESRCH is gone
+  // (review live16); the range gate above keeps every probed pid
+  // signalable, so no other error can occur.
+  return pidProbeAlive(pid);
 }
 
 /** Our own identity for `owner_pid`/`owner_start`. */
 export function currentProcessIdentity(): { pid: number; start: string | null } {
   const table = readProcessTable();
   return { pid: process.pid, start: table.get(process.pid)?.start ?? null };
-}
-
-/** Resolve symlinked ancestors away: realpath the deepest existing
- * ancestor and re-attach the not-yet-existing tail (ceiling.ts resolves
- * tool targets with the same walk). Symlinked system ancestors are the
- * normal case for a real home — macOS `/var -> /private/var`, Linux
- * `/home -> /data/home` — so the registry resolves them instead of
- * refusing; every registry open then names the real directory, and a
- * later re-link of the friendly spelling cannot redirect it. Unlike the
- * ceiling's resolver this keeps the on-disk spelling (no NFC
- * normalization): the result is opened, and macOS directory names are
- * NFD. Never fails — realpath of `/` is the floor. */
-export function resolveRegistryPath(path: string): string {
-  let probe = path;
-  for (;;) {
-    try {
-      const real = realpathSync(probe);
-      return probe === path ? real : real + path.slice(probe.length);
-    } catch {
-      const parent = dirname(probe);
-      if (parent === probe) return path;
-      probe = parent;
-    }
-  }
-}
-
-/** Placement checks the design runs on every open (rule 3, §4.8): the
- * ancestor walk runs on the resolved chain — symlinked system ancestors
- * resolved away by `resolveRegistryPath`, anything that survived
- * resolution (an unreadable step degrades the walk and can leave links
- * in the unresolved tail) is still the tamper class this check exists
- * for — and the registry's own directory and the file itself are
- * codemux's: owned by the invoking user, the directory not group- or
- * other-writable, the file a regular 0600 non-symlink. The leaf rules
- * read the original spelling: a symlinked leaf directory or file must
- * refuse even though ancestor resolution would follow it. Ownership is
- * enforced on the codemux-owned leaf only; system ancestors (`/Users`,
- * `/`) are root's by design. Returns the first problem found, or
- * null. */
-export function registryPlacementProblem(path: string): string | null {
-  const uid = typeof process.getuid === "function" ? process.getuid() : -1;
-  const canCheckUid = uid >= 0;
-  const dir = dirname(path);
-  // Nothing exists yet: the next write creates the directory (0700) and
-  // the file, so there is nothing to inspect. A missing registry is the
-  // clean `missing` outcome, not an untrusted one. Existence is lstat's,
-  // never `existsSync`'s: that follows links, so a dangling symlink read
-  // as "nothing yet" and skipped the refusal below (review live23).
-  // ENOTDIR (a file where an ancestor directory belongs) is "nothing
-  // yet" too: the write's mkdir then fails as unavailable.
-  let leafStat: Stats;
-  try {
-    leafStat = lstatSync(dir);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return null;
-    return `cannot inspect registry directory ${dir} (${code ?? "error"})`;
-  }
-  if (leafStat.isSymbolicLink()) {
-    return `registry directory ${dir} is a symbolic link`;
-  }
-  let walk = dirname(resolveRegistryPath(path));
-  const chain: string[] = [];
-  for (;;) {
-    chain.unshift(walk);
-    const parent = dirname(walk);
-    if (parent === walk) break;
-    walk = parent;
-  }
-  for (const segment of chain) {
-    let stat: Stats;
-    try {
-      stat = lstatSync(segment);
-    } catch (error) {
-      return `cannot inspect registry directory ${segment} (${(error as NodeJS.ErrnoException).code ?? "error"})`;
-    }
-    if (stat.isSymbolicLink()) {
-      return `registry directory ${segment} is a symbolic link`;
-    }
-  }
-  // The leaf is not a symlink, so its original-spelling lstat and the
-  // resolved chain's leaf are the same directory.
-  if (canCheckUid && leafStat.uid !== uid) {
-    return `registry directory ${dir} is not owned by the invoking user`;
-  }
-  if ((leafStat.mode & 0o022) !== 0) {
-    return `registry directory ${dir} is group- or other-writable`;
-  }
-  let stat: Stats;
-  try {
-    stat = lstatSync(path);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return null;
-    return `cannot inspect the registry (${code ?? "error"})`;
-  }
-  if (stat.isSymbolicLink()) return "the registry is a symbolic link";
-  if (!stat.isFile()) return "the registry is not a regular file";
-  if (canCheckUid && stat.uid !== uid) return "the registry is not owned by the invoking user";
-  if ((stat.mode & 0o777) !== REGISTRY_FILE_MODE) {
-    return `the registry mode is ${stat.mode.toString(8).padStart(3, "0")}, not 0600`;
-  }
-  return null;
 }
 
 export interface LockHandle {
@@ -305,11 +197,46 @@ function stealFailure(name: string, error: unknown): Error {
   );
 }
 
+/** Held files this process created but could not remove at release time
+ * (review round 115). Their never-reused names carry this process's own
+ * pid, so they can never be a rival's lock; every later acquisition
+ * retries them, and the sweep and the confirm below skip what is still
+ * unremovable instead of waiting behind "a live writer" that is us. */
+const leftoverLocks = new Set<string>();
+
+/** Remove one held file, tolerating ENOENT (already gone — the
+ * never-reused name cannot be anyone else's lock) and retrying any other
+ * failure once. Returns the errno code when the file is still there, or
+ * `UNKNOWN` for a failure that carries none: `undefined` means removed
+ * and nothing else (review round 121). */
+function unlinkHeldFile(path: string): string | undefined {
+  let code = "UNKNOWN";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      unlinkSync(path);
+      return undefined;
+    } catch (error) {
+      const errno = (error as NodeJS.ErrnoException).code;
+      if (errno === "ENOENT") return undefined;
+      code = typeof errno === "string" && errno !== "" ? errno : "UNKNOWN";
+    }
+  }
+  return code;
+}
+
+/** Retry a leftover of ours; forget it once it is gone. */
+function retryLeftover(path: string): void {
+  if (unlinkHeldFile(path) === undefined) leftoverLocks.delete(path);
+}
+
 export function acquireLock(lockPath: string, options: LockOptions = {}): LockHandle {
   const attempts = options.attempts ?? LOCK_ATTEMPTS;
   const retryMs = options.retryMs ?? LOCK_RETRY_MS;
   const dir = dirname(lockPath);
   const base = basename(lockPath);
+  // Our own leftovers first: they block nothing once removed, and the
+  // sweep below would otherwise read ours as a live holder (review 115).
+  for (const leftover of leftoverLocks) retryLeftover(leftover);
   const identity = currentProcessIdentity();
   const payload = `${identity.pid}\n${identity.start ?? ""}\n`;
   // Steals and confirms do not consume wait budget; only waiting behind
@@ -324,11 +251,18 @@ export function acquireLock(lockPath: string, options: LockOptions = {}): LockHa
     // successor's lock, because no name is ever handed out twice.
     let blocked = false;
     for (const name of heldLockNames(dir, base)) {
+      const path = join(dir, name);
+      // One of our own unremovable leftovers is not a rival: retry it
+      // and move on whether or not it went away (review round 115).
+      if (leftoverLocks.has(path)) {
+        retryLeftover(path);
+        continue;
+      }
       const state = heldLockState(dir, name);
       if (state === "gone") continue;
       if (state === "dead") {
         try {
-          unlinkSync(join(dir, name));
+          unlinkSync(path);
         } catch (error) {
           // ENOENT: another writer stole the same corpse first. The file
           // is gone, which is what the steal wanted; counting it as
@@ -392,6 +326,13 @@ export function acquireLock(lockPath: string, options: LockOptions = {}): LockHa
       conflict = false;
       let stole = false;
       for (const name of rivals) {
+        const path = join(dir, name);
+        // Our own leftover is never the conflict that loses the race;
+        // retry it and let the confirm succeed (review round 115).
+        if (leftoverLocks.has(path)) {
+          retryLeftover(path);
+          continue;
+        }
         const state = heldLockState(dir, name);
         if (state === "gone") continue;
         if (state === "dead") {
@@ -422,12 +363,19 @@ export function acquireLock(lockPath: string, options: LockOptions = {}): LockHa
       return {
         path: ourName,
         release: () => {
-          try {
-            unlinkSync(ourName);
-          } catch {
-            // Already gone; the never-reused name cannot be anyone
-            // else's lock, so there is nothing left to clean up.
-          }
+          // Only ENOENT means the lock is already gone. Any other failure
+          // leaves the file as this process's leftover — remembered for
+          // the next acquisition's retry and reported once, never the
+          // full path. The release still does not throw: the update that
+          // reached it has already written the registry file, so its
+          // outcome stays a success (review round 115).
+          const failure = unlinkHeldFile(ourName);
+          if (failure === undefined) return;
+          leftoverLocks.add(ourName);
+          console.error(
+            `codemux: could not remove the session registry lock ${basename(ourName)} ` +
+              `(${failure}); it is retried on the next registry update`
+          );
         },
       };
     }
