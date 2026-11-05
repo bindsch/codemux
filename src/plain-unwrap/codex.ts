@@ -14,14 +14,31 @@ import type { RunResult } from "../types.js";
 // in total_tokens alone.
 const ANSI_ESCAPE = /\x1b\[[0-9;?]*[A-Za-z]/g;
 // Locale digit separators the formatter can emit: comma, period,
-// apostrophe (the right single quote in some locales), and space-like
-// characters including no-break and narrow no-break spaces.
-const SEPARATED_NUMBER = /^[.,''’\s   \d]+$/;
+// apostrophe (the right single quote in some locales), and the space-like
+// characters — space, no-break space, and narrow no-break space.
+const SEPARATOR_CLASS = "[.,'’\\u00a0\\u202f ]";
+// One figure after the label, in one of three shapes a locale formatter
+// emits, each with the SAME single separator throughout:
+// - plain digits;
+// - groups of three: one to three digits, then groups of exactly three
+//   (`1,234,567`);
+// - Indian grouping: one or two digits, then groups of two, then a last
+//   group of three (`12,34,567`; review round 125).
+// Anything else — a decimal fraction, doubled or mixed separators, a group
+// of the wrong size, a leading or trailing separator — is not a figure
+// codemux can read: rejected whole, never digit-stripped into a wrong
+// total (review round 123).
+const SEPARATED_FIGURE = new RegExp(
+  "^(?:\\d+" +
+    `|\\d{1,3}(${SEPARATOR_CLASS})\\d{3}(?:\\1\\d{3})*` +
+    `|\\d{1,2}(${SEPARATOR_CLASS})(?:\\d{2}\\2)*\\d{3}` +
+    ")$"
+);
 
 /**
  * Extracts codex's token total from a plain run's captured stderr, or null
- * when the figure is absent or not a separated number (then no usage is
- * recorded).
+ * when the figure is absent or is not a plain or properly grouped digit
+ * figure (then no usage is recorded).
  */
 export function parseCodexTokenTotal(stderr: string): number | null {
   const lines = stderr.replace(ANSI_ESCAPE, "").split(/\r?\n/);
@@ -36,7 +53,7 @@ export function parseCodexTokenTotal(stderr: string): number | null {
   for (let j = label + 1; j < lines.length; j++) {
     const line = lines[j]!.trim();
     if (line === "") continue;
-    if (!SEPARATED_NUMBER.test(line) || !/\d/.test(line)) return null;
+    if (!SEPARATED_FIGURE.test(line)) return null;
     const value = Number(line.replace(/\D/g, ""));
     return Number.isSafeInteger(value) && value >= 0 ? value : null;
   }

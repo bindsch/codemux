@@ -326,7 +326,9 @@ same way — its prompt recorded, no reply — ends the session, since the next
 turn would replay it. Aider refuses harness text beginning with `/` or `!`;
 Kimi refuses `/goal` followed by whitespace or end, and `!`; OpenCode
 refuses a message that is empty after trimming, which its wire exits 1 on.
-These checks apply after the author prefix.
+These checks apply after the author prefix. An OpenCode `error` event fails
+its turn even when the turn's process exits 0 — the failed turn's reason is
+the error line — while the session itself continues with the next turn.
 
 Usage is described in [results and usage](results-and-usage.md). Token
 totals belong to this driver instance, including after resume. Claude/ZAI

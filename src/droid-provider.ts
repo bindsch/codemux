@@ -38,7 +38,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { pidProbeAlive } from "./process-table.js";
-import { recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
+import { recordTrustedParent, removeUnderTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
 import type { ProviderOverride } from "./provider-override.js";
 import { UsageRefusalError } from "./validation.js";
 
@@ -140,36 +140,48 @@ export function writeDroidProviderSettings(
   const parentRecord = recordTrustedParent(parent);
   sweepStaleDirectories(parent);
   const dir = join(parent, `${DIR_PREFIX}${process.pid}-${randomBytes(6).toString("hex")}`);
-  mkdirSync(dir, { mode: 0o700 });
-  const settings = {
-    // The session's default model, so subagents and any path that ignores
-    // `-m` still land on the override rather than a Factory catalog id.
-    model: entryId,
-    customModels: [
-      {
-        model,
-        id: entryId,
-        index: 0,
-        displayName: "codemux provider override",
-        baseUrl: override.baseUrl,
-        apiKey: `\${${DROID_PROVIDER_KEY_ENV}}`,
-        // The documented provider for OpenAI Chat Completions-compatible
-        // endpoints other than OpenAI's own API.
-        provider: "generic-chat-completion-api",
-        noImageSupport: true,
-        // The reply budget droid's model selection honors (docs.factory.ai
-        // model-independence/byok lists maxOutputTokens among the BYOK
-        // fields); the conditional spread keeps an uncapped override's file
-        // byte-identical to the pre-caps shape. There is no context-window
-        // BYOK field — the adapter refuses that cap instead of dropping it.
-        ...(override.maxOutputTokens !== undefined
-          ? { maxOutputTokens: override.maxOutputTokens }
-          : {}),
-      },
-    ],
-  };
+  // Guarded from the directory's creation to its finalizer's registration
+  // (review round 123): a write that fails here removes the just-made
+  // directory through the same revalidated removal the finalizer uses, and
+  // the original error reaches the caller instead of a private directory
+  // the days-later stale sweep has to reclaim.
   const path = join(dir, "settings.json");
-  writeFileSync(path, JSON.stringify(settings, null, 2) + "\n", { mode: 0o600 });
+  // Created outside the guard: a mkdir that fails made nothing, and what
+  // already sits at the name is not this run's to remove (review round 124).
+  mkdirSync(dir, { mode: 0o700 });
+  try {
+    const settings = {
+      // The session's default model, so subagents and any path that ignores
+      // `-m` still land on the override rather than a Factory catalog id.
+      model: entryId,
+      customModels: [
+        {
+          model,
+          id: entryId,
+          index: 0,
+          displayName: "codemux provider override",
+          baseUrl: override.baseUrl,
+          apiKey: `\${${DROID_PROVIDER_KEY_ENV}}`,
+          // The documented provider for OpenAI Chat Completions-compatible
+          // endpoints other than OpenAI's own API.
+          provider: "generic-chat-completion-api",
+          noImageSupport: true,
+          // The reply budget droid's model selection honors (docs.factory.ai
+          // model-independence/byok lists maxOutputTokens among the BYOK
+          // fields); the conditional spread keeps an uncapped override's file
+          // byte-identical to the pre-caps shape. There is no context-window
+          // BYOK field — the adapter refuses that cap instead of dropping it.
+          ...(override.maxOutputTokens !== undefined
+            ? { maxOutputTokens: override.maxOutputTokens }
+            : {}),
+        },
+      ],
+    };
+    writeFileSync(path, JSON.stringify(settings, null, 2) + "\n", { mode: 0o600 });
+  } catch (error) {
+    removeUnderTrustedParent(dir, parentRecord, `the droid provider settings directory ${dir}`);
+    throw error;
+  }
 
   let finalized = false;
   const finalize = (): void => {

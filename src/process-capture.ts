@@ -29,6 +29,28 @@ export function boundedUtf8Prefix(text: string, maxBytes: number): string {
 }
 
 
+/** Decodes one chunk — or, with no argument, flushes the decoder — for
+ * `readBounded`'s fatal decoder: a decoding failure is reported as this
+ * stream's invalid-UTF-8 error AT THE CALL SITE, so a TypeError raised by
+ * a sink (push, finish, keptBytes) reaches the caller unchanged instead of
+ * being relabeled the same way (review round 123). */
+function decodeChunk(
+  decoder: TextDecoder,
+  streamName: "stdout" | "stderr",
+  value?: Uint8Array
+): string {
+  try {
+    return value === undefined
+      ? decoder.decode()
+      : decoder.decode(value, { stream: true });
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error(`${streamName} is not valid UTF-8`, { cause: error });
+    }
+    throw error;
+  }
+}
+
 /** Read a stream to its end, or until `giveUp` resolves, in which case the
  * read is canceled and what arrived so far is returned. Without a `sink` the
  * whole stream is captured, bounded at `MAX_CAPTURE_BYTES`; with one, the
@@ -76,7 +98,7 @@ export async function readBounded(
           // UTF-8 and still throws.
           let tail = "";
           try {
-            tail = decoder.decode();
+            tail = decodeChunk(decoder, streamName);
           } catch {
             // Only the incomplete suffix is lost.
           }
@@ -95,7 +117,7 @@ export async function readBounded(
           }
           return folded;
         }
-        const tail = decoder.decode();
+        const tail = decodeChunk(decoder, streamName);
         if (sink !== undefined && tail !== "") sink.push(tail);
         if (sink !== undefined) {
           // The EOF tail — and the fold a sink performs inside finish()
@@ -116,7 +138,7 @@ export async function readBounded(
         return output + tail;
       }
       if (sink !== undefined) {
-        sink.push(decoder.decode(value, { stream: true }));
+        sink.push(decodeChunk(decoder, streamName, value));
         // The sink's residue is this run's stdout: past the capture bound
         // the run fails at the limit, partial output and all, exactly as a
         // whole-stream capture does.
@@ -129,17 +151,12 @@ export async function readBounded(
       const remaining = MAX_CAPTURE_BYTES - bytesRead;
       bytesRead += value.byteLength;
       if (value.byteLength > remaining) {
-        output += decoder.decode(value.subarray(0, remaining), { stream: true });
+        output += decodeChunk(decoder, streamName, value.subarray(0, remaining));
         await reader.cancel();
         throw new OutputLimitError(streamName, output);
       }
-      output += decoder.decode(value, { stream: true });
+      output += decodeChunk(decoder, streamName, value);
     }
-  } catch (error) {
-    if (error instanceof TypeError) {
-      throw new Error(`${streamName} is not valid UTF-8`, { cause: error });
-    }
-    throw error;
   } finally {
     reader.releaseLock();
   }

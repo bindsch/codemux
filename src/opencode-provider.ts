@@ -36,7 +36,7 @@ import {
 import { join } from "node:path";
 import { pidProbeAlive } from "./process-table.js";
 import type { ProviderOverride } from "./provider-override.js";
-import { recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
+import { recordTrustedParent, removeUnderTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
 import { UsageRefusalError } from "./validation.js";
 
 export interface OpencodeProviderConfig {
@@ -185,33 +185,46 @@ export function writeOpencodeProviderConfig(
   const parentRecord = recordTrustedParent(parent);
   sweepStaleDirectories(parent);
   const dir = join(parent, `${DIR_PREFIX}${process.pid}-${randomBytes(6).toString("hex")}`);
+  // Everything between the directory's creation and its finalizer's
+  // registration is guarded (review round 123): a write that fails here
+  // removes the just-made directory at once — through the same revalidated
+  // removal the finalizer uses, never a bare rm — and the original error
+  // reaches the caller. Without the guard, an ENOSPC or quota failure left
+  // the private directory behind for the days-later stale sweep.
+  const path = join(dir, "opencode.json");
+  // Created outside the guard: a mkdir that fails made nothing, and what
+  // already sits at the name is not this run's to remove (review round 124).
   mkdirSync(dir, { mode: 0o700 });
-  const config = {
-    $schema: "https://opencode.ai/config.json",
-    provider: {
-      [OPENCODE_PROVIDER_ID]: {
-        npm: "@ai-sdk/openai-compatible",
-        name: "codemux provider override",
-        options: {
-          baseURL: override.baseUrl,
-          apiKey: `{env:${OPENCODE_PROVIDER_KEY_ENV}}`,
-        },
-        models: {
-          // limit rides only when the override carries both caps; the
-          // conditional spread keeps an uncapped override's file byte-identical
-          // to the pre-caps shape (opencodeLimit refuses one-sided before
-          // anything is written).
-          [bareModel]: {
-            name: bareModel,
-            ...(limit !== undefined ? { limit } : {}),
+  try {
+    const config = {
+      $schema: "https://opencode.ai/config.json",
+      provider: {
+        [OPENCODE_PROVIDER_ID]: {
+          npm: "@ai-sdk/openai-compatible",
+          name: "codemux provider override",
+          options: {
+            baseURL: override.baseUrl,
+            apiKey: `{env:${OPENCODE_PROVIDER_KEY_ENV}}`,
+          },
+          models: {
+            // limit rides only when the override carries both caps; the
+            // conditional spread keeps an uncapped override's file
+            // byte-identical to the pre-caps shape (opencodeLimit refuses
+            // one-sided before anything is written).
+            [bareModel]: {
+              name: bareModel,
+              ...(limit !== undefined ? { limit } : {}),
+            },
           },
         },
       },
-    },
-    model: opencodeProviderModel(bareModel),
-  };
-  const path = join(dir, "opencode.json");
-  writeFileSync(path, JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });
+      model: opencodeProviderModel(bareModel),
+    };
+    writeFileSync(path, JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });
+  } catch (error) {
+    removeUnderTrustedParent(dir, parentRecord, `the opencode provider config directory ${dir}`);
+    throw error;
+  }
 
   let finalized = false;
   const finalize = (): void => {

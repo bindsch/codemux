@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { codexPlainResult } from "../src/plain-unwrap.js";
+import { codexPlainResult, parseCodexTokenTotal } from "../src/plain-unwrap.js";
 
 describe("codexPlainResult", () => {
   // A plain run keeps human mode (review ul3): stdout is the reply verbatim
@@ -73,5 +73,57 @@ describe("codexPlainResult", () => {
     // The scan runs from the end: the run's own trailing figure, not an
     // earlier line the transcript embedded.
     expect(codexPlainResult(chatty).usage!.total_tokens).toBe(515);
+  });
+});
+
+describe("parseCodexTokenTotal figure grammar (review round 123)", () => {
+  // Accepted: plain digits, or one separator style throughout with groups
+  // of exactly three digits after a one-to-three digit head, or Indian
+  // grouping (groups of two before a last group of three, review round 125).
+  const accepted: Array<[string, number]> = [
+    ["0", 0],
+    ["7", 7],
+    ["1234", 1234],
+    ["1,234", 1234],
+    ["12.345.678", 12345678],
+    ["1 234 567", 1234567],
+    ["1 234 567", 1234567],
+    ["1 234 567", 1234567],
+    ["1'234", 1234],
+    ["1’234", 1234],
+    ["999", 999],
+    ["12,345", 12345],
+    ["12,34,567", 1234567],
+    ["1,23,456", 123456],
+    ["1,23,45,678", 12345678],
+  ];
+  test.each(accepted)("%s parses to %i", (figure, value) => {
+    expect(parseCodexTokenTotal(`tokens used\n${figure}\n`)).toBe(value);
+  });
+
+  // Rejected: a decimal fraction, doubled or mixed separators, a group of
+  // the wrong size, leading or trailing separators, words, an empty digit
+  // run. None may be digit-stripped into a wrong total.
+  const rejected = [
+    "1.5",
+    "1,,2",
+    "12'34",
+    "1,234.567",
+    ",123",
+    "123,",
+    "1 234,567",
+    "1,23",
+    "1234,567",
+    "2,048 tokens",
+    "",
+    "1-234",
+    "1,23 4",
+    "12,34,56",
+    "123,45,678",
+    "1,23,4567",
+    "12,34.567",
+  ];
+  test.each(rejected)("%s is rejected", (figure) => {
+    expect(parseCodexTokenTotal(`tokens used\n${figure}\n`)).toBeNull();
   });
 });

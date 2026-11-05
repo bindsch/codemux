@@ -183,9 +183,10 @@ export abstract class OpenCodeTurns extends OpenCodeDriverCore {
       case "error":
         this.adoptSessionId(parse.sessionId);
         if (this.requireOpenTurn(rawLine)) return;
-        // Non-fatal: the session continues (the next turn runs), and the
-        // exit code still decides the turn's finish; the first error line
-        // is the reason that verdict carries.
+        // Non-fatal: the session continues (the next turn runs), but the
+        // error still fails the turn whatever the exit code turns out to
+        // be — the plain-run rule (plain-unwrap/opencode.ts); the first
+        // error line is the reason that verdict carries.
         this.emitError(false, "harness", parse.message);
         if (this.turnError === null) this.turnError = parse.message;
         return;

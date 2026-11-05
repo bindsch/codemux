@@ -275,10 +275,14 @@ export class OpenCodeSessionDriver extends OpenCodeTurns {
     this.clearTimers();
   }
 
-  /** Turn-per-process verdict: the process's exit code is the turn's
-   * finish, the first error line its reason, the folded step_finish usage
-   * its report. A fresh session still without an id after its first turn
-   * is untrackable and ends the session (§4.8, the agy authfail rule). */
+  /** Turn-per-process verdict: the turn fails on a nonzero exit or on an
+   * error line its stream carried (the plain-run rule, plain-unwrap/
+   * opencode.ts: a reported error fails the turn even when the process
+   * exits 0), the first error line its reason, the folded step_finish
+   * usage its report. A failed turn is not a failed session — the next
+   * turn still runs. A fresh session still without an id after its first
+   * turn is untrackable and ends the session (§4.8, the agy authfail
+   * rule). */
   protected completeTurn(outcome: SessionChildOutcome): void {
     this.lastChildOutcome = outcome;
     this.sawHarnessFailure ||= harnessFailed(outcome);
@@ -334,7 +338,10 @@ export class OpenCodeSessionDriver extends OpenCodeTurns {
       void this.finish("crash", 1);
       return;
     }
-    const failed = outcome.code !== 0;
+    // A reported error line fails the turn whatever the exit code was
+    // (review round 123): the harness itself said the turn failed, so a
+    // clean process exit cannot upgrade it to "end".
+    const failed = outcome.code !== 0 || this.turnError !== null;
     const error = this.fsm.transition({ kind: "turn_completed", turnId });
     if (error !== null) {
       this.emitError(true, "codemux", error.message);

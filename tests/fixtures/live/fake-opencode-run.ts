@@ -20,6 +20,8 @@
  *   tools           — a tool_use part before the text, exit 0
  *   errorturn       — an error line, then exit 1: the turn fails with
  *                     the error line as its reason, the session survives
+ *   errorzero       — an error line, then exit 0: the turn still fails on
+ *                     the error line alone (the plain-run rule)
  *   silentfail      — no lines at all, exit 1 (mid-session: the turn
  *                     fails on the exit code alone)
  *   crash           — no lines at all, exit 1 on the FIRST turn: the
@@ -131,6 +133,9 @@ const runTurn = (scenario: string, prompt: string): number | null => {
     case "errorturn":
       errorLine("the model refused the turn");
       return 1;
+    case "errorzero":
+      errorLine("the model refused the turn");
+      return 0;
     case "silentfail":
     case "crash":
       // No lines at all, exit 1: silentfail mid-session (the turn fails

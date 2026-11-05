@@ -5,6 +5,7 @@
  * failure. */
 
 import { afterAll, describe, expect, test } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
 import { readRegistry } from "../src/session/registry.js";
 import {
   cleanups,
@@ -224,6 +225,53 @@ describe("opencode session e2e - lifecycle", () => {
     send(session.driver, { type: "shutdown" });
     expect(await session.code).toBe(1);
     expect(of("session_ended")(session.events)?.reason).toBe("harness_failed");
+  });
+
+  test("an error line followed by exit 0 still fails the turn; the ledger mirrors it and the next turn runs (review round 123)", async () => {
+    const session = await startSession();
+    send(session.driver, { type: "user", text: "scenario:errorzero" });
+    const error = await waitFor(
+      session.events,
+      (events) => events.find((event) => event.type === "error"),
+      "the non-fatal error"
+    );
+    expect(error.fatal).toBe(false);
+    expect(error.message).toBe("the model refused the turn");
+    const failed = await waitFor(session.events, of("turn_completed"), "turn_completed");
+    expect(failed.finish).toBe("failed");
+    expect(failed.reason).toBe("the model refused the turn");
+    // The ledger's turn record mirrors the event the caller just saw. The
+    // suite shares one per-process ledger (tests/setup.ts), and other
+    // opencode sessions wrote their own t1 records before this one, so the
+    // record to judge is the last of this shape — this turn's append.
+    const ledger = process.env.CODEMUX_TEST_LEDGER!;
+    const records = (existsSync(ledger) ? readFileSync(ledger, "utf8") : "")
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .map((line) => JSON.parse(line) as Record<string, any>);
+    const turn = records.filter(
+      (record) =>
+        record.kind === "session_turn" &&
+        record.agent === "opencode" &&
+        record.session_id === "ses_fake1234567890" &&
+        record.turn_id === "t1"
+    ).at(-1);
+    expect(turn).toBeDefined();
+    expect(turn!.finish).toBe("failed");
+    // The session survives the failed turn: the next one runs and ends.
+    send(session.driver, { type: "user", text: "scenario:basic after" });
+    const second = await waitFor(
+      session.events,
+      (events) => events.filter((event) => event.type === "turn_completed")[1],
+      "second turn_completed"
+    );
+    expect(second.finish).toBe("end");
+    expect(second.turn_id).toBe("t2");
+    send(session.driver, { type: "shutdown" });
+    // The process exited 0 and no fatal owns the end: a failed turn is not
+    // a failed session, so the shutdown ends clean.
+    expect(await session.code).toBe(0);
+    expect(of("session_ended")(session.events)?.reason).toBe("shutdown");
   });
 
   test("a silent nonzero exit mid-session fails the turn on the exit code alone", async () => {

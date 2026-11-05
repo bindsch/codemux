@@ -125,6 +125,14 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 123, whole tree: an OpenCode session turn whose stream carried an `error` event now completes
+  `failed` with that error as its reason even when the per-turn process exits 0 (the plain-run rule), and the
+  ledger's turn record mirrors it; a write that fails between a private per-run artifact's creation and its
+  cleanup registration (opencode, pi, and droid provider configs, the kimi no-tools file, the aider history
+  file) removes the artifact at once instead of leaving it for the two-day stale sweep; the codex `tokens used`
+  figure is accepted only as plain digits, groups of three, or Indian grouping, with one separator throughout, so
+  malformed figures record no usage instead of a stripped-digit guess; and a TypeError thrown by a capture sink reaches the
+  caller unchanged instead of being relabeled "not valid UTF-8".
 - Review round 115, whole tree: the experiment MCP relay records `catalog_served` only when the catalog response
   finished, and records `catalog_fetch_reset` and stops counting the fetch when the client then resets the
   connection with the body unread, so a transfer the client abandons leaves the catalog unserved; a session registry

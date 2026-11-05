@@ -41,7 +41,7 @@ import {
 import { join } from "node:path";
 import { pidProbeAlive } from "./process-table.js";
 import type { ProviderOverride } from "./provider-override.js";
-import { recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
+import { recordTrustedParent, removeUnderTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
 import { UsageRefusalError } from "./validation.js";
 
 export interface PiProviderAgentDir {
@@ -149,48 +149,60 @@ export function writePiProviderAgentDir(
   const parentRecord = recordTrustedParent(parent);
   sweepStaleDirectories(parent);
   const dir = join(parent, `${DIR_PREFIX}${process.pid}-${randomBytes(6).toString("hex")}`);
+  // Guarded from the directory's creation to its finalizer's registration
+  // (review round 123): a write that fails here removes the just-made
+  // directory through the same revalidated removal the finalizer uses, and
+  // the original error reaches the caller instead of a private directory
+  // the days-later stale sweep has to reclaim.
+  // Created outside the guard: a mkdir that fails made nothing, and what
+  // already sits at the name is not this run's to remove (review round 124).
   mkdirSync(dir, { mode: 0o700 });
-  // The model entry stays minimal on purpose: capabilities such as the
-  // thinking format or the context window are the provider's to know, and
-  // pinning one provider's shape would silently misdescribe another
-  // endpoint's models. Only what pi needs to route and stream is set, with
-  // one exception: `reasoning: true`, because pi 0.85.1 defaults a custom
-  // model's reasoning to false, and that default clamps the `--thinking`
-  // flag --effort maps to (0.85.1's model composer answered
-  // {"reasoning":false,"requested":"high","effective":"off"} for the bare
-  // entry), so an override run with --effort high would silently disable
-  // reasoning (h4 review).
-  const models = {
-    providers: {
-      [PI_PROVIDER_ID]: {
-        name: "codemux provider override",
-        baseUrl: override.baseUrl,
-        apiKey: `\${${PI_PROVIDER_KEY_ENV}}`,
-        api: "openai-completions",
-        models: [
-          {
-            id: bareModel,
-            name: bareModel,
-            api: "openai-completions",
-            reasoning: true,
-            // The caps, when the override carries them: maxTokens is the
-            // reply budget pi requests and contextWindow the window it
-            // truncates to (both first-class models.json fields). The
-            // conditional spreads keep an uncapped override's file
-            // byte-identical to the pre-caps shape.
-            ...(override.maxOutputTokens !== undefined
-              ? { maxTokens: override.maxOutputTokens }
-              : {}),
-            ...(override.maxContextTokens !== undefined
-              ? { contextWindow: override.maxContextTokens }
-              : {}),
-          },
-        ],
+  try {
+    // The model entry stays minimal on purpose: capabilities such as the
+    // thinking format or the context window are the provider's to know, and
+    // pinning one provider's shape would silently misdescribe another
+    // endpoint's models. Only what pi needs to route and stream is set, with
+    // one exception: `reasoning: true`, because pi 0.85.1 defaults a custom
+    // model's reasoning to false, and that default clamps the `--thinking`
+    // flag --effort maps to (0.85.1's model composer answered
+    // {"reasoning":false,"requested":"high","effective":"off"} for the bare
+    // entry), so an override run with --effort high would silently disable
+    // reasoning (h4 review).
+    const models = {
+      providers: {
+        [PI_PROVIDER_ID]: {
+          name: "codemux provider override",
+          baseUrl: override.baseUrl,
+          apiKey: `\${${PI_PROVIDER_KEY_ENV}}`,
+          api: "openai-completions",
+          models: [
+            {
+              id: bareModel,
+              name: bareModel,
+              api: "openai-completions",
+              reasoning: true,
+              // The caps, when the override carries them: maxTokens is the
+              // reply budget pi requests and contextWindow the window it
+              // truncates to (both first-class models.json fields). The
+              // conditional spreads keep an uncapped override's file
+              // byte-identical to the pre-caps shape.
+              ...(override.maxOutputTokens !== undefined
+                ? { maxTokens: override.maxOutputTokens }
+                : {}),
+              ...(override.maxContextTokens !== undefined
+                ? { contextWindow: override.maxContextTokens }
+                : {}),
+            },
+          ],
+        },
       },
-    },
-  };
-  const path = join(dir, "models.json");
-  writeFileSync(path, JSON.stringify(models, null, 2) + "\n", { mode: 0o600 });
+    };
+    const path = join(dir, "models.json");
+    writeFileSync(path, JSON.stringify(models, null, 2) + "\n", { mode: 0o600 });
+  } catch (error) {
+    removeUnderTrustedParent(dir, parentRecord, `the pi agent directory ${dir}`);
+    throw error;
+  }
 
   let finalized = false;
   const finalize = (): void => {

@@ -202,7 +202,10 @@ OpenCode malformed/truncated streams retain text and usage folded before the
 error, with a diagnostic. Claude-family/Agy JSON that is not a valid result
 fails instead of becoming plain reply text. Output that never uses the
 requested structured grammar can pass through as plain text without usage.
-The Codex fallback can recover a blended `tokens used` stderr total only.
+The Codex fallback can recover a blended `tokens used` stderr total only, and
+only when the figure is plain digits, digit groups of three (`1,234,567`),
+or Indian grouping (`12,34,567`), with one separator style throughout;
+anything else records no usage rather than a stripped-digit guess.
 Result errors fail even when the child exited zero. Empty structured replies
 fail; Codex plain-mode completed empty/message-free replies retain the
 upstream success behavior.

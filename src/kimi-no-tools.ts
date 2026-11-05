@@ -47,6 +47,7 @@ import { join } from "node:path";
 import { pidProbeAlive } from "./process-table.js";
 import {
   recordTrustedParent,
+  removeUnderTrustedParent,
   removeUnderTrustedParentOrThrow,
   reportingHook,
   type TrustedParentRecord,
@@ -137,7 +138,22 @@ export function writeKimiNoToolsFile(brandHome: string): KimiNoToolsFile {
   // inode, not only by the lstat above.
   const parentRecord: TrustedParentRecord = recordTrustedParent(parent);
   const path = join(parent, `${FILE_PREFIX}${process.pid}-${randomBytes(6).toString("hex")}.md`);
-  writeFileSync(path, AGENT_FILE_TEXT, { mode: 0o600 });
+  // Guarded from the file's creation to its finalizer's registration
+  // (review round 123): a write that fails here removes the just-made file
+  // through the same revalidated removal the finalizer uses, and the
+  // original error reaches the caller instead of an empty or partial file
+  // the days-later stale sweep has to reclaim. The parent itself stays —
+  // it is the shared, persistent `.codemux` directory every run uses.
+  // The create is exclusive, and EEXIST removes nothing: an entry already
+  // at the name is not this run's (review round 124).
+  try {
+    writeFileSync(path, AGENT_FILE_TEXT, { mode: 0o600, flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      removeUnderTrustedParent(path, parentRecord, `the kimi no-tools agent file ${path}`);
+    }
+    throw error;
+  }
 
   let finalized = false;
   const finalize = (): void => {

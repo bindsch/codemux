@@ -333,9 +333,10 @@ export abstract class OpenCodeDriverCore {
       // The open turn's `turn_started` must be answered (review live10/
       // live12): synthesize the completion the harness cannot. Failed on
       // a crash end (its fatal already reported the exit), a drain
-      // failure, or any fatal raised during the drain; interrupted
-      // otherwise. The usage is the turn's real folded step_finish
-      // report — partial, but reported, not guessed.
+      // failure, any fatal raised during the drain, or an error line the
+      // turn's own stream carried (the completeTurn rule, review round
+      // 123); interrupted otherwise. The usage is the turn's real folded
+      // step_finish report — partial, but reported, not guessed.
       const turnId = this.fsm.activeTurn;
       const usage = this.turnUsage ?? emptyUsage();
       const error = this.fsm.transition({
@@ -347,7 +348,8 @@ export abstract class OpenCodeDriverCore {
         this.emitError(true, "codemux", error.message);
       } else {
         const synthFinish =
-          reason === "crash" || drainFailureCode !== null || this.firstFatal !== null
+          reason === "crash" || drainFailureCode !== null || this.firstFatal !== null ||
+          this.turnError !== null
             ? "failed"
             : "interrupted";
         this.cumulative = addUsage(this.cumulative, usage);
@@ -356,13 +358,15 @@ export abstract class OpenCodeDriverCore {
             turn_id: turnId,
             finish: synthFinish,
             reason:
-              reason === "crash"
-                ? crashSynthesisReason(this.firstFatal)
-                : drainFailureCode !== null
-                  ? drainFailureMessage("opencode", this.lastChildOutcome!, true)
-                  : this.firstFatal !== null
-                    ? crashSynthesisReason(this.firstFatal)
-                    : `the session ended (${reason}) before the turn completed`,
+              this.turnError !== null
+                ? this.turnError
+                : reason === "crash"
+                  ? crashSynthesisReason(this.firstFatal)
+                  : drainFailureCode !== null
+                    ? drainFailureMessage("opencode", this.lastChildOutcome!, true)
+                    : this.firstFatal !== null
+                      ? crashSynthesisReason(this.firstFatal)
+                      : `the session ended (${reason}) before the turn completed`,
             usage,
           }),
           { terminal: "fatal" }

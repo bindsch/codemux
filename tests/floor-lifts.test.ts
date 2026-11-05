@@ -158,6 +158,42 @@ describe("the bounded stream capture", () => {
       readBounded(streamOf(["x"]), "stdout", undefined, sink)
     ).rejects.toBeInstanceOf(OutputLimitError);
   });
+
+  test("a sink's own TypeError reaches the caller unchanged (review round 123)", async () => {
+    // A parser bug inside the sink used to be relabeled "stdout is not
+    // valid UTF-8" by the catch-all around the read loop; only the
+    // decoder's own failure may carry that message.
+    const sink = {
+      push: (): void => {
+        throw new TypeError("protocol bug");
+      },
+      finish: () => "",
+      keptBytes: () => 0,
+    };
+    const error: unknown = await readBounded(streamOf(["ok"]), "stdout", undefined, sink).then(
+      () => null,
+      (failure: unknown) => failure
+    );
+    expect(error).toBeInstanceOf(TypeError);
+    expect((error as TypeError).message).toBe("protocol bug");
+  });
+
+  test("invalid UTF-8 still fails with the UTF-8 message, sink path and plain path (review round 123)", async () => {
+    const invalid = (): ReadableStream<Uint8Array> =>
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array([0x80]));
+          controller.close();
+        },
+      });
+    const sink = { push: () => {}, finish: () => "", keptBytes: () => 0 };
+    await expect(readBounded(invalid(), "stderr", undefined, sink)).rejects.toThrow(
+      "stderr is not valid UTF-8"
+    );
+    await expect(readBounded(invalid(), "stdout")).rejects.toThrow(
+      "stdout is not valid UTF-8"
+    );
+  });
 });
 
 describe("the provider directory sweeps", () => {
