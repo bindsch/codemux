@@ -4,6 +4,7 @@ import {
   BoundedOutboundQueue,
   TERMINAL_LANE_CAPACITY,
 } from "../src/session/process.js";
+import type { OutboundFailure } from "../src/session/process-outbound.js";
 import { waitUntil } from "./helpers/session-process.js";
 
 describe("bounded outbound queue", () => {
@@ -246,6 +247,33 @@ describe("bounded outbound queue", () => {
     // Idempotent: a second abandon changes nothing.
     queue.abandon();
     await queue.flush();
+  });
+
+  test("a sink that settles after abandon changes no accounting and reports no failure", async () => {
+    // Review round 108: abandon() cleared the accounting, and the flush
+    // loop then subtracted the in-flight entry on a late resolve (pending
+    // bytes went negative) or called the failure callback on a late
+    // reject, which every driver treats as a new fatal end.
+    for (const outcome of ["resolve", "reject"] as const) {
+      let settle: () => void = () => {};
+      const failures: OutboundFailure[] = [];
+      const queue = new BoundedOutboundQueue(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            settle = outcome === "resolve" ? resolve : () => reject(new Error("late"));
+          }),
+        (failure) => failures.push(failure)
+      );
+      expect(queue.enqueue("final")).toBe(true);
+      await Bun.sleep(5);
+      queue.abandon();
+      settle();
+      await Bun.sleep(5);
+      expect(queue.pending).toEqual({ events: 0, bytes: 0 });
+      expect(failures).toEqual([]);
+      await queue.flush();
+      expect(queue.enqueue("after")).toBe(false);
+    }
   });
 
   test("awaitFinalFlush reports a stalled final flush as undelivered, a completed one as delivered", async () => {

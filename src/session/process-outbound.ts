@@ -439,12 +439,16 @@ export class BoundedOutboundQueue {
         // entries never count against the byte bound, so they subtract
         // nothing here — only the lane's own tallies, which their shift
         // returns (both the shared lane count and the fatal share).
+        // A sink that settles after abandon() answers a delivery the caller
+        // already gave up on: the accounting was cleared, so neither the
+        // bookkeeping below nor the failure callback runs (review round 108).
         try {
           await this.sink(entry.line);
         } catch (error) {
-          this.fail(error);
+          if (!this.abandoned) this.fail(error);
           return;
         }
+        if (this.abandoned) return;
         this.entries.shift();
         if (entry.lane === null) {
           this.pendingBytes -= entry.bytes;

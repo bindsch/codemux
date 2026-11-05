@@ -125,6 +125,10 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 108, whole tree: a session output sink that settles after the final flush was abandoned no longer
+  changes the queue's accounting (pending bytes went negative) or reports a late sink failure as a new fatal end; the
+  doctor's credential store readers open the file once without blocking and check type and size on the descriptor, so
+  a FIFO or an oversized file swapped in after a path check is `unknown` instead of a blocked or unbounded read.
 - `codemux doctor` no longer reports a working kimi login as `LOGIN-EXPIRED`. Kimi's access token lives 15 minutes and
   kimi renews it from the stored refresh token on its next run, so a store with a refresh token is `logged-in`, with a
   note when the access token has aged out. Only an expired access token with no refresh token is `LOGIN-EXPIRED`

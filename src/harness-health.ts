@@ -12,12 +12,13 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { gateOnResult } from "./quota-gate.js";
 import { ALLOWED_CREDENTIAL_ENV, probeEnvironment } from "./environment.js";
 import { resolveTrustedExecutable } from "./executable-security.js";
+import { readUtf8FileBounded } from "./file-io.js";
 import {
   describeHarnessBreakage,
   evaluateHarnessVersion,
@@ -55,17 +56,17 @@ export const loginFingerprint = (identity: string): string =>
 // `no-credential`: a malformed store is not an absent one.
 const MAX_CREDENTIAL_STORE_BYTES = 1_048_576;
 const readJsonIfPresent = (path: string): Record<string, unknown> | null | "unreadable" => {
-  if (!existsSync(path)) return null;
   try {
-    // A FIFO at the path would block the read forever and a huge file would
-    // be read whole: only a bounded regular file is opened (review round 50).
-    const stat = statSync(path);
-    if (!stat.isFile() || stat.size > MAX_CREDENTIAL_STORE_BYTES) return "unreadable";
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    // One non-blocking open, checked on the descriptor: a FIFO would block
+    // the read and a huge file would be read whole, also when either
+    // replaces the file after a check of the path (review rounds 50, 108).
+    const text = readUtf8FileBounded(path, { maxBytes: MAX_CREDENTIAL_STORE_BYTES, label: "the credential store" });
+    const parsed = JSON.parse(text) as unknown;
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return "unreadable";
     return parsed as Record<string, unknown>;
-  } catch {
-    return "unreadable";
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    return code === "ENOENT" || code === "ENOTDIR" ? null : "unreadable";
   }
 };
 
