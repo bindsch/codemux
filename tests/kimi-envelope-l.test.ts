@@ -49,6 +49,54 @@ describe("Kimi failure-envelope recovery", () => {
       } finally { f.cleanup(); }
     });
 
+  test("a result-json envelope over the capture bound fails the run with the bound named (round 100)", () => {
+    const f = fixture();
+    try {
+      f.writeWire();
+      // 9 MiB of assistant content rides in `reply` and again inside
+      // `events`; the serialized envelope exceeds the 16 MiB capture
+      // bound even though the captured stream itself is within it.
+      const large = stream([{ role: "assistant", content: "x".repeat(9 * 1024 * 1024) }, kimiResumeHint()]);
+      const result = f.adapter.processRunResult({ ...success, stdout: large }, f.request);
+      expect(result.success).toBe(false);
+      expect(result.exitCode).toBe(125);
+      expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(16 * 1024 * 1024);
+      expect(result.stderr).toContain("capture bound");
+      expect(result.stderr).toContain("reply is dropped");
+    } finally { f.cleanup(); }
+  });
+
+  test("an experiment envelope over the bound is truncated to fit, with the events copy dropped first", () => {
+    const f = fixture();
+    try {
+      f.writeWire();
+      const large = stream([{ role: "assistant", content: "x".repeat(9 * 1024 * 1024) }, kimiResumeHint()]);
+      const result = f.adapter.processRunResult({ ...success, stdout: large },
+        { ...f.request, experimentMcp: "synthetic.json" }, undefined,
+        new ExperimentFailure(Code.ResultChanged, "synthetic experiment failure"));
+      expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(16 * 1024 * 1024);
+      expect(JSON.parse(result.stdout).events).toBeUndefined();
+      expect(result.stderr).toContain("result truncated to the 16 MiB capture limit");
+    } finally { f.cleanup(); }
+  });
+
+  test("oversized metadata cannot defeat the experiment bound: the emergency envelope keeps every key (round 102)", () => {
+    const f = fixture();
+    try {
+      f.writeWire();
+      const reply = stream([{ role: "assistant", content: "short" }, kimiResumeHint()]);
+      const result = f.adapter.processRunResult({ ...success, stdout: reply },
+        { ...f.request, experimentMcp: "synthetic.json", labels: { big: "y".repeat(17 * 1024 * 1024) } }, undefined,
+        new ExperimentFailure(Code.ResultChanged, "synthetic experiment failure"));
+      expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(16 * 1024 * 1024);
+      const envelope = JSON.parse(result.stdout);
+      expect(envelope.reply).toBeNull();
+      expect(envelope.codemux).toMatchObject({ agent: "kimi", labels: null, model: null, served_model: null,
+        session_id: null, recording: null, failure_code: Code.ResultChanged });
+      expect(result.stderr).toContain("result truncated to the 16 MiB capture limit");
+    } finally { f.cleanup(); }
+  });
+
   test.each([false, true])("capture failures keep only the valid prefix; JSON=%s", (resultJson) => {
     const f = fixture();
     try {

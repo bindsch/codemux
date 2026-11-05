@@ -239,7 +239,11 @@ export const TERMINAL_LANE_CAPACITY = 8;
  * and ends the session instead of growing codemux without limit. Entries
  * are handed to `sink` one at a time in order; a bound is checked against
  * what is still queued, so a fast sink keeps the queue empty and a stopped
- * one trips it deterministically. A sink that rejects is just as fatal and
+ * one trips it deterministically. An overflow is sticky: once a bound has
+ * breached, ordinary events are refused for the rest of the session (a
+ * later drain cannot un-gap the stream the caller was told had a gap);
+ * only the terminal classes the end path needs still queue. A sink that
+ * rejects is just as fatal and
  * just as reported: `onFailure` fires for both classes, exactly once each
  * — both classes latch, so a stream of further enqueues after the first
  * failure cannot re-fire the callback.
@@ -302,9 +306,15 @@ export class BoundedOutboundQueue {
   }
 
   /** Queue one line. Returns false when a bound is breached (the failure
-   * callback has already fired, once), after the sink has failed, or
-   * after the queue was abandoned — either way the caller treats the
-   * queue as a fatal end. Ordinary entries are refused at the event or
+   * callback has already fired, once), after the sink has failed, after
+   * the queue was abandoned, or after an overflow already ended the
+   * session and the entry is ordinary — either way the caller treats the
+   * queue as a fatal end. An overflow is sticky: once a bound has
+   * breached, ordinary entries are refused for the session's remainder
+   * even after a drain frees capacity, so the stream never resumes a
+   * normal-looking continuation after the gap it acknowledged; only the
+   * terminal classes the overflow path needs (fatals and the end event)
+   * still queue. Ordinary entries are refused at the event or
    * byte bound. A terminal entry — `session_ended` (`terminal: true`) or
    * a fatal that ends the session (`terminal: "fatal"`) — takes the
    * ordinary capacity first and is refused only when the ordinary bounds
@@ -316,13 +326,20 @@ export class BoundedOutboundQueue {
    * uses the fatal class, preserving the end event's last slot. */
   enqueue(line: string, options?: { terminal?: boolean | "fatal" }): boolean {
     if (this.sinkError !== NO_SINK_ERROR || this.abandoned) return false;
-    const bytes = utf8ByteLength(line) + 1;
+    // An overflow is sticky (review round 100): the failure callback told
+    // the caller the stream has a gap, so a drain that frees capacity must
+    // not resume ordinary delivery and present a normal-looking
+    // continuation after an acknowledged loss. Only the terminal classes
+    // the overflow path itself needs — the fatal notices and the end
+    // event — can still queue; `terminal: false` is ordinary too.
     const laneClass: "end" | "fatal" | null =
       options?.terminal === true
         ? "end"
         : options?.terminal === "fatal"
           ? "fatal"
           : null;
+    if (this.overflowed && laneClass === null) return false;
+    const bytes = utf8ByteLength(line) + 1;
     const ordinary = this.entries.length - this.queuedTerminal;
     const ordinaryFull =
       ordinary >= this.maxEvents || this.pendingBytes + bytes > this.maxBytes;

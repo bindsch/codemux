@@ -83,6 +83,10 @@ describe("the launched call ledger capture paths", () => {
       expect(record.agent).toBe("claude");
       expect(record.exit_code).toBe(1);
       expect(record.sandboxed).toBe(true);
+      // The receipt describes the sandbox that ran (round 100): no network
+      // restriction requested and the standard trust level resolved.
+      expect(record.sandbox_no_net).toBe(false);
+      expect(record.sandbox_trust).toBe("standard");
       expect(record.usage).toEqual({
         input_tokens: null,
         output_tokens: null,

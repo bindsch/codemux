@@ -18,6 +18,7 @@ import { assertNoCallerBlockOverStateDirs, withKeepEnvExemption } from "./sandbo
 import { featureFloor, SCODE_FLOORS } from "./harness-contracts.js";
 import type { AutonomyLevel, RunRequest, RunResult } from "./types.js";
 import { UsageRefusalError, validateWorkingDirectory } from "./validation.js";
+import { assertSandboxedLaunchAgreement, effectiveWorkingDirectory } from "./launch/constraints.js";
 
 export interface LaunchOptions {
   sandbox: boolean;
@@ -100,11 +101,6 @@ export async function launchRunRequest(
     finally { releaseExitCleanup?.(); }
   };
   try {
-    // An omitted directory means process.cwd() on both sides; comparing the
-    // canonicalized args alone made an explicit cwd equal to the current
-    // directory look like a mismatch (the review's cwd finding).
-    const effectiveWorkingDirectory = (value?: string): string =>
-      validateWorkingDirectory(value) ?? process.cwd();
     if (options.printSandbox && request.experimentMcp) {
       // The experiment relays are minted at prepare — the MCP server command
       // from the spec is spawned there — so a launch that must not run
@@ -153,21 +149,7 @@ export async function launchRunRequest(
         "experiment project-settings launch must run in the request's working directory"
       );
     }
-    if (
-      options.sandbox &&
-      (options.requestedAutonomy !== (request.autonomy ?? "read-only") ||
-        effectiveWorkingDirectory(options.cwd) !== effectiveWorkingDirectory(request.cwd))
-    ) {
-      // The sandboxed branch validates the REQUEST but the scode spawn
-      // executes with the OPTIONS, so two different sets could validate a
-      // read-only request in one directory and execute with high autonomy
-      // in another (review round 64). Refuse before anything spawns; the
-      // special modes above already pin the same agreement with their own
-      // messages, so only matching pairs reach here.
-      throw new UsageRefusalError(
-        "sandboxed launch options must match the request: the scode spawn must run the validated autonomy in the validated working directory"
-      );
-    }
+    if (options.sandbox) assertSandboxedLaunchAgreement(request, options);
     if (!options.sandbox) {
       // A direct launch has no sandbox it could attest, so a request that
       // claims one is refused: the sandboxed branch below is the only launch
@@ -376,7 +358,11 @@ export async function launchRunRequest(
       envArg,
       options.requestedAutonomy,
       sandboxOptions,
-      options.timeoutMs,
+      // One deadline governs both paths: the direct branch below runs on
+      // request.timeoutMs, so the sandboxed branch does too. The guard
+      // above already refused a request and an options pair that disagree,
+      // so the two spell the same value whenever either carries one.
+      request.timeoutMs,
       adapter.getEnvOmissions(),
       context.stdoutSink,
       async () => {

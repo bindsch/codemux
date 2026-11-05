@@ -100,7 +100,13 @@ export class ExperimentHttpRelay {
       const http = this.http = createServer((request, response) => {
         const operation = this.handle(request, response);
         this.requests.add(operation);
-        void operation.finally(() => this.requests.delete(operation));
+        // `finally` here would derive a new promise that rejects whenever
+        // `handle` rejects, with no handler of its own: a managed relay
+        // failure turned into an unhandled rejection (review round 100).
+        // Both settle paths remove the tracked operation; the rejection
+        // itself is already handled inside `handle`.
+        const done = () => this.requests.delete(operation);
+        void operation.then(done, done);
       });
       // Tool replies have no HTTP deadline; request bodies remain bounded.
       http.requestTimeout = 0;
@@ -210,7 +216,15 @@ export class ExperimentHttpRelay {
         try { if (!response.headersSent) respondRelay(this.record, response, 400, Buffer.alloc(0), "POST", true); else response.destroy(); }
         catch { response.destroy(); }
       }
-    } finally { delivery?.close(); }
+    } finally {
+      // A delivery close that throws (a recording failure on the SSE
+      // close record) is a relay failure like any other: it reaches
+      // this.fail instead of escaping `handle`, where it would surface
+      // as an unhandled rejection on the request's promise (review
+      // round 100).
+      try { delivery?.close(); }
+      catch (error) { this.fail(asError(error)); }
+    }
   }
 
   private serveCatalog(request: IncomingMessage, response: ServerResponse, path: string, query: URLSearchParams): void {

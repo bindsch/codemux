@@ -4,6 +4,7 @@ import type { CodemuxResultBlock, RunRequest, RunResult } from "../types.js";
 import { findKimiWireLog, kimiWireUsage, MAX_KIMI_WIRE_BYTES, readBoundedKimiFile } from "../kimi-wire-log.js";
 import { appendDiagnostic, emptyUsage } from "./common.js";
 import { experimentFailure, type ExperimentFailure } from "../experiment-records.js";
+import { MAX_CAPTURE_BYTES, OUTPUT_LIMIT_EXIT_CODE } from "../process-runner.js";
 import { kimiWireShapedLine, parseKimiStreamLine } from "../session/kimi-session.js";
 
 function parseEvents(stdout: string): { events: Record<string, unknown>[]; error?: string } {
@@ -43,6 +44,50 @@ function capturedEvents(stdout: string): ReturnType<typeof parseEvents> {
     }
   } catch { /* A native capture contains several JSON lines. */ }
   return parseEvents(stdout);
+}
+
+const TRUNCATION_NOTE = "\n[truncated by codemux]";
+
+/** Bound a serialized experiment envelope the way the Codex experiment
+ * envelope does: the events copy goes first, then the reply is truncated
+ * to whatever still fits MAX_CAPTURE_BYTES after JSON escaping (review
+ * round 100 — the reply rode in the envelope twice, once as `reply` and
+ * once inside `events`, with no bound after serialization). */
+function boundedKimiEnvelope(envelope: Record<string, unknown>): {
+  stdout: string;
+  truncated: boolean;
+} {
+  const serialize = () => JSON.stringify(envelope) + "\n";
+  let stdout = serialize();
+  if (Buffer.byteLength(stdout) <= MAX_CAPTURE_BYTES) return { stdout, truncated: false };
+  delete envelope.events;
+  stdout = serialize();
+  if (Buffer.byteLength(stdout) <= MAX_CAPTURE_BYTES) return { stdout, truncated: true };
+  const original = envelope[KIMI_ANSWER_FIELD];
+  const text = typeof original === "string" ? original : "";
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    envelope[KIMI_ANSWER_FIELD] = text.slice(0, middle) + TRUNCATION_NOTE;
+    if (Buffer.byteLength(serialize()) <= MAX_CAPTURE_BYTES) low = middle;
+    else high = middle - 1;
+  }
+  // Avoid cutting a UTF-16 surrogate pair in the retained reply.
+  if (low > 0 && /[\uD800-\uDBFF]/.test(text[low - 1]!)) low--;
+  envelope[KIMI_ANSWER_FIELD] = text.slice(0, low) + TRUNCATION_NOTE;
+  stdout = serialize();
+  // Oversized metadata (caller labels, a long model name) can keep the
+  // envelope past the bound with no reply left to cut. The emergency
+  // envelope keeps every documented key with nulls where the metadata is
+  // dropped, as the Codex experiment envelope does (review round 102).
+  if (Buffer.byteLength(stdout) > MAX_CAPTURE_BYTES) {
+    const block = envelope.codemux as CodemuxResultBlock;
+    stdout = JSON.stringify({ [KIMI_ANSWER_FIELD]: null, session_id: null,
+      codemux: { agent: "kimi", model: null, served_model: null, labels: null, usage: emptyUsage(),
+        session_id: null, recording: null, failure_code: block.failure_code } }) + "\n";
+  }
+  return { stdout, truncated: true };
 }
 
 /** Stream text matches the plain printer after its bullet blocks are removed. */
@@ -100,11 +145,34 @@ export function kimiResult(result: RunResult, request: RunRequest, brandHome: st
     failure_code: failure?.code ?? context?.experimentKimi?.relay.failureCode ?? null,
   };
   const diagnostic = failure ? `experiment failure [${failure.code}]: ${outputFailure ?? failure.message}` : outputFailure;
-  return { ...result, stdout: `${JSON.stringify({ [KIMI_ANSWER_FIELD]: text, events, session_id: sessionId, codemux: block })}\n`,
-    usage, servedModel: null,
-    ...(request.experimentMcp ? { reply: text, scanSurface: (result.scanSurface ?? result.stdout + result.stderr) + wireSurface } : {}),
-    ...(failure || outputFailure ? { success: false, exitCode: result.exitCode || 1,
-      ...(diagnostic ? { stderr: appendDiagnostic(result.stderr, `codemux: ${diagnostic}`) } : {}) } : {}) };
+  const envelope: Record<string, unknown> = { [KIMI_ANSWER_FIELD]: text, events, session_id: sessionId, codemux: block };
+  const experimentFields = request.experimentMcp
+    ? { reply: text, scanSurface: (result.scanSurface ?? result.stdout + result.stderr) + wireSurface }
+    : {};
+  const failureFields: { success: false; exitCode: number; stderr?: string } | {} = failure || outputFailure
+    ? { success: false as const, exitCode: result.exitCode || 1,
+      ...(diagnostic ? { stderr: appendDiagnostic(result.stderr, `codemux: ${diagnostic}`) } : {}) }
+    : {};
+  if (request.experimentMcp) {
+    // The experiment rule: bound the serialized envelope by dropping the
+    // events copy, then truncating the reply, and say so on stderr.
+    const { stdout, truncated } = boundedKimiEnvelope(envelope);
+    return { ...result, stdout, usage, servedModel: null, ...experimentFields, ...failureFields,
+      ...(truncated ? { stderr: appendDiagnostic("stderr" in failureFields ? failureFields.stderr ?? "" : result.stderr,
+        "codemux: result truncated to the 16 MiB capture limit") } : {}) };
+  }
+  const serialized = JSON.stringify(envelope) + "\n";
+  // The plain rule (opencode's), for the run whose stdout IS this envelope:
+  // a caller must never read a success it cannot hold, so an envelope past
+  // the capture bound fails the run with the reply dropped and the bound
+  // named on stderr. A plain non-envelope run never serializes for output
+  // (kimiPlainResult keeps only the reply), so it is not refused here.
+  if (request.resultJson && Buffer.byteLength(serialized) > MAX_CAPTURE_BYTES) {
+    const separator = result.stderr === "" || result.stderr.endsWith("\n") ? "" : "\n";
+    return { ...result, success: false, exitCode: OUTPUT_LIMIT_EXIT_CODE, usage, servedModel: null, stdout: "",
+      stderr: `${result.stderr}${separator}kimi result envelope exceeds the ${MAX_CAPTURE_BYTES}-byte capture bound once JSON-escaped; the reply is dropped\n` };
+  }
+  return { ...result, stdout: serialized, usage, servedModel: null, ...experimentFields, ...failureFields };
 }
 
 /** Whether kimi's stdout opens like the stream-json wire the launch asked

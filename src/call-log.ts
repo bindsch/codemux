@@ -113,6 +113,13 @@ export interface CallRecord {
   autonomy: AutonomyLevel | null;
   hermetic: boolean;
   sandboxed: boolean;
+  /** The sandbox that ran, when the call was sandboxed: the network
+   * restriction and trust level the launch options resolved (review
+   * round 100). Null on a direct run; absent on lines older ledgers
+   * wrote before the fields existed and on session records, which the
+   * session drivers own. */
+  sandbox_no_net?: boolean | null;
+  sandbox_trust?: string | null;
   exit_code: number | null;
   /** How a turn or session ended ("end", "interrupted", "failed", or a
    * session's end reason); null for run/check records. */

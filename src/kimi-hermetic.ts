@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { prepareRunDirParent } from "./hermetic-home.js";
 import { hasActiveCapturedCommand } from "./process-runner.js";
@@ -32,6 +32,8 @@ export const KIMI_HERMETIC_ENV_OMISSIONS = [
 export const KIMI_HERMETIC_ENV_ASSIGNMENTS = ["KIMI_CODE_NO_AUTO_UPDATE=1", "KIMI_CODE_REPEAT_BREAKER=false"] as const;
 const MCP_TIMEOUT_KEYS = ["startup_timeout_ms", "tool_timeout_ms"] as const;
 const MAX_CONFIG_BYTES = 1024 * 1024;
+/** `region` and `device_id` are short identifiers; 4096 bytes is ample. */
+const MAX_KIMI_STATE_BYTES = 4096;
 const liveHomes = new Set<() => void>();
 const signals = [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const;
 const handlers = new Map<NodeJS.Signals, () => void>();
@@ -126,10 +128,22 @@ export function createKimiHermeticHome(sourceBrandHome: string, toolsNone = fals
     mkdirSync(skillsDir, { mode: 0o700 });
     writeFileSync(join(kimiHome, "config.toml"), config, { mode: 0o600 });
     if (!printOnly) symlinkSync(resolve(sourceBrandHome, "credentials"), join(kimiHome, "credentials"), "dir");
-    for (const name of ["region", "device_id"]) {
-      if (!printOnly && existsSync(join(sourceBrandHome, name))) {
-        copyFileSync(join(sourceBrandHome, name), join(kimiHome, name));
+    // `region` and `device_id` sit in the brand home a previous kimi child
+    // could write, so they are read through the bounded no-follow reader:
+    // a symlink or a FIFO swapped in for either is refused (the launch
+    // fails and the private home is removed) instead of followed or
+    // blocked on, and the bytes are copied only after every file passed
+    // (review round 100). An absent file is skipped as before.
+    const stateFiles = printOnly ? [] : ["region", "device_id"].map((name) => {
+      const source = join(sourceBrandHome, name);
+      try { return { name, bytes: readBoundedKimiFile(source, MAX_KIMI_STATE_BYTES) }; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
       }
+    });
+    for (const file of stateFiles) {
+      if (file) writeFileSync(join(kimiHome, file.name), file.bytes, { mode: 0o600 });
     }
     writeFileSync(agentFile, ["---", "name: codemux-hermetic",
       "description: Private profile with the default prompt.",

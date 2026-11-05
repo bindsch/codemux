@@ -1,4 +1,5 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { SCODE_TRUST_LEVELS } from "./sandbox.js";
 import type { CallRecord } from "./call-log.js";
 import { parseLabels, validateLabelKey } from "./labels.js";
 
@@ -43,6 +44,7 @@ const CALL_RECORD_KINDS: ReadonlySet<string> = new Set([
 // Lines older than the field carry no cost_source (read as null, a cost
 // with no claim); anything but these three strings, or null, is a
 // wrong-shaped line (audit round 2, B5).
+const SCODE_TRUST_LEVEL_SET: ReadonlySet<string> = new Set(SCODE_TRUST_LEVELS);
 const COST_SOURCES: ReadonlySet<string> = new Set([
   "billed",
   "harness-estimate",
@@ -109,6 +111,16 @@ function isCallRecord(parsed: unknown): parsed is StoredCallRecord {
   if (!isStringOrNull(record["autonomy"])) return false;
   if (typeof record["hermetic"] !== "boolean") return false;
   if (typeof record["sandboxed"] !== "boolean") return false;
+  // Absent on older lines and session records; present means it must hold
+  // the writer's shape (review round 100).
+  if (record["sandbox_no_net"] !== undefined && record["sandbox_no_net"] !== null &&
+      typeof record["sandbox_no_net"] !== "boolean") {
+    return false;
+  }
+  if (record["sandbox_trust"] !== undefined && record["sandbox_trust"] !== null &&
+      (typeof record["sandbox_trust"] !== "string" || !SCODE_TRUST_LEVEL_SET.has(record["sandbox_trust"]))) {
+    return false;
+  }
   if (!isCount(record["exit_code"])) return false;
   if (
     typeof record["duration_ms"] !== "number" ||

@@ -171,7 +171,11 @@ Recovered Codex failure envelopes remove only the final completed
 contains that message. Earlier events with identical text remain. The
 serialized envelope stays within 16 MiB, including JSON escapes and the final
 newline. It drops events before truncating the reply with a note.
-Plain Claude and Z.AI experiment capture-limit failures extract the captured result envelope's reply and keep exit 125. Early Claude and Z.AI experiment failure envelopes retain the adapter's effective model, including its configured default. Kimi result JSON always returns an envelope on parsing, session-hint, or wire-log errors. A plain run whose first stdout line is a one-line JSON object carrying a string `type` is read as the stream-json wire (the wire's forward-compatible events are typed), so a plain JSON answer of that shape fails as a broken wire instead of passing through; an untyped JSON value passes through as the answer. It names the error, preserves complete events before a malformed or truncated line, and reports `failure_code: null` for non-experiment runs.
+Plain Claude and Z.AI experiment capture-limit failures extract the captured result envelope's reply and keep exit 125. Early Claude and Z.AI experiment failure envelopes retain the adapter's effective model, including its configured default. Kimi result JSON always returns an envelope on parsing, session-hint, or wire-log errors.
+The Kimi envelope is bounded after serialization, like Codex's: an experiment envelope
+past the bound drops `events` and truncates the reply with the same note, while a
+plain `--result-json` run past the bound fails with exit 125, drops the reply, and
+names the byte bound on stderr. A plain run whose first stdout line is a one-line JSON object carrying a string `type` is read as the stream-json wire (the wire's forward-compatible events are typed), so a plain JSON answer of that shape fails as a broken wire instead of passing through; an untyped JSON value passes through as the answer. It names the error, preserves complete events before a malformed or truncated line, and reports `failure_code: null` for non-experiment runs.
 
 Discarded tool events do not accumulate against retained-output capacity.
 They can still exceed the individual-line limit. For example, many 1 KiB
@@ -256,6 +260,7 @@ Each record contains:
 | `autonomy` | Autonomy string or null |
 | `labels` | String-keyed object of string values, or null |
 | `hermetic`, `sandboxed` | Booleans |
+| `sandbox_no_net`, `sandbox_trust` | The sandbox the launch ran: a network-restriction boolean (true under the `untrusted` trust level, which implies it) and a trust level, null on a direct run; absent on session records and older ledgers |
 | `exit_code` | Number or null (turns use finish instead) |
 | `finish` | End/turn reason string or null |
 | `duration_ms` | Nonnegative elapsed time from the record's start |

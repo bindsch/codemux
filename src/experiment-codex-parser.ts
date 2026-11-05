@@ -59,6 +59,10 @@ export interface CodexNativeCall {
 }
 interface PendingTurn {
   messageId?: string; functionId?: string; turnId?: string; messageSeen?: boolean; functionSeen?: boolean;
+  /** The response produced a native evidence item (an assistant message,
+   * a reasoning item, or a function call) — the difference between a
+   * timeout cutting a real turn short and an orphan usage record. */
+  evidenceSeen?: boolean;
   responseId?: string; responseUsage?: ExperimentUsage;
   calls: { call: CodexNativeCall; t: number }[];
 }
@@ -150,6 +154,7 @@ export class CodexRolloutParser {
     if ((payload.type === "message" && payload.role === "assistant") || payload.type === "reasoning" ||
         payload.type === "function_call" || payload.type === "custom_tool_call") {
       this.pending ??= { calls: [] };
+      this.pending.evidenceSeen = true;
       if (payload.type === "message" && !this.pending.messageSeen) {
         this.pending.messageSeen = true;
         if (typeof payload.id === "string" && payload.id) this.pending.messageId = payload.id;
@@ -193,6 +198,17 @@ export class CodexRolloutParser {
       "Codex rollout is missing a resource builtin output");
     for (const call of this.modelErrors) if (!call.output) this.refuseTool(call.item);
     if (!options?.timedOut && this.pending) throw new ExperimentFailure(Code.HarnessLogMissing, "Codex rollout is missing a following token_count usage event");
+    // A timeout may cut the LAST response short, so a pending response that
+    // produced a message, reasoning item, or function call is accepted
+    // without its token_count. A pending response with a response id and
+    // usage but no evidence item is not a cut-short turn: an orphan
+    // `token_usage_record` after a complete one would otherwise carry
+    // provider-response usage no native turn vouches for (review round
+    // 100).
+    if (options?.timedOut && this.pending?.responseId !== undefined && !this.pending.evidenceSeen) {
+      throw new ExperimentFailure(Code.HarnessLogMissing,
+        `Codex rollout ends with response usage ${this.pending.responseId} and no native evidence item`);
+    }
     if (!options?.timedOut && this.usageRecords !== this.turns) throw new ExperimentFailure(Code.HarnessLogMissing, "Codex rollout is missing normalized turn usage");
     if (this.turns === 0) throw new ExperimentFailure(Code.HarnessLogMissing, "Codex rollout has no completed response evidence");
   }

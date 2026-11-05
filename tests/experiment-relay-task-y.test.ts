@@ -100,6 +100,40 @@ function ledger(relay: ExperimentHttpRelay) {
   return records(relay).filter((entry) => entry.kind === "call_ledger");
 }
 
+test("a delivery close that throws fails the relay with that error, never an unhandled rejection (round 100)", async () => {
+  const relay = await setup();
+  // The production shape of the finding: the run's owner defers the first
+  // failure (Kimi defers server exits), the SSE delivery then fails to
+  // record its close, and that close failure must reach the relay's own
+  // failure latch instead of escaping `handle` as an unhandled rejection
+  // on the discarded `operation.finally` promise.
+  relay.deferFailure = (error) => error.code === ExperimentFailureCode.CallIdUnresolved;
+  relay.resolveCallId = () => Bun.sleep(80).then(() => {
+    throw new Error("native call id resolution failed");
+  });
+  const original = relay.record.bind(relay);
+  const record = spyOn(relay, "record").mockImplementation((kind, fields) => {
+    if (kind === "relay_sse") throw new Error("close recording failed");
+    original(kind, fields);
+  });
+  const rejections: unknown[] = [];
+  const onUnhandled = (error: unknown) => rejections.push(error);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    // The request's connection is destroyed after the deferred failure;
+    // the assertion target is the relay's latched failure, not the socket.
+    await call(relay, "close-fails", { command: "constant" }).response.catch(() => undefined);
+    await until(() => relay.failureError !== null, "the close failure never latched");
+    expect(relay.failureError).toMatchObject({ code: ExperimentFailureCode.Protocol,
+      message: "close recording failed" });
+    await Bun.sleep(60);
+    expect(rejections).toEqual([]);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    record.mockRestore();
+  }
+});
+
 test("slow tools/call flushes SSE headers and keepalives before one final message", async () => {
   const relay = await setup();
   const pending = call(relay, "slow", { command: "hold:240" });

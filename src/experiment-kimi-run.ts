@@ -38,6 +38,7 @@ export class ExperimentKimiRun implements StdoutSink {
   private harnessActive = false;
   private harnessExitedAt = 0;
   private pendingServerFailure?: ExperimentFailure;
+  private laterFailure?: ExperimentFailure;
   private reconciliation?: Promise<void>;
   private serverFailureFinalized = false;
 
@@ -55,7 +56,13 @@ export class ExperimentKimiRun implements StdoutSink {
     };
     this.relay.deferFailure = (error) => {
       if (this.serverFailureFinalized) return false;
-      if (this.pendingServerFailure) return true;
+      if (this.pendingServerFailure) {
+        // A substantive failure that lands while the server exit is being
+        // reconciled used to be discarded outright; the first one is kept
+        // and finalized ahead of the generic exit (review round 100).
+        if (!isServerExit(error)) this.laterFailure ??= error;
+        return true;
+      }
       if (isServerExit(error)) {
         this.pendingServerFailure = error;
         this.abort?.();
@@ -194,10 +201,18 @@ export class ExperimentKimiRun implements StdoutSink {
   private finalizeServerFailure(): void {
     if (!this.pendingServerFailure) return;
     this.evidence.refresh(false);
-    const native = this.evidence.failureError, original = this.pendingServerFailure;
+    // Preference order (review round 100): a native timeout the wire log
+    // proves, then a substantive failure that arrived while the exit was
+    // pending, then any wire-log evidence failure (a malformed or
+    // inconsistent log the flush wait found: protocol, result-changed,
+    // harness-log-missing, or call-id-unresolved codes), and only then
+    // the generic server exit — never the exit over a real finding.
+    const native = this.evidence.failureError, original = this.pendingServerFailure,
+      later = this.laterFailure;
     this.pendingServerFailure = undefined;
+    this.laterFailure = undefined;
     this.serverFailureFinalized = true;
-    this.relay.fail(isNativeTimeout(native) ? native : original);
+    this.relay.fail(isNativeTimeout(native) ? native : later ?? native ?? original);
   }
 
   preserveHarnessLog(): void {

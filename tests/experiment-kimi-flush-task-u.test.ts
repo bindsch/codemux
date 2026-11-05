@@ -82,17 +82,52 @@ test("Kimi starts the wire quiet interval after the harness exit boundary", asyn
   } finally { await f.close(); }
 });
 
-test("Kimi retains the first server exit when the flushed log has no timeout", async () => {
-  const f = await fixture(), original = new ExperimentFailure(Code.ServerError, EXIT_MESSAGES[0]!);
+test("Kimi keeps a later substantive failure ahead of the pending server exit (round 100)", async () => {
+  const f = await fixture(), original = new ExperimentFailure(Code.ServerError, EXIT_MESSAGES[0]!),
+    later = new ExperimentFailure(Code.Protocol, "protocol capture aborted");
   try {
     f.run.relay.fail(original);
+    // A second server exit stays discarded: only substantive failures are
+    // kept, and the first one wins among them.
     f.run.relay.fail(new ExperimentFailure(Code.ServerError, EXIT_MESSAGES[1]!));
-    f.run.relay.fail(new ExperimentFailure(Code.Protocol, "protocol capture aborted"));
+    f.run.relay.fail(later);
+    f.run.relay.fail(new ExperimentFailure(Code.Protocol, "a second substantive failure"));
     expect(f.aborts()).toBe(1);
     expect(f.records().filter((record) => record.kind === "failure")).toEqual([]);
     await f.run.closeProtocol();
+    await expect(f.run.complete()).rejects.toBe(later);
+    expect(f.records().filter((record) => record.kind === "failure")).toMatchObject([
+      { code: Code.Protocol, message: "protocol capture aborted" },
+    ]);
+  } finally { await f.close(); }
+});
+
+test("Kimi ends with the server exit alone when nothing substantive follows it", async () => {
+  const f = await fixture(), original = new ExperimentFailure(Code.ServerError, EXIT_MESSAGES[0]!);
+  try {
+    f.run.relay.fail(original);
+    f.run.relay.fail(new ExperimentFailure(Code.ServerError, EXIT_MESSAGES[2]!));
+    await f.run.closeProtocol();
     await expect(f.run.complete()).rejects.toBe(original);
-    expect(f.records().filter((record) => record.kind === "failure")).toHaveLength(1);
+    expect(f.records().filter((record) => record.kind === "failure")).toMatchObject([
+      { code: Code.ServerError, message: EXIT_MESSAGES[0] },
+    ]);
+  } finally { await f.close(); }
+});
+
+test("Kimi reports wire-log corruption found during the flush wait, not the generic server exit (round 100)", async () => {
+  const f = await fixture(), original = new ExperimentFailure(Code.ServerError, EXIT_MESSAGES[0]!);
+  try {
+    f.run.relay.fail(original);
+    // A malformed record appended while the exit is pending: the flush
+    // loop's evidence refresh finds it, and finalization must prefer it
+    // over the generic exit.
+    appendFileSync(f.path, "not a wire record\n");
+    await f.run.closeProtocol();
+    await expect(f.run.complete()).rejects.toMatchObject({ code: Code.HarnessLogMissing });
+    expect(f.records().filter((record) => record.kind === "failure")).toMatchObject([
+      { code: Code.HarnessLogMissing, message: expect.stringContaining("Invalid Kimi wire log") },
+    ]);
   } finally { await f.close(); }
 });
 

@@ -6,6 +6,7 @@ import { appendCallRecord, providerHost } from "../call-log.js";
 import { unexpectedErrorExitCode } from "../cli-runtime.js";
 import { foldedSinkUsage } from "../plain-unwrap.js";
 import { readProviderOverride } from "../provider-override.js";
+import { sandboxRestrictsNetwork } from "../sandbox.js";
 import {
   CapturedRunFailure,
   SIGNAL_EXIT_CODE,
@@ -34,6 +35,7 @@ export function recordCompletedLaunch(
     autonomy: request.autonomy ?? "read-only",
     hermetic: Boolean(request.hermetic),
     sandboxed: Boolean(request.sandboxed),
+    ...sandboxFieldsFor(options),
     exit_code: result.exitCode,
     finish: null,
     duration_ms: Math.max(0, Date.now() - startedAt),
@@ -71,6 +73,7 @@ export function appendInterruptedLaunchReceipt(
       autonomy: request.autonomy ?? "read-only",
       hermetic: Boolean(request.hermetic),
       sandboxed: Boolean(request.sandboxed),
+      ...sandboxFieldsFor(options),
       exit_code: SIGNAL_EXIT_CODE,
       finish: null,
       duration_ms: Math.max(0, Date.now() - startedAt),
@@ -122,6 +125,7 @@ export function appendFailedLaunchReceipt(
       autonomy: request.autonomy ?? "read-only",
       hermetic: Boolean(request.hermetic),
       sandboxed: Boolean(request.sandboxed),
+      ...sandboxFieldsFor(options),
       exit_code: exitCode,
       finish: null,
       duration_ms: Math.max(0, Date.now() - startedAt),
@@ -131,6 +135,24 @@ export function appendFailedLaunchReceipt(
   } catch {
     // The never-fail contract, as the interrupted receipt enforces it.
   }
+}
+
+/** The sandbox that ran, for the ledger receipt: the launch options'
+ * resolved network restriction and trust level, null on a direct run.
+ * The launcher's agreement guard already refused a request that claimed
+ * a constraint the options did not carry, so these describe a sandbox at
+ * least as constrained as the validated request (review round 100). */
+function sandboxFieldsFor(options: LaunchOptions): {
+  sandbox_no_net: boolean | null;
+  sandbox_trust: string | null;
+} {
+  if (!options.sandbox) return { sandbox_no_net: null, sandbox_trust: null };
+  return {
+    // The effective restriction: the untrusted preset implies it without
+    // the explicit flag (review round 102).
+    sandbox_no_net: sandboxRestrictsNetwork(options.sandboxPolicyOverrides),
+    sandbox_trust: options.sandboxPolicyOverrides?.trust ?? "standard",
+  };
 }
 
 /** The endpoint identity for the ledger: "default", or the host of the

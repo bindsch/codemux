@@ -71,7 +71,10 @@ Implementation: [private homes](../src/hermetic-home.ts), [Codex adapter](../src
 
 Hermetic runs create a private HOME and KIMI_CODE_HOME with a filtered `config.toml`. The private `credentials` directory is a symlink to the real brand home's credentials directory. Kimi writes refreshed tokens to temporary files and renames them inside that directory. The symlink keeps those renames in the real directory. A hard link to an individual token file would retain the old inode after replacement and let the two logins diverge.
 
-Kimi's token storage constructor accepts the directory without a symlink check. Its recursive directory creation and permission tightening follow the directory symlink. Codemux also copies `region` and `device_id` when present. Cleanup removes the private home and its link; refreshed credentials remain in the real directory. Passing through KIMI_CODE_HOME is refused on hermetic runs.
+Kimi's token storage constructor accepts the directory without a symlink check. Its recursive directory creation and permission tightening follow the directory symlink. Codemux also copies `region` and `device_id` when present: each is read as a
+regular file of at most 4096 bytes without following symlinks and written with
+mode 0600. A symlink, a FIFO, or an oversized file refuses the launch before
+anything is copied, and the private home is finalized. Cleanup removes the private home and its link; refreshed credentials remain in the real directory. Passing through KIMI_CODE_HOME is refused on hermetic runs.
 
 Implementation: [Kimi private homes](../src/kimi-hermetic.ts).
 

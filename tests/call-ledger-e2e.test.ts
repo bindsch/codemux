@@ -63,7 +63,9 @@ describe("the launched call ledger", () => {
       });
       // The record line carries no prompt text and no secrets: the fixed
       // field set only. cost_source joined the set in audit round 2, B5
-      // (writer-computed; this claude run's figure is a harness estimate).
+      // (writer-computed; this claude run's figure is a harness estimate);
+      // the sandbox description fields joined in review round 100, null on
+      // this direct run.
       expect(Object.keys(record).sort()).toEqual([
         "agent",
         "autonomy",
@@ -78,12 +80,16 @@ describe("the launched call ledger", () => {
         "model",
         "model_effective",
         "provider",
+        "sandbox_no_net",
+        "sandbox_trust",
         "sandboxed",
         "session_id",
         "ts",
         "turn_id",
         "usage",
       ]);
+      expect(record.sandbox_no_net).toBeNull();
+      expect(record.sandbox_trust).toBeNull();
       expect(log.entries[0]!.line).not.toContain("test");
     } finally {
       fake.cleanup();

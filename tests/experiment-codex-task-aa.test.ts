@@ -109,6 +109,31 @@ test.each(["null", "[]", "{invalid", ""])("Codex retains native resource argumen
   expect(records.filter((record) => record.kind === "harness_builtin_call")).toHaveLength(1);
 });
 
+test("a timed-out rollout refuses an orphan trailing token_usage_record (round 100)", () => {
+  // One complete turn, then a response that carries only provider usage:
+  // no message, reasoning item, or function call vouches for it, so the
+  // timeout's cut-short allowance must not accept it.
+  const { parser } = parserFixture();
+  parser.accept(line("response_item", { type: "message", role: "assistant", id: "msg_1",
+    content: [{ type: "output_text", text: "finished" }] }));
+  parser.accept(line("event_msg", { type: "token_count", info: { last_token_usage: USAGE } }));
+  parser.accept(line("token_usage_record", { thread_id: THREAD, response_id: "resp_orphan",
+    usage: USAGE }));
+  expect(() => parser.finish({ timedOut: true })).toThrow(expect.objectContaining({
+    code: Code.HarnessLogMissing, message: expect.stringContaining("resp_orphan") }));
+});
+
+test("a timed-out rollout still accepts a cut-short response that produced evidence", () => {
+  const { parser } = parserFixture();
+  parser.accept(line("response_item", { type: "message", role: "assistant", id: "msg_1",
+    content: [{ type: "output_text", text: "finished" }] }));
+  parser.accept(line("event_msg", { type: "token_count", info: { last_token_usage: USAGE } }));
+  parser.accept(line("response_item", { type: "reasoning", id: "r_1", content: [] }));
+  parser.accept(line("token_usage_record", { thread_id: THREAD, response_id: "resp_cut",
+    usage: USAGE }));
+  expect(() => parser.finish({ timedOut: true })).not.toThrow();
+});
+
 test("Codex requires output evidence for a resource builtin call", () => {
   const { parser } = parserFixture();
   parser.accept(world());

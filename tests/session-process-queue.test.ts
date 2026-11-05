@@ -57,6 +57,43 @@ describe("bounded outbound queue", () => {
     expect(overflows).toHaveLength(1);
   });
 
+  test("an overflow is sticky: ordinary events stay refused after a drain, the end event still delivers (round 100)", async () => {
+    const overflows: unknown[] = [];
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    const delivered: string[] = [];
+    const queue = new BoundedOutboundQueue(
+      async (line) => {
+        await gate;
+        delivered.push(line);
+      },
+      (overflow) => overflows.push(overflow),
+      { events: 2 }
+    );
+    expect(queue.enqueue("one")).toBe(true);
+    expect(queue.enqueue("two")).toBe(true);
+    expect(queue.enqueue("three")).toBe(false);
+    expect(overflows).toHaveLength(1);
+    // The sink drains every queued entry; the freed capacity must not
+    // resume ordinary delivery after the acknowledged gap.
+    openGate();
+    await queue.flush();
+    expect(delivered).toEqual(["one", "two"]);
+    expect(queue.pending.events).toBe(0);
+    expect(queue.enqueue("after-drain")).toBe(false);
+    // `terminal: false` spells an ordinary event too (review round 102).
+    expect(queue.enqueue("explicit-ordinary", { terminal: false })).toBe(false);
+    expect(overflows).toHaveLength(1);
+    // The terminal classes the overflow path needs still queue and
+    // deliver, the end event above all.
+    expect(queue.enqueue("fatal notice", { terminal: "fatal" })).toBe(true);
+    expect(queue.enqueue("session_ended", { terminal: true })).toBe(true);
+    await queue.flush();
+    expect(delivered).toEqual(["one", "two", "fatal notice", "session_ended"]);
+  });
+
   test("the byte bound counts UTF-8 bytes plus the newline", async () => {
     const overflows: unknown[] = [];
     const queue = new BoundedOutboundQueue(

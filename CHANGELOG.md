@@ -125,6 +125,18 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 100, whole tree: a sandboxed launch whose options drop a constraint the request carries — a network
+  restriction, a trust level, or a timeout only one side names — or whose options name a trust level weaker than the
+  default the request validated, is refused before anything spawns, and the sandboxed spawn runs on the request's own
+  deadline; the call receipt and ledger record the network restriction and trust level the sandbox actually ran;
+  hermetic kimi homes read `region` and `device_id` as bounded regular files and refuse a symlink, FIFO, or oversized
+  file before copying anything; a relay delivery whose close throws fails the run with that error instead of an
+  unhandled rejection; a kimi server exit keeps the first substantive failure found while waiting (wire-log, protocol,
+  result-changed, call-id-unresolved) ahead of the generic exit message; a codex rollout timeout refuses a pending
+  response that carries usage but no assistant message, reasoning item, or function call; a kimi result envelope past
+  the 16 MiB capture bound is truncated for experiment runs and fails with exit 125 and the reply dropped for plain
+  runs; a session whose outbound queue overflowed refuses ordinary events for the rest of the session and still
+  delivers the terminal notices.
 - Review round 96, whole tree: a failed aider turn whose history holds its prompt with no reply ends the session
   instead of leaving state the next turn would replay; the first signal to a kimi session stops a landed child at once
   instead of opening the grace drain; every private per-run directory's cleanup revalidates its parent first, so a

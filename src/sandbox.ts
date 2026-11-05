@@ -61,6 +61,15 @@ export function mapAutonomyToScodeTrust(_autonomy?: AutonomyLevel): ScodeTrustLe
   return "standard";
 }
 
+/** Whether a sandbox with these options runs without network: the
+ * explicit flag, or scode's untrusted preset, which implies --no-net
+ * (withKeepEnvExemption's note below; review round 102). */
+export function sandboxRestrictsNetwork(
+  options?: { trust?: ScodeTrustLevel; noNet?: boolean }
+): boolean {
+  return options?.noNet === true || options?.trust === "untrusted";
+}
+
 export function buildScodeCommand(
   command: string[],
   cwd?: string,

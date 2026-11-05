@@ -110,6 +110,65 @@ name = "operator"
     } finally { home.finalize(); f.cleanup(); }
   });
 
+  test("a symlink swapped in for region is refused and its target never reaches the private home", () => {
+    const f = fixture();
+    const target = join(f.home, "operator-secret");
+    writeFileSync(target, "symlinked-region");
+    symlinkSync(target, join(f.brand, "region"));
+    writeFileSync(join(f.brand, "device_id"), "test-device");
+    let refusal: unknown;
+    try {
+      createKimiHermeticHome(f.brand);
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toBeInstanceOf(Error);
+    expect((refusal as Error).message).toContain("region");
+    expect((refusal as Error).message).toContain("symbolic link");
+    // The launch failed, so the private home is finalized: no partial
+    // copy of the other state file survives anywhere under the parent.
+    expect(readdirSync(join(f.brand, ".codemux-hermetic")).length).toBe(0);
+    expect(readFileSync(target, "utf8")).toBe("symlinked-region");
+  });
+
+  test("a FIFO swapped in for device_id is refused at once, not blocked on", () => {
+    const f = fixture();
+    writeFileSync(join(f.brand, "region"), "test-region");
+    const fifo = join(f.brand, "device_id");
+    expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
+    const started = Date.now();
+    let refusal: unknown;
+    try {
+      createKimiHermeticHome(f.brand);
+    } catch (error) {
+      refusal = error;
+    }
+    // The bounded reader opens nonblocking and refuses the descriptor on
+    // its fstat: no writer ever appears, so a regression to a plain copy
+    // would block this test instead of refusing.
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(refusal).toBeInstanceOf(Error);
+    expect((refusal as Error).message).toContain("device_id");
+    expect((refusal as Error).message).toContain("not a regular file");
+    expect(readdirSync(join(f.brand, ".codemux-hermetic")).length).toBe(0);
+    rmSync(fifo, { force: true });
+    f.cleanup();
+  });
+
+  test("region and device_id are copied byte for byte with private permissions", () => {
+    const f = fixture();
+    const region = join(f.brand, "region");
+    writeFileSync(region, "eu-central\r\n");
+    writeFileSync(join(f.brand, "device_id"), Buffer.from([0x61, 0x0a, 0x62]));
+    const home = createKimiHermeticHome(f.brand);
+    try {
+      expect(readFileSync(join(home.kimiHome, "region"))).toEqual(readFileSync(region));
+      expect(readFileSync(join(home.kimiHome, "device_id"))).toEqual(Buffer.from([0x61, 0x0a, 0x62]));
+      expect(statSync(join(home.kimiHome, "region")).mode & 0o777).toBe(0o600);
+      expect(statSync(join(home.kimiHome, "device_id")).mode & 0o777).toBe(0o600);
+    } finally { home.finalize(); f.cleanup(); }
+  });
+
   test("directory symlink preserves atomic token refresh and source files at cleanup", () => {
     const f = fixture();
     const home = createKimiHermeticHome(f.brand, true);

@@ -24,7 +24,11 @@ means acceptance by codemux, not completion by the model. Codex may park
 input until its handshake completes or queue an accepted user message.
 During shutdown draining, new lines are rejected `shutting_down`. Nothing
 is emitted after `session_ended`. Delivery guarantees end when the caller
-stops reading or stdout fails; even acknowledgments can be lost then.
+stops reading or stdout fails; even acknowledgments can be lost then. Once a
+pending-event bound breaches, ordinary events are refused for the rest of the
+session; only the terminal events the end path needs (the crash notices and
+`session_ended`) are still delivered, so the stream never resumes a
+normal-looking continuation after the gap it acknowledged.
 
 Input objects reject unknown keys. Optional means omitted, not `null`.
 Validation depends on capability and lifecycle state, so a disabled
@@ -268,7 +272,7 @@ approval offering no refusal choice also interrupts its turn.
 | Caller line / harness write | 17 MiB; caller line overflow is `malformed`; undeliverable text is `text_too_long` |
 | Aider/Kimi argv text | 32 KiB including author prefix; `text_too_long` |
 | Harness stdout line | 16 MiB; fatal overflow |
-| Pending stdout events | 1024 ordinary events or 64 MiB; failure ends the session |
+| Pending stdout events | 1024 ordinary events or 64 MiB; failure ends the session, and ordinary events stay refused after it |
 | Unread harness stdin backlog | 64 MiB; refusal is fatal |
 | Each Codex pre-handshake / user / steer hold | 256 lines or 32 MiB; queued user/steer overflow is `busy`; handshake overflow is fatal |
 | Reserved terminal queue | 8 extra slots; at most 7 fatals, reserving one for the final event |
