@@ -250,8 +250,11 @@ the `--sum` totals see every record. Retained memory is proportional to
 `-n` and to the number of distinct sessions, never to the ledger's
 length: a ring of `-n` records for the listing (raw lines only under
 `--json`), one closing record per session for the totals, and — under
-`--since` — one session id per session with an in-window turn; an empty
-session id keys nothing, so a recent empty-id turn selects no old closings.
+`--since` — one session key per session with an in-window turn. A session
+is keyed by its agent and session id together (review round 127), so
+records of two agents never share a session however their ids collide; an
+empty session id keys nothing, so a recent empty-id turn selects no old
+closings.
 A token total that would leave the safe-integer range prints `unknown`;
 so does a cost total that would leave the finite range, on the totals line
 and on the harness-estimate line.

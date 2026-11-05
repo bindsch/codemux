@@ -77,6 +77,26 @@ export function childLine(
     case "unknown":
       // Tier 1: raw preserved, session continuing.
       return [unknown(line)];
+    case "error": {
+      if (state.turn === null) {
+        return [
+          unknown(line),
+          ...fatalEnd(state, "harness", "an output line arrived with no open turn", "crash", 1),
+        ];
+      }
+      // Non-fatal: the session continues (the next turn runs), but the
+      // error still fails the turn whatever the exit code, the reply, or
+      // the resume hint turn out to be — the plain-run rule
+      // (result-envelope/kimi.ts fails a run on an error event) and the
+      // opencode driver's since review round 123. The first error
+      // frame's message is the reason that verdict carries; the frame
+      // itself is the error event, so the raw line needs no separate
+      // passthrough (the mapped kinds carry their payload in the event).
+      state.turn.errorMessage ??= parse.message;
+      return [
+        { kind: "error", fatal: false, source: "harness", message: parse.message },
+      ];
+    }
     case "resume_hint": {
       // The one line that names the session. The closing-record pin is
       // set FIRST, before adoption, so a foreign id's fatal and any line
@@ -277,10 +297,14 @@ export function childExit(
   // edges major 2; the both-shapes rule is round al34, edges major 1;
   // "resolved exactly once" is the map-keyed grammar of round al35,
   // correctness major 3, which fails the session on the malformed loops
-  // before this verdict ever reads them).
+  // before this verdict ever reads them). An error frame the turn's
+  // stream carried fails it the same way, whatever the exit, the reply,
+  // or the hint say (review round 127, mirroring the opencode rule of
+  // round 123), and its first message is the reason.
   const unresolvedCalls = turn.pendingToolCalls.size;
   const failed =
     harnessFailed(outcome) ||
+    turn.errorMessage !== null ||
     !turn.sawAssistant ||
     !turn.sawFinalAssistantText ||
     !state.confirmed;
@@ -297,19 +321,21 @@ export function childExit(
       ...(failed
         ? {
             reason:
-              outcome.code !== 0
-                ? `the kimi process exited with ${exitDetail}`
-                : unresolvedCalls > 0
-                  ? `the kimi process exited 0 with ${unresolvedCalls} tool call${
-                      unresolvedCalls === 1 ? "" : "s"
-                    } that never received a result and no final assistant reply`
-                  : !turn.sawAssistant
-                    ? "the kimi process exited 0 and printed no assistant output"
-                    : !turn.sawFinalAssistantText
-                      ? "the kimi process exited 0 with no final assistant reply " +
-                        "after its tool results"
-                      : "the kimi process exited 0 without the resume hint that " +
-                        "closes every completed turn, so the session is unconfirmed",
+              turn.errorMessage !== null
+                ? turn.errorMessage
+                : outcome.code !== 0
+                  ? `the kimi process exited with ${exitDetail}`
+                  : unresolvedCalls > 0
+                    ? `the kimi process exited 0 with ${unresolvedCalls} tool call${
+                        unresolvedCalls === 1 ? "" : "s"
+                      } that never received a result and no final assistant reply`
+                    : !turn.sawAssistant
+                      ? "the kimi process exited 0 and printed no assistant output"
+                      : !turn.sawFinalAssistantText
+                        ? "the kimi process exited 0 with no final assistant reply " +
+                          "after its tool results"
+                        : "the kimi process exited 0 without the resume hint that " +
+                          "closes every completed turn, so the session is unconfirmed",
           }
         : {}),
     },

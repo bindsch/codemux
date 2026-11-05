@@ -244,10 +244,12 @@ Pending unacknowledged input is rejected when shutdown starts. Previously
 accepted input that cannot run gets a nonfatal error rather than a second
 acknowledgment. A driver may synthesize a failed/interrupted turn completion
 if the harness closes without one, preserving available turn usage. An
-OpenCode `error` event is nonfatal for the session but fails its turn even
-when the per-turn process exits zero, the plain-run rule; the first error
-line is the completion's `reason`, and the session continues with the next
-turn.
+OpenCode `error` event, and a Kimi roleless `{type:"error",message}` frame,
+are nonfatal for the session but fail their turn even when the per-turn
+process exits zero, the plain-run rule; the first error message is the
+completion's `reason`, and the session continues with the next turn. A Kimi
+error event that names no message fails the turn the same way, with a fixed
+reason.
 
 `session_ended` is last. `harness_exit` is the last observed child's raw
 outcome, or null if no outcome was observed. Every nonzero child exit or

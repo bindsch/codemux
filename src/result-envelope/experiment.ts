@@ -1,11 +1,12 @@
 import type { ExperimentFailure } from "../experiment-records.js";
 import type { CodemuxResultBlock, ResultUsageBlock, RunRequest, RunResult } from "../types.js";
 import { claudeFamilyResult } from "./claude.js";
-import { appendDiagnostic, emptyUsage } from "./common.js";
+import { appendDiagnostic, boundResultEnvelope, emptyUsage, envelopeBoundLine, envelopeRefused } from "./common.js";
 import { codexResult } from "./codex.js";
+import { CODEX_TRUNCATED_LINE, boundedCodexEnvelope } from "./codex-bound.js";
 import { CodexEventReducer } from "./codex-reducer.js";
 import { parseCodexEventStream } from "./codex-stream.js";
-import { MAX_CAPTURE_BYTES, OUTPUT_LIMIT_EXIT_CODE } from "../process-runner.js";
+import { OUTPUT_LIMIT_EXIT_CODE } from "../process-runner.js";
 import { claudeFamilyPlainResult } from "../plain-unwrap.js";
 
 function envelopeObject(stdout: string): Record<string, unknown> | null {
@@ -35,52 +36,6 @@ function codexCapturedPrefix(stdout: string) {
   return { reducer, events: events.filter((_, index) => index !== finalMessageIndex) };
 }
 
-const TRUNCATION_NOTE = "\n[truncated by codemux]";
-
-/** Bound the serialized envelope, including JSON escapes and the final newline. */
-function boundedCodexEnvelope(envelope: Record<string, unknown>): { stdout: string; truncated: boolean } {
-  const serialize = () => JSON.stringify(envelope) + "\n";
-  let stdout = serialize();
-  if (Buffer.byteLength(stdout) <= MAX_CAPTURE_BYTES) return { stdout, truncated: false };
-  delete envelope.events;
-  stdout = serialize();
-  if (Buffer.byteLength(stdout) <= MAX_CAPTURE_BYTES) return { stdout, truncated: false };
-  const originalResult = envelope.result;
-  envelope.result = typeof originalResult === "string" ? TRUNCATION_NOTE : originalResult;
-  const block = envelope.codemux as CodemuxResultBlock;
-  // A reroute event can put nearly the entire captured prefix in model
-  // metadata, and served_model carries the same reroute string, so both
-  // are dropped together (review round 14, edges 7 symmetric case).
-  if (Buffer.byteLength(serialize()) > MAX_CAPTURE_BYTES) {
-    block.model = null;
-    block.served_model = null;
-  }
-  envelope.result = originalResult;
-  stdout = serialize();
-  if (Buffer.byteLength(stdout) <= MAX_CAPTURE_BYTES) return { stdout, truncated: true };
-  const text = typeof envelope.result === "string" ? envelope.result : "";
-  let low = 0;
-  let high = text.length;
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2);
-    envelope.result = text.slice(0, middle) + TRUNCATION_NOTE;
-    if (Buffer.byteLength(serialize()) <= MAX_CAPTURE_BYTES) low = middle;
-    else high = middle - 1;
-  }
-  // Avoid cutting a UTF-16 surrogate pair in the retained reply.
-  if (low > 0 && /[\uD800-\uDBFF]/.test(text[low - 1]!)) low--;
-  envelope.result = typeof originalResult === "string" ? text.slice(0, low) + TRUNCATION_NOTE : originalResult;
-  stdout = serialize();
-  // Keep even oversized caller metadata from defeating the failure-output bound.
-  // The emergency envelope keeps every documented CodemuxResultBlock key
-  // (round 29, edges 5): a consumer reading `--result-json` gets the schema
-  // it was promised, with nulls where the oversized metadata is dropped.
-  if (Buffer.byteLength(stdout) > MAX_CAPTURE_BYTES) stdout = JSON.stringify({ result: null,
-    codemux: { agent: "codex", model: null, served_model: null, labels: null, usage: emptyUsage(),
-      session_id: null, recording: null, failure_code: block.failure_code } }) + "\n";
-  return { stdout, truncated: true };
-}
-
 /** Report experiment verification failures even when capture produced no envelope. */
 export function experimentFailedResult(
   result: RunResult | undefined,
@@ -103,6 +58,7 @@ export function experimentFailedResult(
   let usage = raw.usage ?? foldedUsage ?? emptyUsage();
   let servedModel = raw.servedModel ?? null;
   let truncated = false;
+  let refused = false;
   if (request.resultJson) {
     const prefix = request.agent === "codex" &&
       (raw.exitCode === OUTPUT_LIMIT_EXIT_CODE || parseCodexEventStream(raw.stdout) === null) &&
@@ -114,7 +70,23 @@ export function experimentFailedResult(
         claudeFamilyResult(raw, request, request.agent, recording);
     } else if (request.agent === "codex") {
       normalized = raw.usage !== undefined && envelopeObject(raw.stdout)?.codemux ? raw :
-        codexResult({ ...raw, success: false, exitCode: raw.exitCode || 1 }, request, null, recording);
+        codexResult({ ...raw, success: false, exitCode: raw.exitCode || 1 }, request, null, recording, "leave");
+    }
+    // An envelope refused for the capture bound stays refused: the run
+    // keeps the output-limit exit and the line naming the bound, and
+    // stdout carries no envelope, exactly as when the bound is passed at
+    // the tail below. Rebuilding a small envelope here turned the refusal
+    // into an ordinary failure. The refusal can arrive two ways: the
+    // result was refused before it got here (the launch normalizes before
+    // cleanup, review round 131), or the normalization above refused it
+    // (review round 130). The experiment failure itself is still named on
+    // stderr.
+    if (envelopeRefused(request.agent, raw)) {
+      refused = true;
+    } else if (normalized !== raw && envelopeRefused(request.agent, normalized)) {
+      refused = true;
+      raw = { ...raw, exitCode: OUTPUT_LIMIT_EXIT_CODE,
+        stderr: appendDiagnostic(raw.stderr, envelopeBoundLine(request.agent)) };
     }
     const envelope = envelopeObject(normalized.stdout);
     usage = normalized.usage ?? usage;
@@ -127,14 +99,31 @@ export function experimentFailedResult(
           usage, session_id: null, recording, failure_code: failure.code };
     const output = { ...(existing ? envelope : { result: null }),
       ...(partial?.sawThreadStarted ? { result: partial.finalMessage, events: prefix!.events } : {}), codemux: block };
-    ({ stdout, truncated } = request.agent === "codex" ? boundedCodexEnvelope(output) :
-      { stdout: JSON.stringify(output) + "\n", truncated: false });
+    if (request.agent === "codex") {
+      ({ stdout, truncated } = boundedCodexEnvelope(output));
+    } else {
+      // The final envelope this failure result would carry, serialized
+      // once with its newline: rewriting the block can carry an envelope
+      // that fit before past the bound. The codex arm bounds itself above
+      // (boundedCodexEnvelope truncates toward the bound); every other
+      // agent runs the shared bound at the tail instead, which refuses
+      // the envelope when these bytes are past it (review round 127) --
+      // the stdout below must be the complete final serialization, the
+      // exact bytes a caller would hold, or the tail would measure the
+      // wrong string.
+      stdout = JSON.stringify(output) + "\n";
+    }
     if (block.model === null) servedModel = null;
+    if (refused) stdout = "";
   }
   const diagnostic = `codemux: experiment failure [${failure.code}]: ${failure.message}`;
   // Replace an intermediate normalization diagnostic with the final cleanup outcome.
   let stderr = raw.stderr.split("\n").filter((line) => !line.startsWith(`codemux: experiment failure [${failure.code}]: `)).join("\n");
-  if (truncated) stderr = appendDiagnostic(stderr, "codemux: result truncated to the 16 MiB capture limit");
-  return { ...raw, stdout, usage, servedModel, success: false, exitCode: raw.exitCode || 1,
+  if (truncated) stderr = appendDiagnostic(stderr, CODEX_TRUNCATED_LINE);
+  const settled: RunResult = { ...raw, stdout, usage, servedModel, success: false, exitCode: raw.exitCode || 1,
     stderr: appendDiagnostic(stderr, diagnostic) };
+  // Within the bound this passes settled through unchanged; past it the
+  // refusal keeps the failure verdict and the spent usage, drops the
+  // envelope from stdout, and names the agent and the bound.
+  return boundResultEnvelope(request.agent, settled, usage, servedModel);
 }

@@ -7,6 +7,8 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
+import { KIMI_ERROR_WITHOUT_MESSAGE } from "../src/session/kimi-session.js";
 import {
   cleanups,
   of,
@@ -14,6 +16,7 @@ import {
   startSession,
   waitFor,
   type Event,
+  ID,
 } from "./helpers/session-kimi-e2e.js";
 
 afterAll(async () => {
@@ -35,6 +38,86 @@ describe("kimi session e2e - lifecycle", () => {
     const message = await waitFor(session.events, of("assistant_message"), "assistant_message");
     expect(message.text).toBe("Listed: scenario:tools one");
     await waitFor(session.events, of("turn_completed"), "turn_completed");
+    send(session.driver, { type: "shutdown" });
+    expect(await session.code).toBe(0);
+  });
+
+  test("an error frame followed by a valid reply, the hint, and exit 0 still fails the turn; the ledger mirrors it and the next turn runs (round 127)", async () => {
+    // The opencode rule of review round 123, mirrored: the harness itself
+    // said the turn failed, so a clean process exit, a final reply, and
+    // the closing resume hint cannot upgrade it to "end". The frame is
+    // non-fatal for the session — the next turn runs and ends normally.
+    const session = await startSession();
+    send(session.driver, { type: "user", text: "scenario:errorframe one" });
+    const error = await waitFor(
+      session.events,
+      (events) => events.find((event) => event.type === "error"),
+      "the non-fatal error"
+    );
+    expect(error.fatal).toBe(false);
+    expect(error.source).toBe("harness");
+    expect(error.message).toBe("provider overloaded");
+    // The reply after the frame still reaches the caller.
+    const message = await waitFor(session.events, of("assistant_message"), "assistant_message");
+    expect(message.text).toBe("Done: scenario:errorframe one");
+    const failed = await waitFor(session.events, of("turn_completed"), "turn_completed");
+    expect(failed.finish).toBe("failed");
+    expect(failed.reason).toBe("provider overloaded");
+    // The ledger's turn record mirrors the event the caller just saw. The
+    // suite shares one per-process ledger (tests/setup.ts), and other
+    // kimi sessions wrote their own t1 records before this one, so the
+    // record to judge is the last of this shape — this turn's append.
+    const ledger = process.env.CODEMUX_TEST_LEDGER!;
+    const records = (existsSync(ledger) ? readFileSync(ledger, "utf8") : "")
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .map((line) => JSON.parse(line) as Record<string, any>);
+    const turn = records.filter(
+      (record) =>
+        record.kind === "session_turn" &&
+        record.agent === "kimi" &&
+        record.session_id === ID &&
+        record.turn_id === "t1"
+    ).at(-1);
+    expect(turn).toBeDefined();
+    expect(turn!.finish).toBe("failed");
+    // The session survives the failed turn: the next one runs and ends.
+    send(session.driver, { type: "user", text: "scenario:basic two" });
+    const second = await waitFor(
+      session.events,
+      (events) => events.filter((event) => event.type === "turn_completed")[1],
+      "second turn_completed"
+    );
+    expect(second.finish).toBe("end");
+    expect(second.turn_id).toBe("t2");
+    send(session.driver, { type: "shutdown" });
+    // The child exited 0 and no fatal owns the end: a failed turn is not
+    // a failed session, so the shutdown ends clean.
+    expect(await session.code).toBe(0);
+    const ended = session.events[session.events.length - 1] as Event;
+    expect(ended.type).toBe("session_ended");
+    expect(ended.reason).toBe("shutdown");
+  });
+
+  test("an error event that names no message still fails the turn, with a fixed reason (round 129)", async () => {
+    // The plain path fails a run on every event whose type is "error";
+    // a session turn used to pass this one as an unknown raw line.
+    const session = await startSession();
+    send(session.driver, { type: "user", text: "scenario:errormalformed one" });
+    const completed = await waitFor(session.events, of("turn_completed"), "turn_completed");
+    expect(completed.finish).toBe("failed");
+    expect(completed.reason).toBe(KIMI_ERROR_WITHOUT_MESSAGE);
+    const reported = of("error")(session.events);
+    expect(reported?.fatal).toBe(false);
+    expect(reported?.message).toBe(KIMI_ERROR_WITHOUT_MESSAGE);
+    // The session continues: the next turn runs and ends normally.
+    send(session.driver, { type: "user", text: "scenario:basic two" });
+    const second = await waitFor(
+      session.events,
+      (events) => events.filter((event) => event.type === "turn_completed")[1],
+      "the second turn_completed"
+    );
+    expect(second.finish).toBe("end");
     send(session.driver, { type: "shutdown" });
     expect(await session.code).toBe(0);
   });

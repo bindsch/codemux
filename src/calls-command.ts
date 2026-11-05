@@ -195,21 +195,25 @@ export class ListingRing<T> {
  * set (collectSessionWithTurn below), and the listing pass then decides
  * every closing against the full set (round 23, edges 4). Counted once:
  * the fold in the totals keeps the summary beside its turns without
- * counting either twice. The set of session ids is the only retained
- * state, one entry per session with an in-window turn; an empty session
- * id keys nothing (calls-totals.ts sessionKey), so an old empty-id
- * closing record stays behind the cutoff (review round 80). */
+ * counting either twice. The set of session keys is the only retained
+ * state, one entry per session with an in-window turn; the key is the
+ * agent and the session id together (calls-totals.ts sessionKey), so a
+ * recent turn of one agent never admits an old closing record of
+ * another agent that shares its session id, and an empty session id
+ * keys nothing, so an old empty-id closing record stays behind the
+ * cutoff (review rounds 80 and 127). */
 function recordInsideWindow(record: CallRecord, cutoff: Date): boolean {
   const ts = new Date(record.ts);
   return !Number.isNaN(ts.getTime()) && ts >= cutoff;
 }
 
 /** The first pass's one job: name every session with an in-window turn,
- * after the agent and label filters — one id per such session, never one
- * per turn. The key is the totals' session key (calls-totals.ts): an
- * empty session id is unkeyed legacy data and never a key, so a recent
- * empty-id turn cannot pull an old empty-id closing record past the
- * cutoff (review round 80). */
+ * after the agent and label filters — one key per such session, never one
+ * per turn. The key is the totals' session key (calls-totals.ts): the
+ * agent and the session id together, so another agent's session sharing
+ * the id is a different session; an empty session id is unkeyed legacy
+ * data and never a key, so a recent empty-id turn cannot pull an old
+ * empty-id closing record past the cutoff (review round 80). */
 export function collectSessionWithTurn(
   record: CallRecord,
   cutoff: Date,

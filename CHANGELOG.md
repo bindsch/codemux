@@ -125,6 +125,17 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 127, whole tree: a Kimi session turn whose stream carried the roleless
+  `{type:"error",message}` frame now completes `failed` with that message as its reason even when
+  the per-turn process exits 0 with a reply and a resume hint (the plain-run rule), and the
+  ledger's turn record mirrors it, while the session continues; every `--result-json` envelope
+  path measures its final serialization — original fields plus the codemux block, JSON-escaped,
+  with the newline — in bytes against the 16 MiB capture bound, and Claude-family, Agy, OpenCode,
+  plain Codex, and non-Codex experiment envelopes past it fail with exit 125, no envelope on
+  stdout, the bound named on stderr, and usage still reported, while a Codex experiment envelope
+  past it is truncated to the bound; and `codemux calls` keys a session by its agent and
+  session id together, so records of two agents that share one id are summed and windowed as two
+  sessions, never folded into one.
 - Review round 123, whole tree: an OpenCode session turn whose stream carried an `error` event now completes
   `failed` with that error as its reason even when the per-turn process exits 0 (the plain-run rule), and the
   ledger's turn record mirrors it; a write that fails between a private per-run artifact's creation and its

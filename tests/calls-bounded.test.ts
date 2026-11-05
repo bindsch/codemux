@@ -262,5 +262,24 @@ describe("the --since window during the second pass", () => {
     expect(windowKeeps(turn, cutoff, set)).toBe(true);
     expect(windowKeeps(closing, cutoff, set)).toBe(true);
   });
+
+  test("a shared session id across agents does not admit another agent's old closing (round 127)", () => {
+    // The window keys sessions by agent and session id together. Under the
+    // id alone, a recent turn of one agent admitted an old closing record
+    // of a different agent that happened to share the id, pulling records
+    // the cutoff should have kept out.
+    const cutoff = new Date(iso(10 * HOUR));
+    const set = new Set<string>();
+    const turn: CallRecord = { ...BASE_RECORD, kind: "session_turn", session_id: "shared", ts: iso(1 * HOUR) };
+    const sameAgentClosing: CallRecord = { ...BASE_RECORD, kind: "session", session_id: "shared", ts: iso(20 * HOUR) };
+    const otherAgentClosing: CallRecord = { ...BASE_RECORD, agent: "codex", kind: "session", session_id: "shared", ts: iso(20 * HOUR) };
+    collectSessionWithTurn(turn, cutoff, set);
+    expect(windowKeeps(turn, cutoff, set)).toBe(true);
+    // Same agent, same id: the session's own old closing is admitted.
+    expect(windowKeeps(sameAgentClosing, cutoff, set)).toBe(true);
+    // Another agent sharing the id is a different session: its closing
+    // stays behind the cutoff.
+    expect(windowKeeps(otherAgentClosing, cutoff, set)).toBe(false);
+  });
 });
 

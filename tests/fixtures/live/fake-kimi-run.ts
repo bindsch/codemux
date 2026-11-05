@@ -36,6 +36,15 @@
  *   errorturn       — nothing at all, exit 1: a thrown turn, no hint
  *                     (mid-session the turn fails and the session
  *                     survives)
+ *   errorframe      — a roleless {type:"error",message} frame, then a
+ *                     valid assistant reply, the hint, exit 0: the turn
+ *                     still fails on the error frame alone whatever the
+ *                     reply, the hint, and the exit say (review round
+ *                     127, the opencode rule of round 123)
+ *   errormalformed  — a roleless {type:"error"} line with NO message,
+ *                     then the reply, the hint, exit 0: still an error
+ *                     event, so the turn fails with the fixed reason
+ *                     (review round 129)
  *   nohint          — the assistant text and exit 0, but NO resume
  *                     hint: a completed-looking turn whose closing line
  *                     never arrived (truncated or drifted output); the
@@ -220,6 +229,22 @@ const runTurn = (scenario: string): number | null => {
       // errorturn mid-session fails the turn and the session survives;
       // crash on the first turn leaves the session never identified.
       return 1;
+    case "errorframe":
+      // The roleless error frame the plain path fails a run on (review
+      // round 127): printed before a turn that then looks completed — a
+      // valid reply, the closing hint, exit 0 — so only the error frame
+      // itself can fail the turn.
+      write({ type: "error", message: "provider overloaded" });
+      write({ role: "assistant", content: `Done: ${prompt}` });
+      hint();
+      return 0;
+    case "errormalformed":
+      // `type: "error"` without a message: still the harness's error
+      // event, so the turn fails with the fixed reason.
+      write({ type: "error" });
+      write({ role: "assistant", content: `Done: ${prompt}` });
+      hint();
+      return 0;
     case "trailing":
       // The closing record, then output past it (round al14): the hint is
       // the stream's final line by the writer's own order, so anything

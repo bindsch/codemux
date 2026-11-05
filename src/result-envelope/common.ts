@@ -1,4 +1,5 @@
-import type { ResultUsageBlock } from "../types.js";
+import { MAX_CAPTURE_BYTES, OUTPUT_LIMIT_EXIT_CODE } from "../process-runner.js";
+import type { ResultUsageBlock, RunResult } from "../types.js";
 import { markOverflowed } from "../usage-overflow.js";
 
 export function emptyUsage(): ResultUsageBlock {
@@ -84,4 +85,60 @@ export function appendDiagnostic(stderr: string, line: string): string {
   const separated =
     stderr === "" || stderr.endsWith("\n") ? stderr : `${stderr}\n`;
   return `${separated}${line}\n`;
+}
+
+/** Whether the FINAL serialized envelope — the exact stdout this result
+ * would carry, newline included, after every addition (the codemux block
+ * included) — is past the capture bound. Measured in bytes
+ * (`Buffer.byteLength`), never string length: JSON escaping can carry an
+ * envelope past the bound whose raw parts all fit. */
+export function envelopePastCaptureBound(serialized: string): boolean {
+  return Buffer.byteLength(serialized) > MAX_CAPTURE_BYTES;
+}
+
+/** The one refusal line every `--result-json` envelope path shares: it
+ * names the agent, the byte bound, and that the result is dropped — the
+ * opencode path's own wording (review round 47), so every agent spells
+ * the refusal identically. */
+export function envelopeBoundLine(agent: string): string {
+  return `${agent} result envelope exceeds the ${MAX_CAPTURE_BYTES}-byte capture bound once JSON-escaped; the reply is dropped`;
+}
+
+/** Whether a result is this bound's refusal: no envelope on stdout, the
+ * output-limit exit, and the refusal line for the agent on stderr. The
+ * line is what separates it from a capture that overflowed while the
+ * harness was still writing, which also exits with the output limit. */
+export function envelopeRefused(agent: string, result: RunResult): boolean {
+  return result.stdout === "" && result.exitCode === OUTPUT_LIMIT_EXIT_CODE &&
+    result.stderr.includes(envelopeBoundLine(agent));
+}
+
+/**
+ * The bound every `--result-json` envelope path enforces on its FINAL
+ * serialization (the opencode rule of review round 47, shared since
+ * review round 127 so the Claude-family, agy, and experiment envelopes
+ * cannot drift past it by adding the codemux block): a caller must never
+ * read a success it cannot hold. `result.stdout` is the complete
+ * serialized envelope this path built, newline included; when it is past
+ * the bound the run fails with the output-limit exit, stdout carries no
+ * oversized envelope, stderr gains the refusal line, and the usage and
+ * served model the path computed are still reported — the tokens were
+ * spent. Within the bound the result passes through unchanged.
+ */
+export function boundResultEnvelope(
+  agent: string,
+  result: RunResult,
+  usage: ResultUsageBlock,
+  servedModel: string | null
+): RunResult {
+  if (!envelopePastCaptureBound(result.stdout)) return result;
+  return {
+    ...result,
+    success: false,
+    exitCode: OUTPUT_LIMIT_EXIT_CODE,
+    usage,
+    servedModel,
+    stdout: "",
+    stderr: appendDiagnostic(result.stderr, envelopeBoundLine(agent)),
+  };
 }

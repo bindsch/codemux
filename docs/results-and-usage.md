@@ -179,6 +179,16 @@ past the bound drops `events` and truncates the reply with the same note, while 
 plain `--result-json` run past the bound fails with exit 125, drops the reply, and
 names the byte bound on stderr. A plain run whose first stdout line is a one-line JSON object carrying a string `type` is read as the stream-json wire (the wire's forward-compatible events are typed), so a plain JSON answer of that shape fails as a broken wire instead of passing through; an untyped JSON value passes through as the answer. It names the error, preserves complete events before a malformed or truncated line, and reports `failure_code: null` for non-experiment runs.
 
+Every `--result-json` path also measures the envelope it would emit — every
+original field plus the codemux block, JSON-escaped, with the final newline —
+in bytes against the same 16 MiB bound, because adding the block can carry an
+envelope that fit before past it. Claude-family (Claude and Z.AI), Agy,
+OpenCode, and Codex plain runs, and the non-Codex experiment failure envelopes,
+refuse a past-bound envelope: the run fails with exit 125, stdout carries no envelope,
+stderr names the agent and the byte bound, and the usage and served model the
+path computed still report. Codex and Kimi experiment envelopes truncate
+toward the bound instead, as above.
+
 Discarded tool events do not accumulate against retained-output capacity.
 They can still exceed the individual-line limit. For example, many 1 KiB
 tool events can be discarded without filling the reply buffer, but a single
@@ -343,13 +353,20 @@ The whole ledger streams past the filters, the `--since` window, and the
 Retained memory is proportional to `-n` and to the number of distinct
 sessions, never to the ledger's length — a ring of `-n` records (at most
 100000 rows, raw lines only under `--json`), one closing record per
-session, and one session id per session with an in-window turn under
+session, and one session key per session with an in-window turn under
 `--since`.
+
+A session is keyed by its agent and session id together (review round 127):
+two agents' records never share a session however their ids collide, so a
+Claude turn and a Codex closing that carry one id are two sessions, both
+counted whole.
 
 A matching turn also selects closing summaries of that session even when
 their start timestamps precede the cutoff, whichever side of the summary
 the turn falls on — a resumed session's first closing is selected by the
-turns its resume ran after it. A session id of `""` keys nothing here
+turns its resume ran after it. The selection follows the same agent-qualified
+key, so a recent turn of one agent never selects an old closing record of
+another agent that shares its id. A session id of `""` keys nothing here
 either: it is unkeyed legacy data, so a recent turn with an empty id never
 selects an old closing record that carries one. `--sum` covers every matching
 record: for each session and field, matched turn values take precedence over

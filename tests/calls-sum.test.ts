@@ -174,6 +174,48 @@ describe("codemux calls --sum", () => {
     expect(totals).toContain("1 session summary with no session id excluded");
   });
 
+  test("--sum keys sessions by agent and session id together: a Claude turn and a Codex closing sharing one id are two sessions (round 127)", async () => {
+    // The fold paired a closing record with "its" turns by session id
+    // alone, so a Codex closing that shared a Claude turn's id read as
+    // that session's own summary: its tokens were suppressed wherever the
+    // Claude turn had reported the field, and the sum lost them. Different
+    // agents never share a session; the key says so.
+    const { stdout } = await callsWith(
+      [
+        record({ ts: iso(2 * MINUTE), kind: "session_turn", sessionId: "shared", agent: "claude", input: 10, output: 2, total: 12 }),
+        record({ ts: iso(MINUTE), kind: "session", sessionId: "shared", agent: "codex", input: 20, output: 4, total: 24, cost: 0.05 }),
+      ],
+      ["--sum"]
+    );
+    const totals = stdout.split("\n").find((line) => line.startsWith("Totals"))!;
+    expect(totals).toBeDefined();
+    // Both records count whole: the turn's 10 and the closing's 20.
+    expect(totals).toContain("Totals over 2 record(s)");
+    expect(totals).toContain("input=30");
+    expect(totals).toContain("total=36");
+    expect(totals).toContain("cost=$0.0500");
+  });
+
+  test("--sum still folds a same-agent closing against its own turns under the agent-qualified key (round 127)", async () => {
+    // The resumed-session fold is the reason the key exists: same agent,
+    // same id, one session. The closing contributes only the fields its
+    // matched turns left unreported, so its tokens fold away and its cost
+    // lands — exactly as before the key gained the agent.
+    const { stdout } = await callsWith(
+      [
+        record({ ts: iso(2 * MINUTE), kind: "session_turn", sessionId: "s1", agent: "claude", input: 10, output: 2, total: 12 }),
+        record({ ts: iso(MINUTE), kind: "session", sessionId: "s1", agent: "claude", input: 30, output: 6, total: 36, cost: 0.05 }),
+      ],
+      ["--sum"]
+    );
+    const totals = stdout.split("\n").find((line) => line.startsWith("Totals"))!;
+    expect(totals).toBeDefined();
+    expect(totals).toContain("input=10");
+    expect(totals).not.toContain("input=40");
+    expect(totals).toContain("cost=$0.0500");
+    expect(totals).toContain("1 session summary folded");
+  });
+
   test("--sum never merges sessions that recorded '': the empty id keys nothing, like null (ul6)", async () => {
     // Old ledgers wrote "" where a session had no native id, and one
     // shared "" key merged every such session into one phantom session:

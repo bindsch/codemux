@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { parseKimiStreamLine } from "../src/session/kimi-session.js";
+import { KIMI_ERROR_WITHOUT_MESSAGE, parseKimiStreamLine } from "../src/session/kimi-session.js";
 import { ID, OTHER } from "./helpers/session-kimi.js";
 
 describe("kimi session - parser tiers", () => {
@@ -111,6 +111,56 @@ describe("kimi session - parser tiers", () => {
       }).kind
     ).toBe("unknown");
     expect(parseKimiStreamLine(JSON.stringify({ type: "goal.summary" }), { knownSessionId: ID }).kind).toBe(
+      "unknown"
+    );
+  });
+
+  test("the roleless error frame maps to the error kind; every other valid shape it must not claim stays its own kind (round 127)", () => {
+    // The shapes the parser must KEEP, named before the error arm could
+    // widen onto them: the three wire roles (each carries its own kind,
+    // whatever its `type` field says) and the roleless non-error types
+    // (tier 1). The error frame itself is recognized exactly as the
+    // plain path recognizes it (kimi-fold-lines.ts): a line the role
+    // arms do not claim whose `type` is "error", carrying the pinned
+    // non-empty string `message` — the shape the plain fold synthesizes
+    // as its wire anchor (kimi-fold.ts).
+    expect(
+      parseKimiStreamLine(JSON.stringify({ type: "error", message: "provider overloaded" }), {
+        knownSessionId: ID,
+      })
+    ).toEqual({ kind: "error", message: "provider overloaded" });
+    // An unrecognized role is still the plain path's error frame: the
+    // role arms (assistant, tool, meta) do not claim it.
+    expect(
+      parseKimiStreamLine(JSON.stringify({ role: "system", type: "error", message: "boom" }), {
+        knownSessionId: ID,
+      }).kind
+    ).toBe("error");
+    // A wire role keeps its own kind even when `type` says error.
+    expect(
+      parseKimiStreamLine(
+        JSON.stringify({ role: "assistant", type: "error", content: "text" }),
+        { knownSessionId: ID }
+      ).kind
+    ).toBe("assistant");
+    expect(
+      parseKimiStreamLine(
+        JSON.stringify({ role: "meta", type: "error", message: "not the frame" }),
+        { knownSessionId: ID }
+      ).kind
+    ).toBe("unknown");
+    // An error event with no usable message is still the harness
+    // reporting a failure (the plain path fails a run on every event whose
+    // type is "error", review round 129): it maps to the error kind with a
+    // fixed reason, whether the message is missing, empty, or not a string.
+    for (const frame of [{ type: "error" }, { type: "error", message: "" }, { type: "error", message: 7 }]) {
+      expect(parseKimiStreamLine(JSON.stringify(frame), { knownSessionId: ID })).toEqual({
+        kind: "error",
+        message: KIMI_ERROR_WITHOUT_MESSAGE,
+      });
+    }
+    // A type spelled any other way is not the error event.
+    expect(parseKimiStreamLine(JSON.stringify({ type: "Error", message: "x" }), { knownSessionId: ID }).kind).toBe(
       "unknown"
     );
   });

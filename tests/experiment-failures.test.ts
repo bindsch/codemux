@@ -4,7 +4,7 @@ import * as runtime from "../src/cli-runtime.js";
 import * as callLog from "../src/call-log.js";
 import * as records from "../src/experiment-records.js";
 import { launchRunRequest } from "../src/launch.js";
-import { CapturedRunFailure } from "../src/process-runner.js";
+import { CapturedRunFailure, MAX_CAPTURE_BYTES } from "../src/process-runner.js";
 import { CodexRolloutParser } from "../src/experiment-codex-parser.js";
 import type { RunContext } from "../src/run-context.js";
 import { agyResult, claudeFamilyResult, codexResult } from "../src/result-envelope.js";
@@ -284,4 +284,107 @@ test("a processed Codex envelope survives a later experiment cleanup failure", (
     new records.ExperimentFailure(records.ExperimentFailureCode.ServerError, "server exited"));
   expect(JSON.parse(result.stdout)).toMatchObject({ result: "final message", codemux: {
     failure_code: "server_error", usage: { input_tokens: 200 } } });
+});
+
+test("an oversized non-codex failure envelope is refused at the capture bound; one at the bound still goes out (round 127)", () => {
+  // The non-codex arm of experimentFailedResult re-serializes the whole
+  // processed envelope with its block rewritten, so a reply that fit before
+  // can pass the bound after. The final serialization is measured in bytes
+  // with its newline; past the bound the envelope is dropped, and the reply
+  // text is sized from a probe so both cases are exact.
+  const request: RunRequest = { agent: "claude", prompt: "fixture", resultJson: true };
+  const failure = new records.ExperimentFailure(records.ExperimentFailureCode.ServerError, "server exited");
+  const usage = { input_tokens: 24114, output_tokens: 98, cached_input_tokens: 320,
+    total_tokens: 24532, cost_usd: 0.12735 };
+  // A processed claude envelope that already carries its codemux block: the
+  // shape a later cleanup failure reports over (the guard at the top of
+  // experimentFailedResult requires a normalized result).
+  const normalized = (text: string): RunResult => ({
+    stdout: JSON.stringify({ type: "result", subtype: "success", result: text,
+      codemux: { agent: "claude", labels: null, model: "claude-opus-5", served_model: "claude-opus-5",
+        usage, session_id: null, recording: null, failure_code: null } }),
+    stderr: "", exitCode: 0, success: true, usage, servedModel: "claude-opus-5",
+  });
+  const probe = experimentFailedResult(normalized("OK"), request, "/synthetic/recording.jsonl", failure);
+  const replyLength = MAX_CAPTURE_BYTES - Buffer.byteLength(probe.stdout) + "OK".length;
+  const oversized = "a".repeat(replyLength + 1);
+  const atBound = experimentFailedResult(normalized(oversized.slice(0, -1)), request,
+    "/synthetic/recording.jsonl", failure);
+  expect(Buffer.byteLength(atBound.stdout)).toBe(MAX_CAPTURE_BYTES);
+  // A failure result either way; at the bound the envelope goes out and the
+  // exit is the failure's own, not the refusal's.
+  expect(atBound.success).toBe(false);
+  expect(atBound.exitCode).toBe(1);
+  expect(atBound.stderr).not.toContain("capture bound");
+  const past = experimentFailedResult(normalized(oversized), request, "/synthetic/recording.jsonl", failure);
+  expect(past.stdout).toBe("");
+  expect(past.success).toBe(false);
+  expect(past.exitCode).toBe(125);
+  expect(past.stderr).toContain(
+    `claude result envelope exceeds the ${MAX_CAPTURE_BYTES}-byte capture bound once JSON-escaped; the reply is dropped`
+  );
+  expect(past.stderr).toContain("codemux: experiment failure [server_error]: server exited");
+  // The tokens were spent: the refusal keeps the usage.
+  expect(past.usage).toEqual(usage);
+});
+
+test("a raw Claude envelope refused at the bound during normalization stays refused in the failure result (round 130)", () => {
+  // The raw envelope fits the capture bound; adding the codemux block
+  // carries it past. Normalization refuses it, and the failure result must
+  // not turn that into an ordinary failure with a rebuilt small envelope.
+  const request: RunRequest = { agent: "claude", prompt: "fixture", resultJson: true };
+  const failure = new records.ExperimentFailure(records.ExperimentFailureCode.ServerError, "server exited");
+  const head = JSON.stringify({ ...JSON.parse(CLAUDE_ENVELOPE), result: "" });
+  const envelope = JSON.stringify({ ...JSON.parse(CLAUDE_ENVELOPE), result: "a".repeat(MAX_CAPTURE_BYTES - Buffer.byteLength(head)) });
+  expect(Buffer.byteLength(envelope)).toBe(MAX_CAPTURE_BYTES);
+  const result = experimentFailedResult(finished(envelope), request, "/synthetic/recording.jsonl", failure);
+  expect(result.stdout).toBe("");
+  expect(result.success).toBe(false);
+  expect(result.exitCode).toBe(125);
+  expect(result.stderr).toContain(
+    `claude result envelope exceeds the ${MAX_CAPTURE_BYTES}-byte capture bound once JSON-escaped; the reply is dropped`
+  );
+  expect(result.stderr).toContain("codemux: experiment failure [server_error]: server exited");
+  // The tokens were spent: the usage the envelope reported is kept.
+  expect(result.usage?.input_tokens).toBe(24114);
+  // The launch normalizes before cleanup: a cleanup failure then arrives
+  // with the result already refused (review round 131). It stays refused,
+  // and the bound line is not repeated.
+  const processed = claudeFamilyResult(finished(envelope), request, "claude");
+  expect(processed.stdout).toBe("");
+  expect(processed.exitCode).toBe(125);
+  const later = experimentFailedResult(processed, request, "/synthetic/recording.jsonl", failure);
+  expect(later.stdout).toBe("");
+  expect(later.exitCode).toBe(125);
+  expect(later.stderr.split("capture bound once JSON-escaped").length - 1).toBe(1);
+  expect(later.stderr).toContain("codemux: experiment failure [server_error]: server exited");
+  expect(later.usage?.input_tokens).toBe(24114);
+});
+
+test("a Codex failure envelope is bounded by truncation, never refused, whatever the recording is (round 130)", () => {
+  // A failed codex run reports a null result, so the only thing that can
+  // carry its failure envelope past the bound is oversized metadata: a
+  // reroute that names a 9 MiB model lands in both model fields.
+  const request: RunRequest = { agent: "codex", prompt: "fixture", resultJson: true };
+  const failure = new records.ExperimentFailure(records.ExperimentFailureCode.ServerError, "server exited");
+  const huge = "m".repeat(9 * 1024 * 1024);
+  const stream = [
+    { type: "thread.started", thread_id: "0192b8d4-4d4f-7c4a-9d0e-6f5a4b3c2d1e" },
+    { type: "turn.started" },
+    { type: "item.completed", item: { id: "item_0", type: "error", message: `model rerouted: gpt-5.3 -> ${huge} (Unavailable)` } },
+    { type: "item.completed", item: { id: "item_1", type: "agent_message", text: "OK" } },
+    { type: "turn.completed", usage: { input_tokens: 1000, cached_input_tokens: 600, output_tokens: 50 } },
+  ].map((line) => JSON.stringify(line)).join("\n") + "\n";
+  for (const recording of [null, "/synthetic/recording.jsonl"]) {
+    const result = experimentFailedResult(finished(stream), request, recording, failure);
+    expect(result.stdout).not.toBe("");
+    expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(MAX_CAPTURE_BYTES);
+    const parsed = JSON.parse(result.stdout) as { codemux: { failure_code: string; model: string | null; served_model: string | null } };
+    expect(parsed.codemux.failure_code).toBe("server_error");
+    expect(parsed.codemux.model).toBeNull();
+    expect(parsed.codemux.served_model).toBeNull();
+    expect(result.servedModel).toBeNull();
+    expect(result.stderr).toContain("codemux: result truncated to the 16 MiB capture limit");
+    expect(result.stderr).not.toContain("capture bound once JSON-escaped");
+  }
 });

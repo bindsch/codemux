@@ -220,6 +220,7 @@ export type KimiParse =
     }
   | { kind: "tool_result"; callId: string; output: unknown }
   | { kind: "resume_hint"; sessionId: string }
+  | { kind: "error"; message: string }
   | { kind: "unknown" }
   | {
       kind: "grammar_error";
@@ -240,13 +241,19 @@ export interface KimiParseContext {
   knownSessionId: string | null;
 }
 
+/** The reason a turn carries when the harness reported an error event
+ * that names no message. */
+export const KIMI_ERROR_WITHOUT_MESSAGE = "kimi reported an error event without a message";
+
 /**
  * Parse one `--output-format stream-json` output line under the §4.2
  * tiers. Never throws: a line that is not a JSON object is `unusable`
  * (tier 3, the driver's fatal), a line that claims a mapped shape but
  * breaks its contract — an assistant line with neither content nor tool
  * calls, a tool line with no call id, a resume hint with a malformed or
- * mismatched session id — is a `grammar_error` (tier 2), and a shape
+ * mismatched session id — is a `grammar_error` (tier 2), the roleless
+ * `{type:"error",message}` frame is `error` (the shape the plain path
+ * recognizes and fails a run on; see the default arm below), and a shape
  * codemux does not map (the retrying and version meta lines, anything
  * newer) is `unknown` (tier 1, raw preserved by the driver).
  */
@@ -272,8 +279,27 @@ export function parseKimiStreamLine(
     case "meta":
       return parseMetaLine(event, context);
     default:
-      // No role or an unrecognized one: nothing codemux maps, but the
-      // line is well-formed JSON — tier 1, raw preserved.
+      // No role or an unrecognized one. The one typed shape without a wire
+      // role codemux maps is the error event, recognized exactly as the
+      // plain path recognizes it (kimi-fold-lines.ts: a line the role arms
+      // do not claim whose `type` is "error"). The plain verdict fails a
+      // run on every such event whatever else it carries
+      // (result-envelope/kimi.ts), so the session does too: the pinned
+      // frame is `{type:"error",message}`, and its message is the
+      // `message` field read whole (its bound is the line's own capture
+      // bound). An error event with no usable message — missing, empty,
+      // or not a string — is still the harness reporting a failure and
+      // gets a fixed reason instead of passing as a harmless line (review
+      // round 129).
+      if (event["type"] === "error") {
+        const message = event["message"];
+        return {
+          kind: "error",
+          message: typeof message === "string" && message !== "" ? message : KIMI_ERROR_WITHOUT_MESSAGE,
+        };
+      }
+      // Anything else roleless: nothing codemux maps, but the line is
+      // well-formed JSON — tier 1, raw preserved.
       return { kind: "unknown" };
   }
 }

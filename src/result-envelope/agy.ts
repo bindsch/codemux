@@ -1,5 +1,11 @@
 import type { CodemuxResultBlock, ResultUsageBlock, RunRequest, RunResult } from "../types.js";
-import { appendDiagnostic, emptyUsage, reportedTokenCount, safeTokenSum } from "./common.js";
+import {
+  appendDiagnostic,
+  boundResultEnvelope,
+  emptyUsage,
+  reportedTokenCount,
+  safeTokenSum,
+} from "./common.js";
 
 export interface AgyEnvelopeInfo {
   envelope: Record<string, unknown>;
@@ -161,24 +167,34 @@ export function agyResult(result: RunResult, request: RunRequest): RunResult {
     recording: null,
     failure_code: null,
   });
+  // The envelope this path re-emits: every original field plus the codemux
+  // block, serialized once with its newline — the exact stdout a caller
+  // would hold, so the bound check on each arm below measures the bytes
+  // that are written (review round 127).
+  const serialized = `${JSON.stringify({ ...parsed.envelope, codemux: block() })}\n`;
   if (parsed.isError) {
     const reason =
       parsed.errorText !== null
         ? `status "${parsed.status}": ${parsed.errorText}`
         : `status "${parsed.status}"`;
-    return {
-      ...result,
-      stdout: `${JSON.stringify({ ...parsed.envelope, codemux: block() })}\n`,
-      stderr: appendDiagnostic(
-        result.stderr,
-        `codemux: ${agent} reported an error result (${reason}), ` +
-          `so this run fails even though the harness exited ${result.exitCode}`
-      ),
-      exitCode: result.exitCode === 0 ? 1 : result.exitCode,
-      success: false,
-      usage: parsed.usage,
-      servedModel: null,
-    };
+    return boundResultEnvelope(
+      agent,
+      {
+        ...result,
+        stdout: serialized,
+        stderr: appendDiagnostic(
+          result.stderr,
+          `codemux: ${agent} reported an error result (${reason}), ` +
+            `so this run fails even though the harness exited ${result.exitCode}`
+        ),
+        exitCode: result.exitCode === 0 ? 1 : result.exitCode,
+        success: false,
+        usage: parsed.usage,
+        servedModel: null,
+      },
+      parsed.usage,
+      null
+    );
   }
   // The parser guarantees a string response on a non-error envelope; the
   // belt check keeps the guarantee local rather than trusting the caller's
@@ -188,24 +204,34 @@ export function agyResult(result: RunResult, request: RunRequest): RunResult {
       ? parsed.envelope[AGY_ANSWER_FIELD]
       : "";
   if (response.trim() === "") {
-    return {
+    return boundResultEnvelope(
+      agent,
+      {
+        ...result,
+        stdout: serialized,
+        stderr: appendDiagnostic(
+          result.stderr,
+          `codemux: ${agent} printed an envelope with no ` +
+            "result text, so this --result-json run reports no result"
+        ),
+        exitCode: result.exitCode === 0 ? 1 : result.exitCode,
+        success: false,
+        usage: parsed.usage,
+        servedModel: null,
+      },
+      parsed.usage,
+      null
+    );
+  }
+  return boundResultEnvelope(
+    agent,
+    {
       ...result,
-      stdout: `${JSON.stringify({ ...parsed.envelope, codemux: block() })}\n`,
-      stderr: appendDiagnostic(
-        result.stderr,
-        `codemux: ${agent} printed an envelope with no ` +
-          "result text, so this --result-json run reports no result"
-      ),
-      exitCode: result.exitCode === 0 ? 1 : result.exitCode,
-      success: false,
+      stdout: serialized,
       usage: parsed.usage,
       servedModel: null,
-    };
-  }
-  return {
-    ...result,
-    stdout: `${JSON.stringify({ ...parsed.envelope, codemux: block() })}\n`,
-    usage: parsed.usage,
-    servedModel: null,
-  };
+    },
+    parsed.usage,
+    null
+  );
 }

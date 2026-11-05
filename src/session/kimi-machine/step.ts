@@ -133,6 +133,7 @@ export function step(
             pendingToolCalls: new Map(),
             seenToolCallIds: new Set(),
             sawFinalAssistantText: false,
+            errorMessage: null,
             sawHint: false,
           };
           state.phase = "spawning";
@@ -301,17 +302,21 @@ export function step(
       const effects: KimiEffect[] = [];
       if (state.turn !== null) {
         // The turn_started the caller saw must be answered (the
-        // synthesized completion): failed when any fatal owns the story,
-        // interrupted otherwise. An open turn cut by the end never
-        // closed, so its closing hint never came — the same
-        // unconfirmed-turn evidence a completed turn records, whatever
-        // the synthesized verdict reads.
+        // synthesized completion): failed when any fatal owns the story
+        // or the turn's own stream carried an error frame (the childExit
+        // rule, review round 123), interrupted otherwise. An open turn
+        // cut by the end never closed, so its closing hint never came —
+        // the same unconfirmed-turn evidence a completed turn records,
+        // whatever the synthesized verdict reads.
         if (!state.confirmed) state.sawUnconfirmedTurnFailure = true;
-        const finish: "failed" | "interrupted" = state.fatalClosed ? "failed" : "interrupted";
+        const finish: "failed" | "interrupted" =
+          state.fatalClosed || state.turn.errorMessage !== null ? "failed" : "interrupted";
         const reason =
-          state.fatalMessage !== null
-            ? crashSynthesisReason(state.fatalMessage)
-            : `the session ended (${cause.reason}) before the turn completed`;
+          state.turn.errorMessage !== null
+            ? state.turn.errorMessage
+            : state.fatalMessage !== null
+              ? crashSynthesisReason(state.fatalMessage)
+              : `the session ended (${cause.reason}) before the turn completed`;
         effects.push(
           {
             kind: "emit",

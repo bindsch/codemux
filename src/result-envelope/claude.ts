@@ -1,5 +1,5 @@
 import type { AgentId, CodemuxResultBlock, ResultUsageBlock, RunRequest, RunResult } from "../types.js";
-import { appendDiagnostic, normalizeClaudeUsage } from "./common.js";
+import { appendDiagnostic, boundResultEnvelope, normalizeClaudeUsage } from "./common.js";
 
 export interface ClaudeEnvelopeInfo {
   envelope: Record<string, unknown>;
@@ -167,6 +167,15 @@ export function claudeFamilyResult(
     recording,
     failure_code: null,
   });
+  // The served model this path reports on every arm below; the bound check
+  // re-reports it on its refusal arm.
+  const servedModel = parsed.multipleModels ? null : parsed.servedModel;
+  // The envelope this path re-emits: every original field plus the codemux
+  // block, serialized once with its newline — the exact stdout a caller
+  // would hold, so the bound below measures the bytes that are written
+  // (review round 127: adding the block could carry a fitting envelope
+  // past the capture bound).
+  const serialized = `${JSON.stringify({ ...parsed.envelope, codemux: block() })}\n`;
   if (parsed.isError) {
     // The subtype is the specific reason when the envelope names one; the
     // bare flag is the whole reason when it does not.
@@ -174,44 +183,59 @@ export function claudeFamilyResult(
       parsed.errorSubtype !== null
         ? `subtype "${parsed.errorSubtype}"`
         : "is_error: true";
-    return {
-      ...result,
-      stdout: `${JSON.stringify({ ...parsed.envelope, codemux: block() })}\n`,
-      stderr: appendDiagnostic(
-        result.stderr,
-        `codemux: ${agent} reported an error result ` +
-          `(${reason}), so this run fails even though the harness exited ` +
-          `${result.exitCode}`
-      ),
-      exitCode: result.exitCode === 0 ? 1 : result.exitCode,
-      success: false,
-      // The envelope's numbers are still the harness's own record: the
-      // ledger writes what was reported, even on a failed run.
-      usage: parsed.usage,
-      servedModel: parsed.multipleModels ? null : parsed.servedModel,
-    };
+    return boundResultEnvelope(
+      agent,
+      {
+        ...result,
+        stdout: serialized,
+        stderr: appendDiagnostic(
+          result.stderr,
+          `codemux: ${agent} reported an error result ` +
+            `(${reason}), so this run fails even though the harness exited ` +
+            `${result.exitCode}`
+        ),
+        exitCode: result.exitCode === 0 ? 1 : result.exitCode,
+        success: false,
+        // The envelope's numbers are still the harness's own record: the
+        // ledger writes what was reported, even on a failed run.
+        usage: parsed.usage,
+        servedModel,
+      },
+      parsed.usage,
+      servedModel
+    );
   }
   if (replyAbsent) {
     // Fail closed: the envelope still goes out with the block attached (its
     // fields are the harness's own record), but the run reports no result.
-    return {
-      ...result,
-      stdout: `${JSON.stringify({ ...parsed.envelope, codemux: block() })}\n`,
-      stderr: appendDiagnostic(
-        result.stderr,
-        `codemux: ${agent} printed an envelope with no ` +
-          "result text, so this --result-json run reports no result"
-      ),
-      exitCode: result.exitCode === 0 ? 1 : result.exitCode,
-      success: false,
-      usage: parsed.usage,
-      servedModel: parsed.multipleModels ? null : parsed.servedModel,
-    };
+    return boundResultEnvelope(
+      agent,
+      {
+        ...result,
+        stdout: serialized,
+        stderr: appendDiagnostic(
+          result.stderr,
+          `codemux: ${agent} printed an envelope with no ` +
+            "result text, so this --result-json run reports no result"
+        ),
+        exitCode: result.exitCode === 0 ? 1 : result.exitCode,
+        success: false,
+        usage: parsed.usage,
+        servedModel,
+      },
+      parsed.usage,
+      servedModel
+    );
   }
-  return {
-    ...result,
-    stdout: `${JSON.stringify({ ...parsed.envelope, codemux: block() })}\n`,
-    usage: parsed.usage,
-    servedModel: parsed.multipleModels ? null : parsed.servedModel,
-  };
+  return boundResultEnvelope(
+    agent,
+    {
+      ...result,
+      stdout: serialized,
+      usage: parsed.usage,
+      servedModel,
+    },
+    parsed.usage,
+    servedModel
+  );
 }

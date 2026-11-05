@@ -70,6 +70,13 @@ export interface KimiTurnSlot {
    * while the loop is open, so a stream ending mid-loop ends without
    * it. */
   sawFinalAssistantText: boolean;
+  /** The first roleless error frame this turn's stream carried, when one
+   * did: the harness's own statement that the turn failed, which the
+   * turn's verdict reads whatever the exit code, the reply, or the
+   * resume hint say (the opencode driver's rule since review round 123:
+   * the error fails the turn, the session continues, and the first
+   * error message is the reason). */
+  errorMessage: string | null;
   sawHint: boolean;
 }
 

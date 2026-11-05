@@ -1,5 +1,6 @@
 import type { CodemuxResultBlock, RunRequest, RunResult } from "../types.js";
-import { appendDiagnostic, emptyUsage } from "./common.js";
+import { appendDiagnostic, boundResultEnvelope, emptyUsage } from "./common.js";
+import { CODEX_TRUNCATED_LINE, boundedCodexEnvelope } from "./codex-bound.js";
 import { parseCodexEventStream, type CodexEventStream } from "./codex-stream.js";
 
 /**
@@ -155,7 +156,13 @@ export function codexResult(
   result: RunResult,
   request: RunRequest,
   finalMessageFallback: CodexFinalMessageFallback = null,
-  recording: string | null = null
+  recording: string | null = null,
+  /** What a final envelope past the capture bound becomes: a plain run
+   * refuses it, an experiment run (it names a recording) truncates it.
+   * The experiment failure path asks to leave it alone: it rebuilds the
+   * envelope with the failure code and bounds that one itself, with the
+   * truncation note. */
+  pastBound: "refuse" | "truncate" | "leave" = recording === null ? "refuse" : "truncate"
 ): RunResult {
   const stream = parseCodexEventStream(result.stdout);
   if (stream === null) {
@@ -249,9 +256,10 @@ export function codexResult(
           : "")
     );
   }
-  return {
+  const envelope = { [CODEX_ANSWER_FIELD]: verdict.failed ? null : stream.finalMessage, codemux: block };
+  const settled: RunResult = {
     ...result,
-    stdout: `${JSON.stringify({ [CODEX_ANSWER_FIELD]: verdict.failed ? null : stream.finalMessage, codemux: block })}\n`,
+    stdout: `${JSON.stringify(envelope)}\n`,
     stderr:
       notes.length > 0
         ? appendDiagnostic(result.stderr, notes.join("\n"))
@@ -260,5 +268,24 @@ export function codexResult(
     success: !verdict.failed,
     usage: block.usage,
     servedModel: stream.servedModel,
+  };
+  // The final serialization is bounded like every other envelope's
+  // (review round 127): the reply fit the capture bound, but JSON escaping
+  // and the codemux block can carry the envelope past it. A plain run
+  // refuses, as the Claude-family, agy, and opencode paths do. An
+  // experiment run truncates toward the bound instead, the rule its
+  // failure envelopes already follow, so the recorded run keeps a reply.
+  if (pastBound === "leave") return settled;
+  if (pastBound === "refuse") return boundResultEnvelope("codex", settled, block.usage, stream.servedModel);
+  const bounded = boundedCodexEnvelope(envelope);
+  if (!bounded.truncated) return settled;
+  // The truncation can drop an oversized reroute name from the block; the
+  // returned served model follows the block, so the ledger never records
+  // a model the envelope no longer names (review round 128).
+  return {
+    ...settled,
+    stdout: bounded.stdout,
+    servedModel: block.served_model,
+    stderr: appendDiagnostic(settled.stderr, CODEX_TRUNCATED_LINE),
   };
 }

@@ -27,22 +27,34 @@ const nextCostSum = (current: number | null, value: number): number | null => {
   return Number.isFinite(next) ? next : null;
 };
 
-/** A record's session key: null when the record keys nothing. A session
- * id of null — or "", which older ledgers wrote where a session had no
- * native id — matches no session and is never merged under one shared
- * key (review ul6); the writers key by a codemux-owned id every session
- * has. The `--since` window keys by the same rule (review round 80): an
- * empty id is unkeyed legacy data, never a session identity, so a
- * recent empty-id turn cannot admit an old empty-id closing record. */
+/** A record's session key: null when the record keys nothing. The key is
+ * the agent and the session id together, spelled as the JSON array of the
+ * two (`JSON.stringify([agent, session_id])`): the array form cannot
+ * collide, because JSON escaping keeps any quote, backslash, or bracket
+ * inside either string from ending it early, so two records key the same
+ * session only when both parts are equal — a Claude turn and a Codex
+ * closing that share one session id are two sessions, not one (review
+ * round 127; the id alone folded them, and the `--since` window admitted
+ * another agent's old closing through a shared id). A session id of null
+ * — or "", which older ledgers wrote where a session had no native id —
+ * matches no session and is never merged under one shared key (review
+ * ul6); the writers key by a codemux-owned id every session has. The
+ * `--since` window keys by the same rule (review round 80): an empty id
+ * is unkeyed legacy data, never a session identity, so a recent
+ * empty-id turn cannot admit an old empty-id closing record. Every
+ * consumer treats the key as opaque (a Map or Set entry, never parsed
+ * back). */
 export const sessionKey = (record: CallRecord): string | null =>
-  record.session_id === null || record.session_id === "" ? null : record.session_id;
+  record.session_id === null || record.session_id === ""
+    ? null
+    : JSON.stringify([record.agent, record.session_id]);
 
 /**
  * Running totals for one group — the whole ledger, or one `--by` label
  * value — built one record at a time so a streaming pass never holds the
  * matching history. Retained memory is proportional to the number of
  * distinct sessions, never to the ledger's length: the usage fields each
- * session's turns reported (a set of field names keyed by session id)
+ * session's turns reported (a set of field names keyed by session key)
  * and one closing record per session, the newest. A null sum is the
  * honest "unknown", never a zero, and `unknown` counts the records that
  * did not report the field, so a partial picture says which part is

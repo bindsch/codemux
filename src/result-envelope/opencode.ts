@@ -1,6 +1,5 @@
-import { MAX_CAPTURE_BYTES } from "../process-runner.js";
 import type { CodemuxResultBlock, RunRequest, RunResult } from "../types.js";
-import { appendDiagnostic, emptyUsage } from "./common.js";
+import { appendDiagnostic, boundResultEnvelope, emptyUsage } from "./common.js";
 import { opencodeVerdict, type OpenCodeResultData } from "../plain-unwrap.js";
 
 /**
@@ -78,18 +77,13 @@ export function opencodeResult(
   // The fold bounds the reply's raw bytes; the JSON escaping of many
   // quotes or newlines can still carry the envelope past the capture
   // bound, and a caller must never read a success it cannot hold
-  // (review round 47).
-  if (Buffer.byteLength(envelope) > MAX_CAPTURE_BYTES) {
-    const separator = verdict.stderr === "" || verdict.stderr.endsWith("\n") ? "" : "\n";
-    return {
-      ...verdict,
-      success: false,
-      exitCode: 125,
-      usage,
-      servedModel: null,
-      stdout: "",
-      stderr: `${verdict.stderr}${separator}opencode result envelope exceeds the ${MAX_CAPTURE_BYTES}-byte capture bound once JSON-escaped; the reply is dropped\n`,
-    };
-  }
-  return { ...verdict, usage, servedModel: null, stdout: envelope };
+  // (review round 47). The check is the shared bound helper every
+  // --result-json path enforces since review round 127; this path's own
+  // wording and exit code are the ones the helper spells.
+  return boundResultEnvelope(
+    "opencode",
+    { ...verdict, usage, servedModel: null, stdout: envelope },
+    usage,
+    null
+  );
 }
