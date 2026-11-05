@@ -247,7 +247,11 @@ For the strict JSON transports (Claude/ZAI, Codex, Agy, OpenCode, Kimi):
    mirrored as `unknown`, then a fatal harness `error` ends the session.
 3. Invalid JSON or UTF-8 is fatal. Diagnostics include an excerpt bounded
    to the first 4 KiB of offending bytes. Empty harness lines are skipped;
-   whitespace-only strict-JSON lines are invalid.
+   whitespace-only strict-JSON lines are invalid. An oversized harness
+   line is fatal the moment an unterminated run passes the line bound —
+   the session must not wait for a newline that may never arrive — and
+   its reported byte count is the bytes seen at that crossing; the rest
+   of the run is discarded through the newline without being counted.
 
 Aider is different: its stdout is a human transcript, and every nonempty
 line, including non-JSON, is forwarded as `unknown`. UTF-8 and size bounds

@@ -81,6 +81,35 @@ describe("session process runner", () => {
   }, 30_000);
 
   test(
+    "a paced oversized line reports the bytes seen at the crossing, the figure docs/session-protocol.md documents (review round 87)",
+    async () => {
+      // The writer stops right past the cap, then appends more of the same
+      // line before its newline: only MAX+1 bytes exist when the reader
+      // first crosses the cap, so cumulative length at the crossing is
+      // exactly that, whatever chunk boundaries the pipe chose. The bytes
+      // that land during resynchronization are discarded uncounted — the
+      // documented figure, not the full discarded run, because the fatal
+      // fires at the crossing so the session ends without waiting for a
+      // newline that may never arrive.
+      const { proc, lines, fatals, done } = harness(
+        `head -c $(( ${MAX_HARNESS_LINE_BYTES} + 1 )) /dev/zero | tr '\\0' 'a'; sleep 1; ` +
+          "head -c 4096 /dev/zero | tr '\\0' 'a'; printf '\\nafter-resync\\n'; sleep 30"
+      );
+      await waitUntil(() => fatals.length === 1, 20_000);
+      const fatal = fatals[0];
+      expect(fatal?.kind).toBe("line-overflow");
+      if (fatal?.kind === "line-overflow" || fatal?.kind === "invalid-utf8") {
+        expect(fatal.bytes).toBe(MAX_HARNESS_LINE_BYTES + 1);
+      }
+      // Nothing is delivered after a fatal, not even the post-resync line.
+      expect(lines).toEqual([]);
+      proc.requestStop();
+      await done;
+    },
+    30_000
+  );
+
+  test(
     "framing a large line in pipe-sized chunks stays linear, not quadratic",
     async () => {
       // Review live15: the framer restarted its newline scan from byte 0

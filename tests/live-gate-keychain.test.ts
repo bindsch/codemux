@@ -10,7 +10,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { keychainDrift, keychainSnapshot } from "../scripts/live-gate/keychain.js";
+import { keychainBaselineRefusal, keychainCheckApplies, keychainDrift, keychainSnapshot } from "../scripts/live-gate/keychain.js";
 import { verifyPrintedSandbox } from "../scripts/live-gate/print-probe.js";
 
 const scratch: string[] = [];
@@ -52,14 +52,42 @@ describe("keychain snapshots", () => {
     expect(keychainDrift(await keychainSnapshot({ PATH: stable }), snapshot)).toContain("could not be observed after the probe");
   });
 
-  test("no security on PATH, or another platform, yields no snapshot and never a drift", async () => {
+  test("no security on PATH, or another platform, yields no snapshot; both missing is not a drift", async () => {
     const empty = mkdtempSync(join(tmpdir(), "codemux-gate-empty-"));
     scratch.push(empty);
     expect(await keychainSnapshot({ PATH: empty })).toBeNull();
-    expect(keychainDrift(null, { ok: true, text: "anything" })).toBeNull();
-    expect(keychainDrift({ ok: true, text: "a" }, null)).toBeNull();
+    // The one shape that says the check does not apply rather than went
+    // missing: both observations absent on the same machine.
+    expect(keychainDrift(null, null)).toBeNull();
     expect(keychainDrift({ ok: true, text: "a" }, { ok: true, text: "a" })).toBeNull();
     expect(keychainDrift({ ok: true, text: "a" }, { ok: true, text: "b" })).toContain("before:\na\nafter:\nb");
+  });
+
+  test("a snapshot that goes missing between the two observations is a failure naming its side (review round 87)", () => {
+    // A pre-probe snapshot that succeeded and no after snapshot: the gate
+    // must not certify a pool it could not observe — the security tool
+    // vanishing from PATH between the two calls is the live shape.
+    expect(keychainDrift({ ok: true, text: "a" }, null)).toContain("the snapshot after the pool is missing");
+    expect(keychainDrift(null, { ok: true, text: "anything" })).toContain("the snapshot before the pool is missing");
+    // A failed observation does not hide a missing one.
+    expect(keychainDrift({ ok: false, reason: "x" }, null)).toContain("the snapshot after the pool is missing");
+    // The platform rule the caller stops on: macOS carries the check,
+    // everything else does not.
+    expect(keychainCheckApplies("darwin")).toBe(true);
+    expect(keychainCheckApplies("linux")).toBe(false);
+    expect(keychainCheckApplies("win32")).toBe(false);
+  });
+
+  test("a missing or failed baseline stops the gate before the pool (review round 88)", () => {
+    // A usable baseline lets the pool run.
+    expect(keychainBaselineRefusal({ ok: true, text: "a" }, true)).toBeNull();
+    // No security tool: a refusal where the check applies, nothing where it does not.
+    expect(keychainBaselineRefusal(null, true)).toContain("could not be taken");
+    expect(keychainBaselineRefusal(null, false)).toBeNull();
+    // The tool is present but timed out, exited nonzero, or is untrusted:
+    // the pool must not run on a baseline that was attempted and failed.
+    expect(keychainBaselineRefusal({ ok: false, reason: "security list-keychains exited 1" }, true))
+      .toBe("the snapshot before the pool failed (security list-keychains exited 1)");
   });
 });
 

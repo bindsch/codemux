@@ -20,6 +20,7 @@ import {
 import {
   assertAbsoluteClaudeConfigDir,
   assertExperimentConfigRootSingleLine,
+  canonicalInstructionDir,
   claudeChildProject,
   claudeGatewayEnv,
   claudeGatewayOmissions,
@@ -288,9 +289,13 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
     // proven closed.
     // The project source is enabled only when the working directory is one
     // of the named instruction directories, so a repository's own settings
-    // file can never ride in on an unrelated instruction directory.
+    // file can never ride in on an unrelated instruction directory. Both
+    // sides compare in the same canonical form (canonicalInstructionDir,
+    // review round 87): raw strings let equivalent spellings of one
+    // directory silently disable the project source.
     const instructionDirs = request.instructionDirs ?? [];
-    const cwdIsInstructionDir = instructionDirs.includes(request.cwd ?? process.cwd());
+    const cwd = canonicalInstructionDir(request.cwd ?? process.cwd());
+    const cwdIsInstructionDir = instructionDirs.some((dir) => canonicalInstructionDir(dir) === cwd);
     cmd.push(
       "--setting-sources",
       request.experimentProjectSettings ? PROJECT_SETTING_SOURCES : cwdIsInstructionDir ? "user,project" : "user",

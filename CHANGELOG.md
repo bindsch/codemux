@@ -125,6 +125,15 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 87, whole tree: a session history delta that is not valid UTF-8 ends the session as
+  unreliable state instead of passing as a reply with its byte offset committed, an incomplete
+  trailing character included (the history is read after the turn's process tree settled); equivalent spellings of the working
+  directory (`/tmp/repo` and `/tmp/repo/.`) no longer silently disable project instructions on claude
+  and zai runs; the live gate fails when a Keychain snapshot goes missing around the probe pool
+  instead of certifying the pool unobserved, and stops before the probes when the baseline is missing
+  or its snapshot failed; an oversized harness line reports the bytes seen at the crossing, matching the
+  documented figure (docs/session-protocol.md); and an opencode run whose hermetic home cannot be
+  removed still removes its provider configuration, combining cleanup failures into one error.
 - Review round 80, whole tree: `calls --since` no longer treats an empty session id as a session key, so a recent
   empty-id turn cannot pull old empty-id closing records past the cutoff; session usage (codex, opencode, and the
   cumulative fold) applies the envelope's safe-integer rule, so a count past the safe range or a sum that would

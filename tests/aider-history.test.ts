@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -327,6 +328,47 @@ describe("aider chat history file", () => {
     // session's own state truncated) both answer null, fail-closed.
     expect(readAiderHistoryDelta(path, 0)).toBeNull();
     expect(readAiderHistoryDelta(path, MAX_HISTORY_BYTES + 2)).toBeNull();
+  });
+
+  test("a malformed delta, an incomplete trailing character included, is refused without committing the offset (review rounds 87, 88)", () => {
+    // Buffer.toString("utf8") replaced malformed bytes with U+FFFD, so a
+    // corrupted delta passed as a reply and its byte offset was committed.
+    // The decode is fatal-strict now: the read answers null, the driver
+    // ends the turn as unreliable state, and the offset stays where it was.
+    const dir = mkdtempSync(join(tmpdir(), "codemux-aider-delta-"));
+    scratch.push(dir);
+    const path = join(dir, "history.md");
+    writeFileSync(path, Buffer.from([0x41, 0xff, 0x42]));
+    expect(readAiderHistoryDelta(path, 0)).toBeNull();
+    // The offset was not consumed by the refused read: the same offset is
+    // what the repaired delta is read from.
+    writeFileSync(path, Buffer.concat([Buffer.from("#### q\n\n"), Buffer.from([0x41, 0xff, 0x42])]));
+    expect(readAiderHistoryDelta(path, 8)).toBeNull();
+    rmSync(path);
+    writeFileSync(path, "#### q\n\nOK\n");
+    expect(readAiderHistoryDelta(path, 8)?.text).toBe("OK\n");
+
+    // A delta that ends inside a multibyte character is malformed as
+    // well: the history is read after the turn's process tree settled, so
+    // no writer remains to complete it. Accepting the complete prefix let
+    // the turn succeed over corrupted state and poisoned the next turn.
+    writeFileSync(path, "r");
+    appendFileSync(path, Buffer.from([0xc3]));
+    expect(readAiderHistoryDelta(path, 0)).toBeNull();
+    appendFileSync(path, Buffer.from([0xa9, 0x21]));
+    const whole = readAiderHistoryDelta(path, 0);
+    expect(whole!.text).toBe("ré!");
+    expect(whole!.sizeBytes).toBe(4);
+
+    // A leading byte order mark is kept and counted: a decoder that
+    // stripped it would consume three bytes it did not count, and the next
+    // read would start three bytes early and repeat the tail.
+    writeFileSync(path, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("abc")]));
+    const marked = readAiderHistoryDelta(path, 0);
+    expect(marked!.sizeBytes).toBe(6);
+    expect(marked!.text).toBe("\ufeffabc");
+    appendFileSync(path, "d");
+    expect(readAiderHistoryDelta(path, marked!.sizeBytes)!.text).toBe("d");
   });
 
   test("a FIFO replacing the history file fails closed instead of hanging", () => {

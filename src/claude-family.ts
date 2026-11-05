@@ -1,4 +1,5 @@
-import { isAbsolute, join } from "node:path";
+import { realpathSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
 import { UsageRefusalError } from "./validation.js";
 
 /**
@@ -194,6 +195,27 @@ export function claudeChildProject(environment: NodeJS.ProcessEnv, passthroughEn
   const tokenLimit = limit !== undefined && limit > 0 ? limit : undefined;
   const truncationPrompt = passed("MCP_TRUNCATION_PROMPT_OVERRIDE")?.trim() || undefined;
   return { configDir, projectDirName, tokenLimit, truncationPrompt };
+}
+
+/**
+ * The canonical form instruction directories are compared in (claude and
+ * zai, the two `--setting-sources` adapters): resolve, then realpath
+ * where the path exists — the same canonicalization validateWorkingDirectory
+ * applies to the working directories these are compared against (review
+ * round 87). Raw strings made equivalent spellings of one directory
+ * (`/tmp/repo` and `/tmp/repo/.`, a symlinked temp root) compare unequal,
+ * silently disabling the project setting source for a run whose working
+ * directory IS an instruction directory. A path that does not exist keeps
+ * its resolved form: buildRunCommand also serves previews that never ran
+ * the validator, and both sides of the comparison fail the same way there.
+ */
+export function canonicalInstructionDir(dir: string): string {
+  const absolute = resolve(dir);
+  try {
+    return realpathSync(absolute);
+  } catch {
+    return absolute;
+  }
 }
 
 /** Claude Code's oversize-result messages end the spill path at a line break,

@@ -48,7 +48,7 @@ export type SessionFatal =
       kind: "line-overflow" | "invalid-utf8";
       /** First 4 KiB of the offending bytes, lossily decoded for the report. */
       excerpt: string;
-      /** Length of the discarded run in bytes. */
+      /** Bytes of the discarded run observed when the fatal fired; an unterminated run is reported at the crossing (docs/session-protocol.md). */
       bytes: number;
     }
   | {
@@ -378,9 +378,9 @@ export class SessionProcess {
         // quadratic scan (review live15).
         searchFrom = length;
         // No newline in what is buffered: an unterminated run past the cap
-        // is already an overflow — waiting for its newline would mean
-        // buffering without bound. Discard (bounded memory) whether or not
-        // a fatal was already reported; report only the first.
+        // is already an overflow — waiting for its newline would buffer
+        // without bound. Discard (bounded memory) reporting only the first,
+        // with the bytes seen at this crossing; the resynced tail is uncounted.
         if (length > MAX_HARNESS_LINE_BYTES) {
           if (!resyncing) {
             this.reportFatal({

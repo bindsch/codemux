@@ -5,7 +5,10 @@
  * behind is what produces the macOS prompt "a keychain cannot be found to
  * store antigravity" the next time any process stores a credential. The gate
  * snapshots both before and after every probe and fails the probe on any
- * difference. Not macOS, or no `security` on PATH: no snapshot, no check.
+ * difference. Not macOS, or no `security` on PATH: no snapshot, no check —
+ * and on macOS a snapshot that goes missing between the two observations is
+ * itself a failure (review round 87): a pool that ran unobserved is never
+ * certified clean.
  */
 
 import { resolveTrustedExecutable } from "../../src/executable-security.js";
@@ -49,11 +52,45 @@ export const keychainSnapshot = async (
   return { ok: true, text: parts.join("\n") };
 };
 
+/** Whether this is a platform the Keychain hygiene check covers: macOS.
+ * Elsewhere the check cannot apply and never fails the gate (the
+ * non-macOS behavior stays as it was). */
+export const keychainCheckApplies = (platform: NodeJS.Platform = process.platform): boolean =>
+  platform === "darwin";
+
+/** Why the gate must stop before its probe pool, or null when the
+ * baseline is usable: the snapshot before the pool is missing on a
+ * platform the check covers, or it was attempted and failed (the
+ * security tool timed out, exited nonzero, or is untrusted). A pool
+ * whose starting state was never observed is not run at all (review
+ * rounds 87 and 88). */
+export function keychainBaselineRefusal(
+  before: KeychainSnapshot | null,
+  applies: boolean = keychainCheckApplies()
+): string | null {
+  if (before === null) {
+    return applies ? "the snapshot before the pool could not be taken (no security tool on PATH)" : null;
+  }
+  return before.ok ? null : `the snapshot before the pool failed (${before.reason})`;
+}
+
 /** The probe failure when the snapshots differ or either could not be
- * taken; null when both were observed and match, or when there is nothing
- * to observe on this machine. */
+ * taken; null when both were observed and match, or when there was
+ * nothing to observe on this machine — both snapshots missing, the one
+ * shape that says the check does not apply rather than went missing.
+ * One snapshot present and the other missing means the state during the
+ * pool is unknown, and the drift is reported naming the missing side
+ * (review round 87): that is a failure, never a pass. */
 export const keychainDrift = (before: KeychainSnapshot | null, after: KeychainSnapshot | null): string | null => {
-  if (before === null || after === null) return null;
+  if (before === null && after === null) return null;
+  if (before === null) {
+    return "the Keychain drift is unknown: the snapshot before the pool is missing, " +
+      "so the state the probes started from was never observed";
+  }
+  if (after === null) {
+    return "the Keychain drift is unknown: the snapshot after the pool is missing, " +
+      "so whether the probes restored the Keychain state was never verified";
+  }
   if (!before.ok) return `the Keychain state could not be observed before the probe: ${before.reason}`;
   if (!after.ok) return `the Keychain state could not be observed after the probe: ${after.reason}`;
   if (before.text === after.text) return null;

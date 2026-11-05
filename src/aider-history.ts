@@ -233,6 +233,25 @@ export interface AiderHistoryDelta {
 }
 
 /**
+ * Decodes a history delta fatal-strict, the way the session process
+ * layer decodes harness lines. Malformed bytes answer null, so the
+ * caller treats the history as unreliable and never commits the offset
+ * a corrupted delta asked for (review round 87; `Buffer.toString`
+ * replaced the bad bytes with U+FFFD and let them pass as a reply). A
+ * delta that ends inside a multibyte character is malformed too: the
+ * history is read after the turn's process tree has settled, so no
+ * writer remains to complete the character (review round 88).
+ */
+function decodeHistoryDelta(buffer: Buffer): string | null {
+  try {
+    // ignoreBOM keeps a leading U+FEFF in the text instead of dropping it.
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Reads the SESSION history's bytes past `offsetBytes` under the shared
  * trust rules (openTrustedHistory). A session's history accumulates
  * every exchange and can outgrow MAX_HISTORY_BYTES many times over, so
@@ -243,7 +262,9 @@ export interface AiderHistoryDelta {
  * The bound moves to the read itself: a file that shrank below the
  * offset (the session's own state truncated), or a delta larger than
  * one run's whole history (a single exchange cannot legitimately be
- * one), answers null and the caller fails closed.
+ * one), answers null and the caller fails closed. So does a delta that
+ * is not valid UTF-8, an incomplete trailing character included
+ * (decodeHistoryDelta): the byte offset is not committed.
  */
 export function readAiderHistoryDelta(
   path: string,
@@ -263,9 +284,11 @@ export function readAiderHistoryDelta(
       if (got <= 0) return null; // the file shrank under the read
       read += got;
     }
+    const text = decodeHistoryDelta(buffer.subarray(0, read));
+    if (text === null) return null;
     // The last byte actually read, so bytes that landed between the
     // fstat and the read are the NEXT turn's delta, never skipped.
-    return { text: buffer.toString("utf8"), sizeBytes: offsetBytes + read };
+    return { text, sizeBytes: offsetBytes + read };
   } catch {
     return null;
   } finally {

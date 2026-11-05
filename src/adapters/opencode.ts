@@ -355,9 +355,21 @@ export class OpencodeAdapter extends BaseAdapter {
   override cleanupRunSync(context?: RunContext): void {
     // The launcher calls this exactly once per context it created, after a
     // finished run and after a rejected one alike; each artifact dies with
-    // its own launch only.
-    context?.opencodeHermeticHome?.finalize();
-    context?.opencodeProviderConfig?.finalize();
+    // its own launch only. Both finalizers run even when the first throws
+    // (review round 87): a hermetic home that cannot be removed must not
+    // strand the provider config too. One failure rethrows as itself;
+    // several combine into one AggregateError naming each (kimi's
+    // cleanupHome follows the same rule).
+    const failures: unknown[] = [];
+    for (const artifact of [context?.opencodeHermeticHome, context?.opencodeProviderConfig]) {
+      if (artifact === undefined) continue;
+      try { artifact.finalize(); } catch (error) { failures.push(error); }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      const messages = failures.map((f) => f instanceof Error ? f.message : String(f));
+      throw new AggregateError(failures, `codemux: opencode cleanup failed ${failures.length} times: ${messages.join("; ")}`);
+    }
   }
 
   override getRunEnv(

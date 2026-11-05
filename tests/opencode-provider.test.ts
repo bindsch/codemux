@@ -269,6 +269,52 @@ describe("opencode provider override", () => {
     expect(statSync(second).isFile()).toBe(true);
   });
 
+  test("a throwing hermetic-home finalizer still removes the provider config (review round 87)", () => {
+    // Two sequential finalizers meant a hermetic home that could not be
+    // removed also stranded the run's provider configuration until process
+    // exit. Both finalizers run now; the failure is reported, and two
+    // failures combine into one AggregateError naming each.
+    const adapter = adapterOf(ZAI);
+    const request: RunRequest = { agent: "opencode", prompt: "p", hermetic: true };
+    const context = prepare(adapter, request);
+    const configPath = context.opencodeProviderConfig!.path;
+    expect(statSync(configPath).isFile()).toBe(true);
+    const realHome = context.opencodeHermeticHome!;
+    const realConfig = context.opencodeProviderConfig!;
+    context.opencodeHermeticHome = {
+      home: realHome.home,
+      finalize: () => { throw new Error("hermetic home removal failed"); },
+    };
+    let reported: unknown;
+    try {
+      adapter.cleanupRunSync(context);
+    } catch (error) {
+      reported = error;
+    }
+    expect(reported).toBeInstanceOf(Error);
+    expect((reported as Error).message).toBe("hermetic home removal failed");
+    expect(() => statSync(configPath)).toThrow();
+    // Both failing: one combined error, each failure named.
+    context.opencodeProviderConfig = {
+      path: "already-removed",
+      finalize: () => { throw new Error("provider config removal failed"); },
+    };
+    let combined: unknown;
+    try {
+      adapter.cleanupRunSync(context);
+    } catch (error) {
+      combined = error;
+    }
+    expect(combined).toBeInstanceOf(AggregateError);
+    expect((combined as AggregateError).message).toBe(
+      "codemux: opencode cleanup failed 2 times: hermetic home removal failed; provider config removal failed"
+    );
+    // Restore the real artifacts (both idempotent) so afterEach cleans up
+    // without hitting the throwing stubs.
+    context.opencodeHermeticHome = realHome;
+    context.opencodeProviderConfig = realConfig;
+  });
+
   test("old configs of dead codemux processes are swept", () => {
     const home = homeOf();
     const dataDir = join(home, ".local", "share", "opencode");

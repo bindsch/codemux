@@ -63,6 +63,30 @@ describe("hermetic runs: claude and zai", () => {
     expect(new ClaudeAdapter().buildRunCommand({ agent: "claude", prompt: "p", cwd: "/tmp/repo", instructionDirs: ["/tmp/a"] }))
       .toEqual([...PLAIN_CLAUDE, "--add-dir", "/tmp/a"]);
   });
+
+  test("equivalent spellings of the working directory keep the project source enabled (review round 87)", () => {
+    // Raw-string comparison made `/tmp/repo` and `/tmp/repo/.` compare
+    // unequal, silently disabling project instructions for a run whose
+    // working directory IS an instruction directory. Both sides of the
+    // comparison are canonicalized now (resolve, then realpath where the
+    // path exists). The temp root is realized first: on macOS it is a
+    // symlink, and an unrealized spelling would compare unequal for real.
+    const repo = realpathSync(mkdtempSync(join(tmpdir(), "codemux-instr-")));
+    try {
+      const sources = (adapter: ClaudeAdapter | ZaiAdapter, cwd: string, instructionDirs: readonly string[]): string => {
+        const cmd = adapter.buildRunCommand({ agent: adapter.id, prompt: "p", cwd, instructionDirs });
+        return cmd[cmd.indexOf("--setting-sources") + 1]!;
+      };
+      const dotted = join(repo, ".");
+      for (const adapter of [new ClaudeAdapter(), new ZaiAdapter()]) {
+        expect(sources(adapter, repo, [dotted])).toBe("user,project");
+        expect(sources(adapter, dotted, [repo])).toBe("user,project");
+        expect(sources(adapter, repo, [join(tmpdir(), "codemux-elsewhere-")])).toBe("user");
+      }
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
 });
 
 // Restored from the pre-merge tree (h1 review finding): the merge dropped
