@@ -157,7 +157,19 @@ export function carryOpencodeModelState(
       }
       const probe = Buffer.alloc(1);
       if (readSync(fd, probe, 0, 1, buffer.length) !== 0) return `${source} grew past its judged size while being read`;
-      text = buffer.toString("utf8", 0, offset);
+      // Strict decode: Buffer.toString("utf8") replaces malformed bytes
+      // with U+FFFD, after which JSON.parse can ACCEPT a document whose
+      // bytes were never valid UTF-8, and the copy below would write a
+      // different file than the source (round 137). A fatal decoder
+      // refuses instead. ignoreBOM keeps a leading U+FEFF in the text, so
+      // JSON.parse rejects it exactly as it did before.
+      try {
+        text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+          buffer.subarray(0, offset)
+        );
+      } catch {
+        return `${source} is not readable JSON: not valid UTF-8`;
+      }
       JSON.parse(text);
     } catch (error) {
       return `${source} is not readable JSON: ${error instanceof Error ? error.message : String(error)}`;

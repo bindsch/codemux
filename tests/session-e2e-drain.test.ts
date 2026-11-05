@@ -253,8 +253,10 @@ describe("claude session driver e2e", () => {
     expect(resolved.resolution).toBe("superseded");
     expect(resolved.message).toBe(DEFAULT_DENIAL_MESSAGE);
     // The deny reached the harness, keyed to the request it denied, with
-    // the default denial text.
-    const responses = fakeRecord(session, "responses.jsonl") as Event[];
+    // the default denial text. permission_resolved is codemux's own
+    // event, so the fake's record follows a pipe turn later: one read
+    // right after it raced the fake under load (waitForRecord's rule).
+    const responses = await waitForRecord(session, "responses.jsonl");
     const deny = responses.find((entry) => entry.request_id === "toolu_drain_1");
     expect(deny?.behavior).toBe("deny");
     expect(deny?.message).toBe(DEFAULT_DENIAL_MESSAGE);

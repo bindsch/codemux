@@ -8,7 +8,7 @@ import {
   runCapturedCommand,
 } from "./process-runner.js";
 import { trustCheckedCommandChecks, trustCheckedCommandPaths } from "./executable-security.js";
-import { appendFailedLaunchReceipt, appendInterruptedLaunchReceipt, recordCompletedLaunch } from "./launch/receipts.js";
+import { appendFailedLaunchReceipt, appendInterruptedLaunchReceipt, launchProvider, recordCompletedLaunch } from "./launch/receipts.js";
 import { registerRunExitCleanup } from "./run-exit-cleanup.js";
 import {
   resolveSandboxOptionsForAgent,
@@ -63,6 +63,7 @@ export async function launchRunRequest(
   // The ledger's `ts`: the moment this launch began, before any refusal
   // could end it.
   const startedAt = Date.now();
+  const provider = launchProvider(adapter);
   // Undefined until this launch's own prepareRun succeeds, so a rejection
   // before that point (an untrusted sandbox, a refused request) has nothing
   // of its own to clean and cannot touch a concurrent launch's context.
@@ -86,8 +87,15 @@ export async function launchRunRequest(
   const cleanup = async () => {
     if (context === undefined || cleanupStarted) return;
     cleanupStarted = true;
+    // The exit backstop is released when the cleanup succeeded, and when
+    // it failed with nothing left to retry. It stays registered only while
+    // the adapter kept state for a retry (agy's private home, review
+    // round 137): the exit then runs cleanupRunSync once more, and that
+    // last call closes what the failed attempt held (rounds 138, 141).
+    let cleaned = false;
     try {
       await adapter.cleanupRun(context);
+      cleaned = true;
       const failure = retainedExperimentFailure();
       // Explicit experiments must fail on retained verification errors. Other
       // runs already received protocol cleanup errors from the capture layer.
@@ -98,7 +106,7 @@ export async function launchRunRequest(
       const separator = processed.stderr && !processed.stderr.endsWith("\n") ? "\n" : "";
       processed.stderr += `${separator}Note: cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`;
     }
-    finally { releaseExitCleanup?.(); }
+    finally { if (cleaned || !adapter.cleanupRetryPending(context)) releaseExitCleanup?.(); }
   };
   try {
     if (options.printSandbox && request.experimentMcp) {
@@ -209,14 +217,14 @@ export async function launchRunRequest(
         async () => {
           recordInterruption();
           try { await cleanup(); }
-          finally { appendInterruptedLaunchReceipt(effective, options, runContext, startedAt); }
+          finally { appendInterruptedLaunchReceipt(provider, effective, options, runContext, startedAt); }
         }
       );
       captured = true;
       capturedResult = raw;
       processed = adapter.processRunResult(raw, effective, context);
       await cleanup();
-      recordCompletedLaunch(effective, options, processed, startedAt);
+      recordCompletedLaunch(provider, effective, options, processed, startedAt);
       return processed;
     }
     let sandboxOptions = resolveSandboxOptionsForAgent(
@@ -368,7 +376,7 @@ export async function launchRunRequest(
       async () => {
         recordInterruption();
         try { await cleanup(); }
-        finally { appendInterruptedLaunchReceipt(request, options, runContext, startedAt); }
+        finally { appendInterruptedLaunchReceipt(provider, request, options, runContext, startedAt); }
       },
       options.printSandbox,
       // The Playwright binary embedded in the --mcp-config argument
@@ -394,7 +402,7 @@ export async function launchRunRequest(
     await context.experimentKimi?.complete({ timedOut: raw.timedOut === true });
     processed ??= adapter.processRunResult(raw, request, context);
     await cleanup();
-    recordCompletedLaunch(request, options, processed, startedAt);
+    recordCompletedLaunch(provider, request, options, processed, startedAt);
     return processed;
   } catch (error) {
     if (context?.experimentCodex && !capturedResult && !processed) capturedResult = { stdout: context.experimentCodex.capturedOutput, stderr: "", exitCode: 1, success: false };
@@ -424,11 +432,11 @@ export async function launchRunRequest(
         : primary;
       const result = experimentFailedResult(processed ?? capturedResult, receiptRequest,
         context?.experimentRecording ?? null, diagnostic, foldedSinkUsage(context?.stdoutSink), adapter.resultModel(receiptRequest));
-      if (context) appendFailedLaunchReceipt(receiptRequest, options, context, startedAt, failure,
+      if (context) appendFailedLaunchReceipt(provider, receiptRequest, options, context, startedAt, failure,
         captured || error instanceof CapturedRunFailure, result, result.exitCode);
       return result;
     }
-    if (context) appendFailedLaunchReceipt(receiptRequest, options, context, startedAt, failure,
+    if (context) appendFailedLaunchReceipt(provider, receiptRequest, options, context, startedAt, failure,
       captured || error instanceof CapturedRunFailure, processed);
     throw failure;
   }

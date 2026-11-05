@@ -37,8 +37,9 @@
  * the same pattern through its own descriptor-based implementation in
  * src/aider-history.ts. A bare readFileSync parked forever on a FIFO a
  * harness left in place of the store — h6 review), and the account store
- * is lstat'd to a regular file
- * before SQLite opens it, because SQLite's own open has the same two
+ * is lstat'd to a regular file before SQLite opens it and lstat'd again
+ * after the query closes (same device, inode, and type, or the answer is
+ * a refusal), because SQLite's own open has the same two
  * shapes. A store that exists but cannot be inspected that way cannot be
  * ruled out, so it fails closed naming the file; only an absent store
  * carries nothing (OpenCode reads the same paths as the same user).
@@ -121,6 +122,8 @@ function activeOrgAccount(realDataDir: string): string | null {
     return accountStoreUnreadable(dbPath, ": it is not a regular file");
   }
   let url: string | undefined;
+  let queryDetail: string | null = null;
+  let changed = false;
   try {
     const db = new Database(dbPath, { readonly: true });
     try {
@@ -138,9 +141,28 @@ WHERE state.id = 1 AND state.active_org_id IS NOT NULL LIMIT 1"
   } catch (error) {
     // A store that exists but cannot be read cannot be ruled out: fail
     // closed, naming the file, and let the operator see why.
-    const detail = error instanceof Error ? `: ${error.message}` : "";
-    return accountStoreUnreadable(dbPath, detail);
+    queryDetail = error instanceof Error ? `: ${error.message}` : "";
+  } finally {
+    // The store judged must be the store read: SQLite opens by NAME, so
+    // the file at `dbPath` could be swapped between the first stat and
+    // the open. This recheck cannot close that window (a swap inside it
+    // is still opened), but any swap still in place at the recheck, or
+    // any swap of the inode, turns the answer into a refusal. It runs
+    // whether the query succeeded or threw, and it never replaces a
+    // refusal with the query's answer (review round 137).
+    try {
+      const recheck = lstatSync(dbPath, { throwIfNoEntry: false });
+      changed =
+        recheck === undefined ||
+        !recheck.isFile() ||
+        recheck.dev !== dbStat.dev ||
+        recheck.ino !== dbStat.ino;
+    } catch {
+      changed = true; // unreadable now: the judged store cannot be confirmed
+    }
   }
+  if (changed) return accountStoreUnreadable(dbPath, ": it changed while it was read");
+  if (queryDetail !== null) return accountStoreUnreadable(dbPath, queryDetail);
   if (url === undefined) return null;
   return `an OpenCode account (${url}) with an active organization, whose /api/config OpenCode fetches and merges into every run (deactivate the organization or log out of the account)`;
 }

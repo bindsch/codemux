@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
   chmodSync,
   readdirSync,
@@ -206,7 +206,9 @@ describe("syncKeychainCredential — a mirror of an existing file", () => {
     withTarget((target, dir) => {
       const backupDir = join(dir, "backups");
       require("node:fs").mkdirSync(backupDir, { mode: 0o700 });
-      writeFileSync(join(backupDir, "credentials-1999-01-01T00-00-00-000Z-1-1.json"), "{}\n", { mode: 0o600 });
+      // This process's own pid: always ours to prune (pid 1 would read as
+      // a live foreign process under the round-137 liveness rule).
+      writeFileSync(join(backupDir, `credentials-1999-01-01T00-00-00-000Z-${process.pid}-1.json`), "{}\n", { mode: 0o600 });
       writeFileSync(join(backupDir, "credentials-2999-01-01T00-00-00-000Z-1-1.json"), "{}\n", { mode: 0o600 });
       writeFileSync(join(backupDir, "unrelated.txt"), "keep\n", { mode: 0o600 });
       expect(syncKeychainCredential("svc", target, gives(SECRET), BACKUPS(target))).toBe("synced");
@@ -214,7 +216,7 @@ describe("syncKeychainCredential — a mirror of an existing file", () => {
       expect(names).toHaveLength(3);
       expect(names).toContain("unrelated.txt");
       expect(names).toContain("credentials-2999-01-01T00-00-00-000Z-1-1.json");
-      expect(names).not.toContain("credentials-1999-01-01T00-00-00-000Z-1-1.json");
+      expect(names).not.toContain(`credentials-1999-01-01T00-00-00-000Z-${process.pid}-1.json`);
     }, leaked);
     // A failed rewrite prunes nothing: the earlier copy is still the last one.
     if (typeof process.getuid !== "function" || process.getuid() !== 0) {
@@ -243,6 +245,56 @@ describe("syncKeychainCredential — a mirror of an existing file", () => {
       expect(syncKeychainCredential("svc", target, gives(SECRET), { backupDir: "" })).toBe("unsafe");
       expect(readFileSync(target, "utf8")).toContain("KEEP-ME");
     }, leaked);
+  });
+
+  test("a live writer's older backup survives pruning; a dead writer's and this process's do not (review round 137)", () => {
+    // Round 137: pruning by name order alone could delete another live
+    // process's in-progress backup before its rewrite finished. The liveness
+    // probe is stubbed, so the test answers for the pids it names and
+    // nothing else.
+    const leaked = JSON.stringify({ claudeAiOauth: { accessToken: "old", refreshToken: "KEEP-ME" } });
+    const livePid = 999_999_101;
+    const deadPid = 999_999_102;
+    const probe = spyOn(process, "kill").mockImplementation(((pid: number, signal?: number | string) => {
+      if (signal === 0 && pid === livePid) return true;
+      const error = new Error(`no such process ${pid}`) as NodeJS.ErrnoException;
+      error.code = "ESRCH";
+      throw error;
+    }) as typeof process.kill);
+    const backupName = (year: string, pid: number | string) =>
+      `credentials-${year}-01-01T00-00-00-000Z-${pid}-1.json`;
+    try {
+      withTarget((target, dir) => {
+        const fs = require("node:fs") as typeof import("node:fs");
+        const backupDir = join(dir, "backups");
+        fs.mkdirSync(backupDir, { mode: 0o700 });
+        fs.writeFileSync(join(backupDir, backupName("1998", livePid)), "live writer\n", { mode: 0o600 });
+        fs.writeFileSync(join(backupDir, backupName("1997", deadPid)), "dead writer\n", { mode: 0o600 });
+        // A live pid protects a backup only while a run could still be
+        // using it: three days old, the pid in the name was reused by some
+        // other process (review round 144).
+        const reused = join(backupDir, backupName("1999", livePid));
+        fs.writeFileSync(reused, "old, pid reused\n", { mode: 0o600 });
+        const threeDaysAgo = new Date(Date.now() - 3 * 86_400_000);
+        fs.utimesSync(reused, threeDaysAgo, threeDaysAgo);
+        fs.writeFileSync(join(backupDir, backupName("1996", process.pid)), "our own\n", { mode: 0o600 });
+        // Names that are not the exact shape backupCredential writes are
+        // never prune candidates, whatever they sort as.
+        fs.writeFileSync(join(backupDir, "credentials-1995-01-01T00-00-00Z-1-1.json"), "short stamp\n", { mode: 0o600 });
+        fs.writeFileSync(join(backupDir, "credentials-notes.json"), "operator file\n", { mode: 0o600 });
+        expect(syncKeychainCredential("svc", target, gives(SECRET), BACKUPS(target))).toBe("synced");
+        const names = readdirSync(backupDir).sort();
+        expect(names).toContain(backupName("1998", livePid)); // live foreign writer: kept
+        expect(names).not.toContain(backupName("1997", deadPid)); // dead writer: pruned
+        expect(names).not.toContain(backupName("1999", livePid)); // live pid, but older than any run: pruned
+        expect(names).not.toContain(backupName("1996", process.pid)); // ours: pruned, never probed
+        expect(names).toContain("credentials-1995-01-01T00-00-00Z-1-1.json");
+        expect(names).toContain("credentials-notes.json");
+        expect(names).toHaveLength(4); // the three kept above plus this sync's own backup
+      }, leaked);
+    } finally {
+      probe.mockRestore();
+    }
   });
 
   test("CODEMUX_NO_KEYCHAIN_SYNC never consults the Keychain, so it neither scrubs nor refuses", () => {

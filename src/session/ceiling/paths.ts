@@ -91,6 +91,31 @@ function resolveRealPath(target: string): ResolvedForms | null {
  * unresolvable is deny. */
 const SYMLINK_EXPANSION_BOUND = 40;
 
+/** The first symlink component an expansion pass meets, left to right:
+ * the link's full prefix path and the components after it. A name that
+ * does not exist ends the reachable walk (the kernel cannot reach past
+ * it), so a symlink beyond a missing name is never found. Null when no
+ * reachable component is a symlink. */
+function reachableSymlink(current: string): { link: string; rest: string } | null {
+  const components = current.split("/");
+  let prefix = "";
+  for (let index = 0; index < components.length; index += 1) {
+    const component = components[index];
+    if (component === "") continue;
+    prefix = prefix === "" ? `/${component}` : `${prefix}/${component}`;
+    let stats: Stats;
+    try {
+      stats = lstatSync(prefix);
+    } catch {
+      return null;
+    }
+    if (stats.isSymbolicLink()) {
+      return { link: prefix, rest: components.slice(index + 1).join("/") };
+    }
+  }
+  return null;
+}
+
 /** Expand every existing symlink component of an absolute path, left to
  * right, the order the kernel's namei meets them. libc `realpath` (and
  * Node's `resolve`) both collapse a `link/..` pair lexically — the `..`
@@ -106,56 +131,40 @@ const SYMLINK_EXPANSION_BOUND = 40;
  * name are left alone (the kernel cannot reach them either; the lexical
  * spelling judges that shape). Returns null when a link's target cannot
  * be resolved where it stands (a dangling link is unjudgeable) or the
- * chain overruns the bound. */
+ * chain overruns the bound. A chain of exactly the bound's count of
+ * substitutions is valid — the loop's own passes substitute, and one
+ * final pass only looks: no symlink left resolves, one more denies
+ * (review round 137, which found the fortieth substitution rejected). */
 function expandSymlinkComponents(target: string): string | null {
   let current = target;
   for (let hops = 0; hops < SYMLINK_EXPANSION_BOUND; hops += 1) {
-    const components = current.split("/");
-    let prefix = "";
-    let substituted: string | null = null;
-    for (let index = 0; index < components.length; index += 1) {
-      const component = components[index];
-      if (component === "") continue;
-      prefix = prefix === "" ? `/${component}` : `${prefix}/${component}`;
-      let stats: Stats;
-      try {
-        stats = lstatSync(prefix);
-      } catch {
-        // A name that does not exist ends the reachable walk; the rest
-        // of the path stays as written.
-        break;
-      }
-      if (!stats.isSymbolicLink()) continue;
-      let linkTarget: string;
-      try {
-        linkTarget = readlinkSync(prefix);
-      } catch {
-        return null;
-      }
-      // The join is literal, dots intact: `resolve` would collapse a
-      // `..` in the target onto the link's directory before this walk
-      // expands the links inside the target, but the kernel applies that
-      // `..` only after following them (review live10).
-      const absoluteTarget = isAbsolute(linkTarget)
-        ? linkTarget
-        : `${dirname(prefix)}/${linkTarget}`;
-      // The link must resolve where it stands — a dangling one is
-      // unjudgeable, the live3 rule. A dotted relative target whose
-      // dotted path itself traverses a nonexistent directory fails here
-      // too, which is the kernel's own failure to resolve the link.
-      try {
-        realpathSync(absoluteTarget);
-      } catch {
-        return null;
-      }
-      const rest = components.slice(index + 1).join("/");
-      substituted = rest === "" ? absoluteTarget : `${absoluteTarget}/${rest}`;
-      break;
+    const found = reachableSymlink(current);
+    if (found === null) return current;
+    let linkTarget: string;
+    try {
+      linkTarget = readlinkSync(found.link);
+    } catch {
+      return null;
     }
-    if (substituted === null) return current;
-    current = substituted;
+    // The join is literal, dots intact: `resolve` would collapse a
+    // `..` in the target onto the link's directory before this walk
+    // expands the links inside the target, but the kernel applies that
+    // `..` only after following them (review live10).
+    const absoluteTarget = isAbsolute(linkTarget)
+      ? linkTarget
+      : `${dirname(found.link)}/${linkTarget}`;
+    // The link must resolve where it stands — a dangling one is
+    // unjudgeable, the live3 rule. A dotted relative target whose
+    // dotted path itself traverses a nonexistent directory fails here
+    // too, which is the kernel's own failure to resolve the link.
+    try {
+      realpathSync(absoluteTarget);
+    } catch {
+      return null;
+    }
+    current = found.rest === "" ? absoluteTarget : `${absoluteTarget}/${found.rest}`;
   }
-  return null;
+  return reachableSymlink(current) === null ? current : null;
 }
 
 /** Directories whose contents run code without anyone running it on

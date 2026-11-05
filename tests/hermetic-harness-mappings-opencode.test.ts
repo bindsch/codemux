@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -14,6 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import * as fs from "node:fs";
 import { Database } from "bun:sqlite";
 import type { RunContext } from "../src/adapters/base.js";
 import { OpencodeAdapter } from "../src/adapters/opencode.js";
@@ -213,6 +215,53 @@ describe("hermetic runs: opencode", () => {
     rmSync(join(dataDir, "opencode.db"), { force: true });
     writeFileSync(join(dataDir, "opencode.db"), "not a database\n");
     expect(() => adapter.buildRunCommand(request)).toThrow("could not be read");
+  });
+
+  test("an account store swapped while it was read is refused, never answered (review round 137)", () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "codemux-opencode-db-"));
+    scratch.push(dataDir);
+    const makeDb = (path: string, url: string, org: string | null): void => {
+      const db = new Database(path);
+      db.exec("CREATE TABLE account (id TEXT PRIMARY KEY, url TEXT NOT NULL)");
+      db.exec("CREATE TABLE account_state (id INTEGER PRIMARY KEY, active_account_id TEXT, active_org_id TEXT)");
+      db.exec(`INSERT INTO account VALUES ('acct', '${url}')`);
+      db.exec(org === null
+        ? "INSERT INTO account_state VALUES (1, 'acct', NULL)"
+        : `INSERT INTO account_state VALUES (1, 'acct', '${org}')`);
+      db.close();
+    };
+    const dbPath = join(dataDir, "opencode.db");
+    // Controls first, on an untouched store: the account is the answer
+    // with an organization, null without one.
+    makeDb(dbPath, "https://console.example", "org-1");
+    expect(opencodeRemoteConfigCarrier(dataDir)).toContain("an OpenCode account (https://console.example)");
+    rmSync(dbPath);
+    makeDb(dbPath, "https://console.example", null);
+    expect(opencodeRemoteConfigCarrier(dataDir)).toBeNull();
+    // The swap: the second lstat of the path (the recheck after the
+    // query) finds a different file at it. The query had answered with
+    // the account; the verdict is the refusal instead.
+    rmSync(dbPath);
+    makeDb(dbPath, "https://console.example", "org-1");
+    makeDb(`${dbPath}.swapped`, "https://elsewhere.example", "org-9");
+    const original = fs.lstatSync;
+    let seen = 0;
+    type LstatArgs = Parameters<typeof fs.lstatSync>;
+    const stat = spyOn(fs, "lstatSync").mockImplementation(((...args: LstatArgs) => {
+      if (args[0] === dbPath) {
+        seen += 1;
+        if (seen === 2) renameSync(`${dbPath}.swapped`, dbPath); // a new inode at the same name
+      }
+      return original(...args);
+    }) as typeof fs.lstatSync);
+    try {
+      const verdict = opencodeRemoteConfigCarrier(dataDir);
+      expect(verdict).toContain("could not be read");
+      expect(verdict).toContain("changed while it was read");
+      expect(verdict).not.toContain("console.example"); // never the query's answer
+    } finally {
+      stat.mockRestore();
+    }
   });
 
   test("a login store the inspection cannot read fails closed fast instead of hanging", () => {

@@ -1,7 +1,8 @@
-import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { describe, expect, spyOn, test } from "bun:test";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
+import * as fs from "node:fs";
 import { claudeCeiling } from "../src/session/ceiling.js";
 import { tempDir } from "./helpers/session-ceiling.js";
 
@@ -162,5 +163,63 @@ describe("claude ceiling path normalization", () => {
     // a medium edit of a workspace-relative file is the level's core case.
     expect(write("notes/new.ts").allowable).toBe(true);
     expect(write("./notes/new.ts").allowable).toBe(true);
+  });
+
+  test("exactly forty symlink substitutions resolve; forty-one deny (review round 137)", () => {
+    // The expansion bound denied its own boundary: the fortieth
+    // substitution updated the path, the loop ended, and the result was
+    // never looked at, so a valid chain of exactly the bound's links read
+    // as unresolvable. The chain is served through fs spies because the
+    // macOS kernel itself refuses chains over 32 links (ELOOP at 33, the
+    // probe for this test), so a real 40-link chain cannot ask this host
+    // the question; the walk under test is the code's own, on a virtual
+    // chain whose every link the test controls.
+    const dir = realpathSync(tempDir());
+    writeFileSync(join(dir, "settings.txt"), "x");
+    const linkStats = {
+      isSymbolicLink: () => true, isFile: () => false, isDirectory: () => false, dev: 0, ino: 0,
+    } as unknown as fs.Stats;
+    const edit = (links: number) => {
+      const virtual = new Map<string, string>(); // link path -> read target
+      for (let i = 1; i <= links; i += 1) {
+        virtual.set(join(dir, `chain-${i}`), i === 1 ? "settings.txt" : `chain-${i - 1}`);
+      }
+      const resolveVirtual = (path: string): string => {
+        let current = path;
+        for (;;) {
+          const target = virtual.get(current);
+          if (target === undefined) return current;
+          current = isAbsolute(target) ? target : join(dirname(current), target);
+        }
+      };
+      const original = {
+        lstat: fs.lstatSync, readlink: fs.readlinkSync, realpath: fs.realpathSync,
+      };
+      type LstatArgs = Parameters<typeof fs.lstatSync>;
+      const stat = spyOn(fs, "lstatSync").mockImplementation(((...args: LstatArgs) =>
+        virtual.has(String(args[0])) ? linkStats : original.lstat(...args)) as typeof fs.lstatSync);
+      type ReadlinkArgs = Parameters<typeof fs.readlinkSync>;
+      const read = spyOn(fs, "readlinkSync").mockImplementation(((...args: ReadlinkArgs) =>
+        virtual.get(String(args[0])) ?? original.readlink(...args)) as typeof fs.readlinkSync);
+      type RealpathArgs = Parameters<typeof fs.realpathSync>;
+      const real = spyOn(fs, "realpathSync").mockImplementation(((...args: RealpathArgs) =>
+        virtual.has(String(args[0])) ? resolveVirtual(String(args[0])) : original.realpath(...args)) as typeof fs.realpathSync);
+      try {
+        return claudeCeiling(
+          "medium", "Edit",
+          { file_path: join(dir, `chain-${links}`), old_string: "x", new_string: "y" },
+          dir
+        );
+      } finally {
+        stat.mockRestore();
+        read.mockRestore();
+        real.mockRestore();
+      }
+    };
+    expect(edit(39).allowable).toBe(true);
+    expect(edit(40).allowable).toBe(true); // the bound's own count
+    const denied = edit(41);
+    expect(denied.allowable).toBe(false);
+    expect(denied.reason).toContain("cannot resolve target path");
   });
 });

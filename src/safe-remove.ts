@@ -82,7 +82,10 @@ export function removeUnderTrustedParentOrThrow(
     // recorded location and be the recorded directory itself. Node has
     // no descriptor-relative removal, so a swap between this check and
     // the removal below stays possible; the check closes every swap made
-    // before cleanup starts.
+    // before cleanup starts. Pinning the parent with process.chdir and
+    // removing by a relative name would close the rest, but it changes
+    // the working directory of the whole process while other file
+    // operations may be in flight, so it is not done (review round 137).
     const stat = lstatSync(record.path, { bigint: true });
     if (
       realpathSync(record.path) !== record.real ||

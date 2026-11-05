@@ -30,7 +30,7 @@ export function registerRunExitCleanup(
     } catch (error) {
       report(error);
     }
-    try { adapter.cleanupRunSync(context); }
+    try { adapter.cleanupRunSync(context, true); }
     catch (error) { report(error); }
   };
   process.prependOnceListener("exit", onExit);

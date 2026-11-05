@@ -125,6 +125,11 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 137, whole tree: credential-backup pruning keeps a backup another live process may still need; a
+  failed Antigravity private-home cleanup is retried instead of stranded; the OpenCode account store is rechecked
+  after it is read, so a store swapped in the window is refused; a symlink chain of exactly the expansion bound
+  resolves; launch receipts read the provider override from the adapter's environment, not the ambient one; and a
+  model state file that is not valid UTF-8 is refused instead of copied with replaced bytes.
 - Review round 133, whole tree: `codemux calls --sum` gives the same totals however often they are printed (a
   session fold that overflowed used to show a partial sum on the second print); a harness version with a part that
   is not plain digits, such as an empty string or `1..2`, is no longer read as a version, and version parts of

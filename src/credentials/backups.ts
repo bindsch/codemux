@@ -17,6 +17,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 
 import { readUtf8FileBounded } from "../file-io.js";
+import { UNREADABLE_OWNER_STALE_MS, pidProbeAlive } from "../process-table.js";
 import { carriesRefreshToken, claudeOauthObject } from "./oauth.js";
 
 /** The file's contents with only its `claudeAiOauth` field replaced by the
@@ -200,12 +201,26 @@ function backupCredential(backupDir: string, current: string): string | null {
   }
 }
 
+/** The exact name `backupCredential` writes: `credentials-<stamp>-<pid>-
+ * <sequence>.json`, the stamp being the ISO time with `:` and `.` replaced
+ * by `-`. Anchored, so a name of any other shape is never a prune
+ * candidate. */
+const BACKUP_NAME = /^credentials-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-(\d+)-\d+\.json$/;
+
 /** After a rewrite succeeded, drop the backups OLDER than the one this
  * launch wrote (names start with an ISO timestamp, so they sort by age).
  * Never a newer one: a parallel launch may have written it and may still
- * need it. Never before the rename: until then the one just written is the
- * only copy the operator was told about, and a failed rewrite must leave
- * every earlier copy where it was. */
+ * need it. An older one written by ANOTHER LIVE PROCESS stays too: its
+ * writer may not have finished its own rewrite, and deleting its backup
+ * could destroy the operator's only refresh-token copy while the code
+ * reports one was kept — that process prunes it once its rewrite
+ * succeeds, and a later launch prunes it once the writer is gone. A
+ * matching name whose pid is this process's own is always ours to drop;
+ * one whose pid no kernel assigns (pidProbeAlive refuses 0, negatives,
+ * and out-of-range values) reads as not alive. A name of any other shape
+ * is left alone. Never before the rename: until then the one just written
+ * is the only copy the operator was told about, and a failed rewrite must
+ * leave every earlier copy where it was (review round 137). */
 function pruneOlderBackups(backup: string): void {
   const dir = dirname(backup);
   const own = basename(backup);
@@ -216,7 +231,23 @@ function pruneOlderBackups(backup: string): void {
     return;
   }
   for (const name of names) {
-    if (/^credentials-.*\.json$/.test(name) && name < own) removeQuietly(join(dir, name));
+    const match = BACKUP_NAME.exec(name);
+    if (match === null || name >= own) continue;
+    const pid = Number(match[1]);
+    if (pid !== process.pid && pidProbeAlive(pid) && !olderThanAnyRun(join(dir, name))) continue;
+    removeQuietly(join(dir, name));
+  }
+}
+
+/** Whether a backup is older than any run lasts. A live pid in its name
+ * then says nothing about its writer: the number was reused by another
+ * process, and the copy would otherwise be kept for as long as that
+ * process lives (review round 144). A file that cannot be read is kept. */
+function olderThanAnyRun(path: string): boolean {
+  try {
+    return Date.now() - lstatSync(path).mtimeMs > UNREADABLE_OWNER_STALE_MS;
+  } catch {
+    return false;
   }
 }
 

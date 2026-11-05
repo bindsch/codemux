@@ -1,11 +1,11 @@
 import { BaseAdapter, type RunContext } from "./base.js";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync, type Stats } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import type { AgyProbeMode } from "../agy-isolation-probe.js";
 import { summarizeAgyStream } from "../agy-stream.js";
-import { UNREADABLE_OWNER_STALE_MS, parseOwnerPid, pidProbeAlive } from "../process-table.js";
+import { PROBE_MARKER, PROBE_PID, findDirectory, sameDirectory, sweepStaleHomes } from "./agy-homes.js";
 import { AGY_MIRROR_PATH, agyKeychainHost, agyProbeRoots, insertAgyKeychainItem, prepareAgyPrivateKeychain, recoverAgyKeychainSearchList, verifyAgyKeychainSearchList } from "../agy-keychain.js";
 import { assertNoAgyProjectExecutionConfig } from "../project-safety.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
@@ -26,51 +26,10 @@ const isolationProbes = new WeakMap<RunRequest, { mode: AgyProbeMode; operatorHo
 const ownedProbeHomes = new WeakMap<RunContext, {
   home: string; parent: string; parentDev: number; parentIno: number;
   homeDev: number; homeIno: number; marker: string;
-  parentFd: number; homeFd: number; finished?: boolean; cleanupError?: Error;
+  parentFd: number; homeFd: number; finished?: boolean; cleanupError?: Error; removalStarted?: boolean;
 }>();
-const PROBE_MARKER = ".codemux-probe-owner";
-const PROBE_PID = ".codemux-probe-pid";
 const PROBE_TOKEN = ".gemini/antigravity-cli/antigravity-oauth-token";
 
-/** Remove only identified private homes whose owner is known to have exited. */
-function sweepStaleHomes(root: string): void {
-  const rootStat = lstatSync(root, { throwIfNoEntry: false });
-  if (!rootStat) return;
-  if (!rootStat.isDirectory()) throw new Error("agy probe home root must be a directory, not a symlink");
-  if (rootStat.uid !== process.getuid?.() || realpathSync(root) !== root) {
-    throw new Error("agy probe sweep root must be canonical and user-owned");
-  }
-  for (const name of readdirSync(root)) {
-    if (!name.startsWith("run-")) continue;
-    try {
-      const home = join(root, name);
-      const identity = lstatSync(home, { throwIfNoEntry: false });
-      if (!identity?.isDirectory() || identity.uid !== rootStat.uid) continue;
-      const marker = join(home, PROBE_MARKER);
-      if (!lstatSync(marker, { throwIfNoEntry: false })?.isFile() ||
-          !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(readFileSync(marker, "utf8"))) continue;
-      const pidPath = join(home, PROBE_PID);
-      if (!lstatSync(pidPath, { throwIfNoEntry: false })?.isFile()) continue;
-      const pid = parseOwnerPid(readFileSync(pidPath, "utf8"));
-      // A dead owner is swept. An unreadable one (the child can rewrite the file) only once the file is old.
-      if (pid === null ? Date.now() - lstatSync(pidPath).mtimeMs <= UNREADABLE_OWNER_STALE_MS : pidProbeAlive(pid)) continue;
-      // Never follow a replacement introduced during the owner check.
-      if (sameDirectory(root, rootStat) && sameDirectory(home, identity)) rmSync(home, { recursive: true, force: true });
-    } catch (error) {
-      // Another launch or normal cleanup may have removed this entry already.
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
-}
-
-function sameDirectory(path: string, identity: Stats): boolean {
-  const stat = lstatSync(path, { throwIfNoEntry: false });
-  return Boolean(stat?.isDirectory() && stat.dev === identity.dev && stat.ino === identity.ino);
-}
-
-function findDirectory(parent: string, identity: Stats): string | undefined {
-  return readdirSync(parent).map((name) => join(parent, name)).find((path) => sameDirectory(path, identity));
-}
 /** Internal entry for check's isolation diagnostics only. */
 export function markAgyIsolationProbe(request: RunRequest, mode: AgyProbeMode, operatorHome?: string): void {
   if (request.agent !== "agy" || !request.sandboxed || request.autonomy !== "read-only" ||
@@ -271,7 +230,10 @@ export class AgyAdapter extends BaseAdapter {
       return context;
     } catch (error) {
       if (context.agyProbe!.home) {
-        try { this.cleanupRun(context); }
+        // The last attempt there can be: the context never reaches the
+        // launcher, so nothing would retry or close what a failed removal
+        // keeps open (review round 139).
+        try { this.cleanupRunSync(context, true); }
         catch (cleanupError) {
           if (error instanceof Error) error.message += `; cleanup failed: ${String(cleanupError)}`;
         }
@@ -287,7 +249,17 @@ export class AgyAdapter extends BaseAdapter {
     }
   }
 
-  override cleanupRunSync(context?: RunContext): void {
+  /** True from the preparation of a private home until its cleanup
+   * finished: a failed removal keeps the descriptors for another attempt. */
+  override cleanupRetryPending(context?: RunContext): boolean {
+    const owned = context ? ownedProbeHomes.get(context) : undefined;
+    return owned !== undefined && owned.finished !== true;
+  }
+
+  /** `atExit` marks the process-exit backstop's call: the last attempt
+   * there can be, so the validation descriptors are closed even when the
+   * removal failed and the cleanup stays retryable for no one. */
+  override cleanupRunSync(context?: RunContext, atExit = false): void {
     const probe = context?.agyProbe;
     if (!probe?.home) return;
     const owned = ownedProbeHomes.get(context!);
@@ -300,6 +272,13 @@ export class AgyAdapter extends BaseAdapter {
     }
     let homePath = owned.home;
     let searchError: unknown;
+    // False only once nothing a retry could remove is left: the removal
+    // succeeded, or the home is already gone. Every other failure keeps
+    // the descriptors and the state, so the next call revalidates and
+    // removes again (review round 137: a transient rmSync failure used to
+    // close them and cache the error forever).
+    let retryable = true;
+    let succeeded = false;
     if (!probe.printOnly) { // print-only created no Keychain state: nothing to repair
 
       try {
@@ -325,16 +304,30 @@ export class AgyAdapter extends BaseAdapter {
       }
       if (!lstatSync(owned.home, { throwIfNoEntry: false })) {
         homePath = findDirectory(parentPath, home) ?? "";
+        // Not found under its parent: a retry has nothing to remove here.
+        // It is still reported below, because a home that was removed and
+        // one that was moved away look the same from here, and a moved one
+        // may still hold the token copy (review round 144).
+        if (!homePath) retryable = false;
       }
       if (!homePath || !sameDirectory(homePath, home)) {
         throw new Error("refusing cleanup of a replaced agy probe home or one that cannot be found");
       }
+      // A removal that failed halfway may have deleted the marker already.
+      // The retry then accepts its absence: the descriptor checks above
+      // still prove this is the directory the run created. A marker that
+      // is present must still be this run's (review round 143).
       const markerPath = join(homePath, PROBE_MARKER);
-      if (!lstatSync(markerPath).isFile() || readFileSync(markerPath, "utf8") !== owned.marker) {
+      const markerStat = lstatSync(markerPath, { throwIfNoEntry: false });
+      if (markerStat === undefined ? owned.removalStarted !== true
+        : !markerStat.isFile() || readFileSync(markerPath, "utf8") !== owned.marker) {
         throw new Error("refusing cleanup of a replaced agy probe home or parent");
       }
+      owned.removalStarted = true;
       rmSync(homePath, { recursive: true });
+      retryable = false;
       if (searchError) throw searchError;
+      succeeded = true;
     } catch (error) {
       owned.cleanupError = new Error(`agy probe cleanup failed: ${error instanceof Error ? error.message : String(error)}; ` +
         (searchError && error !== searchError ? `${String(searchError)}; ` : "") +
@@ -343,9 +336,12 @@ export class AgyAdapter extends BaseAdapter {
         `(home device ${owned.homeDev}, inode ${owned.homeIno})`);
       throw owned.cleanupError;
     } finally {
-      owned.finished = true;
-      try { closeSync(owned.homeFd); }
-      finally { closeSync(owned.parentFd); }
+      if (succeeded) owned.cleanupError = undefined; // an earlier attempt's report no longer applies
+      if (!retryable) owned.finished = true;
+      if (!retryable || atExit) {
+        try { closeSync(owned.homeFd); }
+        finally { closeSync(owned.parentFd); }
+      }
     }
   }
 

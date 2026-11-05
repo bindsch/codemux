@@ -276,7 +276,7 @@ Each record contains:
 |---|---|
 | `ts` | Start time as an ISO string |
 | `kind` | `run`, `check`, `session_turn`, or closing `session` |
-| `agent`, `provider`, `cwd` | Strings; provider is `default` or override URL host, never its key |
+| `agent`, `provider`, `cwd` | Strings; provider is `default` or the override URL host read from the launch adapter's own environment, never its key |
 | `model`, `model_effective` | Requested and reported model, each string or null |
 | `session_id`, `turn_id` | Strings or null; turns identify their session |
 | `autonomy` | Autonomy string or null |

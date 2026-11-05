@@ -8,7 +8,7 @@ import {
  type LaunchIntent } from "../types.js";
 import { sanitizeEnvironment } from "../environment.js";
 import { isAbsolute } from "node:path";
-import { readProviderOverride } from "../provider-override.js";
+import { readProviderOverride, type ProviderOverride } from "../provider-override.js";
 import { launchRunRequest } from "../launch.js";
 import type { ExperimentFailure } from "../experiment-records.js";
 import { runInteractive } from "./interactive.js";
@@ -285,8 +285,18 @@ export abstract class BaseAdapter {
     this.cleanupRunSync(context);
   }
 
-  /** Exit backstop: implementations must use synchronous operations only. */
-  cleanupRunSync(_context?: RunContext): void {}
+  /** Exit backstop: implementations must use synchronous operations only.
+   * `atExit` is true on the process-exit backstop's call (run-exit-cleanup),
+   * the last attempt there can be: a retryable failure may release what it
+   * holds then, since no later call exists. */
+  cleanupRunSync(_context?: RunContext, _atExit?: boolean): void {}
+
+  /** Whether a cleanup that failed kept state a later cleanupRunSync call
+   * can still use. The launcher keeps its exit backstop registered only
+   * then; for every other failure a second call would do nothing. */
+  cleanupRetryPending(_context?: RunContext): boolean {
+    return false;
+  }
 
   /**
    * Called before a SANDBOXED launch only, after beforeLaunch. Use for
@@ -303,6 +313,17 @@ export abstract class BaseAdapter {
     return [];
   }
 
+  /** The provider override in THIS adapter's environment view, read from
+   * the same `readProviderOverride(this.id, this.environment)` call every
+   * override consumer in this class makes. Throws on a malformed override
+   * exactly as the direct call does. Receipts and other records that must
+   * name the endpoint a launch used read it through here, never
+   * process.env, so an adapter built against a custom environment is
+   * recorded against the provider it actually ran (round 137). */
+  providerOverride(): ProviderOverride | null {
+    return readProviderOverride(this.id, this.environment);
+  }
+
   /** Whether a provider override is active in THIS adapter's environment
    * view. The launch path's keep-env gate asks this (launch.ts) so a
    * custom-environment launch decides on the same view the adapter
@@ -310,7 +331,7 @@ export abstract class BaseAdapter {
    * malformed CODEMUX_<AGENT>_PROVIDER_* value would fail a launch whose
    * own view has no override at all (round al12). */
   providerOverrideActive(): boolean {
-    return readProviderOverride(this.id, this.environment) !== null;
+    return this.providerOverride() !== null;
   }
 
   /**

@@ -80,6 +80,35 @@ describe("hermetic opencode model preference", () => {
     expect(existsSync(join(target, ".local"))).toBe(false);
   });
 
+  test("invalid UTF-8 and a byte order mark are refused, not repaired (review round 137)", () => {
+    const userHome = home();
+    const stateDir = join(userHome, "state");
+    mkdirSync(stateDir);
+    const target = join(userHome, "private");
+    mkdirSync(target);
+    // One invalid byte inside a JSON string: toString("utf8") would have
+    // turned it into U+FFFD and JSON.parse would have accepted the result,
+    // so the copy would have written a different document than the source.
+    writeFileSync(join(stateDir, "model.json"), Buffer.concat([
+      Buffer.from('{"note":"ok '), Buffer.from([0xff]), Buffer.from('"}'),
+    ]));
+    const refused = carryOpencodeModelState(stateDir, target);
+    expect(refused).toContain("not readable JSON");
+    expect(refused).toContain("not valid UTF-8");
+    expect(existsSync(join(target, ".local"))).toBe(false);
+    // A byte order mark: JSON.parse rejected a leading U+FEFF before, and
+    // the strict decoder keeps it (ignoreBOM), so the refusal stands.
+    writeFileSync(join(stateDir, "model.json"), Buffer.concat([
+      Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(preference),
+    ]));
+    expect(carryOpencodeModelState(stateDir, target)).toContain("not readable JSON");
+    expect(existsSync(join(target, ".local"))).toBe(false);
+    // The valid file still copies byte for byte.
+    writeFileSync(join(stateDir, "model.json"), preference);
+    expect(carryOpencodeModelState(stateDir, target)).toBeNull();
+    expect(readFileSync(join(target, ".local", "state", "opencode", "model.json"))).toEqual(Buffer.from(preference));
+  });
+
   test("a copy that throws removes the home it was filling (review round 22, edges 3)", () => {
     const userHome = home();
     const dataDir = join(userHome, ".local", "share", "opencode");

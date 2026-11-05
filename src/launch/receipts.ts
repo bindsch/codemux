@@ -1,11 +1,10 @@
 // Ledger receipts for launched runs: completed, interrupted, and failed.
 // src/launch.ts owns the launch lifecycle and calls these from its paths;
 // every receipt uses the same never-fail append contract.
-import type { RunContext } from "../adapters/base.js";
+import { type BaseAdapter, type RunContext } from "../adapters/base.js";
 import { appendCallRecord, providerHost } from "../call-log.js";
 import { unexpectedErrorExitCode } from "../cli-runtime.js";
 import { foldedSinkUsage } from "../plain-unwrap.js";
-import { readProviderOverride } from "../provider-override.js";
 import { sandboxRestrictsNetwork } from "../sandbox.js";
 import {
   CapturedRunFailure,
@@ -13,10 +12,11 @@ import {
 } from "../process-runner.js";
 import { emptyUsage } from "../result-envelope.js";
 import type { LaunchOptions } from "../launch.js";
-import type { AgentId, RunRequest, RunResult } from "../types.js";
+import type { RunRequest, RunResult } from "../types.js";
 
 /** Records a processed launch; refusals, capture failures, and signals use other paths. */
 export function recordCompletedLaunch(
+  provider: string,
   request: RunRequest,
   options: LaunchOptions,
   result: RunResult,
@@ -29,7 +29,7 @@ export function recordCompletedLaunch(
     agent: request.agent,
     model: request.model ?? null,
     model_effective: result.servedModel ?? null,
-    provider: providerHostFor(request.agent),
+    provider,
     session_id: null,
     turn_id: null,
     autonomy: request.autonomy ?? "read-only",
@@ -53,6 +53,7 @@ export function recordCompletedLaunch(
  * through the same never-fail append. Must not throw: a throw here would
  * only mask the exit it runs inside (review ul6). */
 export function appendInterruptedLaunchReceipt(
+  provider: string,
   request: RunRequest,
   options: LaunchOptions,
   context: RunContext,
@@ -67,7 +68,7 @@ export function appendInterruptedLaunchReceipt(
       agent: request.agent,
       model: request.model ?? null,
       model_effective: null,
-      provider: providerHostFor(request.agent),
+      provider,
       session_id: null,
       turn_id: null,
       autonomy: request.autonomy ?? "read-only",
@@ -100,6 +101,7 @@ export function appendInterruptedLaunchReceipt(
  * guess. Must not throw: the rejection it rides cannot gain a second
  * failure (review ul8). */
 export function appendFailedLaunchReceipt(
+  provider: string,
   request: RunRequest,
   options: LaunchOptions,
   context: RunContext,
@@ -119,7 +121,7 @@ export function appendFailedLaunchReceipt(
       agent: request.agent,
       model: request.model ?? null,
       model_effective: processed?.servedModel ?? null,
-      provider: providerHostFor(request.agent),
+      provider,
       session_id: null,
       turn_id: null,
       autonomy: request.autonomy ?? "read-only",
@@ -156,11 +158,20 @@ function sandboxFieldsFor(options: LaunchOptions): {
 }
 
 /** The endpoint identity for the ledger: "default", or the host of the
- * provider override this launch ran against — never the key. A malformed
- * override cannot fail the receipt; it failed the launch itself already. */
-function providerHostFor(agent: AgentId): string {
+ * provider override this launch ran against — never the key. The override
+ * is read from the ADAPTER's environment view, the one its own provider
+ * wiring read, so a launch through an adapter built against a custom
+ * environment is recorded against the provider it ran — not whatever the
+ * ambient process.env exports (review round 137). A malformed override
+ * cannot fail the receipt; it failed the launch itself already. The
+ * launcher calls this once, before anything runs, and hands the value to
+ * every receipt of that launch: the adapter's environment is a live
+ * object, and a receipt written after the run must not record a change
+ * made during it, nor another launch's value when two launches share one
+ * adapter (review rounds 144 and 145). */
+export function launchProvider(adapter: BaseAdapter): string {
   try {
-    return providerHost(readProviderOverride(agent)?.baseUrl ?? null);
+    return providerHost(adapter.providerOverride()?.baseUrl ?? null);
   } catch {
     return "default";
   }

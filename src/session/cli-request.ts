@@ -18,7 +18,6 @@ import {
   resolveEffortForAdapter,
 } from "../cli-runtime.js";
 import { resolveModel } from "../config.js";
-import { readProviderOverride } from "../provider-override.js";
 import { resolveSandboxOptionsForAgent } from "../sandbox-policy.js";
 import type { AgentId, CodemuxConfig, RunRequest } from "../types.js";
 import { validateWorkingDirectory } from "../validation.js";
@@ -76,14 +75,17 @@ export function resolveSessionRequest(
   // Provider overrides reach session spawns exactly as run spawns:
   // every session-capable harness `run` can point at a custom
   // provider, its session can too, through the same adapter seams
-  // (readProviderOverride here; the adapter's env/config wiring
-  // below). The adapter's own validateRunRequest — the uniform gate
-  // every session agent passes through below — refuses an override
-  // an agent cannot carry, zai and agy, with the run path's message
-  // verbatim, so the two paths cannot drift.
+  // (the adapter's environment view here — the same read its own
+  // env/config wiring makes below; the ledger's provider identity
+  // derives from this one value, so a record can never name an
+  // endpoint the session's spawns did not use). The adapter's own
+  // validateRunRequest — the uniform gate every session agent passes
+  // through below — refuses an override an agent cannot carry, zai
+  // and agy, with the run path's message verbatim, so the two paths
+  // cannot drift.
   const adapter = getAdapter(agentId);
   const caps = adapter.capabilities();
-  const override = readProviderOverride(agentId);
+  const override = adapter.providerOverride();
 
   const requestedAutonomy = parseAutonomyOption(options.auto) ?? "read-only";
   const requestedEffort = parseEffortOption(options.effort);
