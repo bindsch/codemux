@@ -27,6 +27,7 @@ import { escapeForTerminal, formatResetTime } from "./usage-protocol.js";
 import type { UsageSnapshot, UsageWindow } from "./usage-protocol.js";
 import { fetchUsageSnapshot, formatUsagePercent, getUsagemuxStatus, UsageQueryError } from "./usage.js";
 import { UsageRefusalError } from "./validation.js";
+import { timestampMs } from "./calendar.js";
 
 /** A fetched snapshot is reused inside this window, so a batch or a
  * resumed session does not pay the usagemux query per call. */
@@ -291,7 +292,7 @@ export const gateOnResult = (
  * gate warns and proceeds on it, and the machine check reports the same
  * (review round 54). generatedAt is usagemux's own string and is escaped. */
 export const snapshotFreshnessIssue = (snapshot: { generatedAt: string }): string | null => {
-  const generatedAt = Date.parse(snapshot.generatedAt);
+  const generatedAt = timestampMs(snapshot.generatedAt);
   const age = Date.now() - generatedAt;
   if (!Number.isFinite(generatedAt) || age > STALE_SNAPSHOT_MS) {
     return `usagemux snapshot is stale (generated at ${escapeForTerminal(snapshot.generatedAt)})`;

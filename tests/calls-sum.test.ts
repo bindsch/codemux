@@ -1,4 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import type { CallRecord } from "../src/call-log.js";
+import { CallTotals } from "../src/calls-totals.js";
 import { callsWith, iso, MINUTE, record } from "./helpers/calls-records.js";
 
 describe("codemux calls --sum", () => {
@@ -296,5 +298,28 @@ describe("codemux calls --sum", () => {
     expect(estimate).toBeDefined();
     expect(estimate).toContain("harness estimate unknown");
     expect(estimated).not.toContain("Infinity");
+  });
+
+  test("printing the totals twice gives the same line when the session fold overflows (round 133)", () => {
+    // The fold of a closing record runs at print time. It used to write
+    // its overflow into the accumulator, so a second print skipped the
+    // addition and showed the partial sum where the first showed unknown.
+    const totals = new CallTotals();
+    totals.add(JSON.parse(record({ ts: iso(2 * MINUTE), agent: "codex", input: 1 })) as CallRecord);
+    totals.add(JSON.parse(record({
+      ts: iso(MINUTE), agent: "codex", kind: "session", sessionId: "s1", input: Number.MAX_SAFE_INTEGER,
+    })) as CallRecord);
+    const lines: string[] = [];
+    const log = spyOn(console, "log").mockImplementation((line: string) => { lines.push(line); });
+    try {
+      totals.print();
+      const first = lines.splice(0);
+      totals.print();
+      expect(lines).toEqual(first);
+      expect(first.join("\n")).toContain("input=unknown");
+      expect(first.join("\n")).not.toContain("input=1 ");
+    } finally {
+      log.mockRestore();
+    }
   });
 });

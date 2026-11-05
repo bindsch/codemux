@@ -5,6 +5,8 @@ import {
   evaluateHarnessVersion,
   extractHarnessVersion,
   HARNESS_CONTRACTS,
+  HarnessVersionError,
+  parseVersionParts,
   type HarnessContract,
 } from "../src/harness-compatibility.js";
 
@@ -26,6 +28,27 @@ describe("version comparison", () => {
 
   test("orders calendar builds by date prefix", () => {
     expect(compareVersions("2026.08.11", "2026.07.23")).toBeGreaterThan(0);
+  });
+
+  test("a version with a part that is not plain digits is not a version (review round 133)", () => {
+    // Number("") is 0, so "" and "1..2" used to compare as 0 and 1.0.2.
+    for (const malformed of ["", "1..2", ".1", "1.", "1.x", "1e3", "0x10", " 1", "1 ", "+1", "-1", "1.2.-3"]) {
+      expect(parseVersionParts(malformed)).toBeNull();
+      expect(() => compareVersions(malformed, "1.0.0")).toThrow(HarnessVersionError);
+      expect(() => compareVersions("1.0.0", malformed)).toThrow(HarnessVersionError);
+    }
+    expect(parseVersionParts("0")).toEqual([0]);
+    expect(parseVersionParts("2.1.220")).toEqual([2, 1, 220]);
+    expect(parseVersionParts("2026.08.11")).toEqual([2026, 8, 11]);
+  });
+
+  test("a part longer than a safe integer still compares exactly (review round 134)", () => {
+    // 9007199254740993 and 9007199254740992 are one number as a float.
+    expect(compareVersions("1.5.9007199254740993", "1.5.9007199254740992")).toBeGreaterThan(0);
+    expect(compareVersions("1.5.9007199254740992", "1.5.9007199254740993")).toBeLessThan(0);
+    expect(compareVersions("1.5.9007199254740993", "1.5.9007199254740993")).toBe(0);
+    expect(compareVersions("1.5.99999999999999999999999999", "1.6")).toBeLessThan(0);
+    expect(parseVersionParts("1.5.9007199254740993")).not.toBeNull();
   });
 });
 

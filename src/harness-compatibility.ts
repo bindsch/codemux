@@ -19,22 +19,32 @@ export {
 
 export class HarnessVersionError extends Error {}
 
-export const parseVersionParts = (value: string): number[] | null => {
-  const parts = value.split(".").map((part) => Number(part));
-  if (parts.length === 0 || parts.some((part) => !Number.isInteger(part) || part < 0)) {
-    return null;
-  }
-  return parts;
+/** The parts of a dotted version as exact integers, or null when any part
+ * is not a plain run of digits. `Number` reads an empty part as zero, so
+ * `""` and `1..2` used to pass as the versions 0 and 1.0.2 (review round
+ * 133); it also reads `1e3`, `0x10`, and padded text as numbers. BigInt
+ * keeps a part of any length exact, so a long build number still compares
+ * correctly instead of being rounded or refused (review round 134). */
+const exactVersionParts = (value: string): bigint[] | null => {
+  const texts = value.split(".");
+  return texts.every((part) => /^\d+$/.test(part)) ? texts.map((part) => BigInt(part)) : null;
 };
+
+/** The numeric parts of a dotted version, or null when it is not one. A
+ * part past the safe-integer range is rounded here; comparisons use the
+ * exact parts instead. */
+export const parseVersionParts = (value: string): number[] | null =>
+  exactVersionParts(value)?.map((part) => Number(part)) ?? null;
 
 /** Returns <0, 0, or >0. Missing trailing components count as zero. */
 export const compareVersions = (left: string, right: string): number => {
-  const a = parseVersionParts(left);
-  const b = parseVersionParts(right);
+  const a = exactVersionParts(left);
+  const b = exactVersionParts(right);
   if (!a || !b) throw new HarnessVersionError(`cannot compare '${left}' and '${right}'`);
   for (let index = 0; index < Math.max(a.length, b.length); index++) {
-    const diff = (a[index] ?? 0) - (b[index] ?? 0);
-    if (diff !== 0) return diff;
+    const x = a[index] ?? 0n;
+    const y = b[index] ?? 0n;
+    if (x !== y) return x < y ? -1 : 1;
   }
   return 0;
 };

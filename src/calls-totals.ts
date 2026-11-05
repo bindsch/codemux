@@ -107,10 +107,15 @@ class GroupTotals {
    * safe-sum rule (safeTokenSum): a sum that would leave the safe-integer
    * range is unknown — printed as `unknown` — never the rounded number
    * the float addition produces (review round 80). */
-  private addCount(field: TokenField, value: number, sums: Record<UsageField, number | null>): void {
-    if (this.overflowed.has(field)) return;
+  private addCount(
+    field: TokenField,
+    value: number,
+    sums: Record<UsageField, number | null>,
+    overflowed: Set<TokenField> = this.overflowed
+  ): void {
+    if (overflowed.has(field)) return;
     const next = safeTokenSum(sums[field] ?? 0, value);
-    if (next === null) this.overflowed.add(field);
+    if (next === null) overflowed.add(field);
     sums[field] = next;
   }
 
@@ -204,6 +209,11 @@ class GroupTotals {
     // one the fold overflows joins it.
     let costOverflowed = this.costOverflowed;
     let costEstimatedOverflowed = this.costEstimatedOverflowed;
+    // The token fields follow the same rule on a copy: the fold must not
+    // write its overflows into the accumulator, or a second print would
+    // skip the addition that overflowed and show the partial sum where
+    // the first print showed unknown (review round 133).
+    const overflowed = new Set(this.overflowed);
     for (const [key, closing] of this.newestClosing) {
       const reported = this.turnsReported.get(key);
       for (const { field, pick } of USAGE_FIELDS) {
@@ -226,7 +236,7 @@ class GroupTotals {
         }
         const value = pick(closing.usage);
         if (value === null) unknowns[field]++;
-        else this.addCount(field, value, sums);
+        else this.addCount(field, value, sums, overflowed);
       }
     }
     const foldedSummaries = this.newestClosing.size;

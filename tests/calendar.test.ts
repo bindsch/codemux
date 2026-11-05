@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
-import { calendarValid } from "../src/calendar.js";
+import { calendarValid, leapSecondValid, timestampMs } from "../src/calendar.js";
 import { CodexRolloutParser } from "../src/experiment-codex-parser.js";
+import { snapshotFreshnessIssue } from "../src/quota-gate.js";
+import { parseUsageSnapshot } from "../src/usage.js";
+import { formatResetTime } from "../src/usage-protocol.js";
 import { codexCatalog, codexDefinitions } from "./fixtures/experiment-codex.js";
 
 test("calendarValid refuses calendar dates JavaScript would silently normalize (review round 64)", () => {
@@ -36,3 +39,63 @@ test("the Codex rollout parser refuses a normalized calendar date and accepts ye
   // itself, so the guard does not trade one normalization for another.
   expect(() => parser.accept({ ...codexCatalog(["bash"]), timestamp: "0001-01-01T00:00:00Z" })).not.toThrow();
 });
+
+test("a leap second is valid only where one happened, and reads as the second after 23:59:59 (review rounds 133, 134)", () => {
+  // RFC 3339 allows second 60; Date.parse rejects it, so a legal timestamp
+  // used to fail as malformed.
+  expect(leapSecondValid("1990-12-31T23:59:60Z")).toBe(true);
+  expect(leapSecondValid("2016-12-31T23:59:60.5Z")).toBe(true);
+  expect(leapSecondValid("2015-06-30T23:59:60Z")).toBe(true);
+  // The same instant written with an offset.
+  expect(leapSecondValid("1991-01-01T00:59:60+01:00")).toBe(true);
+  // Second 60 anywhere else is not a leap second.
+  expect(leapSecondValid("2026-11-05T12:00:60Z")).toBe(false);
+  expect(leapSecondValid("2026-11-05T23:59:60Z")).toBe(false);
+  expect(leapSecondValid("2016-12-31T23:59:60+05:00")).toBe(false);
+  expect(leapSecondValid("2026-02-30T23:59:60Z")).toBe(false);
+  // A month end, or even a year end, where no leap second was inserted.
+  expect(leapSecondValid("2016-01-31T23:59:60Z")).toBe(false);
+  expect(leapSecondValid("2016-06-30T23:59:60Z")).toBe(false);
+  expect(leapSecondValid("2026-12-31T23:59:60Z")).toBe(false);
+  expect(leapSecondValid("1971-12-31T23:59:60Z")).toBe(false);
+  // Not a leap second at all.
+  expect(leapSecondValid("2026-12-31T23:59:59Z")).toBe(false);
+  expect(leapSecondValid("")).toBe(false);
+  // The reader: one second after 23:59:59, fraction kept; every other
+  // value is what Date.parse answers.
+  expect(timestampMs("1990-12-31T23:59:60Z")).toBe(Date.parse("1991-01-01T00:00:00Z"));
+  expect(timestampMs("2016-12-31T23:59:60.5Z")).toBe(Date.parse("2017-01-01T00:00:00.5Z"));
+  expect(timestampMs("2026-11-05T12:00:00Z")).toBe(Date.parse("2026-11-05T12:00:00Z"));
+  expect(Number.isNaN(timestampMs("not a time"))).toBe(true);
+  expect(Number.isNaN(timestampMs("2026-13-01T00:00:60Z"))).toBe(true);
+});
+
+test("a usage snapshot with a leap-second timestamp is accepted and read, not called malformed (review round 133)", () => {
+  const snapshot = (generatedAt: string, resetsAt: string): string => JSON.stringify({
+    schemaVersion: "1",
+    generatedAt,
+    results: [{
+      client: "codex", provider: "codex", status: "ok", source: "codex-cli", plan: "plus", account: null,
+      windows: [{ kind: "weekly", usedPercent: 39, remainingPercent: 61, windowMinutes: 10080, resetsAt }],
+      credits: null, subscriptionRenewsAt: null, subscriptionExpiresAt: null, message: null,
+    }],
+  });
+  const leap = "2016-12-31T23:59:60Z";
+  expect(() => parseUsageSnapshot(snapshot(leap, leap))).not.toThrow();
+  // Second 60 anywhere else is still not a timestamp.
+  expect(() => parseUsageSnapshot(snapshot("2026-11-05T12:00:60Z", leap)))
+    .toThrow("generatedAt must be an RFC 3339 timestamp");
+  expect(() => parseUsageSnapshot(snapshot(leap, "2026-11-05T12:00:60Z")))
+    .toThrow("resetsAt must be an RFC 3339 timestamp");
+  // The two readers of these fields read a leap second as an instant.
+  expect(formatResetTime(leap, new Date("2016-12-31T00:00:00Z"))).not.toBeNull();
+  expect(snapshotFreshnessIssue({ generatedAt: leap })).toContain("stale");
+  const now = Date.now;
+  Date.now = () => Date.parse("2017-01-01T00:00:10Z");
+  try {
+    expect(snapshotFreshnessIssue({ generatedAt: leap })).toBeNull();
+  } finally {
+    Date.now = now;
+  }
+});
+

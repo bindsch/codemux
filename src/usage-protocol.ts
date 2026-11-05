@@ -1,4 +1,4 @@
-import { calendarValid } from "./calendar.js";
+import { calendarValid, leapSecondValid, timestampMs } from "./calendar.js";
 import { AGENT_IDS, type AgentId } from "./types.js";
 
 export const USAGEMUX_PROTOCOL_VERSION = "1";
@@ -83,11 +83,13 @@ const requirePercentage = (value: unknown, field: string): number | null => {
  * readers (src/calendar.ts, review round 64). */
 
 const requireTimestamp = (value: unknown, field: string): string => {
+  // A leap second (second 60) is legal RFC 3339 and Date.parse rejects it,
+  // so it is checked on its own terms; the readers of these fields parse
+  // through timestampMs, which reads it too (review round 133).
   if (
     typeof value !== "string" ||
     !RFC3339_TIMESTAMP.test(value) ||
-    !Number.isFinite(Date.parse(value)) ||
-    !calendarValid(value)
+    !(leapSecondValid(value) || (Number.isFinite(Date.parse(value)) && calendarValid(value)))
   ) {
     throw new Error(`${field} must be an RFC 3339 timestamp`);
   }
@@ -267,7 +269,7 @@ export const formatUsagePercent = (value: number): string =>
  * prints its own placeholder. */
 export const formatResetTime = (iso: string | null, now = new Date()): string | null => {
   if (iso === null) return null;
-  const when = Date.parse(iso);
+  const when = timestampMs(iso);
   if (!Number.isFinite(when)) return null;
   const date = new Date(when);
   const two = (value: number): string => String(value).padStart(2, "0");

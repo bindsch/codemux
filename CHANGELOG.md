@@ -125,6 +125,11 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 133, whole tree: `codemux calls --sum` gives the same totals however often they are printed (a
+  session fold that overflowed used to show a partial sum on the second print); a harness version with a part that
+  is not plain digits, such as an empty string or `1..2`, is no longer read as a version, and version parts of
+  any length compare exactly; and a usage snapshot timestamp that names a leap second that happened is accepted and
+  read as an instant instead of being called malformed.
 - Review round 127, whole tree: a Kimi session turn whose stream carried the roleless
   `{type:"error",message}` frame now completes `failed` with that message as its reason even when
   the per-turn process exits 0 with a reply and a resume hint (the plain-run rule), and the
