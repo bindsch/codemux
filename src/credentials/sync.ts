@@ -53,6 +53,23 @@ function refusedRead(error: unknown, entryExists: boolean): "failed" | "unsafe" 
   return error instanceof FileContentError && entryExists ? "unsafe" : "failed";
 }
 
+/** What a finished scrub left on disk, reread once: either the mirror's
+ * `claudeAiOauth` object as it stands NOW (null when the file no longer
+ * holds one), or the refusal that replaces the caller's own decision.
+ * "clean" from scrubRefreshToken may describe a replacement the scrub's
+ * own conflict re-read saw, so every caller judges THIS, never the copy
+ * it read before the scrub (review round 90); both scrub paths go through
+ * here so the reread rule cannot diverge between them. */
+function oauthAfterScrub(
+  target: string
+): { oauth: Record<string, unknown> | null } | { outcome: "failed" | "unsafe" } {
+  try {
+    return { oauth: claudeOauthObject(readMirror(target, true)) };
+  } catch (error) {
+    return { outcome: refusedRead(error, true) };
+  }
+}
+
 /** Every key Claude Code writes under `claudeAiOauth` in the on-disk stub.
  * A stub carrying any other key is not overwritten: it is either some other
  * program's state under Claude's key, or a Claude Code newer than this
@@ -251,11 +268,13 @@ export function syncKeychainCredential(
       if (scrubbed !== "clean") return scrubbed;
       // Judge what is on disk now, not the copy read before the scrub (a
       // concurrent writer may have changed it).
-      try {
-        own = claudeOauthObject(readMirror(target, true)) ?? own;
-      } catch (error) {
-        return refusedRead(error, true);
-      }
+      const now = oauthAfterScrub(target);
+      if ("outcome" in now) return now.outcome;
+      // A file that no longer holds a Claude credential leaves the child
+      // nothing to authenticate with; the copy read before the scrub says
+      // nothing about it (review round 91).
+      if (now.oauth === null) return "failed";
+      own = now.oauth;
     }
     // The mirror stands alone only while its own access token is live; an
     // expired one (the usual state after an idle period, with the Keychain
@@ -288,7 +307,15 @@ export function syncKeychainCredential(
   if (carriesRefreshToken(liveFile.oauth)) {
     const scrubbed = scrubRefreshToken(target, live, liveFile.oauth, backupDir);
     if (scrubbed !== "clean") return scrubbed;
-    return liveFile.oauth.accessToken === keychainOauth.accessToken ? "current" : "failed";
+    // The scrub may have ended on another writer's replacement (its own
+    // conflict re-read), so the pre-scrub `liveFile` snapshot no longer
+    // describes the disk: "current" only for a file that now holds no
+    // refresh token and the Keychain's access token (review round 90).
+    const now = oauthAfterScrub(target);
+    if ("outcome" in now) return now.outcome;
+    if (now.oauth === null) return "failed";
+    if (carriesRefreshToken(now.oauth)) return "unsafe";
+    return now.oauth.accessToken === keychainOauth.accessToken ? "current" : "failed";
   }
   return shouldReplace(liveFile.oauth, keychainOauth) ? "failed" : "current";
 }

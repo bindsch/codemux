@@ -19,19 +19,9 @@
 import type { ResultUsageBlock } from "../types.js";
 import { safeTokenSum } from "../result-envelope/common.js";
 
-import { markOverflowed, overflowMarks, overflowedFields, TOKEN_FIELDS, type TokenField } from "../usage-overflow.js";
+import { markOverflowed, overflowMarks, overflowedFields, TOKEN_FIELDS, type OverflowField, type TokenField } from "../usage-overflow.js";
 
 export { markOverflowed, overflowedFields };
-
-/** A copy of `block` with `changes` applied that keeps the source's
- * marks: the one way a block is rebuilt here (a plain spread would drop
- * them, review round 82). */
-function derive(source: ResultUsageBlock, changes: Partial<ResultUsageBlock>): ResultUsageBlock {
-  const result = { ...source, ...changes };
-  const marks = overflowMarks.get(source);
-  if (marks) overflowMarks.set(result, marks);
-  return result;
-}
 
 /** Sum two usage blocks field-wise: a null side yields the other side,
  * two nulls stay null. A partially-reporting turn therefore cannot wipe
@@ -53,15 +43,16 @@ function derive(source: ResultUsageBlock, changes: Partial<ResultUsageBlock>): R
  * safe-integer range is null — unknown — never the rounded number the
  * float addition produces, the envelope's rule, so a session cannot
  * report a total the equivalent non-session run would call unknown
- * (review round 80). Cost still sums as a plain float: it is money, not
+ * (review round 80). Cost still sums as a plain float — it is money, not
  * a count, and its accuracy is the cent-level float's, not the integer
- * range's. */
+ * range's — except a total that leaves the finite range, which is null
+ * (review round 90). */
 export function addUsage(
   total: ResultUsageBlock,
   addend: ResultUsageBlock
 ): ResultUsageBlock {
-  const overflowed = new Set<TokenField>(overflowMarks.get(total) ?? []);
-  for (const field of TOKEN_FIELDS) {
+  const overflowed = new Set<OverflowField>(overflowMarks.get(total) ?? []);
+  for (const field of [...TOKEN_FIELDS, "cost_usd"] as const) {
     if (overflowMarks.get(addend)?.has(field)) overflowed.add(field);
   }
   // An overflowed field stays unknown whatever later turns report.
@@ -75,8 +66,20 @@ export function addUsage(
     if (result === null) overflowed.add(field);
     return result;
   };
-  const sumCost = (a: number | null, b: number | null): number | null =>
-    a === null ? b : b === null ? a : a + b;
+  // A cost sum that leaves the finite range is null — unknown — never the
+  // float addition's Infinity: the reader accepts every finite cost, so
+  // two valid figures can overflow a money total (review round 90).
+  // The overflow is marked like a token field's, so a later figure cannot
+  // restart the total from the null it left (review round 91).
+  const sumCost = (a: number | null, b: number | null): number | null => {
+    if (overflowed.has("cost_usd")) return null;
+    if (a === null) return b;
+    if (b === null) return a;
+    const next = a + b;
+    if (Number.isFinite(next)) return next;
+    overflowed.add("cost_usd");
+    return null;
+  };
   const input_tokens = sum("input_tokens");
   const output_tokens = sum("output_tokens");
   const cached_input_tokens = sum("cached_input_tokens");
@@ -142,6 +145,27 @@ export function addTurnUsage(
   total: ResultUsageBlock,
   addend: ResultUsageBlock
 ): ResultUsageBlock {
-  const folded = addUsage(total, derive(addend, { cost_usd: null }));
-  return derive(folded, { cost_usd: addend.cost_usd ?? total.cost_usd });
+  const costLost = (block: ResultUsageBlock): boolean => overflowMarks.get(block)?.has("cost_usd") === true;
+  // Tokens fold with the addend's token marks only; the cost is decided
+  // here: the harness's latest figure when it reports one, unknown when
+  // the turn's own accumulation overflowed, the standing figure otherwise.
+  const tokenOnly: ResultUsageBlock = { ...addend, cost_usd: null };
+  markOverflowed(tokenOnly, overflowedFields(addend).filter((field) => field !== "cost_usd"));
+  const folded = addUsage(stripCostMark(total), tokenOnly);
+  const cost = addend.cost_usd ?? (costLost(addend) ? null : total.cost_usd);
+  const result: ResultUsageBlock = { ...folded, cost_usd: cost };
+  const marks = new Set<OverflowField>(overflowMarks.get(folded) ?? []);
+  if (addend.cost_usd === null && (costLost(addend) || costLost(total))) marks.add("cost_usd");
+  if (marks.size > 0) overflowMarks.set(result, marks);
+  return result;
+}
+
+/** `block` with its token marks and no cost mark: the turn fold sums
+ * tokens only, and a cost mark would otherwise void the token fold's
+ * untouched cost slot. */
+function stripCostMark(block: ResultUsageBlock): ResultUsageBlock {
+  if (overflowMarks.get(block)?.has("cost_usd") !== true) return block;
+  const copy = { ...block };
+  markOverflowed(copy, overflowedFields(block).filter((field) => field !== "cost_usd"));
+  return copy;
 }

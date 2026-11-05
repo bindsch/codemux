@@ -212,6 +212,35 @@ describe("usage arithmetic", () => {
     expect(addUsage(block({ cost_usd: 0.01 }), block({ cost_usd: 0.02 })).cost_usd).toBe(0.03);
   });
 
+  test("a cost sum that leaves the finite range is null, never Infinity (round 90)", () => {
+    // The ledger's reader accepts every finite cost, so two
+    // Number.MAX_VALUE blocks are honest inputs; the fold's money total is
+    // unknown, not the float addition's Infinity.
+    const overflowed = addUsage(
+      block({ cost_usd: Number.MAX_VALUE }),
+      block({ cost_usd: Number.MAX_VALUE })
+    );
+    expect(overflowed.cost_usd).toBe(null);
+    // The overflow is sticky: a later figure does not restart the total
+    // from the null the overflow left (round 91).
+    expect(overflowedFields(overflowed)).toEqual(["cost_usd"]);
+    expect(addUsage(overflowed, block({ cost_usd: 1 })).cost_usd).toBe(null);
+    expect(addUsage(block({ cost_usd: 1 }), overflowed).cost_usd).toBe(null);
+    // The turn fold adopts the harness's latest session figure, which
+    // settles the cost again; a turn that reports none keeps it unknown,
+    // and the token fold is untouched either way.
+    const noCost = addTurnUsage(overflowed, block({ input_tokens: 2, output_tokens: 1, cached_input_tokens: 0, total_tokens: 3, cost_usd: null }));
+    expect(noCost.cost_usd).toBe(null);
+    expect(overflowedFields(noCost)).toEqual(["cost_usd"]);
+    // 10 + 10 from the two overflowed blocks' defaults, plus this turn's 2.
+    expect(noCost.input_tokens).toBe(22);
+    const settled = addTurnUsage(noCost, block({ cost_usd: 0.25 }));
+    expect(settled.cost_usd).toBe(0.25);
+    expect(overflowedFields(settled)).toEqual([]);
+    // A turn whose own accumulation overflowed makes the session cost unknown.
+    expect(addTurnUsage(block({ cost_usd: 3 }), overflowed).cost_usd).toBe(null);
+  });
+
   test("an overflowed field stays unknown through every later fold (round 81)", () => {
     // After MAX_SAFE_INTEGER + 2 overflowed input_tokens to null, a later
     // turn reporting 5 must not revive it as 5: the null of an overflow

@@ -101,6 +101,80 @@ describe("syncKeychainCredential — a mirror of an existing file", () => {
     } finally { spy.mockRestore(); }
   });
 
+  test("a scrub that ends on a file with no Claude credential is failed, never judged by the pre-scrub copy (review round 91)", () => {
+    // The Keychain entry holds no usable credential, so the file's refresh
+    // token is scrubbed locally, and the scrub's own write lands. Another
+    // writer then replaces the file with one that has no claudeAiOauth at
+    // all. The copy read before the scrub still had a live access token;
+    // judging by it answered "missing" (the mirror authenticates alone)
+    // while the child has nothing to authenticate with.
+    const carrying = JSON.stringify({ claudeAiOauth: { accessToken: "a", refreshToken: "LIVE", expiresAt: FUTURE } });
+    const fileIo = require("../src/file-io.js") as typeof import("../src/file-io.js");
+    const original = fileIo.readUtf8FileBounded;
+    let reads = 0;
+    const spy = spyOn(fileIo, "readUtf8FileBounded").mockImplementation((path: string, options: Parameters<typeof original>[1]) => {
+      reads += 1;
+      // Reads 1 and 2: the sync's read and the writer's conflict check, the
+      // real disk. Read 3: the post-scrub reread sees the replacement.
+      return reads >= 3 ? `${JSON.stringify({ somethingElse: true })}\n` : original(path, options);
+    });
+    try {
+      withTarget((target) => {
+        expect(syncKeychainCredential("svc", target, gives(JSON.stringify({ mcpOAuth: {} })), BACKUPS(target))).toBe("failed");
+        expect(reads).toBe(3);
+      }, carrying);
+    } finally { spy.mockRestore(); }
+  });
+
+  test("a scrub that ends on another writer's replacement is judged against the disk, not the pre-scrub copy (review round 90)", () => {
+    // The conflict path: the mirror another writer left carries a refresh
+    // token and the Keychain's own access token, so the scrub runs — and
+    // while the scrub handles ITS write conflict the writer replaces the
+    // file again, this time with a clean mirror holding a DIFFERENT access
+    // token. The scrub reports "clean" (nothing carries a refresh token
+    // anymore) and the pre-scrub snapshot would answer "current", sending
+    // the launch out on a token the Keychain no longer holds. The reread
+    // decides against what is on disk now.
+    const seed = JSON.stringify({ claudeAiOauth: { accessToken: "stale", refreshToken: "OLD", expiresAt: FUTURE - 1, scopes: [] } });
+    // What the first reread sees (read 3): a mirror carrying a refresh
+    // token under the Keychain's access token "t".
+    const carrying = JSON.stringify({ claudeAiOauth: { accessToken: "t", refreshToken: "LIVE", expiresAt: FUTURE, scopes: [] } });
+    // What the scrub's conflict re-read and the caller's reread see
+    // (reads 5 and 6): another writer's finished replacement.
+    const theirs = JSON.stringify({ claudeAiOauth: { accessToken: "theirs", refreshToken: "", expiresAt: FUTURE, scopes: [] } });
+    const matched = JSON.stringify({ claudeAiOauth: { accessToken: "t", refreshToken: "", expiresAt: FUTURE, scopes: [] } });
+    const fileIo = require("../src/file-io.js") as typeof import("../src/file-io.js");
+    const original = fileIo.readUtf8FileBounded;
+    const spyOnReads = (live: string, after: string) => {
+      let reads = 0;
+      return spyOn(fileIo, "readUtf8FileBounded").mockImplementation((path: string, options: Parameters<typeof original>[1]) => {
+        reads += 1;
+        if (reads === 1) return `${original(path, options).trimEnd()} \n`; // differs from disk: the first write conflicts
+        if (reads === 3) return `${live}\n`; // the reread sees the other writer's refresh-token-carrying mirror
+        if (reads >= 5) return `${after}\n`; // the scrub's conflict re-read and the caller's post-scrub reread
+        return original(path, options); // reads 2 and 4: the real disk, so both writes conflict
+      });
+    };
+    withTarget((target) => {
+      const spy = spyOnReads(carrying, theirs);
+      try {
+        expect(syncKeychainCredential("svc", target, gives(SECRET), BACKUPS(target))).toBe("failed");
+      } finally {
+        spy.mockRestore();
+      }
+    }, seed);
+    // The replacement holding the Keychain's own token is current: the
+    // reread judges, and a clean matching mirror needs no rewrite.
+    withTarget((target) => {
+      const spy = spyOnReads(carrying, matched);
+      try {
+        expect(syncKeychainCredential("svc", target, gives(SECRET), BACKUPS(target))).toBe("current");
+      } finally {
+        spy.mockRestore();
+      }
+    }, seed);
+  });
+
   test("a mirror that would exceed the bound is never written (review round 76)", () => {
     // A Keychain credential large enough to push the mirror past 1 MiB is
     // not written: the next launch could not read it back. The file keeps

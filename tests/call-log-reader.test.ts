@@ -1,7 +1,9 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { appendCallRecord, CALL_LOG_ENV, MAX_CALL_LOG_BYTES, MAX_CALL_LOG_LINE_BYTES, readCallLog, resetCallLogWarningForTests, streamCallLog } from "../src/call-log.js";
 import { BASE_RECORD, tempEnv } from "./helpers/call-log.js";
 
@@ -348,6 +350,115 @@ test("endAt stops the stream at the byte the caller saw, so a growing ledger rea
     expect(all).toEqual(["first", "second"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a ledger swapped for a FIFO between the check and the open never blocks the stream (review round 90)", () => {
+  // The stream once statted the pathname and opened it separately, so a
+  // FIFO swapped in between parked the blocking open forever — with no
+  // writer, nothing else would have stopped it. The open comes first now
+  // (O_NONBLOCK, O_NOFOLLOW) and the type is judged on the descriptor
+  // itself. The read runs in a child `bun test` run, so a regression
+  // fails this test instead of hanging the suite: the child's spyOn
+  // replaces statSync so the swap lands exactly between the old check
+  // and the old open (a plain child script cannot patch node:fs).
+  if (process.platform === "win32") return;
+  const { dir, cleanup } = tempEnv();
+  try {
+    const path = join(dir, "calls.jsonl");
+    writeFileSync(path, `${JSON.stringify(BASE_RECORD)}\n`);
+    const moduleUrl = pathToFileURL(join(import.meta.dir, "..", "src", "call-log-reader.ts")).href;
+    const child = join(dir, "fifo-race.test.ts");
+    writeFileSync(child, [
+      `import { expect, spyOn, test } from "bun:test";`,
+      `import * as fs from "node:fs";`,
+      `import { streamCallLog } from ${JSON.stringify(moduleUrl)};`,
+      `const path = ${JSON.stringify(path)};`,
+      `test("phase 1: the swap lands between the old check and the old open", () => {`,
+      `  const real = fs.statSync(path);`,
+      `  let swapped = false;`,
+      `  const spy = spyOn(fs, "statSync").mockImplementation(((target: string) => {`,
+      `    if (target === path && !swapped) {`,
+      `      swapped = true;`,
+      `      fs.rmSync(path);`,
+      `      Bun.spawnSync(["mkfifo", path]);`,
+      `      return real;`,
+      `    }`,
+      `    return real;`,
+      `  }) as typeof fs.statSync);`,
+      `  let seen = 0;`,
+      `  try {`,
+      `    streamCallLog(path, () => { seen += 1; });`,
+      `  } finally {`,
+      `    spy.mockRestore();`,
+      `  }`,
+      `  // The fixed code never stats the pathname: the regular ledger read,`,
+      `  // and the swap never fired.`,
+      `  expect(seen).toBe(1);`,
+      `  expect(swapped).toBe(false);`,
+      `});`,
+      `test("phase 2: a FIFO at the ledger path is refused on the descriptor", () => {`,
+      `  fs.rmSync(path, { force: true });`,
+      `  expect(Bun.spawnSync(["mkfifo", path]).exitCode).toBe(0);`,
+      `  expect(() => streamCallLog(path, () => {})).toThrow("is not a regular file");`,
+      `});`,
+    ].join("\n"));
+    const result = Bun.spawnSync([process.execPath, "test", child], {
+      timeout: 9_000,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(result.exitCode).toBe(0);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a ledger that shrinks mid-read yields only the bytes actually read, never the NUL-filled tail (review round 90)", () => {
+  // The bounded-tail read allocates the whole 16 MiB window and counts the
+  // bytes it got; a ledger truncated between the size check and the read
+  // left the buffer's tail zero-filled, and decoding the whole allocation
+  // appended those NUL bytes to the final line. readSync is stubbed to
+  // deliver only one record's worth of the window, exactly as a shrink
+  // would.
+  const { dir, cleanup } = tempEnv();
+  try {
+    const path = join(dir, "calls.jsonl");
+    const recordSize = 4096;
+    const count = MAX_CALL_LOG_BYTES / recordSize;
+    const bare = `${JSON.stringify({ ...BASE_RECORD, model: "" })}\n`;
+    const model = "m".repeat(recordSize - bare.length);
+    const chunk = `${JSON.stringify({ ...BASE_RECORD, model })}\n`;
+    const handle = Bun.file(path).writer();
+    // The junk ends with a newline, so the window begins with a complete
+    // record and the prelude byte drops nothing.
+    handle.write(`${"j".repeat(8191)}\n`);
+    for (let i = 0; i < count + 1; i++) handle.write(chunk);
+    handle.end();
+    const size = statSync(path).size;
+    expect(size).toBeGreaterThan(MAX_CALL_LOG_BYTES);
+    const cut = size - MAX_CALL_LOG_BYTES;
+    const end = cut + recordSize; // one record arrives; nothing past it does
+    const realReadSync = fs.readSync;
+    const spy = spyOn(fs, "readSync").mockImplementation(((fd: number, buffer: Buffer, offset: number, length: number, position: number | null) => {
+      if (typeof position === "number" && position >= cut) {
+        if (position >= end) return 0; // past the truncated end: nothing arrives
+        return realReadSync(fd, buffer, offset, Math.min(length, end - position), position);
+      }
+      return realReadSync(fd, buffer, offset, length, position);
+    }) as typeof fs.readSync);
+    try {
+      const log = readCallLog(path);
+      expect(log.truncated).toBe(true);
+      expect(log.malformed).toBe(0);
+      expect(log.entries).toHaveLength(1);
+      expect(log.entries[0]!.line).not.toContain("\0");
+      expect(log.entries[0]!.record?.model).toBe(model);
+    } finally {
+      spy.mockRestore();
+    }
+  } finally {
+    cleanup();
   }
 });
 

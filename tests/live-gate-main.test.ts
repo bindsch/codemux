@@ -2,12 +2,25 @@
 // the nothing-was-probed refusal, and the in-process run. main() lives in
 // the entry barrel scripts/live-gate.ts (only spawned children run it as
 // an entry; review round 8, edges).
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { CHECKOUT_VERSION, main } from "../scripts/live-gate.js";
-import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { AGENT_IDS } from "../src/types.js";
 import { ROOT, fixtureDirectory } from "./helpers/live-gate.js";
+
+// The gate snapshots the Keychain search list through `security` before
+// its probe pool and stops when that baseline cannot be taken (review
+// round 88). These tests run the whole gate, so they bring their own
+// `security`: a fake in a private directory ahead of PATH with a stable
+// answer, never the machine's tool or its Keychain state (a sandbox that
+// denies the real one must not fail them).
+const SECURITY_DIR = mkdtempSync(join(tmpdir(), "codemux-gate-main-security-"));
+writeFileSync(join(SECURITY_DIR, "security"), `#!/bin/sh\nprintf '    "/u/login.keychain-db"\\n'\n`);
+chmodSync(join(SECURITY_DIR, "security"), 0o700);
+const GATE_ENV = { ...process.env, PATH: `${SECURITY_DIR}:${process.env.PATH ?? ""}` };
+afterAll(() => rmSync(SECURITY_DIR, { recursive: true, force: true }));
 
 /** A fake candidate build (round 18, edges 4): answers `--version` with
  * this checkout's version and `list --json` with the given available
@@ -46,7 +59,7 @@ test.each(["missing", "non-executable", "directory"])("live gate refuses a %s bi
   if (kind === "non-executable") writeFileSync(binary, "", { mode: 0o600 });
   try {
     const result = Bun.spawnSync([process.execPath, join(ROOT, "scripts/live-gate.ts"), "--codemux", binary], {
-      cwd: ROOT, env: { ...process.env, LIVE_GATE_SKIP: AGENT_IDS.join(",") },
+      cwd: ROOT, env: { ...GATE_ENV, LIVE_GATE_SKIP: AGENT_IDS.join(",") },
     });
     expect(result.exitCode).toBe(2);
     expect(result.stdout.toString()).toBe("");
@@ -60,7 +73,7 @@ test("a bad --timeout prints commander's argument error exactly once", () => {
   // exitOverride throw, so main()'s catch must not repeat it.
   const result = Bun.spawnSync(
     [process.execPath, join(ROOT, "scripts/live-gate.ts"), "--codemux", process.execPath, "--timeout", "soon"],
-    { cwd: ROOT, env: { ...process.env } }
+    { cwd: ROOT, env: { ...GATE_ENV } }
   );
   const stderr = result.stderr.toString();
   expect(result.exitCode).not.toBe(0);
@@ -119,7 +132,7 @@ test("live gate registers and removes SIGHUP handling and exits 129", async () =
     console.log("signal handlers removed");
   `;
   const proc = Bun.spawn([process.execPath, "-e", source], {
-    cwd: ROOT, env: { ...process.env },
+    cwd: ROOT, env: { ...GATE_ENV },
     stdin: "ignore", stdout: "pipe", stderr: "pipe",
   });
   const [exit, stdout, stderr] = await Promise.all([
@@ -173,7 +186,7 @@ test.each([
     await main();
   `;
   const proc = Bun.spawn([process.execPath, "-e", source], {
-    cwd: ROOT, env: { ...process.env, ...(skipEnv === "" ? {} : { LIVE_GATE_SKIP: skipEnv }) },
+    cwd: ROOT, env: { ...GATE_ENV, ...(skipEnv === "" ? {} : { LIVE_GATE_SKIP: skipEnv }) },
     stdin: "ignore", stdout: "pipe", stderr: "pipe",
   });
   const [exit, stdout, stderr] = await Promise.all([
@@ -217,9 +230,12 @@ test("main() runs in process: report written, exit code set, handlers removed", 
   });
   const argv = process.argv;
   const code = process.exitCode;
+  const path = process.env.PATH;
   // The default launcher: discovery then reads the mocked adapter
-  // registry in process, and no candidate listing is spawned.
+  // registry in process, and no candidate listing is spawned. The fake
+  // `security` answers the gate's Keychain baseline here too.
   process.argv = ["bun", "live-gate"];
+  process.env.PATH = GATE_ENV.PATH;
   try {
     await main();
     // Nothing was probed (no adapters available), so the gate fails.
@@ -228,6 +244,7 @@ test("main() runs in process: report written, exit code set, handlers removed", 
   } finally {
     process.argv = argv;
     process.exitCode = code;
+    process.env.PATH = path;
     adapters.mockRestore();
     version.mockRestore();
     usage.mockRestore();
@@ -257,7 +274,7 @@ test("a throwing adapter in the login pre-check closes probe J's listener, so th
       console.log("rejected: " + (error instanceof Error ? error.message : String(error)));
     }
   `;
-  const proc = Bun.spawn([process.execPath, "-e", source], { cwd: ROOT, env: { ...process.env }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn([process.execPath, "-e", source], { cwd: ROOT, env: { ...GATE_ENV }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   const exited = await Promise.race([proc.exited, new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 15_000))]);
   if (exited === "hung") proc.kill();
   const stdout = await new Response(proc.stdout).text();

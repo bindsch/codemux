@@ -125,6 +125,17 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 90, whole tree: a credential scrub that ends on another writer's replacement is judged
+  against the file on disk, not the pre-scrub snapshot, so a sandboxed launch can no longer proceed as
+  current on a stale access token; a cost total that would leave the finite range prints `unknown` — on the
+  totals line and the harness-estimate line — and the session fold yields null instead of `Infinity`; a
+  session record whose `ended` is not null or a valid timestamp reads as corrupt, so resume fails closed
+  instead of skipping the live-owner check; `calls` opens the ledger before judging it, so a FIFO swapped
+  in between the check and the open is refused on the descriptor instead of blocking the command; and a
+  ledger that shrinks mid-read decodes only the bytes actually read, never the NUL-filled tail. Round 91 on that diff: an overflowed session cost stays unknown
+  until the harness reports a new session figure; a scrub that ends on a file with no Claude credential is `failed`,
+  never judged by the copy read before it; a registry `ended` stamp is checked whole, so trailing text or an offset
+  is refused.
 - Review round 87, whole tree: a session history delta that is not valid UTF-8 ends the session as
   unreliable state instead of passing as a reply with its byte offset committed, an incomplete
   trailing character included (the history is read after the turn's process tree settled); equivalent spellings of the working

@@ -9,6 +9,9 @@ import type { ResultUsageBlock } from "./types.js";
 
 export type TokenField = "input_tokens" | "output_tokens" | "cached_input_tokens";
 export const TOKEN_FIELDS: readonly TokenField[] = ["input_tokens", "output_tokens", "cached_input_tokens"];
+/** Every field a mark can name: the token fields, and the cost, whose sum
+ * can leave the finite range (review round 91). */
+export type OverflowField = TokenField | "cost_usd";
 
 /** The fields a running block lost to overflow, keyed by the block's
  * identity. An overflowed field is null in the block, the same null an
@@ -18,10 +21,10 @@ export const TOKEN_FIELDS: readonly TokenField[] = ["input_tokens", "output_toke
  * derive from a marked one carries it forward. Callers hold the block
  * the helpers return and never rebuild it by hand (the drivers assign
  * `cumulative` from addTurnUsage alone), so identity is the carrier. */
-export const overflowMarks = new WeakMap<ResultUsageBlock, ReadonlySet<TokenField>>();
+export const overflowMarks = new WeakMap<ResultUsageBlock, ReadonlySet<OverflowField>>();
 
-/** The token fields of `block` that overflowed in an earlier fold. */
-export function overflowedFields(block: ResultUsageBlock): readonly TokenField[] {
+/** The fields of `block` that overflowed in an earlier fold. */
+export function overflowedFields(block: ResultUsageBlock): readonly OverflowField[] {
   return [...(overflowMarks.get(block) ?? [])];
 }
 
@@ -30,9 +33,9 @@ export function overflowedFields(block: ResultUsageBlock): readonly TokenField[]
  * reports null for the field, and the mark keeps that null from being
  * read as "never reported" by the folds (review round 84). Returns the
  * block for chaining. */
-export function markOverflowed(block: ResultUsageBlock, fields: readonly TokenField[]): ResultUsageBlock {
+export function markOverflowed(block: ResultUsageBlock, fields: readonly OverflowField[]): ResultUsageBlock {
   if (fields.length === 0) return block;
-  const marks = new Set<TokenField>(overflowMarks.get(block) ?? []);
+  const marks = new Set<OverflowField>(overflowMarks.get(block) ?? []);
   for (const field of fields) marks.add(field);
   overflowMarks.set(block, marks);
   return block;

@@ -4,6 +4,7 @@
 import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { FileContentError, readUtf8FileBounded } from "../../file-io.js";
+import { calendarValid } from "../../calendar.js";
 import type { AutonomyLevel } from "../../types.js";
 import { MAX_PASSTHROUGH_ENV_NAMES, UsageRefusalError } from "../../validation.js";
 import { MAX_ID_CHARS } from "../protocol.js";
@@ -222,9 +223,21 @@ function validRecord(value: unknown): value is SessionRecord {
   if (typeof provider === "string" && provider.length === 0) return false;
   if (!Number.isInteger(record["owner_pid"]) || (record["owner_pid"] as number) <= 0) return false;
   if (record["owner_start"] !== null && typeof record["owner_start"] !== "string") return false;
-  if (record["ended"] !== null && typeof record["ended"] !== "string") return false;
+  // `ended` is null while the session is open, and resume checks owner
+  // liveness only while it is null, so any string the old check accepted
+  // silently ended the session and a live owner's record resumed under it.
+  // The writer stamps new Date().toISOString(); nothing but null or that
+  // calendar shape is a record a writer makes (review round 90).
+  const ended = record["ended"];
+  if (ended !== null && (typeof ended !== "string" || !ENDED_STAMP.test(ended) || !calendarValid(ended))) return false;
   return true;
 }
+
+/** The whole `ended` value: a UTC ISO stamp, with or without a fraction,
+ * and nothing after it. calendarValid checks the calendar fields but only
+ * the prefix, so a trailing `garbage` or an impossible offset would pass
+ * without this (review round 91). */
+const ENDED_STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
 
 /** The first session id that appears twice in a parsed file's sessions
  * array (each entry read for its id alone), or null. Resume lookup

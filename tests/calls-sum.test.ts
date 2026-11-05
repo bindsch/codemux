@@ -223,4 +223,36 @@ describe("codemux calls --sum", () => {
     expect(totals).toContain("output=unknown");
     expect(totals).toContain("Totals over 3 record(s)");
   });
+
+  test("--sum prints unknown for a cost total that leaves the finite range (round 90)", async () => {
+    // The reader accepts every finite cost, so two Number.MAX_VALUE
+    // figures are valid records; the unchecked addition printed Infinity
+    // as a money total. The billed total prints unknown — the same word an
+    // unreported field prints — a later figure cannot restart it, and the
+    // harness-estimate bucket follows the same rule on its own line.
+    const { stdout } = await callsWith(
+      [
+        record({ ts: iso(3 * MINUTE), agent: "codex", input: 1, output: 1, total: 2, cost: Number.MAX_VALUE }),
+        record({ ts: iso(2 * MINUTE), agent: "codex", input: 1, output: 1, total: 2, cost: Number.MAX_VALUE }),
+        record({ ts: iso(MINUTE), agent: "codex", input: 1, output: 1, total: 2, cost: 0.01 }),
+      ],
+      ["--sum"]
+    );
+    const totals = stdout.split("\n").find((line) => line.startsWith("Totals"))!;
+    expect(totals).toBeDefined();
+    expect(totals).toContain("cost=unknown");
+    expect(totals).not.toContain("$0.0100"); // the overflowed bucket stays unknown
+    expect(stdout).not.toContain("Infinity");
+    const { stdout: estimated } = await callsWith(
+      [
+        record({ ts: iso(2 * MINUTE), input: 1, output: 1, total: 2, cost: Number.MAX_VALUE, costSource: "harness-estimate" }),
+        record({ ts: iso(MINUTE), input: 1, output: 1, total: 2, cost: Number.MAX_VALUE, costSource: "harness-estimate" }),
+      ],
+      ["--sum"]
+    );
+    const estimate = estimated.split("\n").find((line) => line.includes("harness estimate"))!;
+    expect(estimate).toBeDefined();
+    expect(estimate).toContain("harness estimate unknown");
+    expect(estimated).not.toContain("Infinity");
+  });
 });

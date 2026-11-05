@@ -1,4 +1,4 @@
-import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import type { CallRecord } from "./call-log.js";
 import { parseLabels, validateLabelKey } from "./labels.js";
 
@@ -172,7 +172,11 @@ export function readCallLog(path: string): CallLogContents {
         if (n === 0) break;
         read += n;
       }
-      text = buffer.toString("utf8");
+      // Only the bytes actually read: a ledger that shrank between the
+      // size check and this read leaves the buffer's tail zero-filled, and
+      // decoding the whole allocation turned those NUL bytes into the
+      // final line's content (review round 90).
+      text = buffer.subarray(0, read).toString("utf8");
       // The read may have started mid-line, in which case the window's
       // first line is the one the bounded read cut and is dropped. But the
       // byte BEFORE the cut decides that, not an unconditional drop: a cut
@@ -243,18 +247,33 @@ export function streamCallLog(
   visit: (entry: CallLogEntry) => void,
   options: { endAt?: number } = {}
 ): StreamedCallLog {
-  // `endAt` fixes the byte the read stops at, so two passes over a ledger
-  // that is still being appended to see the same records (round 28,
-  // edges 2): bytes past it, a partial line included, are the next
-  // invocation's business.
-  const ledgerStat = statSync(path);
-  // A FIFO or a directory at the path would block or fail the read: only a
-  // regular file is a ledger (review round 56).
-  if (!ledgerStat.isFile()) throw new Error(`the call log at ${path} is not a regular file`);
-  const size = ledgerStat.size;
-  const endAt = Math.min(options.endAt ?? size, size);
-  const fd = openSync(path, "r");
+  // Open FIRST, then judge the descriptor: a stat of the pathname before a
+  // separate open leaves a window a swap defeats — a FIFO replaced in
+  // between made the blocking open park forever (review round 90). The
+  // open passes O_NONBLOCK (a FIFO with no writer never blocks it) and
+  // O_NOFOLLOW (a final symlink is refused, never read through), the
+  // pattern the writer (src/call-log.ts) and the shared bounded reader
+  // (src/file-io.ts) already use; only a regular file is a ledger
+  // (review round 56). `endAt` fixes the byte the read stops at, so two
+  // passes over a ledger that is still being appended to see the same
+  // records (round 28, edges 2): bytes past it, a partial line included,
+  // are the next invocation's business.
+  const noFollowFlag = process.platform !== "win32" ? constants.O_NOFOLLOW : 0;
+  let fd: number;
   try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | noFollowFlag);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ELOOP") throw new Error(`the call log at ${path} is not a regular file`);
+    throw error;
+  }
+  try {
+    const ledgerStat = fstatSync(fd);
+    if (!ledgerStat.isFile()) {
+      throw new Error(`the call log at ${path} is not a regular file`);
+    }
+    const size = ledgerStat.size;
+    const endAt = Math.min(options.endAt ?? size, size);
     const chunk = Buffer.alloc(STREAM_CHUNK_BYTES);
     // An incomplete line is held as the chunks that carry it and joined
     // once, at its newline: joining it on every chunk made a 16 MiB line

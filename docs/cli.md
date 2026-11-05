@@ -250,7 +250,9 @@ length: a ring of `-n` records for the listing (raw lines only under
 `--json`), one closing record per session for the totals, and — under
 `--since` — one session id per session with an in-window turn; an empty
 session id keys nothing, so a recent empty-id turn selects no old closings.
-A token total that would leave the safe-integer range prints `unknown`.
+A token total that would leave the safe-integer range prints `unknown`;
+so does a cost total that would leave the finite range, on the totals line
+and on the harness-estimate line.
 Label
 filters use the [label syntax](#labels) above;
 `calls` does not read

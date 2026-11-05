@@ -208,6 +208,9 @@ never zero. Reported zero remains zero. Token counts are whole non-negative
 safe integers everywhere — run envelopes, session usage events, and the
 ledger: a count past the safe-integer range is null, and so is any sum that
 would leave the range, never the rounded number a float addition produces.
+A cost is finite and non-negative, and a cost sum that would leave the
+finite range is null too — never `Infinity` — in the session fold and in
+the `calls` totals alike.
 
 | Field | Meaning |
 |---|---|
@@ -339,6 +342,10 @@ Closings without a nonempty session ID are excluded. Unknown fields are
 reported with missing-value counts, and a token field whose running sum
 would leave the safe-integer range prints `unknown` — the same word an
 unreported field prints — and stays unknown for the rest of the total.
+A cost total follows the same rule at the finite range: the reader accepts
+every finite cost, so two valid figures can overflow a money total, which
+prints `unknown` (the harness-estimate line prints `harness estimate
+unknown`) and stays unknown for the rest of the total.
 `--json --sum` emits stored JSONL followed
 by human-readable totals; it is not a pure JSONL stream.
 

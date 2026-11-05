@@ -18,6 +18,15 @@ type UsageField = (typeof USAGE_FIELDS)[number]["field"];
 /** The count fields safeTokenSum guards; cost is money, not a token count. */
 type TokenField = Exclude<UsageField, "cost_usd">;
 
+/** The next running cost total, or null once the addition has left the
+ * finite range: the reader accepts every finite cost, so two valid
+ * figures can sum past Number.MAX_VALUE, and the float addition's
+ * `Infinity` is not a monetary total (review round 90). */
+const nextCostSum = (current: number | null, value: number): number | null => {
+  const next = (current ?? 0) + value;
+  return Number.isFinite(next) ? next : null;
+};
+
 /** A record's session key: null when the record keys nothing. A session
  * id of null — or "", which older ledgers wrote where a session had no
  * native id — matches no session and is never merged under one shared
@@ -40,7 +49,8 @@ export const sessionKey = (record: CallRecord): string | null =>
  * missing. Token sums follow the envelope's safe rule (safeTokenSum):
  * a count past the safe-integer range never enters a sum, and a running
  * sum that would leave the range is unknown and stays unknown (review
- * round 80).
+ * round 80). A cost total that would leave the finite range is unknown
+ * the same sticky way (review round 90).
  */
 class GroupTotals {
   private readonly sums: Record<UsageField, number | null> = {
@@ -71,6 +81,13 @@ class GroupTotals {
   // landing in it would report a number the true total has already
   // overflowed past (review round 80).
   private readonly overflowed = new Set<TokenField>();
+  // A cost bucket whose running total has left the finite range follows
+  // the same sticky rule (review round 90): the total stays unknown for
+  // the rest of the pass, so a later figure cannot restart a sum the true
+  // total has already overflowed past. One flag per bucket — the billed
+  // total and the harness estimate overflow independently.
+  private costOverflowed = false;
+  private costEstimatedOverflowed = false;
   private readonly turnsReported = new Map<string, Set<UsageField>>();
   private readonly newestClosing = new Map<string, CallRecord>();
 
@@ -90,17 +107,24 @@ class GroupTotals {
    * the billed bucket. A ledger line older than the field is classified
    * the way the writer classifies it today (costSourceFor), so a claude or
    * zai estimate recorded before 2.0.0 does not read as a provider charge
-   * (review round 39). */
+   * (review round 39). A total that would leave the finite range is
+   * unknown and stays unknown (review round 90). */
   private addCost(value: number | null, source: CostSource | null, agent: AgentId): void {
     if (value === null) {
       this.unknowns.cost_usd++;
       return;
     }
     if ((source ?? costSourceFor(agent, value)) === "harness-estimate") {
-      this.costEstimated = (this.costEstimated ?? 0) + value;
+      if (this.costEstimatedOverflowed) return;
+      const next = nextCostSum(this.costEstimated, value);
+      if (next === null) this.costEstimatedOverflowed = true;
+      this.costEstimated = next;
       return;
     }
-    this.sums.cost_usd = (this.sums.cost_usd ?? 0) + value;
+    if (this.costOverflowed) return;
+    const next = nextCostSum(this.sums.cost_usd, value);
+    if (next === null) this.costOverflowed = true;
+    this.sums.cost_usd = next;
   }
 
   add(record: CallRecord): void {
@@ -163,6 +187,11 @@ class GroupTotals {
     const sums = { ...this.sums };
     const unknowns = { ...this.unknowns };
     let costEstimated = this.costEstimated;
+    // The fold obeys the same sticky finite rule the pass did (review
+    // round 90): a bucket the pass already overflowed stays unknown, and
+    // one the fold overflows joins it.
+    let costOverflowed = this.costOverflowed;
+    let costEstimatedOverflowed = this.costEstimatedOverflowed;
     for (const [key, closing] of this.newestClosing) {
       const reported = this.turnsReported.get(key);
       for (const { field, pick } of USAGE_FIELDS) {
@@ -171,9 +200,15 @@ class GroupTotals {
           const value = pick(closing.usage);
           if (value === null) unknowns.cost_usd++;
           else if ((closing.cost_source ?? costSourceFor(closing.agent, value)) === "harness-estimate") {
-            costEstimated = (costEstimated ?? 0) + value;
-          } else {
-            sums.cost_usd = (sums.cost_usd ?? 0) + value;
+            if (!costEstimatedOverflowed) {
+              const next = nextCostSum(costEstimated, value);
+              if (next === null) costEstimatedOverflowed = true;
+              costEstimated = next;
+            }
+          } else if (!costOverflowed) {
+            const next = nextCostSum(sums.cost_usd, value);
+            if (next === null) costOverflowed = true;
+            sums.cost_usd = next;
           }
           continue;
         }
@@ -231,10 +266,13 @@ class GroupTotals {
     console.log(line);
     // The estimate on its own line, never inside the billed total: a
     // claude or zai session-lifetime figure is what the harness folded,
-    // not money the provider billed per call (audit round 2, B5).
-    if (costEstimated !== null) {
+    // not money the provider billed per call (audit round 2, B5). A total
+    // that left the finite range prints `unknown` rather than a figure
+    // (review round 90).
+    if (costEstimated !== null || costEstimatedOverflowed) {
+      const figure = costEstimated === null ? "unknown" : `$${costEstimated.toFixed(4)}`;
       console.log(
-        `${heading} harness estimate $${costEstimated.toFixed(4)} — ` +
+        `${heading} harness estimate ${figure} — ` +
           "claude and zai report session-lifetime figures, not per-call bills"
       );
     }

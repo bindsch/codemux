@@ -54,6 +54,33 @@ describe("failure policy", () => {
     expect(readRegistry(otherPath).outcome).toBe("corrupt");
   });
 
+  test("an `ended` that is not null or a valid timestamp is corrupt, and resume fails closed (review round 90)", () => {
+    // Resume checks owner liveness only while `ended` is null, so any
+    // string the shape accepted silently ended the session — a live
+    // owner's record could be resumed under it. The writer stamps
+    // new Date().toISOString(); nothing but null or that calendar shape
+    // is a record a writer makes.
+    // The whole value is checked, not its prefix (round 91): trailing
+    // text and an impossible offset are refused as well.
+    for (const ended of ["", "soon", "2026-01-01T00:00:00garbage", "2026-01-01T00:00:00+99:99", "2026-02-30T00:00:00.000Z"]) {
+      const path = registryIn(makeRoot());
+      seedRegistry(path, [craftEntry({ id: "bad-end", ended })]);
+      expect(readRegistry(path).outcome).toBe("corrupt");
+      const refused = lookupForResume(path, "bad-end", probe());
+      expect(refused.outcome).toBe("untrusted");
+      if (refused.outcome === "untrusted") {
+        expect(refused.reason).toContain("fail-closed on a corrupt registry");
+      }
+    }
+    // The writer's own stamp still reads.
+    const ended = registryIn(makeRoot());
+    seedRegistry(ended, [craftEntry({ id: "ended-ok", ended: "2026-10-05T11:00:00.000Z" })]);
+    expect(readRegistry(ended).outcome).toBe("ok");
+    const plain = registryIn(makeRoot());
+    seedRegistry(plain, [craftEntry({ id: "ended-plain", ended: "2026-10-05T11:00:00Z" })]);
+    expect(readRegistry(plain).outcome).toBe("ok");
+  });
+
   test("a duplicated session id is corrupt, naming the id (review round 73)", () => {
     // Resume lookup returns only the first record for an id and pruning
     // collapses sizes by id, so a file holding the same id twice would
