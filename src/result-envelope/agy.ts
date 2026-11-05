@@ -89,9 +89,16 @@ export function parseAgyResultEnvelope(
     // null would drop a known number. The raw input includes the cache
     // reads, so uncached input is their difference and needs both counts:
     // one-sided reports stay null rather than guessing the missing half.
+    // A cache-read count ABOVE the input count is an inconsistent snapshot
+    // (the reads are a breakdown of that input): clamping the difference to
+    // zero used to publish an uncached input the harness never reported and
+    // a total above its own input-plus-output (review round 104). The
+    // uncached input is unknown instead — null — and with it the total
+    // (the sum rule below needs every component); the cached and output
+    // counts stay as reported.
     const cacheRead = reportedTokenCount(reported.cache_read_tokens);
-    if (input !== null && cacheRead !== null) {
-      usage.input_tokens = Math.max(0, input - cacheRead);
+    if (input !== null && cacheRead !== null && input >= cacheRead) {
+      usage.input_tokens = input - cacheRead;
     }
     usage.output_tokens = output;
     usage.cached_input_tokens = cacheRead;

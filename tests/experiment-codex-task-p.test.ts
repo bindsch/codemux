@@ -87,7 +87,6 @@ describe("Codex experiment uncached input", () => {
   test.each([
     { read: 0, write: 4, input: 6 },
     { read: 3, write: 4, input: 3 },
-    { read: 4, write: 8, input: 0 },
     { read: 4, write: undefined, input: 6 },
   ])("subtracts both cache components consistently with result accounting: %j", ({ read, write, input }) => {
     const usage = { ...USAGE, cached_input_tokens: read, cache_write_input_tokens: write };
@@ -104,5 +103,25 @@ describe("Codex experiment uncached input", () => {
     expect(normalized.cache_read + normalized.cache_write).toBe(stream.usage.cached_input_tokens);
     expect(normalized.input + normalized.output + normalized.cache_read + normalized.cache_write)
       .toBe(stream.usage.total_tokens);
+  });
+
+  test("cache components over the input are inconsistent, so neither side invents an uncached count (round 104)", () => {
+    // read 4 + write 8 over input 10: the result envelope reports the
+    // snapshot's uncached input and total as unknown, and the experiment
+    // record, whose fields carry counts rather than unknowns, refuses the
+    // snapshot instead of clamping the subtraction to zero.
+    const usage = { ...USAGE, cached_input_tokens: 4, cache_write_input_tokens: 8 };
+    const { parser } = fixture();
+    expect(() => accept(parser, completed("response-A", usage))).toThrow(
+      "Codex cached plus cache-write input exceeds input_tokens",
+    );
+    const stream = parseCodexEventStream([
+      { type: "thread.started", thread_id: "thread" }, { type: "turn.started" },
+      { type: "turn.completed", usage },
+    ].map((entry) => JSON.stringify(entry)).join("\n"))!;
+    expect(stream.usage.input_tokens).toBe(null);
+    expect(stream.usage.total_tokens).toBe(null);
+    expect(stream.usage.cached_input_tokens).toBe(12);
+    expect(stream.usage.output_tokens).toBe(2);
   });
 });

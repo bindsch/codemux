@@ -1,6 +1,6 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { combinedCleanupFailure } from "../experiment-records.js";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { RunContext } from "./base.js";
 import { CodexPolicy } from "./codex-policy.js";
 import {
@@ -12,10 +12,10 @@ import {
 } from "./codex-flags.js";
 import { processCodexRunResult } from "./codex-result.js";
 import {
-  assertTrustedDirectory,
   createCodexHermeticHome,
   prepareRunDirParent,
 } from "../hermetic-home.js";
+import { recordTrustedParent, removeUnderTrustedParent } from "../safe-remove.js";
 import {
   readCodexMultiAgent,
   writeCodexProviderConfig,
@@ -263,6 +263,11 @@ export class CodexAdapter extends CodexPolicy {
             this.realCodexHome(request),
             SCRATCH_PARENT_DIR_NAME
           );
+          // Recorded at creation for the cleanup's revalidation
+          // (src/safe-remove.ts, review round 104): the lstat check the
+          // cleanup used caught a swapped symlink but not another directory
+          // put at the same path, and a codex child can write CODEX_HOME.
+          context.lastMessageParentRecord = recordTrustedParent(scratchParent);
           context.lastMessageDir = mkdtempSync(
             join(scratchParent, `run-${process.pid}-`)
           );
@@ -334,36 +339,33 @@ export class CodexAdapter extends CodexPolicy {
     }
     if (context.lastMessageDir !== undefined) {
       // The same revalidation the result reader applies
-      // (readFinalMessageFallback): a run with write access to Codex state could
-      // have replaced `.codemux-scratch` with a symlink after prepareRun made
-      // it, and the recursive removal resolves that intermediate component
-      // like any path operation would -- following the link into a directory
-      // codemux never chose, outside the sandbox. rm does not follow a symlink
-      // at the run directory's own name (it removes the link), so the parent
-      // is the one component to check. A parent that fails keeps its
-      // directory: the refusal says so, the reader's wording, and the launch's
-      // own rejection stays the failure the caller needs.
-      let parentTrusted = true;
-      try {
-        assertTrustedDirectory(dirname(context.lastMessageDir));
-      } catch (error) {
-        parentTrusted = false;
+      // (readFinalMessageFallback), by the identity recorded when the
+      // directory was made (src/safe-remove.ts, review round 104): a run
+      // with write access to Codex state could have replaced
+      // `.codemux-scratch` with a symlink — or another directory — after
+      // prepareRun made it, and the recursive removal resolves that
+      // intermediate component like any path operation would -- following
+      // the link into a directory codemux never chose, outside the sandbox.
+      // rm does not follow a symlink at the run directory's own name (it
+      // removes the link), so the parent is the one component to check. A
+      // parent that fails keeps its directory: the refusal says so, the
+      // reader's wording, and the launch's own rejection stays the failure
+      // the caller needs.
+      const record = context.lastMessageParentRecord;
+      if (record === undefined) {
+        // Cannot happen: both fields are set together in prepareRun. Kept as
+        // a refusal anyway, because an unchecked removal is the one outcome
+        // worse than a kept directory.
         console.error(
           "codemux: refusing to remove codex's --output-last-message directory: " +
-            `${error instanceof Error ? error.message : String(error)}`
+            "no trusted parent was recorded at creation"
         );
-      }
-      if (parentTrusted) {
-        try {
-          rmSync(context.lastMessageDir, { recursive: true, force: true });
-        } catch (error) {
-          // A cleanup that cannot remove the directory says so and stays out
-          // of its way.
-          console.error(
-            "codemux: could not remove codex's --output-last-message directory: " +
-              `${error instanceof Error ? error.message : String(error)}`
-          );
-        }
+      } else {
+        removeUnderTrustedParent(
+          context.lastMessageDir,
+          record,
+          `codex's --output-last-message directory ${context.lastMessageDir}`
+        );
       }
     }
     try {

@@ -224,6 +224,13 @@ the `calls` totals alike.
 | `total_tokens` | Sum only when all components are known, or an explicitly reported total |
 | `cost_usd` | Reported dollar cost; never estimated from token prices. Claude and Z.AI figures are session-lifetime amounts the harness folded, not per-call bills; the ledger marks them `harness-estimate` |
 
+A snapshot whose cached count exceeds its input count is inconsistent, not a
+zero-uncached-input turn: the cache figures are a breakdown of the input, so
+the harness reported counts that cannot belong to one turn. Such a snapshot
+publishes `input_tokens` null and `total_tokens` null and keeps the reported
+`cached_input_tokens` and `output_tokens`; it is never clamped, which would
+publish components that do not sum to the published total.
+
 | Harness | Run usage | Session usage |
 |---|---|---|
 | Claude/Z.AI | Input/output/cache, computed total, reported cost | Turn token counts; closing tokens accumulate within this driver invocation; closing cost adopts the latest reported session-lifetime cost |
@@ -266,6 +273,10 @@ Each record contains:
 | `duration_ms` | Nonnegative elapsed time from the record's start |
 | `usage` | The five-field object above |
 | `cost_source` | `billed`, `harness-estimate`, `subscription-zero`, or null; written by the ledger from the agent and the figure, never taken from the caller |
+
+`agent` must be a known agent id and `autonomy` a known autonomy level or
+null; a line naming anything else is skipped as malformed and never reaches
+the totals, which key on exactly those fields.
 
 `cost_source` says where the dollar figure came from. Claude and Z.AI report
 session-lifetime cost, so every figure they report is a `harness-estimate`,

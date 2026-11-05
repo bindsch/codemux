@@ -20,6 +20,12 @@ const MINUTE = 60_000;
 const claudeMirror = (expiresAt: number): string =>
   JSON.stringify({ claudeAiOauth: { expiresAt } });
 
+const KIMI_STORE = ".kimi-code/credentials/kimi-code.json";
+const KIMI_LABEL = "~/.kimi-code/credentials/kimi-code.json";
+const kimiStore = (fields: Record<string, unknown>): string => JSON.stringify(fields);
+/** Epoch seconds `offsetMs` from now, kimi's own expiry unit. */
+const seconds = (offsetMs: number): number => Math.floor((Date.now() + offsetMs) / 1_000);
+
 const greenBase = (extra: Record<string, string> = {}): Record<string, string> => ({
   scode: fakeScodeHelp(),
   usagemux: fakeUsagemux(),
@@ -75,29 +81,28 @@ describe("doctor login rows over fixture stores", () => {
     ["agy", { ".gemini/antigravity-cli/antigravity-oauth-token": "" }, {}, "no-credential (~/.gemini/antigravity-cli/antigravity-oauth-token)", "| NO-LOGIN |", 1],
     ["agy", { ".gemini/antigravity-cli/antigravity-oauth-token/placeholder": "x" }, {}, "no-credential (~/.gemini/antigravity-cli/antigravity-oauth-token)", "| NO-LOGIN |", 1],
     // kimi: the 15-minute token, epoch seconds.
-    [
-      "kimi",
-      {
-        ".kimi-code/credentials/kimi-code.json":
-          '{"expires_at":' + Math.floor((Date.now() + 10 * MINUTE) / 1_000) + ',"refresh_token":"present"}',
-      },
-      {},
-      "logged-in (~/.kimi-code/credentials/kimi-code.json)",
-      "| OK |",
-      0,
-    ],
-    [
-      "kimi",
-      {
-        ".kimi-code/credentials/kimi-code.json":
-          '{"expires_at":' + Math.floor((Date.now() - 10 * MINUTE) / 1_000) + ',"refresh_token":"present"}',
-      },
-      {},
-      "expired (~/.kimi-code/credentials/kimi-code.json)",
-      "| LOGIN-EXPIRED |",
-      1,
-    ],
-    ["kimi", {}, {}, "no-credential (~/.kimi-code/credentials/kimi-code.json)", "| NO-LOGIN |", 1],
+    ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: seconds(10 * MINUTE), access_token: "a", refresh_token: "r" }) }, {}, `logged-in (${KIMI_LABEL})`, "| OK |", 0],
+    // An aged-out access token beside a refresh token is a working login:
+    // kimi renews the token on its next run (2026-11-05: doctor reported a
+    // working kimi login as LOGIN-EXPIRED 15 minutes after every run).
+    ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: seconds(-10 * MINUTE), access_token: "a", refresh_token: "r" }) }, {}, `logged-in (${KIMI_LABEL}) refresh token present`, "| OK |", 0],
+    // A refresh token alone is enough for kimi to obtain an access token.
+    ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: seconds(10 * MINUTE), refresh_token: "r" }) }, {}, `logged-in (${KIMI_LABEL}) refresh token present`, "| OK |", 0],
+    // Without a refresh token an aged-out access token is a real expiry.
+    ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: seconds(-10 * MINUTE), access_token: "a", refresh_token: "" }) }, {}, `expired (${KIMI_LABEL})`, "| LOGIN-EXPIRED |", 1],
+    // A decimal string and a millisecond expiry read like kimi's epoch seconds.
+    ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: String(seconds(10 * MINUTE)), access_token: "a" }) }, {}, `logged-in (${KIMI_LABEL})`, "| OK |", 0],
+    ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: Date.now() - 10 * MINUTE, access_token: "a" }) }, {}, `expired (${KIMI_LABEL})`, "| LOGIN-EXPIRED |", 1],
+    // A refresh token logs kimi in whether or not the expiry is readable (review round 106).
+    ["kimi", { [KIMI_STORE]: kimiStore({ refresh_token: "r" }) }, {}, `logged-in (${KIMI_LABEL}) refresh token present`, "| OK |", 0],
+    ["kimi", { [KIMI_STORE]: kimiStore({ access_token: "a", refresh_token: "r" }) }, {}, `logged-in (${KIMI_LABEL}) refresh token present`, "no readable expiry; kimi renews it", 0],
+    // An access token alone with no readable expiry is unknown; a hexadecimal or exponent string is not an expiry.
+    ["kimi", { [KIMI_STORE]: kimiStore({ access_token: "a" }) }, {}, `unknown (${KIMI_LABEL})`, "| LOGIN-UNKNOWN |", 0],
+    ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: "0x7fffffffff", access_token: "a" }) }, {}, `unknown (${KIMI_LABEL})`, "| LOGIN-UNKNOWN |", 0],
+    ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: "9e12", access_token: "a" }) }, {}, `unknown (${KIMI_LABEL})`, "| LOGIN-UNKNOWN |", 0],
+    // A store with an expiry and no token is no login.
+    ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: seconds(10 * MINUTE) }) }, {}, `no-credential (${KIMI_LABEL})`, "| NO-LOGIN |", 1],
+    ["kimi", {}, {}, `no-credential (${KIMI_LABEL})`, "| NO-LOGIN |", 1],
     // zai: the key file, mode checked.
     ["zai", { ".zai": { body: "synthetic-key", mode: 0o600 } }, {}, "logged-in (~/.zai)", "| OK |", 0],
     [
@@ -169,27 +174,36 @@ describe("doctor login rows over fixture stores", () => {
     }
   );
 
-  test("an expired kimi refresh token names the remedy kimi itself gives", async () => {
+  const kimiDoctor = async (credential: string) => {
     const fake = createFakeBinaryEnv({
       ...greenBase(),
       kimi: `if [ "$1" = "--version" ]; then printf '2.4.0\\n'; exit 0; fi`,
     });
     try {
-      const result = await runDoctor(["--only", "kimi"], {
+      return await runDoctor(["--only", "kimi"], {
         path: fake.env.PATH!,
-        home: fixtureHome(
-          {
-            ".kimi-code/credentials/kimi-code.json":
-              '{"expires_at":' + Math.floor((Date.now() - MINUTE) / 1_000) + ',"refresh_token":"present"}',
-          },
-          homes
-        ),
+        home: fixtureHome({ ".kimi-code/credentials/kimi-code.json": credential }, homes),
       });
-      expect(result.output).toContain("refresh token present");
-      expect(result.output).toContain("run kimi once");
     } finally {
       fake.cleanup();
     }
+  };
+
+  test("an aged-out kimi access token beside a refresh token is a working login", async () => {
+    const result = await kimiDoctor(kimiStore({ expires_at: seconds(-MINUTE), access_token: "a", refresh_token: "r" }));
+    expect(result.output).toContain("logged-in (~/.kimi-code/credentials/kimi-code.json) refresh token present");
+    expect(result.output).toContain("kimi renews it from the refresh token on its next run");
+    expect(result.output).not.toContain("LOGIN-EXPIRED");
+    expect(result.output).not.toContain("kimi login");
+    expect(result.exitCode).toBe(0);
+  });
+
+  test("an expired kimi token with no refresh token names kimi login", async () => {
+    const result = await kimiDoctor(kimiStore({ expires_at: seconds(-MINUTE), access_token: "a" }));
+    expect(result.output).toContain("| LOGIN-EXPIRED |");
+    expect(result.output).toContain("the store holds no refresh token");
+    expect(result.output).toContain("kimi login");
+    expect(result.exitCode).toBe(1);
   });
 
   test("a zai key file readable by others says chmod, not just no-login", async () => {

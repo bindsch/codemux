@@ -372,7 +372,15 @@ function normalizedUsage(value: unknown): ExperimentUsage {
     if (key === "cache_write_input_tokens" && usage[key] === undefined) continue;
     if (!Number.isSafeInteger(usage[key]) || usage[key] < 0) throw new ExperimentFailure(Code.Protocol, `Invalid Codex token_count ${key}`);
   }
-  if (usage.cached_input_tokens > usage.input_tokens) throw new ExperimentFailure(Code.Protocol, "Codex cached_input_tokens exceeds input_tokens");
-  return { input: Math.max(0, usage.input_tokens - usage.cached_input_tokens - (usage.cache_write_input_tokens ?? 0)), output: usage.output_tokens,
+  // Both breakdowns sit inside input_tokens (the reducer's rule), so an
+  // overshoot of either is an inconsistent snapshot: refused as protocol
+  // evidence rather than clamped to zero, which would record an uncached
+  // input the harness never reported (review round 104). BigInt, like the
+  // reducer's comparison: a float sum of safe integers can round across
+  // the input it overshoots at the top of the safe range.
+  if (BigInt(usage.cached_input_tokens) + BigInt(usage.cache_write_input_tokens ?? 0) > BigInt(usage.input_tokens)) {
+    throw new ExperimentFailure(Code.Protocol, "Codex cached plus cache-write input exceeds input_tokens");
+  }
+  return { input: usage.input_tokens - usage.cached_input_tokens - (usage.cache_write_input_tokens ?? 0), output: usage.output_tokens,
     cache_read: usage.cached_input_tokens, cache_write: usage.cache_write_input_tokens ?? 0 };
 }

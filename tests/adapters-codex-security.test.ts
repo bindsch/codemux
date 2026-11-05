@@ -371,11 +371,12 @@ describe("CodexAdapter", () => {
     // like any other component, so a child that replaced the parent with a
     // link pointed the rm at a matching run directory of its choosing,
     // outside the sandbox, even on a launch whose result read already
-    // refused the swap. The parent is lstat-checked before the removal now
-    // (rm removes a symlink at the run directory's own name rather than
-    // following it, so the parent is the one component that needs it); a
-    // parent that fails keeps its directory and says why, the reader's
-    // wording.
+    // refused the swap. The parent is recorded at creation and the removal
+    // revalidates that record (realpath, device, and inode) through the
+    // shared safe-remove helper (review round 104: the lstat check caught a
+    // swapped symlink but not another directory at the same path); a parent
+    // that fails keeps its directory and says why, naming the parent check
+    // rather than an I/O failure.
     const home = mkdtempSync(join(tmpdir(), "codemux-codex-"));
     const victims: string[] = [];
     const errors: string[] = [];
@@ -407,13 +408,15 @@ describe("CodexAdapter", () => {
 
       // The recursive removal would have deleted the planted directory and
       // everything in it, outside codemux's scratch tree; the refusal is
-      // the security outcome, distinct from a cleanup that merely failed.
+      // the security outcome, distinct from a cleanup that merely failed:
+      // the reason names the parent check, not an I/O error.
       expect(existsSync(plantedPath)).toBe(true);
       expect(readFileSync(plantedFile, "utf8")).toBe("the victim's own text");
       expect(errors.join("\n")).toContain(
-        "refusing to remove codex's --output-last-message directory"
+        "could not remove codex's --output-last-message directory"
       );
-      expect(errors.join("\n")).not.toContain("could not remove");
+      expect(errors.join("\n")).toContain("must be a directory owned by the current user");
+      expect(errors.join("\n")).toContain("the directory was kept");
     } finally {
       console.error = originalError;
       for (const dir of victims) rmSync(dir, { recursive: true, force: true });

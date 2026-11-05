@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createCodexHermeticHome } from "../src/hermetic-home.js";
+import { createAiderHistoryFile } from "../src/aider-history.js";
 import { createKimiHermeticHome } from "../src/kimi-hermetic.js";
 import { createOpencodeHermeticHome } from "../src/opencode-hermetic.js";
 import { writeOpencodeProviderConfig } from "../src/opencode-provider.js";
@@ -146,6 +147,22 @@ const SITES: Site[] = [
         parent: join(root, ".codemux-provider"),
         dir: home.codexHome,
         finalize: home.finalize,
+        cleanup: () => rmSync(root, { recursive: true, force: true }),
+      };
+    },
+  },
+  {
+    // Review round 104: the aider history finalizer was the kimi no-tools
+    // pattern's twin (a bare rm after an lstat-only parent check); it uses
+    // the shared record now, so the same swap battery applies to it.
+    name: "the aider history file",
+    make: () => {
+      const root = mkdtempSync(join(tmpdir(), "codemux-f3-"));
+      const file = createAiderHistoryFile(root);
+      return {
+        parent: join(root, ".aider", ".codemux"),
+        dir: file.path,
+        finalize: file.finalize,
         cleanup: () => rmSync(root, { recursive: true, force: true }),
       };
     },

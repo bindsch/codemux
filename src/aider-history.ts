@@ -62,6 +62,12 @@ import {
   type Stats,
 } from "node:fs";
 import { join } from "node:path";
+import {
+  recordTrustedParent,
+  removeUnderTrustedParentOrThrow,
+  reportingHook,
+  type TrustedParentRecord,
+} from "./safe-remove.js";
 
 export interface AiderHistoryFile {
   /** The path to pass as `--chat-history-file`. */
@@ -138,17 +144,28 @@ export function createAiderHistoryFile(home: string): AiderHistoryFile {
     throw new Error(`${parent} must be a directory owned by the current user`);
   }
   sweepStaleFiles(parent);
+  // Recorded for the finalizer's revalidation (src/safe-remove.ts): an
+  // aider child with write access to the home could have replaced `.codemux`
+  // between creation and cleanup, and a bare rm then removed the same-named
+  // history file wherever the replacement points. The parent is revalidated
+  // by device and inode, not only by the lstat above.
+  const parentRecord: TrustedParentRecord = recordTrustedParent(parent);
   const path = join(parent, `${FILE_PREFIX}${process.pid}-${randomBytes(6).toString("hex")}.md`);
   writeFileSync(path, "", { mode: 0o600 });
 
   let finalized = false;
   const finalize = (): void => {
     if (finalized) return;
+    // Thrown when refused or failed, so the adapter's cleanup reports the
+    // kept file; it stays retryable, and the exit hook retries and reports
+    // (the shared rule; review round 104 caught the kimi twin of this
+    // pattern setting `finalized` before the removal).
+    removeUnderTrustedParentOrThrow(path, parentRecord, `the aider history file ${path}`);
     finalized = true;
-    rmSync(path, { force: true });
-    process.off("exit", finalize);
+    process.off("exit", atExit);
   };
-  process.once("exit", finalize);
+  const atExit = reportingHook(finalize);
+  process.once("exit", atExit);
 
   return { path, finalize };
 }

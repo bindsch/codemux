@@ -43,7 +43,9 @@ function removeStaleCredentialCopy(configDir: string): void {
  * refresh token refuses the run — the mirror rule (credentials.ts): a
  * child holding that token could revoke the operator's login — and so does
  * a mirror that is not a parseable credential object: nothing unparseable
- * is copied. No mirror at all copies nothing; the harness then reports its
+ * is copied, and so does a mirror whose bytes are not valid UTF-8: a lossy
+ * decode would copy a different token than the one the mirror holds.
+ * No mirror at all copies nothing; the harness then reports its
  * own authentication failure, exactly as a plain sandboxed run without one
  * does. A mirror that is not a regular file — a symlink first of all —
  * refuses the run instead of being read through (the sync path's rule,
@@ -91,9 +93,11 @@ export function copyClaudeCredentialMirror(configDir: string, mirrorPath: string
   // still cannot be read through.
   let text: string;
   let fd: number | null = null;
-  // The oversize refusal, kept by reference so the catch below rethrows it
-  // verbatim instead of re-wrapping it as a read failure.
+  // The oversize and invalid-encoding refusals, kept by reference so the
+  // catch below rethrows them verbatim instead of re-wrapping them as read
+  // failures.
   let oversize: Error | null = null;
+  let invalid: Error | null = null;
   try {
     // O_NONBLOCK beside O_NOFOLLOW: a FIFO planted between the lstat above
     // and this open would otherwise block the open itself, before any
@@ -121,13 +125,28 @@ export function copyClaudeCredentialMirror(configDir: string, mirrorPath: string
       if (read === 0) break;
       offset += read;
     }
-    text = buffer.toString("utf8", 0, offset);
+    // Decoded fatally, never with replacement characters (review round
+    // 104): a lossy decode turns an invalid byte inside a JSON string into
+    // U+FFFD, which still parses and would be copied as a DIFFERENT token
+    // than the one the mirror holds. The refusal never names the content.
+    try {
+      text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+        buffer.subarray(0, offset)
+      );
+    } catch {
+      invalid = new Error(
+        `claude: the credential mirror at ${mirrorPath} is not valid UTF-8; refusing the ` +
+          "--experiment-project-settings run"
+      );
+      throw invalid;
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       removeStaleCredentialCopy(configDir);
       return; // the mirror vanished: no login to copy
     }
     if (oversize !== null && error === oversize) throw oversize;
+    if (invalid !== null && error === invalid) throw invalid;
     // The refusal keeps, but the reason names what actually failed — an
     // open or read error (EACCES, EIO, a loop) is not a regularity
     // finding; the lstat above owns those.

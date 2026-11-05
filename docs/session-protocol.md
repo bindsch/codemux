@@ -151,7 +151,12 @@ A `request_id` is the harness request's id as codemux presents it, and the
 decision echoes it back verbatim. Claude and ZAI present the raw id string.
 Codex presents the JSON-RPC id's JSON spelling: numeric ids as their digits
 (`42`), string ids with their quotes (`"appr-1"`), so two Codex requests
-whose ids differ only by JSON type never collide.
+whose ids differ only by JSON type never collide. A `permission_request`
+never carries an id a decision cannot answer (empty, over the request-id
+bound, or containing NUL): the same predicate guards both sides, and a
+Claude/ZAI `can_use_tool` with such an id is answered by the driver itself
+with the control protocol's error response instead of joining the pending
+set.
 
 `model` is the requested/resolved selection, or null when none was selected;
 it is not a guarantee of the model actually served. Session CLI launches

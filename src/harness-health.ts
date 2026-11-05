@@ -170,10 +170,22 @@ export function codexLoginState(home: string, environment: NodeJS.ProcessEnv): L
     : { state: "logged-in", store: envName, note: "API key in the environment" };
 }
 
+/** A kimi expiry as epoch milliseconds: kimi writes epoch seconds as a
+ * number; a plain decimal string and a millisecond value are read the same
+ * way (usagemux reads this field with the same rule). */
+const kimiExpiryMs = (value: unknown): number | null => {
+  const parsed = typeof value === "number" ? value : typeof value === "string" && /^\d+(\.\d+)?$/.test(value) ? Number(value) : NaN;
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed > 1e12 ? parsed : parsed * 1_000;
+};
+
 /** kimi: `~/.kimi-code/credentials/kimi-code.json`. The access token
- * lives 15 minutes; an aged-out token with a refresh token present is
- * `expired`, and running kimi once refreshes it (usagemux 1.0.0's own
- * explanation of this state). */
+ * lives 15 minutes and kimi renews it from the stored refresh token at the
+ * start of its next run, so an aged-out access token beside a refresh
+ * token is how a working login looks most of the time: `logged-in`, with a
+ * note. Only an aged-out token with no refresh token is `expired`. The
+ * reader checks presence only: a refresh token the server has revoked
+ * looks the same, and only a kimi run can tell. */
 export function kimiLoginState(home: string, environment: NodeJS.ProcessEnv): LoginState {
   const envName = firstSetEnv(environment, ALLOWED_CREDENTIAL_ENV.kimi);
   if (envName !== null) {
@@ -185,14 +197,29 @@ export function kimiLoginState(home: string, environment: NodeJS.ProcessEnv): Lo
   if (parsed === "unreadable") {
     return { state: "unknown", store, note: "the credential file is not a readable object" };
   }
-  const expiresAt = parsed.expires_at;
+  const accessToken = typeof parsed.access_token === "string" && parsed.access_token !== "";
   const refreshToken = typeof parsed.refresh_token === "string" && parsed.refresh_token !== "";
-  if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt)) {
-    return { state: "unknown", store, note: "the credential carries no readable expiry" };
+  if (!accessToken && !refreshToken) {
+    return { state: "no-credential", store, note: "the credential file exists but carries no token" };
   }
-  return expiryFresh(expiresAt * 1_000)
-    ? { state: "logged-in", store }
-    : { state: "expired", store, refreshPresent: refreshToken };
+  // The expiry decides one thing only: whether the access token alone is
+  // still usable. A refresh token logs kimi in whatever the expiry says,
+  // readable or not (review round 106).
+  const expiresAt = kimiExpiryMs(parsed.expires_at);
+  if (accessToken && expiresAt !== null && expiryFresh(expiresAt)) return { state: "logged-in", store };
+  if (refreshToken) {
+    const renews = "kimi renews it from the refresh token on its next run";
+    const note = !accessToken
+      ? "the store holds no access token; kimi obtains one from the refresh token on its next run"
+      : expiresAt === null
+        ? `the access token carries no readable expiry; ${renews}`
+        : `kimi's 15-minute access token has aged out; ${renews}`;
+    return { state: "logged-in", store, refreshPresent: true, note };
+  }
+  if (expiresAt === null) {
+    return { state: "unknown", store, note: "the credential carries no readable expiry and no refresh token" };
+  }
+  return { state: "expired", store, refreshPresent: false, note: "the access token has expired and the store holds no refresh token" };
 }
 
 /** zai: the key file `~/.zai` (existence and mode only) or `ZAI_API_KEY`. */

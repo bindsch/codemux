@@ -8,6 +8,7 @@
 
 import { normalizeClaudeUsage } from "../../result-envelope.js";
 import type { ResultUsageBlock } from "../../types.js";
+import { isAnswerableRequestId } from "../protocol.js";
 import { unusableFacts } from "../process.js";
 
 /** What one harness line resolves to. The driver owns the FSM and the
@@ -256,14 +257,19 @@ export class ClaudeStreamParser {
           typeof request === "object" && request !== null
             ? (request as Record<string, unknown>)["subtype"]
             : undefined;
-        if (subtype !== "can_use_tool" || typeof requestId !== "string") {
+        if (subtype !== "can_use_tool" || !isAnswerableRequestId(requestId)) {
           // Any other control request (a subtype codemux does not
           // implement, or a can_use_tool with no usable string id) still
           // waits on an answer harness-side: passing it through as
           // `unknown` alone left the turn blocked until --turn-timeout or
           // the session end (review live18). The driver answers it with
           // the control protocol's error response when the id can be
-          // echoed, and reports it either way.
+          // echoed, and reports it either way. A can_use_tool whose id
+          // fails isAnswerableRequestId — empty, over the protocol's
+          // bound, or carrying NUL — takes this same branch (review round
+          // 104): the decision parser rejects every such id as malformed,
+          // so emitting it as a permission request would block the
+          // harness on a pending id no caller decision can resolve.
           return [
             {
               kind: "unsupported_control_request",

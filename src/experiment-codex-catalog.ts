@@ -44,12 +44,27 @@ export function assertCodexToolDefinition(tool: JsonObject, name: string, defini
   return pruned;
 }
 
-/** Validate schema fields without interpreting instance data or rewriting the schema. */
+/** Validate schema fields without interpreting instance data or rewriting
+ * the schema. The rules are the JSON Schema validation vocabulary's own
+ * (draft 2020-12), held to what the subset comparison below needs as
+ * evidence: an empty `type` array and an empty composition array
+ * (`anyOf`, `oneOf`, `allOf`) are invalid — each is a MUST, and each
+ * matches no instance, so neither can establish that the model retained
+ * the tool's shape (review round 104: a vacuous `every` over an empty
+ * array used to accept both). Repeated `type` or `required` entries stay
+ * accepted: `type` uniqueness is a MUST in the standard, but the
+ * positional subset comparison a repeat must survive already ties every
+ * element to the definition's element at that index, so a repeat cannot
+ * smuggle in anything (pinned by the repeated-types regression test);
+ * `required` has no uniqueness rule at all. An empty `enum` stays
+ * accepted: the standard asks for "at least one element" as a SHOULD,
+ * not a MUST, so it is not invalid schema data. */
 function validateSchema(value: unknown): void {
   const schema = object(value);
   if (!schema) throw new Error("Invalid MCP schema node");
   for (const [key, field] of Object.entries(schema)) {
-    if (key === "type" && !(Array.isArray(field) ? field : [field]).every((type) => SCHEMA_TYPES.has(type))) {
+    if (key === "type" && (!(Array.isArray(field) ? field : [field]).every((type) => SCHEMA_TYPES.has(type)) ||
+        (Array.isArray(field) && field.length === 0))) {
       throw new Error("Invalid MCP schema type");
     }
     if (((key === "$ref" || key === "description") && typeof field !== "string") ||
@@ -63,7 +78,8 @@ function validateSchema(value: unknown): void {
       if (!table) throw new Error(`Invalid MCP schema ${key}`);
       for (const child of Object.values(table)) validateSchema(child);
     } else if (COMPOSITION_KEYS.includes(key)) {
-      if (!Array.isArray(field)) throw new Error(`Invalid MCP schema ${key}`);
+      // Non-empty is a MUST ("MUST be a non-empty array"), like the shape.
+      if (!Array.isArray(field) || field.length === 0) throw new Error(`Invalid MCP schema ${key}`);
       for (const child of field) validateSchema(child);
     } else if (key === "items" || (key === "additionalProperties" && typeof field !== "boolean")) {
       validateSchema(field);

@@ -137,3 +137,31 @@ describe("Codex restricted built-in calls", () => {
       name: namespace ? `${namespace}.${name}` : name });
   });
 });
+
+describe("Codex token_count usage normalization (round 104)", () => {
+  const tokenCount = (usage: JsonObject): void => {
+    const { parser } = fixture(["view_image"]);
+    // A completed response the usage event follows (the parser's own
+    // ordering rule: token_count records the response just completed).
+    parser.accept(line({ type: "function_call", namespace: "mcp__experiment", name: "view_image",
+      id: "fc_u", call_id: "u", arguments: "{}" }));
+    parser.accept(line({ type: "function_call_output", call_id: "u", output: "done" }));
+    parser.accept({ timestamp, type: "event_msg", payload: { type: "token_count",
+      info: { last_token_usage: usage } } });
+  };
+
+  test("cached plus cache-write above the input is refused as protocol evidence", () => {
+    // Both breakdowns sit inside input_tokens, so a pair that exceeds it
+    // is an inconsistent snapshot: clamping to zero would record an
+    // uncached input the harness never reported, and experiment evidence
+    // must be exact. The comparison is exact (BigInt), not float-rounded.
+    expect(() => tokenCount({ input_tokens: 5, cached_input_tokens: 4, cache_write_input_tokens: 3, output_tokens: 1 }))
+      .toThrow(ExperimentFailure);
+    expect(() => tokenCount({ input_tokens: 5, cached_input_tokens: 6, cache_write_input_tokens: 0, output_tokens: 1 }))
+      .toThrow("Codex cached plus cache-write input exceeds input_tokens");
+    // A consistent snapshot — including an exact sum, whose uncached input
+    // is a real zero — records normally.
+    expect(() => tokenCount({ input_tokens: 7, cached_input_tokens: 4, cache_write_input_tokens: 3, output_tokens: 1 }))
+      .not.toThrow();
+  });
+});

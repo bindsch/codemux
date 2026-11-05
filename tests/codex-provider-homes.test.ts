@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   unlinkSync,
@@ -240,5 +241,70 @@ describe("codex provider session homes (review D1)", () => {
     expect(existsSync(join(otherKey, "AGENTS.md"))).toBe(false);
     expect(existsSync(join(otherKey, "rules"))).toBe(false);
     expect(existsSync(join(keyed, "AGENTS.md"))).toBe(true);
+  });
+
+  test("settle and abandon refuse a parent swapped or replaced after creation (round 104)", () => {
+    // The session home's removals revalidated the parent by lstat alone,
+    // so a symlink was caught but another directory put at the same path
+    // was not, and the recursive remove deleted the same-named child under
+    // it. The parent's identity is recorded at creation and revalidated by
+    // every removal (src/safe-remove.ts); a refused removal answers false
+    // (settle) or keeps the home (abandon), and the sweep reclaims it.
+    for (const shape of ["symlink", "replacement"] as const) {
+      const home = makeCodexHome();
+      try {
+        const parent = codexProviderSessionsParent(home);
+        const settled = createCodexSessionProviderHome(home, OVERRIDE, MODEL, null);
+        const abandoned = createCodexSessionProviderHome(home, OVERRIDE, MODEL, null);
+        // The victim (symlink shape) or decoy child (replacement shape)
+        // holding a same-named directory a naive removal would delete.
+        const sameNamed = (root: string): string => {
+          const child = join(root, basename(settled.codexHome));
+          mkdirSync(child, { recursive: true });
+          writeFileSync(join(child, "marker.txt"), "kept\n");
+          return child;
+        };
+        const victim = sameNamed(join(home, "victim"));
+        const moved = join(home, "parent-moved");
+        renameSync(parent, moved);
+        let decoy: string | null = null;
+        if (shape === "symlink") {
+          symlinkSync(join(home, "victim"), parent);
+        } else {
+          mkdirSync(parent);
+          decoy = sameNamed(parent);
+        }
+        const errors: string[] = [];
+        const realError = console.error;
+        console.error = ((message: string) => errors.push(String(message))) as typeof console.error;
+        try {
+          expect(settled.settle(null, false)).toBe(false);
+          abandoned.abandon();
+        } finally {
+          console.error = realError;
+        }
+        expect(errors.join("\n")).toContain("the directory was kept");
+        expect(readFileSync(join(victim, "marker.txt"), "utf8")).toBe("kept\n");
+        if (decoy !== null) expect(readFileSync(join(decoy, "marker.txt"), "utf8")).toBe("kept\n");
+        // Both homes are kept — settle and abandon are one-shot by design,
+        // so a refused removal leaves the directory to the stale-home sweep
+        // instead of retrying, and nothing under the victim or the decoy
+        // went with them. The homes physically sit under the moved parent;
+        // their recorded paths now resolve through the swap, so the check
+        // follows the physical tree, not the name.
+        expect(existsSync(join(moved, basename(settled.codexHome)))).toBe(true);
+        expect(existsSync(join(moved, basename(abandoned.codexHome)))).toBe(true);
+        // Restore the real parent so the finally cleanup reaches the moved
+        // tree; the homes themselves are the sweep's now.
+        if (shape === "symlink") {
+          rmSync(parent);
+        } else {
+          rmSync(parent, { recursive: true, force: true });
+        }
+        renameSync(moved, parent);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    }
   });
 });

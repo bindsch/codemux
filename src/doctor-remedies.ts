@@ -131,7 +131,7 @@ export function remedyFor(
         return "claude auth login; if the Keychain is readable but the mirror is stale, one unsandboxed claude run refreshes it";
       }
       if (agent === "kimi") {
-        return "run kimi once; it refreshes the 15-minute token itself. If that fails: kimi login";
+        return "kimi login (device-code flow); the store holds no refresh token, so kimi cannot renew the access token itself";
       }
       return "log in again through the harness's own login flow";
     case "OVERRIDE-INVALID":

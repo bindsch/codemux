@@ -96,4 +96,38 @@ describe("codex session - usage normalization", () => {
     expect(overflowedFields(cacheOverflow)).toEqual(["cached_input_tokens"]);
     expect(overflowedFields(normalizeCodexTokenUsage({ cachedInputTokens: 1, cacheWriteInputTokens: 2 }))).toEqual([]);
   });
+
+  test("cached plus cache-write above the input is an inconsistent snapshot, not a clamp (round 104)", () => {
+    // Reads and writes are each a breakdown of the input count, so a pair
+    // that exceeds it is a harness reporting inconsistent counts. The old
+    // clamp published input_tokens 0 and a total the components cannot sum
+    // to; the derived fields go null and the reported counts stay.
+    const usage = normalizeCodexTokenUsage({
+      inputTokens: 100,
+      cachedInputTokens: 90,
+      cacheWriteInputTokens: 20,
+      outputTokens: 5,
+    });
+    expect(usage.input_tokens).toBe(null);
+    expect(usage.output_tokens).toBe(5);
+    expect(usage.cached_input_tokens).toBe(110);
+    expect(usage.total_tokens).toBe(null);
+    // A consistent snapshot at the same seam still normalizes fully, and an
+    // exact-sum pair (input == cached + write) is consistent: the uncached
+    // input is a real zero.
+    expect(
+      normalizeCodexTokenUsage({
+        inputTokens: 110,
+        cachedInputTokens: 90,
+        cacheWriteInputTokens: 20,
+        outputTokens: 5,
+      })
+    ).toEqual({
+      input_tokens: 0,
+      output_tokens: 5,
+      cached_input_tokens: 110,
+      total_tokens: 115,
+      cost_usd: null,
+    });
+  });
 });

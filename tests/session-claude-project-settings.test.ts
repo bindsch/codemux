@@ -15,6 +15,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -132,6 +133,54 @@ describe("a project-settings session's private config directory", () => {
     opened.remove();
     opened.remove();
     expect(existsSync(opened.dir)).toBe(false);
+  });
+
+  test("remove refuses a parent swapped or replaced after the open (round 104)", () => {
+    // The session variant used to revalidate only dirname(dir) by lstat, so
+    // a symlink swap was caught but another directory put at the same path
+    // was not, and the recursive remove then deleted the same-named child
+    // under it. The parent's identity is recorded at open and revalidated
+    // by remove (src/safe-remove.ts). Both shapes are refused, the victim
+    // survives, and a refused remove stays retryable.
+    for (const shape of ["symlink", "replacement"] as const) {
+      const root = home();
+      const cwd = fixtureCwd(root);
+      const opened = openProjectSettingsSessionConfigDir(ID, false, cwd, { HOME: root });
+      const parent = join(root, ".claude", ".codemux-hermetic");
+      // The victim holds a same-named directory with a file inside — what a
+      // naive recursive removal would delete.
+      const victim = join(root, "victim");
+      const victimChild = join(victim, `${SESSION_DIR_PREFIX}${ID}`);
+      mkdirSync(victimChild, { recursive: true });
+      writeFileSync(join(victimChild, "marker.txt"), "kept\n");
+      const moved = join(root, "parent-moved");
+      renameSync(parent, moved);
+      let decoy: string | null = null;
+      if (shape === "symlink") {
+        symlinkSync(victim, parent);
+      } else {
+        // Another real directory at the same path, holding the same-named
+        // child: only the recorded device and inode tell it apart.
+        mkdirSync(parent);
+        decoy = join(parent, `${SESSION_DIR_PREFIX}${ID}`);
+        mkdirSync(decoy);
+        writeFileSync(join(decoy, "marker.txt"), "kept\n");
+      }
+      expect(() => opened.remove()).toThrow(/the directory was kept/);
+      expect(readFileSync(join(victimChild, "marker.txt"), "utf8")).toBe("kept\n");
+      if (decoy !== null) expect(readFileSync(join(decoy, "marker.txt"), "utf8")).toBe("kept\n");
+      expect(existsSync(opened.dir)).toBe(true);
+      // Restore the real parent and retry: the removal now succeeds.
+      if (shape === "symlink") {
+        rmSync(parent);
+      } else {
+        rmSync(parent, { recursive: true, force: true });
+      }
+      renameSync(moved, parent);
+      opened.remove();
+      expect(existsSync(opened.dir)).toBe(false);
+      expect(readFileSync(join(victimChild, "marker.txt"), "utf8")).toBe("kept\n");
+    }
   });
 
   test("the sweep reclaims an unowned quiet directory and spares everything else", () => {

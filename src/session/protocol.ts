@@ -34,6 +34,24 @@ export const MAX_REQUEST_ID_CHARS = MAX_ID_CHARS * 6 + 2;
 /** `permission_decision.message` bound, in UTF-16 code units. */
 export const MAX_DECISION_MESSAGE_UNITS = 2000;
 
+/** A `request_id` the caller protocol can answer: a non-empty string within
+ * `MAX_REQUEST_ID_CHARS` and free of NUL. ONE predicate for both sides of
+ * the permission channel (review round 104): the decision parser rejects an
+ * id that fails it as `malformed`, so a driver that emits such an id as a
+ * `permission_request` would register a pending request no decision can
+ * ever resolve — the harness then waits until the turn timeout. The
+ * claude-family parser therefore routes a `can_use_tool` whose id fails
+ * this predicate to its own answer instead of a permission request
+ * (src/session/claude-session/parser.ts). */
+export function isAnswerableRequestId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= MAX_REQUEST_ID_CHARS &&
+    !value.includes("\0")
+  );
+}
+
 export type UserDuringTurn = "inject" | "queue" | false;
 
 /** Capability flags exactly as `session_started` reports them (§4.3). */
@@ -243,12 +261,7 @@ export function parseInputLine(
         return { ok: false, reason: "malformed" };
       }
       const requestId = record["request_id"];
-      if (
-        typeof requestId !== "string" ||
-        requestId.length === 0 ||
-        requestId.length > MAX_REQUEST_ID_CHARS ||
-        requestId.includes("\0")
-      ) {
+      if (!isAnswerableRequestId(requestId)) {
         return { ok: false, reason: "malformed" };
       }
       if (!context.pendingRequestIds.has(requestId)) {

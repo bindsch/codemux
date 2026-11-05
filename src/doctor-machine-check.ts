@@ -45,6 +45,32 @@ const readPackageFacts = (): { version: string; packageManager: string | null } 
   };
 };
 
+/**
+ * The per-probe bound in whole milliseconds a `--timeout` in seconds must
+ * land on (review round 104): every probe validates its timeout through
+ * `validateTimeout` (an integer from 1 ms up), so a flag the CLI accepted
+ * but the probes reject — `0.0001` s becomes 0.1 ms — read every installed
+ * harness back as `unreadable` instead of refusing the option. The value
+ * here is validated at the boundary: seconds from 0.001 to 60 with at
+ * most three decimals, exactly the integers 1 to 60000 in milliseconds.
+ */
+export function doctorTimeoutMs(timeoutSeconds: number): number {
+  // A three-decimal value does not always scale to an exact integer in
+  // binary floating point (1.001 * 1000 is 1000.9999999999999), so the
+  // test runs the other way: the nearest whole millisecond, divided back,
+  // must be the very number given. Division rounds correctly, so that
+  // holds for exactly the numbers a three-decimal flag parses to and for
+  // no finer one (1.0000000001 is not 1000 / 1000).
+  const ms = Math.round(timeoutSeconds * 1_000);
+  if (!Number.isFinite(timeoutSeconds) || ms / 1_000 !== timeoutSeconds || ms < 1 || ms > 60_000) {
+    throw new UsageRefusalError(
+      "--timeout must be a number of seconds from 0.001 to 60 with at most three decimals " +
+        "(whole milliseconds from 1 to 60000)"
+    );
+  }
+  return ms;
+}
+
 export async function runMachineCheck(
   config: CodemuxConfig,
   configError: Error | undefined,
@@ -53,16 +79,11 @@ export async function runMachineCheck(
   if (flags.spendCap !== undefined && (!Number.isInteger(flags.spendCap) || flags.spendCap < 0)) {
     throw new UsageRefusalError("--spend-cap must be a whole number of harnesses, 0 or more");
   }
-  if (
-    flags.timeoutSeconds !== undefined &&
-    (!Number.isFinite(flags.timeoutSeconds) || flags.timeoutSeconds <= 0 || flags.timeoutSeconds > 60)
-  ) {
-    throw new UsageRefusalError("--timeout must be a number of seconds from 0 (exclusive) to 60");
-  }
   const pkg = readPackageFacts();
   const selected = validateAgentFilter(flags.only, flags.skip);
-  const timeoutMs =
-    (flags.timeoutSeconds ?? VERSION_VERDICT_PROBE_TIMEOUT_MS / 1_000) * 1_000;
+  const timeoutMs = doctorTimeoutMs(
+    flags.timeoutSeconds ?? VERSION_VERDICT_PROBE_TIMEOUT_MS / 1_000
+  );
 
   const environment: Record<string, MachineCheckReport["environment"][string]> = {};
   environment.config =

@@ -11,6 +11,7 @@ import type { OpencodeProviderConfig } from "./opencode-provider.js";
 import type { DroidProviderSettings } from "./droid-provider.js";
 import type { KimiNoToolsFile } from "./kimi-no-tools.js";
 import type { KimiHermeticHome } from "./kimi-hermetic.js";
+import type { TrustedParentRecord } from "./safe-remove.js";
 import type { PiProviderAgentDir } from "./pi-provider.js";
 
 /**
@@ -68,6 +69,15 @@ export interface RunContext {
    * untrusted sandbox has neither -- no fallback file at all).
    */
   lastMessageDir?: string;
+  /**
+   * Codex: the `.codemux-scratch` parent of lastMessageDir exactly as it was
+   * when prepareRun made the directory, recorded for cleanupRun's
+   * revalidation (src/safe-remove.ts, review round 104): the removal must
+   * refuse a parent swapped for a symlink — or replaced by another
+   * directory — instead of resolving the path elsewhere. Set together with
+   * lastMessageDir or not at all.
+   */
+  lastMessageParentRecord?: TrustedParentRecord;
   /** Codex: this run's private hermetic home, when the run is hermetic. */
   hermeticHome?: HermeticHome;
   /**

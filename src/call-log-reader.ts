@@ -1,5 +1,6 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { SCODE_TRUST_LEVELS } from "./sandbox.js";
+import { AGENT_IDS, AUTONOMY_LEVELS } from "./types.js";
 import type { CallRecord } from "./call-log.js";
 import { parseLabels, validateLabelKey } from "./labels.js";
 
@@ -40,6 +41,15 @@ const CALL_RECORD_KINDS: ReadonlySet<string> = new Set([
   "session_turn",
   "session",
 ]);
+
+// `CallRecord` types `agent` as a known AgentId and `autonomy` as null or a
+// known AutonomyLevel; the reader enforces the same sets (derived from the
+// one definition in types.ts, never a second list). Anything else makes the
+// line malformed — counted, skipped, never listed or summed (review round
+// 104) — because every consumer that trusts the record's shape (agent
+// filters, per-agent totals) assumes the id is one codemux can launch.
+const KNOWN_AGENT_IDS: ReadonlySet<string> = new Set(AGENT_IDS);
+const KNOWN_AUTONOMY_LEVELS: ReadonlySet<string> = new Set(AUTONOMY_LEVELS);
 
 // Lines older than the field carry no cost_source (read as null, a cost
 // with no claim); anything but these three strings, or null, is a
@@ -101,14 +111,20 @@ function isCallRecord(parsed: unknown): parsed is StoredCallRecord {
   ) {
     return false;
   }
-  if (typeof record["agent"] !== "string") return false;
+  if (typeof record["agent"] !== "string" || !KNOWN_AGENT_IDS.has(record["agent"])) return false;
   if (!isStringOrNull(record["model"])) return false;
   if (!isStringOrNull(record["model_effective"])) return false;
   if (typeof record["provider"] !== "string") return false;
   if (!isStringOrNull(record["session_id"])) return false;
   if (!isStringOrNull(record["turn_id"])) return false;
   if (!isStringOrNull(record["finish"])) return false;
-  if (!isStringOrNull(record["autonomy"])) return false;
+  if (
+    record["autonomy"] !== null &&
+    (typeof record["autonomy"] !== "string" ||
+      !KNOWN_AUTONOMY_LEVELS.has(record["autonomy"]))
+  ) {
+    return false;
+  }
   if (typeof record["hermetic"] !== "boolean") return false;
   if (typeof record["sandboxed"] !== "boolean") return false;
   // Absent on older lines and session records; present means it must hold

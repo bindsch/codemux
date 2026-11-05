@@ -144,6 +144,27 @@ describe("copyClaudeCredentialMirror", () => {
     expect(existsSync(join(dir, ".credentials.json"))).toBe(false);
   });
 
+  test("a mirror with an invalid UTF-8 byte inside the access token is refused, nothing copied (round 104)", () => {
+    // A lossy decode turned the invalid byte into U+FFFD, which still
+    // parsed — and the copy would then carry a DIFFERENT token than the
+    // one the mirror holds. The decode is fatal now; the refusal names the
+    // encoding problem, never the content.
+    const dir = directory();
+    const mirror = join(dir, "mirror.json");
+    const head = Buffer.from(
+      `{"claudeAiOauth":{"accessToken":"at`,
+      "utf8"
+    );
+    const tail = Buffer.from(`","refreshToken":"","expiresAt":4102444800,"scopes":[]}}\n`, "utf8");
+    // 0xFF alone is never valid UTF-8, wherever it falls.
+    writeFileSync(mirror, Buffer.concat([head, Buffer.from([0xff]), tail]), { mode: 0o600 });
+    const reads = withMirrorReads(mirror, () => {
+      expect(() => copyClaudeCredentialMirror(dir, mirror)).toThrow("is not valid UTF-8");
+    });
+    expect(reads).toEqual([mirror]);
+    expect(existsSync(join(dir, ".credentials.json"))).toBe(false);
+  });
+
   test("no mirror at all copies nothing", () => {
     const dir = directory();
     copyClaudeCredentialMirror(dir, join(dir, "absent.json"));

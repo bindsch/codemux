@@ -342,6 +342,21 @@ export class CodexEventReducer {
         // traffic keeps cached_input_tokens 0), while a missing field stays
         // missing. The snapshot replaces, not joins, the previous one: each
         // is the same cumulative thread counter at a later point.
+        // Cached counts ABOVE the input count are an inconsistent snapshot
+        // (each is a breakdown of that input): clamping the difference to
+        // zero used to publish an uncached input the harness never reported
+        // and a total above its own input-plus-output. The uncached input
+        // is unknown instead -- null -- and with it the total; the cached
+        // and output counts stay as reported (review round 104; the
+        // clamping rule of rounds 19 and 25 is gone). The comparison runs
+        // on BigInt: a float sum of two safe integers can round across the
+        // input it overshoots at the top of the safe range, and the float
+        // difference below is exact only once consistency is established.
+        const inconsistent =
+          input !== null &&
+          cached !== null &&
+          cacheWrite !== null &&
+          BigInt(input) < BigInt(cached) + BigInt(cacheWrite);
         this.usage = {
           // The uncached input: codex counts BOTH cache reads and cache
           // writes inside input_tokens (each is a breakdown of that total,
@@ -349,8 +364,8 @@ export class CodexEventReducer {
           // reads left every cache write counted twice -- once here and
           // once in the cached count below (round25).
           input_tokens:
-            input !== null && cached !== null && cacheWrite !== null
-              ? Math.max(0, input - cached - cacheWrite)
+            input !== null && cached !== null && cacheWrite !== null && !inconsistent
+              ? input - cached - cacheWrite
               : null,
           output_tokens: output,
           // Cache reads and writes join into the one cached count.
@@ -362,13 +377,11 @@ export class CodexEventReducer {
           // because the uncached input needs `cached` AND `cacheWrite` and
           // the joined cached count needs `cacheWrite` too (README: the
           // total is computed "only when every component was reported",
-          // round17). The uncached term is the CLAMPED one: cached input
-          // above total input once summed the raw `input`, so the reported
-          // components disagreed with the total they were promised to sum
-          // to (round19).
+          // round17). An inconsistent snapshot's uncached input is null, so
+          // its total is null too (round 104).
           total_tokens:
-            input !== null && cached !== null && cacheWrite !== null && output !== null
-              ? safeTokenSum(Math.max(0, input - cached - cacheWrite), cached, cacheWrite, output)
+            input !== null && cached !== null && cacheWrite !== null && output !== null && !inconsistent
+              ? safeTokenSum(input - cached - cacheWrite, cached, cacheWrite, output)
               : null,
           cost_usd: null,
         };

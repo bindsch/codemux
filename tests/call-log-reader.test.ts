@@ -102,6 +102,28 @@ describe("readCallLog", () => {
     }
   });
 
+  test("an agent or autonomy outside the known sets is malformed (round 104)", () => {
+    const { dir, cleanup } = tempEnv();
+    try {
+      const path = join(dir, "calls.jsonl");
+      writeFileSync(path, [
+        JSON.stringify({ ...BASE_RECORD, agent: "claude-pro" }),
+        JSON.stringify({ ...BASE_RECORD, autonomy: "yolo" }),
+        JSON.stringify({ ...BASE_RECORD, autonomy: 3 }),
+        JSON.stringify({ ...BASE_RECORD, agent: "zai", autonomy: null }),
+      ].join("\n") + "\n");
+      const log = readCallLog(path);
+      expect(log.malformed).toBe(3);
+      expect(log.entries[0]!.record).toBeNull();
+      expect(log.entries[1]!.record).toBeNull();
+      expect(log.entries[2]!.record).toBeNull();
+      expect(log.entries[3]!.record?.agent).toBe("zai");
+      expect(log.entries[3]!.record?.autonomy).toBeNull();
+    } finally {
+      cleanup();
+    }
+  });
+
   test("corrupt lines are skipped and counted, never fatal", () => {
     const { env, dir, cleanup } = tempEnv();
     try {

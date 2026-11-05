@@ -16,6 +16,7 @@ import {
 } from "../src/session/claude-session.js";
 import { CodexStreamParser } from "../src/session/codex-session.js";
 import { parseAgySessionLine } from "../src/session/agy-session.js";
+import { MAX_REQUEST_ID_CHARS } from "../src/session/protocol.js";
 import { FLOOR_ID } from "./helpers/session-claude.js";
 
 function feedOne(parser: ClaudeStreamParser, event: unknown, expectedSessionId = FLOOR_ID): unknown[] {
@@ -352,6 +353,59 @@ describe("ClaudeStreamParser", () => {
     expect(
       feedOne(parser, { type: "control_response", response: { request_id: "x" } })
     ).toEqual([{ kind: "unknown" }]);
+  });
+
+  test("a can_use_tool id a decision cannot answer is the driver's own (round 104)", () => {
+    // Review round 104: an id that is empty, over MAX_REQUEST_ID_CHARS, or
+    // carries NUL cannot be answered by a permission_decision — the
+    // decision writer would reject its own id as malformed — so a pending
+    // permission_request keyed by it would block the harness forever. Such
+    // a request must take the no-usable-id branch: the driver answers it
+    // itself (unsupported_control_request), never a permission_request.
+    // The same predicate guards the decision writer (protocol.ts), so the
+    // two sides cannot disagree.
+    const parser = new ClaudeStreamParser();
+    const oversized = "r".repeat(MAX_REQUEST_ID_CHARS + 1);
+    // The id is echoed verbatim in the unsupported event — the driver's
+    // error response keys the answer by the exact id the harness itself
+    // sent, so every shape that fails the predicate still gets answered.
+    expect(
+      feedOne(parser, {
+        type: "control_request",
+        request_id: "",
+        request: { subtype: "can_use_tool", tool_name: "Bash", input: {} },
+      })
+    ).toEqual([{ kind: "unsupported_control_request", requestId: "", subtype: "can_use_tool" }]);
+    expect(
+      feedOne(parser, {
+        type: "control_request",
+        request_id: oversized,
+        request: { subtype: "can_use_tool", tool_name: "Bash", input: {} },
+      })
+    ).toEqual([
+      { kind: "unsupported_control_request", requestId: oversized, subtype: "can_use_tool" },
+    ]);
+    expect(
+      feedOne(parser, {
+        type: "control_request",
+        request_id: "req\u000012",
+        request: { subtype: "can_use_tool", tool_name: "Bash", input: {} },
+      })
+    ).toEqual([
+      { kind: "unsupported_control_request", requestId: "req\u000012", subtype: "can_use_tool" },
+    ]);
+    // The bound itself still parses and stays answerable: an id at exactly
+    // MAX_REQUEST_ID_CHARS is the longest a decision can carry.
+    const bounded = "r".repeat(MAX_REQUEST_ID_CHARS);
+    expect(
+      feedOne(parser, {
+        type: "control_request",
+        request_id: bounded,
+        request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "echo hi" } },
+      })
+    ).toEqual([
+      { kind: "permission_request", requestId: bounded, tool: "Bash", input: { command: "echo hi" } },
+    ]);
   });
 
   test("unmapped system subtypes and unknown types are unknown", () => {

@@ -258,11 +258,22 @@ export function normalizeCodexTokenUsage(raw: unknown): ResultUsageBlock {
   const cached = reportedTokenCount(record["cachedInputTokens"]);
   const cacheWrite = reportedTokenCount(record["cacheWriteInputTokens"]);
   const output = reportedTokenCount(record["outputTokens"]);
-  // Subtraction of safe integers stays inside the safe range; Math.max
-  // keeps a breakdown that overshoots at zero instead of going negative.
+  // Cached counts above the input count are an inconsistent snapshot (each
+  // is a breakdown of that input): clamping the difference to zero used to
+  // publish an uncached input the harness never reported and a total above
+  // its own input-plus-output. The uncached input is unknown instead —
+  // null — and with it the total; the cached and output counts stay as
+  // reported (review round 104). The comparison runs on BigInt, like the
+  // reducer's: a float sum of two safe integers can round across the input
+  // it overshoots at the top of the safe range.
+  const inconsistent =
+    input !== null &&
+    cached !== null &&
+    cacheWrite !== null &&
+    BigInt(input) < BigInt(cached) + BigInt(cacheWrite);
   const uncachedInput =
-    input !== null && cached !== null && cacheWrite !== null
-      ? Math.max(0, input - cached - cacheWrite)
+    input !== null && cached !== null && cacheWrite !== null && !inconsistent
+      ? input - cached - cacheWrite
       : null;
   const cachedSum = cached !== null && cacheWrite !== null ? safeTokenSum(cached, cacheWrite) : null;
   // A cache pair whose sum left the safe range is an overflow, not an

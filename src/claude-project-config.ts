@@ -57,7 +57,6 @@ import {
   mkdirSync,
   mkdtempSync,
   realpathSync,
-  rmSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -70,7 +69,11 @@ import {
   prepareRunDirParent,
 } from "./hermetic-home.js";
 import { trackPrivateDir, untrackPrivateDir } from "./private-dir-signals.js";
-import { recordTrustedParent, removeUnderTrustedParent } from "./safe-remove.js";
+import {
+  recordTrustedParent,
+  removeUnderTrustedParent,
+  removeUnderTrustedParentOrThrow,
+} from "./safe-remove.js";
 export { copyClaudeCredentialMirror } from "./claude-credential-mirror.js";
 
 export interface ClaudeProjectConfigDir {
@@ -296,7 +299,17 @@ export function openProjectSettingsSessionConfigDir(
   // Path first: it validates the id shape, so the sweep below can key its
   // registry consult on the name alone.
   const dir = projectSettingsSessionDirPath(root, sessionId);
-  prepareRunDirParent(root, PARENT_DIR_NAME, holdStateOf, projectSettingsSessionDirName(sessionId));
+  const parent = prepareRunDirParent(
+    root,
+    PARENT_DIR_NAME,
+    holdStateOf,
+    projectSettingsSessionDirName(sessionId)
+  );
+  // Recorded at open time for the removal's revalidation (src/safe-remove.ts,
+  // review round 104): the lstat check this variant used caught a swapped
+  // symlink but not another directory put at the same path, and the sandboxed
+  // child of any earlier command of this session can write the parent.
+  const parentRecord = recordTrustedParent(parent);
   if (resume) {
     if (!existsSync(dir)) {
       throw new Error(
@@ -324,23 +337,20 @@ export function openProjectSettingsSessionConfigDir(
     } catch (error) {
       // Unreferenced: remove it, parent revalidated first like every removal
       // here (round 30, contracts 1); the write error stays the one reported.
-      try {
-        assertTrustedDirectory(dirname(dir));
-        rmSync(dir, { recursive: true, force: true });
-      } catch (cleanupError) { console.error(`codemux: could not remove the project-settings directory ${dir}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`); }
+      removeUnderTrustedParent(dir, parentRecord, `the project-settings directory ${dir}`);
       throw error;
     }
   }
   let removed = false;
   const remove = (): void => {
     if (removed) return;
-    // The parent is revalidated first, like the run-path finalize above
-    // (and every codex-provider removal): a swapped parent must refuse
-    // the removal instead of resolving the link (review round 15,
-    // edges 2).
-    assertTrustedDirectory(dirname(dir));
-    rmSync(dir, { recursive: true, force: true });
-    // Marked only after rmSync succeeded: a failed removal stays
+    // The parent is revalidated first by the record's identity, like the
+    // run-path finalize above (and every codex-provider removal): a parent
+    // swapped for a symlink or replaced by another directory must refuse
+    // the removal instead of resolving the path elsewhere (review round 15,
+    // edges 2; the shared rule is src/safe-remove.ts).
+    removeUnderTrustedParentOrThrow(dir, parentRecord, `the project-settings directory ${dir}`);
+    // Marked only after the removal succeeded: a failed removal stays
     // retryable, so the caller's next attempt gets a real second try
     // instead of a no-op (review round 11, contracts-2 4).
     removed = true;

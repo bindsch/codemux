@@ -61,22 +61,40 @@ describe("parseCodexEventStream", () => {
     });
   });
 
-  test("cached input above total input clamps, and the total sums the clamped fields", () => {
-    // Round19: the uncached input was clamped to zero when cached exceeded
-    // the reported input, but total_tokens still summed the raw input -- so
-    // the components the envelope published (0 + 10 + 1 = 11) disagreed
-    // with the total they were promised to sum to (6). The total now sums
-    // the three normalized fields.
+  test("cached input above total input is an inconsistent snapshot, not a clamp (round 104)", () => {
+    // Round19 clamped the uncached input to zero when cached exceeded the
+    // reported input, and round25 kept the clamp while fixing the total;
+    // but a snapshot where cached reads plus cache writes exceed the input
+    // is a harness reporting inconsistent counts, not a zero-uncached-input
+    // turn. The clamp published components that cannot sum to any honest
+    // total; the derived fields go null (unknown) and the reported cached
+    // and output counts stay as knowledge.
     const stream = parseCodexEventStream(codexStream([
       { type: "thread.started", thread_id: "t" },
       { type: "turn.started" },
       { type: "turn.completed", usage: { input_tokens: 5, cached_input_tokens: 10, cache_write_input_tokens: 0, output_tokens: 1 } },
     ]))!;
     expect(stream.usage).toEqual({
-      input_tokens: 0,
+      input_tokens: null,
       output_tokens: 1,
       cached_input_tokens: 10,
-      total_tokens: 11,
+      total_tokens: null,
+      cost_usd: null,
+    });
+    // A cache-write overshoot is the same inconsistency: writes are a
+    // breakdown of the input, so input 5 cannot carry 4 cached and 3
+    // written. The comparison is exact, not float-rounded (BigInt), so an
+    // overshoot past 2^53 cannot round back under the input.
+    const overshoot = parseCodexEventStream(codexStream([
+      { type: "thread.started", thread_id: "t" },
+      { type: "turn.started" },
+      { type: "turn.completed", usage: { input_tokens: 5, cached_input_tokens: 4, cache_write_input_tokens: 3, output_tokens: 1 } },
+    ]))!;
+    expect(overshoot.usage).toEqual({
+      input_tokens: null,
+      output_tokens: 1,
+      cached_input_tokens: 7,
+      total_tokens: null,
       cost_usd: null,
     });
   });

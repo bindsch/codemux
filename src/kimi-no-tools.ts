@@ -44,6 +44,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import {
+  recordTrustedParent,
+  removeUnderTrustedParentOrThrow,
+  reportingHook,
+  type TrustedParentRecord,
+} from "./safe-remove.js";
 
 export interface KimiNoToolsFile {
   /** The path to pass as `--agent-file`. */
@@ -131,17 +137,30 @@ export function writeKimiNoToolsFile(brandHome: string): KimiNoToolsFile {
     throw new Error(`${parent} must be a directory owned by the current user`);
   }
   sweepStaleFiles(parent);
+  // Recorded for the finalizer's revalidation (src/safe-remove.ts): a
+  // previous kimi child with write access to the brand home could have
+  // replaced `.codemux` between this run's creation and its cleanup, and a
+  // bare rm then removed the same-named file wherever the replacement
+  // points (review round 104). The parent is revalidated by device and
+  // inode, not only by the lstat above.
+  const parentRecord: TrustedParentRecord = recordTrustedParent(parent);
   const path = join(parent, `${FILE_PREFIX}${process.pid}-${randomBytes(6).toString("hex")}.md`);
   writeFileSync(path, AGENT_FILE_TEXT, { mode: 0o600 });
 
   let finalized = false;
   const finalize = (): void => {
     if (finalized) return;
+    // Thrown when refused or failed, so the adapter's cleanupHome reports
+    // the kept file; it stays retryable, and the exit hook retries and
+    // reports (review round 104: `finalized` used to be set before the
+    // removal, so a transiently failed removal left the file behind with
+    // the exit hook already disarmed).
+    removeUnderTrustedParentOrThrow(path, parentRecord, `the kimi no-tools agent file ${path}`);
     finalized = true;
-    rmSync(path, { force: true });
-    process.off("exit", finalize);
+    process.off("exit", atExit);
   };
-  process.once("exit", finalize);
+  const atExit = reportingHook(finalize);
+  process.once("exit", atExit);
 
   return { path, finalize };
 }

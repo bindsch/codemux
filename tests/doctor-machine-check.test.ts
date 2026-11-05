@@ -9,7 +9,8 @@
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { validateAgentFilter } from "../src/doctor-machine-check.js";
+import { doctorTimeoutMs, validateAgentFilter } from "../src/doctor-machine-check.js";
+import { UsageRefusalError } from "../src/validation.js";
 import { VERSION_VERDICT_PROBE_TIMEOUT_MS } from "../src/harness-health.js";
 import { fakeScodeHelp, fakeUsagemux, fixtureHome, readPathMarker, runDoctor } from "./helpers/doctor.js";
 import { createFakeBinaryEnv } from "./helpers/cli.js";
@@ -361,6 +362,14 @@ describe("doctor flag validation", () => {
     [["--spend-cap", "-1"], /--spend-cap must be a whole number/],
     [["--timeout", "0"], /--timeout must be a number of seconds/],
     [["--timeout", "abc"], /--timeout must be a number of seconds/],
+    // Round 104: the flag must land on whole milliseconds a probe accepts
+    // (1 to 60000), so a fourth decimal or a value over 60 seconds is a
+    // usage refusal at the boundary, not a run that reads every harness
+    // back as unreadable.
+    [["--timeout", "0.0001"], /--timeout must be a number of seconds/],
+    [["--timeout", "1.0005"], /--timeout must be a number of seconds/],
+    [["--timeout", "60.0001"], /--timeout must be a number of seconds/],
+    [["--timeout", "100"], /--timeout must be a number of seconds/],
     [["--format", "yaml"], /--format must be 'text' or 'json'/],
   ])("%s is a usage refusal", async (args, pattern) => {
     const fake = base();
@@ -384,6 +393,65 @@ describe("doctor flag validation", () => {
       expect(result.exitCode).toBe(2);
       expect(result.output).toContain("config: invalid: invalid configuration");
       expect(result.output).not.toContain("second line");
+    } finally {
+      fake.cleanup();
+    }
+  });
+});
+
+describe("doctorTimeoutMs (round 104)", () => {
+  test.each([
+    [0.001, 1],
+    [1.5, 1500],
+    [60, 60000],
+  ])("%s seconds is exactly %i whole milliseconds", (seconds, ms) => {
+    expect(doctorTimeoutMs(seconds)).toBe(ms);
+  });
+
+  test("every three-decimal value from 0.001 to 60 is accepted", () => {
+    // 1.001 * 1000 is 1000.9999999999999 in binary floating point: an exact
+    // integer test refused 731 of the 60000 valid values.
+    expect(doctorTimeoutMs(1.001)).toBe(1001);
+    for (let ms = 1; ms <= 60_000; ms += 1) {
+      expect(doctorTimeoutMs(Number((ms / 1_000).toFixed(3)))).toBe(ms);
+    }
+  });
+
+  test.each([0.0001, 0.0005, 1.0005, 1.0010001, 1.0000000001, 0.0010000001, 59.9999999999, 60.0001, 100, 0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    "%s is a usage refusal naming the rule",
+    (seconds) => {
+      expect(() => doctorTimeoutMs(seconds)).toThrow(UsageRefusalError);
+      expect(() => doctorTimeoutMs(seconds)).toThrow(/--timeout must be a number of seconds/);
+    }
+  );
+
+  test("the whole milliseconds reach the version probe", async () => {
+    // A fake claude that answers instantly stays green under 1.5 and 60
+    // seconds; under 0.001 (1 ms) the same binary cannot answer in budget
+    // and the row reports the timeout — the fractional flag reached the
+    // probe as the exact millisecond count, not as a refusal or a default.
+    const fake = createFakeBinaryEnv(greenBinaries("2.1.300 (Claude Code)"));
+    try {
+      const green = async (timeout: string): Promise<void> => {
+        const result = await runDoctor(["--only", "claude", "--timeout", timeout], {
+          path: fake.env.PATH!,
+          home: fixtureHome({ ".claude/.credentials.json": claudeMirror(Date.now() + 3_600_000) }),
+        });
+        expect(result.exitCode).toBe(0);
+        expect(result.output).toContain("| claude | yes | 2.1.300 | ok (2.1.300) |");
+        expect(result.output).not.toContain("timed out");
+      };
+      await green("1.5");
+      await green("60");
+      const oneMs = await runDoctor(["--only", "claude", "--timeout", "0.001"], {
+        path: fake.env.PATH!,
+        home: fixtureHome({ ".claude/.credentials.json": claudeMirror(Date.now() + 3_600_000) }),
+      });
+      // Accepted (no usage refusal) and the 1 ms budget is what the probe
+      // ran with: the row times out, exit stays informational.
+      expect(oneMs.exitCode).toBe(0);
+      expect(oneMs.errors).not.toContain("--timeout");
+      expect(oneMs.output).toContain("timed out");
     } finally {
       fake.cleanup();
     }

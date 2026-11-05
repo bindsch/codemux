@@ -125,6 +125,24 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- `codemux doctor` no longer reports a working kimi login as `LOGIN-EXPIRED`. Kimi's access token lives 15 minutes and
+  kimi renews it from the stored refresh token on its next run, so a store with a refresh token is `logged-in`, with a
+  note when the access token has aged out. Only an expired access token with no refresh token is `LOGIN-EXPIRED`
+  (remedy: `kimi login`), and a store with no token is `NO-LOGIN`. The expiry is read as epoch seconds or
+  milliseconds, as a number or a decimal string.
+- Review round 104, whole tree: the kimi no-tools and aider history finalizers remove their files under a parent
+  revalidated by its recorded device and inode and arm off only after the removal succeeds, so a swapped parent cannot
+  redirect the removal and a transiently failed cleanup stays retryable — the same record now guards the
+  project-settings session directory, codex's `--output-last-message` scratch, and the provider-override session
+  homes; a `can_use_tool` whose request id is empty, over the protocol bound, or carries NUL is answered by the driver
+  itself instead of joining the pending set, where no decision could resolve it; `doctor --timeout` must land on whole
+  milliseconds from 1 to 60000 (seconds 0.001 to 60, three decimals), so a sub-millisecond flag is a usage refusal
+  instead of every probe timing out; a credential mirror that is not valid UTF-8 is refused instead of copied with
+  replacement characters standing in for the token; a ledger line naming an unknown agent or autonomy level is
+  malformed, never a totals row; a usage snapshot whose cached count exceeds its input publishes null input and total
+  instead of a clamped zero the components cannot sum to — on the agy, codex run, codex session, and experiment
+  parsers alike; and an MCP catalog schema with an empty `type` or composition array matches no instance and is
+  invalid, never catalog evidence.
 - Review round 100, whole tree: a sandboxed launch whose options drop a constraint the request carries — a network
   restriction, a trust level, or a timeout only one side names — or whose options name a trust level weaker than the
   default the request validated, is refused before anything spawns, and the sandboxed spawn runs on the request's own

@@ -3,9 +3,14 @@
 // them. src/codex-provider.ts owns the override and re-exports this.
 
 import { createHash } from "node:crypto";
-import { mkdtempSync, renameSync, rmSync } from "node:fs";
+import { mkdtempSync, renameSync } from "node:fs";
 import { basename, join } from "node:path";
 import { assertTrustedDirectory, prepareRunDirParent } from "../hermetic-home.js";
+import {
+  recordTrustedParent,
+  removeUnderTrustedParent,
+  type TrustedParentRecord,
+} from "../safe-remove.js";
 import { providerIdentityBaseUrl } from "../provider-override.js";
 
 import type { ProviderOverride } from "../provider-override.js";
@@ -112,21 +117,19 @@ function warnLostHome(action: string, path: string, error: unknown): void {
   console.error(`codemux: could not ${action} the session's provider home ${path}: ${detail}`);
 }
 
-/** Removes a home through a parent revalidated first: a run with write
- * access to `~/.codex` could have replaced the parent with a symlink
- * after the home was made, and a recursive removal resolves that
- * component like any path operation would (the run-path finalize's rule;
- * rm never follows a link at the home's own name). Returns whether the
- * home is gone. */
-function removeHome(parent: string, codexHome: string): boolean {
-  try {
-    assertTrustedDirectory(parent);
-  } catch (error) {
-    warnLostHome("remove", codexHome, error);
-    return false;
-  }
-  rmSync(codexHome, { recursive: true, force: true });
-  return true;
+/** Removes a home through its parent's recorded identity (src/safe-remove.ts,
+ * review round 104): a run with write access to `~/.codex` could have
+ * replaced the parent with a symlink — or another directory — after the home
+ * was made, and a recursive removal resolves that component like any path
+ * operation would (rm never follows a link at the home's own name). Answers
+ * whether the home is gone; a refusal or failure is reported, not raised,
+ * because the sweep is what reclaims a kept directory. */
+function removeHome(record: TrustedParentRecord, codexHome: string): boolean {
+  return removeUnderTrustedParent(
+    codexHome,
+    record,
+    `codex's provider-override home ${codexHome}`
+  );
 }
 
 /**
@@ -146,6 +149,11 @@ export function createCodexSessionProviderHome(
   multiAgent: boolean | null
 ): CodexSessionProviderHome {
   const parent = prepareRunDirParent(realCodexHome, PARENT_DIR_NAME);
+  // Recorded for the removal's revalidation (src/safe-remove.ts): every
+  // session's child can write this shared parent, so a settle or abandon
+  // that removes the home must confirm it is still the directory this
+  // session's home was made under.
+  const parentRecord = recordTrustedParent(parent);
   const codexHome = mkdtempSync(join(parent, `run-${process.pid}-`));
   const prepareConfig = (): void => {
     writeCodexProviderConfigInto(codexHome, override, model, multiAgent);
@@ -155,7 +163,7 @@ export function createCodexSessionProviderHome(
     if (settled) return false;
     settled = true;
     if (!resumable || sessionId === null) {
-      return removeHome(parent, codexHome);
+      return removeHome(parentRecord, codexHome);
     }
     const target = codexSessionProviderHomePath(realCodexHome, override.baseUrl, sessionId);
     try {
@@ -183,7 +191,7 @@ export function createCodexSessionProviderHome(
     abandon: (): void => {
       if (settled) return;
       settled = true;
-      removeHome(parent, codexHome);
+      removeHome(parentRecord, codexHome);
     },
   };
 }

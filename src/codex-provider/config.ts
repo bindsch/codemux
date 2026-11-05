@@ -7,7 +7,12 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { assertTrustedDirectory, prepareRunDirParent } from "../hermetic-home.js";
-import { recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "../safe-remove.js";
+import {
+  recordTrustedParent,
+  removeUnderTrustedParent,
+  removeUnderTrustedParentOrThrow,
+  reportingHook,
+} from "../safe-remove.js";
 import { UsageRefusalError } from "../validation.js";
 
 import type { ProviderOverride } from "../provider-override.js";
@@ -211,8 +216,16 @@ export function writeCodexProviderConfig(
     writeCodexProviderConfigInto(codexHome, override, model, multiAgent);
   } catch (error) {
     // A run that never launches leaves nothing behind: the directory made a
-    // moment ago is removed before the failure reaches the caller.
-    rmSync(codexHome, { recursive: true, force: true });
+    // moment ago is removed — under the creation-time record
+    // (src/safe-remove.ts, review round 104: the removal must refuse a
+    // parent that is no longer the one made, not resolve the path
+    // elsewhere) — before the failure reaches the caller; the write error
+    // stays the one reported.
+    removeUnderTrustedParent(
+      codexHome,
+      parentRecord,
+      `codex's provider-override home ${codexHome}`
+    );
     throw error;
   }
 

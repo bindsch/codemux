@@ -4,11 +4,14 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
+  renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { CodexAdapter } from "../src/adapters/codex.js";
 import type { RunContext } from "../src/adapters/base.js";
 import type { RunRequest } from "../src/types.js";
@@ -298,8 +301,7 @@ describe("CodexAdapter", () => {
     }
   });
 
-  test("two overlapping launches through one request object each carry their own context", () => {
-    // Round13 refused the second launch because per-run state was keyed by
+  test("two overlapping launches through one request object each carry their own context", () => {    // Round13 refused the second launch because per-run state was keyed by
     // the request object; the round15 restructure made the context a value
     // the launcher owns, so the SAME request object may launch twice
     // concurrently and each launch reads and removes only its own file.
@@ -357,6 +359,70 @@ describe("CodexAdapter", () => {
     } finally {
       for (const dir of scratchDirs) rmSync(dir, { recursive: true, force: true });
       rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a scratch cleanup refuses a swapped or replaced .codemux-scratch parent (round 104)", () => {
+    // The cleanup revalidated dirname(lastMessageDir) by lstat alone, so a
+    // symlink was caught but another directory put at the same path was
+    // not, and the recursive remove deleted the same-named run directory
+    // under it. The parent's identity is recorded at prepareRun and
+    // revalidated at cleanup (src/safe-remove.ts); a refused cleanup keeps
+    // the scratch directory and says so, and a later cleanup of the same
+    // context (the launch failed, the retry path) removes it once the
+    // parent is real again.
+    for (const shape of ["symlink", "replacement"] as const) {
+      const home = mkdtempSync(join(tmpdir(), "codemux-codex-"));
+      try {
+        mkdirSync(join(home, ".codex"));
+        const adapter = new CodexAdapter({ CODEX_API_KEY: "sk-test" }, home);
+        const context = adapter.prepareRun({ agent: "codex", prompt: "t", resultJson: true });
+        const scratchParent = dirname(context.lastMessageDir!);
+        // The victim (symlink shape) or decoy (replacement shape) holding a
+        // same-named run directory with a file inside.
+        const sameNamed = (root: string): string => {
+          const child = join(root, basename(context.lastMessageDir!));
+          mkdirSync(child, { recursive: true });
+          writeFileSync(join(child, "marker.txt"), "kept\n");
+          return child;
+        };
+        const victim = sameNamed(join(home, "victim"));
+        const moved = join(home, "scratch-moved");
+        renameSync(scratchParent, moved);
+        let decoy: string | null = null;
+        if (shape === "symlink") {
+          symlinkSync(join(home, "victim"), scratchParent);
+        } else {
+          mkdirSync(scratchParent);
+          decoy = sameNamed(scratchParent);
+        }
+        const errors: string[] = [];
+        const realError = console.error;
+        console.error = ((message: string) => errors.push(String(message))) as typeof console.error;
+        try {
+          adapter.cleanupRun(context);
+        } finally {
+          console.error = realError;
+        }
+        expect(errors.join("\n")).toContain("the directory was kept");
+        expect(readFileSync(join(victim, "marker.txt"), "utf8")).toBe("kept\n");
+        if (decoy !== null) expect(readFileSync(join(decoy, "marker.txt"), "utf8")).toBe("kept\n");
+        // The run's own directory physically sits under the moved parent,
+        // kept with the refusal.
+        expect(existsSync(join(moved, basename(context.lastMessageDir!)))).toBe(true);
+        // Restore the real parent and clean up again: the removal succeeds.
+        if (shape === "symlink") {
+          rmSync(scratchParent);
+        } else {
+          rmSync(scratchParent, { recursive: true, force: true });
+        }
+        renameSync(moved, scratchParent);
+        adapter.cleanupRun(context);
+        expect(existsSync(context.lastMessageDir!)).toBe(false);
+        expect(readFileSync(join(victim, "marker.txt"), "utf8")).toBe("kept\n");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
     }
   });
 

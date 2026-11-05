@@ -48,7 +48,7 @@ also carries a remedy line naming the fix.
 | `KNOWN-BREAK` | warn or broken | A recorded break removes enforcement at named autonomy levels. Broken unless the sandbox mitigates it and scode is present; a mitigated row says so and warns. |
 | `FEATURE-FLOOR` | broken | A feature this codemux gates (hermetic runs, result JSON, sessions, experiment MCP) needs a newer harness than the installed one. |
 | `NO-LOGIN` | broken | No credential store where the adapter looks for one. |
-| `LOGIN-EXPIRED` | broken | The stored credential is expired. |
+| `LOGIN-EXPIRED` | broken | The stored credential is expired and the harness cannot renew it. Kimi's access token lives 15 minutes and kimi renews it from its refresh token on its next run, so a kimi store with a refresh token is `logged-in`; the row notes an aged-out access token. |
 | `LOGIN-UNKNOWN` | warn | The adapter cannot tell (a mirror may be absent, or a config file ambiguous). |
 | `QUOTA-LOW` | broken | The quota gate would refuse the launch: the usage window is below the ceiling. |
 | `QUOTA-UNREADABLE` | warn | The usage window could not be read; the gate warns and proceeds. |

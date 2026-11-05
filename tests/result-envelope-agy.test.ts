@@ -113,6 +113,44 @@ describe("parseAgyResultEnvelope", () => {
     });
   });
 
+  test("cached reads over the reported input are an inconsistent snapshot, not a clamp (round 104)", () => {
+    // Rounds 17/19 computed the uncached input as input - cacheRead and
+    // clamped a negative difference to 0. A snapshot where cached > input
+    // is not a zero-uncached-input turn but a harness reporting
+    // inconsistent counts, and the clamp published components that do not
+    // sum to the published total. The two derived fields go null
+    // (unknown); the reported cached and output counts stay as knowledge.
+    const parsed = parseAgyResultEnvelope(
+      JSON.stringify({
+        status: "SUCCESS",
+        response: "OK",
+        usage: { input_tokens: 100, output_tokens: 5, cache_read_tokens: 120, total_tokens: 125 },
+      })
+    )!;
+    expect(parsed.usage).toEqual({
+      input_tokens: null,
+      output_tokens: 5,
+      cached_input_tokens: 120,
+      total_tokens: null,
+      cost_usd: null,
+    });
+    // A consistent snapshot at the same seam still normalizes fully.
+    const consistent = parseAgyResultEnvelope(
+      JSON.stringify({
+        status: "SUCCESS",
+        response: "OK",
+        usage: { input_tokens: 120, output_tokens: 5, cache_read_tokens: 100 },
+      })
+    )!;
+    expect(consistent.usage).toEqual({
+      input_tokens: 20,
+      output_tokens: 5,
+      cached_input_tokens: 100,
+      total_tokens: 125,
+      cost_usd: null,
+    });
+  });
+
   test("rejects stdout that is not the envelope", () => {
     expect(parseAgyResultEnvelope("OK\n")).toBeNull();
     expect(parseAgyResultEnvelope("")).toBeNull();
