@@ -30,10 +30,12 @@ interface Connection {
  *   on a pipelined connection) is never counted (review round 117).
  *
  * The limit, which is deliberate: HTTP gives a server no receipt. A
- * client that lets the response finish and then, without reading it,
- * sends another request or closes in order shows the server exactly what
- * a client that read it shows (measured: the same `end` and `close`, no
- * error). A stricter rule has no evidence to use. Counting only fetches
+ * client whose next request reaches the relay after the response
+ * finished, or that closes in order, shows the server exactly what a
+ * client that read the response shows (measured: the same `end` and
+ * `close`, no error), whether or not it read anything. That includes a
+ * client that wrote both requests at once: the relay may see the second
+ * only after the first response finished. A stricter rule has no evidence to use. Counting only fetches
  * that a later request confirms would fail every client that fetches the
  * catalog on a connection of its own and then closes it, which is an
  * ordinary client, so the run would fail for a catalog that was read.

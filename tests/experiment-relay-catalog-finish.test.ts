@@ -140,7 +140,15 @@ test("a catalog response with no connection to watch is never counted", async ()
   expect(kinds(relay)).toEqual([]);
 });
 
-test("two requests pipelined over a real socket and never read leave the catalog unserved", async () => {
+test("two requests pipelined over a real socket and never read: the reset is recorded and nothing fails", async () => {
+  // What the relay concludes about the FIRST fetch depends on when it
+  // sees the second request, which the client does not control: before
+  // the first response finished (pipelined, settles nothing, so the reset
+  // uncounts the fetch) or after it (indistinguishable from a client that
+  // read the response, so the fetch stays counted; the stated limit).
+  // Both orders happen for two requests written together, so this test
+  // asserts only what holds in both. The two orders themselves are
+  // pinned with fake responses above, where the order is under control.
   const relay = await setup(undefined, { catalog: { body: BIG_BODY } });
   const catalog = new URL(relay.catalogUrl!);
   const client = await rawClient(relay);
@@ -151,7 +159,14 @@ test("two requests pipelined over a real socket and never read leave the catalog
   client.socket.resetAndDestroy();
   await until(() => kinds(relay).includes("catalog_fetch_reset"), "catalog_fetch_reset");
   await Bun.sleep(100);
-  expect(relay.catalogServed).toBe(false);
+  const seen = kinds(relay);
+  const served = seen.filter((kind) => kind === "catalog_served").length;
+  const reset = seen.filter((kind) => kind === "catalog_fetch_reset").length;
+  // The abandoned connection uncounted at least its last fetch, and never
+  // more fetches than it counted.
+  expect(reset).toBeGreaterThanOrEqual(1);
+  expect(reset).toBeLessThanOrEqual(served);
+  expect(relay.catalogServed).toBe(served > reset);
   expect(relay.failureCode).toBeNull();
 });
 
