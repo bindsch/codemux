@@ -120,7 +120,16 @@ export const readKeychainStatus = async (
       cwd: process.cwd(), env: environment as unknown as Record<string, string>, timeoutMs: 5_000,
     });
     const path = def.stdout.trim().replace(/^"|"$/g, "");
-    if (def.success && path !== "" && !existsSync(path)) {
+    // The Keychain is readable only when the default query itself
+    // succeeded and named a file (review round 147): a query that fails,
+    // times out, or prints no path leaves the store a launch writes to
+    // undetermined, and a successful item lookup beneath it verified the
+    // item, not that store. Fail closed as unreadable, naming what could
+    // not be determined; the command's own output stays out of the detail.
+    if (!def.success || path === "") {
+      return { state: "unreadable", detail: "the user default keychain could not be determined" };
+    }
+    if (!existsSync(path)) {
       return { state: "default-missing", detail: `the user default keychain names a missing file: ${path}` };
     }
     const result = await runCapturedCommand(

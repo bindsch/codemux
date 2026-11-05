@@ -20,6 +20,21 @@ describe("OpencodeAdapter", () => {
     expect(adapter.binaryName).toBe("opencode");
   });
 
+  test("the shared validators refuse the Playwright option for an agent with no carrier", () => {
+    // Review round 147: only claude and zai have a command builder that can
+    // attach the Playwright MCP server. An adapter outside that list refuses
+    // the option instead of accepting a launch the server never rides; the
+    // sandbox refusal fires first, exactly as for a supporting agent.
+    expect(() => adapter.validateRunRequest({
+      agent: "opencode", prompt: "t", enablePlaywrightMcp: true,
+    })).toThrow("--enable-playwright-mcp requires --sandbox");
+    expect(() => adapter.validateRunRequest({
+      agent: "opencode", prompt: "t", sandboxed: true, enablePlaywrightMcp: true,
+    })).toThrow("--enable-playwright-mcp is supported only by claude and zai");
+    expect(() => adapter.validateTuiRequest(undefined, undefined, undefined, undefined, [], true))
+      .toThrow("--enable-playwright-mcp is supported only by claude and zai");
+  });
+
   test("capabilities are correct", () => {
     const caps = adapter.capabilities();
     expect(caps.supportsNonInteractive).toBe(true);

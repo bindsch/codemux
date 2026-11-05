@@ -8,6 +8,7 @@ import { summarizeAgyStream } from "../agy-stream.js";
 import { PROBE_MARKER, PROBE_PID, findDirectory, sameDirectory, sweepStaleHomes } from "./agy-homes.js";
 import { AGY_MIRROR_PATH, agyKeychainHost, agyProbeRoots, insertAgyKeychainItem, prepareAgyPrivateKeychain, recoverAgyKeychainSearchList, verifyAgyKeychainSearchList } from "../agy-keychain.js";
 import { assertNoAgyProjectExecutionConfig } from "../project-safety.js";
+import { AGY_DENIED_ACTIONS, headlessMediumSettings } from "./agy-settings.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import { agyResult } from "../result-envelope.js";
 import { agyPlainResult } from "../plain-unwrap.js";
@@ -37,28 +38,6 @@ export function markAgyIsolationProbe(request: RunRequest, mode: AgyProbeMode, o
     throw new Error("agy isolation probes require a plain read-only scode request");
   }
   isolationProbes.set(request, { mode, operatorHome });
-}
-
-const AGY_DENIED_ACTIONS = ["read_file", "write_file", "read_url", "execute_url", "command", "unsandboxed", "mcp"];
-
-function headlessMediumSettings(path: string): string {
-  let settings: unknown = {};
-  try { if (existsSync(path)) settings = JSON.parse(readFileSync(path, "utf8")); }
-  catch { throw new Error(`cannot read agy settings: ${path}`); }
-  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
-    throw new Error(`invalid agy settings object: ${path}`);
-  }
-  const config = settings as Record<string, unknown>;
-  const permissions = config.permissions ?? {};
-  if (typeof permissions !== "object" || Array.isArray(permissions)) {
-    throw new Error(`invalid agy settings permissions: ${path}`);
-  }
-  const rules = permissions as Record<string, unknown>;
-  const allow = rules.allow ?? [];
-  if (!Array.isArray(allow) || allow.some((rule) => typeof rule !== "string")) {
-    throw new Error(`invalid agy settings permissions.allow: ${path}`);
-  }
-  return JSON.stringify({ ...config, permissions: { ...rules, allow: [...new Set([...allow, "command(*)"])] } });
 }
 
 /**

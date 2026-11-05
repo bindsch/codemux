@@ -14,6 +14,7 @@ import { resolveModel } from "./config.js";
 import type { Command } from "commander";
 import type { AgentId, CodemuxConfig } from "./types.js";
 import { resolveSandboxOptionsForAgent } from "./sandbox-policy.js";
+import { supportsPlaywrightMcpAgent } from "./mcp.js";
 import { withKeepEnvExemption } from "./sandbox.js";
 import type { ExecutableCheck } from "./executable-security.js";
 import { runSandboxed } from "./cli-runtime.js";
@@ -86,7 +87,7 @@ export function registerTuiCommand(
         if (enablePlaywrightMcp && !options.sandbox) {
           throw new UsageRefusalError("--enable-playwright-mcp requires --sandbox");
         }
-        if (enablePlaywrightMcp && agentId !== "claude" && agentId !== "zai") {
+        if (enablePlaywrightMcp && !supportsPlaywrightMcpAgent(agentId)) {
           throw new UsageRefusalError("--enable-playwright-mcp is supported only by claude and zai");
         }
         const sandboxPolicyOverrides = parseSandboxPolicyOverrides({

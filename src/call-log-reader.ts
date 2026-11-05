@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { SCODE_TRUST_LEVELS } from "./sandbox.js";
 import { AGENT_IDS, AUTONOMY_LEVELS } from "./types.js";
 import type { CallRecord } from "./call-log.js";
@@ -166,6 +166,37 @@ function isCallRecord(parsed: unknown): parsed is StoredCallRecord {
   );
 }
 
+/** Opens the ledger once and answers a validated descriptor with its
+ * size, the rule both readers share: O_NONBLOCK so a FIFO with no writer
+ * never parks the open, O_NOFOLLOW so a final symlink is refused, never
+ * read through, and only a regular file is a ledger. Opening first and
+ * judging the descriptor closes the pathname-then-open window a swap
+ * defeats (review round 90) and the stat-then-read window that read a
+ * different object than it validated (review round 147). The descriptor
+ * is closed before a validation error escapes; the caller closes it on
+ * success. */
+function openCallLogDescriptor(path: string): { fd: number; size: number } {
+  const noFollowFlag = process.platform !== "win32" ? constants.O_NOFOLLOW : 0;
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | noFollowFlag);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ELOOP") throw new Error(`the call log at ${path} is not a regular file`);
+    throw error;
+  }
+  try {
+    const ledgerStat = fstatSync(fd);
+    if (!ledgerStat.isFile()) {
+      throw new Error(`the call log at ${path} is not a regular file`);
+    }
+    return { fd, size: ledgerStat.size };
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+}
+
 /**
  * Reads the ledger, bounded to its last 16 MiB (the tail is the newest
  * data, and a multi-gigabyte ledger must not be loaded whole). A window
@@ -177,22 +208,33 @@ function isCallRecord(parsed: unknown): parsed is StoredCallRecord {
  * not parse, or parses to something without the record's shape, is
  * skipped and counted, never fatal. Invalid labels are counted and replaced
  * with null while retaining the rest of the record. Throws on read errors
- * (absent file, not a regular file); callers report those. Invalid UTF-8
- * is not one of them: the bytes decode with replacement characters, so
- * the affected lines simply land in `malformed`.
+ * (absent file, not a regular file, a final symlink — the same refusal
+ * streamCallLog makes); callers report those. Invalid UTF-8 is not one of
+ * them: the bytes decode with replacement characters, so the affected
+ * lines simply land in `malformed`.
  */
 export function readCallLog(path: string): CallLogContents {
-  const ledgerStat = statSync(path);
-  if (!ledgerStat.isFile()) throw new Error(`the call log at ${path} is not a regular file`);
-  const size = ledgerStat.size;
-  let text: string;
-  let truncated = false;
-  if (size <= MAX_CALL_LOG_BYTES) {
-    text = readFileSync(path, "utf8");
-  } else {
-    const cut = size - MAX_CALL_LOG_BYTES;
-    const fd = openSync(path, "r");
-    try {
+  const { fd, size } = openCallLogDescriptor(path);
+  try {
+    let text: string;
+    let truncated = false;
+    if (size <= MAX_CALL_LOG_BYTES) {
+      // The small-file window is the fstat size, read through the
+      // validated descriptor: a file that grew past the bound after the
+      // fstat is still read as one bounded window, and a file that
+      // shrank is decoded up to the bytes that arrived, never the
+      // zero-filled tail of the allocation (the rule the tail branch
+      // below has had since review round 90).
+      const buffer = Buffer.alloc(size);
+      let read = 0;
+      while (read < buffer.length) {
+        const n = readSync(fd, buffer, read, buffer.length - read, read);
+        if (n === 0) break;
+        read += n;
+      }
+      text = buffer.subarray(0, read).toString("utf8");
+    } else {
+      const cut = size - MAX_CALL_LOG_BYTES;
       const buffer = Buffer.alloc(MAX_CALL_LOG_BYTES);
       let read = 0;
       while (read < buffer.length) {
@@ -217,21 +259,21 @@ export function readCallLog(path: string): CallLogContents {
         const firstNewline = text.indexOf("\n");
         text = firstNewline === -1 ? "" : text.slice(firstNewline + 1);
       }
-    } finally {
-      closeSync(fd);
+      truncated = true;
     }
-    truncated = true;
+    const lines = text.split("\n");
+    if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+    const entries: CallLogEntry[] = [];
+    let malformed = 0;
+    for (const line of lines) {
+      const parsed = parseLine(line);
+      if (parsed.malformed) malformed++;
+      entries.push({ line, record: parsed.record });
+    }
+    return { entries, malformed, truncated };
+  } finally {
+    closeSync(fd);
   }
-  const lines = text.split("\n");
-  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
-  const entries: CallLogEntry[] = [];
-  let malformed = 0;
-  for (const line of lines) {
-    const parsed = parseLine(line);
-    if (parsed.malformed) malformed++;
-    entries.push({ line, record: parsed.record });
-  }
-  return { entries, malformed, truncated };
 }
 
 /** Parses one ledger line into a record or a malformed count, the single
@@ -275,32 +317,14 @@ export function streamCallLog(
   visit: (entry: CallLogEntry) => void,
   options: { endAt?: number } = {}
 ): StreamedCallLog {
-  // Open FIRST, then judge the descriptor: a stat of the pathname before a
-  // separate open leaves a window a swap defeats — a FIFO replaced in
-  // between made the blocking open park forever (review round 90). The
-  // open passes O_NONBLOCK (a FIFO with no writer never blocks it) and
-  // O_NOFOLLOW (a final symlink is refused, never read through), the
-  // pattern the writer (src/call-log.ts) and the shared bounded reader
-  // (src/file-io.ts) already use; only a regular file is a ledger
-  // (review round 56). `endAt` fixes the byte the read stops at, so two
-  // passes over a ledger that is still being appended to see the same
-  // records (round 28, edges 2): bytes past it, a partial line included,
-  // are the next invocation's business.
-  const noFollowFlag = process.platform !== "win32" ? constants.O_NOFOLLOW : 0;
-  let fd: number;
+  // The open-and-validate rule both readers share: openCallLogDescriptor
+  // above (O_NONBLOCK, O_NOFOLLOW, only a regular file — review rounds 90
+  // and 56). `endAt` fixes the byte the read stops at, so two passes over
+  // a ledger that is still being appended to see the same records (round
+  // 28, edges 2): bytes past it, a partial line included, are the next
+  // invocation's business.
+  const { fd, size } = openCallLogDescriptor(path);
   try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | noFollowFlag);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ELOOP") throw new Error(`the call log at ${path} is not a regular file`);
-    throw error;
-  }
-  try {
-    const ledgerStat = fstatSync(fd);
-    if (!ledgerStat.isFile()) {
-      throw new Error(`the call log at ${path} is not a regular file`);
-    }
-    const size = ledgerStat.size;
     const endAt = Math.min(options.endAt ?? size, size);
     const chunk = Buffer.alloc(STREAM_CHUNK_BYTES);
     // An incomplete line is held as the chunks that carry it and joined

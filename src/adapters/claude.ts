@@ -268,9 +268,27 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
   }
 
   buildRunCommand(request: RunRequest, context?: RunContext): string[] {
+    // The Playwright build is decided first, because the settings branch
+    // reads it: the Playwright binary's trust check rides the context
+    // (review round 110) — its path is embedded in the --mcp-config JSON
+    // argument, where the spawn's command re-check cannot see it, so the
+    // launcher re-stats it through the recorded check instead.
+    const playwright = buildPlaywrightSandboxMcp(request.sandboxed, {
+      enabled: request.enablePlaywrightMcp,
+      forbiddenRoot: request.cwd ?? process.cwd(),
+    });
+    // True when the request asked for the Playwright server and none can
+    // be attached (an unsandboxed launch: the build returns no
+    // arguments). The validators refuse that combination first; this is
+    // the fail-closed command a caller that reaches the builder directly
+    // gets — the every-customization-off baseline, not the user settings
+    // source the server needs (review round 147). Project settings keep
+    // their own branch, which the experiment validation guards instead.
+    const playwrightRefused = !request.experimentProjectSettings &&
+      request.enablePlaywrightMcp === true && playwright.args.length === 0;
     const cmd = ["claude", "-p"];
     // Project settings replace --safe-mode, which would ignore their rules.
-    if (request.hermetic && !request.experimentProjectSettings) {
+    if ((request.hermetic || playwrightRefused) && !request.experimentProjectSettings) {
       // --safe-mode starts with every customization disabled: CLAUDE.md
       // (user and project), skills, plugins, hooks, MCP servers, custom
       // commands and agents. Auth, model selection, built-in tools and
@@ -297,11 +315,13 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
     const instructionDirs = request.instructionDirs ?? [];
     const cwd = canonicalInstructionDir(request.cwd ?? process.cwd());
     const cwdIsInstructionDir = instructionDirs.some((dir) => canonicalInstructionDir(dir) === cwd);
-    cmd.push(
-      "--setting-sources",
-      request.experimentProjectSettings ? PROJECT_SETTING_SOURCES : cwdIsInstructionDir ? "user,project" : "user",
-      "--strict-mcp-config"
-    );
+    if (!playwrightRefused) {
+      cmd.push(
+        "--setting-sources",
+        request.experimentProjectSettings ? PROJECT_SETTING_SOURCES : cwdIsInstructionDir ? "user,project" : "user",
+        "--strict-mcp-config"
+      );
+    }
     // No run of this adapter persists a session, so the harness is told so
     // explicitly: nothing a later run could resume is left behind.
     cmd.push("--no-session-persistence");
@@ -324,14 +344,8 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
       cmd.push("--add-dir", dir);
     }
 
-    // The Playwright binary's trust check rides the context (review round
-    // 110): its path is embedded in the --mcp-config JSON argument, where
-    // the spawn's command re-check cannot see it, so the launcher re-stats
-    // it through the recorded check instead.
-    const playwright = buildPlaywrightSandboxMcp(request.sandboxed, {
-      enabled: request.enablePlaywrightMcp,
-      forbiddenRoot: request.cwd ?? process.cwd(),
-    });
+    // The Playwright arguments and their trust check, from the build the
+    // settings branch above already read (see the top of this method).
     cmd.push(...playwright.args);
     if (context !== undefined) context.playwrightMcpCheck = playwright.check;
 
@@ -429,14 +443,17 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
     // and the only verified way to keep an interactive session from
     // loading the operator's own hooks and MCP servers. The Playwright
     // branch needs the user settings source instead, so the MCP client
-    // configuration is reachable.
-    const cmd = enablePlaywrightMcp
-      ? ["claude", "--setting-sources", "user", "--strict-mcp-config"]
-      : ["claude", "--safe-mode"];
+    // configuration is reachable — and it is selected by what the MCP
+    // build attached, never by the flag alone (review round 147): an
+    // unsandboxed launch attaches nothing, and user settings with no MCP
+    // configuration to load from them is the baseline lost for nothing.
     const playwright = buildPlaywrightSandboxMcp(sandboxed, {
       enabled: enablePlaywrightMcp,
       forbiddenRoot: cwd ?? process.cwd(),
     });
+    const cmd = playwright.args.length > 0
+      ? ["claude", "--setting-sources", "user", "--strict-mcp-config"]
+      : ["claude", "--safe-mode"];
     cmd.push(...playwright.args);
     if (playwright.check !== null) nestedChecks?.push(playwright.check);
     // The override's model fallback, same as buildRunCommand: an override

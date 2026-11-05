@@ -18,6 +18,7 @@ import {
   validatePrompt,
   validateWorkingDirectory,
 } from "../validation.js";
+import { supportsPlaywrightMcpAgent } from "../mcp.js";
 import { TOOL_SELECTIONS, isToolSelection } from "../types.js";
 import type {
   AdapterCapabilities,
@@ -95,6 +96,26 @@ export function validateRunRequestFor(
   }
   if (request.enablePlaywrightMcp !== undefined && typeof request.enablePlaywrightMcp !== "boolean") {
     throw new Error("enablePlaywrightMcp must be a boolean");
+  }
+  if (request.enablePlaywrightMcp === true) {
+    // The CLI's rules, in the shared validator where a programmatic
+    // request meets them too (review round 147): the server rides the
+    // sandbox-scoped --mcp-config carrier, and only claude and zai have
+    // one. The same wording the CLI prints, so every entry names the same
+    // refusal.
+    if (request.sandboxed !== true) {
+      throw new UsageRefusalError("--enable-playwright-mcp requires --sandbox");
+    }
+    if (!supportsPlaywrightMcpAgent(adapter.id)) {
+      throw new UsageRefusalError("--enable-playwright-mcp is supported only by claude and zai");
+    }
+    // The CLI's third rule, for the same reason: a hermetic run starts
+    // the harness with its MCP servers off, and a run with no tools has
+    // nothing to call the server with, so either would accept an option
+    // that cannot take effect.
+    if (request.hermetic === true || request.tools === "none") {
+      throw new UsageRefusalError("--hermetic and --tools none cannot be combined with --enable-playwright-mcp");
+    }
   }
   if (request.hermetic !== undefined && typeof request.hermetic !== "boolean") {
     throw new Error("hermetic must be a boolean");
@@ -197,5 +218,13 @@ export function validateTuiRequestFor(
   validateEnvironmentNames(passthroughEnv);
   if (typeof enablePlaywrightMcp !== "boolean") {
     throw new Error("enablePlaywrightMcp must be a boolean");
+  }
+  if (enablePlaywrightMcp && !supportsPlaywrightMcpAgent(adapter.id)) {
+    // The CLI's agent rule (review round 147): an adapter whose command
+    // never carries the server refuses the option instead of ignoring it.
+    // The sandbox rule cannot live here — a sandboxed TUI validates this
+    // same request — so the unsandboxed entry point (runInteractive)
+    // refuses the option outright.
+    throw new UsageRefusalError("--enable-playwright-mcp is supported only by claude and zai");
   }
 }

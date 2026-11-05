@@ -2,7 +2,7 @@ import type { BaseAdapter } from "./base.js";
 import type { AutonomyLevel, ReasoningEffort } from "../types.js";
 import { guardedWait } from "../process-runner.js";
 import { assertExecutablesUnchanged } from "../executable-security.js";
-import { validateWorkingDirectory } from "../validation.js";
+import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 
 export async function runInteractive(
   this: BaseAdapter,
@@ -18,6 +18,15 @@ export async function runInteractive(
     throw new Error(
       "BaseAdapter.runInteractive cannot attest an external sandbox; use the sandbox runner"
     );
+  }
+  if (enablePlaywrightMcp) {
+    // This entry point never sandboxes, and the Playwright server rides
+    // the sandbox-scoped carrier only (review round 147): refuse the
+    // option outright, before anything is built or spawned. Without this
+    // the launch ran unsandboxed, attached no MCP configuration, and for
+    // claude and zai still selected the user settings source in place of
+    // --safe-mode.
+    throw new UsageRefusalError("--enable-playwright-mcp requires --sandbox");
   }
   const effectiveAutonomy = autonomy ?? "read-only";
   this.validateTuiRequest(

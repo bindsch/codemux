@@ -125,6 +125,14 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 147, whole tree: a blank CRLF line between harness frames no longer ends a session as
+  unusable output; the Playwright MCP option is refused for programmatic requests without the sandbox,
+  on an agent that never attaches the server, or with a hermetic or no-tools run, and an unsandboxed
+  launch keeps its customization-off baseline; the Antigravity settings read is bounded and refuses a FIFO or directory instead of
+  hanging; `doctor` no longer reports the Keychain readable when the default-keychain query itself
+  failed; the bounded call-log reader validates and reads the same file descriptor, refusing a final
+  symlink like the streaming reader; and a session failure handler that throws now ends the session by
+  killing the harness tree instead of ending codemux with the harness still running.
 - Review round 137, whole tree: credential-backup pruning keeps a backup another live process may still need; a
   failed Antigravity private-home cleanup is retried instead of stranded; the OpenCode account store is rechecked
   after it is read, so a store swapped in the window is refused; a symlink chain of exactly the expansion bound

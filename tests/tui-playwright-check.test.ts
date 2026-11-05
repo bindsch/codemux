@@ -71,8 +71,13 @@ describe("buildTuiCommand's nested executable checks", () => {
     const command = make().buildTuiCommand(undefined, "read-only", undefined, true, false, process.cwd(), checks);
     expect(command).not.toContain("--mcp-config");
     expect(checks).toEqual([]);
-    // Unsandboxed launches never carry the server, whatever the flag says.
-    make().buildTuiCommand(undefined, "read-only", undefined, false, true, process.cwd(), checks);
+    // Unsandboxed launches never carry the server, whatever the flag says
+    // (review round 147): no check, no MCP configuration, and no settings
+    // source either — the every-customization-off baseline stands.
+    const unsandboxed = make().buildTuiCommand(undefined, "read-only", undefined, false, true, process.cwd(), checks);
+    expect(unsandboxed).not.toContain("--mcp-config");
+    expect(unsandboxed).toContain("--safe-mode");
+    expect(unsandboxed).not.toContain("--setting-sources");
     expect(checks).toEqual([]);
   });
 });

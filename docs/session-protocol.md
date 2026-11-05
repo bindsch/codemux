@@ -267,7 +267,8 @@ For the strict JSON transports (Claude/ZAI, Codex, Agy, OpenCode, Kimi):
 2. A recognized lifecycle event that violates identity or turn grammar is
    mirrored as `unknown`, then a fatal harness `error` ends the session.
 3. Invalid JSON or UTF-8 is fatal. Diagnostics include an excerpt bounded
-   to the first 4 KiB of offending bytes. Empty harness lines are skipped;
+   to the first 4 KiB of offending bytes. Empty harness lines are skipped,
+   including a line of one carriage return (the blank line of a CRLF wire);
    whitespace-only strict-JSON lines are invalid. An oversized harness
    line is fatal the moment an unterminated run passes the line bound —
    the session must not wait for a newline that may never arrive — and

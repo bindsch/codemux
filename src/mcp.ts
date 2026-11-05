@@ -1,9 +1,21 @@
 import { executableCheck, resolveTrustedExecutable, type ExecutableCheck } from "./executable-security.js";
+import type { AgentId } from "./types.js";
 
 export interface PlaywrightMcpOptions {
   enabled?: boolean;
   binaryPath?: string | null;
   forbiddenRoot?: string;
+}
+
+/** The one list of agents whose command builders can attach the Playwright
+ * MCP server (review round 147): the CLI checks, the session request
+ * parser, and the shared validators all read this predicate, so no second
+ * list can drift from it. An adapter outside the list refuses the option
+ * instead of accepting a launch the server never rides. */
+const PLAYWRIGHT_MCP_AGENTS: readonly AgentId[] = ["claude", "zai"];
+
+export function supportsPlaywrightMcpAgent(agent: AgentId): boolean {
+  return PLAYWRIGHT_MCP_AGENTS.includes(agent);
 }
 
 /** What building the Playwright MCP arguments leaves behind for the spawn

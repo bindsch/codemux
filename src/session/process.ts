@@ -9,6 +9,15 @@ import { signalProcess } from "../process-runner.js";
 import { assertExecutablesUnchanged } from "../executable-security.js";
 import { buildEvent } from "./protocol.js";
 import { SessionWriter, type WriteLineResult } from "./process-outbound.js";
+import { excerptOf, type SessionFatal } from "./process-fatal.js";
+
+export {
+  FATAL_EXCERPT_BYTES,
+  codemuxFatalMessage,
+  unusableFacts,
+  type SessionFatal,
+  type SessionFatalKind,
+} from "./process-fatal.js";
 
 /**
  * The streaming session process runner (design §4.6/§4.7): one harness
@@ -28,8 +37,6 @@ import { SessionWriter, type WriteLineResult } from "./process-outbound.js";
 /** A harness stdout line over this is a tier-3 fatal (design §4.2). */
 export const MAX_HARNESS_LINE_BYTES = 16 * 1024 * 1024;
 
-/** Bounded excerpt a tier-3 fatal carries (design §4.2). */
-export const FATAL_EXCERPT_BYTES = 4096;
 /** Default grace for the harness to persist before the tree is killed. */
 export const DEFAULT_SHUTDOWN_GRACE_MS = 10_000;
 /** 128 + SIGTERM, the process runner's convention for a signaled stop. */
@@ -40,41 +47,6 @@ const DESCENDANT_CAPTURE_MS = 5_000;
 // before abandoning it: an orphan no signal can reach (reparented before
 // any snapshot) may hold it open forever; settled must still resolve.
 const PIPE_GIVE_UP_MS = 1_000;
-
-export type SessionFatalKind = "line-overflow" | "invalid-utf8" | "handler" | "read-error";
-
-export type SessionFatal =
-  | {
-      kind: "line-overflow" | "invalid-utf8";
-      /** First 4 KiB of the offending bytes, lossily decoded for the report. */
-      excerpt: string;
-      /** Bytes of the discarded run observed when the fatal fired; an unterminated run is reported at the crossing (docs/session-protocol.md). */
-      bytes: number;
-    }
-  | {
-      kind: "handler";
-      /** The exception the line handler threw: a codemux defect, reported
-       * as itself so the caller never mistakes it for harness output. */
-      error: unknown;
-      /** Length of the line being processed, for the report. */
-      bytes: number;
-    }
-  | {
-      kind: "read-error";
-      /** The error reading the harness's stdout pipe raised: a codemux
-       * I/O failure, not harness output (review live25). */
-      error: unknown;
-      bytes: number;
-    };
-
-/** The codemux-side message for the two fatal classes that carry an
- * error instead of harness bytes; every driver reports them the same. */
-export function codemuxFatalMessage(fatal: Extract<SessionFatal, { error: unknown }>): string {
-  const detail = fatal.error instanceof Error ? fatal.error.message : String(fatal.error);
-  return fatal.kind === "handler"
-    ? `internal error while processing a harness line: ${detail}`
-    : `reading the harness's stdout failed: ${detail}`;
-}
 
 export interface SessionChildOutcome {
   code: number | null;
@@ -122,22 +94,6 @@ export interface SessionProcessOptions {
     requiredPaths: readonly string[];
     checks: readonly import("../executable-security.js").ExecutableCheck[];
   };
-}
-
-const UTF8 = new TextEncoder();
-const LOSSY_DECODER = new TextDecoder("utf-8");
-
-function excerptOf(bytes: Uint8Array): string {
-  return LOSSY_DECODER.decode(bytes.subarray(0, FATAL_EXCERPT_BYTES));
-}
-
-/** The bounded facts a tier-3 report carries (§4.2) for a decoded line
- * a session parser cannot use: the first 4 KiB of its UTF-8 bytes and
- * its full byte length. One unit for every layer (review live23: the
- * parsers cut 4096 characters, up to 16 KiB of multibyte text). */
-export function unusableFacts(line: string): { excerpt: string; bytes: number } {
-  const bytes = UTF8.encode(line);
-  return { excerpt: excerptOf(bytes), bytes: bytes.byteLength };
 }
 
 function indexOfByte(
@@ -405,8 +361,18 @@ export class SessionProcess {
   private deliver(lineBytes: Uint8Array): void {
     // A blank line is framing whitespace (a separator a harness may emit
     // between frames), not an event: not delivered, and never judged for
-    // JSON validity.
+    // JSON validity. The blank line of a CRLF wire is one carriage
+    // return: a harness that ends every line with \r\n sends \r\n
+    // between frames, and the framer takes \n as its terminator, so a
+    // lone \r is that same separator and is dropped with it (review
+    // round 147 — delivered as a line, it reached the parsers and ended
+    // the session as unusable output). Any other line that ends in \r
+    // keeps it: JSON.parse accepts trailing whitespace, so a CRLF JSON
+    // line already parses, and no reader of the raw line needs it
+    // stripped. A line of spaces is not a separator under this rule:
+    // delivered and judged as before.
     if (lineBytes.byteLength === 0) return;
+    if (lineBytes.byteLength === 1 && lineBytes[0] === 0x0d) return;
     if (this.fatal !== null) return;
     if (lineBytes.byteLength > MAX_HARNESS_LINE_BYTES) {
       this.reportFatal({
@@ -446,7 +412,21 @@ export class SessionProcess {
   private reportFatal(fatal: SessionFatal): void {
     if (this.fatal !== null) return;
     this.fatal = fatal;
-    this.onFatal(fatal);
+    try {
+      this.onFatal(fatal);
+    } catch (error) {
+      // The fatal handler itself failed: a codemux defect, and the driver
+      // can no longer end the session for this fatal. The throw must not
+      // leave this method. From the read-error path it rejected the
+      // stdout promise nothing awaits until the child exits, so codemux
+      // ended on an unhandled rejection and left the detached harness
+      // group running (review round 149); from the framer it stopped the
+      // drain. The tree is killed here instead, so the end path runs as
+      // for any dead child and the driver sees the exit.
+      const detail = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`codemux: internal error while reporting a session failure: ${detail}\n`);
+      if (!this.childExited) this.escalateStop();
+    }
   }
 
   private startCapture(): void {

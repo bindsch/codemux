@@ -54,6 +54,13 @@ function noteOpenCodeBreak(state: OpenCodeFoldState, note: string): void {
 }
 
 function foldOpenCodeLine(line: string, state: OpenCodeFoldState): void {
+  // Framing whitespace is never judged (review round 147): a line that is
+  // empty once one trailing carriage return is removed — the blank line
+  // of an LF or a CRLF wire — is skipped before the parse, exactly as the
+  // session framer drops it. The skip lives here, not in the streaming
+  // sink's takeLine, so the escape hatch still keeps the line's bytes
+  // verbatim.
+  if (line === "" || line === "\r") return;
   const parse = parseOpenCodeRunLine(line, { knownSessionId: state.knownSessionId });
   if ("sessionId" in parse && parse.sessionId !== undefined) state.knownSessionId ??= parse.sessionId;
   switch (parse.kind) {

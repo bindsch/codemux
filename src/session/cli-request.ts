@@ -18,6 +18,7 @@ import {
   resolveEffortForAdapter,
 } from "../cli-runtime.js";
 import { resolveModel } from "../config.js";
+import { supportsPlaywrightMcpAgent } from "../mcp.js";
 import { resolveSandboxOptionsForAgent } from "../sandbox-policy.js";
 import type { AgentId, CodemuxConfig, RunRequest } from "../types.js";
 import { validateWorkingDirectory } from "../validation.js";
@@ -109,7 +110,7 @@ export function resolveSessionRequest(
   if (enablePlaywrightMcp && !options.sandbox) {
     usageError("--enable-playwright-mcp requires --sandbox");
   }
-  if (enablePlaywrightMcp && agentId !== "claude" && agentId !== "zai") {
+  if (enablePlaywrightMcp && !supportsPlaywrightMcpAgent(agentId)) {
     usageError("--enable-playwright-mcp is supported only by claude and zai");
   }
   const passthroughEnv = asUsage(() => parsePassthroughEnvOption(options.passEnv));

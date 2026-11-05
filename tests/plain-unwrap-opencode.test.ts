@@ -85,6 +85,19 @@ describe("opencodePlainResult", () => {
     expect(out.usage!.total_tokens).toBe(10);
   });
 
+  test("a CRLF wire's blank lines are framing whitespace, never break notes (review round 147)", () => {
+    // Every line ends with \r\n and the harness sends one blank line
+    // between frames: the wire lines parse with their carriage return,
+    // and the lone \r is not counted as a line that was not the wire.
+    const crlf = [part("the reply"), "", stepFinish({ input: 5, output: 5, total: 10 })]
+      .join("\r\n") + "\r\n";
+    const out = opencodePlainResult(finished(crlf));
+    expect(out.success).toBe(true);
+    expect(out.stdout).toBe("the reply\n");
+    expect(out.usage!.total_tokens).toBe(10);
+    expect(out.stderr).toBe("");
+  });
+
   test("a non-JSON line with no wire evidence is the escape hatch: stdout verbatim, nothing recorded", () => {
     const out = opencodePlainResult(finished("hello\n"));
     expect(out).toEqual(finished("hello\n"));

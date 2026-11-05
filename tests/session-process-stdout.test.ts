@@ -26,6 +26,35 @@ describe("session process runner", () => {
     expect(lines).toEqual(["a", "b"]);
   });
 
+  test("a CRLF wire's blank lines are framing whitespace, not events (review round 147)", async () => {
+    // A harness that ends every line with \r\n: the JSON lines keep their
+    // carriage return (JSON.parse accepts trailing whitespace), and the
+    // lone \r between them — the CRLF blank line — is dropped instead of
+    // being judged unusable and ending the session.
+    const { lines, fatals, done } = harness(
+      "printf '{\"a\":1}\\r\\n\\r\\n{\"b\":2}\\r\\n'"
+    );
+    await done;
+    expect(lines).toEqual(['{"a":1}\r', '{"b":2}\r']);
+    expect(fatals).toEqual([]);
+  });
+
+  test("a lone CRLF newline between frames is ignored", async () => {
+    const { lines, fatals, done } = harness("printf 'x\\r\\n\\r\\ny\\r\\n'");
+    await done;
+    expect(lines).toEqual(["x\r", "y\r"]);
+    expect(fatals).toEqual([]);
+  });
+
+  test("a line of spaces is delivered and judged as before", async () => {
+    // The rule covers the empty line and the CRLF blank only; other
+    // whitespace stays a line the parsers judge.
+    const { lines, fatals, done } = harness("printf 'x\\n   \\ny\\n'");
+    await done;
+    expect(lines).toEqual(["x", "   ", "y"]);
+    expect(fatals).toEqual([]);
+  });
+
   test(
     "a line at exactly the cap is delivered; the cap is the boundary",
     async () => {
@@ -245,6 +274,98 @@ describe("session process runner", () => {
       expect(rejections).toEqual([]);
     } finally {
       process.off("unhandledRejection", onRejection);
+    }
+  }, 30_000);
+
+  test("a fatal handler that throws ends the session by killing the tree, never an unhandled rejection (review round 149)", async () => {
+    // The read-error path reports its fatal from the stdout promise's
+    // catch. A handler that threw there rejected that promise, which
+    // nothing awaits until the child exits: codemux ended on the
+    // unhandled rejection and the detached harness kept running. The
+    // throw is now contained and the tree is killed, with no stop request.
+    const realGetReader = ReadableStream.prototype.getReader;
+    const spy = spyOn(ReadableStream.prototype, "getReader").mockImplementation(function (
+      this: ReadableStream<Uint8Array>
+    ) {
+      const reader = realGetReader.call(this) as ReadableStreamDefaultReader<Uint8Array>;
+      return {
+        read: () => Promise.reject(new Error("EIO on the stdout pipe")),
+        cancel: (reason?: unknown) => reader.cancel(reason),
+        releaseLock: () => reader.releaseLock(),
+        closed: reader.closed,
+      } as unknown as ReadableStreamDefaultReader<Uint8Array>;
+    } as typeof realGetReader);
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on("unhandledRejection", onRejection);
+    const stderr = spyOn(process.stderr, "write").mockImplementation(() => true);
+    let handled = 0;
+    let proc: SessionProcess;
+    try {
+      proc = new SessionProcess({
+        command: ["/bin/sh", "-c", "sleep 30"],
+        cwd: tmp(),
+        env: { PATH: "/usr/bin:/bin" },
+        onLine: () => {},
+        onFatal: () => {
+          handled += 1;
+          throw new Error("fatal handler bug");
+        },
+        graceMs: 10_000,
+      });
+    } finally {
+      spy.mockRestore();
+    }
+    try {
+      await proc.settled;
+      expect((await proc.exited).signal).toBe("SIGKILL");
+      expect(handled).toBe(1);
+      expect(rejections).toEqual([]);
+      expect(stderr.mock.calls.map((call) => String(call[0]))).toEqual([
+        "codemux: internal error while reporting a session failure: fatal handler bug\n",
+      ]);
+    } finally {
+      stderr.mockRestore();
+      process.off("unhandledRejection", onRejection);
+      proc.escalateStop();
+    }
+  }, 30_000);
+
+  test("a child that ignores SIGTERM is SIGKILLed by the tree when the grace runs out", async () => {
+    // The stop path's armed escalation: requestStop gives the harness one
+    // grace period, then the kill timer takes the whole tree down. A sh
+    // that traps TERM keeps running past the grace, so the timer fires.
+    // The child prints a line once the trap is installed, so the stop is
+    // never sent before it.
+    const { proc, lines, done } = harness("trap '' TERM\necho ready\nsleep 30", 150);
+    try {
+      await waitUntil(() => lines.length === 1, 10_000);
+      proc.requestStop();
+      const outcome = await proc.exited;
+      expect(outcome.signal).toBe("SIGKILL");
+      await done;
+    } finally {
+      proc.requestStop();
+      await done;
+    }
+  }, 30_000);
+
+  test("escalateStop SIGKILLs the child's tree at once, once per child", async () => {
+    // The second-signal escalation (rounds al30/al33): no grace, no timer,
+    // and latched — however many paths reach it, one kill.
+    const { proc, done } = harness("trap '' TERM\nsleep 30", 10_000);
+    try {
+      await Bun.sleep(200);
+      proc.escalateStop();
+      proc.escalateStop();
+      const outcome = await proc.exited;
+      expect(outcome.signal).toBe("SIGKILL");
+      await done;
+    } finally {
+      proc.escalateStop();
+      await done;
     }
   }, 30_000);
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ZaiAdapter } from "../src/adapters/zai.js";
@@ -126,6 +126,71 @@ describe("ZaiAdapter", () => {
       "--model",
       "opus",
     ]);
+  });
+
+  test("the run request validator refuses the Playwright option without the sandbox", () => {
+    // Review round 147: the CLI's rule lives in the shared validator, so a
+    // programmatic request meets it too, with the CLI's wording.
+    expect(() => adapter.validateRunRequest({ agent: "zai", prompt: "t", enablePlaywrightMcp: true }))
+      .toThrow("--enable-playwright-mcp requires --sandbox");
+    expect(() => adapter.validateRunRequest({
+      agent: "zai", prompt: "t", sandboxed: true, enablePlaywrightMcp: true,
+    })).not.toThrow();
+    expect(() => adapter.validateTuiRequest(undefined, undefined, undefined, undefined, [], true))
+      .not.toThrow();
+  });
+
+  test("a run with the Playwright option but no sandbox keeps the every-customization-off baseline", () => {
+    // Review round 147: the validators refuse that combination first; this
+    // is the fail-closed command a caller that reaches the builder directly
+    // gets -- --safe-mode, no settings sources, no MCP configuration.
+    const cmd = adapter.buildRunCommand({ agent: "zai", prompt: "t", enablePlaywrightMcp: true });
+    expect(cmd).toEqual([
+      "claude",
+      "-p",
+      "--safe-mode",
+      "--no-session-persistence",
+      "--output-format",
+      "json",
+      "--model",
+      "opus",
+    ]);
+  });
+
+  test("a sandboxed run with the Playwright option attaches the server through the settings branch", () => {
+    // Review round 147, unchanged opt-in: the settings branch is selected by
+    // what the MCP build attached, and the binary the build resolved rides
+    // the --mcp-config argument.
+    const root = mkdtempSync(join(tmpdir(), "codemux-zai-run-mcp-"));
+    const cwd = join(root, "work");
+    const binary = join(root, "playwright-mcp");
+    mkdirSync(cwd);
+    writeFileSync(binary, "#!/bin/sh\nexit 0\n");
+    chmodSync(binary, 0o755);
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${root}:${originalPath ?? ""}`;
+    try {
+      const cmd = adapter.buildRunCommand({
+        agent: "zai", prompt: "t", sandboxed: true, enablePlaywrightMcp: true, cwd,
+      });
+      expect(cmd).toContain("--setting-sources");
+      expect(cmd).toContain("--strict-mcp-config");
+      expect(cmd).not.toContain("--safe-mode");
+      const config = cmd[cmd.indexOf("--mcp-config") + 1] ?? "";
+      expect(JSON.parse(config).mcpServers.playwright.command).toBe(realpathSync(binary));
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a TUI command with the Playwright option but no sandbox keeps --safe-mode", () => {
+    // Review round 147: unsandboxed launches never select the user settings
+    // source; the branch is chosen by what the MCP build attached, and an
+    // unsandboxed build attaches nothing.
+    const cmd = adapter.buildTuiCommand(undefined, undefined, undefined, false, true, process.cwd());
+    expect(cmd).toEqual(["claude", "--safe-mode", "--model", "opus"]);
   });
 
   test("getStdinInput returns prompt", () => {

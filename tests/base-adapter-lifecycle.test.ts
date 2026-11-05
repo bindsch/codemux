@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -182,6 +182,21 @@ describe("BaseAdapter", () => {
     })).rejects.toThrow("cannot attest an external sandbox");
     await expect(adapter.runInteractive(undefined, undefined, undefined, undefined, true))
       .rejects.toThrow("cannot attest an external sandbox");
+  });
+
+  test("runInteractive refuses the Playwright option before anything is built or spawned", async () => {
+    // Review round 147: this entry point never sandboxes, and the Playwright
+    // server rides the sandbox-scoped carrier only. Without the refusal the
+    // launch ran unsandboxed, attached no MCP configuration, and for claude
+    // and zai still dropped --safe-mode for the user settings source.
+    const adapter = new DefaultHookAdapter();
+    const beforeLaunch = spyOn(adapter, "beforeLaunch");
+    const buildTuiCommand = spyOn(adapter, "buildTuiCommand");
+    await expect(
+      adapter.runInteractive(undefined, undefined, undefined, undefined, false, [], true)
+    ).rejects.toThrow("--enable-playwright-mcp requires --sandbox");
+    expect(beforeLaunch).not.toHaveBeenCalled();
+    expect(buildTuiCommand).not.toHaveBeenCalled();
   });
 
   test("rejects mismatched adapter identity and oversized argv prompts", () => {

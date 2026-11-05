@@ -12,6 +12,7 @@ import {
 } from "./cli-runtime.js";
 import { getAdapter, AGENT_IDS } from "./adapters/index.js";
 import { resolveModel } from "./config.js";
+import { supportsPlaywrightMcpAgent } from "./mcp.js";
 import type { Command } from "commander";
 import type { AgentId, CodemuxConfig, RunRequest } from "./types.js";
 import { assertExperimentMcpUnavailable, validateExperimentRequest } from "./experiment-mcp.js";
@@ -216,7 +217,7 @@ export function registerRunCommand(
         if (enablePlaywrightMcp && !options.sandbox) {
           throw new UsageRefusalError("--enable-playwright-mcp requires --sandbox");
         }
-        if (enablePlaywrightMcp && agentId !== "claude" && agentId !== "zai") {
+        if (enablePlaywrightMcp && !supportsPlaywrightMcpAgent(agentId)) {
           throw new UsageRefusalError("--enable-playwright-mcp is supported only by claude and zai");
         }
         const hermetic = Boolean(options.hermetic);
