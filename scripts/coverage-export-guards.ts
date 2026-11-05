@@ -1,9 +1,10 @@
 /**
- * The two AST guards behind the type-only coverage waiver (src/ files that
- * declare types only): how many runtime functions and how many runtime
- * value exports a file carries, with the waiver lists they judge. Split
- * from check-source-coverage.ts for the 500-line ceiling; that script
- * imports and re-exports them, so its public surface is unchanged.
+ * The three AST guards behind the type-only coverage waiver (src/ files
+ * that declare types only): how many runtime functions, how many runtime
+ * value exports, and how many top-level runtime statements a file
+ * carries, with the waiver lists they judge. Split from
+ * check-source-coverage.ts for the 500-line ceiling; that script imports
+ * and re-exports them, so its public surface is unchanged.
  */
 import ts from "typescript";
 
@@ -110,4 +111,53 @@ export function runtimeValueExportCount(content: string, path: string): number {
 
   visit(sourceFile);
   return values;
+}
+
+/** Top-level statements a type-only waiver forbids (review round 151):
+ * the two guards above count runtime functions and value exports, so a
+ * waived file could still gain executable behavior through a top-level
+ * statement — `const cache = initialize()`, a side-effect import, a class
+ * static block — while both counts stayed zero. Allowed is only what the
+ * compiler erases: type-only imports (an import whose every named
+ * specifier is `type`, with no default or namespace binding), `export
+ * type` and type-only re-exports, interface and type alias declarations,
+ * ambient `declare` statements, and empty statements. Everything else
+ * counts one per top-level statement. */
+export function runtimeStatementCount(content: string, path: string): number {
+  const sourceFile = ts.createSourceFile(path, content, ts.ScriptTarget.Latest, true);
+  const modifiersOf = (node: ts.Node): readonly ts.ModifierLike[] | undefined =>
+    (node as { modifiers?: readonly ts.ModifierLike[] }).modifiers;
+  const isErasedImport = (node: ts.ImportDeclaration): boolean => {
+    const clause = node.importClause;
+    // `import "./x.js"` runs for its side effect: it is not erased.
+    if (clause === undefined) return false;
+    if (clause.isTypeOnly) return true;
+    // A default or namespace binding is a value.
+    if (clause.name !== undefined) return false;
+    const bindings = clause.namedBindings;
+    if (bindings === undefined || !ts.isNamedImports(bindings) || bindings.elements.length === 0) {
+      return false;
+    }
+    return bindings.elements.every((element) => element.isTypeOnly);
+  };
+  const isErasedExport = (node: ts.ExportDeclaration): boolean => {
+    if (node.isTypeOnly) return true;
+    // `export * from` re-exports values; `export {}` is not one of the
+    // allowed shapes either.
+    if (node.exportClause === undefined || !ts.isNamedExports(node.exportClause)) return false;
+    if (node.exportClause.elements.length === 0) return false;
+    return node.exportClause.elements.every((element) => element.isTypeOnly);
+  };
+  const isAmbient = (node: ts.Node): boolean =>
+    modifiersOf(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.DeclareKeyword) ?? false;
+  let statements = 0;
+  for (const statement of sourceFile.statements) {
+    if (ts.isEmptyStatement(statement)) continue;
+    if (ts.isImportDeclaration(statement) && isErasedImport(statement)) continue;
+    if (ts.isExportDeclaration(statement) && isErasedExport(statement)) continue;
+    if (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) continue;
+    if (isAmbient(statement)) continue;
+    statements += 1;
+  }
+  return statements;
 }

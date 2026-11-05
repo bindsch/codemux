@@ -160,7 +160,7 @@ test("the usage check skips, passes, and fails on real conditions", async () => 
   // The version read is injected everywhere below so no test depends on
   // whether the host has a usagemux installed (audit D5's floor is its own
   // test).
-  const current = async () => ({ version: "1.0.0", belowMinimum: false });
+  const current = async () => ({ version: "1.0.0", belowMinimum: false, issue: null });
   const pass = await runUsageCheck("codemux", {
     which: (name) => (name === "usagemux" ? "/bin/usagemux" : null),
     readVersion: current,
@@ -188,14 +188,33 @@ test("the usage check skips, passes, and fails on real conditions", async () => 
   expect(unparseable.detail).toContain("invalid JSON");
   expect(gateFailed(reportInput({ usage: unparseable }))).toBe(true);
   expect(gateFailed(reportInput({ usage: absent, rows: [passRow("claude", ["A"])], probes: ["A"] }))).toBe(false);
-  // A version the reader could not read is not a floor failure: the
-  // snapshot check still decides.
+  // A version the reader could not read is itself a failure (review
+  // round 151): the gate cannot show the 1.0.0 semantics against a
+  // usagemux whose version it never established, so it fails closed
+  // before any snapshot is judged — the same "must not run" rule as a
+  // usagemux below the minimum.
   const unreadable = await runUsageCheck("codemux", {
     which: () => "/bin/usagemux",
-    readVersion: async () => ({ version: null, belowMinimum: false }),
-    run: async () => ({ exitCode: 0, stdout: snapshot, stderr: "" }),
+    readVersion: async () => ({ version: null, belowMinimum: false, issue: "usagemux --version exited 3" }),
+    run: async () => {
+      throw new Error("the snapshot check must not run");
+    },
   });
-  expect(unreadable.status).toBe("PASS");
+  expect(unreadable.status).toBe("FAIL");
+  expect(unreadable.detail).toContain("1.0.0");
+  expect(unreadable.detail).toContain("usagemux --version exited 3");
+  expect(gateFailed(reportInput({ usage: unreadable }))).toBe(true);
+  // No issue string at all: still a failure that names the minimum.
+  const silent = await runUsageCheck("codemux", {
+    which: () => "/bin/usagemux",
+    readVersion: async () => ({ version: null, belowMinimum: false, issue: null }),
+    run: async () => {
+      throw new Error("the snapshot check must not run");
+    },
+  });
+  expect(silent.status).toBe("FAIL");
+  expect(silent.detail).toContain("1.0.0");
+  expect(gateFailed(reportInput({ usage: silent }))).toBe(true);
 });
 
 test("the usage check fails a usagemux below the protocol minimum", async () => {
@@ -204,7 +223,7 @@ test("the usage check fails a usagemux below the protocol minimum", async () => 
   // on whatever such a build printed.
   const stale = await runUsageCheck("codemux", {
     which: () => "/bin/usagemux",
-    readVersion: async () => ({ version: "0.2.1", belowMinimum: true }),
+    readVersion: async () => ({ version: "0.2.1", belowMinimum: true, issue: null }),
     run: async () => {
       throw new Error("the snapshot check must not run");
     },
@@ -218,7 +237,7 @@ test("the usage check fails a snapshot that does not validate against the protoc
   // Any parseable JSON used to pass: `{"ok":true}` is JSON and no usagemux
   // snapshot at all, and a codemux/usagemux pair disagreeing on the protocol
   // shape sailed through the gate.
-  const current = async () => ({ version: "1.0.0", belowMinimum: false });
+  const current = async () => ({ version: "1.0.0", belowMinimum: false, issue: null });
   const wrongShape = await runUsageCheck("codemux", {
     which: () => "/bin/usagemux",
     readVersion: current,

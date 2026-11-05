@@ -4,7 +4,7 @@ import type { HarnessContract } from "../../src/harness-compatibility.js";
 import { HARNESS_CONTRACTS } from "../../src/harness-contracts.js";
 import type { AgentId } from "../../src/types.js";
 import { parseUsageSnapshot, USAGEMUX_PROTOCOL_VERSION } from "../../src/usage-protocol.js";
-import { readUsagemuxVersion, USAGEMUX_MINIMUM_VERSION } from "../../src/usage.js";
+import { readUsagemuxVersion, USAGEMUX_MINIMUM_VERSION, type UsagemuxVersionStatus } from "../../src/usage.js";
 
 // Probe 0: zero model quota. The version-contract column reads each installed
 // harness's version through the ONE verdict module doctor also reads
@@ -135,7 +135,7 @@ export interface UsageDeps {
   run?: (command: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
   timeoutMs?: number;
   /** The usagemux version read, injectable so a test spawns nothing. */
-  readVersion?: () => Promise<{ version: string | null; belowMinimum: boolean; issue?: string }>;
+  readVersion?: () => Promise<UsagemuxVersionStatus>;
 }
 
 /** The gate's own subprocesses (the candidate's `--version` and `usage
@@ -162,8 +162,20 @@ export async function runUsageCheck(codemux: string, deps: UsageDeps = {}): Prom
   // A usagemux old enough to predate the 1.0.0 protocol is a FAIL, not a
   // pass on whatever it prints (audit D5): the gate's snapshot check is
   // only meaningful against a usagemux that speaks the validated shape.
+  // A version that could not be read at all is the same failure (review
+  // round 151): without one the gate cannot show the 1.0.0 semantics, so
+  // it fails closed instead of passing on the snapshot shape alone. The
+  // issue strings are codemux's own wording, never command output.
   const version = await (deps.readVersion ?? readUsagemuxVersion)();
-  if (version.version !== null && version.belowMinimum) {
+  if (version.version === null) {
+    return {
+      status: "FAIL",
+      detail:
+        `usagemux version could not be read; the usage check needs at least ${USAGEMUX_MINIMUM_VERSION}` +
+        (version.issue !== null && version.issue !== "" ? `: ${version.issue}` : ""),
+    };
+  }
+  if (version.belowMinimum) {
     return {
       status: "FAIL",
       detail: `usagemux ${version.version} is below ${USAGEMUX_MINIMUM_VERSION}; the usage check needs the validated snapshot shape`,

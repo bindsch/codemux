@@ -1,4 +1,5 @@
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { timestampValid } from "./calendar.js";
 import { SCODE_TRUST_LEVELS } from "./sandbox.js";
 import { AGENT_IDS, AUTONOMY_LEVELS } from "./types.js";
 import type { CallRecord } from "./call-log.js";
@@ -104,7 +105,12 @@ type StoredCallRecord = Omit<CallRecord, "labels"> & { labels?: unknown };
 function isCallRecord(parsed: unknown): parsed is StoredCallRecord {
   if (typeof parsed !== "object" || parsed === null) return false;
   const record = parsed as Record<string, unknown>;
-  if (typeof record["ts"] !== "string") return false;
+  // The writer always stores `new Date(ms).toISOString()`; a `ts` that is
+  // not an RFC 3339 timestamp — a control character, a date-only string,
+  // free text — is a wrong-shaped line like any other (review round 151),
+  // judged by the one shared rule (calendar.ts timestampValid) so it can
+  // never reach a renderer or a window comparison.
+  if (typeof record["ts"] !== "string" || !timestampValid(record["ts"])) return false;
   if (
     typeof record["kind"] !== "string" ||
     !CALL_RECORD_KINDS.has(record["kind"])

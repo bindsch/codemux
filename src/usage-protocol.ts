@@ -1,12 +1,10 @@
-import { calendarValid, leapSecondValid, timestampMs } from "./calendar.js";
+import { timestampMs, timestampValid } from "./calendar.js";
 import { AGENT_IDS, type AgentId } from "./types.js";
 
 export const USAGEMUX_PROTOCOL_VERSION = "1";
 
 const USAGE_STATUSES = ["ok", "unavailable", "not-applicable", "error"] as const;
 type UsageStatus = (typeof USAGE_STATUSES)[number];
-const RFC3339_TIMESTAMP =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 export interface UsageWindow {
   kind: string;
@@ -77,20 +75,12 @@ const requirePercentage = (value: unknown, field: string): number | null => {
   return number;
 };
 
-/** Date.parse normalizes a nonexistent date (2026-02-30 reads as March 2),
- * so the calendar fields must round-trip through Date.UTC exactly
- * (review round 59); calendarValid is shared with the experiment evidence
- * readers (src/calendar.ts, review round 64). */
+/** One rule for every timestamp field this protocol reads: the shared
+ * predicate in src/calendar.ts (review rounds 59, 64, 133, and 151) judges
+ * the RFC 3339 shape, normalized calendar dates, and leap seconds. */
 
 const requireTimestamp = (value: unknown, field: string): string => {
-  // A leap second (second 60) is legal RFC 3339 and Date.parse rejects it,
-  // so it is checked on its own terms; the readers of these fields parse
-  // through timestampMs, which reads it too (review round 133).
-  if (
-    typeof value !== "string" ||
-    !RFC3339_TIMESTAMP.test(value) ||
-    !(leapSecondValid(value) || (Number.isFinite(Date.parse(value)) && calendarValid(value)))
-  ) {
+  if (typeof value !== "string" || !timestampValid(value)) {
     throw new Error(`${field} must be an RFC 3339 timestamp`);
   }
   return value;

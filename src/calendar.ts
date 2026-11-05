@@ -64,3 +64,19 @@ export const calendarValid = (value: string): boolean => {
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day &&
     date.getUTCHours() === hour && date.getUTCMinutes() === minute && date.getUTCSeconds() === second;
 };
+
+/** The RFC 3339 timestamp shape: a calendar date, `T`, a clock time with
+ * an optional fraction, and `Z` or a numeric offset. One definition for
+ * every timestamp the tree reads on the wire. */
+export const RFC3339_TIMESTAMP =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+/** Whether `value` is an RFC 3339 timestamp that names a real instant:
+ * the shape above, a real calendar date (Date.parse normalizes a
+ * nonexistent one away), and — for second 60 — a leap second that
+ * happened. One rule decides timestamps in the tree (review round 151):
+ * the usage protocol's fields (usage-protocol.ts requireTimestamp) and
+ * the call ledger's `ts` (call-log-reader.ts) both delegate here. */
+export const timestampValid = (value: string): boolean =>
+  RFC3339_TIMESTAMP.test(value) &&
+  (leapSecondValid(value) || (Number.isFinite(timestampMs(value)) && calendarValid(value)));

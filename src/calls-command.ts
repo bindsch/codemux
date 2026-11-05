@@ -41,6 +41,7 @@ import {
   streamCallLog,
   type CallRecord,
 } from "./call-log.js";
+import { timestampMs } from "./calendar.js";
 import { CallTotals, sessionKey } from "./calls-totals.js";
 import { collectLabel, escapeJsonControls, parseLabels, validateLabelKey } from "./labels.js";
 import { AGENT_IDS, type AgentId } from "./types.js";
@@ -88,10 +89,15 @@ function formatCount(value: number | null): string {
   return value === null ? "-" : value.toLocaleString("en-US");
 }
 
-// Local time for the table; --json keeps the exact UTC timestamps.
+// Local time for the table; --json keeps the exact UTC timestamps. The
+// reader refuses a `ts` that is not an RFC 3339 timestamp (review round
+// 151), so an unparseable value cannot arrive through the ledger; the
+// fallback is a fixed dash, never the raw string. The parse is the
+// shared one (calendar.ts timestampMs), so a leap second the reader
+// accepts renders as the instant after 23:59:59 instead of the dash.
 function formatTimestamp(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return iso;
+  const date = new Date(timestampMs(iso));
+  if (Number.isNaN(date.getTime())) return "-";
   const pad = (value: number) => String(value).padStart(2, "0");
   return (
     `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
@@ -203,8 +209,10 @@ export class ListingRing<T> {
  * keys nothing, so an old empty-id closing record stays behind the
  * cutoff (review rounds 80 and 127). */
 function recordInsideWindow(record: CallRecord, cutoff: Date): boolean {
-  const ts = new Date(record.ts);
-  return !Number.isNaN(ts.getTime()) && ts >= cutoff;
+  // The same parse the reader's rule uses, so every ts the reader
+  // accepts (a leap second included) is placed in the window.
+  const ts = timestampMs(record.ts);
+  return Number.isFinite(ts) && ts >= cutoff.getTime();
 }
 
 /** The first pass's one job: name every session with an in-window turn,

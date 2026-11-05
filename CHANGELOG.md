@@ -125,6 +125,12 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 151, whole tree: the release gate's usage check fails when the usagemux version
+  cannot be read, not only when it is below 1.0.0; a call-ledger record whose `ts` is not an
+  RFC 3339 timestamp is skipped as malformed and the table never prints one; the
+  installed-layout check reads a Markdown link's destination only, so titled links to existing
+  files pass; and the type-only coverage waiver rejects any top-level runtime statement, not
+  only runtime functions and value exports.
 - Review round 147, whole tree: a blank CRLF line between harness frames no longer ends a session as
   unusable output; the Playwright MCP option is refused for programmatic requests without the sandbox,
   on an agent that never attaches the server, or with a hermetic or no-tools run, and an unsandboxed

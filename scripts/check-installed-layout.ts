@@ -153,6 +153,26 @@ function markdownFiles(directory: string): string[] {
 
 const LINK_PATTERN = /\]\(([^)]+)\)/g;
 
+/** The destination of a CommonMark inline link `[text](destination
+ * "title")`, from the text LINK_PATTERN captured between `](` and the
+ * first closing parenthesis (review round 151: the whole capture used to
+ * be read as the path, so a titled link to an existing file failed). The
+ * destination is either `<...>`, which may hold spaces, or the run up to
+ * the first whitespace; the optional title — double quotes, single
+ * quotes, or parentheses — is dropped. A destination with balanced
+ * parentheses such as `b(c).md` stays unsupported, cut at the first `)`
+ * exactly as before this fix: the pattern itself stops there, and
+ * supporting it is optional, not a case this checker ever passed. */
+export function markdownLinkDestination(captured: string): string {
+  const text = captured.trim();
+  if (text.startsWith("<")) {
+    const close = text.indexOf(">");
+    return close === -1 ? text.slice(1) : text.slice(1, close);
+  }
+  const space = /\s/.exec(text);
+  return space === null ? text : text.slice(0, space.index);
+}
+
 /** Every relative markdown link in the installed docs must resolve inside the
  * keg — through symlinks too: a link whose target is a symlink out of the
  * keg resolves from the checkout but not from an install (review round 14,
@@ -168,7 +188,7 @@ export function verifyDocsLinks(keg: string): string[] {
   for (const file of markdownFiles(docsRoot)) {
     const text = readFileSync(file, "utf8");
     for (const match of text.matchAll(LINK_PATTERN)) {
-      const target = match[1]!.trim();
+      const target = markdownLinkDestination(match[1]!);
       if (/^(https?:|mailto:|\/|#)/.test(target)) continue;
       const path = target.split("#")[0]!;
       if (path === "") continue;

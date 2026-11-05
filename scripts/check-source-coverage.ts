@@ -6,10 +6,19 @@ import {
   TYPE_ONLY_FILES,
   physicalLineCount,
   runtimeFunctionCount,
+  runtimeStatementCount,
   runtimeValueExportCount,
 } from "./coverage-export-guards.js";
 
-export { CHILD_ONLY_FILES, PLATFORM_GATED_FILES, TYPE_ONLY_FILES, physicalLineCount, runtimeFunctionCount, runtimeValueExportCount };
+export {
+  CHILD_ONLY_FILES,
+  PLATFORM_GATED_FILES,
+  TYPE_ONLY_FILES,
+  physicalLineCount,
+  runtimeFunctionCount,
+  runtimeStatementCount,
+  runtimeValueExportCount,
+};
 
 const MINIMUM_COVERAGE = 0.8;
 const LCOV_PATH = "coverage/lcov.info";
@@ -373,10 +382,11 @@ export async function collectSourceFiles(cwd: string): Promise<Map<string, Sourc
 /** A type-only waiver must still be earned (review round 10, edges 7):
  * the waiver drops the file from the per-file floor and the
  * whole-source ratios, so nothing else would notice it growing runtime
- * exports — functions (round 10) or values (round 20, minor 10) — or
- * the suite starting to load it. Any case fails the gate naming the
- * file; a waiver over a file with runtime behavior is a hole in the
- * floor. A tree without the file (a fixture) has nothing to guard. */
+ * exports — functions (round 10), values (round 20, minor 10), or
+ * top-level statements (round 151) — or the suite starting to load it.
+ * Any case fails the gate naming the file; a waiver over a file with
+ * runtime behavior is a hole in the floor. A tree without the file (a
+ * fixture) has nothing to guard. */
 async function assertTypeOnlyWaiversHold(cwd: string, lcovText: string): Promise<void> {
   const records = parseLcov(lcovText, cwd);
   for (const path of TYPE_ONLY_FILES) {
@@ -388,10 +398,12 @@ async function assertTypeOnlyWaiversHold(cwd: string, lcovText: string): Promise
     }
     const runtimeFunctions = runtimeFunctionCount(content, path);
     const runtimeValues = runtimeValueExportCount(content, path);
+    const runtimeStatements = runtimeStatementCount(content, path);
     const record = records.get(path);
     if (
       runtimeFunctions > 0 ||
       runtimeValues > 0 ||
+      runtimeStatements > 0 ||
       (record !== undefined && (record.linesFound > 0 || record.functionsFound > 0))
     ) {
       throw new Error(
@@ -400,7 +412,9 @@ async function assertTypeOnlyWaiversHold(cwd: string, lcovText: string): Promise
             ? `the file now exports ${runtimeFunctions} runtime function(s)`
             : runtimeValues > 0
               ? `the file now exports ${runtimeValues} runtime value export(s)`
-              : `the coverage report carries ${record?.linesFound ?? 0} line(s) for it`) +
+              : runtimeStatements > 0
+                ? `the file now carries ${runtimeStatements} runtime statement(s)`
+                : `the coverage report carries ${record?.linesFound ?? 0} line(s) for it`) +
           "; remove the waiver so the per-file floor applies"
       );
     }

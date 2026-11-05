@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { buildLayout, checkInstalledLayout, LAUNCHER_PIN_TOKEN, pinLauncherBun, runLayoutCheck, verifyDocsLinks, verifyInstalledCommands } from "../scripts/check-installed-layout.js";
+import { buildLayout, checkInstalledLayout, LAUNCHER_PIN_TOKEN, markdownLinkDestination, pinLauncherBun, runLayoutCheck, verifyDocsLinks, verifyInstalledCommands } from "../scripts/check-installed-layout.js";
 
 const ROOT = resolve(import.meta.dir, "..");
 // Only one layout per file run: building a keg copies the whole checkout.
@@ -212,5 +212,57 @@ test("re-pinning the same quoted bun path is idempotent (round 34, edges 10)", (
   expect(readFileSync(launcher, "utf8")).toContain(`${LAUNCHER_PIN_TOKEN}'${spaced}'`);
   expect(() => pinLauncherBun(keg, spaced)).not.toThrow();
   expect(() => pinLauncherBun(keg, "/elsewhere/bun")).toThrow(/already pinned/);
+});
+
+test("the link parser takes the destination only, whatever the title (round 151)", () => {
+  // A CommonMark inline link is [text](destination "title"): the title is
+  // double-quoted, single-quoted, or parenthesized, and an angle-bracket
+  // destination may hold spaces.
+  const cases: [string, string][] = [
+    ["guide.md \"Guide\"", "guide.md"],
+    ["guide.md 'Guide'", "guide.md"],
+    ["guide.md (Guide)", "guide.md"],
+    ["<my file.md> \"Spaced\"", "my file.md"],
+    ["<my file.md>", "my file.md"],
+    [" <spaced destination.md> ", "spaced destination.md"],
+    ["guide.md#section \"T\"", "guide.md#section"],
+    ["guide.md", "guide.md"],
+    // Balanced parentheses inside a destination stay cut at the first `)`,
+    // as before the fix: the pattern itself stops there.
+    ["b(c", "b(c"],
+  ];
+  for (const [captured, destination] of cases) {
+    expect(markdownLinkDestination(captured)).toBe(destination);
+  }
+});
+
+test("installed docs links with titles resolve to their destination (round 151)", () => {
+  // A fake keg: libexec/docs holds the links and their targets, the shape
+  // verifyDocsLinks walks. Titled links to existing files used to fail as
+  // broken because the title was read as part of the path.
+  const keg = mkdtempSync(join(tmpdir(), "codemux-layout-links-"));
+  try {
+    const docs = join(keg, "libexec", "docs");
+    mkdirSync(docs, { recursive: true });
+    writeFileSync(join(docs, "guide.md"), "# guide\n");
+    writeFileSync(join(docs, "my file.md"), "# spaced\n");
+    writeFileSync(join(docs, "page.md"), [
+      "[one](guide.md \"Guide\")",
+      "[two](guide.md 'Guide')",
+      "[three](guide.md (Guide))",
+      "[four](<my file.md> \"Spaced\")",
+      "",
+    ].join("\n"));
+    expect(verifyDocsLinks(keg)).toEqual([]);
+    // A missing target with a title still fails, and the failure names
+    // the destination without the title.
+    writeFileSync(join(docs, "broken.md"), "[gone](missing.md \"Gone\")\n");
+    const failures = verifyDocsLinks(keg);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toContain("missing.md (from docs/broken.md)");
+    expect(failures[0]).not.toContain("Gone");
+  } finally {
+    rmSync(keg, { recursive: true, force: true });
+  }
 });
 

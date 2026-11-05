@@ -164,7 +164,7 @@ the sandbox mitigates never fails, flag or no flag — the gate's probes run
 sandboxed, so they already close the gap the record names, and its cell
 prints `KNOWN-BREAK (mitigated)`. Any failed usage check — `usage --json`
 could not run, exited nonzero, its output did not parse, or the installed
-usagemux is below 1.0.0 — fails the gate. The
+usagemux is below 1.0.0 or its version could not be read — fails the gate. The
 report header stamps the exact `codemux --version` of the binary under test,
 so a saved report names the build that produced it.
 
@@ -224,7 +224,8 @@ documented capability matrix, not a regression.
   flag (`--allow-stale-contracts`, `--allow-known-breaks`); a
   `KNOWN-BREAK (mitigated)` cell needs no allowance.
 - [ ] `codemux usage --json` passed (or usagemux's absence is recorded);
-  a usagemux below 1.0.0 is a failure, not a skip.
+  a usagemux below 1.0.0, or whose version could not be read, is a failure,
+  not a skip.
 - [ ] Record the result table, the contract column, timeout and job limits,
   and every skip reason.
 

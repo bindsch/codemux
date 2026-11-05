@@ -274,7 +274,7 @@ Each record contains:
 
 | Field | Shape |
 |---|---|
-| `ts` | Start time as an ISO string |
+| `ts` | Start time as an RFC 3339 timestamp; a `ts` that is not one makes the line malformed |
 | `kind` | `run`, `check`, `session_turn`, or closing `session` |
 | `agent`, `provider`, `cwd` | Strings; provider is `default` or the override URL host read from the launch adapter's own environment, never its key |
 | `model`, `model_effective` | Requested and reported model, each string or null |
@@ -291,7 +291,10 @@ Each record contains:
 
 `agent` must be a known agent id and `autonomy` a known autonomy level or
 null; a line naming anything else is skipped as malformed and never reaches
-the totals, which key on exactly those fields.
+the totals, which key on exactly those fields. `ts` is judged by the same
+RFC 3339 rule the usage protocol's timestamp fields use: a date-only string
+or free text is malformed, so a corrupted timestamp can never reach the
+table.
 
 `cost_source` says where the dollar figure came from. Claude and Z.AI report
 session-lifetime cost, so every figure they report is a `harness-estimate`,
