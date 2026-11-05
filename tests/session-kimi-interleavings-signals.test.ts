@@ -128,10 +128,11 @@ describe("kimi session interleavings (round al28)", () => {
     await until("the turn opened", () =>
       rig.events.some((event) => event.type === "turn_started")
     );
-    // The two SIGTERMs: the first starts the graceful end — the drain
-    // asks the child to stop — and the second escalates, once.
+    // The two SIGTERMs: the first is a killing end — the child is asked
+    // to stop at once, no drain (review round 96) — and the second
+    // escalates, once.
     process.kill(process.pid, "SIGTERM");
-    await until("the drain's stop asked", () => child.stopArmed);
+    await until("the end path's stop asked", () => child.stopArmed);
     process.kill(process.pid, "SIGTERM");
     await until("the escalation onto the turn child", () => child.escalated);
     expect(child.escalated).toBe(true);
@@ -146,6 +147,33 @@ describe("kimi session interleavings (round al28)", () => {
     expect(
       rig.events.filter((event) => event.type === "session_ended")
     ).toHaveLength(1);
+    await until("the registry release", () => recordEnded(rig) != null);
+  }, 15_000);
+
+  test("the first signal stops a landed child at once, without the grace deadline (review round 96)", async () => {
+    // A signal with a child landed was treated as a graceful end: the end
+    // path opened the drain and waited for the child's answer or the full
+    // grace deadline before stopping it, contrary to the documented
+    // killing-end behavior. The child here never answers a drain — its
+    // awaitEndAnswer never resolves — so a regression to the graceful
+    // drain hangs this test instead of passing; a killing end dies on
+    // requestStop the moment the signal arrives.
+    const rig = await startRig(null);
+    send(rig, "signal stop scenario");
+    const child = new FakeTurnProcess();
+    child.awaitEndAnswer = () => new Promise<void>(() => {});
+    rig.children.push(child);
+    rig.spawn.settle(child);
+    await until("the turn opened", () =>
+      rig.events.some((event) => event.type === "turn_started")
+    );
+    process.kill(process.pid, "SIGTERM");
+    await until("the child was stopped", () => !child.alive);
+    expect(await rig.code).toBe(SESSION_SIGNAL_EXIT_CODE);
+    const ended = rig.events.find((event) => event.type === "session_ended") as Event;
+    expect(ended).toBeDefined();
+    expect(ended.reason).toBe("harness_failed");
+    expect(ended.exit_code).toBe(SESSION_SIGNAL_EXIT_CODE);
     await until("the registry release", () => recordEnded(rig) != null);
   }, 15_000);
 

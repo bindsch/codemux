@@ -30,12 +30,12 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
-  rmSync,
   statSync,
   symlinkSync,
 } from "node:fs";
 import { join } from "node:path";
 import { prepareRunDirParent } from "./hermetic-sweep.js";
+import { recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
 import { trackPrivateDir, untrackPrivateDir } from "./private-dir-signals.js";
 export { assertTrustedDirectory, prepareRunDirParent, MTIME_WALK_ENTRY_CAP } from "./hermetic-sweep.js";
 
@@ -110,6 +110,8 @@ export function createCodexHermeticHome(
   if (linkLogin) assertRealLoginFile(sourceAuth);
 
   const parent = prepareRunDirParent(sourceCodexHome, PARENT_DIR_NAME);
+  // Recorded for the finalizer's revalidation (src/safe-remove.ts).
+  const parentRecord = recordTrustedParent(parent);
   // mkdtemp creates the directory mode 0700; the login inside is 0600.
   const home = mkdtempSync(join(parent, `${RUN_PREFIX}${process.pid}-`));
   const codexHome = join(home, ".codex");
@@ -121,9 +123,8 @@ export function createCodexHermeticHome(
   // clean up.
   let linkKind: "hard" | "symlink" | "none" = "none";
   let finalized = false;
-  const finalize = (): void => {
-    if (finalized) return;
-    finalized = true;
+  let inspected = false;
+  const inspectLogin = (): void => {
     try {
       const diverged =
         linkKind === "none"
@@ -141,15 +142,26 @@ export function createCodexHermeticHome(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`codex: could not inspect the hermetic login: ${message}`);
-    } finally {
-      // rm never follows the link: it unlinks our name, or the symlink itself.
-      rmSync(home, { recursive: true, force: true });
-      process.off("exit", finalize);
-      untrackPrivateDir(finalize);
     }
   };
-  process.once("exit", finalize);
-  trackPrivateDir(finalize);
+  const finalize = (): void => {
+    if (finalized) return;
+    if (!inspected) {
+      inspected = true;
+      inspectLogin();
+    }
+    // rm never follows the link: it unlinks our name, or the symlink
+    // itself — and only under the parent recorded above. Thrown when
+    // refused or failed, so the adapter's cleanup reports the kept home;
+    // it stays retryable, and the hook retries and reports (round 97).
+    removeUnderTrustedParentOrThrow(home, parentRecord, `the private hermetic home ${home}`);
+    finalized = true;
+    process.off("exit", hook);
+    untrackPrivateDir(hook);
+  };
+  const hook = reportingHook(finalize);
+  process.once("exit", hook);
+  trackPrivateDir(hook);
 
   try {
     mkdirSync(codexHome, { mode: 0o700 });

@@ -7,6 +7,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { assertTrustedDirectory, prepareRunDirParent } from "../hermetic-home.js";
+import { recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "../safe-remove.js";
 import { UsageRefusalError } from "../validation.js";
 
 import type { ProviderOverride } from "../provider-override.js";
@@ -203,6 +204,8 @@ export function writeCodexProviderConfig(
   multiAgent: boolean | null
 ): CodexProviderHome {
   const parent = prepareRunDirParent(realCodexHome, PARENT_DIR_NAME);
+  // Recorded for the finalizer's revalidation (src/safe-remove.ts).
+  const parentRecord = recordTrustedParent(parent);
   const codexHome = mkdtempSync(join(parent, `run-${process.pid}-`));
   try {
     writeCodexProviderConfigInto(codexHome, override, model, multiAgent);
@@ -216,27 +219,25 @@ export function writeCodexProviderConfig(
   let finalized = false;
   const finalize = (): void => {
     if (finalized) return;
-    finalized = true;
-    process.off("exit", finalize);
     // The same revalidation the codex adapter applies to its scratch
     // directory: a run with write access to ~/.codex could have replaced
     // `.codemux-provider` with a symlink after prepareRun made it, and a
     // recursive removal resolves that component like any path operation
     // would — into a directory codemux never chose. rm does not follow a
     // link at the run directory's own name, so the parent is the component
-    // to check; a parent that fails keeps its directory, and says so.
-    try {
-      assertTrustedDirectory(parent);
-    } catch (error) {
-      console.error(
-        "codemux: refusing to remove codex's provider-override home: " +
-          `${error instanceof Error ? error.message : String(error)}`
-      );
-      return;
-    }
-    rmSync(codexHome, { recursive: true, force: true });
+    // to check; a parent that fails keeps its directory, and the throw
+    // reaches the adapter's cleanup, which says so. A failed removal
+    // stays retryable; the exit hook retries and reports (round 97).
+    removeUnderTrustedParentOrThrow(
+      codexHome,
+      parentRecord,
+      `codex's provider-override home ${codexHome}`
+    );
+    finalized = true;
+    process.off("exit", atExit);
   };
-  process.once("exit", finalize);
+  const atExit = reportingHook(finalize);
+  process.once("exit", atExit);
 
   return { codexHome, finalize };
 }

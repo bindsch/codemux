@@ -1,8 +1,9 @@
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { prepareRunDirParent } from "./hermetic-home.js";
 import { hasActiveCapturedCommand } from "./process-runner.js";
 import { readBoundedKimiFile } from "./kimi-wire-log.js";
+import { recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
 
 export interface KimiHermeticHome {
   home: string;
@@ -102,6 +103,8 @@ export function createKimiHermeticHome(sourceBrandHome: string, toolsNone = fals
   // operator's: no configuration read, no credential link (review round 55).
   const config = printOnly ? "" : kimiHermeticConfig(sourceBrandHome);
   const parent = prepareRunDirParent(sourceBrandHome, ".codemux-hermetic");
+  // Recorded for the finalizer's revalidation (src/safe-remove.ts).
+  const parentRecord = recordTrustedParent(parent);
   const home = mkdtempSync(join(parent, `run-${process.pid}-`));
   const kimiHome = join(home, ".kimi-code");
   const skillsDir = join(home, "skills-dir");
@@ -109,10 +112,15 @@ export function createKimiHermeticHome(sourceBrandHome: string, toolsNone = fals
   let finalized = false;
   const finalize = () => {
     if (finalized) return;
-    try { rmSync(home, { recursive: true, force: true }); }
-    finally { finalized = true; untrack(finalize); }
+    // Thrown when refused or failed, so cleanupHome reports the kept home;
+    // it stays retryable, and the tracked hook retries and reports
+    // (review round 97).
+    removeUnderTrustedParentOrThrow(home, parentRecord, `the private kimi home ${home}`);
+    finalized = true;
+    untrack(hook);
   };
-  track(finalize);
+  const hook = reportingHook(finalize);
+  track(hook);
   try {
     mkdirSync(kimiHome, { mode: 0o700 });
     mkdirSync(skillsDir, { mode: 0o700 });

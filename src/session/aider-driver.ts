@@ -53,6 +53,7 @@
 import { providerHost } from "../call-log.js";
 import { HEADLESS_NEGATIVE_RESPONSES } from "../adapters/aider.js";
 import {
+  aiderDeltaRecordsUnansweredPrompt,
   aiderHistoryHeader,
   aiderHistorySizeBytes,
   aiderReplyAfterHeader,
@@ -351,15 +352,31 @@ export class AiderSessionDriver extends AiderCallerInput {
       return;
     }
     const delta = read.text;
-    this.consumedBytes = read.sizeBytes;
     const exitDetail =
       outcome.code !== null
         ? `code ${outcome.code}`
         : `signal ${outcome.signal ?? "unknown"}`;
     if (outcome.code !== 0) {
       this.finishTurn(turnId, "failed", `the aider process exited with ${exitDetail}`);
+      // A prompt-only delta from the failed process is the non-resumable
+      // shape the end path refuses (aiderDeltaRecordsUnansweredPrompt):
+      // the session ends and the offset never advances past the
+      // unanswered prompt. `!finished` keeps the verdict with an end path
+      // already draining this child.
+      if (!this.finished && aiderDeltaRecordsUnansweredPrompt(delta, this.turnPrompt)) {
+        this.emitError(
+          true,
+          "codemux",
+          `the session's chat history holds the failed turn's prompt with no reply (${this.options.historyPath}); ` +
+            "the session state is unreliable, so the session cannot continue"
+        );
+        void this.finish("crash", 1);
+        return;
+      }
+      this.consumedBytes = read.sizeBytes;
       return;
     }
+    this.consumedBytes = read.sizeBytes;
     if (!delta.includes("#### ")) {
       // Exit 0 but no exchange recorded: the turn produced nothing the
       // session can vouch for. The session continues — the next turn's

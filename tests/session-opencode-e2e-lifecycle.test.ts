@@ -306,6 +306,32 @@ describe("opencode session e2e - lifecycle", () => {
     expect(await session.code).toBe(0);
   });
 
+  test("an empty message is rejected unsupported and the session stays usable (review round 96)", async () => {
+    // The opencode wire exits 1 on an empty message (a non-TTY stdin is
+    // read to EOF and used as the message), and on a fresh session that
+    // also leaves no session id — so an accepted empty message ended the
+    // whole session as untrackable instead of being refused as invalid
+    // input before the acknowledgement.
+    const session = await startSession();
+    send(session.driver, { type: "user", text: "   " });
+    const rejected = await waitFor(
+      session.events,
+      (events) => events.find((event) => event.type === "input_rejected"),
+      "the unsupported rejection"
+    );
+    expect(rejected.input_seq).toBe(1);
+    expect(rejected.reason).toBe("unsupported");
+    // No turn opened, no process spawned, nothing delivered to the wire.
+    expect(session.events.filter((event) => event.type === "turn_started")).toHaveLength(0);
+    expect(fakeRecord(session, "prompts.jsonl")).toHaveLength(0);
+    // The session stays usable: a following valid message runs its turn.
+    send(session.driver, { type: "user", text: "scenario:basic one" });
+    await waitFor(session.events, of("turn_completed"), "turn_completed");
+    expect(session.events.filter((event) => event.type === "turn_started")).toHaveLength(1);
+    send(session.driver, { type: "shutdown" });
+    expect(await session.code).toBe(0);
+  });
+
   test("a spawn failure is a fatal codemux error, never an unhandled rejection", async () => {
     const session = await startSession({
       spawnTurn: () => Promise.reject(new Error("the binary is gone")),

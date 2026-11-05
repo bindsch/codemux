@@ -199,6 +199,19 @@ export class OpenCodeSessionDriver extends OpenCodeTurns {
           this.ack(inputSeq, false, "text_too_long");
           return;
         }
+        // The opencode wire refuses an empty message outright (it reads a
+        // non-TTY stdin to EOF as the message and exits 1 on an empty
+        // one — opencode-session.ts's pin), and on a fresh session that
+        // also leaves no session id, so the turn would end the whole
+        // session as untrackable (§4.8). Refused before the
+        // acknowledgement the way kimi refuses its whitespace-only
+        // prompt: the message is deliverable but not one the harness
+        // accepts — the `unsupported` row, not a framing error (review
+        // round 96, whole tree).
+        if (harnessText.trim() === "") {
+          this.ack(inputSeq, false, "unsupported");
+          return;
+        }
         this.ack(inputSeq, true);
         if (this.fsm.state === "starting") {
           // The silent warm-up: a fresh opencode session has no init

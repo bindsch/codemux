@@ -32,6 +32,11 @@
  *                     lines may leak into the reply
  *   errorturn       — banner lines, no exchange appended, exit 1: the
  *                     turn fails on the exit code, the session survives
+ *   promptexit      — the user block appended, then exit 1 before any
+ *                     reply: the turn fails and the history is left in
+ *                     the half-written shape a resume would replay, so
+ *                     the session must end as unreliable (review round
+ *                     96, whole tree)
  *   noexchange      — exit 0 with no exchange: the turn fails ("records
  *                     no exchange"), the session survives
  *   crash           — nothing at all, exit 1
@@ -142,6 +147,15 @@ const runTurn = (scenario: string, prompt: string): number | null => {
     case "errorturn":
       banner();
       process.stdout.write("The model refused the turn\n");
+      return 1;
+    case "promptexit":
+      // io.user_input already wrote the user block; the process failed
+      // before io.ai_output's reply, so the history holds the prompt
+      // alone and the exit code says the turn failed.
+      banner();
+      if (historyPath !== undefined) {
+        appendFileSync(historyPath, userBlock(prompt));
+      }
       return 1;
     case "noexchange":
       banner();

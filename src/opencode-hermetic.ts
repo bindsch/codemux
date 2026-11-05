@@ -36,7 +36,6 @@ import {
   closeSync,
   constants,
   fstatSync,
-  lstatSync,
   mkdirSync,
   mkdtempSync,
   openSync,
@@ -47,6 +46,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
 
 export interface OpencodeHermeticHome {
   /** The private HOME, also the root of the redirected XDG directories. */
@@ -193,16 +193,9 @@ export function createOpencodeHermeticHome(
   const parent = join(realDataDir, PARENT_DIR_NAME);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   // A run with write access to the data directory could have replaced the
-  // parent with a symlink, pointing the sweep's rm elsewhere.
-  const parentStat = lstatSync(parent);
-  if (
-    !parentStat.isDirectory() ||
-    (process.platform !== "win32" &&
-      typeof process.getuid === "function" &&
-      parentStat.uid !== process.getuid())
-  ) {
-    throw new Error(`${parent} must be a directory owned by the current user`);
-  }
+  // parent with a symlink, pointing the sweep's rm elsewhere; the record
+  // also lets the finalizer revalidate the parent (src/safe-remove.ts).
+  const parentRecord = recordTrustedParent(parent);
   sweepStaleHomes(parent);
   const home = mkdtempSync(join(parent, `${RUN_PREFIX}${process.pid}-`));
 
@@ -212,11 +205,15 @@ export function createOpencodeHermeticHome(
   let finalized = false;
   const finalize = (): void => {
     if (finalized) return;
+    // Thrown when refused or failed, so the run's cleanup reports the kept
+    // directory; it stays retryable, and the exit hook retries and reports
+    // (review round 97).
+    removeUnderTrustedParentOrThrow(home, parentRecord, `the private opencode home ${home}`);
     finalized = true;
-    rmSync(home, { recursive: true, force: true });
-    process.off("exit", finalize);
+    process.off("exit", atExit);
   };
-  process.once("exit", finalize);
+  const atExit = reportingHook(finalize);
+  process.once("exit", atExit);
   if (realStateDir !== undefined) {
     let skipped: string | null | undefined;
     try {

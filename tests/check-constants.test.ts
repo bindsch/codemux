@@ -69,7 +69,9 @@ describe("run exit cleanup error branches", () => {
       } as unknown as RunContext;
       const dispose = registerRunExitCleanup(adapter, context);
       process.emit("exit");
-      expect(errors).toEqual([
+      // The emitted exit also runs hooks other test files left in this
+      // shared process; only this registration's report is judged.
+      expect(errors.filter((message) => message.includes("per-run state at exit"))).toEqual([
         "codemux: could not clean up per-run state at exit: sink is gone",
       ]);
       expect(cleanups).toEqual(["adapter"]);
@@ -92,14 +94,14 @@ describe("run exit cleanup error branches", () => {
       const context = {} as RunContext;
       const dispose = registerRunExitCleanup(adapter, context);
       process.emit("exit");
-      expect(errors).toEqual([
+      expect(errors.filter((message) => message.includes("per-run state at exit"))).toEqual([
         "codemux: could not clean up per-run state at exit: mirror locked",
       ]);
       // The handler is registered with prependOnceListener, so one exit
       // consumed it; a second exit runs nothing.
       errors.length = 0;
       process.emit("exit");
-      expect(errors).toEqual([]);
+      expect(errors.filter((message) => message.includes("per-run state at exit"))).toEqual([]);
       dispose();
     } finally {
       console.error = original;
@@ -119,7 +121,7 @@ describe("run exit cleanup error branches", () => {
       const dispose = registerRunExitCleanup(adapter, {} as RunContext);
       dispose();
       process.emit("exit");
-      expect(errors).toEqual([]);
+      expect(errors.filter((message) => message.includes("per-run state at exit"))).toEqual([]);
     } finally {
       console.error = original;
     }

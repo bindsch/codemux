@@ -30,7 +30,6 @@
 
 import { randomBytes } from "node:crypto";
 import {
-  lstatSync,
   mkdirSync,
   readdirSync,
   rmSync,
@@ -38,6 +37,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
 import type { ProviderOverride } from "./provider-override.js";
 import { UsageRefusalError } from "./validation.js";
 
@@ -143,16 +143,9 @@ export function writeDroidProviderSettings(
   const parent = join(brandHome, PARENT_DIR_NAME);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   // A run with write access to the brand home could have replaced the parent
-  // with a symlink, pointing the sweep's rm elsewhere.
-  const parentStat = lstatSync(parent);
-  if (
-    !parentStat.isDirectory() ||
-    (process.platform !== "win32" &&
-      typeof process.getuid === "function" &&
-      parentStat.uid !== process.getuid())
-  ) {
-    throw new Error(`${parent} must be a directory owned by the current user`);
-  }
+  // with a symlink, pointing the sweep's rm elsewhere; the record also lets
+  // the finalizer revalidate the parent (src/safe-remove.ts).
+  const parentRecord = recordTrustedParent(parent);
   sweepStaleDirectories(parent);
   const dir = join(parent, `${DIR_PREFIX}${process.pid}-${randomBytes(6).toString("hex")}`);
   mkdirSync(dir, { mode: 0o700 });
@@ -189,11 +182,15 @@ export function writeDroidProviderSettings(
   let finalized = false;
   const finalize = (): void => {
     if (finalized) return;
+    // Thrown when refused or failed, so the run's cleanup reports the kept
+    // directory; it stays retryable, and the exit hook retries and reports
+    // (review round 97).
+    removeUnderTrustedParentOrThrow(dir, parentRecord, `the droid provider settings directory ${dir}`);
     finalized = true;
-    rmSync(dir, { recursive: true, force: true });
-    process.off("exit", finalize);
+    process.off("exit", atExit);
   };
-  process.once("exit", finalize);
+  const atExit = reportingHook(finalize);
+  process.once("exit", atExit);
 
   return { path, finalize };
 }

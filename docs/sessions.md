@@ -318,9 +318,12 @@ Aider's stdout is a human transcript: non-JSON lines become `unknown`.
 Its assistant message is extracted from persistent history. History is
 checked before each turn, reads are bounded per turn, and the accumulated
 file has no codemux size cap. A killed partial turn is not resumable because
-restoring history could replay its unanswered prompt. Aider refuses harness
-text beginning with `/` or `!`; Kimi refuses `/goal` followed by whitespace
-or end, and `!`. These checks apply after the author prefix.
+restoring history could replay its unanswered prompt; a turn that failed the
+same way — its prompt recorded, no reply — ends the session, since the next
+turn would replay it. Aider refuses harness text beginning with `/` or `!`;
+Kimi refuses `/goal` followed by whitespace or end, and `!`; OpenCode
+refuses a message that is empty after trimming, which its wire exits 1 on.
+These checks apply after the author prefix.
 
 Usage is described in [results and usage](results-and-usage.md). Token
 totals belong to this driver instance, including after resume. Claude/ZAI

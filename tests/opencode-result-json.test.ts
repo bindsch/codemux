@@ -206,16 +206,19 @@ describe("OpenCode result-json", () => {
       prompt: "hello",
       resultJson: true,
     };
+    let context: ReturnType<typeof adapter.prepareRun> | undefined;
     try {
       // The launch the adapter builds carries the selected model...
       expect(adapter.buildRunCommand(request).join(" ")).toContain("--model codemux/glm-5.3");
       // ...and so does the envelope, streamed through prepareRun's fold.
-      const context = adapter.prepareRun(request);
+      context = adapter.prepareRun(request);
       const sink = context.stdoutSink as OpenCodePlainFold;
       sink.push(replyWire);
       const result = adapter.processRunResult({ ...success, stdout: replyWire }, request, context);
       expect(JSON.parse(result.stdout).codemux.model).toBe("glm-5.3");
     } finally {
+      // The provider config is finalized before its root goes.
+      adapter.cleanupRunSync(context);
       rmSync(home, { recursive: true, force: true });
     }
   });

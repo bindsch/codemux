@@ -125,6 +125,14 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 96, whole tree: a failed aider turn whose history holds its prompt with no reply ends the session
+  instead of leaving state the next turn would replay; the first signal to a kimi session stops a landed child at once
+  instead of opening the grace drain; every private per-run directory's cleanup revalidates its parent first, so a
+  parent swapped for a symlink cannot redirect the removal into another directory, a parent missing at its path counts
+  as a refusal because a rename moves the run directory with it, and a refused or failed removal is reported by the
+  run's cleanup and retried at exit; the credential file's refresh-token check reads bounded and answers fail-closed
+  on a FIFO or an oversized file; an empty opencode message is rejected as invalid input instead of ending a fresh
+  session as untrackable; and a malformed `expiresAt` (null, a string, NaN) no longer counts as a live token.
 - Review round 93, whole tree: a session registry record's `created_at` and `last_activity` must be the UTC stamps
   the writers make, so a malformed value can no longer outrank real stamps in pruning and evict a valid session; an
   `owner_pid` outside the range a kernel assigns is invalid, and the liveness probe treats such a pid as dead instead

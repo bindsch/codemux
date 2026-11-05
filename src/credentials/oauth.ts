@@ -3,8 +3,10 @@
 // file's) into mirror shapes and file classes. src/credentials.ts owns
 // the mirror lifecycle and re-exports this.
 
-import { readFileSync, statSync } from "node:fs";
 import { userInfo } from "node:os";
+
+import { readUtf8FileBounded } from "../file-io.js";
+import { MAX_CREDENTIAL_MIRROR_BYTES } from "./backups.js";
 
 export type SecretReadResult =
   | { kind: "secret"; value: string }
@@ -89,10 +91,18 @@ function usableString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
-/** A non-empty access token whose `expiresAt`, when present, lies ahead. */
+/** A non-empty access token whose expiry, when the field is absent, is
+ * unknown (no expiry to check — the pre-2.0 rule, which the mirror-side
+ * stub classification and the sync's stand-alone-mirror verdict rely on),
+ * and when present must be a finite number lying ahead: `null`, `"0"`,
+ * NaN, or an infinity is a malformed expiry, not a non-expiring token
+ * (review round 96, whole tree) — treating it as live could mirror a
+ * dead credential over a working file or report one as usable. */
 export function accessTokenLive(oauth: Record<string, unknown>, now: number = Date.now()): boolean {
   if (!usableString(oauth.accessToken)) return false;
-  return typeof oauth.expiresAt !== "number" || oauth.expiresAt > now;
+  const expiresAt = oauth.expiresAt;
+  if (expiresAt === undefined) return true;
+  return typeof expiresAt === "number" && Number.isFinite(expiresAt) && expiresAt > now;
 }
 
 /** Whether a FILE holds a token at all (either kind): the 0.5.0 rule for
@@ -178,13 +188,28 @@ export function credentialTextCarriesRefreshToken(text: string): boolean {
   return oauth !== null && carriesRefreshToken(oauth);
 }
 
-/** Whether the credential file at `path` (read through any symlink, regular
- * files only) carries a refresh token. Unreadable or absent: false. */
+/** Whether the credential file at `path` carries a refresh token, read
+ * through the shared bounded reader (one open, no pathname stat first):
+ * a regular file, read through any symlink, at most
+ * MAX_CREDENTIAL_MIRROR_BYTES — the same rules the sync path reads under
+ * (src/credentials/sync.ts), so an oversized file the sandboxed child
+ * wrote cannot spend unbounded memory here and a regular-file-to-FIFO
+ * swap cannot block the launch (review round 96, whole tree). A file
+ * that exists but cannot be read or judged — oversized, non-regular,
+ * unreadable, invalid UTF-8 — answers TRUE, the fail-closed value for
+ * every caller (each treats a carried token as the hazard to warn about
+ * or refuse the launch over; codemux cannot rule the token out). A file
+ * that does not exist carries nothing: false. */
 export function fileCarriesRefreshToken(path: string): boolean {
+  let text: string;
   try {
-    if (!statSync(path).isFile()) return false;
-    return credentialTextCarriesRefreshToken(readFileSync(path, "utf8"));
-  } catch {
-    return false;
+    text = readUtf8FileBounded(path, {
+      maxBytes: MAX_CREDENTIAL_MIRROR_BYTES,
+      label: "the credential file",
+      noFollow: false,
+    });
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
   }
+  return credentialTextCarriesRefreshToken(text);
 }

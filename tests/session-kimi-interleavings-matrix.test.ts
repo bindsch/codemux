@@ -53,7 +53,9 @@ const CAUSE_CODE: Partial<Record<Injection, number>> = {
  * before the second injection runs (its guard sees session_ended, or
  * the event lands in an ended machine and is ignored), so only a
  * graceful first end — still draining — actually meets the second
- * event. */
+ * event. Only the caller-driven stdin close is graceful: a signal is a
+ * killing end too (review round 96, whole tree), and its 143 dominates
+ * every later cause's code, so the numeric expectations do not change. */
 function expectedCode(pair: readonly Injection[]): number {
   let code: number | null = null;
   let gracefulEndOpen = false;
@@ -65,7 +67,7 @@ function expectedCode(pair: readonly Injection[]): number {
       const first = CAUSE_CODE[event];
       if (first === undefined) continue; // spawn_ok
       code = first;
-      gracefulEndOpen = event === "stdin_eof" || event === "signal";
+      gracefulEndOpen = event === "stdin_eof";
       continue;
     }
     if (!gracefulEndOpen) continue; // done already resolved; nothing delivered

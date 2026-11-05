@@ -70,6 +70,7 @@ import {
   prepareRunDirParent,
 } from "./hermetic-home.js";
 import { trackPrivateDir, untrackPrivateDir } from "./private-dir-signals.js";
+import { recordTrustedParent, removeUnderTrustedParent } from "./safe-remove.js";
 export { copyClaudeCredentialMirror } from "./claude-credential-mirror.js";
 
 export interface ClaudeProjectConfigDir {
@@ -177,30 +178,26 @@ export function createProjectSettingsConfigDir(
 ): ClaudeProjectConfigDir {
   const root = projectSettingsConfigRoot(environment);
   const parent = prepareRunDirParent(root, PARENT_DIR_NAME);
+  // Recorded for the finalizer's revalidation (src/safe-remove.ts).
+  const parentRecord = recordTrustedParent(parent);
   // mkdtemp creates mode 0700; the files inside are written 0600.
   const dir = mkdtempSync(join(parent, `${RUN_PREFIX}${process.pid}-`));
   let finalized = false;
   const finalize = (): void => {
     if (finalized) return;
-    try {
-      // The parent is revalidated first, like every removal the codex
-      // provider runs (codex-provider/home.ts removeHome): a sandboxed
-      // child with write access to the config root could have swapped
-      // the parent for a symlink after this directory was made, and a
-      // recursive removal resolves that component like any path
-      // operation would (review round 15, edges 2).
-      assertTrustedDirectory(parent);
-      rmSync(dir, { recursive: true, force: true });
-    } catch (error) {
-      // Marked only after rmSync succeeded, mirroring the session
-      // variant's rule (below): a failed removal — or a parent that
-      // failed the check above — stays retryable, and the exit hook
-      // stays registered so the process's exit gets a real second
-      // attempt instead of a no-op (review round 14, edges 4). The
-      // directory (and its token copy) otherwise persists only until
-      // the stale-directory sweep.
-      const reason = error instanceof Error ? error.message : String(error);
-      console.error(`codemux: could not remove the private config directory ${dir} (${reason}); the directory was kept`);
+    // The parent is revalidated before the recursive removal, like every
+    // removal the codex provider runs: a sandboxed child with write
+    // access to the config root could have swapped the parent for a
+    // symlink after this directory was made, and a recursive removal
+    // resolves that component like any path operation would (review
+    // round 15, edges 2; the shared rule is src/safe-remove.ts).
+    if (!removeUnderTrustedParent(dir, parentRecord, `the private config directory ${dir}`)) {
+      // Marked only after the removal succeeded, mirroring the session
+      // variant's rule (below): a refused or failed removal stays
+      // retryable, and the exit hook stays registered so the process's
+      // exit gets a real second attempt instead of a no-op (review
+      // round 14, edges 4). The directory (and its token copy)
+      // otherwise persists only until the stale-directory sweep.
       return;
     }
     finalized = true;

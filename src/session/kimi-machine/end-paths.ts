@@ -16,6 +16,13 @@ import type { KimiEffect, KimiMachineState } from "./types.js";
  * defers the registry release behind its settling) — and the end_path
  * effect starts the executor's procedure.
  *
+ * Only the caller-driven ends (stdin close, shutdown) open the graceful
+ * drain. Every other first cause is a killing end whether or not a
+ * child has landed: the first signal (SIGINT, SIGTERM, SIGHUP) stops
+ * the child at once instead of waiting out the grace deadline (review
+ * round 96, whole tree) — the documented killing-end behavior, and what
+ * the executor already does whenever graceOpen is false.
+ *
  * A fatal first cause is always a killing end (round al30, rule 4,
  * correctness major 3): the stdin read error records the end reason
  * `stdin-close` — the channel did close — but a FAILED close is a fatal
@@ -26,8 +33,7 @@ import type { KimiEffect, KimiMachineState } from "./types.js";
 export function startEndPath(state: KimiMachineState): KimiEffect[] {
   const cause = state.end.cause!;
   const killing =
-    state.fatalClosed || (cause.reason !== "stdin-close" && cause.reason !== "shutdown" &&
-      (cause.reason !== "signal" || state.spawnInFlight));
+    state.fatalClosed || (cause.reason !== "stdin-close" && cause.reason !== "shutdown");
   const effects: KimiEffect[] = [];
   if (killing && state.spawnInFlight && !state.spawnAbandoned && state.child === null) {
     state.spawnAbandoned = true;

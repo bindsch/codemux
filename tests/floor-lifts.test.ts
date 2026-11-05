@@ -178,28 +178,34 @@ describe("the provider directory sweeps", () => {
 
   test("pi's sweep removes only stale directories of dead processes", () => {
     const agent = mkdtempSync(join(tmpdir(), "codemux-pi-sweep-"));
+    let made: { finalize: () => void } | undefined;
     try {
       craftedParent(join(agent, ".codemux"));
-      writePiProviderAgentDir(agent, override, "lift-model");
+      made = writePiProviderAgentDir(agent, override, "lift-model");
       const names = readdirSync(join(agent, ".codemux"));
       expect(names.some((name) => name === "provider-999999-dead")).toBe(false);
       expect(names.some((name) => name.startsWith(`provider-${process.pid}-`))).toBe(true);
       expect(names.some((name) => name === "provider-999998-fresh")).toBe(true);
       expect(names.some((name) => name === "unrelated")).toBe(true);
     } finally {
+      // Finalized before the root goes: the exit hook otherwise finds its
+      // parent missing and reports a kept directory (src/safe-remove.ts).
+      made?.finalize();
       rmSync(agent, { recursive: true, force: true });
     }
   });
 
   test("droid's sweep removes only stale directories of dead processes", () => {
     const home = mkdtempSync(join(tmpdir(), "codemux-droid-sweep-"));
+    let made: { finalize: () => void } | undefined;
     try {
       craftedParent(join(home, ".codemux"));
-      writeDroidProviderSettings(home, override, "lift-model");
+      made = writeDroidProviderSettings(home, override, "lift-model");
       const names = readdirSync(join(home, ".codemux"));
       expect(names.some((name) => name === "provider-999999-dead")).toBe(false);
       expect(names.some((name) => name === "provider-999998-fresh")).toBe(true);
     } finally {
+      made?.finalize();
       rmSync(home, { recursive: true, force: true });
     }
   });

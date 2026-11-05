@@ -406,6 +406,31 @@ export function extractAiderReply(history: string): string {
   return aiderReplyAfterHeader(history.slice(afterHeader + 1));
 }
 
+/**
+ * Whether a failed turn's history delta is the non-resumable shape the
+ * session-end path refuses to resume (src/session/aider-finalize.ts):
+ * a `#### ` user block with no reply after it. Aider writes the prompt
+ * when the turn starts and the reply only at its end, so a process that
+ * exits nonzero between the two leaves an unanswered prompt the next
+ * `--restore-chat-history` process would replay as if the caller had
+ * sent it (review round 96, whole tree). The reply is extracted with
+ * the same anchoring the verdict path uses, so the two cannot disagree
+ * about what counts as answered.
+ */
+export function aiderDeltaRecordsUnansweredPrompt(
+  delta: string,
+  prompt: string | null
+): boolean {
+  if (!delta.includes("#### ")) return false;
+  const header = prompt !== null ? aiderHistoryHeader(prompt) : null;
+  const at = header !== null ? delta.indexOf(header) : -1;
+  const reply =
+    header !== null && at !== -1
+      ? aiderReplyAfterHeader(delta.slice(at + header.length))
+      : extractAiderReply(delta);
+  return reply === "";
+}
+
 // Aider folds the endpoint's reasoning into the reply, wrapped in
 // `<thinking-content-…>` tags ("reasoning tokens" display, aider 0.86); the
 // model's visible answer follows them. Only a LEADING block is stripped —
