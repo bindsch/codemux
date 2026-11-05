@@ -15,6 +15,7 @@ import {
 } from "./process.js";
 import { buildEvent, buildUnknownEvent } from "./protocol.js";
 import { accumulateUsage } from "./usage.js";
+import { lateChildRuns } from "./spawn-wait.js";
 import { OpenCodeDriverCore } from "./opencode-finalize.js";
 
 export abstract class OpenCodeTurns extends OpenCodeDriverCore {
@@ -36,7 +37,7 @@ export abstract class OpenCodeTurns extends OpenCodeDriverCore {
     let proc: SessionProcess;
     let spawn: Promise<SessionProcess> | null = null;
     try {
-      spawn = this.options.spawnTurn(argv);
+      spawn = this.options.spawnTurn(argv, () => this.turnSpawnAbandoned);
       this.turnSpawn = spawn;
       proc = await spawn;
     } catch (error) {
@@ -67,11 +68,10 @@ export abstract class OpenCodeTurns extends OpenCodeDriverCore {
     // (stdin-close, shutdown) is the exception (review D11, correctness
     // 2 1): it owes this turn its run, delivers the prompt to the late
     // child itself (see finish), and this arm must not kill what that
-    // path is about to run.
+    // path is about to run — unless that end already gave up on this
+    // spawn (review round 110), when nothing is left that would run it.
     if (this.finished) {
-      if (this.endReason === "stdin-close" || this.endReason === "shutdown") {
-        return;
-      }
+      if (lateChildRuns(this.endReason, this.turnSpawnAbandoned)) return;
       proc.requestStop();
       void proc.settled;
       return;

@@ -74,6 +74,7 @@ import {
   type SessionFatal,
   type SessionProcess,
 } from "./process.js";
+import { lateChildRuns } from "./spawn-wait.js";
 import {
   buildEvent,
   buildInputAck,
@@ -267,7 +268,7 @@ export class AiderSessionDriver extends AiderCallerInput {
     let proc: SessionProcess;
     let spawn: Promise<SessionProcess> | null = null;
     try {
-      spawn = this.options.spawnTurn(argv);
+      spawn = this.options.spawnTurn(argv, () => this.turnSpawnAbandoned);
       this.turnSpawn = spawn;
       proc = await spawn;
     } catch (error) {
@@ -297,11 +298,10 @@ export class AiderSessionDriver extends AiderCallerInput {
     // shutdown) is the exception (review D11, correctness 2 1): it owes
     // this turn its run, primes the late child's stdin itself (see
     // finish), and this arm must not kill what that path is about to
-    // run.
+    // run — unless that end already gave up on this spawn (review round
+    // 110), when nothing is left that would run it.
     if (this.finished) {
-      if (this.endReason === "stdin-close" || this.endReason === "shutdown") {
-        return;
-      }
+      if (lateChildRuns(this.endReason, this.turnSpawnAbandoned)) return;
       proc.requestStop();
       void proc.settled;
       return;

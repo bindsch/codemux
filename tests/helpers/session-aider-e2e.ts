@@ -51,13 +51,16 @@ export const STARTUP_GRACE_MS = 5_000;
  * the CLI's closure spawns one headless aider per caller input. A nonzero
  * spawnDelayMs holds the spawn in flight first — the review D5 late-child
  * window, where the end path begins while the turn's process has not
- * landed yet. */
+ * landed yet. A spawnGate holds it until the test opens the gate — the
+ * review round 110 stalled-spawn window, where the end path gives up on
+ * the child entirely. */
 export async function startSession(
   overrides: Partial<AiderDriverOptions> = {},
   extraEnv: Record<string, string> = {},
   beforeRun?: (historyPath: string) => void,
   spawnDelayMs = 0,
-  graceMs = 500
+  graceMs = 500,
+  spawnGate?: Promise<unknown>
 ): Promise<Session> {
   const dir = mkdtempSync(join(workRoot(), "s-"));
   const workDir = join(dir, "work");
@@ -92,6 +95,7 @@ export async function startSession(
     historyPath,
     spawnTurn: async (argv) => {
       if (spawnDelayMs > 0) await Bun.sleep(spawnDelayMs);
+      if (spawnGate !== undefined) await spawnGate;
       // The fake replaces the binary name and keeps every flag, so the
       // recorded argv is the argv the driver built.
       const proc = new SessionProcess({

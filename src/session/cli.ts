@@ -372,6 +372,13 @@ export function registerSessionCommand(
               sandboxOptions: longLivedSandboxOptions,
               graceMs: shutdownGraceMs,
               envOmissions: adapter.getEnvOmissions(),
+              // The Playwright binary the claude-family argv embeds in its
+              // --mcp-config argument (review round 110): the spawn re-stats
+              // it beside the command's own positions, immediately before
+              // the child exists.
+              ...(claudeBuilt?.playwrightMcpCheck != null
+                ? { extraExecutableChecks: [claudeBuilt.playwrightMcpCheck] }
+                : {}),
             }, {
               onLine: (line) => driver.handleHarnessLine(line),
               onFatal: (fatal) => driver.handleFatal(fatal),
@@ -414,6 +421,13 @@ export function registerSessionCommand(
         try {
           code = await driver.run();
         } finally {
+          // A turn spawn the end path gave up waiting on (review round
+          // 110) can still land a child after run() resolved; the
+          // driver's hold stops and settles it, and the cleanup below —
+          // which deletes what a live child would still be using
+          // (opencode's turn provider config, review D5) — runs after
+          // that hold.
+          await driver.awaitAbandonedSpawn?.();
           // What the latest turn's env assembly left live (opencode's
           // current provider config; earlier turns' were finalized at the
           // next turn's spawn) dies with the session. The codex session

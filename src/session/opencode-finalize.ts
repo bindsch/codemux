@@ -25,10 +25,12 @@ import {
   BoundedOutboundQueue,
   crashSynthesisReason,
   drainFailureMessage,
+  DEFAULT_SHUTDOWN_GRACE_MS,
   type SessionChildOutcome,
   type SessionProcess,
   type SessionSignalGate,
 } from "./process.js";
+import { awaitSpawnWithGrace, holdAbandonedSpawn } from "./spawn-wait.js";
 import { buildEvent } from "./protocol.js";
 import {
   recordSessionStart,
@@ -74,7 +76,11 @@ export interface OpenCodeDriverOptions {
   /** Spawns one process per turn (the CLI's scode/env wiring around
    * SessionProcess); a throw is reported as a codemux failure, never an
    * unhandled rejection. */
-  spawnTurn: (argv: string[]) => Promise<SessionProcess>;
+  spawnTurn: (argv: string[], abandoned?: () => boolean) => Promise<SessionProcess>;
+  /** The bound the end path gives an in-flight spawn before giving up
+   * on it (review round 110): the CLI's --shutdown-grace. Default
+   * DEFAULT_SHUTDOWN_GRACE_MS. */
+  spawnGraceMs?: number;
   sink?: (line: string) => Promise<void> | void;
 }
 
@@ -137,6 +143,12 @@ export abstract class OpenCodeDriverCore {
    * live7). Monotone: only a higher code ever wins. */
   protected endExitCode = 0;
   protected lastChildOutcome: SessionChildOutcome | null = null;
+  /** True once the end path gave up on the in-flight turn spawn, and
+   * the hold that stops its late-landing child (review round 110): the
+   * CLI awaits the hold before the cleanup a live child would race
+   * (the turn's provider config removal, review D5). */
+  protected turnSpawnAbandoned = false;
+  protected abandonedSpawnHold: Promise<void> | null = null;
   protected sawHarnessFailure = false;
   /** True only once the end path has settled every child: run-output
    * lines keep being parsed and emitted through the whole shutdown drain
@@ -200,36 +212,29 @@ export abstract class OpenCodeDriverCore {
     if (drain === null && spawn !== null) {
       // A turn whose spawn was still in flight when the end path began
       // (an end between the turn's start and its child landing). The
-      // CLI's cleanup — for opencode, the turn's provider config
-      // removal — runs the moment done resolves, so the late child must
-      // be stopped and its tree settled BEFORE that (review D5,
-      // correctness 2): never an opencode process running with an
-      // OPENCODE_CONFIG that already points at a deleted file. A
-      // graceful end meets that by RUNNING the turn inside this path
-      // (review
-      // D11, correctness 2 1): the child landed before its prompt was
-      // written, so deliver the prompt (startTurn's finished-arm leaves
-      // the child untouched for exactly this) and give it the landed
-      // path's drain below — the turn finishes and settles before done
-      // resolves, or the drain's grace expiry stops it. A signal,
-      // timeout, or crash end keeps the D5 rule: stop on arrival; the
-      // session_ended reports a failure for every nonzero or signal exit.
+      // wait itself is bounded by the stop grace (review round 110):
+      // the CLI's cleanup — for opencode, the turn's provider config
+      // removal — runs the moment done resolves, so a stalled spawn
+      // must not hold the end past it. A graceful end meets the D5 rule
+      // by RUNNING the turn inside this path (review D11, correctness
+      // 2 1): deliver the prompt (startTurn's finished-arm leaves the
+      // child untouched for exactly this) and give it the landed path's
+      // drain below. A signal, timeout, or crash end keeps the D5 rule:
+      // stop on arrival. A spawn that outlasts the grace is given up on
+      // below — fatally, and with the hold stopping whatever lands late.
       let late: SessionProcess | null = null;
-      try {
-        late = await spawn;
-      } catch (error) {
-        late = null; // no child to stop
-        // A graceful end owes this turn its run (review D11), and a
-        // spawn that rejects here means that run can never happen:
-        // report it exactly as startTurn's pre-end path does (review
-        // round 73). The fatal makes the open turn's synthesized
-        // completion failed rather than interrupted, and the crash's
-        // code raises the session's exit code to at least 1 — finish
-        // is already in flight, so its idempotent arm only raises the
-        // code; session_ended still follows this path's own ordering.
-        // A signal, timeout, or crash end already carries a nonzero
-        // verdict and owes no run, so the rejection stays absorbed
-        // there.
+      const graceMs = this.options.spawnGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
+      const wait = await awaitSpawnWithGrace(spawn, graceMs);
+      if (wait.kind === "landed") {
+        late = wait.child;
+      } else if (wait.kind === "rejected") {
+        // No child to stop. A graceful end owes this turn its run
+        // (review D11), and a rejected spawn means that run can never
+        // happen: report it exactly as startTurn's pre-end path does
+        // (review round 73) — the fatal fails the open turn's synthesis
+        // and the crash's code raises the exit to at least 1. A
+        // signal, timeout, or crash end already carries its verdict and
+        // owes no run, so the rejection stays absorbed there.
         if (
           (reason === "stdin-close" || reason === "shutdown") &&
           this.fsm.state === "turn_active"
@@ -238,10 +243,24 @@ export abstract class OpenCodeDriverCore {
             true,
             "codemux",
             "could not spawn the opencode turn process " +
-              `(${error instanceof Error ? error.message : String(error)})`
+              `(${wait.error instanceof Error ? wait.error.message : String(wait.error)})`
           );
           void this.finish("crash", 1);
         }
+      } else {
+        // The spawn outlasted the grace (review round 110): fatal
+        // whatever the reason — the graceful arm's run can never happen
+        // now — so the open turn's synthesis answers failed and the
+        // exit code is at least 1. The hold stops a late-landing child
+        // and settles it before the CLI's cleanup (review D5).
+        this.turnSpawnAbandoned = true;
+        this.abandonedSpawnHold = holdAbandonedSpawn(spawn, graceMs);
+        this.endExitCode = Math.max(this.endExitCode, 1);
+        this.emitError(
+          true,
+          "codemux",
+          `the opencode turn process never appeared within the ${graceMs} ms end grace; ending without it`
+        );
       }
       if (late !== null) {
         if (
@@ -403,6 +422,13 @@ export abstract class OpenCodeDriverCore {
     const delivered = sent ? await awaitFinalFlush(this.out) : false;
     this.signals.dispose();
     this.resolveDone(delivered ? this.endExitCode : Math.max(this.endExitCode, 1));
+  }
+
+  /** The CLI awaits this before the cleanup a late-landing child would
+   * race (review round 110, review D5): resolved once the abandoned
+   * spawn can no longer start a child unnoticed. */
+  awaitAbandonedSpawn(): Promise<void> {
+    return this.abandonedSpawnHold ?? Promise.resolve();
   }
 
   // --- helpers ---------------------------------------------------------------

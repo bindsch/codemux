@@ -151,10 +151,16 @@ A `request_id` is the harness request's id as codemux presents it, and the
 decision echoes it back verbatim. Claude and ZAI present the raw id string.
 Codex presents the JSON-RPC id's JSON spelling: numeric ids as their digits
 (`42`), string ids with their quotes (`"appr-1"`), so two Codex requests
-whose ids differ only by JSON type never collide. A `permission_request`
+whose ids differ only by JSON type never collide. A numeric id must be a
+safe integer (review round 110): a number JSON serialization corrupts —
+`1e400` folds to Infinity and back to `null`, an unsafe integer rounds,
+`-0` renders as `0` — so such an id never joins the pending set; two
+requests differing only by the corruption would have collided on one
+answer. A `permission_request`
 never carries an id a decision cannot answer (empty, over the request-id
-bound, or containing NUL): the same predicate guards both sides, and a
-Claude/ZAI `can_use_tool` with such an id is answered by the driver itself
+bound, containing NUL, or an unsafe number): the same predicate guards both
+sides, and a Claude/ZAI `can_use_tool` with such an id is answered by the
+driver itself
 with the control protocol's error response instead of joining the pending
 set.
 

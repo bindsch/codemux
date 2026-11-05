@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, closeSync, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, readFileSync, realpathSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, sep } from "node:path";
 import { assertExecutablesUnchanged, executableCheck, resolveTrustedExecutable } from "./executable-security.js";
@@ -12,6 +12,10 @@ export const AGY_TEMPLATE_NAME = "agy-mirror-template.keychain-db";
 const LOCK_WAIT_MS = 60_000;
 const LOCK_POLL_MS = 25;
 const EMPTY_LOCK_STALE_MS = 60_000;
+// A lock holds a decimal pid or nothing; anything longer is not a pid
+// spelling this program ever wrote, so it is read no further.
+const LOCK_MAX_BYTES = 64;
+const LOCK_PID_PATTERN = /^[1-9]\d*$/;
 // Apple's interactive reader has a 4096-byte buffer, including the terminator.
 const SECURITY_LINE_BYTES = 4096;
 export const agyKeychainHost = {
@@ -19,6 +23,10 @@ export const agyKeychainHost = {
   securityPath: (_environment: NodeJS.ProcessEnv): string | undefined =>
     existsSync("/usr/bin/security") ? "/usr/bin/security" : undefined,
   spawnSync: Bun.spawnSync,
+  /** The lock wait and poll cadence, injectable so tests can prove the
+   * waiting behavior without sitting out the production minute. */
+  lockWaitMs: LOCK_WAIT_MS,
+  lockPollMs: LOCK_POLL_MS,
 };
 
 /** One location per login user, independent of adapter HOME and log overrides. */
@@ -233,9 +241,37 @@ export function recoverAgyKeychainSearchList(environment: NodeJS.ProcessEnv, cwd
   finally { unlock(); }
 }
 
+/** One held lock's facts, read from the descriptor the identity came
+ * from: the content is bounded and the staleness rule below reads the
+ * same inode the unlink check compares. */
+interface LockFacts {
+  identity: Stats;
+  /** The lock's content, or null when it cannot be a pid (empty, or
+   * malformed: a non-decimal value, content past the byte bound, or a
+   * partial read). */
+  owner: string | null;
+}
+
+/** Read the lock by descriptor: never a non-regular file (the identity
+ * refuses it), never more than the bound's bytes, so a planted huge file
+ * is classified, not slurped. */
+function readLockFacts(fd: number): LockFacts {
+  const identity = fstatSync(fd);
+  if (!identity.isFile()) throw new Error("agy template lock must be a regular file");
+  if (identity.size > LOCK_MAX_BYTES) return { identity, owner: null };
+  const buffer = Buffer.alloc(identity.size);
+  let read = 0;
+  while (read < buffer.length) {
+    const received = readSync(fd, buffer, read, buffer.length - read, read);
+    if (received <= 0) break;
+    read += received;
+  }
+  return { identity, owner: read === buffer.length ? buffer.toString("utf8") : null };
+}
+
 /** Synchronous preparation uses an exclusive, process-owned lock across launches. */
 function templateLock(path: string): () => void {
-  const deadline = Date.now() + LOCK_WAIT_MS;
+  const deadline = Date.now() + agyKeychainHost.lockWaitMs;
   const pause = new Int32Array(new SharedArrayBuffer(4));
   for (;;) {
     try {
@@ -252,13 +288,34 @@ function templateLock(path: string): () => void {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
     try {
-      const identity = lstatSync(path);
-      if (!identity.isFile()) throw new Error("agy template lock must be a regular file");
-      const owner = readFileSync(path, "utf8");
-      let stale = !owner && Date.now() - identity.mtimeMs > EMPTY_LOCK_STALE_MS;
-      if (/^[1-9]\d*$/.test(owner)) {
-        try { process.kill(Number(owner), 0); }
-        catch (error) { stale = (error as NodeJS.ErrnoException).code === "ESRCH"; }
+      // The type is checked before the open, and the open neither blocks
+      // nor follows a link: a FIFO at the lock path would otherwise hold a
+      // plain read-only open forever, past the deadline below (review
+      // round 111). The descriptor's own fstat repeats the type check.
+      if (!lstatSync(path).isFile()) throw new Error("agy template lock must be a regular file");
+      const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+      let facts: LockFacts;
+      try { facts = readLockFacts(fd); }
+      finally { closeSync(fd); }
+      const identity = facts.identity;
+      const ageMs = () => Date.now() - identity.mtimeMs;
+      // The staleness rule, one shape for every content: a live owner
+      // (kill succeeds, or EPERM — a process exists that this uid may not
+      // signal) holds the lock; a dead owner (ESRCH) is stale at any age;
+      // everything else — empty content, a value that is not a decimal
+      // pid, content past the byte bound, or a pid `process.kill` itself
+      // rejects (EINVAL, a RangeError above the platform's range) — is
+      // malformed in the empty case's sense: stale once its mtime is
+      // older than EMPTY_LOCK_STALE_MS, so an abandoned or corrupted lock
+      // recovers instead of failing every later launch (review round 110).
+      let stale = ageMs() > EMPTY_LOCK_STALE_MS;
+      if (facts.owner !== null && LOCK_PID_PATTERN.test(facts.owner)) {
+        try { process.kill(Number(facts.owner), 0); stale = false; }
+        catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code === "ESRCH") stale = true;
+          else if (code !== "EPERM") stale = ageMs() > EMPTY_LOCK_STALE_MS;
+        }
       }
       if (stale) {
         const current = lstatSync(path);
@@ -269,7 +326,7 @@ function templateLock(path: string): () => void {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     if (Date.now() >= deadline) throw new Error("timed out waiting for agy template keychain lock");
-    Atomics.wait(pause, 0, 0, LOCK_POLL_MS);
+    Atomics.wait(pause, 0, 0, agyKeychainHost.lockPollMs);
   }
 }
 

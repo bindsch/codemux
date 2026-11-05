@@ -1,4 +1,4 @@
-import { resolveTrustedExecutable } from "./executable-security.js";
+import { executableCheck, resolveTrustedExecutable, type ExecutableCheck } from "./executable-security.js";
 
 export interface PlaywrightMcpOptions {
   enabled?: boolean;
@@ -6,13 +6,27 @@ export interface PlaywrightMcpOptions {
   forbiddenRoot?: string;
 }
 
-export function getPlaywrightSandboxMcpArgs(
+/** What building the Playwright MCP arguments leaves behind for the spawn
+ * site's pre-spawn re-check: the arguments to embed, and this build's own
+ * trust check of the binary they name. The binary's path sits INSIDE the
+ * `--mcp-config` JSON argument, so the ordinary command re-check — which
+ * scans argv positions — never sees it; a spawn site that does not hand
+ * this check to its re-stat lets bytes swapped in after this build run
+ * unvalidated (review round 110). One bound the check cannot close: after
+ * the spawn, Claude itself decides when to start the server, so a swap in
+ * that later window is the sandbox's to contain, not a re-check's. */
+export interface PlaywrightSandboxMcp {
+  args: string[];
+  check: ExecutableCheck | null;
+}
+
+export function buildPlaywrightSandboxMcp(
   sandboxed?: boolean,
   options: PlaywrightMcpOptions = {}
-): string[] {
+): PlaywrightSandboxMcp {
   const enabled = options.enabled ?? false;
   if (!sandboxed || !enabled) {
-    return [];
+    return { args: [], check: null };
   }
 
   const binaryPath = options.binaryPath !== undefined
@@ -28,6 +42,9 @@ export function getPlaywrightSandboxMcpArgs(
     "playwright-mcp",
     options.forbiddenRoot
   );
+  // Captured in the resolution's own synchronous block, so the spawn's
+  // re-stat compares this build's identity, never another launch's.
+  const check = executableCheck(resolvedBinary);
 
   const config = JSON.stringify({
     mcpServers: {
@@ -37,5 +54,12 @@ export function getPlaywrightSandboxMcpArgs(
       },
     },
   });
-  return ["--mcp-config", config];
+  return { args: ["--mcp-config", config], check };
+}
+
+export function getPlaywrightSandboxMcpArgs(
+  sandboxed?: boolean,
+  options: PlaywrightMcpOptions = {}
+): string[] {
+  return buildPlaywrightSandboxMcp(sandboxed, options).args;
 }

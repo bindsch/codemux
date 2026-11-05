@@ -15,6 +15,7 @@ import type { Command } from "commander";
 import type { AgentId, CodemuxConfig } from "./types.js";
 import { resolveSandboxOptionsForAgent } from "./sandbox-policy.js";
 import { withKeepEnvExemption } from "./sandbox.js";
+import type { ExecutableCheck } from "./executable-security.js";
 import { runSandboxed } from "./cli-runtime.js";
 import { assertQuotaHeadroomForLaunch, resolveQuotaGate } from "./quota-gate.js";
 import { UsageRefusalError, validateWorkingDirectory } from "./validation.js";
@@ -222,13 +223,22 @@ export function registerTuiCommand(
             ...adapter.getTuiEnv(model, autonomy, effort, true, passthroughEnv),
           };
           const adapterEnv = adapter.buildExecutionEnv(injectedEnv, passthroughEnv);
+          // The Playwright binary the command embeds is trust-checked
+          // inside buildTuiCommand, but its path sits in the --mcp-config
+          // JSON argument the command re-check never parses (review round
+          // 110). The build hands back the check it captured in that same
+          // resolution (review round 111: never a second resolution, which
+          // would trust whatever replaced the binary in between), and the
+          // spawn's re-stat compares against it.
+          const nestedChecks: ExecutableCheck[] = [];
           const command = adapter.buildTuiCommand(
             model,
             autonomy,
             effort,
             true,
             enablePlaywrightMcp,
-            workdir
+            workdir,
+            nestedChecks
           );
           const exitCode = await runSandboxed(
             command,
@@ -242,7 +252,8 @@ export function registerTuiCommand(
               adapter.providerOverrideActive()
             ),
             adapter.getEnvOmissions(),
-            Boolean(options.printSandbox)
+            Boolean(options.printSandbox),
+            nestedChecks[0] ?? null
           );
           process.exitCode = exitCode;
         } else {

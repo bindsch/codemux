@@ -29,10 +29,12 @@ import {
   BoundedOutboundQueue,
   crashSynthesisReason,
   drainFailureMessage,
+  DEFAULT_SHUTDOWN_GRACE_MS,
   type SessionChildOutcome,
   type SessionProcess,
   type SessionSignalGate,
 } from "./process.js";
+import { awaitSpawnWithGrace, holdAbandonedSpawn } from "./spawn-wait.js";
 import { buildEvent } from "./protocol.js";
 import {
   recordSessionStart,
@@ -80,7 +82,11 @@ export interface AiderDriverOptions {
   providerBaseUrl: string | null;
   /** Spawns one process per turn; a throw is reported as a codemux
    * failure, never an unhandled rejection. */
-  spawnTurn: (argv: string[]) => Promise<SessionProcess>;
+  spawnTurn: (argv: string[], abandoned?: () => boolean) => Promise<SessionProcess>;
+  /** The bound the end path gives an in-flight spawn before giving up
+   * on it (review round 110): the CLI's --shutdown-grace. Default
+   * DEFAULT_SHUTDOWN_GRACE_MS. */
+  spawnGraceMs?: number;
   sink?: (line: string) => Promise<void> | void;
 }
 
@@ -117,6 +123,11 @@ export abstract class AiderDriverCore {
    * live7). Monotone: only a higher code ever wins. */
   protected endExitCode = 0;
   protected lastChildOutcome: SessionChildOutcome | null = null;
+  /** True once the end path gave up on the in-flight turn spawn, and
+   * the hold that stops its late-landing child (review round 110): the
+   * CLI awaits the hold before the cleanup a live child would race. */
+  protected turnSpawnAbandoned = false;
+  protected abandonedSpawnHold: Promise<void> | null = null;
   protected sawHarnessFailure = false;
   protected settled = false;
   protected firstFatal: string | null = null;
@@ -230,35 +241,33 @@ export abstract class AiderDriverCore {
     if (drain === null && spawn !== null) {
       // A turn whose spawn was still in flight when the end path began
       // (an end between the turn's start and its child landing). The
-      // CLI's cleanup runs the moment done resolves, so the late child
-      // must be stopped and its tree settled BEFORE that (review D5,
-      // correctness 2 — the opencode twin of this branch names the
-      // provider-config deletion; aider's child holds nothing codemux
-      // deletes, but the ordering rule is one). A graceful end meets
-      // that by RUNNING the turn inside this path instead (review D11,
-      // correctness 2 1): the child landed before its negatives were
-      // written, so prime its stdin (startTurn's finished-arm leaves
-      // the child untouched for exactly this) and give it the landed
-      // path's drain below — the turn finishes and settles before done
-      // resolves, or the drain's grace expiry stops it. A signal,
-      // timeout, or crash end stops the late child on arrival. Any
-      // nonzero or signal exit still fails the session.
+      // wait itself is bounded by the stop grace (review round 110):
+      // the CLI's cleanup runs the moment done resolves, so a stalled
+      // spawn must not hold the end past it (the opencode twin of this
+      // branch names the provider-config deletion; aider's child holds
+      // nothing codemux deletes, but the ordering rule is one). A
+      // graceful end meets that by RUNNING the turn inside this path
+      // instead (review D11, correctness 2 1): the child landed before
+      // its negatives were written, so prime its stdin (startTurn's
+      // finished-arm leaves the child untouched for exactly this) and
+      // give it the landed path's drain below. A signal, timeout, or
+      // crash end stops the late child on arrival. A spawn that
+      // outlasts the grace is given up on below — fatally, and with
+      // the hold stopping whatever lands late. Any nonzero or signal
+      // exit still fails the session.
       let late: SessionProcess | null = null;
-      try {
-        late = await spawn;
-      } catch (error) {
-        late = null; // no child to stop
-        // A graceful end owes this turn its run (review D11), and a
-        // spawn that rejects here means that run can never happen:
-        // report it exactly as startTurn's pre-end path does (review
-        // round 73). The fatal makes the open turn's synthesized
-        // completion failed rather than interrupted, and the crash's
-        // code raises the session's exit code to at least 1 — finish
-        // is already in flight, so its idempotent arm only raises the
-        // code; session_ended still follows this path's own ordering.
-        // A signal, timeout, or crash end already carries a nonzero
-        // verdict and owes no run, so the rejection stays absorbed
-        // there.
+      const graceMs = this.options.spawnGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
+      const wait = await awaitSpawnWithGrace(spawn, graceMs);
+      if (wait.kind === "landed") {
+        late = wait.child;
+      } else if (wait.kind === "rejected") {
+        // No child to stop. A graceful end owes this turn its run
+        // (review D11), and a rejected spawn means that run can never
+        // happen: report it exactly as startTurn's pre-end path does
+        // (review round 73) — the fatal fails the open turn's synthesis
+        // and the crash's code raises the exit to at least 1. A
+        // signal, timeout, or crash end already carries its verdict and
+        // owes no run, so the rejection stays absorbed there.
         if (
           (reason === "stdin-close" || reason === "shutdown") &&
           this.fsm.state === "turn_active"
@@ -267,10 +276,24 @@ export abstract class AiderDriverCore {
             true,
             "codemux",
             "could not spawn the aider turn process " +
-              `(${error instanceof Error ? error.message : String(error)})`
+              `(${wait.error instanceof Error ? wait.error.message : String(wait.error)})`
           );
           void this.finish("crash", 1);
         }
+      } else {
+        // The spawn outlasted the grace (review round 110): fatal
+        // whatever the reason — the graceful arm's run can never happen
+        // now — so the open turn's synthesis answers failed and the
+        // exit code is at least 1. The hold stops a late-landing child
+        // and settles it before the CLI's cleanup.
+        this.turnSpawnAbandoned = true;
+        this.abandonedSpawnHold = holdAbandonedSpawn(spawn, graceMs);
+        this.endExitCode = Math.max(this.endExitCode, 1);
+        this.emitError(
+          true,
+          "codemux",
+          `the aider turn process never appeared within the ${graceMs} ms end grace; ending without it`
+        );
       }
       if (late !== null) {
         if (
@@ -435,6 +458,13 @@ export abstract class AiderDriverCore {
     const delivered = sent ? await awaitFinalFlush(this.out) : false;
     this.signals.dispose();
     this.resolveDone(delivered ? this.endExitCode : Math.max(this.endExitCode, 1));
+  }
+
+  /** The CLI awaits this before the cleanup a late-landing child would
+   * race (review round 110): resolved once the abandoned spawn can no
+   * longer start a child unnoticed. */
+  awaitAbandonedSpawn(): Promise<void> {
+    return this.abandonedSpawnHold ?? Promise.resolve();
   }
 
   /** The start record (§4.8): the claude-family writeStartRecord shape.

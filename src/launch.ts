@@ -370,7 +370,11 @@ export async function launchRunRequest(
         try { await cleanup(); }
         finally { appendInterruptedLaunchReceipt(request, options, runContext, startedAt); }
       },
-      options.printSandbox
+      options.printSandbox,
+      // The Playwright binary embedded in the --mcp-config argument
+      // (review round 110): the sandbox runner revalidates it beside its
+      // own positions immediately before the spawn.
+      context.playwrightMcpCheck ?? null
     );
     if (options.printSandbox) {
       // The argv was already printed inside the runner (after every probe
@@ -460,6 +464,10 @@ async function runDirect(
   // skipping the re-check.
   const requiredPaths = trustCheckedCommandPaths(command);
   const checks = trustCheckedCommandChecks(command);
+  // The Playwright binary buildRunCommand embedded in a --mcp-config
+  // argument (review round 110): re-stat it like the command's own
+  // positions. Null on every direct run that built no such argument.
+  const playwrightCheck = context.playwrightMcpCheck ?? null;
   const stdinInput = adapter.getStdinInput(request);
   const env = adapter.buildExecutionEnv(
     adapter.getRunEnv(request, context),
@@ -477,6 +485,6 @@ async function runDirect(
     stdoutSink: context.stdoutSink,
     onSignaled,
     requiredPaths,
-    checks,
+    checks: [...checks, ...(playwrightCheck === null ? [] : [playwrightCheck])],
   });
 }

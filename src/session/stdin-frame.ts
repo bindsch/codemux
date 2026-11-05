@@ -30,6 +30,12 @@ export interface SessionDriver {
    * rethrowing past it (round 20, minor 8; round 65 for every
    * long-lived-child driver). */
   endPathStarted?(): boolean;
+  /** The end path's hold on a turn spawn it gave up waiting for (review
+   * round 110): turn-per-process drivers resolve it once a
+   * late-landing child has been stopped and settled, so the CLI's
+   * cleanup — which deletes what a live child would still use
+   * (opencode's turn provider config, review D5) — never races one. */
+  awaitAbandonedSpawn?(): Promise<void>;
   /** The spawn-throw catch's exit once endPathStarted() is true: awaits
    * the end path's verdict and leaves through the session's exit code. */
   finishAfterSpawnThrow?(error: unknown): Promise<void>;

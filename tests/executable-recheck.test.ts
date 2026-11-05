@@ -17,6 +17,7 @@ import { runSandboxedWithStdin } from "../src/cli-runtime.js";
 import * as scodeModule from "../src/cli-runtime/scode.js";
 import { spawnSessionChild } from "../src/session/spawn.js";
 import { SessionProcess } from "../src/session/process.js";
+import { buildPlaywrightSandboxMcp } from "../src/mcp.js";
 
 describe("executable re-stat before spawn", () => {
   const scratch: string[] = [];
@@ -348,6 +349,48 @@ describe("executable re-stat before spawn", () => {
       await expect(
         runSandboxedWithStdin(["wrapped"], "", dirA, { PATH: bin }, "high", undefined, 5_000)
       ).rejects.toThrow("sandbox command executable changed after its trust check");
+    } finally {
+      probe.mockRestore();
+    }
+  });
+
+  test("a Playwright binary swapped after the --mcp-config build refuses the sandboxed launch (review round 110)", async () => {
+    // The binary's path sits inside one JSON argument, so the command
+    // re-check never sees it; the launch carries the argument build's own
+    // check to the runner, and the pre-spawn re-stat refuses a binary
+    // replaced or widened in between. Unchanged, the launch proceeds.
+    const dirA = mkdtempSync(join(tmpdir(), "codemux-recheck-mcp-a-"));
+    const bin = mkdtempSync(join(tmpdir(), "codemux-recheck-mcp-b-"));
+    scratch.push(dirA, bin);
+    script(bin, "wrapped");
+    script(bin, "scode");
+    const probe = spyOn(scodeModule, "assertCompatibleScode").mockImplementation(async () => {});
+    const launch = (plan: ReturnType<typeof buildPlaywrightSandboxMcp>) =>
+      runSandboxedWithStdin(["wrapped", ...plan.args], "", dirA, { PATH: bin }, "high", undefined, 5_000,
+        undefined, undefined, undefined, false, plan.check);
+    try {
+      // Replaced (a different inode) between the argument build and the
+      // recheck: refused.
+      const playwrightPath = script(bin, "playwright-mcp");
+      const replaced = buildPlaywrightSandboxMcp(true, { enabled: true, binaryPath: playwrightPath });
+      expect(replaced.args[0]).toBe("--mcp-config");
+      expect(replaced.check).not.toBeNull();
+      replace(playwrightPath);
+      await expect(launch(replaced)).rejects.toThrow(
+        "sandbox command executable changed after its trust check"
+      );
+      // Made group-writable in between: refused the same way.
+      rmSync(playwrightPath);
+      const fresh = script(bin, "playwright-mcp");
+      const widened = buildPlaywrightSandboxMcp(true, { enabled: true, binaryPath: fresh });
+      chmodSync(fresh, 0o664);
+      await expect(launch(widened)).rejects.toThrow(
+        "sandbox command executable changed after its trust check"
+      );
+      // Unchanged: the launch runs (the fake scode exits 0).
+      chmodSync(fresh, 0o755);
+      const unchanged = buildPlaywrightSandboxMcp(true, { enabled: true, binaryPath: fresh });
+      await expect(launch(unchanged)).resolves.toBeTruthy();
     } finally {
       probe.mockRestore();
     }

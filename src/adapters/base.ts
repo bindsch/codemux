@@ -15,7 +15,7 @@ import { runInteractive } from "./interactive.js";
 import { validateRunRequestFor, validateTuiRequestFor } from "./base-validate.js";
 import type { LoginState } from "../harness-health.js";
 import type { SandboxOptions, ScodeTrustLevel } from "../sandbox.js";
-import { resolveTrustedCommand } from "../executable-security.js";
+import { resolveTrustedCommand, type ExecutableCheck } from "../executable-security.js";
 import type { RunContext } from "../run-context.js";
 import { UsageRefusalError } from "../validation.js";
 
@@ -77,13 +77,18 @@ export abstract class BaseAdapter {
    */
   abstract buildRunCommand(request: RunRequest, context?: RunContext): string[];
 
+  /** `nestedChecks` receives this build's own trust check of every
+   * executable the command names inside an argument (the Playwright MCP
+   * binary in --mcp-config JSON), so the launch re-stats the identity this
+   * build resolved and never a second resolution's (review round 111). */
   abstract buildTuiCommand(
     model?: string,
     autonomy?: AutonomyLevel,
     effort?: ReasoningEffort,
     sandboxed?: boolean,
     enablePlaywrightMcp?: boolean,
-    cwd?: string
+    cwd?: string,
+    nestedChecks?: ExecutableCheck[]
   ): string[];
 
   isAvailable(): boolean {

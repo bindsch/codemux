@@ -9,7 +9,8 @@ import {
 } from "../claude-project-config.js";
 import { ExperimentBridge } from "../experiment-bridge.js";
 import { readExperimentRunSpec } from "../experiment-mcp.js";
-import { getPlaywrightSandboxMcpArgs } from "../mcp.js";
+import { buildPlaywrightSandboxMcp } from "../mcp.js";
+import type { ExecutableCheck } from "../executable-security.js";
 import { appendDiagnostic, claudeFamilyResult } from "../result-envelope.js";
 import { claudeFamilyPlainResult } from "../plain-unwrap.js";
 import {
@@ -323,10 +324,16 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
       cmd.push("--add-dir", dir);
     }
 
-    cmd.push(...getPlaywrightSandboxMcpArgs(request.sandboxed, {
+    // The Playwright binary's trust check rides the context (review round
+    // 110): its path is embedded in the --mcp-config JSON argument, where
+    // the spawn's command re-check cannot see it, so the launcher re-stats
+    // it through the recorded check instead.
+    const playwright = buildPlaywrightSandboxMcp(request.sandboxed, {
       enabled: request.enablePlaywrightMcp,
       forbiddenRoot: request.cwd ?? process.cwd(),
-    }));
+    });
+    cmd.push(...playwright.args);
+    if (context !== undefined) context.playwrightMcpCheck = playwright.check;
 
     // With an override the model is always explicit — the request's or the
     // override's — because the binary's default model is a subscription
@@ -414,7 +421,8 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
     effort?: ReasoningEffort,
     sandboxed?: boolean,
     enablePlaywrightMcp?: boolean,
-    cwd?: string
+    cwd?: string,
+    nestedChecks?: ExecutableCheck[]
   ): string[] {
     // The TUI's default launch carries --safe-mode: the same every-
     // customization-off baseline as a hermetic run (see buildRunCommand),
@@ -425,10 +433,12 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
     const cmd = enablePlaywrightMcp
       ? ["claude", "--setting-sources", "user", "--strict-mcp-config"]
       : ["claude", "--safe-mode"];
-    cmd.push(...getPlaywrightSandboxMcpArgs(sandboxed, {
+    const playwright = buildPlaywrightSandboxMcp(sandboxed, {
       enabled: enablePlaywrightMcp,
       forbiddenRoot: cwd ?? process.cwd(),
-    }));
+    });
+    cmd.push(...playwright.args);
+    if (playwright.check !== null) nestedChecks?.push(playwright.check);
     // The override's model fallback, same as buildRunCommand: an override
     // launch never runs the binary's default model, and the picker
     // mapping rides with it (modelFlags) for the same catalog reason.

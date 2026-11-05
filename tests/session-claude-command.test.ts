@@ -15,6 +15,7 @@ import {
   claudeSessionAutonomyFlags,
 } from "../src/session/claude-session.js";
 import { claudeAutonomyFlags, grantRule } from "../src/claude-autonomy.js";
+import { assertExecutablesUnchanged } from "../src/executable-security.js";
 import { claudeProviderPickerSettings } from "../src/claude-family.js";
 import { HARNESS_CONTRACTS, compareVersions } from "../src/harness-compatibility.js";
 import { FLOOR_ID } from "./helpers/session-claude.js";
@@ -210,6 +211,48 @@ describe("buildClaudeSessionCommand", () => {
         sandboxed: true,
       }).argv
     ).not.toContain("--mcp-config");
+  });
+
+  test("the Playwright MCP build returns its own trust check for the spawn's re-stat (review round 110)", () => {
+    // The binary's path sits inside the --mcp-config JSON argument, where
+    // the command re-check cannot see it; the spawn re-stats it through
+    // the returned check (session/cli.ts hands it to spawnSessionChild).
+    const dir = mkdtempSync(join(tmpdir(), "codemux-session-mcp-check-"));
+    const binaryPath = join(dir, "playwright-mcp");
+    writeFileSync(binaryPath, "#!/bin/sh\nexit 0\n");
+    chmodSync(binaryPath, 0o755);
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${dir}:${originalPath ?? ""}`;
+    try {
+      const { playwrightMcpCheck } = buildClaudeSessionCommand({
+        agent: "claude",
+        autonomy: "read-only",
+        cwd: process.cwd(),
+        sandboxed: true,
+        enablePlaywrightMcp: true,
+      });
+      expect(playwrightMcpCheck).not.toBeNull();
+      expect(playwrightMcpCheck!.path).toBe(realpathSync(binaryPath));
+      // Replaced after the build: a re-stat through the check refuses.
+      rmSync(binaryPath);
+      writeFileSync(binaryPath, "#!/bin/sh\nexit 0\n");
+      chmodSync(binaryPath, 0o755);
+      expect(() =>
+        assertExecutablesUnchanged([], "session command", undefined, [playwrightMcpCheck!])
+      ).toThrow("session command executable changed after its trust check");
+    } finally {
+      process.env.PATH = originalPath;
+      rmSync(dir, { recursive: true, force: true });
+    }
+    // No Playwright arguments: no check.
+    expect(
+      buildClaudeSessionCommand({
+        agent: "claude",
+        autonomy: "read-only",
+        cwd: "/tmp/launch",
+        sandboxed: true,
+      }).playwrightMcpCheck
+    ).toBeNull();
   });
 
   test("the providerSettings payload rides --settings right after the model it describes", () => {

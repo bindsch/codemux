@@ -297,7 +297,10 @@ rejects substituted `updated_input`, which its wire cannot carry.
 or fatal failure also ends the session. Pending turns receive a completion
 when possible, and `session_ended` is the final event. Turn-per-process
 agents drain a child still being spawned on orderly shutdown; a hard end
-stops it when it arrives. Grace expiry can kill the child and therefore
+stops it when it arrives. That wait is bounded by the stop grace for every
+end (review round 110): a spawn that outlasts it fails the session, and
+that spawn refuses to create its process when it resumes, so no child
+starts after the CLI's run cleanup. Grace expiry can kill the child and therefore
 make an otherwise requested shutdown fail.
 
 | Exit | Meaning |

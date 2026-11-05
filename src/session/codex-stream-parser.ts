@@ -4,8 +4,7 @@
  * lifecycle.
  */
 
-import { normalizeCodexTokenUsage, type RequestId } from "./codex-protocol-builders.js";
-import { MAX_ID_CHARS } from "./protocol.js";
+import { isAcceptableRequestId, normalizeCodexTokenUsage } from "./codex-protocol-builders.js";
 import { CODEX_APPROVAL_METHODS, fileChangePaths } from "./codex-session-approvals.js";
 import { bufferable, CODEX_THREAD_ID_PATTERN, isRecord, PARSE_BUFFER_MAX_BYTES, PARSE_BUFFER_MAX_LINES, type PendingParse } from "./codex-parse-facts.js";
 import { unusableFacts } from "./process.js";
@@ -104,9 +103,10 @@ export class CodexStreamParser {
       return this.classifyNotification(frame, method, context);
     }
     if (frame["id"] !== undefined) {
-      const id = frame["id"] as RequestId;
-      if (typeof id !== "number" && typeof id !== "string") {
-        return [{ kind: "grammar_error", message: "a response carries a non-scalar id" }];
+      const id = frame["id"];
+      if (!isAcceptableRequestId(id)) {
+        return [{ kind: "grammar_error",
+          message: "a response carries an id that is not a bounded string or a safe integer" }];
       }
       const error = frame["error"];
       if (isRecord(error)) {
@@ -133,12 +133,10 @@ export class CodexStreamParser {
     method: string,
     context: CodexParseContext
   ): CodexParse[] {
-    const id = frame["id"] as RequestId;
-    if (typeof id !== "number" && typeof id !== "string") {
-      return [{ kind: "grammar_error", message: `server request ${method} carries a non-scalar id` }];
-    }
-    if (typeof id === "string" && (id.length === 0 || id.length > MAX_ID_CHARS || id.includes("\0"))) {
-      return [{ kind: "grammar_error", message: `server request ${method} carries an id outside the bound` }];
+    const id = frame["id"];
+    if (!isAcceptableRequestId(id)) {
+      return [{ kind: "grammar_error",
+        message: `server request ${method} carries an id that is not a bounded string or a safe integer` }];
     }
     const kindOfApproval = CODEX_APPROVAL_METHODS[method];
     if (kindOfApproval === undefined) {

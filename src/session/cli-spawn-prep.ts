@@ -16,6 +16,7 @@ import { withKeepEnvExemption, type SandboxOptions } from "../sandbox.js";
 import { escapeArgvForPrint } from "../usage-protocol.js";
 import type { SessionEnvironmentBuilder } from "./cli-launch.js";
 import type { SessionCommandOptions } from "./cli-request.js";
+import type { ClaudeSessionBuilt } from "./claude-session/builders.js";
 import { usageError } from "./cli-usage.js";
 import { resolveSessionSandboxSpawn } from "./spawn.js";
 import type { AgentId, AutonomyLevel, ReasoningEffort, RunRequest } from "../types.js";
@@ -52,7 +53,7 @@ export async function prepareSessionChild({
   workdir: string;
   requestedAutonomy: AutonomyLevel;
   sandboxOptions: SandboxOptions | undefined;
-  claudeBuilt: { argv: string[]; sessionId: string } | null;
+  claudeBuilt: ClaudeSessionBuilt | null;
   codexSessionHome: CodexSessionProviderHome | null;
   sessionProjectDir: ProjectSettingsSessionDir | null;
   turnPerProcess: boolean;

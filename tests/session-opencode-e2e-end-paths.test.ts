@@ -6,6 +6,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import { readRegistry } from "../src/session/registry.js";
 import {
   cleanups,
   fakeRecord,
@@ -220,6 +221,66 @@ describe("opencode session e2e - end paths", () => {
     // (The kill can land before the fake's startup line records argv, so
     // the argv record itself is not asserted here.)
     expect(session.order).toEqual(["spawned", "settled", "done"]);
+  });
+
+  test("a stalled turn spawn cannot stretch a timeout end past the grace (review round 110)", async () => {
+    // The spawn closure stalls — the gate never opens while the end
+    // runs. Pre-round-110 finish awaited the in-flight spawn with no
+    // bound, so the timeout end could never emit session_ended, release
+    // the registry, or resolve run. Now the wait is bounded by the same
+    // grace that bounds the stop: the give-up is fatal, the open turn's
+    // synthesis answers failed, and a child landing after the give-up is
+    // the hold's to stop — the CLI awaits that hold before the cleanup
+    // that deletes the turn's provider config (review D5).
+    let openGate: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    // A resumed id, so the record exists from run start (a fresh session
+    // records only on its first run-output line, which a stalled spawn
+    // never produces).
+    const session = await startSession(
+      { resumeSessionId: "ses_stall000001", sessionTimeoutMs: 100, spawnGraceMs: 300 },
+      {},
+      0,
+      gate
+    );
+    send(session.driver, { type: "user", text: "scenario:basic one" });
+    await waitFor(session.events, of("turn_started"), "turn_started");
+    const startedAt = Date.now();
+
+    const completed = await waitFor(
+      session.events,
+      of("turn_completed"),
+      "the synthesized turn_completed"
+    );
+    expect(completed.turn_id).toBe("t1");
+    expect(completed.finish).toBe("failed");
+    expect(completed.reason).toContain("never appeared within the 300 ms end grace");
+    const ended = session.events[session.events.length - 1] as Event;
+    expect(ended.type).toBe("session_ended");
+    expect(ended.reason).toBe("timeout");
+    expect(ended.exit_code).toBe(1);
+    expect(await session.code).toBe(1);
+    // Bounded: the whole end landed well inside the default 10 s grace.
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+    // The registry record the resumed session wrote at run start was
+    // released — the end stamp a later --resume reads.
+    const registry = readRegistry(session.options.registryPath as string);
+    expect(registry.outcome).toBe("ok");
+    const entry =
+      registry.outcome === "ok"
+        ? registry.file.sessions.find((candidate) => candidate.id === "ses_stall000001")
+        : undefined;
+    expect(entry?.ended).not.toBe(null);
+    // The child landed after the give-up and was stopped: the hold
+    // settles it before it resolves, and run had already resolved.
+    openGate();
+    await session.driver.awaitAbandonedSpawn();
+    for (let i = 0; i < 500 && !session.order.includes("settled"); i += 1) {
+      await Bun.sleep(10);
+    }
+    expect(session.order).toEqual(["done", "spawned", "settled"]);
   });
 
   test("a stdin close while the turn's spawn is still in flight runs that turn to completion (review D11, correctness 2 1)", async () => {

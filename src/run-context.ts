@@ -1,5 +1,6 @@
 import type { HermeticHome } from "./hermetic-home.js";
 import type { StdoutSink } from "./process-runner.js";
+import type { ExecutableCheck } from "./executable-security.js";
 import type { ExperimentBridge } from "./experiment-bridge.js";
 import type { ExperimentCodexRun } from "./experiment-codex-run.js";
 import type { ExperimentKimiRun } from "./experiment-kimi-run.js";
@@ -134,4 +135,13 @@ export interface RunContext {
    * streamed and whole-capture paths cannot disagree.
    */
   stdoutSink?: StdoutSink;
+  /**
+   * Claude/Z.AI: this run's Playwright MCP executable check, recorded by
+   * buildRunCommand when it trust-checked the binary and embedded it in
+   * the `--mcp-config` JSON argument (review round 110). That path sits
+   * inside one argument, so the command re-check never sees it; the
+   * launcher hands this check to the spawn's re-stat instead. Null or
+   * absent when the run built no Playwright arguments.
+   */
+  playwrightMcpCheck?: ExecutableCheck | null;
 }

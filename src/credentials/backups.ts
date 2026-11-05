@@ -7,13 +7,14 @@ import {
   chmodSync,
   mkdirSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
   lstatSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 
 import { readUtf8FileBounded } from "../file-io.js";
 import { carriesRefreshToken, claudeOauthObject } from "./oauth.js";
@@ -140,19 +141,58 @@ let backupSequence = 0;
  * succeeded (see `pruneOlderBackups`). The operator is told where it is
  * and may delete it once the login is known good. An empty `backupDir`
  * means there is no safe place: the backup fails, and with it the scrub. */
+/** Build `dir` as a chain of real directories, walked from the filesystem
+ * root one component at a time: an existing component must be a real
+ * directory, a missing one is created by a non-recursive mkdir (0o700) and
+ * looked at again. A symbolic link refuses the backup wherever it sits —
+ * below a missing component, or above components that already exist
+ * (review round 111; round 110 walked only from the nearest existing
+ * ancestor, and round 51 looked at the final component alone). The one
+ * link accepted is a link root owns, such as macOS's `/var` and `/tmp`:
+ * a process running as an unprivileged operator, a sandboxed child
+ * included, cannot create one. The walk continues from that link's real
+ * path, and the finished chain must resolve to exactly where it ended. */
+function createPrivateDirectory(dir: string): boolean {
+  try {
+    if (!isAbsolute(dir)) return false;
+    const absolute = resolve(dir);
+    let current = parse(absolute).root;
+    for (const part of absolute.slice(current.length).split(sep)) {
+      if (part === "") continue;
+      const candidate = join(current, part);
+      if (lstatSync(candidate, { throwIfNoEntry: false }) === undefined) {
+        mkdirSync(candidate, { mode: 0o700 }); // never recursive: nothing below is followed
+        chmodSync(candidate, 0o700); // the mode is stated whatever the umask is
+      }
+      // What is on disk now decides: a link or a file that won a race for
+      // the name is refused exactly as one that was there before.
+      const entry = lstatSync(candidate);
+      if (entry.isSymbolicLink()) {
+        if (entry.uid !== 0) return false;
+        current = realpathSync(candidate);
+        if (!lstatSync(current).isDirectory()) return false;
+        continue;
+      }
+      if (!entry.isDirectory()) return false;
+      current = candidate;
+    }
+    chmodSync(current, 0o700); // an existing final directory is tightened too
+    return realpathSync(dir) === current;
+  } catch {
+    return false;
+  }
+}
+
 function backupCredential(backupDir: string, current: string): string | null {
   if (backupDir === "") return null;
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   backupSequence += 1;
   const backup = join(backupDir, `credentials-${stamp}-${process.pid}-${backupSequence}.json`);
+  // A redirected path anywhere in the chain gets no backup and no
+  // permission change: following it would write the refresh-token copy
+  // wherever it points.
+  if (!createPrivateDirectory(backupDir)) return null;
   try {
-    // A redirected path (a symlink, or a file where the directory should
-    // be) gets no backup and no permission change: following it would
-    // write the refresh-token copy wherever it points (review round 51).
-    const existing = lstatSync(backupDir, { throwIfNoEntry: false });
-    if (existing !== undefined && (existing.isSymbolicLink() || !existing.isDirectory())) return null;
-    mkdirSync(backupDir, { recursive: true, mode: 0o700 });
-    chmodSync(backupDir, 0o700); // an existing directory is tightened too
     writeFileSync(backup, current.endsWith("\n") ? current : `${current}\n`, { flag: "wx", mode: 0o600 });
     return backup;
   } catch {

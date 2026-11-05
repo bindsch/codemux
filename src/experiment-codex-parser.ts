@@ -3,6 +3,7 @@ import { calendarValid } from "./calendar.js";
 import { object } from "./experiment-codex-content.js";
 import { assertCodexToolDefinition } from "./experiment-codex-catalog.js";
 import { CodexTopLevelInventory, isCodexResourceCall } from "./experiment-codex-inventory.js";
+import { codexNativeToolName } from "./experiment-codex-resource.js";
 import { sanitizeCodexToolName as sanitize } from "./experiment-tool-names.js";
 import { ExperimentFailure, ExperimentFailureCode as Code, turnRecord, turnUsageRecord, turnCallRecord, toolResultDeliveredRecord,
   type ExperimentRecord, type ExperimentUsage } from "./experiment-records.js";
@@ -179,10 +180,7 @@ export class CodexRolloutParser {
           payload.output.every((part: unknown) => object(part)?.type === "input_text" && typeof object(part)?.text === "string")
           ? payload.output.map((part: JsonObject) => part.text).join("") : undefined;
         const prefix = call.item.type === "custom_tool_call" ? "unsupported custom tool call: " : "unsupported call: ";
-        // ToolName::Display drops the default namespace and concatenates other namespaces.
-        const namespace = call.item.namespace;
-        const nativeName = namespace && namespace !== "functions" ? namespace + call.item.name : call.item.name;
-        if (text !== prefix + nativeName) this.refuseTool(call.item);
+        if (text !== prefix + codexNativeToolName(call.item)) this.refuseTool(call.item);
         this.record("model_tool_error", { call_id: call.callId, name: call.name, input: call.input, harness_output: payload.output });
       }
       call.output = { value: payload.output, item: payload };

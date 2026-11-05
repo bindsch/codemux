@@ -151,6 +151,18 @@ describe("codex session - method allowlist and builders", () => {
     ).toEqual({ id: 7, error: { code: -32601, message: "codemux does not implement fs/readFileText" } });
   });
 
+  test("a response builder refuses an id serialization would corrupt (review round 110)", () => {
+    // JSON.stringify turns Infinity and NaN into null and rounds unsafe
+    // integers, so echoing such an id would answer the wrong request; the
+    // builders refuse instead of corrupting the wire.
+    for (const id of [1e400, 1.5, 1e21, 9007199254740992, -0, Number.NaN]) {
+      expect(() => buildJsonRpcResponse(id as never, {})).toThrow("safe integer");
+      expect(() => buildJsonRpcErrorResponse(id as never, -1, "nope")).toThrow("safe integer");
+    }
+    expect(parseJson(buildJsonRpcResponse(0, {}))).toEqual({ id: 0, result: {} });
+    expect(parseJson(buildJsonRpcResponse(-7, {}))).toEqual({ id: -7, result: {} });
+  });
+
   test("thread/start carries cwd, the policy pair, and exactly the AGENTS.md-skip config", () => {
     // Review live3, security 2: the config object is the project-doc
     // (AGENTS.md) skip and NOTHING else — toEqual pins the exact key set.

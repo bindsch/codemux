@@ -215,6 +215,59 @@ test.each([
   ]);
 });
 
+test("a rollout resource builtin call missing from the exec stream fails verification (review round 110)", () => {
+  // One completed list_mcp_resources call in the rollout: the exec stream
+  // either reports its MCP completion or verification refuses, counting
+  // what is missing — the same refusal the relay-calls check issues. The
+  // one exemption is the harness's own unsupported-call refusal as the
+  // call's whole output: nothing executed, so no completion can exist
+  // (the saved-rollout shape the task-t suite pins).
+  const writeRollout = (output: string): ReturnType<typeof homeFixture> => {
+    const fixture = homeFixture();
+    const input = { server: "experiment" };
+    appendFileSync(fixture.rollout, [world(), codexCatalog(["lookup"]), line("response_item", { type: "function_call",
+      namespace: "functions", name: "list_mcp_resources", id: "fc-resource", call_id: "call-resource", arguments: JSON.stringify(input) }),
+    line("response_item", { type: "function_call_output", call_id: "call-resource", output }),
+    line("event_msg", { type: "token_count", info: { last_token_usage: USAGE } })]
+      .map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    return fixture;
+  };
+  const evidenceOver = () => {
+    const evidence = new ExperimentCodexEvidence({ spec: { name: "experiment", accept_harness_prefix: ["codex-wall-time"] },
+      toolNames: new Set(["lookup"]), toolDefinitions: codexDefinitions(["lookup"]), calls: [],
+      record: () => {} });
+    evidence.accept({ type: "thread.started", thread_id: THREAD });
+    return evidence;
+  };
+  const missing = writeRollout(JSON.stringify({ server: "experiment", resources: [] }));
+  expect(() => evidenceOver().finish(missing.home)).toThrow(expect.objectContaining({
+    code: Code.HarnessLogMissing, message: "Missing Codex exec MCP results for 1 resource builtin calls" }));
+  // A near-miss refusal spelling is still missing evidence: the text is
+  // pinned, not prefix-matched.
+  const nearMiss = writeRollout("unsupported call: functions.list_mcp_resources ");
+  expect(() => evidenceOver().finish(nearMiss.home)).toThrow(expect.objectContaining({
+    code: Code.HarnessLogMissing, message: "Missing Codex exec MCP results for 1 resource builtin calls" }));
+  const refused = writeRollout("unsupported call: functions.list_mcp_resources");
+  expect(() => evidenceOver().finish(refused.home)).not.toThrow();
+  // The spelling Codex itself prints drops the default `functions`
+  // namespace (review round 112): the real refusal is exempt too, and a
+  // near miss of it is not.
+  const native = writeRollout("unsupported call: list_mcp_resources");
+  expect(() => evidenceOver().finish(native.home)).not.toThrow();
+  for (const text of ["unsupported call: list_mcp_resource", "unsupported custom tool call: list_mcp_resources",
+    "unsupported call: functionslist_mcp_resources"]) {
+    const other = writeRollout(text);
+    expect(() => evidenceOver().finish(other.home)).toThrow(expect.objectContaining({ code: Code.HarnessLogMissing }));
+  }
+  const present = writeRollout(JSON.stringify({ server: "experiment", resources: [] }));
+  const complete = evidenceOver();
+  complete.accept({ type: "item.completed", item: { type: "mcp_tool_call", id: "item-0", server: "experiment",
+    tool: "list_mcp_resources", arguments: { server: "experiment" }, status: "completed",
+    result: { content: [{ type: "text", text: JSON.stringify({ server: "experiment", resources: [] }) }], structured_content: null },
+    error: null } });
+  expect(() => complete.finish(present.home)).not.toThrow();
+});
+
 test.each(["pass", "leak", "missing"])(
   "Codex blocks metadata-based first dispatch until inventory passes: %s", async (mode) => {
     const { home, rollout } = homeFixture();

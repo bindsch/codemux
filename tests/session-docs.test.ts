@@ -106,7 +106,7 @@ describe("session lifecycle source invariants", () => {
 
   test("Aider revalidates history before spawning each turn", () => {
     before("src/session/aider-driver.ts",
-      "assertAiderHistoryForTurn(this.options.historyPath)", "this.options.spawnTurn(argv)");
+      "assertAiderHistoryForTurn(this.options.historyPath)", "this.options.spawnTurn(argv,");
   });
 
   test("Codex settles provider state before releasing registry ownership", () => {

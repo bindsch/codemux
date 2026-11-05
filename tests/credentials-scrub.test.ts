@@ -10,6 +10,10 @@ import { join } from "node:path";
 import { syncKeychainCredential } from "../src/credentials.js";
 import { BACKUPS, FUTURE, LATER, SECRET, errors, gives, missing, withTarget } from "./helpers/credentials.js";
 
+/** Root may own every link it creates, and the backup walk accepts a link
+ * root owns (a system alias), so the link refusals prove nothing as root. */
+const RUNS_AS_ROOT = typeof process.getuid === "function" && process.getuid() === 0;
+
 const SAVED = ["CODEMUX_NO_KEYCHAIN_SYNC", "USER"] as const;
 const saved = new Map<string, string | undefined>();
 beforeEach(() => {
@@ -90,7 +94,7 @@ describe("syncKeychainCredential — a mirror of an existing file", () => {
     }, JSON.stringify({ claudeAiOauth: { accessToken: "a", refreshToken: "" } }));
   });
 
-  test("a redirected backup directory gets no backup and no permission change, and the scrub fails closed (review round 51)", () => {
+  test.skipIf(RUNS_AS_ROOT)("a redirected backup directory gets no backup and no permission change, and the scrub fails closed (review round 51)", () => {
     const leaked = JSON.stringify({ claudeAiOauth: { accessToken: "old", refreshToken: "KEEP-ME" } });
     withTarget((target, dir) => {
       const fs = require("node:fs") as typeof import("node:fs");
@@ -105,6 +109,74 @@ describe("syncKeychainCredential — a mirror of an existing file", () => {
       expect(fs.readdirSync(elsewhere)).toEqual([]);
       expect(fs.statSync(elsewhere).mode & 0o777).toBe(0o755);
       expect(readFileSync(target, "utf8")).toContain("KEEP-ME");
+    }, leaked);
+  });
+
+  test.skipIf(RUNS_AS_ROOT)("a missing backup directory with a symlinked ancestor is refused: nothing is written through the link (review round 110)", () => {
+    // Round 51 checked the final component only; a symlink higher in the
+    // chain let the recursive mkdir follow it and put the refresh-token
+    // copy where a sandboxed child can read it.
+    const leaked = JSON.stringify({ claudeAiOauth: { accessToken: "old", refreshToken: "KEEP-ME" } });
+    const fs = require("node:fs") as typeof import("node:fs");
+    // The symlink directly above the missing final component.
+    withTarget((target, dir) => {
+      const elsewhere = join(dir, "elsewhere");
+      fs.mkdirSync(elsewhere, { mode: 0o755 });
+      fs.symlinkSync(elsewhere, join(dir, "link"));
+      expect(syncKeychainCredential("svc", target, gives(SECRET), { backupDir: join(dir, "link", "inner") })).toBe("unsafe");
+      expect(fs.readdirSync(elsewhere)).toEqual([]);
+      expect(fs.statSync(elsewhere).mode & 0o777).toBe(0o755);
+      expect(readFileSync(target, "utf8")).toContain("KEEP-ME");
+    }, leaked);
+    // The symlink deeper in the chain, below a real directory.
+    withTarget((target, dir) => {
+      const elsewhere = join(dir, "elsewhere");
+      fs.mkdirSync(elsewhere, { mode: 0o755 });
+      fs.mkdirSync(join(dir, "real"), { mode: 0o700 });
+      fs.symlinkSync(elsewhere, join(dir, "real", "link"));
+      expect(syncKeychainCredential("svc", target, gives(SECRET), { backupDir: join(dir, "real", "link", "b") })).toBe("unsafe");
+      expect(fs.readdirSync(elsewhere)).toEqual([]);
+      expect(readFileSync(target, "utf8")).toContain("KEEP-ME");
+    }, leaked);
+  });
+
+  test.skipIf(RUNS_AS_ROOT)("a symlinked ancestor above components that already exist is refused too (review round 111)", () => {
+    // Round 110's walk began at the nearest existing ancestor, and lstat of
+    // `link/existing` follows `link`: the redirected directory read as a
+    // plain one and the refresh-token copy landed inside the link's target.
+    const leaked = JSON.stringify({ claudeAiOauth: { accessToken: "old", refreshToken: "KEEP-ME" } });
+    const fs = require("node:fs") as typeof import("node:fs");
+    for (const tail of [["existing", "new"], ["existing"]]) {
+      withTarget((target, dir) => {
+        const elsewhere = join(dir, "elsewhere");
+        fs.mkdirSync(join(elsewhere, "existing"), { recursive: true, mode: 0o755 });
+        fs.symlinkSync(elsewhere, join(dir, "link"));
+        expect(syncKeychainCredential("svc", target, gives(SECRET), { backupDir: join(dir, "link", ...tail) })).toBe("unsafe");
+        expect(fs.readdirSync(join(elsewhere, "existing"))).toEqual([]);
+        expect(fs.statSync(join(elsewhere, "existing")).mode & 0o777).toBe(0o755);
+        expect(readFileSync(target, "utf8")).toContain("KEEP-ME");
+      }, leaked);
+    }
+  });
+
+  test("a relative backup directory is refused", () => {
+    const leaked = JSON.stringify({ claudeAiOauth: { accessToken: "old", refreshToken: "KEEP-ME" } });
+    withTarget((target) => {
+      expect(syncKeychainCredential("svc", target, gives(SECRET), { backupDir: "relative-backups" })).toBe("unsafe");
+      expect(readFileSync(target, "utf8")).toContain("KEEP-ME");
+    }, leaked);
+  });
+
+  test("a missing backup directory with missing ancestors is created one component at a time (review round 110)", () => {
+    const leaked = JSON.stringify({ claudeAiOauth: { accessToken: "old", refreshToken: "KEEP-ME" } });
+    withTarget((target, dir) => {
+      expect(syncKeychainCredential("svc", target, gives(SECRET), { backupDir: join(dir, "one", "two") })).toBe("synced");
+      expect(statSync(join(dir, "one")).mode & 0o777).toBe(0o700);
+      expect(statSync(join(dir, "one", "two")).mode & 0o777).toBe(0o700);
+      const backups = readdirSync(join(dir, "one", "two"));
+      expect(backups).toHaveLength(1);
+      expect(statSync(join(dir, "one", "two", backups[0]!)).mode & 0o777).toBe(0o600);
+      expect(readFileSync(target, "utf8")).not.toContain("KEEP-ME");
     }, leaked);
   });
 

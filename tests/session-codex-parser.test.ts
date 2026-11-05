@@ -56,7 +56,10 @@ describe("codex session - stream parser", () => {
     const { parser: p, ctx } = parser();
     expect(p.feed(JSON.stringify({ hello: "world" }), ctx)).toEqual([{ kind: "unknown" }]);
     expect(p.feed(JSON.stringify({ id: { nested: true }, result: 1 }), ctx)).toEqual([
-      { kind: "grammar_error", message: "a response carries a non-scalar id" },
+      {
+        kind: "grammar_error",
+        message: "a response carries an id that is not a bounded string or a safe integer",
+      },
     ]);
   });
 

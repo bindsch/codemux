@@ -5,7 +5,8 @@ import { isAbsolute, join } from "node:path";
 import { BaseAdapter, type RunContext } from "./base.js";
 import { ExperimentBridge } from "../experiment-bridge.js";
 import { readExperimentRunSpec } from "../experiment-mcp.js";
-import { getPlaywrightSandboxMcpArgs } from "../mcp.js";
+import { buildPlaywrightSandboxMcp } from "../mcp.js";
+import type { ExecutableCheck } from "../executable-security.js";
 import {
   claudeAutonomyFlags,
   claudeNativeAutonomyFlags,
@@ -345,10 +346,16 @@ export class ZaiAdapter extends BaseAdapter {
     for (const dir of instructionDirs) {
       cmd.push("--add-dir", dir);
     }
-    cmd.push(...getPlaywrightSandboxMcpArgs(request.sandboxed, {
+    // The Playwright binary's trust check rides the context (review round
+    // 110): its path is embedded in the --mcp-config JSON argument, where
+    // the spawn's command re-check cannot see it, so the launcher re-stats
+    // it through the recorded check instead.
+    const playwright = buildPlaywrightSandboxMcp(request.sandboxed, {
       enabled: request.enablePlaywrightMcp,
       forbiddenRoot: request.cwd ?? process.cwd(),
-    }));
+    });
+    cmd.push(...playwright.args);
+    if (context !== undefined) context.playwrightMcpCheck = playwright.check;
     // Non-catalog ids (glm-5.3, glm-4.5-air — the clerk/worker/judge
     // tiers) need the picker --settings or the 2.1.280+ catalog check
     // rejects them client-side (claude-family.ts); the default `opus`
@@ -417,7 +424,8 @@ export class ZaiAdapter extends BaseAdapter {
     effort?: ReasoningEffort,
     sandboxed?: boolean,
     enablePlaywrightMcp?: boolean,
-    cwd?: string
+    cwd?: string,
+    nestedChecks?: ExecutableCheck[]
   ): string[] {
     // The TUI's default launch carries --safe-mode, the same every-
     // customization-off baseline as a hermetic run (claude.ts's
@@ -427,10 +435,12 @@ export class ZaiAdapter extends BaseAdapter {
     const cmd = enablePlaywrightMcp
       ? ["claude", "--setting-sources", "user", "--strict-mcp-config"]
       : ["claude", "--safe-mode"];
-    cmd.push(...getPlaywrightSandboxMcpArgs(sandboxed, {
+    const playwright = buildPlaywrightSandboxMcp(sandboxed, {
       enabled: enablePlaywrightMcp,
       forbiddenRoot: cwd ?? process.cwd(),
-    }));
+    });
+    cmd.push(...playwright.args);
+    if (playwright.check !== null) nestedChecks?.push(playwright.check);
     // Same rule as the run path: a non-catalog model id rides the picker
     // --settings (claude-family.ts) or the binary rejects it before any
     // request.

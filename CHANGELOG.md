@@ -125,6 +125,17 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 110, whole tree: credential backups walk the backup directory from the filesystem root one component
+  at a time, so a symbolic link anywhere in the path is refused (only a link owned by root, such as macOS's `/var`,
+  is accepted) and the refresh-token copy is never written through a link; the opencode and aider end paths bound
+  their wait on an in-flight turn spawn by the stop grace, so a stalled spawn can no longer keep session_ended, the
+  registry release, and run() from resolving, and a spawn given up on refuses to create its process when it
+  resumes, so no child starts after the CLI's run cleanup; JSON-RPC ids that are not bounded strings or safe integers
+  are rejected instead of colliding on a corrupted serialization; experiment verification fails when a rollout
+  resource call has no exec-stream completion; the Playwright MCP binary embedded in `--mcp-config` is re-stat
+  checked immediately before the spawn, against the identity the command build resolved; and a malformed agy
+  template lock is taken over once it ages past the stale window instead of blocking every later launch for 60
+  seconds, while a lock path that is not a regular file fails the launch at once.
 - Review round 108, whole tree: a session output sink that settles after the final flush was abandoned no longer
   changes the queue's accounting (pending bytes went negative) or reports a late sink failure as a new fatal end; the
   doctor's credential store readers open the file once without blocking and check type and size on the descriptor, so

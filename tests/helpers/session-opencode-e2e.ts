@@ -49,11 +49,14 @@ export function workRoot(): string {
  * the CLI's closure spawns one `opencode run` per caller input. A nonzero
  * spawnDelayMs holds the spawn in flight first — the review D5 late-child
  * window, where the end path begins while the turn's process has not
- * landed yet. */
+ * landed yet. A spawnGate holds it until the test opens the gate — the
+ * review round 110 stalled-spawn window, where the end path gives up on
+ * the child entirely. */
 export async function startSession(
   overrides: Partial<OpenCodeDriverOptions> = {},
   extraEnv: Record<string, string> = {},
-  spawnDelayMs = 0
+  spawnDelayMs = 0,
+  spawnGate?: Promise<unknown>
 ): Promise<Session> {
   const dir = mkdtempSync(join(workRoot(), "s-"));
   const workDir = join(dir, "work");
@@ -83,6 +86,7 @@ export async function startSession(
     providerBaseUrl: null,
     spawnTurn: async (argv) => {
       if (spawnDelayMs > 0) await Bun.sleep(spawnDelayMs);
+      if (spawnGate !== undefined) await spawnGate;
       // The fake replaces the binary name and keeps every flag, so the
       // recorded argv is the argv the driver built.
       const proc = new SessionProcess({

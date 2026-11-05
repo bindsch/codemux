@@ -8,7 +8,8 @@
 import { randomUUID } from "node:crypto";
 import { claudeAutonomyFlags, claudeNativeAutonomyFlags, grantRule } from "../../claude-autonomy.js";
 import { PROJECT_SETTING_SOURCES } from "../../claude-project-settings.js";
-import { getPlaywrightSandboxMcpArgs } from "../../mcp.js";
+import { buildPlaywrightSandboxMcp } from "../../mcp.js";
+import type { ExecutableCheck } from "../../executable-security.js";
 import type { AutonomyLevel, ReasoningEffort } from "../../types.js";
 import type { SessionCapabilities } from "../protocol.js";
 
@@ -88,9 +89,21 @@ export function claudeSessionAutonomyFlags(
  * (`--safe-mode` would ignore the project's rules — the thing that mode
  * exists to observe).
  */
+/** What buildClaudeSessionCommand leaves for the spawn site: the argv and
+ * the session id, plus this build's trust check of the Playwright MCP
+ * binary the argv may embed (review round 110). That path sits inside the
+ * `--mcp-config` JSON argument, so the command re-check never sees it;
+ * the spawn site re-stats it through this check instead. Null when the
+ * argv carries no Playwright arguments. */
+export interface ClaudeSessionBuilt {
+  argv: string[];
+  sessionId: string;
+  playwrightMcpCheck: ExecutableCheck | null;
+}
+
 export function buildClaudeSessionCommand(
   command: ClaudeSessionCommand
-): { argv: string[]; sessionId: string } {
+): ClaudeSessionBuilt {
   const sessionId = command.resumeId ?? command.sessionId ?? randomUUID();
   // The whole family spawns the same `claude` binary: the zai agent is
   // that binary pointed at the Z.AI endpoint through the adapter's env
@@ -129,13 +142,15 @@ export function buildClaudeSessionCommand(
   }
   // Run parity for --enable-playwright-mcp (§4.5): the same verified
   // carrier, in run's position — after the writable roots, before the
-  // model. Absent (not an error) unless sandboxed and enabled.
-  argv.push(
-    ...getPlaywrightSandboxMcpArgs(command.sandboxed, {
-      enabled: command.enablePlaywrightMcp,
-      forbiddenRoot: launchDir,
-    })
-  );
+  // model. Absent (not an error) unless sandboxed and enabled. The
+  // binary's trust check rides the return value (review round 110): its
+  // path sits inside the --mcp-config JSON argument, where the spawn's
+  // command re-check cannot see it.
+  const playwright = buildPlaywrightSandboxMcp(command.sandboxed, {
+    enabled: command.enablePlaywrightMcp,
+    forbiddenRoot: launchDir,
+  });
+  argv.push(...playwright.args);
   if (command.model !== undefined) {
     argv.push("--model", command.model);
   }
@@ -149,7 +164,7 @@ export function buildClaudeSessionCommand(
   if (command.effort !== undefined && command.effort !== "none") {
     argv.push("--effort", command.effort);
   }
-  return { argv, sessionId };
+  return { argv, sessionId, playwrightMcpCheck: playwright.check };
 }
 
 /** Capability flags for claude-family sessions (§4.3), pinned by the

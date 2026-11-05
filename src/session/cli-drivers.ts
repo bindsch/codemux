@@ -31,6 +31,7 @@ import type { SessionProcess } from "./process.js";
 import { spawnSessionChild } from "./spawn.js";
 import type { SessionEnvironmentBuilder } from "./cli-launch.js";
 import type { SessionCommandOptions } from "./cli-request.js";
+import type { ClaudeSessionBuilt } from "./claude-session/builders.js";
 import type { SessionDriver } from "./stdin-frame.js";
 
 export function createSessionDriver({
@@ -77,7 +78,7 @@ export function createSessionDriver({
   codexSessionHome: CodexSessionProviderHome | null;
   resumeId: string | undefined;
   claudeFamilyAgent: "claude" | "zai";
-  claudeBuilt: { argv: string[]; sessionId: string } | null;
+  claudeBuilt: ClaudeSessionBuilt | null;
   model: string | undefined;
   autonomy: AutonomyLevel;
   effort: ReasoningEffort | undefined;
@@ -158,7 +159,7 @@ export function createSessionDriver({
           { ...adapter.getEnv(), ...runEnv },
           override !== null
         );
-  const spawnTurn = (turnArgv: string[]): Promise<SessionProcess> => {
+  const spawnTurn = (turnArgv: string[], abandoned?: () => boolean): Promise<SessionProcess> => {
     // Re-run the adapter's validation gate before EVERY turn
     // (review D2, security 1): the turn-per-process agents (opencode,
     // aider, kimi) reload project config in each fresh process, and turn N
@@ -217,6 +218,7 @@ export function createSessionDriver({
       sandboxOptions: turnState.launch.sandboxOptions,
       graceMs: shutdownGraceMs,
       envOmissions: adapter.getEnvOmissions(),
+      abandoned,
     }, {
       onLine: (line) => driver.handleHarnessLine(line),
       onFatal: (fatal) => driver.handleFatal(fatal),
@@ -299,6 +301,9 @@ export function createSessionDriver({
       harnessHome,
       providerBaseUrl,
       spawnTurn,
+      // The end path's bound on an in-flight turn spawn (review round
+      // 110): the same --shutdown-grace that bounds the stop.
+      spawnGraceMs: shutdownGraceMs,
     });
   } else if (agentId === "kimi") {
     driver = new KimiSessionDriver({
@@ -355,6 +360,9 @@ export function createSessionDriver({
       harnessHome,
       providerBaseUrl,
       spawnTurn,
+      // The end path's bound on an in-flight turn spawn (review round
+      // 110): the same --shutdown-grace that bounds the stop.
+      spawnGraceMs: shutdownGraceMs,
     });
   } else if (claudeBuilt !== null) {
     driver = claudeDriver = new ClaudeSessionDriver({

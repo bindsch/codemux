@@ -40,6 +40,24 @@ export interface SessionSpawnOptions {
   /** Adapter env omissions, deleted from the sandbox environment like
    * `runSandboxedWithStdin` deletes them (belt over buildExecutionEnv). */
   envOmissions?: readonly string[];
+  /** Executables the command embeds inside an argument (the Playwright
+   * MCP binary inside --mcp-config JSON, review round 110): trust-checked
+   * where the argv was built, invisible to the command re-check, and
+   * revalidated here immediately before the spawn. */
+  extraExecutableChecks?: readonly ExecutableCheck[];
+  /** True once the caller gave up on this spawn (an end path whose
+   * bounded wait ran out, spawn-wait.ts). Read synchronously right before
+   * the process is created, after every await: a spawn that was stalled
+   * in a probe then rejects instead of starting a child the session's
+   * cleanup has already run past (review round 111). */
+  abandoned?: () => boolean;
+}
+
+/** The refusal of a spawn its caller abandoned while it was resolving. */
+function refuseAbandonedSpawn(options: SessionSpawnOptions): void {
+  if (options.abandoned?.() === true) {
+    throw new Error("the session spawn was abandoned before its process started");
+  }
 }
 
 /**
@@ -103,6 +121,10 @@ export async function resolveSessionSandboxSpawn(
     checks: [
       ...trustCheckedCommandChecks(resolved),
       ...(scodeCheck === null ? [] : [scodeCheck]),
+      // The argv's nested executables (review round 110) join the same
+      // pin: the SessionProcess re-stats them beside the command's own
+      // positions immediately before the spawn.
+      ...(options.extraExecutableChecks ?? []),
     ],
   };
   const scodeCmd = buildScodeCommand(
@@ -154,6 +176,7 @@ export async function spawnSessionChild(
       options,
       workdir
     );
+    refuseAbandonedSpawn(options);
     return new SessionProcess({
       command: scodeCmd,
       cwd: workdir,
@@ -164,13 +187,15 @@ export async function spawnSessionChild(
     });
   }
   // The direct half mirrors runDirect in launch.ts: the same trusted
-  // resolution, the caller-provided execution environment, no scode.
+  // resolution, the caller-provided execution environment, no scode. The
+  // argv's nested executables (review round 110) join the pin here too.
   const resolved = resolveTrustedCommand(
     command,
     "session command",
     workdir,
     env.PATH ?? ""
   );
+  refuseAbandonedSpawn(options);
   return new SessionProcess({
     command: resolved,
     cwd: workdir,
@@ -178,7 +203,10 @@ export async function spawnSessionChild(
     graceMs: options.graceMs,
     executableChecks: {
       requiredPaths: trustCheckedCommandPaths(resolved),
-      checks: trustCheckedCommandChecks(resolved),
+      checks: [
+        ...trustCheckedCommandChecks(resolved),
+        ...(options.extraExecutableChecks ?? []),
+      ],
     },
     ...hooks,
   });

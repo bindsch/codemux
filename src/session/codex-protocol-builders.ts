@@ -10,6 +10,7 @@ import { markOverflowed } from "./usage.js";
 import type { AutonomyLevel, ReasoningEffort, ResultUsageBlock } from "../types.js";
 import { reportedTokenCount, safeTokenSum } from "../result-envelope/common.js";
 import { isRecord } from "./codex-parse-facts.js";
+import { MAX_ID_CHARS } from "./protocol.js";
 
 export type CodexSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 export type CodexApprovalPolicy = "untrusted" | "never";
@@ -111,6 +112,37 @@ export function codemuxClientVersion(): string {
 /** JSON-RPC ids keep their type on the wire: a numeric request id must be
  * answered numerically or the server cannot correlate the reply. */
 export type RequestId = number | string;
+
+/** The one predicate for every JSON-RPC id accepted from the harness: a
+ * string within the protocol's id bound, or a number that is a safe
+ * integer. Anything else fails closed at the parse site, because
+ * serialization corrupts it: `JSON.stringify` turns a non-finite number
+ * (`1e400` parses to Infinity) into `null` and an unsafe integer rounds
+ * (`9007199254740993` parses as 2^53), so distinct ids would collide in
+ * the pending set and the echoed response would answer the wrong request
+ * (review round 110). `-0` is refused, not normalized: it stringifies as
+ * `0`, so accepting it would let `-0` and `0` collide silently; the
+ * grammar error names the frame instead. */
+export function isAcceptableRequestId(id: unknown): id is RequestId {
+  if (typeof id === "string") {
+    return id.length > 0 && id.length <= MAX_ID_CHARS && !id.includes("\0");
+  }
+  return (
+    typeof id === "number" &&
+    Number.isSafeInteger(id) &&
+    !Object.is(id, -0)
+  );
+}
+
+/** The wire builders' guard: an id that failed the predicate must never
+ * reach `JSON.stringify`, which would corrupt it silently. */
+function assertAcceptableRequestId(id: RequestId): void {
+  if (!isAcceptableRequestId(id)) {
+    throw new Error(
+      "a JSON-RPC id must be a bounded string or a safe integer, never a value serialization corrupts"
+    );
+  }
+}
 
 /** Requests carry `jsonrpc`, as every client line in the fixture does. */
 function request(id: RequestId, method: CodexSessionMethod, params?: unknown): string {
@@ -224,6 +256,7 @@ export function buildInterruptRequest(
 /** Responses omit `jsonrpc`, matching both the server's own responses in
  * the fixture and the openclaw client's writer. */
 export function buildJsonRpcResponse(id: RequestId, result: unknown): string {
+  assertAcceptableRequestId(id);
   return JSON.stringify({ id, result });
 }
 
@@ -232,6 +265,7 @@ export function buildJsonRpcErrorResponse(
   code: number,
   message: string
 ): string {
+  assertAcceptableRequestId(id);
   return JSON.stringify({ id, error: { code, message } });
 }
 

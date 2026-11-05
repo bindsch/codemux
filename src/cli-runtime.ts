@@ -1,6 +1,6 @@
 import { isAbsolute } from "node:path";
 import { guardedWait, runCapturedCommand, type StdoutSink } from "./process-runner.js";
-import { assertExecutablesUnchanged, executableCheck, resolveTrustedCommand, resolveTrustedExecutable, trustCheckedCommandChecks, trustCheckedCommandPaths } from "./executable-security.js";
+import { assertExecutablesUnchanged, executableCheck, resolveTrustedCommand, resolveTrustedExecutable, trustCheckedCommandChecks, trustCheckedCommandPaths, type ExecutableCheck } from "./executable-security.js";
 import { activeRedirects, probeEnvironment } from "./environment.js";
 import { ALLOW_UNTESTED_ENV, assertSupportedHarnessVersion } from "./harness-compatibility.js";
 import { buildSandboxEnv, buildScodeCommand, type SandboxOptions } from "./sandbox.js";
@@ -182,7 +182,13 @@ export async function runSandboxed(
   // argument) and return 0 without spawning. Everything before this point
   // has already run — the probes, trust checks, and option resolution — so
   // the printed argv is the one a real launch would exec.
-  printSandbox?: boolean
+  printSandbox?: boolean,
+  /** An executable the command embeds inside an argument (the Playwright
+   * MCP binary inside --mcp-config JSON, review round 110): trust-checked
+   * where the argument was built, invisible to the command re-check, and
+   * revalidated here immediately before the spawn. Null when the command
+   * embeds none. */
+  nestedExecutable?: ExecutableCheck | null
 ): Promise<number> {
   const workdir = validateWorkingDirectory(cwd) ?? process.cwd();
   assertNoProjectScodePolicy(workdir);
@@ -241,11 +247,13 @@ export async function runSandboxed(
   // is pinned by the check carried from that resolution (round 19, edges
   // 2; round 20, minor 7): without its check the re-stat falls back to
   // the process-wide identity list, where another launch's probe of a
-  // replaced scode would let this one exec bytes it never probed.
+  // replaced scode would let this one exec bytes it never probed. The
+  // nested executable joins the same pin (review round 110).
   assertExecutablesUnchanged(scodeCmd, "sandbox command", [
     ...trustCheckedCommandPaths(resolvedCommand),
     scode,
-  ], [...trustCheckedCommandChecks(resolvedCommand), ...(carriedScodeCheck === null ? [] : [carriedScodeCheck])]);
+  ], [...trustCheckedCommandChecks(resolvedCommand), ...(carriedScodeCheck === null ? [] : [carriedScodeCheck]),
+    ...(nestedExecutable == null ? [] : [nestedExecutable])]);
   const proc = Bun.spawn(scodeCmd, {
     cwd: workdir,
     stdout: "inherit",
@@ -275,7 +283,13 @@ export async function runSandboxedWithStdin(
   // zero exit without spawning anything. Everything before this point has
   // already run — the probes, validation, and option resolution — so the
   // printed argv is exactly the one a real launch would exec.
-  printSandbox?: boolean
+  printSandbox?: boolean,
+  /** An executable the command embeds inside an argument (the Playwright
+   * MCP binary inside --mcp-config JSON, review round 110): trust-checked
+   * where the argument was built, invisible to the command re-check, and
+   * revalidated here immediately before the spawn. Null when the command
+   * embeds none. */
+  nestedExecutable?: ExecutableCheck | null
 ): Promise<RunResult> {
   const workdir = validateWorkingDirectory(cwd) ?? process.cwd();
   assertNoProjectScodePolicy(workdir);
@@ -332,11 +346,13 @@ export async function runSandboxedWithStdin(
   // launch's recorded identity for the same path (round 13, edges 2).
   // scodeCmd[0] is pinned by the check carried from that resolution
   // (round 19, edges 2; round 20, minor 7): the same rule the
-  // inherited-stdio runner above applies.
+  // inherited-stdio runner above applies. The nested executable joins
+  // the same pin (review round 110).
   assertExecutablesUnchanged(scodeCmd, "sandbox command", [
     ...trustCheckedCommandPaths(resolvedCommand),
     scode,
-  ], [...trustCheckedCommandChecks(resolvedCommand), ...(carriedScodeCheck === null ? [] : [carriedScodeCheck])]);
+  ], [...trustCheckedCommandChecks(resolvedCommand), ...(carriedScodeCheck === null ? [] : [carriedScodeCheck]),
+    ...(nestedExecutable == null ? [] : [nestedExecutable])]);
   return runCapturedCommand(scodeCmd, {
     cwd: workdir,
     env,
@@ -349,6 +365,7 @@ export async function runSandboxedWithStdin(
     // identity list another launch's probe may have widened (round 23,
     // edges 1).
     requiredPaths: [...trustCheckedCommandPaths(resolvedCommand), scode],
-    checks: [...trustCheckedCommandChecks(resolvedCommand), ...(carriedScodeCheck === null ? [] : [carriedScodeCheck])],
+    checks: [...trustCheckedCommandChecks(resolvedCommand), ...(carriedScodeCheck === null ? [] : [carriedScodeCheck]),
+      ...(nestedExecutable == null ? [] : [nestedExecutable])],
   });
 }

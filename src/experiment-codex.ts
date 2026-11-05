@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { assertCodexResult, compareCodexOutput, object } from "./experiment-codex-content.js";
 import { CodexRolloutCursor, findRollout } from "./experiment-codex-rollout.js";
 import { CodexRolloutParser, type CodexNativeCall } from "./experiment-codex-parser.js";
-import { matchesCodexResourceResult } from "./experiment-codex-resource.js";
+import { isCodexResourceRefusal, matchesCodexResourceResult } from "./experiment-codex-resource.js";
 import { ExperimentFailure, ExperimentFailureCode as Code, experimentFailure, type ExperimentRecord } from "./experiment-records.js";
 import type { ExperimentRelayCall } from "./experiment-relay.js";
 import type { JsonObject } from "./experiment-server.js";
@@ -244,5 +244,18 @@ export class ExperimentCodexEvidence {
       if (item.result.structured_content != null) throw new ExperimentFailure(Code.UnsupportedResult, "Codex exec MCP result carrying structured_content is unsupported");
     }
     if (remaining.length !== 0) throw new ExperimentFailure(Code.HarnessLogMissing, `Missing Codex exec MCP results for ${remaining.length} experiment relay calls`);
+    // The parser's builtinCalls hold only resource operations (the
+    // list/read MCP resource trio), and those emit MCP exec completions
+    // without native call ids — the matcher above is the one that pairs
+    // them with the exec stream (src/experiment-codex-resource.ts). An
+    // entry left over is a rollout call whose exec completion never
+    // arrived — the same defect the `remaining` check names for relay
+    // calls — unless the harness refused the call outright (the
+    // unsupported-call text as its whole output, the saved-rollout
+    // shape): nothing executed, so no completion can exist (review
+    // round 110).
+    const refused = builtinCalls.filter(isCodexResourceRefusal).length;
+    if (builtinCalls.length !== refused) throw new ExperimentFailure(Code.HarnessLogMissing,
+      `Missing Codex exec MCP results for ${builtinCalls.length - refused} resource builtin calls`);
   }
 }

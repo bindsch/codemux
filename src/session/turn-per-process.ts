@@ -74,8 +74,11 @@
  *   caller's absolute deadline), and its late-landing child is stopped
  *   and settled before the record is released; a GRACEFUL first end
  *   (stdin-close, shutdown) awaits the spawn and runs the turn. Aider
- *   always awaits the spawn — its end path has no deadline-vs-probe
- *   tension, and awaiting keeps every child settled before done.
+ *   and opencode await the spawn on every end but BOUNDED by the stop
+ *   grace (review round 110): a spawn that outlasts it is given up on —
+ *   fatally, so the graceful arm's owed run is reported lost — and its
+ *   late landing is stopped and settled by the end path's hold, which
+ *   the CLI awaits before it deletes the turn's launch state.
  * - The end code's arithmetic: kimi derives it from the cause log
  *   (EndCauseLog.exitCode, the max over every recorded cause); aider
  *   accumulates the same maximum itself — its ladder has a single
