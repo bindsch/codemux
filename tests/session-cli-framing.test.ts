@@ -176,6 +176,30 @@ describe("CLI - caller stdin framing", () => {
     expect(ends).toEqual([failure]);
   });
 
+  test("data after a read error delivers no line and no second end (review round 169)", () => {
+    // The error leaves the data listener behind, so a complete line that
+    // arrived after the failure was parsed as a command even though the
+    // driver had already heard the end. One end, carried by the error;
+    // the later line never reaches the driver.
+    const lines: string[] = [];
+    const ends: unknown[] = [];
+    const input = new StubInput();
+    frameCallerStdin(
+      {
+        handleCallerLine: (line: string) => lines.push(line),
+        handleCallerEnd: (error?: unknown) => {
+          ends.push(error);
+        },
+      },
+      input
+    );
+    const failure = new Error("EIO: i/o error, read");
+    input.emitError(failure);
+    input.emitData(Buffer.from("late-command\n"));
+    expect(lines).toEqual([]);
+    expect(ends).toEqual([failure]);
+  });
+
   test("a complete line past the cap is rejected even when its newline shares the chunk (review live18)", () => {
     // Review live18, minor: the cap was checked only while the buffer held
     // no newline, so a line just under the cap followed by one chunk that

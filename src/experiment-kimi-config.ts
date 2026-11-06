@@ -1,8 +1,8 @@
-import { existsSync, renameSync, writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { assertTrustedDirectory } from "./hermetic-home.js";
-import { readUtf8FileBounded } from "./file-io.js";
+import { readUtf8FileBounded, statEntryPresent } from "./file-io.js";
 import { kimiTomlValue } from "./kimi-hermetic.js";
 import { experimentToolTimeoutSeconds } from "./experiment-mcp.js";
 import { sanitizeKimiToolNamePart } from "./experiment-kimi-tool-names.js";
@@ -12,7 +12,12 @@ const MAX_CONFIG_BYTES = 1024 * 1024;
 
 function writeKimiToolTimeout(kimiHome: string, milliseconds: number): void {
   const path = join(kimiHome, "config.toml");
-  const source = existsSync(path)
+  // An uninspectable path refuses rather than reading as empty: a stat
+  // error folded into "absent" would silently drop the existing config
+  // this write merges into (review round 169).
+  const source = statEntryPresent(path, (code) => {
+    throw new Error(`${path} could not be inspected (${code})`);
+  })
     ? readUtf8FileBounded(path, { maxBytes: MAX_CONFIG_BYTES, label: "private Kimi config" }) : "";
   const config = Bun.TOML.parse(source) as Record<string, unknown>;
   const mcp = config.mcp;
@@ -37,7 +42,14 @@ export function kimiExperimentToolPattern(serverName: string): string {
 export function writeKimiExperimentConfig(relay: ExperimentHttpRelay, kimiHome: string, agentFile: string): void {
   assertTrustedDirectory(kimiHome);
   const path = join(kimiHome, "mcp.json");
-  if (existsSync(path)) throw new Error(`Kimi experiment refuses an existing MCP config: ${path}`);
+  // The rename below replaces an existing file, so an uninspectable path
+  // must refuse like a present one: a stat error folded into "absent"
+  // would silently overwrite the config this check exists to protect
+  // (review round 169).
+  const present = statEntryPresent(path, (code) => {
+    throw new Error(`Kimi experiment cannot inspect the MCP config path ${path} (${code})`);
+  });
+  if (present) throw new Error(`Kimi experiment refuses an existing MCP config: ${path}`);
   const milliseconds = experimentToolTimeoutSeconds(relay.spec) * 1000;
   writeKimiToolTimeout(kimiHome, milliseconds);
   const temporary = join(kimiHome, `mcp.${randomBytes(8).toString("hex")}.json`);

@@ -95,6 +95,26 @@ describe("goose provider override", () => {
     // A query string cannot ride the host/path pair goose consumes.
     expect(() => gooseOpenAiEndpoint("https://gw.example/v1?api-version=2024-02-01"))
       .toThrow("cannot map onto goose's OPENAI_HOST/OPENAI_BASE_PATH");
+    // Already-complete endpoints stay as they are — the bare path, a
+    // versioned one, a nested one, and one with a trailing slash — but
+    // only at a segment boundary: "notchat/completions" is not the
+    // completions endpoint and gains the suffix (review round 169).
+    expect(gooseOpenAiEndpoint("https://h/chat/completions")).toEqual({
+      host: "https://h",
+      basePath: "chat/completions",
+    });
+    expect(gooseOpenAiEndpoint("https://h/v1/chat/completions")).toEqual({
+      host: "https://h",
+      basePath: "v1/chat/completions",
+    });
+    expect(gooseOpenAiEndpoint("https://h/x/v2/chat/completions/")).toEqual({
+      host: "https://h",
+      basePath: "x/v2/chat/completions",
+    });
+    expect(gooseOpenAiEndpoint("https://h/notchat/completions")).toEqual({
+      host: "https://h",
+      basePath: "notchat/completions/v1/chat/completions",
+    });
   });
 
   test("a query-string base URL refuses at validation with exit 64", () => {

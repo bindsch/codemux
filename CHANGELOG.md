@@ -125,6 +125,27 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 169, whole tree: the process exit code after a session is the one `session_ended`
+  reported even when a signal lands while the final event is still being flushed (it used to become
+  143), and the session's closing call-ledger line carries that same process exit code, nonzero when
+  the final event was not delivered; concurrent captured commands under one signal no longer let the
+  first to finish exit under the others' cleanup, which could leave a child that ignores SIGTERM
+  running: the first waits for the others, whose cleanup is now bounded at every step (the protocol
+  cleanup gets a two-second grace after a signal, so the interruption receipt is always written),
+  every command in flight is signaled together, the interruption line is printed once, and no
+  captured command starts while a signaled one is still terminating its tree; the signal handlers
+  are installed before the child spawns, so a signal in that window no longer takes the default
+  action and leaves a detached child; a caller-stdin read error now stops line delivery instead of
+  parsing later chunks as commands; configuration and security checks that used `existsSync` no
+  longer fold a stat error into "absent" — an unreadable path refuses, and a symlink whose target is
+  missing counts as an existing entry (codemux config, the scode project policy, the
+  project-execution walk, the opencode account store, the experiment configs); the agy file token is
+  read through one non-following bounded open (on Windows, which has no such flag, a symlink check
+  before the open and an identity check after it) and copied byte for byte, so a symlink, FIFO, or
+  oversized token refuses instead of being copied; and a goose base URL ending in
+  `notchat/completions` gains the `/v1/chat/completions` suffix instead of being taken as already
+  complete.
+
 - Review round 162, whole tree: an aider turn whose chat history holds its prompt with no reply ends
   the session non-resumable whatever the exit code was (exit 0 used to leave the session open, and a
   resume replayed the unanswered prompt); a second SIGINT/SIGTERM/SIGHUP while the first signal's end

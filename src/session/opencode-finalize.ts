@@ -372,28 +372,30 @@ export abstract class OpenCodeDriverCore {
       this.capabilities.resume &&
       ownsRecord &&
       (this.harnessConfirmed || this.endExitCode === 0);
+    // The exit code the report carries, read once here: a signal or a
+    // failure landing during the final flush (through `finish`'s re-entry
+    // arm) no longer changes the process exit code — the session had
+    // already ended and told the caller its verdict. That holds for a
+    // termination signal too: it exits 143 only when it stopped the
+    // session, which the event then says (kimi's machine has the same
+    // rule; docs/sessions.md states it under the exit table).
+    const reported = this.endExitCode;
     const sent = this.out.enqueue(
       buildSessionEnded(++this.seq, this.sessionIdOrEmpty(), this.lastChildOutcome, {
         reason,
         shutdown_requested: this.shutdownWasRequested,
-        exit_code: this.endExitCode,
+        exit_code: reported,
         usage: this.cumulative,
         resumable,
       }),
       { terminal: true }
     );
-    // The closing ledger line: the same cumulative usage and end verdict
-    // the caller just received (call-log.ts).
-    appendSessionCallRecord(
-      this.callLedger,
-      this.ledgerSessionId(),
-      this.sessionStartedAt,
-      reason,
-      this.endExitCode,
-      this.cumulative
-    );
     const delivered = sent ? await awaitFinalFlush(this.out) : false;
-    this.resolveDone(delivered ? this.endExitCode : Math.max(this.endExitCode, 1));
+    const finalCode = delivered ? reported : Math.max(reported, 1);
+    // The closing ledger line carries the process exit code: the reported
+    // one, or nonzero when the report was not delivered (round 171).
+    appendSessionCallRecord(this.callLedger, this.ledgerSessionId(), this.sessionStartedAt, reason, finalCode, this.cumulative);
+    this.resolveDone(finalCode);
     // The handlers stay installed past done while the abandoned spawn's
     // hold still waits (kimi's rule, round al30): a second signal there
     // escalates the late child instead of being absorbed. dispose is

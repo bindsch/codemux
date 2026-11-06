@@ -2,11 +2,12 @@
 // capability probes, keep-env sandbox option resolution, and the
 // accounting-sink checks. src/cli-runtime.ts owns the run paths that
 // call these.
-import { existsSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { runCapturedCommand } from "../process-runner.js";
 import { resolveTrustedExecutable } from "../executable-security.js";
+import { statEntryPresent } from "../file-io.js";
 import { UsageRefusalError } from "../validation.js";
 import { buildSandboxEnv, type SandboxOptions } from "../sandbox.js";
 
@@ -388,7 +389,15 @@ export function warnIfSinkInsideWorkdir(accountFile: string, workdir: string): v
 
 export function assertNoProjectScodePolicy(workdir: string): void {
   const projectPolicy = join(workdir, ".scode.yaml");
-  if (existsSync(projectPolicy)) {
+  // An uninspectable path is the same refusal as a present one: a stat
+  // error folded into "absent" would silently pass this security check
+  // (review round 169).
+  const present = statEntryPresent(projectPolicy, (code) => {
+    throw new UsageRefusalError(
+      `refusing sandbox execution because ${projectPolicy} could not be inspected (${code})`
+    );
+  });
+  if (present) {
     // A usage refusal (exit 64), the contract every caller-triggered
     // pre-launch refusal follows — project-execution configuration
     // included (review round 17, contracts-2 2: this used to be a plain

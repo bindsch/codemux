@@ -1,5 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import * as http from "node:http";
 import { join, resolve } from "node:path";
 import { ExperimentCodexRun } from "../src/experiment-codex-run.js";
@@ -101,6 +102,86 @@ test("Kimi rejects an invalid MCP timeout table before creating its private MCP 
   await relay.start();
   expect(() => writeKimiExperimentConfig(relay, home, join(cwd, "agent.md"))).toThrow("MCP timeout table");
   expect(readFileSync(join(home, "config.toml"), "utf8")).toBe('mcp = "invalid"\n');
+});
+
+/** Makes the look at `path` fail with EIO for one call site under test:
+ * a code that is neither ENOENT nor ENOTDIR and needs no permissions. */
+function failLookAt(path: string): { restore(): void } {
+  const original = fs.lstatSync;
+  type LstatArgs = Parameters<typeof fs.lstatSync>;
+  const spy = spyOn(fs, "lstatSync").mockImplementation(((...args: LstatArgs) => {
+    if (args[0] === path) throw Object.assign(new Error("input/output error"), { code: "EIO" });
+    return original(...args);
+  }) as typeof fs.lstatSync);
+  return { restore: () => spy.mockRestore() };
+}
+
+test("Kimi refuses an MCP config path it cannot inspect instead of reading it as absent", async () => {
+  // Review round 169: a failed look folded into "absent" would let the
+  // rename below replace a file this guard exists to protect.
+  const cwd = directory();
+  const home = join(cwd, "kimi");
+  mkdirSync(home, { mode: 0o700 });
+  const { spec } = specification(cwd);
+  const relay = new ExperimentHttpRelay(spec, cwd, {});
+  relays.push(relay);
+  await relay.start();
+  const look = failLookAt(join(home, "mcp.json"));
+  let refused: unknown;
+  try {
+    writeKimiExperimentConfig(relay, home, join(cwd, "agent.md"));
+  } catch (error) {
+    refused = error;
+  } finally {
+    look.restore();
+  }
+  expect((refused as Error).message).toContain("Kimi experiment cannot inspect the MCP config path");
+  expect((refused as Error).message).toContain("EIO");
+  expect(existsSync(join(home, "config.toml"))).toBe(false);
+  expect(existsSync(join(cwd, "agent.md"))).toBe(false);
+});
+
+test("Kimi refuses a TOML config it cannot inspect instead of reading it as empty", async () => {
+  // Same defect on the merge side: an uninspectable config.toml must
+  // refuse, not silently drop the config the write merges into.
+  const cwd = directory();
+  const home = join(cwd, "kimi");
+  mkdirSync(home, { mode: 0o700 });
+  const { spec } = specification(cwd);
+  const relay = new ExperimentHttpRelay(spec, cwd, {});
+  relays.push(relay);
+  await relay.start();
+  const look = failLookAt(join(home, "config.toml"));
+  let refused: unknown;
+  try {
+    writeKimiExperimentConfig(relay, home, join(cwd, "agent.md"));
+  } catch (error) {
+    refused = error;
+  } finally {
+    look.restore();
+  }
+  expect((refused as Error).message).toContain("could not be inspected");
+  expect((refused as Error).message).toContain("EIO");
+  expect(existsSync(join(home, "mcp.json"))).toBe(false);
+  expect(existsSync(join(cwd, "agent.md"))).toBe(false);
+});
+
+test("Kimi refuses an MCP config link whose target is missing, and leaves the link", async () => {
+  // Review round 174: the look used to follow the link, read a missing
+  // target as "no file", and the rename then replaced the link.
+  const cwd = directory();
+  const home = join(cwd, "kimi");
+  mkdirSync(home, { mode: 0o700 });
+  symlinkSync(join(cwd, "missing-target.json"), join(home, "mcp.json"));
+  const { spec } = specification(cwd);
+  const relay = new ExperimentHttpRelay(spec, cwd, {});
+  relays.push(relay);
+  await relay.start();
+  expect(() => writeKimiExperimentConfig(relay, home, join(cwd, "agent.md")))
+    .toThrow("Kimi experiment refuses an existing MCP config");
+  expect(lstatSync(join(home, "mcp.json")).isSymbolicLink()).toBe(true);
+  expect(existsSync(join(home, "config.toml"))).toBe(false);
+  expect(existsSync(join(cwd, "agent.md"))).toBe(false);
 });
 
 function post(relay: ExperimentHttpRelay, message: JsonObject) {

@@ -4,6 +4,16 @@ import { assertExecutablesUnchanged, type ExecutableCheck } from "./executable-s
 import { OutputLimitError, readBounded } from "./process-capture.js";
 import { trackStdinDelivery } from "./process-stdin.js";
 import { writeRunStdin } from "./process-stdin-repeat.js";
+import {
+  beginCapturedCommand,
+  endCapturedCommand,
+  finishSignaledRun,
+  neverSettles,
+  noteSignaledRun,
+  signalShutdownPending,
+} from "./process-runner-signals.js";
+export { hasActiveCapturedCommand } from "./process-runner-signals.js";
+export { guardedWait } from "./process-guarded-wait.js";
 export { MAX_CAPTURE_BYTES } from "./process-capture.js";
 import {
   createTerminationTarget,
@@ -22,7 +32,11 @@ export const FORCE_KILL_DELAY_MS = 2_000;
 // (orphaned into another process group before the first snapshot) may hold
 // them open forever; the run must still return.
 export const PIPE_GIVE_UP_MS = 1_000;
-const SIGNAL_BURST_WINDOW_MS = 1_000;
+// What a signaled run's cleanup can take once the signal has landed (the
+// force-kill delay, the pipe give-up, the protocol cleanup's grace, and
+// the interruption receipt's grace), plus a second of margin so a peer
+// that used every deadline still runs its last continuation first.
+const SIGNALED_PEER_WAIT_MS = FORCE_KILL_DELAY_MS + PIPE_GIVE_UP_MS + 2 * FORCE_KILL_DELAY_MS + 1_000;
 const TIMEOUT_EXIT_CODE = 124;
 // 128 + SIGTERM: the child tree was terminated after a signal to codemux.
 export const SIGNAL_EXIT_CODE = 143;
@@ -63,23 +77,6 @@ export interface StdoutSink {
   finish(options?: { timedOut: boolean; aborted?: boolean }): string;
   /** What the sink is currently keeping, in bytes. */
   keptBytes(): number;
-}
-
-/**
- * SIGTERM now, SIGKILL after the grace period. `termScope` decides whether the
- * initial SIGTERM reaches the whole tree (non-interactive runs) or only the
- * child (interactive runs, which get the grace period to shut down their own
- * children). The SIGKILL escalation always covers the tree.
- */
-function forceKillAfterGrace(
-  target: TerminationTarget,
-  termScope: "process" | "tree"
-): ReturnType<typeof setTimeout> {
-  signalProcess(target, "SIGTERM", termScope);
-  return setTimeout(
-    () => signalProcess(target, "SIGKILL", "tree"),
-    FORCE_KILL_DELAY_MS
-  );
 }
 
 export function validateTimeout(timeoutMs: number): void {
@@ -126,14 +123,6 @@ export interface CapturedCommandOptions {
   checks?: readonly ExecutableCheck[];
 }
 
-// Captured commands in flight. While one runs, its own signal handlers own
-// the shutdown (terminate the tree, then exit); outside that window, other
-// exit-time cleanup (a hermetic home) has to handle a signal itself.
-let activeCapturedCommands = 0;
-export function hasActiveCapturedCommand(): boolean {
-  return activeCapturedCommands > 0;
-}
-
 export async function runCapturedCommand(
   command: string[],
   options: CapturedCommandOptions
@@ -150,21 +139,12 @@ export async function runCapturedCommand(
   }
   const timeoutMs = options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
   validateTimeout(timeoutMs);
+  // A signaled command is still terminating its tree and exits codemux
+  // when it has: a child started now would outlive that exit in its own
+  // process group, so nothing starts (review round 169).
+  if (signalShutdownPending()) await neverSettles;
   const useProcessGroup = process.platform !== "win32";
   assertExecutablesUnchanged(command, "command", options.requiredPaths, options.checks);
-  const proc = Bun.spawn(command, {
-    cwd: options.cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-    stdin: "pipe",
-    env: options.env,
-    detached: useProcessGroup,
-  });
-
-  const target = createTerminationTarget(proc, useProcessGroup);
-  // Counted only once everything that can throw synchronously is done, so
-  // the decrement in the finally block below always balances it.
-  activeCapturedCommands++;
   let timedOut = false;
   let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
   let forceKillDeadline = 0;
@@ -177,13 +157,27 @@ export async function runCapturedCommand(
   let protocolAborted = false;
   let cleanupStarted = false;
   let terminationNote: string | undefined;
+  let pipesAbandoned = false;
+  let giveUpReads: () => void = () => {};
+  const giveUp = new Promise<void>((resolve) => {
+    giveUpReads = resolve;
+  });
+  // Only the bounded termination deadline abandons the child exit wait.
+  let giveUpExit: () => void = () => {};
+  const exitGiveUp = new Promise<void>((resolve) => { giveUpExit = resolve; });
+  // Null until the spawn returned. No handler can run inside the
+  // synchronous stretch that installs it and spawns, but the handler
+  // checks anyway, so the type says what the code does (review round 169).
+  let target: TerminationTarget | null = null;
   const terminateRun = (): void => {
+    if (target === null) return;
+    const tree = target;
     const starting = !cleanupStarted && forceKillTimer === null;
     // Arm forced reaping before protocol code can throw. The server still
     // receives SIGTERM before the harness, so it stops accepting work first.
     if (starting) {
       forceKillDeadline = performance.now() + FORCE_KILL_DELAY_MS;
-      forceKillTimer = setTimeout(() => signalProcess(target, "SIGKILL", "tree"), FORCE_KILL_DELAY_MS);
+      forceKillTimer = setTimeout(() => signalProcess(tree, "SIGKILL", "tree"), FORCE_KILL_DELAY_MS);
       giveUpTimer = setTimeout(() => {
         pipesAbandoned = true;
         giveUpReads();
@@ -194,29 +188,26 @@ export async function runCapturedCommand(
     catch (error) {
       terminationNote ??= `protocol termination failed: ${error instanceof Error ? error.message : String(error)}`;
     }
-    if (starting) signalProcess(target, "SIGTERM", "tree");
+    if (starting) signalProcess(tree, "SIGTERM", "tree");
+  };
+  // After a signal the protocol cleanup gets the same grace the receipt
+  // gets: closeProtocol has no deadline of its own, and one that never
+  // settled kept the interruption receipt from being written and codemux
+  // from exiting (review round 174).
+  let closingProtocol = false;
+  let protocolGraceTimer: ReturnType<typeof setTimeout> | null = null;
+  let expireProtocolGrace: () => void = () => {};
+  const protocolGrace = new Promise<void>((resolve) => { expireProtocolGrace = resolve; });
+  const armProtocolGrace = (): void => {
+    if (closingProtocol) protocolGraceTimer ??= setTimeout(expireProtocolGrace, FORCE_KILL_DELAY_MS);
   };
   const onSignal = (): void => {
     if (signaled) return;
     signaled = true;
+    noteSignaledRun();
     terminateRun();
+    armProtocolGrace();
   };
-  process.on("SIGINT", onSignal);
-  process.on("SIGTERM", onSignal);
-  process.on("SIGHUP", onSignal);
-  let pipesAbandoned = false;
-  let giveUpReads: () => void = () => {};
-  const giveUp = new Promise<void>((resolve) => {
-    giveUpReads = resolve;
-  });
-  // Only the bounded termination deadline abandons the child exit wait.
-  let giveUpExit: () => void = () => {};
-  const exitGiveUp = new Promise<void>((resolve) => { giveUpExit = resolve; });
-  const timeoutTimer = setTimeout(() => {
-    timedOut = true;
-    terminateRun();
-  }, timeoutMs);
-
   const abortCapture = (): void => {
     if (!captureFailed) terminateRun();
     captureFailed = true;
@@ -248,16 +239,55 @@ export async function runCapturedCommand(
     }
   };
 
-  // Stdin failures after the spawn are the run's (rounds 64 to 67): see
-  // process-stdin.ts for the rules.
-  const stdin = trackStdinDelivery({
-    exited: proc.exited,
-    superseded: () => captureFailed || timedOut || signaled,
-    abort: abortCapture,
-  });
-  const trackStdin = stdin.track;
+  // Handlers and count before the spawn (review round 169): until the
+  // first process.on there is no handler at the operating-system level,
+  // so a signal in that window took the default action and left the
+  // detached child running, and the private-directory handlers saw zero
+  // active commands and exited codemux for it.
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+  process.on("SIGHUP", onSignal);
+  beginCapturedCommand(onSignal);
+  let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+  let spawned: Bun.Subprocess<"pipe", "pipe", "pipe"> | undefined;
+  try {
+    spawned = Bun.spawn(command, {
+      cwd: options.cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+      stdin: "pipe",
+      env: options.env,
+      detached: useProcessGroup,
+    });
+    target = createTerminationTarget(spawned, useProcessGroup);
+    timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      terminateRun();
+    }, timeoutMs);
+  } catch (error) {
+    // Nothing before this point owns a child except the spawn itself: undo
+    // the count and the handlers exactly once (the finally below never
+    // ran), kill anything the spawn produced, and let the refusal
+    // propagate.
+    if (timeoutTimer !== null) clearTimeout(timeoutTimer);
+    spawned?.kill("SIGKILL");
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+    process.off("SIGHUP", onSignal);
+    endCapturedCommand(onSignal);
+    throw error;
+  }
+  const proc = spawned;
 
   try {
+    // Stdin failures after the spawn are the run's (rounds 64 to 67): see
+    // process-stdin.ts for the rules.
+    const stdin = trackStdinDelivery({
+      exited: proc.exited,
+      superseded: () => captureFailed || timedOut || signaled,
+      abort: abortCapture,
+    });
+    const trackStdin = stdin.track;
     try {
       // The plain path's stdin carrier — one shot, or the repeating
       // decline feeder an always-decline harness needs (review round
@@ -359,8 +389,14 @@ export async function runCapturedCommand(
     // timers are cleared first. A protocol abort's diagnosis is never replaced.
     firstError ??= protocolAborted ? new CapturedRunFailure("protocol capture aborted") : undefined;
     let cleanupNote: string | undefined;
-    try { await options.stdoutSink?.closeProtocol?.(); }
-    catch (error) {
+    try {
+      closingProtocol = true;
+      if (signaled) armProtocolGrace();
+      const closed = (async () => { await options.stdoutSink?.closeProtocol?.(); return true; })();
+      if (!(await Promise.race([closed, protocolGrace.then(() => false)]))) {
+        throw new Error("protocol cleanup remains incomplete after the signal cleanup grace");
+      }
+    } catch (error) {
       const note = `cleanup failed: ${error instanceof Error ? error.message : String(error)}`;
       cleanupNote = note;
       const retained = failureResult ?? completedResult;
@@ -368,6 +404,8 @@ export async function runCapturedCommand(
       if (firstError) firstError.message += `; ${note}`;
       else if (!retained) firstError = new CapturedRunFailure(error);
     } finally {
+      closingProtocol = false;
+      if (protocolGraceTimer) clearTimeout(protocolGraceTimer);
       if (signaled) {
         let cleanupDeadline: ReturnType<typeof setTimeout> | undefined;
         try {
@@ -387,7 +425,7 @@ export async function runCapturedCommand(
       process.off("SIGINT", onSignal);
       process.off("SIGTERM", onSignal);
       process.off("SIGHUP", onSignal);
-      activeCapturedCommands--;
+      endCapturedCommand(onSignal);
     }
     if (terminationNote) {
       if (failureResult) failureResult.stderr += `Note: ${terminationNote}\n`;
@@ -399,99 +437,19 @@ export async function runCapturedCommand(
       // interrupted version probe must not fall through to the launch. The
       // launch's receipt is written first: recordCompletedLaunch never runs.
       if (cleanupNote) console.error(`Note: ${cleanupNote}`);
+      // Other captured commands got the same signal and are still
+      // terminating their own trees: the first to finish must not exit
+      // under them (review round 169). This run returns to no caller
+      // either way. The last signaled run to finish prints the line and
+      // exits. Every step of a signaled run's cleanup is bounded, so the
+      // last one arrives; an earlier one still waits no longer than those
+      // bounds add up to and then exits itself, so nothing a peer does can
+      // hold codemux open after a signal (review rounds 171 and 174).
+      if (!finishSignaledRun()) await Bun.sleep(SIGNALED_PEER_WAIT_MS);
       console.error("codemux: interrupted; the agent's process tree was terminated");
       process.exit(SIGNAL_EXIT_CODE);
     }
     if (firstError && !failureResult) throw firstError;
     if (protocolAborted && !failureResult) throw new CapturedRunFailure("protocol capture aborted");
-  }
-}
-
-/**
- * Wait for a spawned interactive process, shielding it from signals that would
- * otherwise propagate through the process group and kill grandchildren (e.g. a
- * Playwright browser).
- *
- * - SIGINT: swallowed in parent (child receives it from the terminal via the
- *   shared process group). Rapid triple-SIGINT forces a SIGTERM to the child.
- * - SIGTERM/SIGHUP: forwarded to child only (a child-directed
- *   process.kill inside signalProcess), not broadcast, so
- *   the child gets the grace period to shut down its own children. The
- *   SIGKILL escalation after the grace period covers the whole process tree.
- */
-export async function guardedWait(
-  proc: ReturnType<typeof Bun.spawn>,
-  timeoutMs?: number
-): Promise<number> {
-  if (timeoutMs !== undefined) validateTimeout(timeoutMs);
-  const target = createTerminationTarget(proc);
-  let forceKillDeadline = 0;
-  const armForceKill = (): ReturnType<typeof setTimeout> => {
-    const timer = forceKillAfterGrace(target, "process");
-    // Measured from SIGTERM delivery, after the table read inside it, so a
-    // slow enumeration cannot eat into the grace period.
-    forceKillDeadline = performance.now() + FORCE_KILL_DELAY_MS;
-    return timer;
-  };
-  let sigintCount = 0;
-  let sigintTimer: ReturnType<typeof setTimeout> | null = null;
-  let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
-  let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
-  let timedOut = false;
-
-  const onSigint = () => {
-    sigintCount++;
-    if (sigintCount >= 3) {
-      forceKillTimer ??= armForceKill();
-      return;
-    }
-    if (sigintTimer) clearTimeout(sigintTimer);
-    sigintTimer = setTimeout(() => {
-      sigintCount = 0;
-    }, SIGNAL_BURST_WINDOW_MS);
-  };
-  const onSigterm = () => {
-    forceKillTimer ??= armForceKill();
-  };
-  const onSighup = () => {
-    forceKillTimer ??= armForceKill();
-  };
-
-  process.on("SIGINT", onSigint);
-  process.on("SIGTERM", onSigterm);
-  process.on("SIGHUP", onSighup);
-
-  if (timeoutMs !== undefined) {
-    timeoutTimer = setTimeout(() => {
-      timedOut = true;
-      forceKillTimer ??= armForceKill();
-    }, timeoutMs);
-  }
-
-  try {
-    const exitCode = await proc.exited;
-    return timedOut ? TIMEOUT_EXIT_CODE : exitCode;
-  } finally {
-    if (sigintTimer) clearTimeout(sigintTimer);
-    if (timeoutTimer) clearTimeout(timeoutTimer);
-    if (forceKillTimer) {
-      clearTimeout(forceKillTimer);
-      // The child exited on SIGTERM before the grace period ran out, so the
-      // scheduled tree-scoped SIGKILL was canceled with it. Its remembered
-      // descendants keep the rest of the grace period, then get the SIGKILL
-      // they were promised; otherwise they would outlive the run for good.
-      // The signal listeners stay installed until this is done, so a second
-      // Ctrl-C or SIGTERM in that window cannot kill codemux first. The
-      // SIGKILL is unconditional: cheap when nothing is left, and the only
-      // escalation there is when the table could not be read.
-      await waitForDescendantsGrace(target, forceKillDeadline);
-      signalProcess(target, "SIGKILL", "tree");
-      // A Ctrl-C during that wait re-armed the burst timer; clear it again
-      // so no pending timer keeps the event loop alive after we return.
-      if (sigintTimer) clearTimeout(sigintTimer);
-    }
-    process.off("SIGINT", onSigint);
-    process.off("SIGTERM", onSigterm);
-    process.off("SIGHUP", onSighup);
   }
 }

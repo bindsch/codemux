@@ -147,6 +147,12 @@ no extra length guarantee beyond the framing and queue bounds below.
 | `error` | `fatal: boolean`; `source: "codemux" \| "harness"`; `message: string` |
 | `session_ended` | `reason: "shutdown" \| "stdin-close" \| "signal" \| "timeout" \| "crash" \| "harness_failed"`; `exit_code: integer`; `harness_exit: {code: integer \| null, signal: string \| null} \| null`; `shutdown_requested: boolean`; `usage: Usage`; `resumable: boolean` |
 
+The process exit code is the `exit_code` `session_ended` reported, unless
+the event's delivery failed (the sink rejected or stalled), which ends the
+process nonzero instead: a signal or a failure that lands while the final
+event is still being flushed no longer changes the exit code, because the
+session had already ended and reported its verdict.
+
 A `request_id` is the harness request's id as codemux presents it, and the
 decision echoes it back verbatim. Claude and ZAI present the raw id string.
 Codex presents the JSON-RPC id's JSON spelling: numeric ids as their digits

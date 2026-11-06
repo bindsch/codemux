@@ -45,7 +45,10 @@ export function gooseOpenAiEndpoint(baseUrl: string): {
   let basePath: string;
   if (path === "") {
     basePath = "v1/chat/completions";
-  } else if (path.endsWith("chat/completions")) {
+  } else if (path === "chat/completions" || path.endsWith("/chat/completions")) {
+    // Already complete — but only at a segment boundary: "notchat/
+    // completions" does not name the completions endpoint and gets the
+    // suffix appended (review round 169).
     basePath = path;
   } else if (/^v\d+$/.test(lastSegment)) {
     basePath = `${path}/chat/completions`;

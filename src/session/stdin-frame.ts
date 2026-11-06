@@ -146,7 +146,12 @@ export function frameCallerStdin(
     buffer.set(chunk, length);
     length += chunk.length;
   };
+  // Input processing is over (the stream ended or failed): a late `data`
+  // event — a stream that errored and keeps emitting — must not deliver a
+  // line after the driver already heard the end (review round 169).
+  let ended = false;
   const onData = (chunk: Buffer): void => {
+    if (ended) return;
     if (discarding) {
       // Still inside the rejected oversized line: everything up to its
       // newline belongs to it, whatever it contains.
@@ -174,6 +179,7 @@ export function frameCallerStdin(
   };
   const onEnd = (): void => {
     input.removeListener("error", onError);
+    ended = true;
     if (!discarding) {
       deliver();
       const rest = Buffer.from(buffer.subarray(0, length));
@@ -185,9 +191,13 @@ export function frameCallerStdin(
   // A read error is not an end of input: the trailing partial line may be
   // a fragment, so it is not delivered, and the driver reports the error
   // as a failure instead of a clean close (review live17 — it used to run
-  // the same handler as "end" and exit 0).
+  // the same handler as "end" and exit 0). The data listener comes off
+  // too, so a chunk that lands after the failure is never parsed as a
+  // command (review round 169).
   const onError = (error: unknown): void => {
+    input.removeListener("data", onData);
     input.removeListener("end", onEnd);
+    ended = true;
     length = 0;
     driver.handleCallerEnd(error ?? new Error("unknown read error"));
   };

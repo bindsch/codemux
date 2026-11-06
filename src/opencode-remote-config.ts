@@ -111,9 +111,19 @@ function activeOrgAccount(realDataDir: string): string | null {
   let dbStat: Stats;
   try {
     dbStat = lstatSync(dbPath);
-  } catch {
-    // No store, no account in it.
-    return null;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      // No store, no account in it.
+      return null;
+    }
+    // Any other inspection failure is the same fail-closed refusal a
+    // non-regular file gets: a stat error folded into "no store" would
+    // silently pass the hermetic check (review round 169).
+    return accountStoreUnreadable(
+      dbPath,
+      `: it could not be inspected (${code ?? "unknown error"})`
+    );
   }
   // SQLite's own open blocks on a FIFO and follows a symlink (the same
   // two shapes the auth store read refuses), so only a regular file is

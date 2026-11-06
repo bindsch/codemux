@@ -318,6 +318,13 @@ A second signal with no child alive only latches and changes nothing.
 | 78 | Resume policy/trust refusal, including a corrupt or untrusted registry or a live owner |
 | 143 | Codemux's signal-stop convention |
 
+The exit status is the `exit_code` that `session_ended` reported. A signal
+that stops a session is reported in that event and exits 143. A signal that
+arrives after the event was written, while it is still being flushed, stops
+nothing: the session had already ended, so the status stays what the event
+said, 0 after a clean end. Only a failed delivery of the event changes the
+status, to at least 1. Every agent follows this rule.
+
 Child failures can preserve another nonzero code. Any observed nonzero child
 exit or signal changes the final reason to `harness_failed`, including after
 a requested shutdown. A caller must inspect both exit status and events.

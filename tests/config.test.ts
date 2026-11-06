@@ -1,8 +1,9 @@
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import {
+  ConfigError,
   getConfigPath,
   getDefaultConfig,
   loadConfig,
@@ -50,6 +51,44 @@ describe("Config", () => {
     expect(config.defaultAgent).toBe("claude");
     expect(config.models["sonnet"]?.claude).toBe("sonnet");
     expect(config.models["gpt5"]?.codex).toBe("gpt-5.6");
+  });
+
+  test("a config path that cannot be inspected refuses instead of taking the defaults (review round 169)", () => {
+    // A mode-000 parent makes the stat itself fail with EACCES; root
+    // ignores directory modes, so the case cannot be built there.
+    if (typeof process.getuid === "function" && process.getuid() === 0) return;
+    const dir = mkdtempSync(join(tmpdir(), "codemux-config-refuse-"));
+    const parent = join(dir, "config");
+    mkdirSync(parent);
+    writeFileSync(join(parent, "config.yaml"), "defaultAgent: codex\n");
+    chmodSync(parent, 0o000);
+    try {
+      const configPath = join(parent, "config.yaml");
+      expect(() => loadConfig(configPath)).toThrow(ConfigError);
+      try {
+        loadConfig(configPath);
+      } catch (error) {
+        expect(error instanceof ConfigError && error.message).toContain(configPath);
+        expect(error instanceof ConfigError && error.message).toContain("EACCES");
+      }
+    } finally {
+      chmodSync(parent, 0o700);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a config path under a file parent and a missing path both give the defaults (review round 169)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "codemux-config-absent-"));
+    try {
+      const blocker = join(dir, "blocker");
+      writeFileSync(blocker, "not a directory");
+      const underFile = loadConfig(join(blocker, "config.yaml"));
+      expect(underFile.defaultAgent).toBe("claude");
+      const missing = loadConfig(join(dir, "config.yaml"));
+      expect(missing.defaultAgent).toBe("claude");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("the claude-family built-in aliases cover zai", () => {

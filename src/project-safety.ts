@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { statEntryPresent } from "./file-io.js";
 import { UsageRefusalError } from "./validation.js";
 
 const AIDER_EXECUTABLE_CONFIG_FILES = [
@@ -220,13 +221,26 @@ function assertNoProjectExecutionConfig(
       // round 10, contracts 7).
       for (const relativePath of files) {
         const path = join(directory, relativePath);
-        if (existsSync(path)) {
+        // A path that cannot be inspected is the same refusal as a present
+        // one: a stat error folded into "absent" would silently pass this
+        // safety check (review round 169).
+        const present = statEntryPresent(path, (code) => {
+          throw new UsageRefusalError(
+            `${tool} ${reason}: ${path} could not be inspected (${code})`
+          );
+        });
+        if (present) {
           throw new UsageRefusalError(`${tool} ${reason}: ${path}`);
         }
       }
       for (const relativePath of directories) {
         const path = join(directory, relativePath);
-        if (existsSync(path) && containsEntries(path)) {
+        const present = statEntryPresent(path, (code) => {
+          throw new UsageRefusalError(
+            `${tool} ${reason}: ${path} could not be inspected (${code})`
+          );
+        });
+        if (present && containsEntries(path)) {
           throw new UsageRefusalError(`${tool} ${reason}: ${path}`);
         }
       }

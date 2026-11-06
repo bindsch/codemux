@@ -8,7 +8,7 @@ import { summarizeAgyStream } from "../agy-stream.js";
 import { PROBE_MARKER, PROBE_PID, findDirectory, sameDirectory, sweepStaleHomes } from "./agy-homes.js";
 import { AGY_MIRROR_PATH, agyKeychainHost, agyProbeRoots, insertAgyKeychainItem, prepareAgyPrivateKeychain, recoverAgyKeychainSearchList, verifyAgyKeychainSearchList } from "../agy-keychain.js";
 import { assertNoAgyProjectExecutionConfig } from "../project-safety.js";
-import { AGY_DENIED_ACTIONS, headlessMediumSettings } from "./agy-settings.js";
+import { AGY_DENIED_ACTIONS, headlessMediumSettings, readAgyTokenForCopy } from "./agy-settings.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import { agyResult } from "../result-envelope.js";
 import { agyPlainResult } from "../plain-unwrap.js";
@@ -165,9 +165,15 @@ export class AgyAdapter extends BaseAdapter {
       const scrubbing = policy.scrubEnv === true || policy.trust === "untrusted";
       const hasApiKey = ["GEMINI_API_KEY", "GOOGLE_API_KEY"].some((name) =>
         environment[name] && (!scrubbing || policy.keepEnv?.includes(name)));
-      const fileToken = hasApiKey ? undefined : lstatSync(token, { throwIfNoEntry: false });
-      if (fileToken && !fileToken.isFile()) throw new Error("agy probe token must be a regular file");
-      if (!hasApiKey && !fileToken) {
+      // The token is read once, up front: one non-following open, typed
+      // and sized on the descriptor (readAgyTokenForCopy) — a symlink, a
+      // FIFO, or an oversized file refuses naming the reason instead of
+      // being lstat'd here and re-read by pathname below, where the two
+      // looks could disagree (review round 169). Null is "no file token"
+      // (the Keychain path); an empty file is a token. The bytes are
+      // copied as read, never decoded (review round 170).
+      const fileToken = hasApiKey ? null : readAgyTokenForCopy(token);
+      if (!hasApiKey && fileToken === null) {
         insertAgyKeychainItem(home, this.environment, keychainPassword, request.cwd);
       }
       const state = join(home, ".gemini", "antigravity-cli");
@@ -176,8 +182,8 @@ export class AgyAdapter extends BaseAdapter {
       // nothing is written back to the real store. The 0600 copy lasts for
       // this run only: cleanup removes it or reports its path and fails.
       // The macOS login is mirrored separately, never linked to the real Keychain.
-      if (fileToken) {
-        writeFileSync(join(state, "antigravity-oauth-token"), readFileSync(token), { flag: "wx", mode: 0o600 });
+      if (fileToken !== null) {
+        writeFileSync(join(state, "antigravity-oauth-token"), fileToken, { flag: "wx", mode: 0o600 });
       }
       if (shareState) {
         const grantCommands = request.autonomy === "medium";

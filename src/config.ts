@@ -1,4 +1,3 @@
-import { existsSync } from "fs";
 import { isAbsolute, join } from "path";
 import { homedir } from "os";
 import yaml from "js-yaml";
@@ -10,7 +9,7 @@ import type {
   QuotaPolicy,
   QuotaTimeoutMap,
 } from "./types.js";
-import { readUtf8FileBounded } from "./file-io.js";
+import { readUtf8FileBounded, statEntryPresent } from "./file-io.js";
 import { MAX_USAGE_TIMEOUT_SECONDS } from "./usage.js";
 import { UsageRefusalError, validateModelName } from "./validation.js";
 
@@ -291,7 +290,15 @@ function mergeModelMappings(
 export function loadConfig(configPathOverride?: string): CodemuxConfig {
   const configPath = configPathOverride ?? getConfigPath();
 
-  if (!existsSync(configPath)) {
+  // ENOENT and ENOTDIR mean "no configuration"; any other stat failure
+  // refuses instead of silently taking the defaults, because the file
+  // carries quota and model settings (review round 169).
+  const present = statEntryPresent(configPath, (code) => {
+    throw new ConfigError(
+      `Could not load config from ${configPath}: the path could not be inspected (${code})`
+    );
+  });
+  if (!present) {
     return cloneConfig(DEFAULT_CONFIG);
   }
 

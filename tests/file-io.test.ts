@@ -62,4 +62,36 @@ describe("bounded UTF-8 file reads", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("refuses a symbolic link where the open has no no-follow flag", () => {
+    // Review round 172: Windows has no O_NOFOLLOW, and the flag used to be
+    // dropped there, so a linked credential was followed and copied. The
+    // platform is overridden for this read; the link itself is real.
+    if (process.platform === "win32") return;
+    const dir = mkdtempSync(join(tmpdir(), "codemux-nofollow-windows-"));
+    const target = join(dir, "target");
+    const link = join(dir, "link");
+    writeFileSync(target, "secret");
+    symlinkSync(target, link);
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    try {
+      expect(process.platform as string).toBe("win32");
+      expect(() => readUtf8FileBounded(link, {
+        maxBytes: 16,
+        label: "credential",
+        noFollow: true,
+      })).toThrow("credential must not be a symbolic link");
+      // A regular file still reads, and a missing one is still ENOENT.
+      expect(readUtf8FileBounded(target, { maxBytes: 16, label: "credential", noFollow: true })).toBe("secret");
+      expect(() => readUtf8FileBounded(join(dir, "absent"), {
+        maxBytes: 16,
+        label: "credential",
+        noFollow: true,
+      })).toThrow("ENOENT");
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

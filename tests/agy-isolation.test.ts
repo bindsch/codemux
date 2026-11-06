@@ -239,7 +239,7 @@ test("symlinked token files are refused without leaving a private home", () => {
   writeFileSync(join(home, "target"), "fake-login");
   symlinkSync(join(home, "target"), join(state, "antigravity-oauth-token"));
   markAgyIsolationProbe(request, "hermetic");
-  expect(() => adapter.prepareRun(request)).toThrow("regular file");
+  expect(() => adapter.prepareRun(request)).toThrow("must not be a symbolic link");
   expect(readdirSync(join(home, ".gemini/.codemux-isolation-probes"))).toEqual([]);
 });
 

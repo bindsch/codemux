@@ -323,6 +323,36 @@ describe("hermetic runs: opencode", () => {
     expect(out).toContain("could not be read");
   });
 
+  test("an account store path that cannot be inspected fails closed, not as absent (review round 169)", () => {
+    // The old bare catch read every lstat error as "no store" — a
+    // mode-000 parent (EACCES) silently passed the hermetic check. The
+    // spy throws that error for the db path only: the auth store shares
+    // its directory, so a real mode-000 parent refuses there first.
+    const dataDir = mkdtempSync(join(tmpdir(), "codemux-opencode-inspect-"));
+    scratch.push(dataDir);
+    const dbPath = join(dataDir, "opencode.db");
+    writeFileSync(dbPath, "not a database\n");
+    const original = fs.lstatSync;
+    type LstatArgs = Parameters<typeof fs.lstatSync>;
+    const stat = spyOn(fs, "lstatSync").mockImplementation(((...args: LstatArgs) => {
+      if (args[0] === dbPath) {
+        throw Object.assign(new Error("denied"), { code: "EACCES" });
+      }
+      return original(...args);
+    }) as typeof fs.lstatSync);
+    try {
+      const verdict = opencodeRemoteConfigCarrier(dataDir);
+      expect(verdict).toContain("the account store");
+      expect(verdict).toContain("could not be inspected");
+      expect(verdict).toContain("EACCES");
+    } finally {
+      stat.mockRestore();
+    }
+    // Missing still passes: an absent store carries nothing.
+    rmSync(dbPath);
+    expect(opencodeRemoteConfigCarrier(dataDir)).toBeNull();
+  });
+
   test.skipIf(
     process.platform === "win32" ||
       (typeof process.getuid === "function" && process.getuid() === 0)

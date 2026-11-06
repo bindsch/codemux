@@ -264,25 +264,23 @@ export abstract class AgyFinalize extends AgyDriverIo {
       this.capabilities.resume &&
       ownsRecord &&
       (this.harnessConfirmed || this.endExitCode === 0);
+    // The exit code the report carries, read once here: a signal or a
+    // failure landing during the final flush (through `finish`'s re-entry
+    // arm) no longer changes the process exit code — the session had
+    // already ended and told the caller its verdict. That holds for a
+    // termination signal too: it exits 143 only when it stopped the
+    // session, which the event then says (kimi's machine has the same
+    // rule; docs/sessions.md states it under the exit table).
+    const reported = this.endExitCode;
     const sent = this.out.enqueue(
       buildSessionEnded(++this.seq, this.sessionIdOrEmpty(), childOutcome, {
         reason,
         shutdown_requested: this.shutdownWasRequested,
-        exit_code: this.endExitCode,
+        exit_code: reported,
         usage: this.cumulative,
         resumable,
       }),
       { terminal: true }
-    );
-    // The closing ledger line: the same cumulative usage and end verdict
-    // the caller just received (call-log.ts).
-    appendSessionCallRecord(
-      this.callLedger,
-      this.ledgerSessionId(),
-      this.sessionStartedAt,
-      reason,
-      this.endExitCode,
-      this.cumulative
     );
     // Exit-code honesty: `session_ended` is the one event the caller
     // cannot afford to lose, so a delivery that failed — the sink
@@ -293,10 +291,14 @@ export abstract class AgyFinalize extends AgyDriverIo {
     // abandons the queue, so a stalled sink cannot hold the process
     // open past the report.
     const delivered = sent ? await awaitFinalFlush(this.out) : false;
+    const finalCode = delivered ? reported : Math.max(reported, 1);
+    // The closing ledger line carries the process exit code: the reported
+    // one, or nonzero when the report was not delivered (round 171).
+    appendSessionCallRecord(this.callLedger, this.ledgerSessionId(), this.sessionStartedAt, reason, finalCode, this.cumulative);
     // Only now, with the report delivered and the exit code decided, do
     // the signal handlers come off: from here to process exit there is
     // no cleanup left for a signal to interrupt.
     this.signals.dispose();
-    this.resolveDone(delivered ? this.endExitCode : Math.max(this.endExitCode, 1));
+    this.resolveDone(finalCode);
   }
 }

@@ -1,7 +1,7 @@
-import { existsSync, renameSync, writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { readUtf8FileBounded } from "./file-io.js";
+import { readUtf8FileBounded, statEntryPresent } from "./file-io.js";
 import { assertTrustedDirectory } from "./hermetic-home.js";
 import { ExperimentHttpRelay } from "./experiment-relay.js";
 import { ExperimentCodexEvidence } from "./experiment-codex.js";
@@ -87,7 +87,12 @@ export class ExperimentCodexRun implements StdoutSink {
     }
     assertTrustedDirectory(this.codexHome);
     const path = join(this.codexHome, "config.toml");
-    const previous = existsSync(path)
+    // An uninspectable path refuses rather than reading as empty: a stat
+    // error folded into "absent" would silently drop the existing config
+    // this write merges into (review round 169).
+    const previous = statEntryPresent(path, (code) => {
+      throw new Error(`${path} could not be inspected (${code})`);
+    })
       ? readUtf8FileBounded(path, { maxBytes: MAX_CONFIG_BYTES, label: "private Codex config" }) : "";
     const relay = new ExperimentHttpRelay(this.spec, this.cwd, this.environment, { catalog: this.selection?.catalog,
       startFields: { omit_tools_from: CODEX_EXPERIMENT_OMITTED_SURFACES } });
