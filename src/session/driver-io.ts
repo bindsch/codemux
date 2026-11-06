@@ -13,7 +13,6 @@ import { SessionFsm } from "./fsm.js";
 import {
   BoundedOutboundQueue,
   codemuxFatalMessage,
-  installSessionSignalHandlers,
   SESSION_SIGNAL_EXIT_CODE,
   type SessionFatal,
   type SessionProcess,
@@ -26,6 +25,7 @@ import {
   type InputRejectionReason,
 } from "./protocol.js";
 import type { SandboxTrust } from "./registry.js";
+import { SessionStopEscalation } from "./stop-escalation.js";
 
 export interface SessionDriverOptions {
   agent: "claude" | "zai";
@@ -121,6 +121,8 @@ export abstract class ClaudeDriverIo {
 
   protected proc: SessionProcess | null = null;
   protected readonly earlyLines: string[] = [];
+  /** The second-signal escalation (src/session/stop-escalation.ts). */
+  protected readonly stopEscalation = new SessionStopEscalation();
   protected readonly signals: SessionSignalGate;
   protected seq = 0;
 
@@ -199,9 +201,10 @@ export abstract class ClaudeDriverIo {
         void this.finish("crash", 1);
       }
     );
-    this.signals = installSessionSignalHandlers(() => {
-      void this.finish("signal", SESSION_SIGNAL_EXIT_CODE);
-    });
+    this.signals = this.stopEscalation.install(
+      () => void this.finish("signal", SESSION_SIGNAL_EXIT_CODE),
+      () => [this.proc]
+    );
   }
 
   /** Every end path's funnel (§4.6); the final class owns it

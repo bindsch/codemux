@@ -125,6 +125,16 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 162, whole tree: an aider turn whose chat history holds its prompt with no reply ends
+  the session non-resumable whatever the exit code was (exit 0 used to leave the session open, and a
+  resume replayed the unanswered prompt); a second SIGINT/SIGTERM/SIGHUP while the first signal's end
+  still runs now SIGKILLs the child tree at once for every agent, including a child whose spawn was
+  still in flight or who attaches after the end (it is killed on arrival) — only kimi escalated
+  before; `doctor`'s scode namespace probe and the sandbox-contract script no longer pass ambient
+  `SCODE_*` variables to the scode they spawn; and launch options that run a sandbox the request does
+  not claim are refused before any spawn (the programmatic API only: the command line sets both, and
+  the opposite mismatch was already refused).
+
 - Review round 159, whole tree: an option given on the command line with an explicitly empty value
   (`--model ""`, typically an unset shell variable) is present, not absent — every value option now
   refuses it with exit 64 instead of silently taking its default. Fixed for run's `--file` (the

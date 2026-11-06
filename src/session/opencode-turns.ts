@@ -78,7 +78,9 @@ export abstract class OpenCodeTurns extends OpenCodeDriverCore {
     // spawn (review round 110), when nothing is left that would run it.
     if (this.finished) {
       if (lateChildRuns(this.endReason, this.turnSpawnAbandoned)) return;
-      proc.requestStop();
+      // A second signal latched while the spawn ran: the tree SIGKILL it
+      // asked for, not the stop with grace (stop-escalation.ts).
+      if (!this.stopEscalation.escalateIfRequested(proc)) proc.requestStop();
       void proc.settled;
       return;
     }

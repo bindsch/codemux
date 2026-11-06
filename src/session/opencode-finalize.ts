@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { AutonomyLevel, ReasoningEffort, ResultUsageBlock } from "../types.js";
+import type { ResultUsageBlock } from "../types.js";
 import {
   appendSessionCallRecord,
   appendSessionTurnCallRecord,
@@ -30,59 +30,19 @@ import {
   type SessionProcess,
   type SessionSignalGate,
 } from "./process.js";
+import type { OpenCodeDriverOptions } from "./opencode-options.js";
+import { SessionStopEscalation } from "./stop-escalation.js";
 import { awaitSpawnWithGrace, holdAbandonedSpawn } from "./spawn-wait.js";
 import { buildEvent } from "./protocol.js";
 import {
   recordSessionStart,
   releaseSessionRecord,
   touchSession,
-  type SandboxTrust,
 } from "./registry.js";
 import { addUsage } from "./usage.js";
 import type { SessionEndReason } from "./agy-driver.js";
 
-export interface OpenCodeDriverOptions {
-  /** The native session id to resume, or null to start fresh. */
-  resumeSessionId: string | null;
-  autonomy: AutonomyLevel;
-  /** The wire model (`--model`), already provider-prefixed when an
-   * override is active — the CLI owns that mapping, the driver passes it
-   * through. Reported on session_started as-is. */
-  model?: string;
-  effort?: ReasoningEffort;
-  /** The validated working directory — also the registry's cwd record. */
-  cwd: string;
-  hermetic: boolean;
-  sandboxed: boolean;
-  /** The trust the session actually runs at; recorded and reported as-is. */
-  sandboxTrust: SandboxTrust;
-  sandboxNoNet: boolean;
-  /** The caller's --sandbox-block paths, canonicalized; recorded and
-   * compared on resume (registry/format.ts). */
-  sandboxBlock?: readonly string[];
-  sandboxScrubEnv: boolean;
-  /** The `--pass-env` names the child runs with; recorded for the resume
-   * guard. */
-  passEnv: readonly string[];
-  authorPrefix: boolean;
-  sessionTimeoutMs: number | null;
-  /** Null disables registry writes (unit tests); the CLI always passes one. */
-  registryPath: string | null;
-  /** The harness state home recorded for this session (§4.8). */
-  harnessHome: string;
-  /** The provider identity recorded for the resume guard (review D3):
-   * the override's base URL, or null for the operator's own login. */
-  providerBaseUrl: string | null;
-  /** Spawns one process per turn (the CLI's scode/env wiring around
-   * SessionProcess); a throw is reported as a codemux failure, never an
-   * unhandled rejection. */
-  spawnTurn: (argv: string[], abandoned?: () => boolean) => Promise<SessionProcess>;
-  /** The bound the end path gives an in-flight spawn before giving up
-   * on it (review round 110): the CLI's --shutdown-grace. Default
-   * DEFAULT_SHUTDOWN_GRACE_MS. */
-  spawnGraceMs?: number;
-  sink?: (line: string) => Promise<void> | void;
-}
+export type { OpenCodeDriverOptions } from "./opencode-options.js";
 
 export abstract class OpenCodeDriverCore {
   /** The driver options (OpenCodeDriverOptions above); assigned by
@@ -149,6 +109,8 @@ export abstract class OpenCodeDriverCore {
    * (the turn's provider config removal, review D5). */
   protected turnSpawnAbandoned = false;
   protected abandonedSpawnHold: Promise<void> | null = null;
+  /** The second-signal escalation (src/session/stop-escalation.ts). */
+  protected readonly stopEscalation = new SessionStopEscalation();
   protected sawHarnessFailure = false;
   /** True only once the end path has settled every child: run-output
    * lines keep being parsed and emitted through the whole shutdown drain
@@ -254,7 +216,7 @@ export abstract class OpenCodeDriverCore {
         // exit code is at least 1. The hold stops a late-landing child
         // and settles it before the CLI's cleanup (review D5).
         this.turnSpawnAbandoned = true;
-        this.abandonedSpawnHold = holdAbandonedSpawn(spawn, graceMs);
+        this.abandonedSpawnHold = holdAbandonedSpawn(spawn, graceMs, this.stopEscalation);
         this.endExitCode = Math.max(this.endExitCode, 1);
         this.emitError(
           true,
@@ -263,7 +225,12 @@ export abstract class OpenCodeDriverCore {
         );
       }
       if (late !== null) {
+        // A second signal latched while this child was still being born
+        // (review round 162, finding 2): tree SIGKILL on arrival — not
+        // the run a graceful end owes the turn, not the stop with grace.
+        const escalated = this.stopEscalation.escalateIfRequested(late);
         if (
+          !escalated &&
           (reason === "stdin-close" || reason === "shutdown") &&
           this.fsm.state === "turn_active"
         ) {
@@ -293,7 +260,7 @@ export abstract class OpenCodeDriverCore {
           }
         }
         if (drain === null) {
-          late.requestStop();
+          if (!escalated) late.requestStop();
           await late.settled;
           this.lastChildOutcome = await late.exited;
 
@@ -306,7 +273,9 @@ export abstract class OpenCodeDriverCore {
       // for a fatal verdict or the child's raw exit —
       // then the stop signal, then the settle.
       await drain.awaitEndAnswer(() => this.firstFatal !== null || this.endExitCode !== 0);
-      drain.requestStop();
+      // An escalated child is already tree-SIGKILLed; requestStop would
+      // only arm timers against the dying group (stop-escalation.ts).
+      if (!this.stopEscalation.escalateIfRequested(drain)) drain.requestStop();
       await drain.settled;
       this.lastChildOutcome = await drain.exited;
 
@@ -424,8 +393,13 @@ export abstract class OpenCodeDriverCore {
       this.cumulative
     );
     const delivered = sent ? await awaitFinalFlush(this.out) : false;
-    this.signals.dispose();
     this.resolveDone(delivered ? this.endExitCode : Math.max(this.endExitCode, 1));
+    // The handlers stay installed past done while the abandoned spawn's
+    // hold still waits (kimi's rule, round al30): a second signal there
+    // escalates the late child instead of being absorbed. dispose is
+    // process-off under the hood, so the CLI's later dispose() is safe.
+    if (this.turnSpawnAbandoned) await this.abandonedSpawnHold;
+    this.signals.dispose();
   }
 
   /** The CLI awaits this before the cleanup a late-landing child would

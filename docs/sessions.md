@@ -303,6 +303,12 @@ that spawn refuses to create its process when it resumes, so no child
 starts after the CLI's run cleanup. Grace expiry can kill the child and therefore
 make an otherwise requested shutdown fail.
 
+A second SIGINT/SIGTERM/SIGHUP while the first signal's end still runs
+SIGKILLs the whole child tree at once, for every agent: the first signal
+starts the graceful end, a later one skips the grace. A child that did not
+exist yet — a turn's spawn still in flight — is killed the moment it lands.
+A second signal with no child alive only latches and changes nothing.
+
 | Exit | Meaning |
 |---|---|
 | 0 | Clean session end |
@@ -322,8 +328,13 @@ Its assistant message is extracted from persistent history. History is
 checked before each turn, reads are bounded per turn, and the accumulated
 file has no codemux size cap. A killed partial turn is not resumable because
 restoring history could replay its unanswered prompt; a turn that failed the
-same way — its prompt recorded, no reply — ends the session, since the next
-turn would replay it. Aider refuses harness text beginning with `/` or `!`;
+same way — its prompt recorded, no reply, whatever the exit code was — ends
+the session, since the next turn would replay it. The test is what aider
+itself restores: a reply that is only a reasoning block counts as a reply,
+and a reply made only of `> `, `# `, or `#### ` lines does not, because
+aider writes its tool output and the user's text in those shapes and
+restores none of them as assistant text. Aider refuses harness text
+beginning with `/` or `!`;
 Kimi refuses `/goal` followed by whitespace or end, and `!`; OpenCode
 refuses a message that is empty after trimming, which its wire exits 1 on.
 These checks apply after the author prefix. An OpenCode `error` event, and

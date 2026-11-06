@@ -19,12 +19,12 @@ import { SessionFsm } from "./fsm.js";
 import {
   BoundedOutboundQueue,
   codemuxFatalMessage,
-  installSessionSignalHandlers,
   SESSION_SIGNAL_EXIT_CODE,
   type SessionFatal,
   type SessionProcess,
   type SessionSignalGate,
 } from "./process.js";
+import { SessionStopEscalation } from "./stop-escalation.js";
 import {
   buildEvent,
   buildInputAck,
@@ -124,6 +124,8 @@ export abstract class CodexDriverIo {
 
   protected proc: SessionProcess | null = null;
   protected readonly earlyLines: string[] = [];
+  /** The second-signal escalation (src/session/stop-escalation.ts). */
+  protected readonly stopEscalation = new SessionStopEscalation();
   /** Caller lines that arrived before the thread existed; replayed once
    * session_started fires so their acks and echoes carry the thread id.
    * Two event classes in that window carry the empty id: the
@@ -212,9 +214,10 @@ export abstract class CodexDriverIo {
         void this.finish("crash", 1);
       }
     );
-    this.signals = installSessionSignalHandlers(() => {
-      void this.finish("signal", SESSION_SIGNAL_EXIT_CODE);
-    });
+    this.signals = this.stopEscalation.install(
+      () => void this.finish("signal", SESSION_SIGNAL_EXIT_CODE),
+      () => [this.proc]
+    );
   }
 
   /** Every end path's funnel (§4.6); the final class owns it
@@ -309,7 +312,7 @@ export abstract class CodexDriverIo {
       // No end path waits for this child (the end completed with no spawn
       // pending): nothing will drain it, so it is stopped at once or it
       // outlives the session it was spawned for.
-      proc.requestStop();
+      if (!this.stopEscalation.escalateIfRequested(proc)) proc.requestStop();
       return;
     }
     this.resolveLateChild?.(proc);

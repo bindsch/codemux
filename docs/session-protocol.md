@@ -257,7 +257,10 @@ signal forces `reason: "harness_failed"` and a nonzero summary exit,
 regardless of who requested shutdown. `shutdown_requested` records stdin
 close, shutdown input, or a signal to codemux. It does not excuse failure.
 Absolute timeout is a failure; a first turn timeout can interrupt and leave
-the session running. A second expiry on the same turn ends it.
+the session running. A second expiry on the same turn ends it. A second
+signal to codemux while the first signal's end still runs SIGKILLs the
+child tree at once, so the end lands with no additional event and the
+summary exit stays the signal convention's.
 
 ## Unmapped and invalid harness output
 

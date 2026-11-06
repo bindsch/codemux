@@ -26,6 +26,7 @@
  *   basic (default) — banner lines on stdout, the exchange appended,
  *                     exit 0
  *   toolreply       — the reply is preceded by a `> ` blockquote (tool
+ *   thinkingonly    — the reply is nothing but a leading thinking block
  *                     chatter): the blockquote never reaches the
  *                     driver's assistant_message
  *   multiline       — the prompt itself is multi-line: every line
@@ -39,6 +40,11 @@
  *                     the half-written shape a resume would replay, so
  *                     the session must end as unreliable (review round
  *                     96, whole tree)
+ *   promptexit0     — the user block appended, then exit 0 before any
+ *                     reply: the same half-written history with a clean
+ *                     exit code, which changes nothing — the session
+ *                     ends as unreliable all the same (review round
+ *                     162, whole tree)
  *   noexchange      — exit 0 with no exchange: the turn fails ("records
  *                     no exchange"), the session survives
  *   crash           — nothing at all, exit 1
@@ -58,11 +64,16 @@
  * 0 — the user block is already in the file (the `wait` scenario wrote
  * it at the turn's start), so io.ai_output's reply is the only thing
  * left to append, delivered inside the grace window, which the drain
- * tests pin as delivered; =exit42 answers nothing and exits 42 — the
- * drain-failure verdict; =exit143 is the same silence with the signal's
- * coded spelling, which must NOT be read as a failure (the history
- * keeps the unanswered user block — the half-written state). Without
- * the env the default SIGTERM disposition applies.
+ * tests pin as delivered; =exit0silent answers nothing and exits 0 — a
+ * drained process that ends clean without ever writing the reply, so
+ * the history keeps the unanswered user block under a zero exit code
+ * and the session must still refuse to resume (review round 162);
+ * =exit42 answers nothing and exits 42 — the drain-failure verdict;
+ * =exit143 is the same silence with the signal's coded spelling, which
+ * must NOT be read as a failure (the history keeps the unanswered user
+ * block — the half-written state); =hold traps SIGTERM and never exits
+ * on it (the escalation tests). Without the env the default SIGTERM
+ * disposition applies.
  */
 
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -73,6 +84,17 @@ mkdirSync(stateDir, { recursive: true });
 const record = (name: string, value: unknown): void => {
   appendFileSync(join(stateDir, name), `${JSON.stringify(value)}\n`);
 };
+
+// =hold traps the shutdown SIGTERM and never exits on it — only the
+// tree SIGKILL of a second signal ends the process (review round 162,
+// finding 2). The handler is installed BEFORE the argv record below is
+// written (review round 165), so "the turn child spawned" (the record
+// the tests wait on) already implies "it can survive SIGTERM"; no boot
+// race is left open.
+if (process.env.FAKE_SIGTERM_PERSIST === "hold") {
+  process.on("SIGTERM", () => {});
+  setInterval(() => {}, 60_000);
+}
 
 const args = process.argv.slice(2);
 record("argv.jsonl", { args, pid: process.pid });
@@ -141,6 +163,16 @@ const runTurn = (scenario: string, prompt: string): number | null => {
       banner();
       appendExchange(prompt, `Done: ${prompt}`, "Adding file main.py");
       return 0;
+    case "thinkingonly":
+      // The reply is nothing but aider's leading reasoning block: the
+      // caller sees no text, but the history holds an assistant block,
+      // so the prompt is answered (review round 163).
+      banner();
+      appendExchange(
+        prompt,
+        "<thinking-content-0123abcd>\nLet me consider.\n</thinking-content-0123abcd>"
+      );
+      return 0;
     case "multiline":
     case "basic":
       banner();
@@ -151,14 +183,18 @@ const runTurn = (scenario: string, prompt: string): number | null => {
       process.stdout.write("The model refused the turn\n");
       return 1;
     case "promptexit":
+    case "promptexit0":
       // io.user_input already wrote the user block; the process failed
       // before io.ai_output's reply, so the history holds the prompt
-      // alone and the exit code says the turn failed.
+      // alone and the exit code says the turn failed. promptexit0 is the
+      // same shape with a clean exit code — provider errors exit 0 in
+      // real aider, and the history, not the code, is the session's
+      // state (review round 162).
       banner();
       if (historyPath !== undefined) {
         appendFileSync(historyPath, userBlock(prompt));
       }
-      return 1;
+      return scenario === "promptexit" ? 1 : 0;
     case "noexchange":
       banner();
       return 0;
@@ -232,7 +268,12 @@ void answered.then(() => {
 });
 
 const persistMode = process.env.FAKE_SIGTERM_PERSIST;
-if (persistMode === "1" || persistMode === "exit42" || persistMode === "exit143") {
+if (
+  persistMode === "1" ||
+  persistMode === "exit0silent" ||
+  persistMode === "exit42" ||
+  persistMode === "exit143"
+) {
   process.on("SIGTERM", () => {
     if (persistMode === "1") {
       // The drained reply: the user block is already in the file (the
@@ -244,7 +285,10 @@ if (persistMode === "1" || persistMode === "exit42" || persistMode === "exit143"
       }
     }
     setTimeout(
-      () => process.exit(persistMode === "exit42" ? 42 : persistMode === "exit143" ? 143 : 0),
+      () =>
+        process.exit(
+          persistMode === "exit42" ? 42 : persistMode === "exit143" ? 143 : 0
+        ),
       300
     );
   });

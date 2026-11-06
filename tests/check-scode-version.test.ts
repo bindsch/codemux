@@ -5,6 +5,8 @@
  * a fake scode from createFakeBinaryEnv — never the operator's.
  */
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFakeBinaryEnv, minimalPath } from "./helpers/cli.js";
 
@@ -109,6 +111,50 @@ describe("the scode contract script", () => {
       expect(result.stderr).toContain("is too old");
     } finally {
       fake.cleanup();
+    }
+  });
+
+  test("the contract probe drops ambient SCODE_* variables from the spawn environment (review round 162)", async () => {
+    // The fake (whose --version preamble the helper prepends) records
+    // which SCODE_* names reach the sandboxed probe and fails when it
+    // sees either accounting name: the script passes the ambient
+    // environment minus SCODE_*, so an ambient SCODE_ACCOUNT_FILE cannot
+    // aim the probe's accounting at a path of its choosing. Names only,
+    // never values (review round 165): the ambient environment holds
+    // credentials no test should write to disk.
+    const dir = mkdtempSync(join(tmpdir(), "codemux-scode-contract-"));
+    const record = join(dir, "probe-env.txt");
+    const fake = createFakeBinaryEnv({
+      scode: `env | grep '^SCODE_\\|^PROBE_ENV_RECORD=' | cut -d= -f1 | sort > "\${PROBE_ENV_RECORD}"\n` +
+        'if [ -n "${SCODE_ACCOUNT_FILE}" ] || [ -n "${SCODE_ACCOUNT_ID}" ]; then exit 3; fi\n' +
+        "exit 0",
+    });
+    try {
+      const proc = Bun.spawn([process.execPath, "scripts/check-scode-version.ts"], {
+        cwd: join(import.meta.dir, ".."),
+        env: {
+          ...process.env,
+          PATH: fake.env.PATH!,
+          PROBE_ENV_RECORD: record,
+          SCODE_ACCOUNT_FILE: "/ambient/account-file",
+          SCODE_ACCOUNT_ID: "ambient-account-id",
+          SCODE_ANY_OTHER_NAME: "ambient",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain("scode sandbox contract passed");
+      expect(stderr).toBe("");
+      expect(readFileSync(record, "utf8")).toBe("PROBE_ENV_RECORD\n");
+    } finally {
+      fake.cleanup();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

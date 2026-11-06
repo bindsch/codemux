@@ -32,7 +32,6 @@ import {
   harnessFailed,
   harnessLineDeliverable,
   SESSION_SIGNAL_EXIT_CODE,
-  installSessionSignalHandlers,
   type SessionChildOutcome,
   type SessionFatal,
 } from "./process.js";
@@ -91,9 +90,10 @@ export class OpenCodeSessionDriver extends OpenCodeTurns {
         void this.finish("crash", 1);
       }
     );
-    this.signals = installSessionSignalHandlers(() => {
-      void this.finish("signal", SESSION_SIGNAL_EXIT_CODE);
-    });
+    this.signals = this.stopEscalation.install(
+      () => void this.finish("signal", SESSION_SIGNAL_EXIT_CODE),
+      () => [this.turnProc]
+    );
   }
 
   /** The CLI's resume claim succeeded: this process owns the record from

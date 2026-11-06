@@ -1,6 +1,7 @@
 import { getScodeCompatibilityStatus } from "../src/cli-runtime.js";
 import { executableCheck, resolveTrustedExecutable } from "../src/executable-security.js";
 import { runCapturedCommand } from "../src/process-runner.js";
+import { withoutAmbientScodeEnv } from "../src/sandbox.js";
 import { isNamespaceCapabilityFailure } from "../src/scode-namespace.js";
 
 // CI greps for this exact line: the macOS runner fails when it appears
@@ -43,7 +44,10 @@ const scodeCheck = executableCheck(trusted);
 // /usr/bin/true is absent on NixOS (round 26, edges 5).
 const probe = await runCapturedCommand([trusted, "--", "/bin/sh", "-c", "exit 0"], {
   cwd: process.cwd(),
-  env: process.env as unknown as Record<string, string>,
+  // The same scrub a real launch's scode spawn gets (review round 162,
+  // finding 4): an ambient SCODE_ACCOUNT_FILE must not turn this
+  // contract probe into a write to the path it names.
+  env: withoutAmbientScodeEnv(process.env as unknown as Record<string, string>),
   timeoutMs: 10_000,
   requiredPaths: [trusted],
   checks: scodeCheck === null ? undefined : [scodeCheck],

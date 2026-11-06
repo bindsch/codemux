@@ -241,16 +241,31 @@ export function assertNoCallerBlockOverStateDirs(
   }
 }
 
-export function buildSandboxEnv(
-  extraEnv: Record<string, string> = {},
-  sandboxOptions?: SandboxOptions
+/** The ambient SCODE_* scrub every codemux-side scode spawn applies
+ * (review round 162, finding 4): scode consumes SCODE_* names itself —
+ * scratch accounting's output sink among them — so an ambient variable
+ * must never choose where a spawn writes. Real launches have scrubbed
+ * here since buildSandboxEnv existed; the diagnostic spawns (the
+ * namespace probes) use this directly on `process.env`. The only
+ * SCODE_* names in a codemux spawn are the ones codemux sets itself,
+ * after this scrub. */
+export function withoutAmbientScodeEnv(
+  env: Record<string, string>
 ): Record<string, string> {
-  const sanitized = { ...extraEnv };
+  const sanitized = { ...env };
   for (const name of Object.keys(sanitized)) {
     if (name.toUpperCase().startsWith("SCODE_")) {
       delete sanitized[name];
     }
   }
+  return sanitized;
+}
+
+export function buildSandboxEnv(
+  extraEnv: Record<string, string> = {},
+  sandboxOptions?: SandboxOptions
+): Record<string, string> {
+  const sanitized = withoutAmbientScodeEnv(extraEnv);
   // The only SCODE_* names codemux sets itself: scratch-accounting opt-ins
   // requested through --sandbox-account / --sandbox-account-id. scode
   // consumes both into private state and never passes them to the sandboxed

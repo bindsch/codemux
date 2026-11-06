@@ -7,7 +7,7 @@
  * itself fill in the machinery.
  */
 
-import type { AutonomyLevel, ReasoningEffort, ResultUsageBlock } from "../types.js";
+import type { ResultUsageBlock } from "../types.js";
 import {
   appendSessionCallRecord,
   appendSessionTurnCallRecord,
@@ -20,6 +20,7 @@ import {
   createAiderSessionHistory,
   removeAiderSessionHistory,
 } from "./aider-session.js";
+import type { AiderDriverOptions } from "./aider-options.js";
 import { SessionFsm } from "./fsm.js";
 import {
   awaitFinalFlush,
@@ -34,61 +35,17 @@ import {
   type SessionProcess,
   type SessionSignalGate,
 } from "./process.js";
+import { SessionStopEscalation } from "./stop-escalation.js";
 import { awaitSpawnWithGrace, holdAbandonedSpawn } from "./spawn-wait.js";
 import { buildEvent } from "./protocol.js";
 import {
   recordSessionStart,
   releaseSessionRecord,
   sessionHoldState,
-  type SandboxTrust,
 } from "./registry.js";
 import type { SessionEndReason } from "./agy-driver.js";
 
-export interface AiderDriverOptions {
-  /** The codemux-minted session id (the registry key and the history
-   * directory's name); aider has no native session id. */
-  sessionId: string;
-  /** True when this session resumes a recorded one (the id is
-   * registry-vouched and the history file must already exist). */
-  resume: boolean;
-  autonomy: AutonomyLevel;
-  /** The `--model` value (already `openai/`-prefixed under a provider
-   * override — the CLI owns that mapping). Reported as-is. */
-  model?: string;
-  /** The `--weak-model` value; set only under a provider override. */
-  weakModel?: string;
-  effort?: ReasoningEffort;
-  /** The per-session chat history file (aiderSessionHistoryPath). */
-  historyPath: string;
-  /** The validated working directory — also the registry's cwd record. */
-  cwd: string;
-  hermetic: boolean;
-  sandboxed: boolean;
-  sandboxTrust: SandboxTrust;
-  sandboxNoNet: boolean;
-  /** The caller's --sandbox-block paths, canonicalized; recorded and
-   * compared on resume (registry/format.ts). */
-  sandboxBlock?: readonly string[];
-  sandboxScrubEnv: boolean;
-  passEnv: readonly string[];
-  authorPrefix: boolean;
-  sessionTimeoutMs: number | null;
-  /** Null disables registry writes (unit tests); the CLI always passes one. */
-  registryPath: string | null;
-  /** The harness state home recorded for this session (§4.8). */
-  harnessHome: string;
-  /** The provider identity recorded for the resume guard (review D3):
-   * the override's base URL, or null for the operator's own login. */
-  providerBaseUrl: string | null;
-  /** Spawns one process per turn; a throw is reported as a codemux
-   * failure, never an unhandled rejection. */
-  spawnTurn: (argv: string[], abandoned?: () => boolean) => Promise<SessionProcess>;
-  /** The bound the end path gives an in-flight spawn before giving up
-   * on it (review round 110): the CLI's --shutdown-grace. Default
-   * DEFAULT_SHUTDOWN_GRACE_MS. */
-  spawnGraceMs?: number;
-  sink?: (line: string) => Promise<void> | void;
-}
+export type { AiderDriverOptions } from "./aider-options.js";
 
 export abstract class AiderDriverCore {
   /** The driver options (AiderDriverOptions above); assigned by
@@ -128,7 +85,16 @@ export abstract class AiderDriverCore {
    * CLI awaits the hold before the cleanup a live child would race. */
   protected turnSpawnAbandoned = false;
   protected abandonedSpawnHold: Promise<void> | null = null;
+  /** The second-signal escalation (src/session/stop-escalation.ts). */
+  protected readonly stopEscalation = new SessionStopEscalation();
   protected sawHarnessFailure = false;
+  /** True once a completed turn's history delta held its prompt with no
+   * reply (completeTurn's rule, review round 162): the non-resumable
+   * shape whatever the exit code was. Latched separately from the crash
+   * end's exit code because an end path already draining the child can
+   * read `endExitCode` before the crash call's raise lands — the flag
+   * keeps the resumable verdict false in that order too. */
+  protected unansweredPromptRecorded = false;
   protected settled = false;
   protected firstFatal: string | null = null;
   /** The wall clock each open turn started at, keyed by turn id: the
@@ -287,7 +253,7 @@ export abstract class AiderDriverCore {
         // exit code is at least 1. The hold stops a late-landing child
         // and settles it before the CLI's cleanup.
         this.turnSpawnAbandoned = true;
-        this.abandonedSpawnHold = holdAbandonedSpawn(spawn, graceMs);
+        this.abandonedSpawnHold = holdAbandonedSpawn(spawn, graceMs, this.stopEscalation);
         this.endExitCode = Math.max(this.endExitCode, 1);
         this.emitError(
           true,
@@ -296,7 +262,12 @@ export abstract class AiderDriverCore {
         );
       }
       if (late !== null) {
+        // A second signal latched while this child was still being born
+        // (review round 162, finding 2): tree SIGKILL on arrival — not
+        // the run a graceful end owes the turn, not the stop with grace.
+        const escalated = this.stopEscalation.escalateIfRequested(late);
         if (
+          !escalated &&
           (reason === "stdin-close" || reason === "shutdown") &&
           this.fsm.state === "turn_active"
         ) {
@@ -329,7 +300,7 @@ export abstract class AiderDriverCore {
           }
         }
         if (drain === null) {
-          late.requestStop();
+          if (!escalated) late.requestStop();
           await late.settled;
           this.lastChildOutcome = await late.exited;
 
@@ -342,7 +313,9 @@ export abstract class AiderDriverCore {
       // send: the wait is for a fatal verdict or the child's raw exit —
       // then the stop signal, then the settle.
       await drain.awaitEndAnswer(() => this.firstFatal !== null || this.endExitCode !== 0);
-      drain.requestStop();
+      // An escalated child is already tree-SIGKILLed; requestStop would
+      // only arm timers against the dying group (stop-escalation.ts).
+      if (!this.stopEscalation.escalateIfRequested(drain)) drain.requestStop();
       await drain.settled;
       this.lastChildOutcome = await drain.exited;
 
@@ -432,11 +405,15 @@ export abstract class AiderDriverCore {
     // and the reply only at its end, so a killed turn leaves an
     // unanswered prompt that `--restore-chat-history` would replay —
     // even when termination is requested during normal shutdown. A
-    // nonzero or signal exit still fails the session.
+    // turn that COMPLETED with its prompt unanswered is the same state
+    // whatever its exit code was, including the exit-0 process whose
+    // drained completion ran inside this end path (review round 162).
+    // A nonzero or signal exit still fails the session.
     const resumable =
       this.capabilities.resume &&
       ownsRecord &&
       this.endExitCode === 0 &&
+      !this.unansweredPromptRecorded &&
       !openTurnInterrupted && !harnessFailed(this.lastChildOutcome);
     const sent = this.out.enqueue(
       buildSessionEnded(++this.seq, this.options.sessionId, this.lastChildOutcome, {
@@ -459,8 +436,13 @@ export abstract class AiderDriverCore {
       this.cumulative
     );
     const delivered = sent ? await awaitFinalFlush(this.out) : false;
-    this.signals.dispose();
     this.resolveDone(delivered ? this.endExitCode : Math.max(this.endExitCode, 1));
+    // The handlers stay installed past done while the abandoned spawn's
+    // hold still waits (kimi's rule, round al30): a second signal there
+    // escalates the late child instead of being absorbed. dispose is
+    // process-off under the hood, so the CLI's later dispose() is safe.
+    if (this.turnSpawnAbandoned) await this.abandonedSpawnHold;
+    this.signals.dispose();
   }
 
   /** The CLI awaits this before the cleanup a late-landing child would

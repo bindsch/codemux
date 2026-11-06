@@ -102,6 +102,39 @@ describe("scode facts", () => {
     expect(await probeScodeNamespace(process.cwd(), goodPath)).toBe("pass");
   });
 
+  test("the namespace probe drops ambient SCODE_* variables from the spawn environment (review round 162)", async () => {
+    // A fake scode that records which SCODE_* names reach it and fails
+    // when it sees an accounting name: the probe's spawn environment is
+    // what the fake reads, so the assertion runs on the real spawn, not a
+    // spy's idea of it. Names only, never values, and only the names the
+    // test is about (review round 165): the ambient environment holds
+    // credentials no test should write to disk. The recorder path rides
+    // a non-SCODE_* ambient variable, which must still pass through.
+    const dir = mkdtempSync(join(tmpdir(), "codemux-doctor-env-"));
+    scratch.push(dir);
+    const record = join(dir, "names");
+    fakeBin({
+      scode: `env | grep '^SCODE_\\|^PROBE_ENV_RECORD=' | cut -d= -f1 | sort > "\${PROBE_ENV_RECORD}"\n` +
+        `if [ -n "\${SCODE_ACCOUNT_FILE}" ] || [ -n "\${SCODE_ACCOUNT_ID}" ]; then exit 3; fi\n` +
+        "exit 0",
+    });
+    process.env.PROBE_ENV_RECORD = record;
+    process.env.SCODE_ACCOUNT_FILE = "/ambient/account-file";
+    process.env.SCODE_ACCOUNT_ID = "ambient-account-id";
+    process.env.SCODE_ANY_OTHER_NAME = "ambient";
+    try {
+      // The verdicts stay intact: the scrub changed the environment, not
+      // the probe's judgment.
+      expect(await probeScodeNamespace()).toBe("pass");
+      expect(readFileSync(record, "utf8")).toBe("PROBE_ENV_RECORD\n");
+    } finally {
+      delete process.env.PROBE_ENV_RECORD;
+      delete process.env.SCODE_ACCOUNT_FILE;
+      delete process.env.SCODE_ACCOUNT_ID;
+      delete process.env.SCODE_ANY_OTHER_NAME;
+    }
+  });
+
   test("the namespace vocabulary matches bubblewrap's messages, line by line", () => {
     expect(isNamespaceCapabilityFailure("bwrap: No permissions to creating new namespace\n")).toBe(true);
     expect(isNamespaceCapabilityFailure("other\nbwrap: setting up gid map: EPERM")).toBe(true);

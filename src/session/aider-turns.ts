@@ -91,24 +91,27 @@ export abstract class AiderTurns extends AiderDriverCore {
       outcome.code !== null
         ? `code ${outcome.code}`
         : `signal ${outcome.signal ?? "unknown"}`;
+    // The non-resumable shape, checked for EVERY exit code (review round
+    // 162): the history file is the session's whole state, and
+    // --restore-chat-history replays an unanswered prompt as if the
+    // caller had sent it — the exit code does not distinguish the two
+    // shapes, so an exit-0 process that wrote the prompt and no reply is
+    // as unrecoverable as a failed one.
+    const unanswered = aiderDeltaRecordsUnansweredPrompt(delta, this.turnPrompt);
     if (outcome.code !== 0) {
       this.finishTurn(turnId, "failed", `the aider process exited with ${exitDetail}`);
-      // A prompt-only delta from the failed process is the non-resumable
-      // shape the end path refuses (aiderDeltaRecordsUnansweredPrompt):
-      // the session ends and the offset never advances past the
-      // unanswered prompt. `!finished` keeps the verdict with an end path
-      // already draining this child.
-      if (!this.finished && aiderDeltaRecordsUnansweredPrompt(delta, this.turnPrompt)) {
-        this.emitError(
-          true,
-          "codemux",
-          `the session's chat history holds the failed turn's prompt with no reply (${this.options.historyPath}); ` +
-            "the session state is unreliable, so the session cannot continue"
-        );
-        void this.finish("crash", 1);
-        return;
+      // `!finished` keeps the verdict with an end path already draining
+      // this child (its own drain-failure fatal already reports a
+      // nonzero exit).
+      if (!this.finished && unanswered) {
+        this.failOnUnansweredPrompt();
       }
       this.consumedBytes = read.sizeBytes;
+      return;
+    }
+    if (unanswered) {
+      this.finishTurn(turnId, "failed", "the chat history holds the prompt with no reply");
+      this.failOnUnansweredPrompt();
       return;
     }
     this.consumedBytes = read.sizeBytes;
@@ -146,6 +149,25 @@ export abstract class AiderTurns extends AiderDriverCore {
       );
     }
     this.finishTurn(turnId, "end", undefined);
+  }
+
+  /** The shared end for a turn whose history delta holds its prompt with
+   * no reply: the consumed offset never advances past the unanswered
+   * prompt, the fatal says why, and the session ends as a crash with
+   * exit 1 — so `session_ended` is not resumable. The crash call is
+   * unconditional: with an end path already draining this child it only
+   * raises that end's exit code (finish's idempotent arm), and
+   * `unansweredPromptRecorded` keeps the end path's resumable verdict
+   * false whatever order the raise and the verdict land in. */
+  private failOnUnansweredPrompt(): void {
+    this.unansweredPromptRecorded = true;
+    this.emitError(
+      true,
+      "codemux",
+      `the session's chat history holds the failed turn's prompt with no reply (${this.options.historyPath}); ` +
+        "the session state is unreliable, so the session cannot continue"
+    );
+    void this.finish("crash", 1);
   }
 
   /** The turn's pairing completion: FSM transition, the uniform usage

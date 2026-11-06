@@ -26,11 +26,20 @@ export function effectiveWorkingDirectory(value?: string): string {
  * constrained as the validated request, and the ledger receipt records
  * the sandbox that ran. A request that names no trust validated the
  * default one, so options that name `trusted` would run a weaker
- * sandbox than the request's and are refused (review round 101). */
+ * sandbox than the request's and are refused (review round 101). The
+ * mode itself is the first pair checked (review round 162): options
+ * that spawn a sandbox the request does not claim validated one set of
+ * constraints while the adapters build another (an adapter that reads
+ * `request.sandboxed` to pick its native mode would enable it, one that
+ * rejects unsandboxed requests would refuse), so only a matching pair
+ * runs. */
 function sandboxConstraintRefusal(
   request: RunRequest,
   options: LaunchOptions
 ): string | null {
+  if (options.sandbox === true && request.sandboxed !== true) {
+    return "the launch options run a sandbox the request does not claim";
+  }
   if (request.sandboxNoNet === true && !sandboxRestrictsNetwork(options.sandboxPolicyOverrides)) {
     return "the request asks for a network-restricted sandbox but the launch options do not carry the restriction";
   }

@@ -15,6 +15,7 @@
 
 import type { SessionProcess } from "./process.js";
 import type { SessionEndReason } from "./agy-driver.js";
+import type { SessionStopEscalation } from "./stop-escalation.js";
 
 /** What a bounded spawn wait found (review round 110). */
 export type BoundedSpawnWait =
@@ -60,7 +61,8 @@ export function awaitSpawnWithGrace(
  * full settle. */
 export function holdAbandonedSpawn(
   spawn: Promise<SessionProcess>,
-  graceMs: number
+  graceMs: number,
+  escalation?: SessionStopEscalation
 ): Promise<void> {
   return new Promise((resolve) => {
     let landed = false;
@@ -70,7 +72,12 @@ export function holdAbandonedSpawn(
     spawn.then(
       async (child) => {
         landed = true;
-        child.requestStop();
+        // A second signal latched while the hold ran: the late child
+        // gets the tree SIGKILL on arrival, not the stop with grace
+        // (review round 162, finding 2; kimi's rule, round al31).
+        if (escalation === undefined || !escalation.escalateIfRequested(child)) {
+          child.requestStop();
+        }
         try {
           await child.settled;
           await child.exited;

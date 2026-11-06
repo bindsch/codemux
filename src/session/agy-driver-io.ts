@@ -15,7 +15,6 @@ import { SessionFsm } from "./fsm.js";
 import {
   BoundedOutboundQueue,
   codemuxFatalMessage,
-  installSessionSignalHandlers,
   SESSION_SIGNAL_EXIT_CODE,
   type SessionFatal,
   type SessionProcess,
@@ -23,6 +22,7 @@ import {
 } from "./process.js";
 import { buildEvent, buildInputAck, type InputRejectionReason } from "./protocol.js";
 import type { SandboxTrust } from "./registry.js";
+import { SessionStopEscalation } from "./stop-escalation.js";
 
 export interface AgyDriverOptions {
   /** The conversation id to resume, or null to start fresh. */
@@ -77,6 +77,8 @@ export abstract class AgyDriverIo {
   protected readonly capabilities = agySessionCapabilities();
   protected readonly out: BoundedOutboundQueue;
   protected readonly signals: SessionSignalGate;
+  /** The second-signal escalation (src/session/stop-escalation.ts). */
+  protected readonly stopEscalation = new SessionStopEscalation();
   protected proc: SessionProcess | null = null;
   protected readonly earlyLines: string[] = [];
   protected seq = 0;
@@ -175,9 +177,10 @@ export abstract class AgyDriverIo {
         void this.finish("crash", 1);
       }
     );
-    this.signals = installSessionSignalHandlers(() => {
-      void this.finish("signal", SESSION_SIGNAL_EXIT_CODE);
-    });
+    this.signals = this.stopEscalation.install(
+      () => void this.finish("signal", SESSION_SIGNAL_EXIT_CODE),
+      () => [this.proc]
+    );
   }
 
   /** Every end path's funnel (§4.6); src/session/agy-finalize.ts owns it. */
@@ -264,7 +267,7 @@ export abstract class AgyDriverIo {
       // No end path waits for this child (the end completed with no spawn
       // pending): nothing will drain it, so it is stopped at once or it
       // outlives the session it was spawned for.
-      proc.requestStop();
+      if (!this.stopEscalation.escalateIfRequested(proc)) proc.requestStop();
       return;
     }
     this.resolveLateChild?.(proc);

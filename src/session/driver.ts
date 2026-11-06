@@ -126,7 +126,7 @@ export class ClaudeSessionDriver extends ClaudeDriverInput {
       // No end path waits for this child (the end completed with no spawn
       // pending): nothing will drain it, so it is stopped at once or it
       // outlives the session it was spawned for.
-      proc.requestStop();
+      if (!this.stopEscalation.escalateIfRequested(proc)) proc.requestStop();
       return;
     }
     this.resolveLateChild?.(proc);
@@ -285,6 +285,10 @@ export class ClaudeSessionDriver extends ClaudeDriverInput {
       // private directory this end is about to remove. A spawn that threw
       // resolves with no child at all.
       proc = await this.lateChild;
+      // A second signal latched while this child was still being born
+      // (review round 162, finding 2): it gets the tree SIGKILL on
+      // arrival, not the drain below.
+      if (proc !== null) this.stopEscalation.escalateIfRequested(proc);
     }
     // The closing event carries both the child code and its full outcome,
     // preserving the signal when the child code is null.
@@ -304,7 +308,9 @@ export class ClaudeSessionDriver extends ClaudeDriverInput {
       }
       proc.endInput();
       await proc.awaitEndAnswer(() => false);
-      proc.requestStop();
+      // An escalated child is already tree-SIGKILLed; requestStop would
+      // only arm timers against the dying group (stop-escalation.ts).
+      if (!this.stopEscalation.escalateIfRequested(proc)) proc.requestStop();
       await proc.settled;
       childOutcome = await proc.exited;
 

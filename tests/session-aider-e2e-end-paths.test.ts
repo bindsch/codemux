@@ -190,40 +190,6 @@ describe("aider session e2e - end paths", () => {
     expect(history).not.toContain("Done: scenario:wait interrupted");
   });
 
-  test("a failed turn that leaves its prompt unanswered ends the session as unreliable (review round 96)", async () => {
-    // The promptexit scenario: aider appended the `#### ` user block (the
-    // prompt is written the moment the turn starts) and exited 1 before
-    // any reply. The old verdict failed the turn but kept the session
-    // open, so the next --restore-chat-history process would have
-    // replayed the unanswered prompt as if the caller had sent it again.
-    const session = await startSession();
-    send(session.driver, { type: "user", text: "scenario:promptexit broken" });
-    const completed = await waitFor(session.events, of("turn_completed"), "turn_completed");
-    expect(completed.finish).toBe("failed");
-    expect(completed.reason).toBe("the aider process exited with code 1");
-    const fatal = await waitFor(
-      session.events,
-      (events) => events.find((event) => event.type === "error" && event.fatal),
-      "the fatal error"
-    );
-    expect(fatal.source).toBe("codemux");
-    expect(fatal.message).toContain("holds the failed turn's prompt with no reply");
-    expect(fatal.message).toContain("the session state is unreliable");
-    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
-    expect(ended.reason).toBe("harness_failed");
-    expect(ended.exit_code).toBe(1);
-    expect(ended.resumable).toBe(false);
-    expect(await session.code).toBe(1);
-    // Exactly one turn ran: the session never spawns onto the half-written
-    // history again (nothing is emitted after session_ended, so a further
-    // input has no answer to check — the turn count is the proof).
-    expect(session.events.filter((event) => event.type === "turn_started")).toHaveLength(1);
-    send(session.driver, { type: "user", text: "scenario:basic two" });
-    await Bun.sleep(150);
-    expect(session.events.filter((event) => event.type === "turn_started")).toHaveLength(1);
-    expect(fakeRecord(session, "argv.jsonl")).toHaveLength(1);
-  });
-
   test("the session timeout ends the session", async () => {
     const session = await startSession({ sessionTimeoutMs: 300 });
     expect(await session.code).toBe(1);

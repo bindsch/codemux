@@ -18,6 +18,7 @@ import { remedyFor } from "./doctor-remedies.js";
 import type { EnvironmentRow, HarnessRow, RowSeverity } from "./doctor-model.js";
 import { resolveTrustedExecutable } from "./executable-security.js";
 import { runCapturedCommand } from "./process-runner.js";
+import { withoutAmbientScodeEnv } from "./sandbox.js";
 import { isNamespaceCapabilityFailure } from "./scode-namespace.js";
 import { readUsagemuxVersion, USAGEMUX_MINIMUM_VERSION } from "./usage.js";
 import { escapeForTerminal } from "./usage-protocol.js";
@@ -219,7 +220,10 @@ export const probeScodeNamespace = async (
   try {
     const result = await runCapturedCommand([resolved, "--", "/bin/sh", "-c", "exit 0"], {
       cwd: workdir,
-      env: process.env as unknown as Record<string, string>,
+      // The same scrub a real launch's scode spawn gets (review round
+      // 162, finding 4): an ambient SCODE_ACCOUNT_FILE must not turn a
+      // diagnostic probe into a write to the path it names.
+      env: withoutAmbientScodeEnv(process.env as unknown as Record<string, string>),
       timeoutMs: 10_000,
     });
     if (result.success) return "pass";

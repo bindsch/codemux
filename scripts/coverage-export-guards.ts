@@ -14,7 +14,15 @@ import ts from "typescript";
  * in-process, never because its tests are merely missing.
  */
 // Type-only modules: no runtime export, so Bun can never report them.
-export const TYPE_ONLY_FILES = new Set(["src/run-context.ts"]);
+// src/session/aider-options.ts and src/session/opencode-options.ts hold
+// the driver option records their finalize modules re-export as `export
+// type` (the 500-line split, review round 162) — erased at compile time,
+// so the suite structurally cannot load them in-process.
+export const TYPE_ONLY_FILES = new Set([
+  "src/run-context.ts",
+  "src/session/aider-options.ts",
+  "src/session/opencode-options.ts",
+]);
 // Child-only entry surfaces: exercised by spawned `bin/codemux` tests whose
 // coverage Bun does not merge (docs/TESTING.md). They still count as fully
 // uncovered in the whole-source ratios below, so a waiver hides nothing

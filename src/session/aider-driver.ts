@@ -63,7 +63,6 @@ import {
   BoundedOutboundQueue,
   codemuxFatalMessage,
   SESSION_SIGNAL_EXIT_CODE,
-  installSessionSignalHandlers,
   type SessionFatal,
   type SessionProcess,
 } from "./process.js";
@@ -117,9 +116,10 @@ export class AiderSessionDriver extends AiderCallerInput {
         void this.finish("crash", 1);
       }
     );
-    this.signals = installSessionSignalHandlers(() => {
-      void this.finish("signal", SESSION_SIGNAL_EXIT_CODE);
-    });
+    this.signals = this.stopEscalation.install(
+      () => void this.finish("signal", SESSION_SIGNAL_EXIT_CODE),
+      () => [this.turnProc]
+    );
   }
 
   /** The CLI's resume claim succeeded: this process owns the record from
@@ -289,7 +289,9 @@ export class AiderSessionDriver extends AiderCallerInput {
     // 110), when nothing is left that would run it.
     if (this.finished) {
       if (lateChildRuns(this.endReason, this.turnSpawnAbandoned)) return;
-      proc.requestStop();
+      // A second signal latched while the spawn ran: the tree SIGKILL it
+      // asked for, not the stop with grace (stop-escalation.ts).
+      if (!this.stopEscalation.escalateIfRequested(proc)) proc.requestStop();
       void proc.settled;
       return;
     }

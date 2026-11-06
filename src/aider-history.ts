@@ -431,29 +431,59 @@ export function extractAiderReply(history: string): string {
   return aiderReplyAfterHeader(history.slice(afterHeader + 1));
 }
 
+// Python's str.splitlines boundaries and str.strip whitespace, which
+// aider's restore parser uses.
+const PY_LINE_BREAK = /\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/;
+const PY_NON_SPACE =
+  /[^\t\n\v\f\r \x1c-\x1f\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/;
+
 /**
- * Whether a failed turn's history delta is the non-resumable shape the
+ * Whether aider would restore an assistant message from the text AFTER
+ * a user header block: a line-for-line mirror of its restore parser
+ * (utils.split_chat_history_markdown at the pinned 0.86.2). That parser
+ * skips `# ` lines, reads `> ` lines as tool output and `#### ` lines
+ * as user text, and keeps every other line as assistant text; a block
+ * that is blank after stripping yields no message.
+ */
+export function aiderRestoresAssistantText(text: string): boolean {
+  for (const line of text.split(PY_LINE_BREAK)) {
+    if (line.startsWith("# ") || line.startsWith("> ") || line.startsWith("#### ")) continue;
+    if (PY_NON_SPACE.test(line)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a turn's history delta is the non-resumable shape the
  * session-end path refuses to resume (src/session/aider-finalize.ts):
- * a `#### ` user block with no reply after it. Aider writes the prompt
- * when the turn starts and the reply only at its end, so a process that
- * exits nonzero between the two leaves an unanswered prompt the next
- * `--restore-chat-history` process would replay as if the caller had
- * sent it (review round 96, whole tree). The reply is extracted with
- * the same anchoring the verdict path uses, so the two cannot disagree
- * about what counts as answered.
+ * a `#### ` user block the next process would restore with no
+ * assistant message after it. Aider writes the prompt when the turn
+ * starts and the reply only at its end, so a process that exits between
+ * the two leaves an unanswered prompt the next `--restore-chat-history`
+ * process would replay as if the caller had sent it (review round 96,
+ * whole tree). The question is what aider RESTORES, not what the caller
+ * sees, so the answer comes from aider's own parser rules
+ * (aiderRestoresAssistantText; review rounds 163, 166, and 167). A
+ * reply that is only a reasoning block is restored, so the prompt is
+ * answered. A reply made only of `> ` lines, `# ` lines, or `#### `
+ * lines is not: aider writes its tool output and the user's text in
+ * those shapes and restores none of them as the assistant's, so the
+ * turn fails loudly instead of leaving a history that replays its
+ * prompt.
  */
 export function aiderDeltaRecordsUnansweredPrompt(
   delta: string,
   prompt: string | null
 ): boolean {
-  if (!delta.includes("#### ")) return false;
+  const first = delta.indexOf("#### ");
+  if (first === -1) return false;
   const header = prompt !== null ? aiderHistoryHeader(prompt) : null;
   const at = header !== null ? delta.indexOf(header) : -1;
-  const reply =
-    header !== null && at !== -1
-      ? aiderReplyAfterHeader(delta.slice(at + header.length))
-      : extractAiderReply(delta);
-  return reply === "";
+  // Without the exact header (the harness wrote the prompt back
+  // altered) the scan starts at the first user line, which the parser
+  // rules skip along with its continuation lines.
+  const after = header !== null && at !== -1 ? delta.slice(at + header.length) : delta.slice(first);
+  return !aiderRestoresAssistantText(after);
 }
 
 // Aider folds the endpoint's reasoning into the reply, wrapped in

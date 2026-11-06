@@ -144,6 +144,10 @@ export class CodexSessionDriver extends CodexDriverInput {
       // settlement: attach() answers with the stopped child once it
       // settles, a spawn throw with none (review round 64).
       proc = await this.awaitLateChild();
+      // A second signal latched while this child was still being born
+      // (review round 162, finding 2): tree SIGKILL on arrival, not the
+      // drain below.
+      if (proc !== null) this.stopEscalation.escalateIfRequested(proc);
     }
     let childOutcome: SessionChildOutcome | null = null;
     if (proc !== null) {
@@ -165,7 +169,9 @@ export class CodexSessionDriver extends CodexDriverInput {
       }
       proc.endInput();
       await proc.awaitEndAnswer(() => false);
-      proc.requestStop();
+      // An escalated child is already tree-SIGKILLed; requestStop would
+      // only arm timers against the dying group (stop-escalation.ts).
+      if (!this.stopEscalation.escalateIfRequested(proc)) proc.requestStop();
       await proc.settled;
       childOutcome = await proc.exited;
 

@@ -137,6 +137,55 @@ describe("sandboxed launch agreement (review round 100)", () => {
     }
   });
 
+  test("options that spawn a sandbox the request does not claim are refused before validation (review round 162)", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-agree-"));
+    // The request never set `sandboxed` (left undefined here) or set it
+    // false: both validated no sandbox, so the sandboxed branch must not
+    // spawn one for them.
+    for (const sandboxed of [undefined, false] as const) {
+      const launch = harness(
+        { agent: "claude", prompt: "t", sandboxed, cwd },
+        { sandbox: true, requestedAutonomy: "read-only", cwd }
+      );
+      try {
+        const refusal = await launch.run().then(() => null, (error: unknown) => error);
+        expect(refusal).toBeInstanceOf(UsageRefusalError);
+        expect((refusal as Error).message).toContain(
+          "sandboxed launch options must match the request: the launch options run a sandbox the request does not claim"
+        );
+        // Refused before anything spawns: no validation, no runner call.
+        expect(launch.validated()).toBe(0);
+        expect(launch.spawned()).toBe(0);
+      } finally {
+        launch.restore();
+      }
+    }
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  test("the sandbox-claim refusal is named first, before the constraint refusals (review round 162)", async () => {
+    // A request that claims no sandbox but asks for --sandbox-no-net has
+    // two disagreements with sandboxed options. The mode disagreement is
+    // the fundamental one — the request validated no sandbox at all — so
+    // its message is the refusal the caller sees.
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-agree-"));
+    const launch = harness(
+      { agent: "claude", prompt: "t", cwd, sandboxNoNet: true },
+      { sandbox: true, requestedAutonomy: "read-only", cwd }
+    );
+    try {
+      const refusal = await launch.run().then(() => null, (error: unknown) => error);
+      expect(refusal).toBeInstanceOf(UsageRefusalError);
+      expect((refusal as Error).message).toContain("run a sandbox the request does not claim");
+      expect((refusal as Error).message).not.toContain("network-restricted");
+      expect(launch.validated()).toBe(0);
+      expect(launch.spawned()).toBe(0);
+    } finally {
+      launch.restore();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   test("an untrusted sandbox counts as network-restricted in the guard and on the receipt (review round 102)", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "codemux-agree-"));
     const ledger = join(cwd, "calls.jsonl");
