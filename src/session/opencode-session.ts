@@ -254,6 +254,17 @@ export function parseOpenCodeRunLine(
         };
       }
       const error = state["error"];
+      // The protocol's `tool_call.input` is an object
+      // (docs/session-protocol.md), and OpenCode's completed and error
+      // tool states both carry one. A line whose `state.input` is
+      // missing, an array, or a primitive breaks that pin like the
+      // checks above: a grammar error, not an event that violates the
+      // session protocol (review round 199) and not a line passed over
+      // in silence, which would let the turn complete without the tool
+      // call it made (review round 207).
+      if (!isRecord(state["input"])) {
+        return { kind: "grammar_error", sessionId, message: "a tool_use line carries a state.input that is not an object" };
+      }
       return {
         kind: "tool_use",
         sessionId,

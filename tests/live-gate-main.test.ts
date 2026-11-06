@@ -145,6 +145,11 @@ test("live gate registers and removes SIGHUP handling and exits 129", async () =
     expect(stderr.replace(/^Warning:[^\n]*\n/gm, "")).toBe("");
     expect(exit).toBe(129);
     expect(stdout).toContain("signal handlers removed");
+    // An interrupted gate's saved report keeps the marker (review round
+    // 201): it never read the versions again, so the file must not pass
+    // for the record of a finished gate.
+    expect(report).toBeDefined();
+    expect(readFileSync(report!, "utf8").startsWith("PRELIMINARY: the gate did not finish")).toBe(true);
   } finally {
     if (report) rmSync(dirname(report), { recursive: true, force: true });
     rmSync(directory, { recursive: true, force: true });
@@ -289,6 +294,10 @@ test("the report is saved before the version reread, and a failed reread prints 
     await main();
     expect(readings).toBe(2);
     expect(savedBeforeReread).toContain("| agy | 1.4.12 | 1.2.14 | 1.4.12 | SUPPORTED");
+    // The early copy says it is preliminary; the final report does not
+    // (review round 194).
+    expect(savedBeforeReread.startsWith("PRELIMINARY: the gate did not finish")).toBe(true);
+    expect(readFileSync(join(directory, "report.md"), "utf8")).not.toContain("PRELIMINARY");
     const unreadable = "| agy | 1.4.12 | 1.2.14 | 1.4.12 | UNREADABLE (the version could not be read again after the probes; before them: ok (1.4.12)) |";
     expect(printed.join("\n")).toContain(unreadable);
     expect(readFileSync(join(directory, "report.md"), "utf8")).toContain(unreadable);

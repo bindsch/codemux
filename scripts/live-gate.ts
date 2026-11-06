@@ -67,6 +67,12 @@ export type { HarnessFacts, ProbeLetter } from "./live-gate/probes.js";
 
 const ROOT = resolve(import.meta.dir, "..");
 
+/** The first line of the report saved before the version reread, and of
+ * an interrupted gate's report. The report of a gate that finished
+ * replaces the file and does not carry it. */
+export const PRELIMINARY_REPORT_LINE =
+  "PRELIMINARY: the gate did not finish if this line is still here (saved before the second version reading, or interrupted).";
+
 // The version a candidate must report: this checkout's own build, the one
 // whose contract table and probe set the gate runs with.
 export const CHECKOUT_VERSION = (() => {
@@ -171,17 +177,30 @@ export async function main(): Promise<void> {
     // report unwritten. A reread that fails must not cost the report
     // either: its rows print UNREADABLE, which fails the gate (review
     // rounds 183 and 190).
+    // The saved copy says what it is: were the gate to end during the
+    // reread, a file that looked final would stand as release evidence
+    // (review round 194).
     const path = join(directory, "report.md");
-    await Bun.write(path, `${formatReport(first)}\n`);
+    await Bun.write(path, `${PRELIMINARY_REPORT_LINE}\n\n${formatReport(first)}\n`);
     const contracts: ContractRow[] = runner.interrupted
       ? contractsBefore
       : contractsAfterPool(contractsBefore, await runContractColumn(contractHarnesses).catch(() => []));
     const input: ReportInput = { ...first, contracts };
     const report = formatReport(input);
     console.log(report);
-    await Bun.write(path, `${report}\n`);
+    // An interrupted gate keeps the marker on its saved report: it skipped
+    // the reread, or was signaled during it, so the file is not the
+    // record of a finished gate (review round 201).
+    const marked = runner.interrupted !== undefined;
+    await Bun.write(path, marked ? `${PRELIMINARY_REPORT_LINE}\n\n${report}\n` : `${report}\n`);
+    // A signal that landed while that write was pending is read once
+    // more, and that one reading decides both the marker and the exit
+    // code, so the two always agree (review rounds 204 and 207). A signal
+    // after this line reaches a gate that has finished.
+    const interrupted = runner.interrupted;
+    if (!marked && interrupted) await Bun.write(path, `${PRELIMINARY_REPORT_LINE}\n\n${report}\n`);
     console.log(`Report: ${path}`);
-    process.exitCode = runner.interrupted === "SIGHUP" ? 129 : runner.interrupted === "SIGINT" ? 130 : runner.interrupted ? 143
+    process.exitCode = interrupted === "SIGHUP" ? 129 : interrupted === "SIGINT" ? 130 : interrupted ? 143
       : gateFailed(input) ? 1 : 0;
   } finally {
     process.off("SIGINT", onInterrupt);

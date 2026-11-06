@@ -125,20 +125,38 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 199, whole tree: the agy stale-home sweep and cleanup read the probe marker and
+  owner-PID files through one bounded open each that follows no link and decodes the bytes as
+  they are, so an oversized or non-regular marker identifies no home (the sweep) or is refused
+  (cleanup) without being read whole, and an owner file past the bound follows the existing age
+  rule; the live gate's end-state leak check, when both the printed session id and the probe's
+  working directory are known, treats a live entry matching either as the probe's leak; the
+  claude-family session parser echoes a numeric control-request id only when its value survives
+  JSON (an integer past the safe range was already rounded by JSON.parse and negative zero is
+  written back as zero, so the parse reports such a request with no usable id); the run-path
+  aider history read is bounded at the read itself, so a file that grows past the size cap after
+  the check answers null; an opencode tool line whose `state.input` is not an object is a
+  grammar error instead of an event that breaks the session protocol; and a codex
+  `commandExecution` completion with a missing or unknown status is an error result, not a
+  success.
 - Live gate of 2026-11-06, the first run of probes H2, I, J, and P against real harnesses: a
-  usagemux 1.0.1 snapshot is read again — its new `placeholder` window field was refused as unknown,
-  so `codemux usage --json` exited 1 and the quota gate reported every provider unreadable; the
-  field is validated (a boolean; a placeholder window carries no percentages) and printed back by
-  `usage --json`. In the gate itself: probe J no longer asks a model to run its script, which no
-  harness could do without network; it prints the sandbox for the three policy flags, requires
-  scode's three policy arguments in the print, and runs the script behind them, at zero quota, so J
-  and P no longer count as a probed harness. Probe P accepts the file the harness entry name
-  resolves to (`claude` links to `bin/claude.exe`). Probe I accepts a served model id that carries a
-  one-word alias target (`sonnet` served as `claude-sonnet-5-5`) or the target plus a release date.
-  Probe H2 no longer fails on a request that carries no credential beside the keyed ones (Claude
-  Code's `HEAD /api/hello` check), names the method and path of the requests behind a credential
-  failure, and bounds its launch at 120 seconds. The contract column is read again after the probes
-  and names a harness that updated itself while they ran.
+  usagemux 1.0.1 snapshot is read again — its new `placeholder` window field was refused as
+  unknown, so `codemux usage --json` exited 1 and the quota gate reported every provider
+  unreadable; the field is validated (a boolean; a placeholder window carries no percentages)
+  and printed back by `usage --json`. A Kimi Code 2.5.0 usage record without `inputCacheRead`,
+  which 2.5.0 leaves out when nothing was read from cache, counts that field as zero: an
+  experiment run failed on it with a protocol error, and a result-JSON run reported no cached
+  and no total count. In the gate itself: probe J no longer asks a model to run its script,
+  which no harness could do without network; it prints the sandbox for the three policy flags,
+  requires scode's three policy arguments in the print, and runs the script behind them, at zero
+  quota, so J and P no longer count as a probed harness. Probe P accepts the file the harness
+  entry name resolves to (`claude` links to `bin/claude.exe`). Probe I accepts a served model id
+  that carries a one-word alias target (`sonnet` served as `claude-sonnet-5-5`) or the target
+  plus a release date. Probe H2 no longer fails on a request that carries no credential beside
+  the keyed ones (Claude Code's `HEAD /api/hello` check), names the method and path of the
+  requests behind a credential failure, and bounds its launch at 120 seconds. The contract
+  column is read again after the probes and names a harness that updated itself while they ran;
+  the report saved before that second reading is marked preliminary.
 - Review round 169, whole tree: the process exit code after a session is the one `session_ended`
   reported even when a signal lands while the final event is still being flushed (it used to become
   143), and the session's closing call-ledger line carries that same process exit code, nonzero when

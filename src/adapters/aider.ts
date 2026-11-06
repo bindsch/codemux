@@ -6,9 +6,9 @@ import { assertNoAiderProjectExecutionConfig } from "../project-safety.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import {
   createAiderHistoryFile,
-  extractAiderReply,
   readAiderHistory,
 } from "../aider-history.js";
+import { extractAiderReply } from "../aider-history-text.js";
 import {
   assertProviderCap,
   readProviderOverride,

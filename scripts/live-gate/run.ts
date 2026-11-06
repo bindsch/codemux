@@ -54,11 +54,15 @@ export function sessionHarnessFacts(): HarnessFacts[] {
 /** A live session entry left behind after the probe session exited means the
  * registry leaked a live record; the probe's shutdown did not complete.
  * The probe's own record is identified by its session id (parsed from the
- * capture's `session_started` line) or, when the capture carries none, its
- * working directory. Without either it falls back to the old rule — any
- * live entry of the same agent since the probe started — which fails the
- * probe on an operator's parallel session of the same agent (review round
- * 10, contracts 8). */
+ * capture's `session_started` line) or its working directory — the probe's
+ * own fresh directory, so a live entry there is its leak whatever id it
+ * carries. With both known, either one names a leak: a candidate that
+ * printed a wrong session id must not hide a live entry in the probe's
+ * directory (review round 199). With only one of them, that one's rule
+ * applies; without either it falls back to the old rule — any live entry
+ * of the same agent since the probe started — which fails the probe on an
+ * operator's parallel session of the same agent (review round 10,
+ * contracts 8). */
 export function liveSessionLeak(
   agent: AgentId,
   sinceMs: number,
@@ -72,6 +76,9 @@ export function liveSessionLeak(
     };
     const leaked = (file.sessions ?? []).filter((entry) => {
       if (entry.ended != null) return false;
+      if (sessionId !== undefined && cwd !== undefined) {
+        return entry.id === sessionId || entry.cwd === cwd;
+      }
       if (sessionId !== undefined) return entry.id === sessionId;
       if (cwd !== undefined) return entry.cwd === cwd;
       return entry.agent === agent && Date.parse(entry.created_at ?? "") >= sinceMs;
@@ -365,7 +372,7 @@ export async function runProbes(
               const unset = Object.keys(env).filter((name) => name.toUpperCase().startsWith("SCODE_"))
                 .flatMap((name) => ["-u", name]);
               const ran = await runner.run(
-                [...(unset.length === 0 ? [] : ["/usr/bin/env", ...unset]), ...sandbox, "/bin/sh", noNet.script],
+                [...(unset.length === 0 ? [] : ["env", ...unset]), ...sandbox, "/bin/sh", noNet.script],
                 noNet.expected, outer, prefix);
               // Both steps' warnings reach the row: a print that passed with
               // a stale-contract warning must not lose it to the second step.

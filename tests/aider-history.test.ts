@@ -18,14 +18,13 @@ import { pathToFileURL } from "node:url";
 import { AiderAdapter } from "../src/adapters/aider.js";
 import type { RunContext } from "../src/adapters/base.js";
 import {
-  aiderHistoryHeader,
   aiderHistorySizeBytes,
   createAiderHistoryFile,
-  extractAiderReply,
   MAX_HISTORY_BYTES,
   readAiderHistory,
   readAiderHistoryDelta,
 } from "../src/aider-history.js";
+import { aiderHistoryHeader, extractAiderReply } from "../src/aider-history-text.js";
 
 describe("aider chat history extraction", () => {
   const history = (body: string): string =>

@@ -353,7 +353,9 @@ export class CodexStreamParser {
         }
         if (type === "commandExecution" && method === "item/completed") {
           const output = item["aggregatedOutput"];
-          const status = item["status"];
+          // `completed` is the only success the recorded fixtures define
+          // (a refusal lands `declined`); any other or missing status is
+          // an error result, fail-closed like the turn status (round 199).
           return [
             {
               kind: "tool_result",
@@ -361,7 +363,7 @@ export class CodexStreamParser {
               turnId: scoped.turnId as string,
               callId: itemId,
               output: typeof output === "string" ? output : null,
-              isError: status === "failed" || status === "declined",
+              isError: item["status"] !== "completed",
             },
           ];
         }

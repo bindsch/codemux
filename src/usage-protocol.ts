@@ -12,10 +12,11 @@ export interface UsageWindow {
   remainingPercent: number | null;
   windowMinutes: number | null;
   resetsAt: string | null;
-  /** usagemux 1.0.1 and later: true for a window the provider reports
-   * without a measurement (both percentages null), false for a measured
-   * one. Absent in a 1.0.0 snapshot, and kept absent here, so `usage
-   * --json` prints what usagemux answered. */
+  /** usagemux 1.0.1 and later: true for a window upstream marks as a
+   * placeholder, whose percentages are both null; false for every other
+   * window, which may still report a null percentage it does not know.
+   * Absent in a 1.0.0 snapshot, and kept absent here, so `usage --json`
+   * prints what usagemux answered. */
   placeholder?: boolean;
 }
 

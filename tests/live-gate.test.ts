@@ -276,6 +276,33 @@ test("the session leak check blames only the probe's own record (round 10, contr
   }
 });
 
+test("with id and cwd both known, a live entry in the probe's directory is a leak whatever id it carries (round 199)", () => {
+  // A candidate that printed a wrong session id used to hide a live
+  // entry sitting in the probe's own working directory: the check
+  // returned on the id alone. With both facts known, either one names
+  // the probe's record — the probe's cwd is its own fresh directory.
+  // An operator's unrelated live session (other id, other cwd) still
+  // does not.
+  const mkdtemp = Bun.spawnSync(["mktemp", "-d"]).stdout.toString().trim();
+  const registry = join(mkdtemp, "live-sessions.json");
+  const now = new Date().toISOString();
+  try {
+    writeFileSync(registry, JSON.stringify({
+      version: 1,
+      sessions: [
+        { id: "hidden-id", agent: "claude", cwd: "/probe/cwd", created_at: now, ended: null },
+        { id: "operator-session", agent: "claude", cwd: "/operator/cwd", created_at: now, ended: null },
+      ],
+    }));
+    expect(liveSessionLeak("claude", Date.now() - 60_000, registry, "printed-id", "/probe/cwd"))
+      .toContain("1 live registry entry left for claude");
+    expect(liveSessionLeak("claude", Date.now() - 60_000, registry, "printed-id", "/other/cwd"))
+      .toBeNull();
+  } finally {
+    rmSync(mkdtemp, { recursive: true, force: true });
+  }
+});
+
 test("an unreadable or malformed registry fails the leak check instead of reading as no leak (round 16, contracts-2 1)", () => {
   // The end-state check used to catch every read or parse failure and
   // answer null — a vacuous pass for a registry it never saw. Only an

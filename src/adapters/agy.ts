@@ -5,7 +5,8 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import type { AgyProbeMode } from "../agy-isolation-probe.js";
 import { summarizeAgyStream } from "../agy-stream.js";
-import { PROBE_MARKER, PROBE_PID, findDirectory, sameDirectory, sweepStaleHomes } from "./agy-homes.js";
+import { PROBE_FILE_MAX_BYTES, PROBE_MARKER, PROBE_PID, findDirectory, sameDirectory, sweepStaleHomes } from "./agy-homes.js";
+import { readFileBytesBounded } from "../file-io.js";
 import { AGY_MIRROR_PATH, agyKeychainHost, agyProbeRoots, insertAgyKeychainItem, prepareAgyPrivateKeychain, recoverAgyKeychainSearchList, verifyAgyKeychainSearchList } from "../agy-keychain.js";
 import { assertNoAgyProjectExecutionConfig } from "../project-safety.js";
 import { AGY_DENIED_ACTIONS, headlessMediumSettings, readAgyTokenForCopy } from "./agy-settings.js";
@@ -301,11 +302,27 @@ export class AgyAdapter extends BaseAdapter {
       // A removal that failed halfway may have deleted the marker already.
       // The retry then accepts its absence: the descriptor checks above
       // still prove this is the directory the run created. A marker that
-      // is present must still be this run's (review round 143).
+      // is present must still read as this run's, once, bounded, without
+      // following a link (review rounds 143 and 199): a link, a
+      // non-regular file, or an oversized file is "not this run's marker"
+      // and the cleanup refuses. The bytes are decoded with nothing
+      // stripped, so a marker with a byte-order mark still differs
+      // (review round 204).
       const markerPath = join(homePath, PROBE_MARKER);
-      const markerStat = lstatSync(markerPath, { throwIfNoEntry: false });
-      if (markerStat === undefined ? owned.removalStarted !== true
-        : !markerStat.isFile() || readFileSync(markerPath, "utf8") !== owned.marker) {
+      let markerText: string | null;
+      try {
+        markerText = readFileBytesBounded(markerPath, {
+          maxBytes: PROBE_FILE_MAX_BYTES,
+          label: "agy probe marker",
+          noFollow: true,
+        }).toString("utf8");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw new Error("refusing cleanup of a replaced agy probe home or parent");
+        }
+        markerText = null;
+      }
+      if (markerText === null ? owned.removalStarted !== true : markerText !== owned.marker) {
         throw new Error("refusing cleanup of a replaced agy probe home or parent");
       }
       owned.removalStarted = true;

@@ -306,8 +306,15 @@ function timestamp(value: unknown): number {
   return value / 1000;
 }
 
+// Kimi Code 2.5.0 declares `inputCacheRead` optional in its own usage
+// schema and leaves it out when nothing was read from cache; its own
+// token total counts the absent field as zero. So does this: a 2.5.0
+// experiment whose first request read no cache failed here with
+// "Invalid Kimi usage inputCacheRead" (live gate, 2026-11-06). A field
+// that is present is still validated, and the other three stay required.
 function normalizedUsage(value: unknown): ExperimentUsage {
-  const usage = kimiObject(value);
+  const reported = kimiObject(value);
+  const usage = reported && reported.inputCacheRead === undefined ? { ...reported, inputCacheRead: 0 } : reported;
   for (const key of ["inputOther", "output", "inputCacheRead", "inputCacheCreation"]) {
     if (!usage || !Number.isSafeInteger(usage[key]) || usage[key] < 0) throw new ExperimentFailure(Code.Protocol, `Invalid Kimi usage ${key}`);
   }

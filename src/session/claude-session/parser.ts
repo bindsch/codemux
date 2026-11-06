@@ -269,13 +269,16 @@ export class ClaudeStreamParser {
           // bound, or carrying NUL — takes this same branch (review round
           // 104): the decision parser rejects every such id as malformed,
           // so emitting it as a permission request would block the
-          // harness on a pending id no caller decision can resolve.
+          // harness on a pending id no caller decision can resolve. So
+          // does a numeric id serialization corrupts (review rounds 199
+          // and 201): an integer past Number.MAX_SAFE_INTEGER was already
+          // rounded by JSON.parse, and negative zero is written back as
+          // zero, so the echo could answer a request that never existed.
           return [
             {
               kind: "unsupported_control_request",
               requestId:
-                typeof requestId === "string" ||
-                (typeof requestId === "number" && Number.isFinite(requestId))
+                typeof requestId === "string" || isEchoableNumericRequestId(requestId)
                   ? requestId
                   : null,
               subtype: typeof subtype === "string" ? subtype.slice(0, 128) : "(none)",
@@ -302,6 +305,24 @@ export class ClaudeStreamParser {
 
 function isInputObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** A numeric request id the control protocol's error answer can echo:
+ * one whose value survives the round trip through JSON. An integer past
+ * Number.MAX_SAFE_INTEGER was already rounded by JSON.parse
+ * (`9007199254740993` arrives as 2^53), and `JSON.stringify` folds a
+ * non-finite number to `null` and writes `-0` as `0`, so in each case
+ * the answer could name another request and the id is not echoed
+ * (review rounds 199 and 201). A fraction is echoed: `1.5` is written
+ * back as the same value, and leaving that request unanswered would
+ * block the harness until the turn timeout (review round 204). */
+function isEchoableNumericRequestId(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    !Object.is(value, -0) &&
+    (!Number.isInteger(value) || Number.isSafeInteger(value))
+  );
 }
 
 

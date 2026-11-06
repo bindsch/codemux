@@ -15,6 +15,13 @@ const READ_CHUNK_BYTES = 64 * 1024;
  * untrusted or unreadable one match on this class. */
 export class FileContentError extends Error {}
 
+/** The entry at the path is not a regular file this read may use: a
+ * symbolic link, a non-regular file (a FIFO, a directory), or — where the
+ * open has no no-follow flag — an entry that changed between the look
+ * and the open. Callers that skip unusable entries rather than refuse
+ * match on this class. */
+export class FileShapeError extends Error {}
+
 /** Whether a path has an entry, told apart from a path that cannot be
  * inspected. Only ENOENT (nothing there) and ENOTDIR (a parent is a
  * file) mean "no entry"; every other failure — a mode-000 parent
@@ -63,7 +70,7 @@ export function readFileBytesBounded(
   // followed (review round 174).
   const looked = options.noFollow && !noFollowOpen ? lstatSync(path) : null;
   if (looked?.isSymbolicLink()) {
-    throw new Error(`${options.label} must not be a symbolic link`);
+    throw new FileShapeError(`${options.label} must not be a symbolic link`);
   }
   try {
     const noFollowFlag = noFollowOpen ? constants.O_NOFOLLOW : 0;
@@ -76,17 +83,17 @@ export function readFileBytesBounded(
       options.noFollow &&
       (error as NodeJS.ErrnoException).code === "ELOOP"
     ) {
-      throw new Error(`${options.label} must not be a symbolic link`);
+      throw new FileShapeError(`${options.label} must not be a symbolic link`);
     }
     throw error;
   }
   try {
     const stat = fstatSync(fd);
     if (looked !== null && (looked.dev !== stat.dev || looked.ino !== stat.ino)) {
-      throw new Error(`${options.label} changed while it was opened`);
+      throw new FileShapeError(`${options.label} changed while it was opened`);
     }
     if (!stat.isFile()) {
-      throw new Error(`${options.label} is not a regular file`);
+      throw new FileShapeError(`${options.label} is not a regular file`);
     }
     if (stat.size > options.maxBytes) {
       throw new FileContentError(`${options.label} exceeds ${options.maxBytes} bytes`);

@@ -84,7 +84,9 @@ test("probe J runs its script without the ambient SCODE_* names a real launch sc
         return { status: "PASS", seconds: 0, stderr: "" };
       },
     }, reportDirectory, { ...withoutScode(fixture.env), SCODE_ACCOUNT_FILE: "/tmp/ambient-accounting", scode_debug: "1" });
-    expect(ran[0]!.slice(0, 6)).toEqual(["/usr/bin/env", "-u", "SCODE_ACCOUNT_FILE", "-u", "scode_debug", "/opt/tools/bin/scode"]);
+    // `env` is found on PATH: a fixed /usr/bin/env does not exist on every
+    // system (review round 199).
+    expect(ran[0]!.slice(0, 6)).toEqual(["env", "-u", "SCODE_ACCOUNT_FILE", "-u", "scode_debug", "/opt/tools/bin/scode"]);
   } finally {
     rmSync(reportDirectory, { recursive: true, force: true });
   }

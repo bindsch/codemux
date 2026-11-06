@@ -5,13 +5,13 @@
  * owns the lifecycle; the spawn and verdict paths live there.
  */
 
+import { readAiderHistoryDelta } from "../aider-history.js";
 import {
   aiderDeltaRecordsUnansweredPrompt,
   aiderHistoryHeader,
   aiderReplyAfterHeader,
   extractAiderReply,
-  readAiderHistoryDelta,
-} from "../aider-history.js";
+} from "../aider-history-text.js";
 import { appendSessionTurnCallRecord } from "../call-log.js";
 import { emptyUsage } from "../result-envelope.js";
 import {

@@ -82,9 +82,15 @@ test("a cleanup that keeps failing releases its descriptors at process exit", ()
   }) as typeof fs.rmSync);
   try {
     expect(() => adapter.cleanupRunSync(context)).toThrow("agy probe cleanup failed");
-    expect(closes).toHaveLength(0); // descriptors kept for the retry
+    // The marker's bounded read closes its own transient descriptor each
+    // attempt (review round 199); the validation descriptors stay open
+    // for the retry.
+    expect(closes).toHaveLength(1);
     expect(() => adapter.cleanupRunSync(context, true)).toThrow("agy probe cleanup failed");
-    expect(closes).toHaveLength(2); // the exit call closes both, failure or not
+    // The exit call runs one more marker read, then closes both
+    // validation descriptors, failure or not.
+    expect(closes).toHaveLength(4);
+    for (const fd of closes.slice(-2)) expect(() => fs.fstatSync(fd)).toThrow();
     expect(existsSync(probeHome)).toBe(true);
   } finally {
     remove.mockRestore();
@@ -196,6 +202,20 @@ test("a home whose marker is missing before any removal began is still refused",
   } finally {
     // The exit call refuses the same way; it is made for its descriptor close.
     expect(() => adapter.cleanupRunSync(context, true)).toThrow("refusing cleanup");
+    rmSync(dirname(dirname(dirname(probeHome))), { recursive: true, force: true });
+  }
+});
+
+test("an oversized marker is refused without being read whole (review round 199)", () => {
+  // The marker read is bounded: a file past the bound cannot be this
+  // run's 36-character marker, so the cleanup refuses it instead of
+  // reading it to find out.
+  const { adapter, context, probeHome } = preparedProbe();
+  try {
+    fs.appendFileSync(join(probeHome, ".codemux-probe-owner"), "x".repeat(300));
+    expect(() => adapter.cleanupRunSync(context)).toThrow("refusing cleanup of a replaced agy probe home or parent");
+    expect(existsSync(probeHome)).toBe(true);
+  } finally {
     rmSync(dirname(dirname(dirname(probeHome))), { recursive: true, force: true });
   }
 });

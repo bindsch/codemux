@@ -123,3 +123,27 @@ test("unparseable native arguments on a call Kimi ran are still a protocol misma
   expect((thrown as { code?: string }).code).toBe(Code.Protocol);
   expect(String((thrown as Error).message)).toContain("does not match tool.call evidence");
 });
+
+test("Kimi Code 2.5.0's usage without a cache-read count is a zero, and other gaps still fail", () => {
+  // Live gate, 2026-11-06: the 2.5.0 wire carried
+  // {"inputOther":2027,"output":114,"inputCacheCreation":0} and the
+  // experiment failed with "Invalid Kimi usage inputCacheRead". Kimi's own
+  // schema marks the field optional and its own total counts it as zero.
+  const f = fixture();
+  f.accept(toolCall(), 1000);
+  f.accept(stepEnd({ inputOther: 2027, output: 114, inputCacheCreation: 0 }), 1200);
+  expect(f.byKind("turn_usage")).toEqual([{ kind: "turn_usage", message_id: "step-1",
+    usage: { input: 2027, output: 114, cache_read: 0, cache_write: 0 }, t: 1.2 }]);
+  // Present but unusable is still a protocol failure, and the three
+  // required counts stay required.
+  for (const usage of [
+    { inputOther: 1, output: 1, inputCacheRead: null, inputCacheCreation: 0 },
+    { inputOther: 1, output: 1, inputCacheRead: -1, inputCacheCreation: 0 },
+    { inputOther: 1, output: 1 },
+    { output: 1, inputCacheCreation: 0 },
+  ]) {
+    const g = fixture();
+    g.accept(toolCall(), 1000);
+    expect(() => g.accept(stepEnd(usage), 1200)).toThrow(expect.objectContaining({ code: Code.Protocol }));
+  }
+});

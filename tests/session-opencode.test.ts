@@ -239,6 +239,21 @@ describe("opencode session - parser tiers", () => {
     });
   });
 
+  test("a tool line whose input is not an object is a grammar error (review rounds 199, 207)", () => {
+    // The session protocol's tool_call.input is an object, and OpenCode's
+    // completed and error tool states both carry one. Each malformed
+    // shape breaks the wire pin: never an event that violates the
+    // protocol, and never a line passed over while the turn completes.
+    for (const input of [undefined, ["ls"], "ls", 7, null]) {
+      const state = { status: "completed", output: "file-a",
+        ...(input === undefined ? {} : { input }) };
+      expect(parseOpenCodeRunLine(
+        line({ type: "tool_use", sessionID: ID, part: { id: "tu_9", type: "tool_use", tool: "bash", state } }),
+        { knownSessionId: ID }
+      )).toEqual({ kind: "grammar_error", sessionId: ID, message: "a tool_use line carries a state.input that is not an object" });
+    }
+  });
+
   test("a step_finish line parses as the normalized usage", () => {
     // Review D2, contracts 1: the real wire line is
     // `{type, timestamp, sessionID, part}` — the run command's emitter

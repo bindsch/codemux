@@ -241,12 +241,12 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
     maxAudited: "0.186.0",
   },
   kimi: {
-    // Ceiling 2.4.0 from the 2026-11-02 live gate (docs/harnesses.md names the probes).
+    // Ceiling 2.5.0 from the 2026-11-06 live gate (docs/harnesses.md names the probes).
     scheme: "semver",
     versionArgs: ["--version"],
     pattern: /^(\d+\.\d+\.\d+)/,
     min: "0.31.0",
-    maxAudited: "2.4.0",
+    maxAudited: "2.5.0",
   },
   openhands: {
     scheme: "semver",

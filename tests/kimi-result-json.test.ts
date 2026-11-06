@@ -233,6 +233,18 @@ describe("Kimi result-json", () => {
       expect(f.processResult().usage).toEqual({ input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, total_tokens: 0, cost_usd: null });
       f.writeWire([{ type: "usage.record", usage: { inputOther: 2, output: 3, inputCacheRead: 0 } }]);
       expect(f.processResult().usage).toEqual({ input_tokens: 2, output_tokens: 3, cached_input_tokens: null, total_tokens: null, cost_usd: null });
+      // Kimi Code 2.5.0 leaves inputCacheRead out when nothing was read
+      // from cache (its own schema marks it optional and its own total
+      // counts it as zero): absent is zero, while a present null, or any
+      // other missing count, still leaves the sums null (live gate,
+      // 2026-11-06).
+      f.writeWire([
+        { type: "usage.record", usage: { inputOther: 2027, output: 114, inputCacheCreation: 0 } },
+        { type: "usage.record", usage: { inputOther: 5, output: 1, inputCacheRead: 7, inputCacheCreation: 2 } },
+      ]);
+      expect(f.processResult().usage).toEqual({ input_tokens: 2032, output_tokens: 115, cached_input_tokens: 9, total_tokens: 2156, cost_usd: null });
+      f.writeWire([{ type: "usage.record", usage: { inputOther: 2, output: 3, inputCacheRead: null, inputCacheCreation: 0 } }]);
+      expect(f.processResult().usage).toEqual({ input_tokens: 2, output_tokens: 3, cached_input_tokens: null, total_tokens: null, cost_usd: null });
       f.writeWire([]);
       expect(f.processResult().usage).toEqual({ input_tokens: null, output_tokens: null, cached_input_tokens: null, total_tokens: null, cost_usd: null });
     } finally { f.cleanup(); }

@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test";
 import {
   aiderDeltaRecordsUnansweredPrompt,
   aiderHistoryHeader,
-} from "../src/aider-history.js";
+} from "../src/aider-history-text.js";
 
 describe("the unanswered-prompt rule over a turn's delta", () => {
   const prompt = "fix the parser";

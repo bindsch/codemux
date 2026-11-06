@@ -175,7 +175,10 @@ harness that updated itself while the probes ran (agy and cursor both did on
 2026-11-06) is judged on the version installed afterwards, and its row adds
 `updated during the gate, the probes started on <version>`: its probes ran
 on a mix of the two versions, so rerun that harness before recording the new
-version as audited. The report is saved before the second reading starts. A
+version as audited. The report is saved before the second reading starts,
+under a first line that begins `PRELIMINARY:`; the report of a gate that
+finished replaces it, and an interrupted gate's report keeps it, so a saved
+report that carries that line is not release evidence. A
 harness the second reading could not read prints `UNREADABLE`, which fails
 the gate like any other unreadable contract, and a harness that was
 `UNREADABLE` or `UNTRUSTED` before the probes stays so.

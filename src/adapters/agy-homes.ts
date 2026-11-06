@@ -3,12 +3,53 @@
 // after its directory identity (device and inode) is confirmed on disk,
 // and only identified homes whose owner process is gone are swept.
 
-import { lstatSync, readFileSync, readdirSync, realpathSync, rmSync, type Stats } from "node:fs";
+import { lstatSync, readdirSync, realpathSync, rmSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { UNREADABLE_OWNER_STALE_MS, parseOwnerPid, pidProbeAlive } from "../process-table.js";
+import { FileContentError, FileShapeError, readFileBytesBounded } from "../file-io.js";
 
 export const PROBE_MARKER = ".codemux-probe-owner";
 export const PROBE_PID = ".codemux-probe-pid";
+
+/** The read bound on a probe marker or PID file: a marker is a
+ * 36-character UUID and a PID file a short decimal, so 256 bytes holds
+ * either with room to spare. A file past it is skipped by the sweep and
+ * refused by the cleanup, never read to find out (review round 199). */
+export const PROBE_FILE_MAX_BYTES = 256;
+
+const MARKER_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+
+/** What one bounded read of a probe marker or PID file found. */
+type ProbeEntry = { kind: "text"; text: string } | { kind: "oversized" } | { kind: "absent" };
+
+/** One bounded read of a probe marker or PID file (review round 199).
+ * The read never follows a link and never passes the bound, so a file a
+ * harness left in the home cannot grow it without limit or park it on a
+ * FIFO. The bytes are decoded as the old whole-file read decoded them —
+ * nothing stripped, nothing refused — so a marker with a byte-order mark
+ * or stray bytes still fails the exact comparisons its callers make
+ * (review round 204). `absent` covers a missing entry, a link, and a
+ * non-regular file. An error the entry's shape cannot explain — an
+ * unreadable parent, an I/O error — propagates as before; one follow-up
+ * lstat classifies an entry the open itself refused (a socket), and it
+ * is used only to skip, never to read. */
+function readProbeEntryFile(path: string): ProbeEntry {
+  try {
+    const bytes = readFileBytesBounded(path, {
+      maxBytes: PROBE_FILE_MAX_BYTES,
+      label: "agy probe entry file",
+      noFollow: true,
+    });
+    return { kind: "text", text: bytes.toString("utf8") };
+  } catch (error) {
+    if (error instanceof FileContentError) return { kind: "oversized" };
+    if (error instanceof FileShapeError) return { kind: "absent" };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "absent" };
+    const entry = lstatSync(path, { throwIfNoEntry: false });
+    if (entry === undefined || !entry.isFile()) return { kind: "absent" };
+    throw error;
+  }
+}
 
 /** Remove only identified private homes whose owner is known to have exited. */
 export function sweepStaleHomes(root: string): void {
@@ -24,12 +65,16 @@ export function sweepStaleHomes(root: string): void {
       const home = join(root, name);
       const identity = lstatSync(home, { throwIfNoEntry: false });
       if (!identity?.isDirectory() || identity.uid !== rootStat.uid) continue;
-      const marker = join(home, PROBE_MARKER);
-      if (!lstatSync(marker, { throwIfNoEntry: false })?.isFile() ||
-          !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(readFileSync(marker, "utf8"))) continue;
+      // A home is identified by a marker that reads as one: an oversized
+      // marker is not one, and the home is left alone.
+      const marker = readProbeEntryFile(join(home, PROBE_MARKER));
+      if (marker.kind !== "text" || !MARKER_PATTERN.test(marker.text)) continue;
       const pidPath = join(home, PROBE_PID);
-      if (!lstatSync(pidPath, { throwIfNoEntry: false })?.isFile()) continue;
-      const pid = parseOwnerPid(readFileSync(pidPath, "utf8"));
+      const owner = readProbeEntryFile(pidPath);
+      if (owner.kind === "absent") continue;
+      // An owner file past the bound names no pid, like any other content
+      // that parses to none: the age rule below decides.
+      const pid = owner.kind === "text" ? parseOwnerPid(owner.text) : null;
       // A dead owner is swept. An unreadable one (the child can rewrite the file) only once the file is old.
       if (pid === null ? Date.now() - lstatSync(pidPath).mtimeMs <= UNREADABLE_OWNER_STALE_MS : pidProbeAlive(pid)) continue;
       // Never follow a replacement introduced during the owner check.

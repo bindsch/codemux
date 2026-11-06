@@ -52,7 +52,14 @@ export function kimiWireUsage(path: string): ResultUsageBlock {
     let total = 0;
     for (const record of records) {
       const counts = record.usage;
-      const count = counts && typeof counts === "object" ? reportedCount((counts as Record<string, unknown>)[key]) : null;
+      const present = counts !== null && typeof counts === "object";
+      const raw = present ? (counts as Record<string, unknown>)[key] : null;
+      // Kimi Code 2.5.0 leaves `inputCacheRead` out of a record that read
+      // nothing from cache (its schema marks the field optional, and its
+      // own total counts the absent field as zero): absent is zero here
+      // too, or every such run would report no cached and no total count
+      // (live gate, 2026-11-06). Every other missing count stays null.
+      const count = present && raw === undefined && key === "inputCacheRead" ? 0 : reportedCount(raw);
       if (count === null) return null;
       total = checkedSum(total, count);
     }

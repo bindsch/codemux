@@ -144,7 +144,9 @@ Usage sums `usage.record` entries in
 `<brand home>/sessions/*/session_<id>/agents/main/wire.jsonl`: `inputOther`
 becomes uncached input, `inputCacheRead + inputCacheCreation` becomes cached
 input, and `output` becomes output tokens. Their sum is the total; cost is
-null. Missing counts remain null. The wire log is read before hermetic home
+null. Missing counts remain null, with one exception: Kimi Code 2.5.0 leaves
+`inputCacheRead` out of a record that read nothing from cache, and that
+absent field counts as zero, as it does in Kimi's own total. The wire log is read before hermetic home
 cleanup, with a 16 MiB limit. A missing session ID, missing log, malformed
 stream/log, or error event fails the run and reports a diagnostic.
 An experiment provider attempt that fails without usage and without tool calls emits `harness_retry`
@@ -430,8 +432,10 @@ Unknown schema versions, missing/duplicate/unrequested clients, invalid
 fields, or oversized output fail. Results report quota windows, credits,
 account/plan information, and subscription timestamps when available.
 A window may carry usagemux 1.0.1's `placeholder` boolean: true marks a
-window the provider reports without a measurement, whose percentages are
-null, and the quota gate judges only the measured windows beside it.
+window upstream reports as a placeholder, whose percentages are both null;
+false says nothing more than that, and such a window may still lack a
+percentage. The quota gate judges only the windows that report a remaining
+percentage.
 `usage --json` prints the field when usagemux sent it.
 Usagemux owns credential lookup, provider compatibility, and caching.
 
