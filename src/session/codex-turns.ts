@@ -225,6 +225,12 @@ export abstract class CodexDriverTurns extends CodexDriverApprovals {
     this.queuedInputs -= 1;
     const turnId = this.submitTurn();
     if (turnId === null) return; // transition failure already ended us
+    // No turn work after the driver finished (review round 153): the
+    // entry check above cannot see a finish that begins inside
+    // submitTurn's own emit — an outbound bound breach there ends the
+    // session synchronously — so the frame is never written into a child
+    // the end path owns.
+    if (this.finished) return;
     this.sendTurnStart(turnId, next.text);
   }
 

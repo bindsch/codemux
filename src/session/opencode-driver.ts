@@ -213,6 +213,11 @@ export class OpenCodeSessionDriver extends OpenCodeTurns {
           return;
         }
         this.ack(inputSeq, true);
+        // The acknowledgement itself can be the event that breaches the
+        // outbound bound and ends the session. The end path then recorded
+        // that no turn was open, so no turn may open after it (review
+        // round 155).
+        if (this.finished) return;
         if (this.fsm.state === "starting") {
           // The silent warm-up: a fresh opencode session has no init
           // frame — the session_started event and the registry record
@@ -239,6 +244,13 @@ export class OpenCodeSessionDriver extends OpenCodeTurns {
             turnId
           )
         );
+        // A turn must not spawn after the driver finished (review round
+        // 153): an outbound bound breached inside the emits above ends the
+        // session synchronously — the queue's failure callback runs
+        // finish, which sets `finished` before its first await — so the
+        // turn ends with the session instead of spawning a child the end
+        // path no longer owns.
+        if (this.finished) return;
         void this.startTurn(harnessText);
         return;
       }

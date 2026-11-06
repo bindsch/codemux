@@ -2,7 +2,6 @@ import { BaseAdapter, type RunContext } from "./base.js";
 import { devNull, homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MAX_ARGV_PROMPT_BYTES } from "../process-runner.js";
 import { assertNoAiderProjectExecutionConfig } from "../project-safety.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import {
@@ -35,10 +34,14 @@ export const AIDER_MODEL_SETTINGS_PATH = fileURLToPath(
 export const AIDER_MODEL_METADATA_PATH = fileURLToPath(
   new URL("../../resources/aider-model-metadata.json", import.meta.url)
 );
-/** The canned declines every headless aider spawn writes to stdin: aider
- * treats EOF as acceptance for its yes-default prompts (OAuth, URL
- * opening, supervised tool prompts), so a spawn that never answers must
- * answer no. Exported for the session driver's per-turn spawns. */
+/** One block of the canned declines every headless aider spawn feeds its
+ * stdin: aider treats EOF as acceptance for its yes-default prompts (OAuth,
+ * URL opening, supervised tool prompts), so a spawn that never answers must
+ * answer no. The block REPEATS for the child's whole lifetime (the
+ * adapter's stdinRepeats): a run that meets a 65th prompt still answers
+ * no, and stdin is never closed while the child lives, because that EOF is
+ * the acceptance this exists to prevent (review round 153). Exported for
+ * the session driver's per-turn spawns. */
 export const HEADLESS_NEGATIVE_RESPONSES = "n\n".repeat(64);
 
 /** The fixed headless flags every aider spawn shares — run, TUI, and the
@@ -319,6 +322,20 @@ export class AiderAdapter extends BaseAdapter {
     return HEADLESS_NEGATIVE_RESPONSES;
   }
 
+  override promptInArgv(_request: RunRequest): boolean {
+    // The stdin above carries the declines, not the prompt: the prompt
+    // rides `--message=` argv, so the shared validator's argv rules (the
+    // NUL refusal and the byte bound) apply (review round 153).
+    return true;
+  }
+
+  override stdinRepeats(_request: RunRequest): boolean {
+    // While the child lives, its stdin never reaches EOF and always
+    // answers a decline: one block in flight at a time, the next written
+    // only after the previous flushed (review round 153).
+    return true;
+  }
+
   override validateRunRequest(request: RunRequest): void {
     super.validateRunRequest(request);
     assertNoAiderProjectExecutionConfig(
@@ -337,13 +354,10 @@ export class AiderAdapter extends BaseAdapter {
           "dispatched"
       );
     }
-    if (Buffer.byteLength(request.prompt, "utf8") > MAX_ARGV_PROMPT_BYTES) {
-      // Usage like the base adapter's own cap (review round 11,
-      // contracts-2 2): a request only the caller can fix, exit 64.
-      throw new UsageRefusalError(
-        `aider passes prompts in argv; prompt exceeds the ${MAX_ARGV_PROMPT_BYTES}-byte safe limit`
-      );
-    }
+    // The argv byte bound and the NUL refusal are the shared validator's,
+    // keyed on promptInArgv above — the same wording, one rule (review
+    // round 153; the local copy this replaced first appeared in review
+    // round 11, contracts-2 2).
     // Fail before launch on a half-configured override, and surface the
     // model requirement early: the harness's own default model would hit the
     // custom endpoint and fail opaquely.

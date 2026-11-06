@@ -75,10 +75,15 @@ describe("aider session e2e - lifecycle", () => {
       cost_usd: null,
     });
     // The exchange landed in the per-session history file, and the prompt
-    // rode argv while the canned negatives rode stdin.
+    // rode argv while the decline stream rode stdin — whole 128-byte
+    // blocks, no EOF while the child lived (the repeating carrier,
+    // review round 153).
     expect(readFileSync(session.historyPath, "utf8")).toContain("#### scenario:basic one");
     expect(messageArg(session, 0)).toBe("--message=scenario:basic one");
-    expect(fakeRecord(session, "stdin.jsonl")[0]?.bytes).toBe(128);
+    const stdin = fakeRecord(session, "stdin.jsonl")[0];
+    expect(stdin?.eof).toBe(false);
+    expect(stdin?.bytes % 128).toBe(0);
+    expect(stdin?.bytes).toBeGreaterThanOrEqual(128);
     const argvs = fakeRecord(session, "argv.jsonl");
     expect(argvs[0]!.args).toContain("--restore-chat-history");
     expect(argvs[0]!.args).toContain("--chat-history-file");

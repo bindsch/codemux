@@ -25,8 +25,14 @@ export abstract class OpenCodeTurns extends OpenCodeDriverCore {
   /** Spawn the turn's process and write the prompt: `run` reads non-TTY
    * stdin to EOF as its one message, so the write is raw text followed by
    * the half-close. The process's exit — not any one line — ends the
-   * turn. */
+   * turn. A finished driver returns before it builds or spawns anything:
+   * the end path owns the child and the verdict from the moment
+   * `finished` is set, so no turn may spawn after it (review round 153) —
+   * the input path checks this after its emits (an outbound bound breach
+   * ends the session synchronously there); this entry guard is the
+   * backstop for every other caller. */
   protected async startTurn(text: string): Promise<void> {
+    if (this.finished) return;
     this.turnPrompt = text;
     const argv = buildOpenCodeSessionCommand({
       autonomy: this.options.autonomy,

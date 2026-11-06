@@ -2,8 +2,10 @@
  * A scenario-driven fake of headless aider (the per-turn process behind
  * the aider session driver), built from the shapes the adapter pins
  * (src/adapters/aider.ts, 0.86.2): the prompt rides argv as
- * `--message=<text>`, the canned "n\n" negatives arrive on stdin, stdout
- * is a human transcript (never a protocol), and the one machine-usable
+ * `--message=<text>`, the "n\n" negatives arrive on stdin repeatedly for
+ * the process's whole lifetime (never an EOF while it lives, review
+ * round 153), stdout is a human transcript (never a protocol), and the
+ * one machine-usable
  * record of the exchange is the Markdown chat history file the
  * `--chat-history-file` flag names — a `# aider chat started at …`
  * banner at every process start, `#### `-prefixed user sections, `> `
@@ -185,25 +187,42 @@ const runTurn = (scenario: string, prompt: string): number | null => {
   }
 };
 
-// The canned negatives arrive on stdin and EOF closes the exchange's
-// input; the turn cannot start before the stream closes.
-let input = "";
+// The decline carrier repeats for the child's whole lifetime (review
+// round 153): while this process lives, stdin never reaches EOF and every
+// read returns a decline. The turn therefore starts once its first
+// confirmation has been answered — aider reads each prompt as the turn
+// asks it — never on an EOF that no longer comes. stdin stays drained so
+// the feeder's pipe never fills; the bytes are counted, not accumulated,
+// so an endless stream cannot grow this process's memory.
+let stdinBytes = 0;
+let sawEof = false;
+let firstDecline!: () => void;
+const answered = new Promise<void>((resolve) => {
+  firstDecline = resolve;
+});
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk: string) => {
-  input += chunk;
+  stdinBytes += Buffer.byteLength(chunk);
+  firstDecline();
 });
 process.stdin.on("end", () => {
-  record("stdin.jsonl", { bytes: input.length });
-  const scenario = /^scenario:([a-z0-9-]+)/.exec(prompt)?.[1] ?? "basic";
-  // The resume replay: --restore-chat-history reads the file before the
-  // exchange, recorded so the resume tests can prove the file survived.
-  if (args.includes("--restore-chat-history") && historyPath !== undefined) {
-    try {
-      record("prehistory.jsonl", { length: readFileSync(historyPath, "utf8").length });
-    } catch {
-      record("prehistory.jsonl", { length: null });
-    }
+  sawEof = true;
+});
+process.on("exit", () => {
+  record("stdin.jsonl", { bytes: stdinBytes, eof: sawEof });
+});
+
+const scenario = /^scenario:([a-z0-9-]+)/.exec(prompt)?.[1] ?? "basic";
+// The resume replay: --restore-chat-history reads the file before the
+// exchange, recorded so the resume tests can prove the file survived.
+if (args.includes("--restore-chat-history") && historyPath !== undefined) {
+  try {
+    record("prehistory.jsonl", { length: readFileSync(historyPath, "utf8").length });
+  } catch {
+    record("prehistory.jsonl", { length: null });
   }
+}
+void answered.then(() => {
   const code = runTurn(scenario, prompt);
   if (code !== null) {
     process.exit(code);

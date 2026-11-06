@@ -1,33 +1,13 @@
-/**
- * The session outbound path: the SessionWriter the SessionProcess
- * composes for every harness stdin write, the input deliverability caps,
- * and the bounded event queue to the caller. src/session/process.ts owns
- * the lifecycle and re-exports these.
- */
-
+/** * The session outbound path: the input deliverability caps and the bounded * event queue to the caller. The harness stdin write path itself * (SessionWriter and its caps) moved to src/session/stdin-writer.ts, which * this file re-exports. src/session/process.ts owns the lifecycle and * re-exports both. */
 /** The queue's "no sink failure yet" state. `null` cannot carry it: a sink
  * that rejects with `null` is a real failure — JavaScript allows any
  * rejection value — and an equality check against `null` would read that
  * rejection as successful delivery (review round 64, finding 9). */
 const NO_SINK_ERROR = Symbol("no sink error");
 
-/** A caller input line over this is rejected before it reaches the wire. */
-export const MAX_INPUT_LINE_BYTES = 17 * 1024 * 1024;
-/** Outbound queue bounds to the caller (design §4.2). */
+import { MAX_INPUT_LINE_BYTES, utf8ByteLength } from "./stdin-writer.js";export {  MAX_HARNESS_BACKLOG_BYTES,  MAX_INPUT_LINE_BYTES,  SessionWriter,  utf8ByteLength,} from "./stdin-writer.js";export type { WriteLineRejectReason, WriteLineResult } from "./stdin-writer.js";/** Outbound queue bounds to the caller (design §4.2). */
 export const MAX_PENDING_EVENTS = 1024;
 export const MAX_PENDING_EVENT_BYTES = 64 * 1024 * 1024;
-/** Bytes written to the harness's stdin that it has not yet read. Bun's
- * pipe sink buffers every write it cannot flush, without limit, so a
- * harness that stops reading would otherwise let the caller grow
- * codemux's memory without bound (review live19). */
-export const MAX_HARNESS_BACKLOG_BYTES = 64 * 1024 * 1024;
-
-export type WriteLineRejectReason = "oversize" | "framing" | "closed" | "backlog";
-
-export interface WriteLineResult {
-  ok: boolean;
-  reason?: WriteLineRejectReason;
-}
 
 /** Whether `line` fits `writeLine`'s cap, so an input the protocol has
  * already accepted can actually reach the harness. The protocol's own
@@ -59,152 +39,6 @@ export function harnessTextDeliverable(text: string): boolean {
     utf8ByteLength(JSON.stringify(text)) + HARNESS_FRAME_MARGIN_BYTES <=
     MAX_INPUT_LINE_BYTES
   );
-}
-
-const UTF8 = new TextEncoder();
-
-function utf8ByteLength(text: string): number {
-  return UTF8.encode(text).byteLength;
-}
-
-/**
- * The harness stdin write path: framed line writes, raw chunk writes, and
- * the EOF half-close, under the framing, size, and backlog caps.
- * SessionProcess composes one per child and delegates to it;
- * src/session/process.ts owns the lifecycle.
- */
-export class SessionWriter {
-  private readonly proc: ReturnType<typeof Bun.spawn>;
-
-  private stdinEnded = false;
-  /** Unflushed stdin bytes, and the generation of the newest write that
-   * left any. Bun resolves every pending write's promise together, once
-   * the whole buffer has drained, so a resolution clears the backlog
-   * only when no newer write is still pending behind it. */
-  private backlogBytes = 0;
-  private backlogGeneration = 0;
-
-  constructor(proc: ReturnType<typeof Bun.spawn>) {
-    this.proc = proc;
-  }
-
-  /**
-   * Write one line to the harness's stdin. The newline is appended here;
-   * a line that itself contains one (or a NUL) is a framing bug in the
-   * caller and is refused, never mangled onto the wire. An oversize line
-   * is refused without touching the stream, so the next write is intact.
-   * So is a line that would push the unread stdin backlog past
-   * MAX_HARNESS_BACKLOG_BYTES: every driver treats a refused write as a
-   * codemux fatal, so a harness that stops reading ends the session
-   * instead of growing codemux's memory (review live19).
-   */
-  writeLine(line: string): WriteLineResult {
-    if (this.stdinEnded) return { ok: false, reason: "closed" };
-    if (line.includes("\0") || line.includes("\n") || line.includes("\r")) {
-      return { ok: false, reason: "framing" };
-    }
-    const bytes = utf8ByteLength(line) + 1;
-    if (bytes - 1 > MAX_INPUT_LINE_BYTES) {
-      return { ok: false, reason: "oversize" };
-    }
-    if (this.backlogBytes + bytes > MAX_HARNESS_BACKLOG_BYTES) {
-      return { ok: false, reason: "backlog" };
-    }
-    const stdin = this.proc.stdin as import("bun").FileSink | number | undefined;
-    if (stdin === undefined || typeof stdin === "number") {
-      return { ok: false, reason: "closed" };
-    }
-    try {
-      const drained = stdin.write(`${line}\n`);
-      // A full sink (a line larger than the pipe) hands the remainder to
-      // an async drain, and a child that dies mid-drain rejects that
-      // promise with EPIPE — after the submit already succeeded. The
-      // child's exit is what reports the death, so the rejection is
-      // absorbed here instead of surfacing as an unhandled one that kills
-      // codemux (review live14).
-      if (typeof drained === "number") {
-        this.backlogBytes = 0;
-      } else {
-        this.backlogBytes += bytes;
-        const generation = ++this.backlogGeneration;
-        drained.then(
-          () => {
-            if (generation === this.backlogGeneration) this.backlogBytes = 0;
-          },
-          () => {}
-        );
-      }
-    } catch {
-      return { ok: false, reason: "closed" };
-    }
-    return { ok: true };
-  }
-
-  /**
-   * Write one raw chunk to the harness's stdin with NO appended newline —
-   * the primitive the harnesses that read stdin to EOF need: opencode takes
-   * the whole non-TTY stdin as the one-shot message (`Bun.stdin.text()`), so
-   * a multi-line prompt rides stdin exactly as written, and aider consumes
-   * its canned "n\n" negatives the same way. Everything `writeLine` refuses
-   * on framing grounds except the newline rule still applies: a NUL never
-   * reaches the wire, the oversize and backlog caps are the same, and a
-   * closed stdin is refused. The caller owns the framing — a chunk that is
-   * not a whole number of the harness's input units is a caller bug.
-   */
-  writeRaw(text: string): WriteLineResult {
-    if (this.stdinEnded) return { ok: false, reason: "closed" };
-    if (text.includes("\0")) {
-      return { ok: false, reason: "framing" };
-    }
-    const bytes = utf8ByteLength(text);
-    if (bytes > MAX_INPUT_LINE_BYTES) {
-      return { ok: false, reason: "oversize" };
-    }
-    if (this.backlogBytes + bytes > MAX_HARNESS_BACKLOG_BYTES) {
-      return { ok: false, reason: "backlog" };
-    }
-    const stdin = this.proc.stdin as import("bun").FileSink | number | undefined;
-    if (stdin === undefined || typeof stdin === "number") {
-      return { ok: false, reason: "closed" };
-    }
-    try {
-      const drained = stdin.write(text);
-      // The same drain accounting as writeLine (review live14): an async
-      // drain's EPIPE on a dying child is absorbed, and a resolution clears
-      // the backlog only when no newer write is pending behind it.
-      if (typeof drained === "number") {
-        this.backlogBytes = 0;
-      } else {
-        this.backlogBytes += bytes;
-        const generation = ++this.backlogGeneration;
-        drained.then(
-          () => {
-            if (generation === this.backlogGeneration) this.backlogBytes = 0;
-          },
-          () => {}
-        );
-      }
-    } catch {
-      return { ok: false, reason: "closed" };
-    }
-    return { ok: true };
-  }
-
-  /** Half-close the harness's stdin (the EOF half of a graceful end). */
-  endInput(): void {
-    if (this.stdinEnded) return;
-    this.stdinEnded = true;
-    const stdin = this.proc.stdin as import("bun").FileSink | number | undefined;
-    if (stdin === undefined || typeof stdin === "number") return;
-    try {
-      const ended = stdin.end();
-      // The trailing drain of a full sink rejects the same way write's
-      // does; already closed underneath us is the same outcome.
-      if (typeof ended !== "number") ended.catch(() => {});
-    } catch {
-      // Already closed underneath us; the outcome is the same.
-    }
-  }
 }
 
 export interface OutboundOverflow {

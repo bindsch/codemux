@@ -127,7 +127,15 @@ export class OpenHandsAdapter extends BaseAdapter {
     );
   }
 
-  /** The environment is ignored unless --override-with-envs is passed. */
+  /** The environment is ignored unless --override-with-envs is passed.
+   *
+   * Ambient `LLM_BASE_URL`/`LLM_API_KEY` (review round 153): sanitize
+   * keeps those names in the launch environment because they are
+   * OpenHands's own credential variables, so an operator who exported
+   * them has OpenHands itself configured that way — codemux changes
+   * nothing when no override is set. A codemux provider override
+   * REPLACES them (both keys below are set unconditionally), and the
+   * flag below makes OpenHands read the environment at all. */
   override getRunEnv(request: RunRequest): Record<string, string> {
     const override = this.validatedProvider();
     const model = this.modelFor(request.model);
@@ -161,7 +169,11 @@ export class OpenHandsAdapter extends BaseAdapter {
     const cmd = ["openhands", "--headless"];
 
     // A resolved model — the request's or the override's — exists only through
-    // the environment, so the flag rides along whenever there is one.
+    // the environment, so the flag rides along whenever there is one. Without
+    // a model the flag is absent and OpenHands reads its stored config only —
+    // but an operator's exported LLM_BASE_URL/LLM_API_KEY still sit in the
+    // environment (see getRunEnv); they are the operator's own OpenHands
+    // configuration, not a codemux provider override (review round 153).
     if (this.modelFor(request.model)) {
       cmd.push("--override-with-envs");
     }

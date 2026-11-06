@@ -117,9 +117,17 @@ describe("session lifecycle source invariants", () => {
   });
 
   test("Aider reads a turn delta instead of the full accumulated history", () => {
-    const driver = read("src/session/aider-driver.ts");
-    expect(driver).toContain("readAiderHistoryDelta(this.options.historyPath, this.consumedBytes)");
-    expect(driver).not.toContain("readAiderHistory(this.options.historyPath)");
+    // The driver is one class split across a chain of files, and a
+    // refactor may move a member between them; the invariant holds over
+    // the chain as a whole, not over whichever file holds the read today.
+    const chain = [
+      "src/session/aider-driver.ts",
+      "src/session/aider-turns.ts",
+      "src/session/aider-input.ts",
+      "src/session/aider-finalize.ts",
+    ].map(read).join("\n");
+    expect(chain).toContain("readAiderHistoryDelta(this.options.historyPath, this.consumedBytes)");
+    expect(chain).not.toContain("readAiderHistory(this.options.historyPath)");
   });
 
   test("OpenCode sums turn cost instead of adopting a lifetime cost", () => {

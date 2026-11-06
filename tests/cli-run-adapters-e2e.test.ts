@@ -21,7 +21,17 @@ const REPO_ROOT = join(import.meta.dir, "..");
 // environment variables, and whatever arrives on stdin between markers, so
 // each test can assert the prompt transport and the delivered environment.
 function fakeHarnessBody(
-  options: { version?: string; binaryVersion?: string; env?: string[] } = {}
+  options: {
+    version?: string;
+    binaryVersion?: string;
+    env?: string[];
+    // A harness whose stdin carrier repeats for the child's whole
+    // lifetime (aider's decline stream, review round 153) never delivers
+    // the EOF `cat` would need; such a harness reads a bounded number of
+    // bytes, models a turn that consumed its confirmations, and exits —
+    // what a real headless aider does once its turn completes.
+    stdinBytes?: number;
+  } = {}
 ): string {
   const lines: string[] = [];
   if (options.version !== undefined) {
@@ -39,7 +49,7 @@ function fakeHarnessBody(
     lines.push(`printf 'ENV:${name}=%s\\n' "\${${name}-unset}"`);
   }
   lines.push("printf 'STDIN-START\\n'");
-  lines.push("cat");
+  lines.push(options.stdinBytes !== undefined ? `head -c ${options.stdinBytes}` : "cat");
   lines.push("printf 'STDIN-END\\n'");
   return lines.join("\n");
 }
@@ -252,7 +262,7 @@ describe("run e2e - aider", () => {
   test("high autonomy: --message prompt, pinned config files, canned stdin declines", async () => {
     const PROMPT = "summarize the changes under tests";
     const run = await runFakeHarness(
-      { aider: fakeHarnessBody({ version: "aider 0.86.2" }) },
+      { aider: fakeHarnessBody({ version: "aider 0.86.2", stdinBytes: 128 }) },
       "aider",
       ["-m", "gpt-5.2", "-p", PROMPT]
     );
@@ -286,7 +296,11 @@ describe("run e2e - aider", () => {
     ]);
     // The prompt rides argv. Stdin carries the fixed headless declines
     // (aider treats EOF as acceptance for its yes-default prompts), never
-    // the prompt.
+    // the prompt. The carrier repeats for the child's whole lifetime
+    // (review round 153); the fake models an aider that consumed one
+    // decline block and completed its turn, so exactly that block is
+    // echoed between the markers (the never-EOF property itself is
+    // pinned by tests/aider-stdin-repeat.test.ts).
     expect(run.stdin).toBe("n\n".repeat(64));
   });
 });

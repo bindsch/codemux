@@ -31,6 +31,8 @@ Read-only runs under scode `--ro` on every harness; the rows below name each har
 
 Kimi's headless `--prompt` rejects its interactive autonomy flags. OpenHands headless mode auto-approves. Their headless boundaries therefore depend on scode, not the interactive rows. Antigravity can soft-deny a headless approval while still exiting 0; native success alone does not establish that a requested action ran.
 
+Aider's low row declines headless confirmations through its stdin: codemux feeds a repeating stream of `n` lines for the child's whole lifetime and never sends EOF while it lives, because aider reads EOF as acceptance of a yes-default confirmation prompt. The stream is bounded and paced: one pending write at a time, and at most one block of 64 lines every 10 ms. A child that stops reading does not grow codemux's memory, and a child that discards its stdin does not keep codemux busy. The child's exit or the run's own termination ends the feeding. Runs and session turns both behave this way.
+
 Codex's row names the flags an unsandboxed launch passes. On the default sandboxed path codex runs with `--dangerously-bypass-approvals-and-sandbox` and none of the row's native flags, so scode alone enforces the level.
 
 Pi's TUI passes `--no-approve` at medium and high only; read-only and low keep pi's native approvals in the TUI. Pi's headless runs pass `--no-approve` at every level, because no one is present to answer an approval.

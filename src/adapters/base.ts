@@ -107,6 +107,27 @@ export abstract class BaseAdapter {
     return null;
   }
 
+  /** Whether the prompt rides argv for this request. The shared validator
+   * reads this — not `getStdinInput` — to decide the argv rules (the NUL
+   * refusal and the argv byte bound): an adapter whose stdin carries
+   * something other than the prompt (aider's canned declines) still puts
+   * the prompt in argv, and the default here is wrong for exactly that
+   * shape, so such an adapter overrides it (review round 153). */
+  promptInArgv(request: RunRequest): boolean {
+    return this.getStdinInput(request) === null;
+  }
+
+  /** Whether the child's stdin block repeats for the child's whole
+   * lifetime: the writer keeps one block in flight, writes the next only
+   * after the previous flushed, and never closes stdin first. For a
+   * harness that reads EOF as acceptance of a yes-default prompt (aider),
+   * this is what keeps every prompt answered with a decline however many
+   * arrive (review round 153). Default false: one write, then the
+   * half-close every stdin-transport harness expects. */
+  stdinRepeats(_request: RunRequest): boolean {
+    return false;
+  }
+
   supportsTuiModel(): boolean {
     return this.capabilities().supportsModel;
   }

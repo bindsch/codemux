@@ -276,7 +276,7 @@ Each record contains:
 |---|---|
 | `ts` | Start time as an RFC 3339 timestamp; a `ts` that is not one makes the line malformed |
 | `kind` | `run`, `check`, `session_turn`, or closing `session` |
-| `agent`, `provider`, `cwd` | Strings; provider is `default` or the override URL host read from the launch adapter's own environment, never its key |
+| `agent`, `provider`, `cwd` | Strings; provider is `default` or the override URL host read from the launch adapter's own environment, never its key. `default` means no codemux provider override: the harness's own configuration or ambient variables may still name another endpoint (OpenHands under `--model` reads exported `LLM_BASE_URL`/`LLM_API_KEY`), so `default` is not a claim about the vendor's first-party endpoint |
 | `model`, `model_effective` | Requested and reported model, each string or null |
 | `session_id`, `turn_id` | Strings or null; turns identify their session |
 | `autonomy` | Autonomy string or null |

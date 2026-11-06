@@ -136,6 +136,11 @@ export abstract class CodexDriverInput extends CodexDriverEvents {
           return;
         }
         this.ack(inputSeq, true);
+        // The acknowledgement itself can be the event that breaches the
+        // outbound bound and ends the session. The end path then recorded
+        // that no turn was open, so no turn may open after it (review
+        // round 155).
+        if (this.finished) return;
         const turnId = this.fsm.state === "idle" ? this.submitTurn() : null;
         if (turnId === null) this.queuedInputs += 1;
         this.emit(
@@ -148,6 +153,12 @@ export abstract class CodexDriverInput extends CodexDriverEvents {
             turnId
           )
         );
+        // No turn work after the driver finished (review round 153): an
+        // outbound bound breached inside the emits above ends the session
+        // synchronously, and the end path owns the child and its stdin
+        // from that moment — the turn's frame is never written, and a
+        // queued one never drains (drainTurnQueue checks `finished`).
+        if (this.finished) return;
         if (turnId !== null) {
           this.sendTurnStart(turnId, harnessText);
         } else {

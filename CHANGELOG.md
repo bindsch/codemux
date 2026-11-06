@@ -125,6 +125,16 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 153, whole tree: aider's headless declines now repeat on the child's stdin for its
+  whole lifetime instead of one canned block plus EOF (aider reads EOF as acceptance of a
+  yes-default prompt), on both the run and session paths, paced so a child that discards its stdin
+  cannot keep codemux writing without a pause; a caller turn no longer opens, spawns,
+  or writes after a session driver finished, for every driver whose emits can breach an outbound bound
+  synchronously (aider, opencode, claude/zai, agy, codex; kimi was already safe by its
+  effect-completion rule); the shared argv prompt rules key on the adapter's promptInArgv rather
+  than a null stdin block, so aider's NUL refusal and argv byte bound apply with the shared
+  wording; and OpenHands's ambient LLM_BASE_URL/LLM_API_KEY behavior is documented as the
+  operator's own configuration, which a provider override replaces.
 - Review round 151, whole tree: the release gate's usage check fails when the usagemux version
   cannot be read, not only when it is below 1.0.0; a call-ledger record whose `ts` is not an
   RFC 3339 timestamp is skipped as malformed and the table never prints one; the

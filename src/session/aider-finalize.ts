@@ -305,9 +305,12 @@ export abstract class AiderDriverCore {
           child.exited.then((outcome) => {
             void this.onTurnExited(child, outcome);
           });
-          const written = child.writeRaw(HEADLESS_NEGATIVE_RESPONSES);
+          // The repeating decline carrier (review round 153): the late
+          // child gets its declines fed for its whole lifetime too — one
+          // canned block plus the half-close let a yes-default prompt read
+          // the EOF as acceptance once the block ran out.
+          const written = child.repeatRawUntilExit(HEADLESS_NEGATIVE_RESPONSES);
           if (written.ok) {
-            child.endInput();
             drain = child;
           } else {
             // The child cannot take the negatives (it died on arrival):
@@ -334,9 +337,9 @@ export abstract class AiderDriverCore {
       }
     }
     if (drain !== null) {
-      // The turn process's stdin is already at EOF (the negatives write
-      // half-closed it), so there is no end carrier to send: the wait is
-      // for a fatal verdict or the child's raw exit —
+      // The late child's stdin carries the repeating declines (never the
+      // EOF half-close, review round 153), so there is no end carrier to
+      // send: the wait is for a fatal verdict or the child's raw exit —
       // then the stop signal, then the settle.
       await drain.awaitEndAnswer(() => this.firstFatal !== null || this.endExitCode !== 0);
       drain.requestStop();

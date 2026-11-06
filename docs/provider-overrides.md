@@ -25,6 +25,8 @@ URLs must be absolute HTTP(S), without user/password credentials, fragments, or 
 
 Z.AI, Antigravity, Cursor, Copilot, Gemini, Cline, and Qwen do not support this override group. Z.AI is its own fixed gateway adapter, not a configurable provider override.
 
+No override set is not the same thing as the vendor's first-party endpoint. Without an override, codemux changes nothing about where a harness sends its traffic: a harness whose own configuration or ambient variables name another endpoint keeps using it. OpenHands is the recorded example — its credential variables are `LLM_BASE_URL`/`LLM_API_KEY`, environment sanitization keeps them when the operator exported them, and under `--model` codemux passes `--override-with-envs`, which makes OpenHands read that environment. Those variables are then the operator's own OpenHands configuration, not a codemux override; a codemux override, when set, replaces them.
+
 The override survives supported hermetic modes because codemux explicitly supplies it. Session-capable adapters use the same delivery mechanisms for session spawns; Codex session homes persist for resume. TUI supports the listed environment mappings, and **Claude additionally receives inline `--settings` JSON**. It is not environment-only delivery.
 
 ## Claude details

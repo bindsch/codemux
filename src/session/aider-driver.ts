@@ -53,12 +53,7 @@
 import { providerHost } from "../call-log.js";
 import { HEADLESS_NEGATIVE_RESPONSES } from "../adapters/aider.js";
 import {
-  aiderDeltaRecordsUnansweredPrompt,
-  aiderHistoryHeader,
   aiderHistorySizeBytes,
-  aiderReplyAfterHeader,
-  extractAiderReply,
-  readAiderHistoryDelta,
 } from "../aider-history.js";
 import {
   assertAiderHistoryForTurn,
@@ -67,10 +62,8 @@ import {
 import {
   BoundedOutboundQueue,
   codemuxFatalMessage,
-  harnessFailed,
   SESSION_SIGNAL_EXIT_CODE,
   installSessionSignalHandlers,
-  type SessionChildOutcome,
   type SessionFatal,
   type SessionProcess,
 } from "./process.js";
@@ -89,19 +82,6 @@ export type { AiderDriverOptions } from "./aider-finalize.js";
 type Timer = ReturnType<typeof setTimeout>;
 
 export class AiderSessionDriver extends AiderCallerInput {
-
-  /** How many bytes of the history file earlier turns have consumed;
-   * each turn's exchange is the slice past it. A byte offset, not a
-   * string length: the session history outgrows any whole-file read, so
-   * the driver reads only the bounded delta past this offset (review
-   * D8, correctness 2). */
-  private consumedBytes = 0;
-  /** The open turn's prompt as sent: aider's history block for this
-   * exchange is built from exactly these bytes (aiderHistoryHeader), so
-   * the reply is anchored past it — a multi-line prompt's continuation
-   * lines sit inside the header's own section and must not leak into the
-   * reply. */
-  private turnPrompt: string | null = null;
   private sessionTimer: Timer | null = null;
 
   constructor(options: AiderDriverOptions) {
@@ -225,10 +205,17 @@ export class AiderSessionDriver extends AiderCallerInput {
   }
 
   // --- turns ---------------------------------------------------------------
-  /** Spawn the turn's process and prime its stdin: the canned negatives
-   * (aider treats EOF as acceptance, so a spawn that never answers must
-   * answer no), then the half-close. The process's exit ends the turn. */
+  /** Spawn the turn's process and prime its stdin with the repeating
+   * decline carrier: aider treats EOF as acceptance, so while the child
+   * lives every stdin read answers no, never EOF (review round 153). The
+   * process's exit ends the turn. A finished driver returns before it
+   * builds or spawns anything: the end path owns the child and the
+   * verdict from the moment `finished` is set, so no turn may spawn
+   * after it — the input path checks this after its emits (an outbound
+   * bound breach ends the session synchronously there); this entry guard
+   * is the backstop for every other caller. */
   protected async startTurn(text: string): Promise<void> {
+    if (this.finished) return;
     // The history file is the session's whole state, and the sandboxed
     // child can write `~/.aider`: re-verify the ownership chain and the
     // file itself (regular, ours, 0600) before EVERY spawn. The
@@ -310,7 +297,11 @@ export class AiderSessionDriver extends AiderCallerInput {
     proc.exited.then((outcome) => {
       void this.onTurnExited(proc, outcome);
     });
-    const written = proc.writeRaw(HEADLESS_NEGATIVE_RESPONSES);
+    // The repeating decline carrier (review round 153): aider reads EOF as
+    // acceptance of its yes-default prompts, so while this child is alive
+    // every read of its stdin returns a decline, never EOF (one canned
+    // block ran out). The feeder itself stops on the child's exit.
+    const written = proc.repeatRawUntilExit(HEADLESS_NEGATIVE_RESPONSES);
     if (!written.ok) {
       if (!this.finished) {
         this.emitError(
@@ -321,96 +312,7 @@ export class AiderSessionDriver extends AiderCallerInput {
         void this.finish("crash", 1);
       }
       proc.requestStop();
-      return;
     }
-    proc.endInput();
-  }
-
-  /** Turn-per-process verdict: the process's exit code is the turn's
-   * finish; the history file's delta is its substance — the `#### `
-   * exchange this turn appended, the model's reply extracted from it. A
-   * history that cannot be read back (or shrank) is an integrity
-   * failure: the file IS the session's state, so the session ends
-   * rather than continue blind. */
-  protected completeTurn(outcome: SessionChildOutcome): void {
-    this.lastChildOutcome = outcome;
-    this.sawHarnessFailure ||= harnessFailed(outcome);
-    if (this.fsm.state !== "turn_active") return; // the synthesis answered it
-    this.turnProc = null;
-    const turnId = this.fsm.activeTurn;
-    if (turnId === null) return;
-    const read = readAiderHistoryDelta(this.options.historyPath, this.consumedBytes);
-    if (read === null) {
-      this.finishTurn(turnId, "failed", "the chat history file is unreadable or truncated");
-      this.emitError(
-        true,
-        "codemux",
-        `the session's chat history cannot be read back (${this.options.historyPath}); ` +
-          "the session state is unreliable, so the session cannot continue"
-      );
-      void this.finish("crash", 1);
-      return;
-    }
-    const delta = read.text;
-    const exitDetail =
-      outcome.code !== null
-        ? `code ${outcome.code}`
-        : `signal ${outcome.signal ?? "unknown"}`;
-    if (outcome.code !== 0) {
-      this.finishTurn(turnId, "failed", `the aider process exited with ${exitDetail}`);
-      // A prompt-only delta from the failed process is the non-resumable
-      // shape the end path refuses (aiderDeltaRecordsUnansweredPrompt):
-      // the session ends and the offset never advances past the
-      // unanswered prompt. `!finished` keeps the verdict with an end path
-      // already draining this child.
-      if (!this.finished && aiderDeltaRecordsUnansweredPrompt(delta, this.turnPrompt)) {
-        this.emitError(
-          true,
-          "codemux",
-          `the session's chat history holds the failed turn's prompt with no reply (${this.options.historyPath}); ` +
-            "the session state is unreliable, so the session cannot continue"
-        );
-        void this.finish("crash", 1);
-        return;
-      }
-      this.consumedBytes = read.sizeBytes;
-      return;
-    }
-    this.consumedBytes = read.sizeBytes;
-    if (!delta.includes("#### ")) {
-      // Exit 0 but no exchange recorded: the turn produced nothing the
-      // session can vouch for. The session continues — the next turn's
-      // process may succeed.
-      this.finishTurn(turnId, "failed", "the chat history records no exchange for this turn");
-      return;
-    }
-    // The reply is anchored past THIS turn's header block, built exactly
-    // as aider writes it (aiderHistoryHeader: `#### ` before every prompt
-    // line, joined on two-space lines — io.user_input at the pinned
-    // 0.86.2). The delta's first occurrence is the user block: only the
-    // per-process banner precedes it, and the delta holds no earlier
-    // exchange. The header is searched, not required at the start,
-    // because that banner sits ahead of it; the `#### ` search is the
-    // fallback for a harness that writes the prompt back altered — the
-    // only path where a multi-line prompt's continuation lines can leak
-    // (review D1, blocker).
-    const header =
-      this.turnPrompt !== null ? aiderHistoryHeader(this.turnPrompt) : null;
-    const at = header !== null ? delta.indexOf(header) : -1;
-    const reply =
-      header !== null && at !== -1
-        ? aiderReplyAfterHeader(delta.slice(at + header.length))
-        : extractAiderReply(delta);
-    this.turnPrompt = null;
-    if (reply !== "") {
-      this.emit(
-        buildEvent(++this.seq, this.options.sessionId, "assistant_message", null, {
-          text: reply,
-          turn_id: turnId,
-        })
-      );
-    }
-    this.finishTurn(turnId, "end", undefined);
   }
 
   // --- helpers ---------------------------------------------------------------

@@ -214,6 +214,14 @@ export class SessionProcess {
     return this.writer.writeRaw(text);
   }
 
+  /** The repeating decline carrier (review round 153): the session-side
+   * twin of the run path's `stdinRepeats` — one chunk is this call's
+   * synchronous result, the repeats never let a second write pile behind
+   * an undrained one, and stdin is never closed by the feeder itself. */
+  repeatRawUntilExit(text: string): WriteLineResult {
+    return this.writer.repeatRawUntilExit(text, this.exited);
+  }
+
   endInput(): void {
     this.writer.endInput();
   }

@@ -99,7 +99,11 @@ describe("aider session e2e - end paths", () => {
   });
 
   test("a process exiting 42 during the drain with its turn open costs success", async () => {
-    const session = await startSession({}, { FAKE_SIGTERM_PERSIST: "exit42" });
+    // The same longer shutdown grace as the 143 test below: the fake
+    // exits 300 ms after the stop signal, and under a full-suite load its
+    // exit lost the race to the helper's 500 ms grace and its SIGKILL
+    // (seen once, in the gate run for review round 153).
+    const session = await startSession({}, { FAKE_SIGTERM_PERSIST: "exit42" }, undefined, 0, 2_000);
     send(session.driver, { type: "user", text: "scenario:basic one" });
     await waitFor(session.events, of("turn_completed"), "first turn_completed");
     send(session.driver, { type: "user", text: "scenario:wait two" });
@@ -378,8 +382,14 @@ describe("aider session e2e - end paths", () => {
     expect(await session.code).toBe(0);
     // The negatives reached the late child and the prompt rode argv —
     // the regression's core — and the history holds the full exchange
-    // (the resumable state), settled before done resolved.
-    expect(fakeRecord(session, "stdin.jsonl")[0]?.bytes).toBe(128);
+    // (the resumable state), settled before done resolved. Under the
+    // repeating decline carrier (round 153) the child never sees EOF and
+    // the bytes are whole 128-byte decline blocks, however many the
+    // child consumed before it exited.
+    const stdin = fakeRecord(session, "stdin.jsonl")[0];
+    expect(stdin?.eof).toBe(false);
+    expect(stdin?.bytes % 128).toBe(0);
+    expect(stdin?.bytes).toBeGreaterThanOrEqual(128);
     expect(messageArg(session, 0)).toBe("--message=scenario:basic one");
     const history = readFileSync(session.historyPath, "utf8");
     expect(history).toContain("#### scenario:basic one");

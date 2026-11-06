@@ -60,8 +60,12 @@ export abstract class ClaudeDriverInput extends ClaudeDriverEvents {
           return;
         }
         this.ack(inputSeq, true);
+        // The acknowledgement itself can be the event that breaches the
+        // outbound bound and ends the session. The end path then recorded
+        // that no turn was open, so no turn may open after it (review
+        // round 155).
+        if (this.finished) return;
         const turnId = this.fsm.state === "idle" ? this.startTurn() : null;
-        if (turnId === null) this.openerPending = true;
         this.emit(
           buildUserMessage(
             ++this.seq,
@@ -72,6 +76,18 @@ export abstract class ClaudeDriverInput extends ClaudeDriverEvents {
             turnId
           )
         );
+        // No turn work after the driver finished (review round 153): an
+        // outbound bound breached inside the emits above ends the session
+        // synchronously — the queue's failure callback runs finish, which
+        // sets `finished` before its first await — and the end path owns
+        // the child and its stdin from that moment, so the turn's line is
+        // never written into a closing session.
+        if (this.finished) return;
+        // Set only now, with the write that makes it true (review round
+        // 156): the end path reads this flag as "a pre-init line was
+        // already forwarded", so an end that began inside the echo above
+        // must not see it for a line that was never written.
+        if (turnId === null) this.openerPending = true;
         this.writeToHarness(harnessLine);
         return;
       }

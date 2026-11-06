@@ -289,7 +289,11 @@ export async function runSandboxedWithStdin(
    * where the argument was built, invisible to the command re-check, and
    * revalidated here immediately before the spawn. Null when the command
    * embeds none. */
-  nestedExecutable?: ExecutableCheck | null
+  nestedExecutable?: ExecutableCheck | null,
+  /** The adapter's `stdinRepeats`: feed the block for the child's whole
+   * lifetime instead of one write plus the half-close (review round 153;
+   * src/process-stdin-repeat.ts). */
+  stdinRepeats?: boolean
 ): Promise<RunResult> {
   const workdir = validateWorkingDirectory(cwd) ?? process.cwd();
   assertNoProjectScodePolicy(workdir);
@@ -357,6 +361,7 @@ export async function runSandboxedWithStdin(
     cwd: workdir,
     env,
     stdinInput: stdinData,
+    stdinRepeats,
     timeoutMs,
     stdoutSink,
     onSignaled,

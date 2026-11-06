@@ -98,6 +98,11 @@ export abstract class AgyTurns extends AgyFinalize {
           return;
         }
         this.ack(inputSeq, true);
+        // The acknowledgement itself can be the event that breaches the
+        // outbound bound and ends the session. The end path then recorded
+        // that no turn was open, so no turn may open after it (review
+        // round 155).
+        if (this.finished) return;
         if (this.fsm.state === "starting") {
           // The silent warm-up: the FSM must be idle before a turn can
           // open, but a fresh agy session has no init frame to answer —
@@ -130,6 +135,12 @@ export abstract class AgyTurns extends AgyFinalize {
             turnId
           )
         );
+        // No turn work after the driver finished (review round 153): an
+        // outbound bound breached inside the emits above ends the session
+        // synchronously, and the end path owns the child and its stdin
+        // from that moment — the turn's line is never written into a
+        // closing session.
+        if (this.finished) return;
         this.writeToHarness(harnessLine);
         return;
       }

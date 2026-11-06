@@ -39,6 +39,24 @@ describe("openhands provider override", () => {
       .toEqual(["openhands", "--headless", "--task", "p"]);
   });
 
+  test("ambient LLM_* variables stay in a no-override launch environment (round 153)", () => {
+    // With no codemux provider override, exported LLM_BASE_URL/LLM_API_KEY
+    // are the operator's own OpenHands configuration: sanitization keeps
+    // the harness's credential names, so the launch environment carries
+    // them unchanged. The flag facts are already pinned — a run with a
+    // model carries --override-with-envs and a modelless run does not
+    // (tests/openhands.test.ts, "model selection goes through the
+    // environment override") — so this adds only the environment fact.
+    const adapter = adapterOf({
+      LLM_BASE_URL: "https://ambient.example/v1",
+      LLM_API_KEY: "ambient-key",
+    });
+    const request: RunRequest = { agent: "openhands", prompt: "p" };
+    const env = adapter.buildExecutionEnv(adapter.getRunEnv(request));
+    expect(env.LLM_BASE_URL).toBe("https://ambient.example/v1");
+    expect(env.LLM_API_KEY).toBe("ambient-key");
+  });
+
   test("the override rides the LLM_* trio with the openai/ prefix and --override-with-envs", () => {
     const adapter = adapterOf(VLLM_OPENHANDS);
     const request: RunRequest = { agent: "openhands", prompt: "p" };

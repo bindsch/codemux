@@ -3,6 +3,7 @@ export { signalProcess } from "./process-signal.js";
 import { assertExecutablesUnchanged, type ExecutableCheck } from "./executable-security.js";
 import { OutputLimitError, readBounded } from "./process-capture.js";
 import { trackStdinDelivery } from "./process-stdin.js";
+import { writeRunStdin } from "./process-stdin-repeat.js";
 export { MAX_CAPTURE_BYTES } from "./process-capture.js";
 import {
   createTerminationTarget,
@@ -98,6 +99,13 @@ export interface CapturedCommandOptions {
   cwd: string;
   env: Record<string, string>;
   stdinInput?: string | null;
+  /** The adapter's `stdinRepeats`: feed `stdinInput` to the child for its
+   * whole lifetime instead of writing it once and half-closing — for a
+   * harness that reads EOF as acceptance (aider's canned declines), the
+   * repeat is what keeps every yes-default prompt answered no (review
+   * round 153; src/process-stdin-repeat.ts). Default false: one write,
+   * then the half-close. */
+  stdinRepeats?: boolean;
   timeoutMs?: number;
   /** Consumes stdout incrementally instead of capturing it whole; stderr is
    * captured normally either way. */
@@ -251,13 +259,10 @@ export async function runCapturedCommand(
 
   try {
     try {
-      // A protocol sink owns stdin itself: only the plain path writes here.
-      if (!options.stdoutSink?.start) {
-        if (options.stdinInput !== null && options.stdinInput !== undefined) {
-          trackStdin(proc.stdin.write(options.stdinInput));
-        }
-        trackStdin(proc.stdin.end());
-      }
+      // The plain path's stdin carrier — one shot, or the repeating
+      // decline feeder an always-decline harness needs (review round
+      // 153) — lives beside its repeater in process-stdin-repeat.ts.
+      writeRunStdin(options, proc, trackStdin);
       options.stdoutSink?.start?.(
         (line) => { stdin.attempt(() => proc.stdin.write(line)); },
         () => { stdin.attempt(() => proc.stdin.end()); },

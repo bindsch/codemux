@@ -33,7 +33,7 @@ import type {
 export interface ValidationAdapter {
   readonly id: AgentId;
   capabilities(): AdapterCapabilities;
-  getStdinInput(request: RunRequest): string | null;
+  promptInArgv(request: RunRequest): boolean;
   supportsTuiModel(): boolean;
   supportsTuiAutonomy(): boolean;
   supportsTuiEffort(): boolean;
@@ -155,7 +155,14 @@ export function validateRunRequestFor(
     for (const dir of request.instructionDirs) validateWorkingDirectory(dir);
   }
   if (request.timeoutMs !== undefined) validateTimeout(request.timeoutMs);
-  if (adapter.getStdinInput(request) === null) {
+  // The argv rules key on where the prompt goes (promptInArgv), not on
+  // whether getStdinInput is null: aider's stdin carries canned declines
+  // while the prompt itself still rides `--message=` argv, so both rules
+  // must apply there too — the NUL refusal as a usage error before launch,
+  // not the spawn-time "invalid command" it used to become (review round
+  // 153). A NUL cannot survive real argv and the bound keeps the launch
+  // inside the OS limit.
+  if (adapter.promptInArgv(request)) {
     if (request.prompt.includes("\0")) {
       throw new UsageRefusalError(`${adapter.id} cannot pass a NUL byte in an argv prompt`);
     }

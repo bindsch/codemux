@@ -167,6 +167,19 @@ describe("AiderAdapter", () => {
   test("declines headless prompts and retains the argv size guard", () => {
     expect(adapter.getStdinInput({ agent: "aider", prompt: "test" }))
       .toStartWith("n\nn\n");
+    // Round 153: the shared validator owns the argv rules through
+    // promptInArgv — aider's stdin carries the canned declines while the
+    // prompt itself rides `--message=` argv — so a NUL in the prompt is a
+    // usage refusal (the marker the CLI maps to exit 64), not the
+    // spawn-time "invalid command" it used to become.
+    let refusal: unknown;
+    try {
+      adapter.validateRunRequest({ agent: "aider", prompt: "x\0y" });
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toBeInstanceOf(UsageRefusalError);
+    expect((refusal as Error).message).toContain("NUL");
     expect(() => adapter.validateRunRequest({
       agent: "aider",
       prompt: "x".repeat(40_000),
