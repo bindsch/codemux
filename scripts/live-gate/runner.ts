@@ -117,6 +117,17 @@ export function parseOptions(args: string[], skipEnv = process.env.LIVE_GATE_SKI
   } catch {
     command.error(`--codemux must name an existing executable file: ${escapeControls(codemux)}`, { exitCode: 2 });
   }
+  // A list flag given with an empty value — the whole value or one
+  // comma-separated entry — is a caller mistake, not an absent flag:
+  // the list parsers skip empty entries, so `--skip ""` would silently
+  // select every harness (review round 159). The env merge
+  // (LIVE_GATE_SKIP) keeps its own convention: blank means unset.
+  for (const [flag, value] of [["--skip", options.skip], ["--only", options.only], ["--pass-env", options.passEnv],
+    ["--probe", options.probe], ["--skip-probe", options.skipProbe], ["--probe-anyway", options.probeAnyway]] as const) {
+    if (value?.split(",").some((entry) => entry.trim() === "")) {
+      throw new Error(`${flag} takes a comma-separated list; an entry is empty.`);
+    }
+  }
   const skip = agentList([skipEnv, options.skip], "Skip");
   const only = options.only === undefined ? undefined : agentList([options.only], "Only");
   if (only?.size === 0) throw new Error("Only list must contain at least one harness name.");

@@ -108,23 +108,14 @@ export function registerTuiCommand(
 
         const adapter = getAdapter(agentId);
 
-        if (!adapter.isAvailable()) {
-          console.error(`Error: ${agentId} is not installed`);
-          console.error(`Please install '${adapter.binaryName}' and try again`);
-          process.exit(1);
-        }
-
-        if (options.sandbox && !isScodeAvailable()) {
-          console.error("Error: scode is not installed (required for --sandbox)");
-          console.error("Install scode and ensure its executable is on PATH");
-          process.exit(1);
-        }
-
         const caps = adapter.capabilities();
-        const model = options.model
+        // Presence is `!== undefined` so an explicit `--model ""` reaches
+        // resolveModel and its validateModelName refusal instead of reading
+        // as "no model" (review round 159).
+        const model = options.model !== undefined
           ? resolveModel(options.model, agentId, config)
           : undefined;
-        if (model && !adapter.supportsTuiModel()) {
+        if (model !== undefined && !adapter.supportsTuiModel()) {
           throw new UsageRefusalError(`${agentId} does not support model selection in TUI mode`);
         }
 
@@ -161,10 +152,15 @@ export function registerTuiCommand(
           ? resolveSandboxOptionsForAgent(agentId, sandboxAutonomy, sandboxPolicyOverrides)
           : undefined;
 
-        // Validation before the version gate, as on the run path: an adapter
-        // that refuses this request (cursor's desktop entry without the
-        // --pass-env opt-in among them) must do so before the gate can execute
-        // the harness binary it resolves.
+        // The whole request validates before any availability check, the
+        // order the run path holds (its comment near the prompt gates):
+        // a malformed request — a padded model, a missing --cwd, an
+        // adapter that refuses this request (cursor's desktop entry
+        // without the --pass-env opt-in among them) — is the caller's
+        // mistake, and an "is not installed" line would misdirect them
+        // (review round 159). Only checks that need the harness binary
+        // or scode (the version gate, the spawn) stay behind the
+        // availability blocks below.
         const workdir = validateWorkingDirectory(options.cwd) ?? process.cwd();
         adapter.validateTuiRequest(
           model,
@@ -175,15 +171,31 @@ export function registerTuiCommand(
           enablePlaywrightMcp
         );
 
-        // The quota gate: an interactive session spends from the same
-        // windows a run does, so it passes the same check — after every
-        // request check, before anything spawns. A provider override in
-        // force skips the native gate (assertQuotaHeadroomForLaunch).
+        // The quota options are request checks too: their values are
+        // judged before the availability checks, and the gate itself runs
+        // after them.
         const quotaPolicy = resolveQuotaGate({
           config: config.quota,
           ceiling: options.quotaCeiling,
           disabled: options.quotaGate === false,
         });
+
+        if (!adapter.isAvailable()) {
+          console.error(`Error: ${agentId} is not installed`);
+          console.error(`Please install '${adapter.binaryName}' and try again`);
+          process.exit(1);
+        }
+
+        if (options.sandbox && !isScodeAvailable()) {
+          console.error("Error: scode is not installed (required for --sandbox)");
+          console.error("Install scode and ensure its executable is on PATH");
+          process.exit(1);
+        }
+
+        // The quota gate: an interactive session spends from the same
+        // windows a run does, so it passes the same check — after every
+        // request check, before anything spawns. A provider override in
+        // force skips the native gate (assertQuotaHeadroomForLaunch).
         // A print-only launch spends nothing (review round 56).
         if (quotaPolicy !== null && !options.printSandbox) await assertQuotaHeadroomForLaunch(adapter, quotaPolicy);
 

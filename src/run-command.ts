@@ -23,7 +23,7 @@ import { readUtf8FileBounded } from "./file-io.js";
 import { parseTimeoutOption, parseToolsOption } from "./cli-runtime.js";
 import { collectLabel, LABELS_ENV, parseLabels } from "./labels.js";
 import { assertQuotaHeadroomForLaunch, resolveQuotaGate } from "./quota-gate.js";
-import { UsageRefusalError } from "./validation.js";
+import { UsageRefusalError, requireNonEmptyOption } from "./validation.js";
 
 /** A prompt-source refusal is usage (exit 64) like every other
  * pre-launch refusal of the caller's request: the prompt is part of the
@@ -276,7 +276,12 @@ export function registerRunCommand(
         // the timeout on a read that never completes.
         let earlyPrompt: string;
         let readPromptFromStdin = false;
-        if (options.file) {
+        // Presence is `!== undefined`, never truthiness: `-f ""` (an unset
+        // shell variable) is a given file option, not a missing one, so the
+        // mutual-exclusion refusal below still fires and an empty path is
+        // refused by name instead of silently falling back to -p (review
+        // round 159).
+        if (options.file !== undefined) {
           if (options.prompt !== undefined) {
             throw promptRefusal("--prompt and --file cannot be used together");
           }
@@ -287,6 +292,7 @@ export function registerRunCommand(
             readPromptFromStdin = true;
             earlyPrompt = PREFLIGHT_PROMPT;
           } else {
+            requireNonEmptyOption("--file", options.file, "a path or '-' as its value");
             try {
               earlyPrompt = readUtf8FileBounded(options.file, {
                 maxBytes: MAX_PROMPT_FILE_BYTES,
@@ -316,10 +322,13 @@ export function registerRunCommand(
         // (a subprocess, not a request check), and the read is
         // timeout-bounded while it waits.
         const caps = adapter.capabilities();
-        const model = options.model
+        // Presence is `!== undefined` so an explicit `--model ""` reaches
+        // resolveModel and its validateModelName refusal instead of reading
+        // as "no model" (review round 159).
+        const model = options.model !== undefined
           ? resolveModel(options.model, agentId, config)
           : undefined;
-        if (model && !caps.supportsModel) {
+        if (model !== undefined && !caps.supportsModel) {
           throw new UsageRefusalError(`${agentId} does not support model selection`);
         }
 
@@ -331,18 +340,6 @@ export function registerRunCommand(
         }
         const effort = resolveEffortForAdapter(agentId, caps, requestedEffort);
         const sandboxAutonomy = requestedAutonomy;
-
-        if (!adapter.isAvailable()) {
-          console.error(`Error: ${agentId} is not installed`);
-          console.error(`Please install '${adapter.binaryName}' and try again`);
-          process.exit(1);
-        }
-
-        if (options.sandbox && !isScodeAvailable()) {
-          console.error("Error: scode is not installed (required for --sandbox)");
-          console.error("Install scode and ensure its executable is on PATH");
-          process.exit(1);
-        }
 
         const request: RunRequest = {
           agent: agentId,
@@ -375,6 +372,30 @@ export function registerRunCommand(
         // real text after the read -- the same single validator, twice, with
         // the second pass carrying the text the run will actually submit.
         adapter.validateRunRequest(request);
+        // The quota options are request checks too, so their values are
+        // judged here; the gate itself runs after the stdin read below.
+        const quotaPolicy = resolveQuotaGate({
+          config: config.quota,
+          ceiling: options.quotaCeiling,
+          disabled: options.quotaGate === false,
+        });
+
+        // Availability comes after every request check (review round
+        // 159): a malformed request (a missing --cwd, an empty
+        // --quota-ceiling) is the caller's mistake, and an "is not
+        // installed" line would misdirect them. It stays ahead of the
+        // stdin read, so a missing harness never waits on a producer.
+        if (!adapter.isAvailable()) {
+          console.error(`Error: ${agentId} is not installed`);
+          console.error(`Please install '${adapter.binaryName}' and try again`);
+          process.exit(1);
+        }
+
+        if (options.sandbox && !isScodeAvailable()) {
+          console.error("Error: scode is not installed (required for --sandbox)");
+          console.error("Install scode and ensure its executable is on PATH");
+          process.exit(1);
+        }
 
         let prompt = earlyPrompt;
         if (readPromptFromStdin) {
@@ -395,11 +416,6 @@ export function registerRunCommand(
         // or is recorded. A refusal exits 64 and nothing runs. A provider
         // override in force moves the spend off the native account, and the
         // gate skips it with one stderr line (assertQuotaHeadroomForLaunch).
-        const quotaPolicy = resolveQuotaGate({
-          config: config.quota,
-          ceiling: options.quotaCeiling,
-          disabled: options.quotaGate === false,
-        });
         // A print-only launch spends nothing: the quota gate has nothing to
         // protect and must not refuse the diagnostic (review round 55).
         if (quotaPolicy !== null && !options.printSandbox) await assertQuotaHeadroomForLaunch(adapter, quotaPolicy);

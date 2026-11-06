@@ -23,8 +23,9 @@ import { resolveSandboxOptionsForAgent } from "../sandbox-policy.js";
 import type { AgentId, CodemuxConfig, RunRequest } from "../types.js";
 import { validateWorkingDirectory } from "../validation.js";
 import { canonicalSandboxBlockPaths } from "./registry/format.js";
+import { parseQuotaCeilingOption } from "../quota-gate.js";
 import { SESSION_AGENTS } from "./cli-agents.js";
-import { asUsage, parseOptionalTimeout, usageError } from "./cli-usage.js";
+import { asUsage, assertResumeIdShape, parseOptionalTimeout, usageError } from "./cli-usage.js";
 
 /** The commander options `codemux session` delivers to its action. */
 export interface SessionCommandOptions {
@@ -239,10 +240,14 @@ export function resolveSessionRequest(
   const shutdownGraceMs =
     parseOptionalTimeout(options.shutdownGrace, "--shutdown-grace") ?? 10_000;
 
-  const model = options.model
+  // Presence is `!== undefined` (review round 159): an explicit
+  // `--model ""` is a given model option and refuses in resolveModel's
+  // validateModelName — it must never read as "no model" and fall back
+  // to the recorded override's model.
+  const model = options.model !== undefined
     ? asUsage(() => resolveModel(options.model!, agentId, config))
     : override?.model;
-  if (model && !caps.supportsModel) {
+  if (model !== undefined && !caps.supportsModel) {
     usageError(`${agentId} does not support model selection`);
   }
   const autonomy = asUsage(() => resolveAutonomyForAdapter(agentId, caps, requestedAutonomy));
@@ -325,6 +330,15 @@ export function resolveSessionRequest(
     experimentProjectSettings,
   };
   adapter.validateRunRequest(runLike);
+
+  // The last two option values the later phases judge (review round
+  // 159): checked here as well, so a malformed --resume id or
+  // --quota-ceiling is refused as usage before the availability checks
+  // below can report a missing harness instead.
+  if (options.resume !== undefined) assertResumeIdShape(sessionSupport, options.resume);
+  if (options.quotaCeiling !== undefined) {
+    asUsage(() => parseQuotaCeilingOption(options.quotaCeiling!));
+  }
 
   if (!adapter.isAvailable()) {
     console.error(`Error: ${agentId} is not installed`);

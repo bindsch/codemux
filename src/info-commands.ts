@@ -25,7 +25,7 @@ function toolsLabel(caps: AdapterCapabilities): string {
 }
 import { EXPERIMENT_MCP_HARNESSES } from "./experiment-mcp.js";
 import { SERVED_MODEL_EVIDENCE_HARNESSES } from "./result-envelope/index.js";
-import { UsageRefusalError, USAGE_REFUSAL_EXIT_CODE } from "./validation.js";
+import { UsageRefusalError, USAGE_REFUSAL_EXIT_CODE, requireNonEmptyOption } from "./validation.js";
 
 function shellQuote(value: string): string {
   return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value)
@@ -130,7 +130,10 @@ export function registerInfoCommands(
     .option("--sandbox-scrub-env", "Add --scrub-env in --show-scode preview")
     .action((options) => {
       let selectedAgents: readonly AgentId[] = AGENT_IDS;
-      if (options.agent) {
+      // Presence is `!== undefined` (review round 159): `--agent ""` is a
+      // given selector that names no agent, refused below like any unknown
+      // name, not an absent flag that would verify every agent.
+      if (options.agent !== undefined) {
         const agentId = options.agent as AgentId;
         if (!AGENT_IDS.includes(agentId)) {
           console.error(`Error: Unknown agent '${agentId}'`);
@@ -301,8 +304,20 @@ export function registerInfoCommands(
       try {
         report = await runMachineCheck(config, configError, {
           spend: Boolean(options.spend),
+          // The empty value is refused by name (review round 159):
+          // Number("") is 0, which is in range, so `--spend-cap ""` (an
+          // unset shell variable) would silently cap the paid stage at
+          // zero probes instead of refusing.
           spendCap:
-            options.spendCap !== undefined ? Number(options.spendCap) : undefined,
+            options.spendCap !== undefined
+              ? Number(
+                  requireNonEmptyOption(
+                    "--spend-cap",
+                    options.spendCap,
+                    "a whole number of harnesses, 0 or more"
+                  )
+                )
+              : undefined,
           spendUnreadable: Boolean(options.spendUnreadable),
           only: options.only !== undefined ? [options.only] : undefined,
           skip: options.skip !== undefined ? [options.skip] : undefined,

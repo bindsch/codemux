@@ -6,7 +6,13 @@ read_when: "Checking a command, option, exit code, or output schema."
 Every command accepts `-h, --help`. Root `-V, --version` reads the package
 version. Options below are parsed by codemux; unknown options and missing
 option arguments are parser errors (exit 1, or 64 for a missing `--label` or `--by`
-argument). There is no generic pass-through
+argument). An option given on the command line with an empty value —
+`--model ""`, typically an unset shell variable — is present, not absent:
+it is refused with exit 64 instead of silently falling back to the option's
+default. Environment variables and config files keep their own convention,
+where a blank value means unset. On run, tui, check, and session every
+request check runs before the harness and scode are looked up, so a usage
+error exits 64 even when the harness is not installed. There is no generic pass-through
 for arbitrary harness flags.
 
 ## Shared launch options
@@ -300,7 +306,7 @@ commands may inspect local binaries or execute version/help paths.
 |---|---|
 | 0 | Command succeeded; does not imply every optional harness is installed |
 | 1 | Parser errors, configuration/I/O/launch or protocol failures, and runtime errors |
-| 64 | Every pre-launch refusal of a caller mistake, with the same code on run, tui, check, session, calls, usage, and verify: unknown agent (also the unknown `--agent` of calls/usage and `--agent` combined with `--all`); a request the named agent cannot carry (model, effort, autonomy without sandbox, hermetic, tools, result JSON, provider override, --experiment-project-settings); prompt refusals ("No prompt provided. Use -p or -f", an unreadable or empty -f file, a malformed, empty, oversized, or terminal -f - read); sandbox policy option rules ("--sandbox-block requires absolute paths", "--sandbox-account requires an absolute path", "--sandbox-account-id without --sandbox-account"); capability and combination refusals ("--enable-playwright-mcp requires --sandbox", "--no-web applies to the claude and zai agents only"); "--print-sandbox requires --sandbox"; bad option values (--timeout, --pass-env, --auto, --effort, --tools, --sandbox-trust, an invalid `-m/--model` name, an inaccessible `--cwd`); project-execution configuration refusals (a forbidden harness execution knob in the project tree) and the codex multi-agent knob's on/off rule; invalid labels, calls cutoff/grouping, quota-gate refusals, and unsupported session agents. Parser errors stay exit 1. |
+| 64 | Every pre-launch refusal of a caller mistake, with the same code on run, tui, check, session, calls, usage, and verify: unknown agent (also the unknown `--agent` of calls/usage and `--agent` combined with `--all`); a request the named agent cannot carry (model, effort, autonomy without sandbox, hermetic, tools, result JSON, provider override, --experiment-project-settings); prompt refusals ("No prompt provided. Use -p or -f", an unreadable or empty -f file, a malformed, empty, oversized, or terminal -f - read); sandbox policy option rules ("--sandbox-block requires absolute paths", "--sandbox-account requires an absolute path", "--sandbox-account-id without --sandbox-account"); capability and combination refusals ("--enable-playwright-mcp requires --sandbox", "--no-web applies to the claude and zai agents only"); "--print-sandbox requires --sandbox"; bad option values (--timeout, --pass-env, --auto, --effort, --tools, --sandbox-trust, an invalid `-m/--model` name, an inaccessible `--cwd`, an explicitly empty value given to any option above); project-execution configuration refusals (a forbidden harness execution knob in the project tree) and the codex multi-agent knob's on/off rule; invalid labels, calls cutoff/grouping, quota-gate refusals, and unsupported session agents. Parser errors stay exit 1. |
 | 66 | Requested resume identity not found |
 | 69 | Optional usagemux absent or untrusted; a usagemux that exits nonzero is an unreadable query and exits 1 |
 | 78 | Session policy/trust refusal; registry access failure can instead be 1 |

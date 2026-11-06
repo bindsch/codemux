@@ -26,7 +26,7 @@ import {
   opencodeHarnessHome,
 } from "./cli-homes.js";
 import type { SessionCommandOptions } from "./cli-request.js";
-import { exitOnResumeRefusal, exitWithCode, usageError } from "./cli-usage.js";
+import { assertResumeIdShape, exitOnResumeRefusal, exitWithCode, usageError } from "./cli-usage.js";
 import {
   lookupForResume,
   registryInside,
@@ -91,11 +91,7 @@ export function resolveSessionContext({
   // resume's harness home is keyed by it.
   let resumeId: string | undefined;
   if (options.resume !== undefined) {
-    if (!sessionSupport.resumePattern.test(options.resume)) {
-      usageError(
-        `--resume expects a ${sessionSupport.resumeLabel} session id; '${options.resume}' is not one`
-      );
-    }
+    assertResumeIdShape(sessionSupport, options.resume);
     resumeId = options.resume;
   }
   // A claude-family session's id, minted HERE rather than inside

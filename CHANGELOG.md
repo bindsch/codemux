@@ -125,6 +125,19 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 159, whole tree: an option given on the command line with an explicitly empty value
+  (`--model ""`, typically an unset shell variable) is present, not absent — every value option now
+  refuses it with exit 64 instead of silently taking its default. Fixed for run's `--file` (the
+  `-p` clash check now sees the flag) and `--model` on run, tui, check, and session (which no
+  longer falls back to a recorded override model); run, tui, check, and session validate the whole
+  request before reporting a missing harness or scode, so a usage error is never misreported as an
+  installation failure; `verify
+  --agent ""` names no agent instead of verifying all of them; and the sweep also fixed doctor's
+  `--spend-cap` (Number("") is 0, which capped the paid stage at zero probes), check's `--cwd`
+  guards beside `--agy-isolation-probe`, that probe's bad-mode exit (64, not 1), and the release
+  gate's list flags (`--skip`, `--only`, `--pass-env`, `--probe`, `--skip-probe`,
+  `--probe-anyway`), which skipped empty entries and so selected every harness. Environment
+  variables and config files keep their own convention, where a blank value means unset.
 - Review round 153, whole tree: aider's headless declines now repeat on the child's stdin for its
   whole lifetime instead of one canned block plus EOF (aider reads EOF as acceptance of a
   yes-default prompt), on both the run and session paths, paced so a child that discards its stdin

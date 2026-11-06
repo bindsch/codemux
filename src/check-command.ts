@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import { existsSync } from "node:fs";
-import { runAgyCanaryChecks, runAgyIsolationProbe } from "./agy-isolation-probe.js";
+import { assertAgyProbeMode, runAgyCanaryChecks, runAgyIsolationProbe } from "./agy-isolation-probe.js";
 import { plantKimiCanary } from "./kimi-isolation-probe.js";
 import { assertExperimentMcpUnavailable, experimentCanaryControl, validateExperimentRequest } from "./experiment-mcp.js";
 import { getAdapter } from "./adapters/index.js";
@@ -148,18 +148,27 @@ export function registerCheckCommand(
           throw new UsageRefusalError("--hermetic plants its own working directory; drop --cwd");
         }
         const timeoutMs = parseTimeoutOption(options.timeout);
-        const model = options.model
+        // Presence is `!== undefined` so an explicit `--model ""` reaches
+        // resolveModel and its validateModelName refusal instead of reading
+        // as "no model" (review round 159).
+        const model = options.model !== undefined
           ? resolveModel(options.model, agentId, config)
           : undefined;
+        // `--cwd` reads by presence too: an empty value (`--cwd ""`) is a
+        // given working directory these guards must refuse, not one they
+        // skip while the probe runs against its own scratch directory.
         if (options.agyIsolationProbe !== undefined) {
+          // The mode is judged here, with the other request checks, not
+          // after the version probe has already run the harness binary.
+          assertAgyProbeMode(options.agyIsolationProbe);
           if (agentId !== "agy" || hermetic || tools === "none" || options.experimentMcp ||
-              !options.sandbox || requestedAutonomy !== "read-only" || options.cwd || passthroughEnv.length ||
+              !options.sandbox || requestedAutonomy !== "read-only" || options.cwd !== undefined || passthroughEnv.length ||
               options.sandboxTrust || options.sandboxNoNet || options.sandboxScrubEnv || requestedEffort) {
             throw new UsageRefusalError("--agy-isolation-probe requires -a agy --auto read-only with default scode and no other isolation flags");
           }
         }
         if (agentId === "agy" && (hermetic || tools === "none")) {
-          if (!options.sandbox || requestedAutonomy !== "read-only" || options.cwd || passthroughEnv.length ||
+          if (!options.sandbox || requestedAutonomy !== "read-only" || options.cwd !== undefined || passthroughEnv.length ||
               options.sandboxTrust || options.sandboxNoNet || options.sandboxScrubEnv || requestedEffort) {
             throw new UsageRefusalError("agy canary checks require default read-only scode and manage their own scratch cwd and HOME");
           }
@@ -167,14 +176,8 @@ export function registerCheckCommand(
 
         const adapter = getAdapter(agentId);
 
-        if (!adapter.isAvailable()) {
-          console.error(`Error: ${agentId} is not installed`);
-          console.error(`Please install '${adapter.binaryName}' and try again`);
-          process.exit(1);
-        }
-
         const caps = adapter.capabilities();
-        if (model && !caps.supportsModel) {
+        if (model !== undefined && !caps.supportsModel) {
           throw new UsageRefusalError(`${agentId} does not support model selection`);
         }
 
@@ -203,11 +206,6 @@ export function registerCheckCommand(
           );
         }
         const effort = resolveEffortForAdapter(agentId, caps, requestedEffort);
-
-        if (options.sandbox && !isScodeAvailable()) {
-          console.error("Error: scode is not installed (required for --sandbox)");
-          process.exit(1);
-        }
 
         const baseRequest: RunRequest = {
           agent: agentId,
@@ -264,6 +262,21 @@ export function registerCheckCommand(
           ceiling: options.quotaCeiling,
           disabled: options.quotaGate === false,
         });
+
+        // Availability comes after every request check, the order run,
+        // tui, and session hold (review round 159): a malformed request
+        // is the caller's mistake, and an "is not installed" line would
+        // misdirect them.
+        if (!adapter.isAvailable()) {
+          console.error(`Error: ${agentId} is not installed`);
+          console.error(`Please install '${adapter.binaryName}' and try again`);
+          process.exit(1);
+        }
+
+        if (options.sandbox && !isScodeAvailable()) {
+          console.error("Error: scode is not installed (required for --sandbox)");
+          process.exit(1);
+        }
         // A print-only check spends nothing (review round 56).
         if (quotaPolicy !== null && !options.printSandbox) await assertQuotaHeadroomForLaunch(adapter, quotaPolicy);
 

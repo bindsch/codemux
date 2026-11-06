@@ -39,6 +39,26 @@ export const USAGE_REFUSAL_EXIT_CODE = 64 as const;
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const CONTROL_CHARACTER_PATTERN = /[\p{Cc}\p{Cf}\p{Cs}]/u;
 
+/** A value option the caller gave on the command line is present even
+ * when its value is the empty string (review round 159): a value tested
+ * by truthiness reads `--opt ""` — typically an unset shell variable —
+ * as "option not given", so the command goes on with its default and
+ * silently drops what the caller asked for. Presence is `!== undefined`;
+ * this helper carries the other half of the rule: an explicitly given
+ * empty value is a usage refusal, because the empty string names no
+ * path, level, or selector the command could act on. `requirement`
+ * states what the option takes, so the refusal names both. */
+export function requireNonEmptyOption(
+  name: string,
+  value: string,
+  requirement: string
+): string {
+  if (value === "") {
+    throw new UsageRefusalError(`${name} requires ${requirement}`);
+  }
+  return value;
+}
+
 /** Every validator below judges the caller's request, so each refusal is
  * a UsageRefusalError (exit 64) on every command — run, tui, check, and
  * session (review round 4, contracts-2 finding 1: run exited 1 where

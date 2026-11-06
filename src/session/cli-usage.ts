@@ -59,3 +59,18 @@ export function parseOptionalTimeout(seconds: string | undefined, flag: string):
     usageError(detail.replace("--timeout", flag));
   }
 }
+
+/** `--resume <id>`: the id must match the agent's session id shape (the
+ * registry check follows). One rule for the request phase, which runs it
+ * before the availability checks, and the resume phase, which keys a
+ * codex override home by the id. */
+export function assertResumeIdShape(
+  support: { resumePattern: RegExp; resumeLabel: string },
+  resume: string
+): void {
+  if (!support.resumePattern.test(resume)) {
+    usageError(
+      `--resume expects a ${support.resumeLabel} session id; '${resume}' is not one`
+    );
+  }
+}

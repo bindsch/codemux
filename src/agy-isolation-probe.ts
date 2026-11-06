@@ -5,6 +5,7 @@ import { AgyAdapter, markAgyIsolationProbe } from "./adapters/agy.js";
 import { launchRunRequest } from "./launch.js";
 import { summarizeAgyStream } from "./agy-stream.js";
 import { HERMETIC_CANARY_PROMPT, evaluateCanary, trackScratchRemoval, untrackScratchRemoval } from "./hermetic-canary.js";
+import { UsageRefusalError } from "./validation.js";
 import type { RunRequest, RunResult } from "./types.js";
 
 export const AGY_PROBE_MODES = ["login", "hermetic", "control", "tools", "tools-control"] as const;
@@ -85,11 +86,19 @@ async function runProbe(mode: AgyProbeMode, timeoutMs: number, model: string | u
   return passed;
 }
 
+/** A bad mode value, the empty string included, is a usage refusal
+ * (exit 64), the class every other option validator uses (review round
+ * 159), not a plain runtime failure. The check command calls this with
+ * its other request checks, before anything runs the harness binary. */
+export function assertAgyProbeMode(mode: string): asserts mode is AgyProbeMode {
+  if (!(AGY_PROBE_MODES as readonly string[]).includes(mode)) {
+    throw new UsageRefusalError(`--agy-isolation-probe must be one of: ${AGY_PROBE_MODES.join(", ")}`);
+  }
+}
+
 export async function runAgyIsolationProbe(mode: string, timeoutMs: number, model?: string,
   harnessVersion?: string | null): Promise<number> {
-  if (!(AGY_PROBE_MODES as readonly string[]).includes(mode)) {
-    throw new Error(`--agy-isolation-probe must be one of: ${AGY_PROBE_MODES.join(", ")}`);
-  }
+  assertAgyProbeMode(mode);
   const canary = plantAgyCanary();
   try { return await runProbe(mode as AgyProbeMode, timeoutMs, model, canary, harnessVersion) ? 0 : 1; }
   finally { canary.cleanup(); }
