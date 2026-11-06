@@ -10,7 +10,7 @@ import { CommanderError } from "commander";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getAvailableAdapters } from "../src/adapters/index.js";
-import { runContractColumn, runUsageCheck, stampCodemuxVersion, type ContractRow, type UsageCheck } from "./live-gate/contracts.js";
+import { contractsAfterPool, runContractColumn, runUsageCheck, stampCodemuxVersion, type ContractRow, type UsageCheck } from "./live-gate/contracts.js";
 import { formatReport, gateFailed, type ReportInput } from "./live-gate/report.js";
 import { ProbeRunner, isDefaultCodemux, parseOptions } from "./live-gate/runner.js";
 import { discoverCandidate } from "./live-gate/candidate.js";
@@ -39,19 +39,22 @@ export {
 export {
   prepareNoNetProbe,
   providerOverrideEnv,
+  sandboxPrefixFromPrint,
   startFakeProvider,
   startReachableListener,
   verifyOverrideLog,
   verifyProviderOverrideEnvelope,
 } from "./live-gate/loopback.js";
 export type { FakeProvider, LoopbackServer, NoNetProbe, OverrideRequestRecord } from "./live-gate/loopback.js";
-export { runContractColumn, runUsageCheck, stampCodemuxVersion } from "./live-gate/contracts.js";
+export { contractsAfterPool, runContractColumn, runUsageCheck, stampCodemuxVersion } from "./live-gate/contracts.js";
 export { candidateFacts, discoverCandidate, assertCandidateVersion } from "./live-gate/candidate.js";
 export { formatReport, gateFailed } from "./live-gate/report.js";
 export {
   createReportDirectory,
   liveSessionLeak,
+  LOOPBACK_TIMEOUT_SECONDS,
   modelAliasFor,
+  modelNamesTarget,
   runProbes,
   sessionHarnessFacts,
   verifyAliasEnvelope,
@@ -120,7 +123,12 @@ export async function main(): Promise<void> {
         .filter((adapter) => discoveryIds.has(adapter.id))
         .map((adapter) => ({ id: adapter.id, binaryName: adapter.binaryName }))
       : candidate.contractHarnesses.filter((harness) => discoveryIds.has(harness.id));
-    const contracts: ContractRow[] = await runContractColumn(contractHarnesses);
+    // Read here and again after the pool: a harness can update itself
+    // while the pool runs (agy and cursor both did on 2026-11-06), and the
+    // report judges the version installed afterwards, naming the change.
+    // An interrupted gate keeps this first reading: its report must not
+    // wait on more spawns.
+    const contractsBefore: ContractRow[] = await runContractColumn(contractHarnesses);
     const usage: UsageCheck = await runUsageCheck(options.codemux);
     probing = true;
     // Keychain hygiene around the whole pool (review round 52): concurrent
@@ -139,8 +147,8 @@ export async function main(): Promise<void> {
     }
     const rows = await runProbes(facts, options, runner, directory);
     const keychainDriftText = keychainDrift(keychainBefore, await keychainSnapshot());
-    const input: ReportInput = {
-      rows, contracts, usage, version,
+    const first: ReportInput = {
+      rows, contracts: contractsBefore, usage, version,
       keychainDrift: keychainDriftText,
       codemux: options.codemux,
       only: options.only,
@@ -155,9 +163,22 @@ export async function main(): Promise<void> {
         requiredContractIds: new Set(contractHarnesses.map((harness) => harness.id)),
       }),
     };
+    // The pool's results are saved before the second reading starts. Each
+    // version read is a runCapturedCommand call (src/process-runner.ts,
+    // through src/harness-compatibility.ts), and that function's own
+    // signal handlers end the process once its child is stopped, so a
+    // signal during a version read would otherwise end the gate with the
+    // report unwritten. A reread that fails must not cost the report
+    // either: its rows print UNREADABLE, which fails the gate (review
+    // rounds 183 and 190).
+    const path = join(directory, "report.md");
+    await Bun.write(path, `${formatReport(first)}\n`);
+    const contracts: ContractRow[] = runner.interrupted
+      ? contractsBefore
+      : contractsAfterPool(contractsBefore, await runContractColumn(contractHarnesses).catch(() => []));
+    const input: ReportInput = { ...first, contracts };
     const report = formatReport(input);
     console.log(report);
-    const path = join(directory, "report.md");
     await Bun.write(path, `${report}\n`);
     console.log(`Report: ${path}`);
     process.exitCode = runner.interrupted === "SIGHUP" ? 129 : runner.interrupted === "SIGINT" ? 130 : runner.interrupted ? 143

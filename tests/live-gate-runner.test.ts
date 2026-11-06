@@ -341,3 +341,16 @@ test("--codex-model names the alias the codex experiment probe carries, worker b
   expect(() => parseOptions(["--codex-model", " "], "")).toThrow("nonempty");
 });
 
+
+test("a probe command that cannot be spawned fails naming the probe command, not codemux", async () => {
+  // Probe J runs scode directly since 2026-11-06, so the spawn failure line
+  // no longer names a launcher the row may never have started (review
+  // round 187).
+  const directory = fixtureDirectory();
+  try {
+    const result = await new ProbeRunner().run([join(directory, "absent-command")], "OK", 5);
+    expect(result).toMatchObject({ status: "FAIL", stderr: "could not start the probe command" });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

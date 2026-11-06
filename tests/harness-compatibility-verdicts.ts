@@ -156,19 +156,19 @@ describe("session floors and the audited band", () => {
 
   test("above the audited band still warns, naming the higher of floor and ceiling", () => {
     // The session floor (2.1.280) sits inside the run contract's audited
-    // band since the 2026-11-02 live gate raised the ceiling to 2.1.300, so
+    // band since the live gates raised the ceiling (2.1.317 on 2026-11-06), so
     // the band's top is the ceiling; a floor above the ceiling would be
     // named instead (the override raises both, never lowers either).
     const verdict = evaluateHarnessVersion(
       "claude",
       claude,
-      "2.1.310",
+      "2.1.320",
       "high",
       false,
       "2.1.280"
     );
     expect(verdict.kind).toBe("unaudited");
-    expect(verdict.message).toContain("newer than the 2.1.300");
+    expect(verdict.message).toContain("newer than the 2.1.317");
     expect(evaluateHarnessVersion("claude", claude, "2.1.290", "high", false, "2.1.280").kind).toBe("supported");
     // Below the floor is still a refusal whatever the run contract's
     // maxAudited says — the floor, not the contract, is the session's

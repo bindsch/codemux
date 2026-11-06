@@ -1,25 +1,26 @@
 // The probes the matrix grew in the 2.0.0 audit: I (the model-alias and
-// effort flags, D7), J (the sandbox policy flags against a provably
-// reachable loopback port, D7), and H2 (the loopback override twin of
-// probe H, D9 — the proof is the fake provider's request log). The
-// loopback pieces live in scripts/live-gate/loopback.ts; the probe bodies
-// in scripts/live-gate/run.ts.
+// effort flags, D7) and H2 (the loopback override twin of probe H, D9 —
+// the proof is the fake provider's request log). Probe J (the sandbox
+// policy flags, D7) has its own file, tests/live-gate-sandbox-probe.test.ts.
+// The loopback pieces live in scripts/live-gate/loopback.ts; the probe
+// bodies in scripts/live-gate/run.ts.
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { connect } from "node:net";
 import { getDefaultConfig } from "../src/config.js";
 import type { CodemuxConfig } from "../src/types.js";
 import {
+  LOOPBACK_TIMEOUT_SECONDS,
   ProbeRunner,
   modelAliasFor,
+  modelNamesTarget,
   parseOptions,
   runProbes,
   verifyAliasEnvelope,
 } from "../scripts/live-gate.js";
 import {
   FAKE_PROVIDER_BODY_LIMIT,
-  prepareNoNetProbe,
   startFakeProvider,
   startReachableListener,
   verifyOverrideLog,
@@ -98,77 +99,46 @@ test("probe I carries -m and --effort, and verifies the alias target where the h
   }
 });
 
+test("an alias target that is the harness's own short name is named by the full served id", () => {
+  // Live gate, 2026-11-06: the worker alias maps claude to `sonnet`, the
+  // provider reported `claude-sonnet-5-5`, and the exact comparison failed
+  // a correct run. Whole hyphen-separated words decide; another family
+  // still fails.
+  expect(modelNamesTarget("claude-sonnet-5-5", "sonnet")).toBe(true);
+  expect(modelNamesTarget("claude-sonnet-5-5-20261001", "claude-sonnet-5-5")).toBe(true);
+  expect(modelNamesTarget("glm-5.3", "glm-5.3")).toBe(true);
+  expect(modelNamesTarget("claude-opus-5-5", "sonnet")).toBe(false);
+  expect(modelNamesTarget("claude-sonnets-5", "sonnet")).toBe(false);
+  expect(modelNamesTarget("gpt-6-astra", "gpt-6-luna")).toBe(false);
+  expect(modelNamesTarget("claude-sonnet-5-5", "")).toBe(false);
+  // Only a bare family word may match inside an id (review round 180): a
+  // target with a version in it names one model, and a number names none.
+  expect(modelNamesTarget("claude-sonnet-5-high", "claude-sonnet-5")).toBe(false);
+  expect(modelNamesTarget("claude-sonnet-5-5", "claude-sonnet-5")).toBe(false);
+  expect(modelNamesTarget("claude-opus-5-5", "5")).toBe(false);
+  expect(modelNamesTarget("gpt-6-astra", "gpt-6")).toBe(false);
+  expect(modelNamesTarget("claude-sonnet-5-5-2026100", "claude-sonnet-5-5")).toBe(false);
+  expect(modelNamesTarget("-20261001", "")).toBe(false);
+  // The family word must be the id's only word beside the vendor and the
+  // numbers (review round 184): a variant word names no model, and an id
+  // with a variant is not the plain family.
+  expect(modelNamesTarget("claude-sonnet-5-high", "high")).toBe(false);
+  expect(modelNamesTarget("claude-sonnet-5-high", "sonnet")).toBe(false);
+  expect(modelNamesTarget("claude-sonnet-5-5", "claude")).toBe(false);
+  expect(modelNamesTarget("sonnet", "sonnet")).toBe(true);
+  expect(modelNamesTarget("claude-3-5-sonnet-20241022", "sonnet")).toBe(true);
+  expect(modelNamesTarget("claude-fable-5-1", "fable")).toBe(true);
+  expect(verifyAliasEnvelope(aliasEnvelope("claude-sonnet-5-5"), "claude", "sonnet")).toBeNull();
+  expect(verifyAliasEnvelope(aliasEnvelope("claude-opus-5-5"), "claude", "sonnet"))
+    .toContain('codemux.model is "claude-opus-5-5", not the alias\'s target "sonnet"');
+});
+
 test("verifyAliasEnvelope keeps probe C's checks and adds the model assertion", () => {
   expect(verifyAliasEnvelope(aliasEnvelope("claude-worker"), "claude", "claude-worker")).toBeNull();
   // A non-JSON stdout fails probe C's checks before the model is read.
   expect(verifyAliasEnvelope("OK\n", "claude", "claude-worker")).toContain("does not parse");
   expect(verifyAliasEnvelope(aliasEnvelope(null), "claude", "claude-worker"))
     .toContain('codemux.model is null, not the alias\'s target "claude-worker"');
-});
-
-test("probe J sends the sandbox policy flags together and proves the blocked port (audit D7)", async () => {
-  const fixture = loggedInEnv();
-  const reportDirectory = fixtureDirectory();
-  const commands: string[][] = [];
-  try {
-    const rows = await runProbes([factsFor("kimi")], parseOptions(["--probe", "J", "--timeout", "10"], ""), {
-      async run(command, expected) {
-        commands.push(command);
-        expect(expected).toBe("BLOCKED");
-        // The script the harness runs sits in the probe directory, executable
-        // by its owner only — read here, before the cleanup removes a passed
-        // probe's directory.
-        const cwd = command[command.indexOf("--cwd") + 1]!;
-        expect(readdirSync(cwd)).toEqual(["nonet.sh"]);
-        expect(statSync(join(cwd, "nonet.sh")).mode & 0o777).toBe(0o700);
-        return { status: "PASS", seconds: 0, stderr: "" };
-      },
-      async capture() { throw new Error("probe J never captures"); },
-    }, reportDirectory, fixture.env);
-    const command = commands[0]!;
-    // The three policy flags ride one launch: the release contract runs
-    // them together, so the probe does too.
-    expect(command).toContain("--sandbox-no-net");
-    expect(command).toContain("--sandbox-scrub-env");
-    expect(command[command.indexOf("--sandbox-trust") + 1]).toBe("standard");
-    expect(command[command.indexOf("--auto") + 1]).toBe("medium");
-    expect(rows[0]!.results.J).toMatchObject({ status: "PASS" });
-  } finally {
-    rmSync(reportDirectory, { recursive: true, force: true });
-  }
-});
-
-test("the no-net script answers OPEN, BLOCKED, and NO-CURL from the curl outcome", async () => {
-  // The script is a pure read of curl's outcome: exit 0 → OPEN (the
-  // address was reachable), any failure → BLOCKED, no curl on PATH →
-  // NO-CURL. Each branch is driven by a stub curl standing in for the
-  // production outcomes, because a suite running inside a network-
-  // restricted sandbox has no loopback curl to observe — the test cannot
-  // depend on one. The listener itself still serves: the fetch proves the
-  // address the script targets is reachable outside any sandbox.
-  const listener = await startReachableListener();
-  const directory = fixtureDirectory();
-  try {
-    const probe = prepareNoNetProbe(directory, listener.port);
-    expect(probe.expected).toBe("BLOCKED");
-    expect(probe.prompt).toContain("sh nonet.sh");
-    expect(await (await fetch(`http://127.0.0.1:${listener.port}/`)).text()).toBe("reachable\n");
-    const bin = join(directory, "bin");
-    mkdirSync(bin);
-    const stubCurl = (outcome: string) =>
-      writeFileSync(join(bin, "curl"), `#!/bin/sh\n${outcome}\n`, { mode: 0o700 });
-    const run = () =>
-      Bun.spawnSync(["/bin/sh", join(directory, "nonet.sh")], { env: { PATH: bin } }).stdout.toString();
-    stubCurl("exit 0"); // curl reached the listener
-    expect(run()).toBe("OPEN");
-    stubCurl("exit 7"); // connection refused or blocked
-    expect(run()).toBe("BLOCKED");
-    rmSync(join(bin, "curl"));
-    expect(run()).toBe("NO-CURL");
-  } finally {
-    await listener.close();
-    rmSync(directory, { recursive: true, force: true });
-  }
 });
 
 test("the fake provider answers the override key and refuses every other request (audit D9)", async () => {
@@ -190,10 +160,10 @@ test("the fake provider answers the override key and refuses every other request
       expect(served.status).toBe(200);
     }
     expect(provider.requests()).toEqual([
-      { path: "/messages", auth: "other", model: "loopback-probe-model" },
-      { path: "/messages", auth: "none", model: "loopback-probe-model" },
-      { path: "/messages", auth: "override", model: "loopback-probe-model" },
-      { path: "/messages", auth: "override", model: "loopback-probe-model" },
+      { method: "POST", path: "/messages", auth: "other", model: "loopback-probe-model" },
+      { method: "POST", path: "/messages", auth: "none", model: "loopback-probe-model" },
+      { method: "POST", path: "/messages", auth: "override", model: "loopback-probe-model" },
+      { method: "POST", path: "/messages", auth: "override", model: "loopback-probe-model" },
     ]);
   } finally {
     await provider.close();
@@ -205,13 +175,40 @@ test("verifyOverrideLog fails a run that never routed, leaked a credential, or m
   expect(verifyOverrideLog([], "loopback-probe-model"))
     .toBe("the harness sent no request to the loopback provider; the override did not route the run");
   expect(verifyOverrideLog([record("override", "loopback-probe-model"), record("other", "m")], "loopback-probe-model"))
-    .toBe("1 of 2 request(s) carried a credential other than the override key; the override did not isolate the run");
+    .toBe("1 of 2 request(s) carried a credential other than the override key (? /); the override did not isolate the run");
+  // The leak line names the request that carried the foreign credential
+  // (review round 182): that is the request an operator has to find.
+  expect(verifyOverrideLog([
+    record("override", "loopback-probe-model"),
+    { method: "POST", path: "/v1/messages?beta=true", auth: "other" as const, model: "loopback-probe-model" },
+  ], "loopback-probe-model"))
+    .toBe("1 of 2 request(s) carried a credential other than the override key (POST /v1/messages); the override did not isolate the run");
   expect(verifyOverrideLog([record("none", "m")], "loopback-probe-model"))
-    .toBe("1 of 1 request(s) carried no credential header; the override key never reached the provider");
+    .toBe("none of the 1 request(s) carried a credential (? /); the override key never reached the provider");
+  // The failure names which requests they were, method and path without
+  // the query, each pair once (live gate, 2026-11-06: the line gave a
+  // count and nothing to tell a harness probe from a model request).
+  const bare = (method: string, path: string) => ({ method, path, auth: "none" as const, model: null });
+  expect(verifyOverrideLog([bare("HEAD", "/"), bare("HEAD", "/"), bare("POST", "/v1/messages?beta=true")], "loopback-probe-model"))
+    .toBe("none of the 3 request(s) carried a credential (HEAD /, POST /v1/messages); the override key never reached the provider");
+  expect(verifyOverrideLog(["/a", "/b", "/c", "/d", "/e"].map((path) => bare("GET", path)), "loopback-probe-model"))
+    .toContain("(GET /a, GET /b, GET /c, GET /d, ...)");
+  // A request with no credential leaks none: Claude Code's unauthenticated
+  // connectivity check beside its keyed model requests passes (live gate,
+  // 2026-11-06, where `HEAD /api/hello` failed a correct run).
+  expect(verifyOverrideLog([
+    bare("HEAD", "/api/hello"), record("override", "loopback-probe-model"), record("override", "loopback-probe-model"),
+  ], "loopback-probe-model")).toBeNull();
+  // The model must be named by a request that carried the override key: a
+  // bare request naming it proves nothing about the keyed ones.
+  expect(verifyOverrideLog([
+    { ...bare("POST", "/v1/messages"), model: "loopback-probe-model" }, record("override", "other-model"),
+  ], "loopback-probe-model"))
+    .toBe('no request carrying the override key named the override model "loopback-probe-model"; those requests carried: "other-model"');
   expect(verifyOverrideLog([record("override", "other-model")], "loopback-probe-model"))
-    .toBe('no request named the override model "loopback-probe-model"; the requests carried: "other-model"');
+    .toBe('no request carrying the override key named the override model "loopback-probe-model"; those requests carried: "other-model"');
   expect(verifyOverrideLog([record("override", null)], "loopback-probe-model"))
-    .toContain("the requests carried: null");
+    .toContain("those requests carried: null");
   expect(verifyOverrideLog([record("override", "loopback-probe-model")], "loopback-probe-model")).toBeNull();
 });
 
@@ -285,7 +282,7 @@ test.each(["honor", "ignore", "wrong-model", "silent"] as const)(
             ? "the harness sent no request to the loopback provider"
             : behavior === "ignore"
               ? "carried a credential other than the override key"
-              : "no request named the override model"
+              : "no request carrying the override key named the override model"
         );
       }
     } finally {
@@ -347,8 +344,33 @@ test("an oversized body is refused with 413 and recorded without a model", async
       body: "x".repeat(FAKE_PROVIDER_BODY_LIMIT + 1024),
     }).catch(() => null);
     if (response !== null) expect(response.status).toBe(413);
-    expect(provider.requests()).toEqual([{ path: "/v1/messages", auth: "override", model: null }]);
+    expect(provider.requests()).toEqual([{ method: "POST", path: "/v1/messages", auth: "override", model: null }]);
   } finally {
     await provider.close();
+  }
+});
+
+test("probe H2's launch is bounded apart from --timeout: the request log is the proof, not the run's end", async () => {
+  // Live gate, 2026-11-06: opencode retried the fake provider's minimal
+  // answer for the full 600 s and still passed on the log it had after
+  // seconds. The launch and its outer allowance are capped; a shorter
+  // --timeout stays as given.
+  const fixture = loggedInEnv();
+  const reportDirectory = fixtureDirectory();
+  const seen: { timeout: string; outer: number }[] = [];
+  const stub = {
+    async run(): Promise<never> { throw new Error("probe H2 never runs an exact-output probe"); },
+    async capture(command: string[], _verify: unknown, outer: number) {
+      seen.push({ timeout: command[command.indexOf("--timeout") + 1]!, outer });
+      return { status: "PASS" as const, seconds: 0, stderr: "" };
+    },
+  };
+  try {
+    await runProbes([factsFor("claude")], parseOptions(["--probe", "H2", "--timeout", "600"], ""), stub, reportDirectory, fixture.env);
+    await runProbes([factsFor("claude")], parseOptions(["--probe", "H2", "--timeout", "10"], ""), stub, reportDirectory, fixture.env);
+    expect(LOOPBACK_TIMEOUT_SECONDS).toBe(120);
+    expect(seen).toEqual([{ timeout: "120", outer: 150 }, { timeout: "10", outer: 40 }]);
+  } finally {
+    rmSync(reportDirectory, { recursive: true, force: true });
   }
 });

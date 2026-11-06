@@ -91,8 +91,9 @@ export interface HarnessContract {
  */
 export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract>>> = {
   agy: {
-    // Ceiling 1.4.12 from the 2026-11-02 live gate (read-only, medium
-    // shell, result JSON, hermetic check, one session turn; docs/harnesses.md).
+    // Ceiling 1.5.2 from the 2026-11-06 live gate (read-only, medium shell,
+    // result JSON, hermetic check, one session turn, and the two zero-quota
+    // sandbox probes; docs/harnesses.md).
     // Pinned 2026-10-04 against 1.2.14, the installed release, by probing
     // the binary's flag surface and the official docs
     // (https://antigravity.google/docs/cli/overview,
@@ -106,7 +107,7 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
     versionArgs: ["--version"],
     pattern: /^(\d+\.\d+\.\d+)/,
     min: "1.2.14",
-    maxAudited: "1.4.12",
+    maxAudited: "1.5.2",
   },
   aider: {
     scheme: "semver",
@@ -116,12 +117,12 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
     maxAudited: "0.86.2",
   },
   claude: {
-    // Ceiling 2.1.300 from the 2026-11-02 live gate (docs/harnesses.md names the probes).
+    // Ceiling 2.1.317 from the 2026-11-06 live gate (docs/harnesses.md names the probes).
     scheme: "semver",
     versionArgs: ["--version"],
     pattern: /^(\d+\.\d+\.\d+)/,
     min: "2.1.220",
-    maxAudited: "2.1.300",
+    maxAudited: "2.1.317",
   },
   codex: {
     // Ceiling 0.165.0 from the 2026-11-02 live gate (docs/harnesses.md names the probes).
@@ -229,8 +230,8 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
       entryName === "cursor" ? ["agent", "--version"] : ["--version"],
     pattern: /^(\d{4}\.\d{2}\.\d{2})/,
     min: "2026.07.23",
-    // Ceiling 2026.10.22 from the 2026-11-02 live gate (probes A and B; the others are unsupported by contract).
-    maxAudited: "2026.10.22",
+    // Ceiling 2026.11.05 from the 2026-11-06 live gate (probes A, B, J, and P; the others are unsupported by contract).
+    maxAudited: "2026.11.05",
   },
   droid: {
     scheme: "semver",
@@ -260,7 +261,8 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
     versionArgs: ["--version"],
     pattern: /^(\d+\.\d+\.\d+)/,
     min: "1.18.10",
-    maxAudited: "1.18.18",
+    // Ceiling 1.19.5 from the 2026-11-06 live gate (docs/harnesses.md names the probes).
+    maxAudited: "1.19.5",
     breaks: [
       {
         // Reported upstream, not reproduced locally: the version this machine
@@ -280,12 +282,12 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
     ],
   },
   zai: {
-    // Ceiling 2.1.300 from the 2026-11-02 live gate (docs/harnesses.md names the probes).
+    // Ceiling 2.1.317 from the 2026-11-06 live gate (docs/harnesses.md names the probes).
     scheme: "semver",
     versionArgs: ["--version"],
     pattern: /^(\d+\.\d+\.\d+)/,
     min: "2.1.220",
-    maxAudited: "2.1.300",
+    maxAudited: "2.1.317",
   },
 };
 

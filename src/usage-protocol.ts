@@ -12,6 +12,11 @@ export interface UsageWindow {
   remainingPercent: number | null;
   windowMinutes: number | null;
   resetsAt: string | null;
+  /** usagemux 1.0.1 and later: true for a window the provider reports
+   * without a measurement (both percentages null), false for a measured
+   * one. Absent in a 1.0.0 snapshot, and kept absent here, so `usage
+   * --json` prints what usagemux answered. */
+  placeholder?: boolean;
 }
 
 export interface UsageCredits {
@@ -90,7 +95,7 @@ const parseWindow = (value: unknown): UsageWindow => {
   if (!isRecord(value)) throw new Error("usage window must be an object");
   assertExactKeys(
     value,
-    ["kind", "usedPercent", "remainingPercent", "windowMinutes", "resetsAt"],
+    ["kind", "usedPercent", "remainingPercent", "windowMinutes", "resetsAt", "placeholder"],
     "usage window"
   );
   if (typeof value.kind !== "string" || value.kind.length === 0) {
@@ -111,12 +116,26 @@ const parseWindow = (value: unknown): UsageWindow => {
     value.windowMinutes === null || value.windowMinutes < 0 ? null : value.windowMinutes;
   const resetsAt = requireNullableString(value.resetsAt, "resetsAt");
   if (resetsAt !== null) requireTimestamp(resetsAt, "resetsAt");
+  const usedPercent = requirePercentage(value.usedPercent, "usedPercent");
+  const remainingPercent = requirePercentage(value.remainingPercent, "remainingPercent");
+  // usagemux 1.0.1 added `placeholder` to every window (its PROTOCOL.md):
+  // rejecting it as an unknown field made every 1.0.1 snapshot unreadable,
+  // which blinded the quota gate and failed `usage --json` (live gate,
+  // 2026-11-06). A placeholder window is one whose level is unknown, so a
+  // percentage beside `placeholder: true` is a protocol violation.
+  if (value.placeholder !== undefined && typeof value.placeholder !== "boolean") {
+    throw new Error("placeholder must be a boolean");
+  }
+  if (value.placeholder === true && (usedPercent !== null || remainingPercent !== null)) {
+    throw new Error("a placeholder window must report null percentages");
+  }
   return {
     kind: value.kind,
-    usedPercent: requirePercentage(value.usedPercent, "usedPercent"),
-    remainingPercent: requirePercentage(value.remainingPercent, "remainingPercent"),
+    usedPercent,
+    remainingPercent,
     windowMinutes,
     resetsAt,
+    ...(value.placeholder === undefined ? {} : { placeholder: value.placeholder }),
   };
 };
 

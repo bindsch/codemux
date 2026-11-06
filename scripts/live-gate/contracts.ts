@@ -116,6 +116,32 @@ export async function runContractColumn(
   return rows;
 }
 
+/** The contract column the report prints, from the readings taken before
+ * and after the probe pool. A harness that updated itself while the pool
+ * ran is judged on the version installed now, and its row says which
+ * version the pool started on: the probes of that harness ran on a mix of
+ * the two, so neither reading alone describes what was exercised. A row
+ * missing from the second reading — the reread failed, or left the
+ * harness out — is UNREADABLE: the version installed after the probes is
+ * unknown, and the first verdict must not stand in for it (review round
+ * 190). A row that was UNREADABLE or UNTRUSTED before the probes stays as
+ * it was, whatever the second reading says: the version the probes
+ * started on was never established (review round 191). */
+export function contractsAfterPool(before: readonly ContractRow[], after: readonly ContractRow[]): ContractRow[] {
+  return before.map((row) => {
+    if (row.verdict === "UNREADABLE" || row.verdict === "UNTRUSTED") return row;
+    const later = after.find((candidate) => candidate.agent === row.agent);
+    if (later === undefined) {
+      return {
+        ...row, verdict: "UNREADABLE",
+        detail: `the version could not be read again after the probes; before them: ${row.detail}`,
+      };
+    }
+    if (later.version === row.version) return row;
+    return { ...later, detail: `${later.detail}; updated during the gate, the probes started on ${row.version}` };
+  });
+}
+
 /** Rows the report must call out: the contract no longer matches the
  * binary, or a known break removes enforcement at some autonomy level. */
 export function staleContracts(rows: readonly ContractRow[]): ContractRow[] {

@@ -261,8 +261,10 @@ const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
  * command does not start with one. The single parse both
  * resolveTrustedCommand and trustCheckedCommandPaths walk, so the
  * resolved positions and the re-checked positions cannot disagree.
- * Throws the caller's label-prefixed refusals for a malformed prefix. */
-function envProgramIndex(command: readonly string[], label = "sandbox command"): number | null {
+ * Throws the caller's label-prefixed refusals for a malformed prefix.
+ * Exported for the live gate's print probe, which must find the program a
+ * printed argv starts by this same parse. */
+export function envProgramIndex(command: readonly string[], label = "sandbox command"): number | null {
   if (command.length === 0 || typeof command[0] !== "string") return null;
   const isEnv = command[0] === "env" || command[0].endsWith("/env");
   if (!isEnv) return null;

@@ -61,12 +61,13 @@ describe("current harness documentation and the version gate agree", () => {
       expect(rows.get(agent)?.[3], agent).toBe("none");
       expect(HARNESS_CONTRACTS[agent as keyof typeof HARNESS_CONTRACTS]).toBeUndefined();
     }
-    // Column 4 is the dated 2026-11-02 release-machine install; the dated
-    // installed evidence the gate relies on is the column after it.
-    expect(rows.get("agy")?.[5]).toContain("1.4.12");
-    expect(rows.get("agy")?.[3]).toBe("1.4.12");
-    expect(rows.get("claude")?.[5]).toContain("2.1.300");
-    expect(rows.get("claude")?.[3]).toBe("2.1.300");
+    // Column 4 is the release-machine install, dated in the cell when it
+    // was read on 2026-11-06; the dated installed evidence the gate relies
+    // on is the column after it.
+    expect(rows.get("agy")?.[5]).toContain("1.5.2");
+    expect(rows.get("agy")?.[3]).toBe("1.5.2");
+    expect(rows.get("claude")?.[5]).toContain("2.1.317");
+    expect(rows.get("claude")?.[3]).toBe("2.1.317");
   });
 });
 

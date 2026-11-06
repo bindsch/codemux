@@ -252,6 +252,55 @@ test("main() runs in process: report written, exit code set, handlers removed", 
   }
 });
 
+test("the report is saved before the version reread, and a failed reread prints the row unreadable (review rounds 183, 190)", async () => {
+  // The reread's version subprocesses run under the signal-forwarding
+  // runner, which ends the process on a signal: the pool's results must be
+  // on disk before it starts. A reread that throws must not cost the
+  // report either.
+  const { spyOn } = await import("bun:test");
+  const adaptersModule = await import("../src/adapters/index.js");
+  const contractsModule = await import("../scripts/live-gate/contracts.js");
+  const runModule = await import("../scripts/live-gate/run.js");
+  const directory = fixtureDirectory();
+  let readings = 0;
+  let savedBeforeReread = "";
+  const spies: { mockRestore(): void }[] = [
+    spyOn(adaptersModule, "getAvailableAdapters").mockReturnValue([]),
+    spyOn(contractsModule, "stampCodemuxVersion").mockResolvedValue("test-version"),
+    spyOn(contractsModule, "runUsageCheck").mockResolvedValue({ status: "SKIP", detail: "stubbed" }),
+    spyOn(runModule, "createReportDirectory").mockReturnValue(directory),
+    spyOn(contractsModule, "runContractColumn").mockImplementation(async () => {
+      readings++;
+      if (readings === 1) {
+        return [{ agent: "agy", version: "1.4.12", min: "1.2.14", ceiling: "1.4.12", verdict: "SUPPORTED", detail: "ok (1.4.12)" }];
+      }
+      savedBeforeReread = readFileSync(join(directory, "report.md"), "utf8");
+      throw new Error("the reread failed");
+    }),
+  ];
+  const printed: string[] = [];
+  spies.push(spyOn(console, "log").mockImplementation((...args: unknown[]) => { printed.push(args.join(" ")); }));
+  const argv = process.argv;
+  const code = process.exitCode;
+  const path = process.env.PATH;
+  process.argv = ["bun", "live-gate"];
+  process.env.PATH = GATE_ENV.PATH;
+  try {
+    await main();
+    expect(readings).toBe(2);
+    expect(savedBeforeReread).toContain("| agy | 1.4.12 | 1.2.14 | 1.4.12 | SUPPORTED");
+    const unreadable = "| agy | 1.4.12 | 1.2.14 | 1.4.12 | UNREADABLE (the version could not be read again after the probes; before them: ok (1.4.12)) |";
+    expect(printed.join("\n")).toContain(unreadable);
+    expect(readFileSync(join(directory, "report.md"), "utf8")).toContain(unreadable);
+  } finally {
+    process.argv = argv;
+    process.exitCode = code;
+    process.env.PATH = path;
+    for (const spy of spies) spy.mockRestore();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("a throwing adapter in the login pre-check closes probe J's listener, so the process exits (review round 45)", async () => {
   // In process: runProbes rejects; with the listener left open the script
   // would never exit on its own. Bounded by the test's own timeout.

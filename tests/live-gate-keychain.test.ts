@@ -7,11 +7,11 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { keychainBaselineRefusal, keychainCheckApplies, keychainDrift, keychainSnapshot } from "../scripts/live-gate/keychain.js";
-import { verifyPrintedSandbox } from "../scripts/live-gate/print-probe.js";
+import { printedCommand, resolvedBinaryPaths, verifyPrintedSandbox } from "../scripts/live-gate/print-probe.js";
 
 const scratch: string[] = [];
 afterEach(() => {
@@ -103,5 +103,53 @@ describe("the print-sandbox verifier", () => {
     expect(verifyPrintedSandbox("", "claude")).toBe("nothing was printed");
     expect(verifyPrintedSandbox("/usr/local/bin/claude\n-p\n", "claude")).toContain("does not name scode");
     expect(verifyPrintedSandbox("/opt/homebrew/bin/scode\n--\n/usr/bin/true\n", "claude")).toContain("does not name the claude binary");
+    // Live gate, 2026-11-06: the launch prints the file the entry name
+    // resolves to, and the Claude Code package installs `claude` as a link
+    // to bin/claude.exe. The resolved file names the harness; any other
+    // file still does not.
+    const linked = (binary: string): string[] =>
+      binary === "claude" ? ["/opt/tools/bin/claude", "/opt/tools/lib/claude-code/bin/claude.exe"] : [];
+    const printed = "/opt/homebrew/bin/scode\n--ro\n--\n/opt/tools/lib/claude-code/bin/claude.exe\n-p\n";
+    expect(verifyPrintedSandbox(printed, "claude", undefined, linked)).toBeNull();
+    expect(verifyPrintedSandbox(printed, "zai", "claude", linked)).toBeNull();
+    expect(verifyPrintedSandbox("/opt/homebrew/bin/scode\n--\n/opt/tools/lib/other/bin/claude.exe\n", "claude", undefined, linked))
+      .toContain("does not name the claude binary (claude)");
+    expect(verifyPrintedSandbox(printed, "claude", undefined, () => [])).toContain("does not name the claude binary (claude)");
+    // The harness must be the command the sandbox starts, not a word that
+    // appears somewhere (review round 183): its path as a scode argument,
+    // or as an argument of another command, names nothing.
+    expect(verifyPrintedSandbox("scode\n--config\n/opt/tools/lib/claude-code/bin/claude.exe\n--\n/usr/bin/true\n", "claude", undefined, linked))
+      .toContain("does not name the claude binary (claude)");
+    expect(verifyPrintedSandbox("scode\n--\n/usr/bin/true\n/usr/local/bin/claude\n", "claude")).toContain("does not name the claude binary");
+    expect(verifyPrintedSandbox("scode\n/usr/local/bin/claude\n-p\n", "claude")).toContain("does not name the claude binary");
+    // scode must be the program the argv starts (review round 192): the
+    // word later in the prefix, or past the separator, names nothing.
+    expect(verifyPrintedSandbox("/usr/bin/true\n--\nclaude\nscode\n", "claude")).toBe("the printed argv does not name scode");
+    expect(verifyPrintedSandbox("/usr/bin/true\nscode\n--\nclaude\n", "claude")).toBe("the printed argv does not name scode");
+    // An env wrapper's options and assignments are skipped: agy and the
+    // private-home launches start through `env NAME=value ...`.
+    expect(verifyPrintedSandbox("scode\n--\n/usr/bin/env\nHOME=/tmp/home\nXDG_CONFIG_HOME=/tmp/home/.config\n/opt/x/agy\n--print\n", "agy")).toBeNull();
+    expect(verifyPrintedSandbox("scode\n--\nenv\n-u\nKIMI_UPDATE\n-u\nOTHER\nkimi\n", "kimi")).toBeNull();
+    expect(verifyPrintedSandbox("scode\n--\nenv\nHOME=/tmp/home\n/usr/bin/true\nagy\n", "agy")).toContain("does not name the agy binary");
+    // The wrapper is read by the launch path's own parse (review round
+    // 188): both unset spellings count, and a prefix the launch refuses —
+    // an option after an assignment, no program at all — names no command.
+    expect(verifyPrintedSandbox("scode\n--\nenv\n--unset\nKIMI_UPDATE\nkimi\n", "kimi")).toBeNull();
+    expect(verifyPrintedSandbox("scode\n--\nenv\nA=1\n-u\nB\nkimi\n", "kimi")).toContain("does not name the kimi binary");
+    expect(printedCommand(["scode", "--", "env", "A=1"])).toBeNull();
+    expect(printedCommand(["scode", "--"])).toBeNull();
+    expect(printedCommand(["scode", "agy"])).toBeNull();
   });
+});
+
+test("resolvedBinaryPaths answers the PATH match and the file it links to", () => {
+  const dir = mkdtempSync(join(tmpdir(), "codemux-gate-print-"));
+  scratch.push(dir);
+  mkdirSync(join(dir, "bin"));
+  mkdirSync(join(dir, "lib"));
+  writeFileSync(join(dir, "lib", "harness.exe"), "#!/bin/sh\n", { mode: 0o700 });
+  symlinkSync(join(dir, "lib", "harness.exe"), join(dir, "bin", "harness"));
+  expect(resolvedBinaryPaths("harness", join(dir, "bin")))
+    .toEqual([join(dir, "bin", "harness"), realpathSync(join(dir, "lib", "harness.exe"))]);
+  expect(resolvedBinaryPaths("absent-harness", join(dir, "bin"))).toEqual([]);
 });

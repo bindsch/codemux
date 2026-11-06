@@ -3,7 +3,8 @@
 import { expect, test } from "bun:test";
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { runContractColumn, runUsageCheck, stampCodemuxVersion } from "../scripts/live-gate.js";
+import { contractsAfterPool, runContractColumn, runUsageCheck, stampCodemuxVersion } from "../scripts/live-gate.js";
+import type { ContractRow } from "../scripts/live-gate.js";
 import { gateFailed } from "../scripts/live-gate/report.js";
 import type { HarnessContract } from "../src/harness-contracts.js";
 import { ROOT, fixtureDirectory, passRow, reportInput } from "./helpers/live-gate.js";
@@ -289,4 +290,37 @@ test("the usage check's default lookup reports an absent usagemux without runnin
     process.env.PATH = saved;
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("a harness that updated itself during the pool is judged on the version installed now", () => {
+  // Live gate, 2026-11-06: agy went from 1.4.12 to 1.5.2 and cursor from
+  // 2026.10.22 to 2026.11.05 while the probes ran; the report printed the
+  // first reading as SUPPORTED although later probes ran above the ceiling.
+  const row = (agent: ContractRow["agent"], version: string, verdict: ContractRow["verdict"], detail: string): ContractRow =>
+    ({ agent, version, min: "1.2.14", ceiling: "1.4.12", verdict, detail });
+  const before = [row("agy", "1.4.12", "SUPPORTED", "ok (1.4.12)"), row("kimi", "2.5.0", "CONTRACT-STALE", "above audited ceiling")];
+  const after = [
+    row("agy", "1.5.2", "CONTRACT-STALE", "above audited ceiling (1.5.2; audited 1.4.12)"),
+    row("kimi", "2.5.0", "CONTRACT-STALE", "above audited ceiling"),
+  ];
+  expect(contractsAfterPool(before, after)).toEqual([
+    row("agy", "1.5.2", "CONTRACT-STALE",
+      "above audited ceiling (1.5.2; audited 1.4.12); updated during the gate, the probes started on 1.4.12"),
+    before[1]!,
+  ]);
+  // A row the second reading lacks is unreadable, never the first verdict
+  // again (review round 190): the version after the probes is unknown.
+  expect(contractsAfterPool(before, [after[1]!])).toEqual([
+    row("agy", "1.4.12", "UNREADABLE", "the version could not be read again after the probes; before them: ok (1.4.12)"),
+    before[1]!,
+  ]);
+  expect(contractsAfterPool(before, []).map((entry) => entry.verdict)).toEqual(["UNREADABLE", "UNREADABLE"]);
+  // A harness that could not be read, or was not trusted, before the
+  // probes stays failed even when the second reading succeeds (review
+  // round 191): the version the probes started on was never established.
+  const unknown = [row("agy", "?", "UNREADABLE", "could not read the version"), row("kimi", "-", "UNTRUSTED", "not trusted")];
+  expect(contractsAfterPool(unknown, [row("agy", "1.4.12", "SUPPORTED", "ok (1.4.12)"), row("kimi", "2.5.0", "SUPPORTED", "ok (2.5.0)")]))
+    .toEqual(unknown);
+  expect(gateFailed(reportInput({ rows: [passRow("agy", ["A"])], contracts: contractsAfterPool(before.slice(0, 1), []) }))).toBe(true);
+  expect(gateFailed(reportInput({ rows: [passRow("agy", ["A"])], contracts: before.slice(0, 1) }))).toBe(false);
 });

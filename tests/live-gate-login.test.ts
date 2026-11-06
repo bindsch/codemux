@@ -101,6 +101,27 @@ test("H2 runs without credentials and --probe-anyway forces the rest (audit D8)"
   }
 });
 
+test("J and P run without credentials: they print a sandbox and start no harness", async () => {
+  // Since 2026-11-06 probe J takes no model turn (a harness without network
+  // cannot reach its provider), so like P it needs no login.
+  const fixture = loggedOutEnv();
+  const reportDirectory = fixtureDirectory();
+  try {
+    const rows = await runProbes([factsFor("goose")], parseOptions(["--probe", "A,J,P"], ""), {
+      async run() { return { status: "PASS", seconds: 0, stderr: "" }; },
+      async capture(_command, verify) {
+        verify({ exit: 0, stdout: "scode\n--trust\nstandard\n--no-net\n--scrub-env\n--\ngoose\n" });
+        return { status: "PASS", seconds: 0, stderr: "" };
+      },
+    }, reportDirectory, fixture.env);
+    expect(rows[0]!.results.A).toMatchObject({ status: "SKIP", note: "no credentials detected: ~/.config/goose/config.yaml" });
+    expect(rows[0]!.results.J).toMatchObject({ status: "PASS" });
+    expect(rows[0]!.results.P).toMatchObject({ status: "PASS" });
+  } finally {
+    rmSync(reportDirectory, { recursive: true, force: true });
+  }
+});
+
 test("the checks ahead of the login read keep their precedence (audit D8)", async () => {
   // An unsupported cell stays unsupported, an operator skip stays the
   // operator's, and H without its opt-in stays an opt-in note — none of

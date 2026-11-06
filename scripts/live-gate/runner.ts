@@ -283,7 +283,7 @@ export class ProbeRunner {
         ...(env === undefined ? {} : { env: { ...process.env, ...env } }),
       });
     } catch {
-      return failed("could not start codemux");
+      return failed("could not start the probe command");
     }
     // The probe is registered in `active` BEFORE its stdin write (review
     // round 13, edges 4): the write is the one await between spawn and

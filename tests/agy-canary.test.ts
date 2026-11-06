@@ -303,11 +303,12 @@ test("Antigravity documentation separates supported policy from dated live evide
 test("Antigravity compatibility evidence does not renew the historical live claim", () => {
   const compatibility = readFileSync(join(import.meta.dir, "../docs/harnesses.md"), "utf8");
   const row = compatibility.split("\n").find((line) => line.startsWith("| Antigravity CLI |"))!;
-  // The 2026-11-02 live gate passed agy 1.4.12 (read-only, medium shell,
-  // result JSON, hermetic check, one session turn) and the row says so; the
-  // Round 11 claim is history, not renewed evidence.
-  expect(row).toContain("1.4.12, 2026-11-02");
-  expect(row).toContain("2026-11-02 live gate");
+  // The 2026-11-06 live gate passed agy 1.5.2 (read-only, medium shell,
+  // result JSON, hermetic check, one session turn, and the two zero-quota
+  // sandbox probes) and the row says so; the Round 11 claim is history,
+  // not renewed evidence.
+  expect(row).toContain("1.5.2, 2026-11-06");
+  expect(row).toContain("2026-11-06 live gate");
   expect(row).not.toContain("Round 11");
   const report = readFileSync(join(import.meta.dir, "../docs/archive/experiment-mcp-report.md"), "utf8");
   expect(report).toContain("> Historical report:");

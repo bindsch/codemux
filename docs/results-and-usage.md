@@ -429,6 +429,10 @@ Codemux invokes `usagemux snapshot --format json`, validates schemaVersion
 Unknown schema versions, missing/duplicate/unrequested clients, invalid
 fields, or oversized output fail. Results report quota windows, credits,
 account/plan information, and subscription timestamps when available.
+A window may carry usagemux 1.0.1's `placeholder` boolean: true marks a
+window the provider reports without a measurement, whose percentages are
+null, and the quota gate judges only the measured windows beside it.
+`usage --json` prints the field when usagemux sent it.
 Usagemux owns credential lookup, provider compatibility, and caching.
 
 The executable must pass codemux's trust checks. A missing or untrusted

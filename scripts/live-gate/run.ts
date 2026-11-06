@@ -28,6 +28,7 @@ import { verifyPrintedSandbox } from "./print-probe.js";
 import {
   prepareNoNetProbe,
   providerOverrideEnv,
+  sandboxPrefixFromPrint,
   startFakeProvider,
   startReachableListener,
   verifyOverrideLog,
@@ -37,6 +38,11 @@ import {
 import type { GateRow } from "./report.js";
 
 const OUTER_TIMEOUT_GRACE_SECONDS = 30;
+// Probe H2's proof is the fake provider's request log, complete within
+// seconds of the launch; a harness that retries the fake's minimal answer
+// until its own timeout adds nothing (opencode ran the full 600 s on
+// 2026-11-06), so the H2 launch is bounded apart from --timeout.
+export const LOOPBACK_TIMEOUT_SECONDS = 120;
 const ROOT = resolve(import.meta.dir, "../..");
 const FIXTURE_SERVER = join(ROOT, "tests/fixtures/experiment-mcp.ts");
 
@@ -101,6 +107,28 @@ export function modelAliasFor(agent: AgentId, config: CodemuxConfig): { alias: s
   return null;
 }
 
+/** Whether a reported model id names the alias's target. The envelope's
+ * `codemux.model` is the served model when the provider names one, so
+ * three shapes name the target: the same string; the target followed by
+ * an eight-digit release date (`claude-sonnet-5-5-20261001`); and, for a
+ * target that is one word of letters — a harness's own family name — an
+ * id made of a vendor word, that family word, and numbers only (`sonnet`
+ * is served as `claude-sonnet-5-5`; live gate, 2026-11-06). Nothing
+ * looser: a target with a version in it must match exactly, so
+ * `claude-sonnet-5` does not accept `claude-sonnet-5-high`;
+ * `claude-opus-5-5` does not name `sonnet`; and a word that is not the
+ * id's family, such as `high` in `claude-sonnet-5-high`, names nothing
+ * (review rounds 180 and 184). */
+export function modelNamesTarget(model: string, target: string): boolean {
+  if (model === target) return true;
+  if (target === "") return false;
+  if (model.startsWith(`${target}-`) && /^\d{8}$/.test(model.slice(target.length + 1))) return true;
+  if (!/^[A-Za-z]+$/.test(target)) return false;
+  const [vendor, ...rest] = model.split("-");
+  return /^[A-Za-z]+$/.test(vendor ?? "") && rest.includes(target) &&
+    rest.every((word) => word === target || /^\d+$/.test(word));
+}
+
 /** Probe I's verification where the harness reports result JSON (audit
  * D7): probe C's envelope checks, plus `codemux.model` naming the alias's
  * target — an alias that quietly selects another model fails here. */
@@ -109,7 +137,7 @@ export function verifyAliasEnvelope(stdout: string, agent: AgentId, expectedMode
   if (base !== null) return base;
   const envelope = JSON.parse(stdout) as { codemux?: { model?: unknown } };
   const model = envelope.codemux?.model;
-  if (model !== expectedModel) {
+  if (typeof model !== "string" || !modelNamesTarget(model, expectedModel)) {
     return `result JSON's codemux.model is ${JSON.stringify(model) ?? "absent"}, not the alias's target ${JSON.stringify(expectedModel)}`;
   }
   return null;
@@ -145,7 +173,8 @@ export async function runProbes(
     // a harness whose credential store is absent would burn its probe on a
     // login refusal, so the row says SKIP naming the store instead. H2 is
     // exempt — its credentials come from the loopback override, not the
-    // operator's — and --probe-anyway forces the run when the operator says
+    // operator's — and so are J and P, which start no harness; and
+    // --probe-anyway forces the run when the operator says
     // the store is there. A harness the operator skipped is never looked
     // at: the gate constructs no adapter for it (the main test pins this).
     // In candidate mode the credential locations are the candidate's, not
@@ -166,7 +195,7 @@ export async function runProbes(
         row.results[letter] = skip(`opt-in probe: --probe provider-override with ${PROVIDER_OVERRIDE_OPT_IN}=1 and the CODEMUX_${fact.id.toUpperCase()}_PROVIDER_* environment exported`);
         continue;
       }
-      if (noCredential && letter !== "H2" && letter !== "P") {
+      if (noCredential && letter !== "H2" && letter !== "J" && letter !== "P") {
         row.results[letter] = skip(`no credentials detected: ${login?.store ?? "no credential store"}`);
         continue;
       }
@@ -175,10 +204,11 @@ export async function runProbes(
         try {
           directory = mkdtempSync(join(tmpdir(), "codemux-live-gate-"));
           const prefix = join(reportDirectory, `${fact.id}-${letter}`);
-          const base = (level: string, prompt: string, extra: string[] = [], passEnv = options.passEnv): string[] => [
+          const base = (level: string, prompt: string, extra: string[] = [], passEnv = options.passEnv,
+            timeout = options.timeout): string[] => [
             options.codemux, "run", "-a", fact.id,
             ...(passEnv === undefined ? [] : ["--pass-env", passEnv]),
-            ...extra, "--auto", level, "--timeout", String(options.timeout), "-p", prompt, "--cwd", directory!,
+            ...extra, "--auto", level, "--timeout", String(timeout), "-p", prompt, "--cwd", directory!,
           ];
           const outer = options.timeout + OUTER_TIMEOUT_GRACE_SECONDS;
           // A hermetic check is two sequential launches — the probe child,
@@ -254,10 +284,11 @@ export async function runProbes(
             // Audit D9: the loopback twin of probe H. The gate serves a
             // fake provider on 127.0.0.1 and points the run's provider
             // override at it — no provider quota, no real credential
-            // reachable. The proof is the fake's request log (every
-            // request carried the override key; one named the override
-            // model), never the envelope or the exit code, so the run may
-            // fail on the fake's minimal answer and the probe still pass.
+            // reachable. The proof is the fake's request log (no request
+            // carried another credential; one carrying the override key
+            // named the override model), never the envelope or the exit
+            // code, so the run may fail on the fake's minimal answer and
+            // the probe still pass.
             const apiKey = `loopback-${randomBytes(16).toString("hex")}`;
             const overrideModel = `loopback-probe-${randomBytes(6).toString("hex")}`;
             const provider = await startFakeProvider({ apiKey });
@@ -269,10 +300,11 @@ export async function runProbes(
               // the override cannot spend them from env (review round 45);
               // credential files in the harness state dirs remain its
               // documented residual (docs/RELEASE-GATE.md, row H2).
+              const bounded = Math.min(options.timeout, LOOPBACK_TIMEOUT_SECONDS);
               row.results.H2 = await runner.capture(
-                base("read-only", "Reply with exactly: OK", ["--sandbox-scrub-env"], names === "" ? undefined : names),
+                base("read-only", "Reply with exactly: OK", ["--sandbox-scrub-env"], names === "" ? undefined : names, bounded),
                 () => verifyOverrideLog(provider.requests(), overrideModel),
-                outer, prefix, undefined,
+                bounded + OUTER_TIMEOUT_GRACE_SECONDS, prefix, undefined,
                 {
                   env: {
                     [`CODEMUX_${upper}_PROVIDER_BASE_URL`]: `http://127.0.0.1:${provider.port}`,
@@ -304,14 +336,45 @@ export async function runProbes(
             }
           } else if (letter === "J") {
             // Audit D7: the sandbox policy flags as the release contract
-            // runs them — together. The script curls a port the gate
-            // itself serves on loopback, so BLOCKED proves --sandbox-no-net
-            // blocked a reachable address.
+            // runs them — together. Two steps, no model turn: the launch
+            // prints the sandbox it would build for this harness, and the
+            // gate runs its own script behind that scode prefix. The script
+            // curls a port the gate itself serves on loopback, so BLOCKED
+            // proves the printed policy blocks a reachable address. A model
+            // turn cannot carry this proof: under --sandbox-no-net the
+            // harness cannot reach its provider (live gate, 2026-11-06).
             if (listener === null) throw new Error("the probe J listener never started");
             const noNet = prepareNoNetProbe(directory, listener.port);
-            row.results.J = await runner.run(
-              base("medium", noNet.prompt, ["--sandbox-no-net", "--sandbox-scrub-env", "--sandbox-trust", "standard"]),
-              noNet.expected, outer, prefix);
+            let sandbox: string[] = [];
+            const printed = await runner.capture(
+              base("medium", "Reply with exactly: OK",
+                ["--sandbox-no-net", "--sandbox-scrub-env", "--sandbox-trust", "standard", "--print-sandbox"]),
+              (captured) => {
+                const parsed = sandboxPrefixFromPrint(captured.stdout);
+                if ("problem" in parsed) return parsed.problem;
+                sandbox = parsed.argv;
+                return null;
+              }, outer, `${prefix}-print`);
+            if (printed.status !== "PASS") {
+              row.results.J = printed;
+            } else {
+              // A real launch scrubs ambient SCODE_* names before it starts
+              // scode (src/sandbox.ts), so the script runs without them too:
+              // an exported SCODE_ACCOUNT_FILE would otherwise test another
+              // sandbox and write accounting lines (review round 188).
+              const unset = Object.keys(env).filter((name) => name.toUpperCase().startsWith("SCODE_"))
+                .flatMap((name) => ["-u", name]);
+              const ran = await runner.run(
+                [...(unset.length === 0 ? [] : ["/usr/bin/env", ...unset]), ...sandbox, "/bin/sh", noNet.script],
+                noNet.expected, outer, prefix);
+              // Both steps' warnings reach the row: a print that passed with
+              // a stale-contract warning must not lose it to the second step.
+              const notes = [printed.note, ran.note].filter((note) => note !== undefined && note !== "");
+              row.results.J = {
+                ...ran, seconds: printed.seconds + ran.seconds,
+                ...(notes.length === 0 ? {} : { note: notes.join("; ") }),
+              };
+            }
           } else if (letter === "P") {
             // Zero quota: the launch prints the scode argv and exits 0
             // without a child, a credential read, or a Keychain write. The

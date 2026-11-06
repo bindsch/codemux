@@ -50,12 +50,14 @@ export function countRows(rows: readonly GateRow[]): ProbeTotals {
 
 /** A row counts as probed only when an authenticated probe actually ran
  * there; skips and unsupported cells are never passes, and the zero-quota
- * print-sandbox probe (P) proves nothing about a harness's credentials, so a
- * gate whose only PASS cells are P cells did not probe (review round 48). */
+ * probes that start no harness — print-sandbox (P) and, since it takes no
+ * model turn, the sandbox policy probe (J) — prove nothing about a
+ * harness's credentials, so a gate whose only judged cells are P and J
+ * cells did not probe (review round 48). */
 export function hasProbes(rows: readonly GateRow[]): boolean {
   return rows.some((row) =>
     Object.entries(row.results).some(([letter, result]) =>
-      letter !== "P" && (result?.status === "PASS" || result?.status === "FAIL")));
+      letter !== "P" && letter !== "J" && (result?.status === "PASS" || result?.status === "FAIL")));
 }
 
 export interface ReportInput {

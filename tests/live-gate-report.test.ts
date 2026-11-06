@@ -187,6 +187,12 @@ test("a gate whose only passing cells are print-sandbox probes did not probe (re
   // harness's login; a credentialless harness with every authenticated
   // probe skipped and P passing must not pass the gate.
   expect(hasProbes([passRow("gemini", ["P"])])).toBe(false);
+  // The sandbox policy probe starts no harness either (2026-11-06): J and
+  // P together still probed nothing.
+  expect(hasProbes([passRow("gemini", ["J"])])).toBe(false);
+  expect(hasProbes([passRow("gemini", ["J", "P"])])).toBe(false);
+  expect(gateFailed(reportInput({ rows: [passRow("gemini", ["J", "P"])], probes: ["A", "J", "P"] }))).toBe(true);
+  expect(hasProbes([passRow("claude", ["J", "P", "H2"])])).toBe(true);
   expect(hasProbes([passRow("claude", ["P", "A"])])).toBe(true);
   expect(gateFailed(reportInput({ rows: [passRow("gemini", ["P"])], probes: ["A", "P"] }))).toBe(true);
 });

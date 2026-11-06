@@ -97,16 +97,19 @@ export function startReachableListener(): Promise<LoopbackServer> {
 
 export interface NoNetProbe {
   expected: "BLOCKED";
-  prompt: string;
+  /** The script's absolute path; the gate runs it under the sandbox argv
+   * the launch printed. */
+  script: string;
 }
 
-/** Writes probe J's script: run by the harness under
- * `--sandbox-no-net --sandbox-scrub-env --sandbox-trust standard`, it must
- * reply BLOCKED. NO-CURL is a distinct output on purpose — it mismatches
- * the expected BLOCKED and fails the probe instead of passing it on a
- * sandbox that merely lacks curl. */
+/** Writes probe J's script: run under the sandbox a launch with
+ * `--sandbox-no-net --sandbox-scrub-env --sandbox-trust standard` builds, it
+ * must print BLOCKED. NO-CURL is a distinct output on purpose — it
+ * mismatches the expected BLOCKED and fails the probe instead of passing it
+ * on a sandbox that merely lacks curl. */
 export function prepareNoNetProbe(directory: string, port: number): NoNetProbe {
-  writeFileSync(join(directory, "nonet.sh"), [
+  const script = join(directory, "nonet.sh");
+  writeFileSync(script, [
     "if ! command -v curl >/dev/null 2>&1; then",
     "  printf 'NO-CURL'",
     "  exit 0",
@@ -117,16 +120,51 @@ export function prepareNoNetProbe(directory: string, port: number): NoNetProbe {
     "  printf 'BLOCKED'",
     "fi\n",
   ].join("\n"), { mode: 0o700 });
-  return {
-    expected: "BLOCKED",
-    prompt: "Run the shell command: sh nonet.sh and reply with exactly its output, nothing else.",
-  };
+  return { expected: "BLOCKED", script };
+}
+
+/** Probe J's first step: the scode part of the argv a launch with the three
+ * policy flags prints under `--print-sandbox` (one argument per line) —
+ * everything through the `--` separator. The gate runs its own script
+ * behind that prefix instead of the harness: a harness under
+ * `--sandbox-no-net` cannot reach its remote provider, so a model turn can
+ * never report the blocked port (live gate, 2026-11-06: every harness
+ * failed J on its provider's unreachable host). The prefix must carry all
+ * three policies the launch asked for — scode's `--no-net`, `--scrub-env`,
+ * and `--trust standard` — because the script proves only the network
+ * block: a launch that dropped the scrub or changed the trust level would
+ * otherwise pass on the blocked port alone (review round 180). Returns the
+ * prefix, or the reason the print cannot be used. */
+export function sandboxPrefixFromPrint(stdout: string): { argv: string[] } | { problem: string } {
+  const lines = stdout.split("\n").filter((line) => line !== "");
+  if (lines.length === 0) return { problem: "nothing was printed" };
+  const scode = lines[0]!;
+  if (scode !== "scode" && !scode.endsWith("/scode")) {
+    return { problem: "the printed argv does not start with scode" };
+  }
+  const separator = lines.indexOf("--");
+  if (separator === -1) return { problem: "the printed argv has no -- separator before the harness command" };
+  // A print that ends at the separator would start no harness: the script
+  // appended behind it must not certify that launch (review round 188).
+  if (separator === lines.length - 1) return { problem: "the printed argv names no harness command after the -- separator" };
+  const argv = lines.slice(0, separator + 1);
+  const missing = [
+    argv.includes("--no-net") ? null : "--no-net",
+    argv.includes("--scrub-env") ? null : "--scrub-env",
+    argv.some((value, index) => value === "--trust" && argv[index + 1] === "standard") ? null : "--trust standard",
+  ].filter((flag) => flag !== null);
+  if (missing.length > 0) {
+    return { problem: `the printed scode arguments lack ${missing.join(", ")}; the launch did not carry the policy it was asked for` };
+  }
+  return { argv };
 }
 
 /** One request the fake provider saw. `auth` is categorical on purpose:
  * the log never carries a credential value, only whether the request bore
  * the override key, a different one, or none. */
 export interface OverrideRequestRecord {
+  /** The request method, when the server saw one. */
+  method?: string;
   path: string;
   auth: "override" | "other" | "none";
   model: string | null;
@@ -171,7 +209,7 @@ export function startFakeProvider(options: { apiKey: string }): Promise<FakeProv
           // the record is kept (no model read), the request refused.
           if (!oversized) {
             oversized = true;
-            seen.push({ path: request.url ?? "", auth, model: null });
+            seen.push({ method: request.method ?? "", path: request.url ?? "", auth, model: null });
             response.writeHead(413, { "content-type": "application/json" });
             response.end(JSON.stringify({ error: "body too large for the fake provider" }));
             request.destroy();
@@ -189,7 +227,7 @@ export function startFakeProvider(options: { apiKey: string }): Promise<FakeProv
         } catch {
           // A body that is not JSON carries no model field to check.
         }
-        seen.push({ path: request.url ?? "/", auth, model });
+        seen.push({ method: request.method ?? "", path: request.url ?? "/", auth, model });
         if (auth !== "override") {
           response.writeHead(401, { "content-type": "application/json" });
           response.end(JSON.stringify({
@@ -231,12 +269,24 @@ export function startFakeProvider(options: { apiKey: string }): Promise<FakeProv
   });
 }
 
+/** The distinct method-and-path pairs of some logged requests, for a
+ * failure line: which request it was decides whether the harness or the
+ * probe is wrong. Query strings are dropped and the list is bounded. */
+function describeRequests(records: readonly OverrideRequestRecord[]): string {
+  const seen = [...new Set(records.map((record) =>
+    `${record.method === undefined || record.method === "" ? "?" : record.method} ${(record.path.split("?")[0] ?? "").slice(0, 80)}`))];
+  return seen.slice(0, 4).join(", ") + (seen.length > 4 ? ", ..." : "");
+}
+
 /** Probe H2's verification over the fake provider's request log (audit
  * D9): the harness must have talked to the fake at all (zero requests
  * means the override did not route the run — it went to the real provider
- * or nowhere), every request must have carried the override key and no
- * other credential, and at least one request must have named the override
- * model. Returns the failure reason, or null when the log passes. */
+ * or nowhere), no request may have carried a credential other than the
+ * override key, and at least one request carrying the override key must
+ * have named the override model. A request with no credential at all
+ * leaks none and does not fail the log: Claude Code opens with an
+ * unauthenticated connectivity check, `HEAD /api/hello` (live gate,
+ * 2026-11-06). Returns the failure reason, or null when the log passes. */
 export function verifyOverrideLog(
   records: readonly OverrideRequestRecord[],
   overrideModel: string
@@ -244,18 +294,21 @@ export function verifyOverrideLog(
   if (records.length === 0) {
     return "the harness sent no request to the loopback provider; the override did not route the run";
   }
-  const other = records.filter((record) => record.auth === "other").length;
-  if (other > 0) {
-    return `${other} of ${records.length} request(s) carried a credential other than the override key; the override did not isolate the run`;
+  const other = records.filter((record) => record.auth === "other");
+  if (other.length > 0) {
+    return `${other.length} of ${records.length} request(s) carried a credential other than the override key ` +
+      `(${describeRequests(other)}); the override did not isolate the run`;
   }
-  const none = records.filter((record) => record.auth === "none").length;
-  if (none > 0) {
-    return `${none} of ${records.length} request(s) carried no credential header; the override key never reached the provider`;
+  const keyed = records.filter((record) => record.auth === "override");
+  if (keyed.length === 0) {
+    return `none of the ${records.length} request(s) carried a credential (${describeRequests(records)}); ` +
+      "the override key never reached the provider";
   }
-  if (!records.some((record) => record.model === overrideModel)) {
-    const models = [...new Set(records.map((record) => record.model))]
+  if (!keyed.some((record) => record.model === overrideModel)) {
+    const models = [...new Set(keyed.map((record) => record.model))]
       .map((model) => JSON.stringify(model)).join(", ");
-    return `no request named the override model ${JSON.stringify(overrideModel)}; the requests carried: ${models}`;
+    return `no request carrying the override key named the override model ${JSON.stringify(overrideModel)}; ` +
+      `those requests carried: ${models}`;
   }
   return null;
 }

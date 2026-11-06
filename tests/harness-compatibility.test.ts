@@ -201,9 +201,9 @@ describe("the gate itself", () => {
   });
 
   test("a newer version warns but still runs", async () => {
-    // Above maxAudited (1.18.18), and at `high` so the recorded break does not
+    // Above maxAudited (1.19.5), and at `high` so the recorded break does not
     // apply: the only thing left to report is that it is unaudited.
-    const fake = fakeHarness("1.18.19");
+    const fake = fakeHarness("1.19.6");
     try {
       const warnings = await captureWarnings(() =>
         assertSupportedHarnessVersion({
