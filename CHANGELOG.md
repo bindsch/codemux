@@ -165,7 +165,9 @@ implementation narrative behind it is preserved in the
   the keyed ones (Claude Code's `HEAD /api/hello` check), names the method and path of the
   requests behind a credential failure, and bounds its launch at 120 seconds. The contract
   column is read again after the probes and names a harness that updated itself while they ran;
-  the report saved before that second reading is marked preliminary.
+  the report saved before that second reading is marked preliminary. Audited ceilings raised on
+  live passes of every supported probe: agy 1.5.2, claude and zai 2.1.317, codex 0.166.0, cursor
+  2026.11.05, kimi 2.5.0, opencode 1.19.5.
 - Review round 169, whole tree: the process exit code after a session is the one `session_ended`
   reported even when a signal lands while the final event is still being flushed (it used to become
   143), and the session's closing call-ledger line carries that same process exit code, nonzero when

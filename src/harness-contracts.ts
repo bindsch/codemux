@@ -125,12 +125,12 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
     maxAudited: "2.1.317",
   },
   codex: {
-    // Ceiling 0.165.0 from the 2026-11-02 live gate (docs/harnesses.md names the probes).
+    // Ceiling 0.166.0 from the 2026-11-06 live gate (docs/harnesses.md names the probes).
     scheme: "semver",
     versionArgs: ["--version"],
     pattern: /codex-cli (\d+\.\d+\.\d+)/,
     min: "0.146.0",
-    maxAudited: "0.165.0",
+    maxAudited: "0.166.0",
   },
   copilot: {
     // Added 2026-09-21 with the --effort to --reasoning-effort audit. Copilot dropped a flag alias
