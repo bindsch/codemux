@@ -98,7 +98,7 @@ async function timeoutLaunch(mode: Mode, change: string, earlyEof: boolean, resu
   let exit!: (code: number) => void;
   let stopped = false;
   const stop = () => { if (!stopped) { stopped = true; if (!earlyEof) stdout.close(); exit(0); } };
-  const spawn = spyOn(Bun, "spawn").mockReturnValue({ pid: 2147483647, stdin: { write() {}, end() {} }, kill: stop,
+  const spawn = spyOn(Bun, "spawn").mockReturnValue({ pid: 2147483647, stdin: { write() { return 0; }, end() { return 0; } }, kill: stop,
     exited: new Promise<number>((resolveExit) => { exit = resolveExit; }),
     stdout: new ReadableStream<Uint8Array>({ start(controller) {
       stdout = controller; controller.enqueue(Buffer.from(f.stdout)); if (earlyEof) controller.close();

@@ -44,6 +44,9 @@ async function peer(notifyDuringInitialList = false) {
       emit({ jsonrpc: "2.0", id: message.id, result: message.params?.cursor === undefined
         ? { tools: [listTools[0]], nextCursor: "" } : { tools: [listTools[1]] } });
     }
+    // A real sink answers with the byte count; a nonnumeric synchronous
+    // result is a closed sink (round 211).
+    return line.length;
   } } };
   let ended = 0;
   bridge.start((line) => sent.push(JSON.parse(line)), () => { ended++; }, () => {});

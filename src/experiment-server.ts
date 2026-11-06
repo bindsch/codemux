@@ -1,5 +1,6 @@
 import { createTerminationTarget, type TerminationTarget } from "./process-tree.js";
 import { FORCE_KILL_DELAY_MS, PIPE_GIVE_UP_MS, signalProcess } from "./process-runner.js";
+import { sinkWriteState } from "./process-stdin-repeat.js";
 import type { ExperimentSpec } from "./experiment-mcp.js";
 import { resolveTrustedExecutable, assertExecutablesUnchanged, executableCheck } from "./executable-security.js";
 import { ExperimentFailure, ExperimentFailureCode, experimentFailure } from "./experiment-records.js";
@@ -89,14 +90,23 @@ export class ExperimentServer {
       }
     }
     this.record("server_stdin", { bytes_base64: Buffer.from(line).toString("base64"), rpc_id: id ?? null });
-    // Under backpressure Bun's sink returns a promise that can reject
-    // (EPIPE): a notification is acknowledged only once it settled, and a
-    // rejection ends the server instead of going unhandled (review round 59).
+    // The sink's write result says what became of the message: a number
+    // flushed it at once, a promise is pending behind backpressure (its
+    // rejection ends the server instead of going unhandled, review round
+    // 59), and any other synchronous result is a closed sink -- Bun answers
+    // a boolean, or its own Error, instead of throwing (round 211) -- so
+    // the message never left. One classifier (sinkWriteState) decides.
     const written = (this.proc.stdin as Bun.FileSink).write(line);
+    if (sinkWriteState(written) === "closed") {
+      const failure = this.stdinWriteFailure(written, true);
+      this.fail(failure);
+      // The pending slot is registered only on the delivered path below, so
+      // the caller's rejection is this one; no slot is left to release.
+      return Promise.reject(failure);
+    }
     const flushed: Promise<unknown> = written instanceof Promise ? written : Promise.resolve(written);
     flushed.catch((error) => {
-      const failure = new ExperimentFailure(ExperimentFailureCode.ServerError,
-        `experiment MCP server stdin write failed (${error instanceof Error ? error.message : String(error)})`);
+      const failure = this.stdinWriteFailure(error, false);
       // An id-bearing request never reaches the server: its caller is
       // answered and its pending slot released (review round 60).
       if (key !== undefined) {
@@ -109,6 +119,14 @@ export class ExperimentServer {
     // No await occurs before registration, so a response cannot overtake it.
     return key === undefined ? flushed.then(settledNotification) :
       new Promise((resolve, reject) => this.pending.set(key!, { resolve, reject }));
+  }
+
+  /** The one failure shape every failed stdin write reports: the write's
+   * own result described, and a closed sink named as such. */
+  private stdinWriteFailure(cause: unknown, closed: boolean): ExperimentFailure {
+    const described = cause instanceof Error ? cause.message : String(cause);
+    return new ExperimentFailure(ExperimentFailureCode.ServerError,
+      `experiment MCP server stdin write failed (${described}${closed ? "; the stdin sink was closed" : ""})`);
   }
 
   private key(id: unknown): string {

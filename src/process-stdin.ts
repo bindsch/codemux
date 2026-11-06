@@ -3,9 +3,13 @@
 // run's failure (review rounds 64 to 67).
 //
 // Rules:
-// - The sink may throw at once or return a promise that rejects later
-//   (backpressure); a protocol sink's asynchronous writer call routes its
-//   synchronous throw through attempt() to the same rules. Every promise is awaited through settled(), which the
+// - The sink may throw at once, return a promise that rejects later
+//   (backpressure), or answer a closed sink without throwing -- a number
+//   says the write flushed, and every other synchronous result (Bun's
+//   closed boolean, or the Error itself) says the bytes never left (round
+//   211). sinkWriteState (src/process-stdin-repeat.ts) is the one
+//   classifier for that result; a protocol sink's asynchronous writer call
+//   routes its synchronous throw through attempt() to the same rules. Every promise is awaited through settled(), which the
 //   runner calls only once the captures and the exit are done, so every
 //   write issued before the exit is already in the chain; settled() still
 //   follows the chain until nothing was added after the last awaited one.
@@ -16,8 +20,12 @@
 //   after a capture failure, a timeout, or a signal is their consequence,
 //   the termination closed the pipe, and never replaces their diagnosis.
 
+import { sinkWriteState } from "./process-stdin-repeat.js";
+
 export interface StdinDelivery {
-  /** Records one write()/end() result; a non-promise result is final. */
+  /** Records one write()/end() result: a number flushed, a promise is
+   * pending, and any other synchronous result is a closed sink and a
+   * failed delivery (round 211). */
   track(result: unknown): void;
   /** Runs one write()/end() call: a synchronous throw is tracked like a
    * rejection, never thrown to the caller (a protocol sink calls its
@@ -43,9 +51,29 @@ export function trackStdinDelivery(deps: {
   void deps.exited.then(() => { childExited = true; }, () => { childExited = true; });
   return {
     track(result) {
-      if (!(result instanceof Promise)) return;
+      const state = sinkWriteState(result);
+      if (state === "flushed") return;
+      if (state === "closed") {
+        // The sink answered a closed pipe without throwing (round 211):
+        // the bytes never left, so the same rules as a rejection apply --
+        // a superseded run keeps its diagnosis, and a write issued after
+        // the exit had nothing to reach. The verdict waits one turn of
+        // the promise queue, as a rejection's does: an exit that already
+        // resolved marks `childExited` through its own callback, which is
+        // ahead in that queue, so a closed result that is the exit's
+        // consequence never replaces the child's own exit code (review
+        // round 214).
+        const settled = Promise.resolve().then(() => {
+          if (childExited || failed || deps.superseded()) return;
+          failed = true;
+          error = result;
+          deps.abort();
+        });
+        pending = pending.then(() => settled);
+        return;
+      }
       const issuedAfterExit = childExited;
-      const settled = result.then(() => undefined, (rejection: unknown) => {
+      const settled = (result as Promise<unknown>).then(() => undefined, (rejection: unknown) => {
         if (issuedAfterExit || failed || deps.superseded()) return;
         failed = true;
         error = rejection;

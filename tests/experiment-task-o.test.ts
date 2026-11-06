@@ -53,7 +53,7 @@ test("native experiment exit 125 with bounded output is processed and verified",
   const context = { experimentCodex: { failureError: null, prepare: async () => {},
     verify: async () => { verifies++; } } } as unknown as RunContext;
   const spawn = spyOn(Bun, "spawn").mockReturnValue({
-    pid: 2147483647, stdin: { write() {}, end() {} }, exited: Promise.resolve(125), kill() {},
+    pid: 2147483647, stdin: { write() { return 0; }, end() { return 0; } }, exited: Promise.resolve(125), kill() {},
     stdout: new ReadableStream({ start(controller) {
       controller.enqueue(new TextEncoder().encode("bounded output\n")); controller.close();
     } }),

@@ -70,7 +70,12 @@ export function parseClaudeResultEnvelope(
   // (a failure) and fails the run downstream. A bare non-error `subtype`
   // is not an outcome: `{"type":"result","subtype":"success"}` satisfied
   // this check while carrying no reply, and any string -- the empty one
-  // included -- counted.
+  // included -- counted. A present `is_error` that is not a boolean is
+  // malformed the same way (round 211): `{"is_error":"true"}` cannot
+  // safely be read as success, so the envelope reports no outcome.
+  if ("is_error" in envelope && typeof envelope.is_error !== "boolean") {
+    return null;
+  }
   const errorSubtype =
     typeof envelope.subtype === "string" && envelope.subtype.startsWith("error")
       ? envelope.subtype
@@ -84,9 +89,14 @@ export function parseClaudeResultEnvelope(
 
   let servedModel: string | null = null;
   let multipleModels = false;
+  // The record check this file already uses for the envelope itself: an
+  // array is not a `modelUsage` object -- its index "0" is a position,
+  // never a model name, so no attribution is fabricated from it (round
+  // 211) and the envelope names no models at all.
   if (
     typeof envelope.modelUsage === "object" &&
-    envelope.modelUsage !== null
+    envelope.modelUsage !== null &&
+    !Array.isArray(envelope.modelUsage)
   ) {
     const models = Object.keys(envelope.modelUsage as Record<string, unknown>);
     if (models.length === 1 && models[0] !== "") servedModel = models[0] ?? null;

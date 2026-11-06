@@ -109,7 +109,7 @@ test.each(["limit", "invalid UTF-8", "protocol"])("%s cancels partial Claude std
   let stderr!: ReadableStreamDefaultController<Uint8Array>;
   let abort!: () => void;
   const spawn = spyOn(Bun, "spawn").mockReturnValue({
-    pid: 2147483647, kill() {}, stdin: { write() {}, end() {} }, exited: Promise.resolve(0),
+    pid: 2147483647, kill() {}, stdin: { write() { return 0; }, end() { return 0; } }, exited: Promise.resolve(0),
     stdout: new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('{"type":')); } }),
     stderr: new ReadableStream({ start(controller) { stderr = controller; } }),
   } as unknown as ReturnType<typeof Bun.spawn>);
@@ -217,7 +217,7 @@ function bufferedChild(completedCode?: number) {
   const exited = new Promise<number>((resolve) => { exit = resolve; });
   if (completedCode !== undefined) exit(completedCode);
   return spyOn(Bun, "spawn").mockReturnValue({
-    pid: 2147483647, stdin: { write() {}, end() {} }, exited,
+    pid: 2147483647, stdin: { write() { return 0; }, end() { return 0; } }, exited,
     stdout: new ReadableStream<Uint8Array>({
       start(controller) {
         output = controller;
@@ -295,7 +295,7 @@ test.each(["timeout", "limit", "success", "failure"].flatMap((kind) => ["server"
 
 test("pipe abandonment also releases an exit promise held open by inherited stdio", async () => {
   const spawn = spyOn(Bun, "spawn").mockReturnValue({
-    pid: 2147483647, kill: () => {}, stdin: { write: () => {}, end: () => {} },
+    pid: 2147483647, kill: () => {}, stdin: { write: () => 0, end: () => 0 },
     stdout: new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("partial")); } }),
     stderr: new ReadableStream({ start(controller) { controller.close(); } }),
     exited: new Promise(() => {}),

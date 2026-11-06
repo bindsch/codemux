@@ -9,9 +9,11 @@ import {
   waitForDescendantsGrace,
   type TerminationTarget,
 } from "./process-tree.js";
-import { FORCE_KILL_DELAY_MS, validateTimeout } from "./process-runner.js";
+import { FORCE_KILL_DELAY_MS, SIGNAL_EXIT_CODE, validateTimeout } from "./process-runner.js";
 
-const SIGNAL_BURST_WINDOW_MS = 1_000;
+/** The window inside which three SIGINTs count as the burst that forces the
+ * child's termination; exported for the tests that pace it. */
+export const SIGNAL_BURST_WINDOW_MS = 1_000;
 const TIMEOUT_EXIT_CODE = 124;
 
 /**
@@ -36,12 +38,23 @@ function forceKillAfterGrace(
  * otherwise propagate through the process group and kill grandchildren (e.g. a
  * Playwright browser).
  *
- * - SIGINT: swallowed in parent (child receives it from the terminal via the
- *   shared process group). Rapid triple-SIGINT forces a SIGTERM to the child.
+ * - SIGINT: swallowed in parent, because a terminal Ctrl-C reaches the
+ *   foreground child through the shared process group too. It is never
+ *   forwarded: a SIGINT sent to codemux alone (`kill -INT`) cannot be told
+ *   apart from the terminal's inside a handler, and a forward would hand
+ *   a second interrupt to every harness that keeps running after a
+ *   terminal Ctrl-C, which several treat as "quit" (review round 211; the
+ *   limit is documented in docs/cli.md). Rapid triple-SIGINT forces a
+ *   SIGTERM to the child; from outside, SIGTERM or SIGHUP stops the run.
  * - SIGTERM/SIGHUP: forwarded to child only (a child-directed
  *   process.kill inside signalProcess), not broadcast, so
  *   the child gets the grace period to shut down its own children. The
  *   SIGKILL escalation after the grace period covers the whole process tree.
+ * - Exit code: a timeout reports 124, a termination signal codemux received
+ *   (SIGTERM, SIGHUP, or the burst escalation) reports 143 whatever the
+ *   child then exited with -- the documented signal exit, so a child that
+ *   answers the forwarded SIGTERM with 0 cannot read as a normal completion
+ *   (round 211). Every other end reports the child's own exit code.
  */
 export async function guardedWait(
   proc: ReturnType<typeof Bun.spawn>,
@@ -50,7 +63,12 @@ export async function guardedWait(
   if (timeoutMs !== undefined) validateTimeout(timeoutMs);
   const target = createTerminationTarget(proc);
   let forceKillDeadline = 0;
+  // True once a termination signal reached codemux (SIGTERM, SIGHUP, or the
+  // burst escalation; a timeout arms the same path but 124 wins first):
+  // the wait then reports 143 whatever the child exited with.
+  let terminated = false;
   const armForceKill = (): ReturnType<typeof setTimeout> => {
+    terminated = true;
     const timer = forceKillAfterGrace(target, "process");
     // Measured from SIGTERM delivery, after the table read inside it, so a
     // slow enumeration cannot eat into the grace period.
@@ -94,7 +112,7 @@ export async function guardedWait(
 
   try {
     const exitCode = await proc.exited;
-    return timedOut ? TIMEOUT_EXIT_CODE : exitCode;
+    return timedOut ? TIMEOUT_EXIT_CODE : terminated ? SIGNAL_EXIT_CODE : exitCode;
   } finally {
     if (sigintTimer) clearTimeout(sigintTimer);
     if (timeoutTimer) clearTimeout(timeoutTimer);

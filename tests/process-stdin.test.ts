@@ -70,6 +70,42 @@ test("a synchronous result is final", async () => {
   expect(delivery.failed()).toBe(false);
 });
 
+test("a sink that answers a closed result instead of throwing fails the delivery (round 211)", async () => {
+  // Bun's sink can return its Error (or the closed boolean) from end()
+  // after a child closed fd 0 while staying alive: the write neither threw
+  // nor rejected, yet the bytes never left.
+  const { delivery, aborts } = make(new Promise(() => {}));
+  delivery.track(new Error("sink closed"));
+  await delivery.settled();
+  expect(delivery.failed()).toBe(true);
+  expect((delivery.error() as Error).message).toBe("sink closed");
+  expect(aborts).toHaveLength(1);
+  const booleanSink = make(new Promise(() => {}));
+  booleanSink.delivery.track(true);
+  await booleanSink.delivery.settled();
+  expect(booleanSink.delivery.failed()).toBe(true);
+  expect(booleanSink.aborts).toHaveLength(1);
+});
+
+test("a closed result right after an exit that already resolved keeps the child's outcome (review round 214)", async () => {
+  // The exit promise is resolved, but its callback has not run yet when
+  // the sink answers closed in the same turn. The closed result is the
+  // exit's consequence: no failure, no abort, the exit code stands.
+  const { delivery, aborts } = make(Promise.resolve(23));
+  delivery.track(true);
+  await delivery.settled();
+  expect(delivery.failed()).toBe(false);
+  expect(aborts).toHaveLength(0);
+});
+
+test("a closed result issued after the child exited had nothing to reach (round 211)", async () => {
+  const { delivery, aborts } = make(Promise.resolve(0));
+  await Bun.sleep(1);
+  delivery.track(new Error("sink closed after the exit"));
+  expect(delivery.failed()).toBe(false);
+  expect(aborts).toHaveLength(0);
+});
+
 test("attempt() tracks a synchronous throw like a rejection (review round 71)", async () => {
   const { delivery, aborts } = make(new Promise(() => {}));
   expect(() => delivery.attempt(() => { throw new Error("sync EPIPE"); })).not.toThrow();

@@ -22,7 +22,7 @@ const KIMI_PREFIX = '{"role":"assistant","content":"partial reply"}\n';
 
 function syntheticSpawn(chunks: string[], stderr = "") {
   return spyOn(Bun, "spawn").mockReturnValue({
-    pid: 2147483647, stdin: { write() {}, end() {} }, exited: Promise.resolve(0), kill() {},
+    pid: 2147483647, stdin: { write() { return 0; }, end() { return 0; } }, exited: Promise.resolve(0), kill() {},
     stdout: new ReadableStream({ start(controller) {
       for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
       controller.close();

@@ -94,6 +94,9 @@ test.each([
       const request = JSON.parse(line);
       if (alreadyExited) proc.exitCode = naturalCode;
       stdout.send({ jsonrpc: "2.0", id: request.id, result: { tools: [{ name: "lookup" }] } });
+      // A real sink answers with the byte count; a nonnumeric synchronous
+      // result is a closed sink (round 211).
+      return line.length;
     } }, kill() {}, exited: new Promise<number>((resolveExit) => { exit = resolveExit; }) };
   const kill = spyOn(process, "kill").mockImplementation(() => {
     if (naturalCode === null) proc.signalCode = "SIGKILL";

@@ -39,7 +39,7 @@ test.each([
     exit(0);
   };
   const spawn = spyOn(Bun, "spawn").mockReturnValue({
-    pid: 2147483647, stdin: { write() {}, end() {} }, kill: stop,
+    pid: 2147483647, stdin: { write() { return 0; }, end() { return 0; } }, kill: stop,
     exited: new Promise<number>((resolveExit) => { exit = resolveExit; }),
     stdout: new ReadableStream<Uint8Array>({ start(controller) {
       stdout = controller;

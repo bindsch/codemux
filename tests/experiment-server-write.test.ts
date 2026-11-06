@@ -1,7 +1,8 @@
 /**
  * The experiment MCP server's stdin write is settled before a notification is
  * acknowledged, and a rejected write (EPIPE under backpressure) ends the
- * server instead of going unhandled (review round 59).
+ * server instead of going unhandled (review round 59); a sink that answers
+ * a closed result instead of a promise is the same failure (round 211).
  */
 
 import { expect, test } from "bun:test";
@@ -54,6 +55,47 @@ test("an id-bearing request whose write rejects is rejected and releases its pen
     stdin: { write: () => Promise.reject(new Error("EPIPE: broken pipe")) },
   };
   await expect(server.request({ jsonrpc: "2.0", id: 7, method: "tools/list" })).rejects.toThrow("stdin write failed");
+  expect((server as unknown as { pending: Map<string, unknown> }).pending.size).toBe(0);
+  expect(failures).toHaveLength(1);
+});
+
+test("a sink that answers a closed result instead of a promise is a failed delivery (round 211)", async () => {
+  // Bun answers a closed sink with a boolean, or its own Error, instead of
+  // throwing or rejecting: the message never left, so the write is the
+  // failure a rejection is -- acknowledged nowhere, the failure handler
+  // reached at once.
+  const failures: Error[] = [];
+  const errorSink = new ExperimentServer(
+    { name: "experiment", command: "/bin/true", args: [], env: [], accept_harness_prefix: [] } as never,
+    process.cwd(), {}, () => {}, (error) => { failures.push(error); }
+  );
+  (errorSink as unknown as { proc: unknown }).proc = {
+    stdin: { write: () => new Error("EPIPE: broken pipe") },
+  };
+  await expect(errorSink.request({ jsonrpc: "2.0", method: "notifications/initialized" }))
+    .rejects.toThrow("stdin write failed");
+  expect(failures.map((error) => error.message).join("\n")).toContain("the stdin sink was closed");
+
+  const booleanSink = new ExperimentServer(
+    { name: "experiment", command: "/bin/true", args: [], env: [], accept_harness_prefix: [] } as never,
+    process.cwd(), {}, () => {}, (error) => { failures.push(error); }
+  );
+  (booleanSink as unknown as { proc: unknown }).proc = { stdin: { write: () => true } };
+  await expect(booleanSink.request({ jsonrpc: "2.0", method: "notifications/initialized" }))
+    .rejects.toThrow("stdin write failed");
+  expect(failures).toHaveLength(2);
+});
+
+test("an id-bearing request whose sink answered closed rejects and registers no pending slot (round 211)", async () => {
+  const failures: Error[] = [];
+  const server = new ExperimentServer(
+    { name: "experiment", command: "/bin/true", args: [], env: [], accept_harness_prefix: [] } as never,
+    process.cwd(), {}, () => {}, (error) => { failures.push(error); }
+  );
+  (server as unknown as { proc: unknown }).proc = {
+    stdin: { write: () => new Error("EPIPE: broken pipe") },
+  };
+  await expect(server.request({ jsonrpc: "2.0", id: 9, method: "tools/list" })).rejects.toThrow("stdin write failed");
   expect((server as unknown as { pending: Map<string, unknown> }).pending.size).toBe(0);
   expect(failures).toHaveLength(1);
 });

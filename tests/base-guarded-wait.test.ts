@@ -89,7 +89,8 @@ describe("BaseAdapter", () => {
   test("guardedWait escalates to SIGKILL when the child traps SIGTERM", async () => {
     // A child that swallows SIGTERM must not outlive the grace period: the
     // timer armed with the escalation fires the tree-scoped SIGKILL, and
-    // the wait reports the signal exit (137).
+    // the wait reports the signal exit 143 codemux owes after a
+    // termination signal, whatever the child then died of (round 211).
     const cwd = mkdtempSync(join(tmpdir(), "codemux-guarded-kill-"));
     const handlerReady = join(cwd, "handler-ready");
     const proc = Bun.spawn(
@@ -110,7 +111,42 @@ describe("BaseAdapter", () => {
       expect(existsSync(handlerReady)).toBe(true);
       const waiting = guardedWait(proc);
       process.emit("SIGTERM");
-      expect(await waiting).toBe(137);
+      expect(await waiting).toBe(143);
+    } finally {
+      try {
+        process.kill(proc.pid, "SIGKILL");
+      } catch {
+        // The expected path already ended it.
+      }
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  test("a SIGTERM-received run reports 143 even when the child exits 0 (round 211)", async () => {
+    // The child answers the forwarded SIGTERM with a clean 0; the wait
+    // still owes the documented signal exit, so supervisor termination
+    // cannot read as normal completion.
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-guarded-zero-"));
+    const handlerReady = join(cwd, "handler-ready");
+    const proc = Bun.spawn(
+      [
+        bun,
+        "-e",
+        [
+          "process.on('SIGTERM', () => process.exit(0));",
+          `await Bun.write(${JSON.stringify(handlerReady)}, "1");`,
+          "setInterval(() => {}, 1000);",
+        ].join("\n"),
+      ],
+      { cwd, stdin: "ignore", stdout: "ignore", stderr: "ignore" }
+    );
+    try {
+      const ready = Date.now() + 10_000;
+      while (!existsSync(handlerReady) && Date.now() < ready) await Bun.sleep(10);
+      expect(existsSync(handlerReady)).toBe(true);
+      const waiting = guardedWait(proc);
+      process.emit("SIGTERM");
+      expect(await waiting).toBe(143);
     } finally {
       try {
         process.kill(proc.pid, "SIGKILL");
@@ -157,6 +193,94 @@ describe("BaseAdapter", () => {
       expect(() => process.kill(proc.pid, 0)).not.toThrow();
       process.emit("SIGHUP");
       expect(await waiting).toBe(143);
+    } finally {
+      try {
+        process.kill(proc.pid, "SIGKILL");
+      } catch {
+        // The expected path already ended it.
+      }
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  test("a child that keeps running after a terminal Ctrl-C never receives a second interrupt (round 211)", async () => {
+    // A terminal Ctrl-C reaches codemux and the foreground child together.
+    // Codemux forwards nothing: a forward would be a second interrupt for a
+    // harness that handled the first and kept running, and several quit on
+    // two. The cost is the documented limit that a SIGINT sent to codemux
+    // alone does not stop the child; SIGTERM and SIGHUP do.
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-guarded-one-int-"));
+    const handlerReady = join(cwd, "handler-ready");
+    const signalsFile = join(cwd, "signals");
+    const proc = Bun.spawn(
+      [
+        bun,
+        "-e",
+        [
+          "const { appendFileSync } = require('node:fs');",
+          `process.on('SIGINT', () => appendFileSync(${JSON.stringify(signalsFile)}, 'int\\n'));`,
+          "process.on('SIGTERM', () => process.exit(0));",
+          `await Bun.write(${JSON.stringify(handlerReady)}, "1");`,
+          "setInterval(() => {}, 1000);",
+        ].join("\n"),
+      ],
+      { cwd, stdin: "ignore", stdout: "ignore", stderr: "ignore" }
+    );
+    try {
+      const ready = Date.now() + 10_000;
+      while (!existsSync(handlerReady) && Date.now() < ready) await Bun.sleep(10);
+      expect(existsSync(handlerReady)).toBe(true);
+      const waiting = guardedWait(proc);
+      // The terminal's delivery: codemux and the child each get one.
+      process.emit("SIGINT");
+      process.kill(proc.pid, "SIGINT");
+      await Bun.sleep(1500);
+      expect(() => process.kill(proc.pid, 0)).not.toThrow();
+      expect(readFileSync(signalsFile, "utf8")).toBe("int\n");
+      process.emit("SIGHUP");
+      expect(await waiting).toBe(143);
+    } finally {
+      try {
+        process.kill(proc.pid, "SIGKILL");
+      } catch {
+        // The expected path already ended it.
+      }
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  test("a terminal Ctrl-C that reached the child is not delivered twice (round 211)", async () => {
+    // A terminal Ctrl-C reaches the foreground child through the shared
+    // process group, so codemux must not add a forwarded SIGINT to it: the
+    // child leaves on its own inside the forward delay, the pending
+    // forward is canceled with the wait, and the child saw exactly one.
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-guarded-term-int-"));
+    const handlerReady = join(cwd, "handler-ready");
+    const signalsFile = join(cwd, "signals");
+    const proc = Bun.spawn(
+      [
+        bun,
+        "-e",
+        [
+          "const { appendFileSync } = require('node:fs');",
+          `process.on('SIGINT', () => { appendFileSync(${JSON.stringify(signalsFile)}, 'int\\n'); process.exit(130); });`,
+          `await Bun.write(${JSON.stringify(handlerReady)}, "1");`,
+          "setInterval(() => {}, 1000);",
+        ].join("\n"),
+      ],
+      { cwd, stdin: "ignore", stdout: "ignore", stderr: "ignore" }
+    );
+    try {
+      const ready = Date.now() + 10_000;
+      while (!existsSync(handlerReady) && Date.now() < ready) await Bun.sleep(10);
+      expect(existsSync(handlerReady)).toBe(true);
+      const waiting = guardedWait(proc);
+      // The terminal's own delivery: the process group gets SIGINT with
+      // codemux, so the child receives it directly as well.
+      process.emit("SIGINT");
+      process.kill(proc.pid, "SIGINT");
+      expect(await waiting).toBe(130);
+      expect(readFileSync(signalsFile, "utf8")).toBe("int\n");
     } finally {
       try {
         process.kill(proc.pid, "SIGKILL");

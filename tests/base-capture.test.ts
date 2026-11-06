@@ -62,7 +62,7 @@ describe("captured process execution", () => {
       const stderr = new ReadableStream<Uint8Array>({ start() {} });
       Bun.spawn = (() => ({
         pid: 2147483647,
-        stdin: { write() {}, end() {} },
+        stdin: { write() { return 0; }, end() { return 0; } },
         stdout,
         stderr,
         exited: Promise.resolve(0),
@@ -119,7 +119,7 @@ describe("captured process execution", () => {
       const stderr = new ReadableStream<Uint8Array>({ start() {} });
       Bun.spawn = (() => ({
         pid: 2147483647,
-        stdin: { write() {}, end() {} },
+        stdin: { write() { return 0; }, end() { return 0; } },
         stdout,
         stderr,
         exited: Promise.resolve(0),

@@ -125,6 +125,15 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 211, whole tree: stdin delivery and experiment-MCP writes classify a sink's
+  synchronous closed result (Bun's closed boolean, or the Error it returns instead of throwing)
+  as a failed delivery through the one sink classifier, so a prompt or notification that never
+  left fails the run or the server instead of being acknowledged; the tui wait reports the
+  documented 143 after a termination signal whatever the child exited with; the docs now state
+  that a SIGINT sent to codemux alone is not forwarded to a tui child, because a forward would
+  give a second interrupt to a harness that handled the terminal's Ctrl-C; and the claude/zai
+  result envelope rejects a present non-boolean `is_error` and treats an array `modelUsage` as
+  no model report.
 - Review round 199, whole tree: the agy stale-home sweep and cleanup read the probe marker and
   owner-PID files through one bounded open each that follows no link and decodes the bytes as
   they are, so an oversized or non-regular marker identifies no home (the sweep) or is refused

@@ -181,6 +181,16 @@ Its full option set is the shared launch table, accounting options, and
 Playwright option above. It has no prompt/file, timeout, result-JSON, hermetic,
 tool-selection, or experiment-MCP option.
 
+Signals end a tui run the way the exit-code table promises. After SIGTERM or
+SIGHUP the exit is 143 whatever the child itself exited with, so a harness
+that answers the forwarded SIGTERM with 0 still reads as terminated, not as
+success. SIGINT is never forwarded: a terminal Ctrl-C reaches the foreground
+child through the shared process group on its own, and a second interrupt
+makes several harnesses quit. A SIGINT sent to codemux alone (`kill -INT` on
+its pid) therefore does not stop the child; stop a tui from outside with
+SIGTERM or SIGHUP. Three SIGINTs within a second still force the child's
+SIGTERM-then-SIGKILL termination.
+
 Droid and OpenCode TUI refuse `--effort` with a level (exit 64): the interactive
 entry has no effort carrier; `--effort none` (no flag) and `run` remain. On every
 other harness, tui resolves effort exactly as run does, so a value outside the

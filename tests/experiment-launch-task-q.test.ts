@@ -36,7 +36,7 @@ test.each([
     hermetic: true, sandboxed: true, tools: "none", experimentMcp: "synthetic.json" };
   const accepted: unknown[] = [];
   const spawn = spyOn(Bun, "spawn").mockReturnValue({
-    pid: 2147483647, stdin: { write() {}, end() {} }, exited: Promise.resolve(0), kill() {},
+    pid: 2147483647, stdin: { write() { return 0; }, end() { return 0; } }, exited: Promise.resolve(0), kill() {},
     stdout: new ReadableStream({ start(controller) {
       controller.enqueue(new TextEncoder().encode(prefix.map((event) => JSON.stringify(event)).join("\n") + "\n" + suffix));
       controller.close();

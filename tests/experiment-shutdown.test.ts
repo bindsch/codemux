@@ -95,7 +95,7 @@ test("recording waits for both readers and rejects a partial frame queued during
   // Mocks last, right before the try that restores them (round 35, contracts 2).
   const kill = spyOn(process, "kill").mockImplementation(() => true);
   const spawn = spyOn(Bun, "spawn").mockReturnValue({ pid: 2147483647,
-    stdout: stdout.readable, stderr: stderr.readable, stdin: { write() {} }, kill() {},
+    stdout: stdout.readable, stderr: stderr.readable, stdin: { write() { return 0; } }, kill() {},
     exited: new Promise(() => {}),
   } as unknown as ReturnType<typeof Bun.spawn>);
   try {
@@ -178,7 +178,7 @@ test.each(["timeout", "signal", "abort", "parse", "UTF-8", "limit"])("%s termina
   let sequence = 0;
   const spawn = spyOn(Bun, "spawn").mockImplementation(() => {
     const pid = 2147483600 + sequence++;
-    return { pid, kill() {}, stdin: { write() {}, end() {} },
+    return { pid, kill() {}, stdin: { write() { return 0; }, end() { return 0; } },
       stdout: new ReadableStream({ start(controller) {
         if (pid === 2147483601) controller.enqueue(reason === "UTF-8" ? new Uint8Array([255]) : Buffer.from("frame"));
         controller.close();
