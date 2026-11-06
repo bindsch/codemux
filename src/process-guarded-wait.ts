@@ -34,9 +34,18 @@ function forceKillAfterGrace(
 }
 
 /**
- * Wait for a spawned interactive process, shielding it from signals that would
- * otherwise propagate through the process group and kill grandchildren (e.g. a
- * Playwright browser).
+ * Wait for an interactive process the caller has not spawned yet,
+ * shielding it from signals that would otherwise propagate through the
+ * process group and kill grandchildren (e.g. a Playwright browser).
+ *
+ * The wait takes the spawn itself as a function and installs its three
+ * signal handlers before calling it (review round 223), the order the
+ * captured runner has used since round 169: until the first process.on
+ * there is no handler at the operating-system level, so a SIGTERM or
+ * SIGHUP that landed between the spawn and the installation took codemux's
+ * default disposition and left the child and its sandbox running. A spawn
+ * that throws removes the handlers again before the refusal propagates,
+ * and no caller can pass a pre-spawned child, so the window cannot reopen.
  *
  * - SIGINT: swallowed in parent, because a terminal Ctrl-C reaches the
  *   foreground child through the shared process group too. It is never
@@ -57,23 +66,27 @@ function forceKillAfterGrace(
  *   (round 211). Every other end reports the child's own exit code.
  */
 export async function guardedWait(
-  proc: ReturnType<typeof Bun.spawn>,
+  spawn: () => ReturnType<typeof Bun.spawn>,
   timeoutMs?: number
 ): Promise<number> {
   if (timeoutMs !== undefined) validateTimeout(timeoutMs);
-  const target = createTerminationTarget(proc);
+  // Null until the spawn returned. No handler can run inside the
+  // synchronous stretch that installs it and spawns, but the handler
+  // checks anyway, so the type says what the code does (as in
+  // process-runner.ts, review round 169).
+  let target: TerminationTarget | null = null;
   let forceKillDeadline = 0;
   // True once a termination signal reached codemux (SIGTERM, SIGHUP, or the
   // burst escalation; a timeout arms the same path but 124 wins first):
   // the wait then reports 143 whatever the child exited with.
   let terminated = false;
-  const armForceKill = (): ReturnType<typeof setTimeout> => {
+  const armForceKill = (): void => {
     terminated = true;
-    const timer = forceKillAfterGrace(target, "process");
+    if (target === null || forceKillTimer !== null) return;
+    forceKillTimer = forceKillAfterGrace(target, "process");
     // Measured from SIGTERM delivery, after the table read inside it, so a
     // slow enumeration cannot eat into the grace period.
     forceKillDeadline = performance.now() + FORCE_KILL_DELAY_MS;
-    return timer;
   };
   let sigintCount = 0;
   let sigintTimer: ReturnType<typeof setTimeout> | null = null;
@@ -84,7 +97,7 @@ export async function guardedWait(
   const onSigint = () => {
     sigintCount++;
     if (sigintCount >= 3) {
-      forceKillTimer ??= armForceKill();
+      armForceKill();
       return;
     }
     if (sigintTimer) clearTimeout(sigintTimer);
@@ -93,20 +106,34 @@ export async function guardedWait(
     }, SIGNAL_BURST_WINDOW_MS);
   };
   const onSigterm = () => {
-    forceKillTimer ??= armForceKill();
+    armForceKill();
   };
   const onSighup = () => {
-    forceKillTimer ??= armForceKill();
+    armForceKill();
   };
 
   process.on("SIGINT", onSigint);
   process.on("SIGTERM", onSigterm);
   process.on("SIGHUP", onSighup);
 
+  let proc: ReturnType<typeof Bun.spawn>;
+  try {
+    proc = spawn();
+  } catch (error) {
+    // Nothing is running and no timer is armed: undo the handlers and let
+    // the refusal propagate, the same undo the captured runner does when
+    // its spawn throws.
+    process.off("SIGINT", onSigint);
+    process.off("SIGTERM", onSigterm);
+    process.off("SIGHUP", onSighup);
+    throw error;
+  }
+  target = createTerminationTarget(proc);
+
   if (timeoutMs !== undefined) {
     timeoutTimer = setTimeout(() => {
       timedOut = true;
-      forceKillTimer ??= armForceKill();
+      armForceKill();
     }, timeoutMs);
   }
 

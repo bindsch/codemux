@@ -21,7 +21,8 @@ const STREAM_CHUNK_BYTES = 64 * 1024;
 
 /** One JSONL line from the ledger, parsed or not. */
 export interface CallLogEntry {
-  /** The raw line as it appears in the file. */
+  /** The raw line as it appears in the file; a line whose bytes are not
+   * valid UTF-8 appears with them replaced and never carries a record. */
   line: string;
   /** The parsed record, or null when the line is not one. */
   record: CallRecord | null;
@@ -203,6 +204,58 @@ function openCallLogDescriptor(path: string): { fd: number; size: number } {
   }
 }
 
+/** The decoder rule the ledger reads share with readUtf8FileBounded
+ * (file-io.ts): fatal, so a line whose bytes are not valid UTF-8 is
+ * malformed — counted and skipped, never accepted. A replacing decode
+ * rewrote an invalid byte inside a permissive string field (`provider`
+ * holds any string) into U+FFFD while the line stayed valid JSON, passed
+ * the record check, and reached the table and totals as content that is
+ * not the bytes on disk (review round 223). The malformed line's
+ * displayed text keeps the replacing decode, so `calls --json` still
+ * shows the line as it reads. A byte-order mark is kept, not stripped:
+ * the ledger writer never writes one, and a line that opens with one is
+ * not JSON, as the replacing decode read it (review round 226). */
+const fatalUtf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+/** Decodes and parses one ledger line into an entry and a malformed
+ * count, the one rule both readers share. Invalid labels keep the record
+ * (labels replaced with null) and count as malformed, exactly as before. */
+function readLedgerLine(line: Buffer): { entry: CallLogEntry; malformed: boolean } {
+  let text: string;
+  try {
+    text = fatalUtf8Decoder.decode(line);
+  } catch {
+    return { entry: { line: line.toString("utf8"), record: null }, malformed: true };
+  }
+  const parsed = parseLine(text);
+  return { entry: { line: text, record: parsed.record }, malformed: parsed.malformed };
+}
+
+/** Splits the read window into lines at the byte level: 0x0a cannot
+ * appear inside a multi-byte UTF-8 sequence, so the cut points are the
+ * ones a decoded split would find, and each line's bytes reach the fatal
+ * decoder whole. A final line without a trailing newline is a line; a
+ * trailing newline adds no empty final line. `dropFirstLine` carries the
+ * tail window's partial-line rule. */
+function splitLineBytes(windowBytes: Buffer, dropFirstLine: boolean): Buffer[] {
+  let start = 0;
+  if (dropFirstLine) {
+    const firstNewline = windowBytes.indexOf(0x0a);
+    if (firstNewline === -1) return [];
+    start = firstNewline + 1;
+  }
+  const lines: Buffer[] = [];
+  for (;;) {
+    const newline = windowBytes.indexOf(0x0a, start);
+    if (newline === -1) {
+      if (start < windowBytes.length) lines.push(windowBytes.subarray(start));
+      return lines;
+    }
+    lines.push(windowBytes.subarray(start, newline));
+    start = newline + 1;
+  }
+}
+
 /**
  * Reads the ledger, bounded to its last 16 MiB (the tail is the newest
  * data, and a multi-gigabyte ledger must not be loaded whole). A window
@@ -216,14 +269,16 @@ function openCallLogDescriptor(path: string): { fd: number; size: number } {
  * with null while retaining the rest of the record. Throws on read errors
  * (absent file, not a regular file, a final symlink — the same refusal
  * streamCallLog makes); callers report those. Invalid UTF-8 is not one of
- * them: the bytes decode with replacement characters, so the affected
- * lines simply land in `malformed`.
+ * them: a line whose bytes are not valid UTF-8 is malformed like a corrupt
+ * one — counted and skipped, never accepted with replacement characters in
+ * place of the bytes on disk (review round 223).
  */
 export function readCallLog(path: string): CallLogContents {
   const { fd, size } = openCallLogDescriptor(path);
   try {
-    let text: string;
+    let windowBytes: Buffer;
     let truncated = false;
+    let dropFirstLine = false;
     if (size <= MAX_CALL_LOG_BYTES) {
       // The small-file window is the fstat size, read through the
       // validated descriptor: a file that grew past the bound after the
@@ -238,7 +293,7 @@ export function readCallLog(path: string): CallLogContents {
         if (n === 0) break;
         read += n;
       }
-      text = buffer.subarray(0, read).toString("utf8");
+      windowBytes = buffer.subarray(0, read);
     } else {
       const cut = size - MAX_CALL_LOG_BYTES;
       const buffer = Buffer.alloc(MAX_CALL_LOG_BYTES);
@@ -252,7 +307,7 @@ export function readCallLog(path: string): CallLogContents {
       // size check and this read leaves the buffer's tail zero-filled, and
       // decoding the whole allocation turned those NUL bytes into the
       // final line's content (review round 90).
-      text = buffer.subarray(0, read).toString("utf8");
+      windowBytes = buffer.subarray(0, read);
       // The read may have started mid-line, in which case the window's
       // first line is the one the bounded read cut and is dropped. But the
       // byte BEFORE the cut decides that, not an unconditional drop: a cut
@@ -261,20 +316,15 @@ export function readCallLog(path: string): CallLogContents {
       // the first newline anyway discarded it (review ul6).
       const prelude = Buffer.alloc(1);
       const n = readSync(fd, prelude, 0, 1, cut - 1);
-      if (n !== 1 || prelude[0] !== 0x0a) {
-        const firstNewline = text.indexOf("\n");
-        text = firstNewline === -1 ? "" : text.slice(firstNewline + 1);
-      }
+      if (n !== 1 || prelude[0] !== 0x0a) dropFirstLine = true;
       truncated = true;
     }
-    const lines = text.split("\n");
-    if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
     const entries: CallLogEntry[] = [];
     let malformed = 0;
-    for (const line of lines) {
-      const parsed = parseLine(line);
-      if (parsed.malformed) malformed++;
-      entries.push({ line, record: parsed.record });
+    for (const line of splitLineBytes(windowBytes, dropFirstLine)) {
+      const read = readLedgerLine(line);
+      if (read.malformed) malformed++;
+      entries.push(read.entry);
     }
     return { entries, malformed, truncated };
   } finally {
@@ -342,10 +392,9 @@ export function streamCallLog(
     let malformed = 0;
     let position = 0;
     const emit = (line: Buffer): void => {
-      const text = line.toString("utf8");
-      const parsed = parseLine(text);
-      if (parsed.malformed) malformed++;
-      visit({ line: text, record: parsed.record });
+      const read = readLedgerLine(line);
+      if (read.malformed) malformed++;
+      visit(read.entry);
     };
     const dropCarry = (): void => {
       carryParts = [];

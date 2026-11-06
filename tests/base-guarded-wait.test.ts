@@ -37,7 +37,7 @@ describe("BaseAdapter", () => {
     try {
       // Let the child spawn and record the grandchild before the deadline.
       while (!existsSync(pidFile)) await Bun.sleep(10);
-      expect(await guardedWait(proc, 50)).toBe(124);
+      expect(await guardedWait(() => proc, 50)).toBe(124);
       await Bun.sleep(300);
       expect(stillRunning(Number(readFileSync(pidFile, "utf8")))).toBe(false);
     } finally {
@@ -73,7 +73,7 @@ describe("BaseAdapter", () => {
       const ready = Date.now() + 10_000;
       while (!existsSync(handlerReady) && Date.now() < ready) await Bun.sleep(10);
       expect(existsSync(handlerReady)).toBe(true);
-      const waiting = guardedWait(proc);
+      const waiting = guardedWait(() => proc);
       process.emit("SIGTERM");
       expect(await waiting).toBe(143);
     } finally {
@@ -109,7 +109,7 @@ describe("BaseAdapter", () => {
       const ready = Date.now() + 10_000;
       while (!existsSync(handlerReady) && Date.now() < ready) await Bun.sleep(10);
       expect(existsSync(handlerReady)).toBe(true);
-      const waiting = guardedWait(proc);
+      const waiting = guardedWait(() => proc);
       process.emit("SIGTERM");
       expect(await waiting).toBe(143);
     } finally {
@@ -144,7 +144,7 @@ describe("BaseAdapter", () => {
       const ready = Date.now() + 10_000;
       while (!existsSync(handlerReady) && Date.now() < ready) await Bun.sleep(10);
       expect(existsSync(handlerReady)).toBe(true);
-      const waiting = guardedWait(proc);
+      const waiting = guardedWait(() => proc);
       process.emit("SIGTERM");
       expect(await waiting).toBe(143);
     } finally {
@@ -179,7 +179,7 @@ describe("BaseAdapter", () => {
       const ready = Date.now() + 10_000;
       while (!existsSync(handlerReady) && Date.now() < ready) await Bun.sleep(10);
       expect(existsSync(handlerReady)).toBe(true);
-      const waiting = guardedWait(proc);
+      const waiting = guardedWait(() => proc);
       process.emit("SIGINT");
       process.emit("SIGINT");
       // Past the burst window: the counter resets to zero.
@@ -230,7 +230,7 @@ describe("BaseAdapter", () => {
       const ready = Date.now() + 10_000;
       while (!existsSync(handlerReady) && Date.now() < ready) await Bun.sleep(10);
       expect(existsSync(handlerReady)).toBe(true);
-      const waiting = guardedWait(proc);
+      const waiting = guardedWait(() => proc);
       // The terminal's delivery: codemux and the child each get one.
       process.emit("SIGINT");
       process.kill(proc.pid, "SIGINT");
@@ -274,7 +274,7 @@ describe("BaseAdapter", () => {
       const ready = Date.now() + 10_000;
       while (!existsSync(handlerReady) && Date.now() < ready) await Bun.sleep(10);
       expect(existsSync(handlerReady)).toBe(true);
-      const waiting = guardedWait(proc);
+      const waiting = guardedWait(() => proc);
       // The terminal's own delivery: the process group gets SIGINT with
       // codemux, so the child receives it directly as well.
       process.emit("SIGINT");
@@ -302,7 +302,7 @@ describe("BaseAdapter", () => {
       kill: () => undefined,
     } as unknown as ReturnType<typeof Bun.spawn>;
 
-    await expect(guardedWait(proc)).rejects.toThrow("wait failed");
+    await expect(guardedWait(() => proc)).rejects.toThrow("wait failed");
     expect(process.listenerCount("SIGINT")).toBe(before.SIGINT);
     expect(process.listenerCount("SIGTERM")).toBe(before.SIGTERM);
     expect(process.listenerCount("SIGHUP")).toBe(before.SIGHUP);
@@ -334,7 +334,7 @@ describe("BaseAdapter", () => {
       const ready = Date.now() + 10_000;
       while (!existsSync(handlerReady) && Date.now() < ready) await Bun.sleep(10);
       expect(existsSync(handlerReady)).toBe(true);
-      const waiting = guardedWait(proc);
+      const waiting = guardedWait(() => proc);
       process.emit("SIGHUP");
       expect(await waiting).toBe(143);
     } finally {
@@ -346,6 +346,63 @@ describe("BaseAdapter", () => {
       rmSync(cwd, { recursive: true, force: true });
     }
   }, 15_000);
+
+  test("guardedWait registers its signal handlers before the spawn runs (round 223)", async () => {
+    // The interactive paths spawned the child first and installed the
+    // handlers after, so a SIGTERM or SIGHUP in that window took codemux's
+    // default disposition and left the child and its sandbox running. The
+    // wait takes the spawn as a function now, and the three listeners must
+    // already be registered at the moment the spawn runs.
+    const before = {
+      SIGINT: process.listenerCount("SIGINT"),
+      SIGTERM: process.listenerCount("SIGTERM"),
+      SIGHUP: process.listenerCount("SIGHUP"),
+    };
+    // A holder object, so the type of the recorded counts is not narrowed
+    // away from the closure's write.
+    const seen: { atSpawn: typeof before | null } = { atSpawn: null };
+    const waiting = guardedWait(() => {
+      seen.atSpawn = {
+        SIGINT: process.listenerCount("SIGINT"),
+        SIGTERM: process.listenerCount("SIGTERM"),
+        SIGHUP: process.listenerCount("SIGHUP"),
+      };
+      return Bun.spawn([bun, "-e", "process.exit(7)"], {
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+    });
+    expect(await waiting).toBe(7);
+    expect(seen.atSpawn).toEqual({
+      SIGINT: before.SIGINT + 1,
+      SIGTERM: before.SIGTERM + 1,
+      SIGHUP: before.SIGHUP + 1,
+    });
+    // The wait removes what it installed once the child is reaped.
+    expect(process.listenerCount("SIGINT")).toBe(before.SIGINT);
+    expect(process.listenerCount("SIGTERM")).toBe(before.SIGTERM);
+    expect(process.listenerCount("SIGHUP")).toBe(before.SIGHUP);
+  });
+
+  test("a spawn that throws removes the handlers and refuses (round 223)", async () => {
+    // The undo half of the spawn-seam contract: a refused spawn leaves no
+    // listener behind, exactly as the captured runner undoes its handlers
+    // when its spawn throws.
+    const before = {
+      SIGINT: process.listenerCount("SIGINT"),
+      SIGTERM: process.listenerCount("SIGTERM"),
+      SIGHUP: process.listenerCount("SIGHUP"),
+    };
+    await expect(
+      guardedWait(() => {
+        throw new Error("spawn refused");
+      })
+    ).rejects.toThrow("spawn refused");
+    expect(process.listenerCount("SIGINT")).toBe(before.SIGINT);
+    expect(process.listenerCount("SIGTERM")).toBe(before.SIGTERM);
+    expect(process.listenerCount("SIGHUP")).toBe(before.SIGHUP);
+  });
 
   test("guardedWait handles triple interrupt and interactive deadlines", async () => {
     // The same al32 seam change: both halves run real children — the
@@ -373,7 +430,7 @@ describe("BaseAdapter", () => {
       const ready = Date.now() + 10_000;
       while (!existsSync(handlerReady) && Date.now() < ready) await Bun.sleep(10);
       expect(existsSync(handlerReady)).toBe(true);
-      const interrupted = guardedWait(interruptProc);
+      const interrupted = guardedWait(() => interruptProc);
       process.emit("SIGINT");
       process.emit("SIGINT");
       process.emit("SIGINT");
@@ -391,7 +448,7 @@ describe("BaseAdapter", () => {
       { stdin: "ignore", stdout: "ignore", stderr: "ignore" }
     );
     try {
-      expect(await guardedWait(timeoutProc, 10)).toBe(124);
+      expect(await guardedWait(() => timeoutProc, 10)).toBe(124);
     } finally {
       try {
         process.kill(timeoutProc.pid, "SIGKILL");

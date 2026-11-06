@@ -332,10 +332,12 @@ an append. Final symlinks and nonregular files are refused. Append failures
 warn once and do not fail the model run.
 
 Readers stream the whole ledger line by line in bounded memory and
-skip/count malformed or wrong-shaped records. Direct tail readers inspect
-only the newest 16 MiB and discard a leading partial line. Both readers
-open once, judge the descriptor, and read through it; final symlinks and
-nonregular files are refused, like appends.
+skip/count malformed or wrong-shaped records. A line whose bytes are not
+valid UTF-8 counts as malformed the same way, so a record is never
+accepted with replacement characters rewritten into a field. Direct tail
+readers inspect only the newest 16 MiB and discard a leading partial
+line. Both readers open once, judge the descriptor, and read through it;
+final symlinks and nonregular files are refused, like appends.
 The writer refuses a record whose serialized line would exceed 16 MiB, with one
 stderr note, so no written line is ever skipped by the reader; the two bounds
 are one constant.

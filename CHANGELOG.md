@@ -125,6 +125,12 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 223, whole tree: the interactive wait takes the spawn itself and installs its
+  signal handlers before running it, so a SIGTERM or SIGHUP can no longer land between the spawn
+  and the handlers, end codemux by the default disposition, and leave the tui child and its
+  sandbox running (a spawn that throws removes the handlers again); and a ledger line whose
+  bytes are not valid UTF-8 is malformed in both readers, never accepted with replacement
+  characters rewritten into a permissive field such as provider.
 - Review round 211, whole tree: stdin delivery and experiment-MCP writes classify a sink's
   synchronous closed result (Bun's closed boolean, or the Error it returns instead of throwing)
   as a failed delivery through the one sink classifier, so a prompt or notification that never

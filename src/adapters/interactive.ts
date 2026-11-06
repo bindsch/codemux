@@ -58,13 +58,14 @@ export async function runInteractive(
   );
 
   assertExecutablesUnchanged(command, this.id);
-  const proc = Bun.spawn(command, {
+  // The spawn rides the wait itself (review round 223): guardedWait
+  // installs its signal handlers before running it, so a SIGTERM or SIGHUP
+  // cannot land between the spawn and the handlers and orphan the child.
+  return await guardedWait(() => Bun.spawn(command, {
     cwd: workdir,
     stdout: "inherit",
     stderr: "inherit",
     stdin: "inherit",
     env,
-  });
-
-  return await guardedWait(proc);
+  }));
 }

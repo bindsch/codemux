@@ -254,14 +254,20 @@ export async function runSandboxed(
     scode,
   ], [...trustCheckedCommandChecks(resolvedCommand), ...(carriedScodeCheck === null ? [] : [carriedScodeCheck]),
     ...(nestedExecutable == null ? [] : [nestedExecutable])]);
-  const proc = Bun.spawn(scodeCmd, {
-    cwd: workdir,
-    stdout: "inherit",
-    stderr: "inherit",
-    stdin: "inherit",
-    env,
-  });
-  return interactive ? await guardedWait(proc) : await proc.exited;
+  // The interactive branch's spawn rides the guarded wait (review round
+  // 223): the wait installs its signal handlers before running it, so a
+  // SIGTERM or SIGHUP cannot land between the spawn and the handlers and
+  // orphan the sandbox child. The non-interactive branch keeps its plain
+  // wait and never installs handlers, as before.
+  const spawnSandboxChild = (): ReturnType<typeof Bun.spawn> =>
+    Bun.spawn(scodeCmd, {
+      cwd: workdir,
+      stdout: "inherit",
+      stderr: "inherit",
+      stdin: "inherit",
+      env,
+    });
+  return interactive ? await guardedWait(spawnSandboxChild) : await spawnSandboxChild().exited;
 }
 
 export async function runSandboxedWithStdin(

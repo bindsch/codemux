@@ -237,7 +237,7 @@ describe("captured process execution", () => {
       exited: Promise.resolve(0),
       kill: () => undefined,
     } as unknown as ReturnType<typeof Bun.spawn>;
-    await expect(guardedWait(proc, 0)).rejects.toThrow(
+    await expect(guardedWait(() => proc, 0)).rejects.toThrow(
       "timeoutMs must be an integer"
     );
   });
