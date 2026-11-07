@@ -28,10 +28,13 @@ const doctorHomes: string[] = [];
 
 // A fake claude that answers the version probe inside the contract's
 // range and appends every other invocation's argv to a record file, so a
-// test can prove the harness never ran.
+// test can prove the harness never ran. A launched run also prints one
+// plain line: an empty success is a failed plain run (round 259), and
+// these tests assert the launch, not a silent child.
 const recordingClaude = (record: string): string =>
   `if [ "$1" = "--version" ]; then printf '2.1.220 (Claude Code)\\n'; exit 0; fi
-printf '%s\\n' "$*" >> ${JSON.stringify(record)}`;
+printf '%s\\n' "$*" >> ${JSON.stringify(record)}
+printf 'OK\\n'`;
 
 // A scode that runs what it wraps (after `--`, the command the launcher
 // built), so a sandboxed print-only launch resolves its argv for real.

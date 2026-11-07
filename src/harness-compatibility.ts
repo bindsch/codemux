@@ -30,21 +30,74 @@ const exactVersionParts = (value: string): bigint[] | null => {
   return texts.every((part) => /^\d+$/.test(part)) ? texts.map((part) => BigInt(part)) : null;
 };
 
+/** The prerelease suffix a semver version may carry (`-beta.1`): dot-
+ * separated identifiers of digits, letters, and hyphens, the shape the
+ * contracts' patterns capture (harness-contracts.ts). */
+const PRERELEASE_SUFFIX = /^-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)$/;
+
+/** A version split into its numeric core and, when present, its prerelease
+ * identifiers; null when either half is not the shape above. The suffix
+ * begins at the FIRST hyphen, so a core part may never contain one. */
+const parseSemver = (
+  value: string
+): { core: bigint[]; prerelease: string[] | null } | null => {
+  const dash = value.indexOf("-");
+  const [numeric, suffix] = dash === -1 ? [value, ""] : [value.slice(0, dash), value.slice(dash)];
+  const core = exactVersionParts(numeric);
+  if (core === null) return null;
+  if (suffix === "") return { core, prerelease: null };
+  const match = PRERELEASE_SUFFIX.exec(suffix);
+  return match === null ? null : { core, prerelease: match[1]!.split(".") };
+};
+
 /** The numeric parts of a dotted version, or null when it is not one. A
  * part past the safe-integer range is rounded here; comparisons use the
  * exact parts instead. */
 export const parseVersionParts = (value: string): number[] | null =>
-  exactVersionParts(value)?.map((part) => Number(part)) ?? null;
+  parseSemver(value)?.core.map((part) => Number(part)) ?? null;
 
-/** Returns <0, 0, or >0. Missing trailing components count as zero. */
+/** One semver prerelease identifier against another: numeric identifiers
+ * compare numerically (exactly — a long build number again) and rank below
+ * alphanumeric ones, alphanumeric ones compare lexically, and the identifier
+ * that runs out first ranks below (semver precedence, §11.4). */
+const comparePrereleaseIdentifiers = (left: string, right: string): number => {
+  const leftNumeric = /^\d+$/.test(left);
+  const rightNumeric = /^\d+$/.test(right);
+  if (leftNumeric && rightNumeric) {
+    const x = BigInt(left);
+    const y = BigInt(right);
+    return x === y ? 0 : x < y ? -1 : 1;
+  }
+  if (leftNumeric) return -1;
+  if (rightNumeric) return 1;
+  return left === right ? 0 : left < right ? -1 : 1;
+};
+
+/** Returns <0, 0, or >0. Missing trailing components count as zero, and a
+ * prerelease orders below its own release (`1.18.10-beta.1` < `1.18.10`),
+ * so a prerelease of the minimum is below the minimum (round 259: the
+ * probe patterns' numeric-prefix capture used to strip the suffix and pass
+ * it). Two prereleases order by semver identifier rules. */
 export const compareVersions = (left: string, right: string): number => {
-  const a = exactVersionParts(left);
-  const b = exactVersionParts(right);
+  const a = parseSemver(left);
+  const b = parseSemver(right);
   if (!a || !b) throw new HarnessVersionError(`cannot compare '${left}' and '${right}'`);
-  for (let index = 0; index < Math.max(a.length, b.length); index++) {
-    const x = a[index] ?? 0n;
-    const y = b[index] ?? 0n;
+  for (let index = 0; index < Math.max(a.core.length, b.core.length); index++) {
+    const x = a.core[index] ?? 0n;
+    const y = b.core[index] ?? 0n;
     if (x !== y) return x < y ? -1 : 1;
+  }
+  if (a.prerelease === null && b.prerelease === null) return 0;
+  if (a.prerelease === null) return 1; // the release is above its prereleases
+  if (b.prerelease === null) return -1;
+  const length = Math.max(a.prerelease.length, b.prerelease.length);
+  for (let index = 0; index < length; index++) {
+    const x = a.prerelease[index];
+    const y = b.prerelease[index];
+    if (x === undefined) return -1; // fewer identifiers rank below
+    if (y === undefined) return 1;
+    const order = comparePrereleaseIdentifiers(x, y);
+    if (order !== 0) return order;
   }
   return 0;
 };

@@ -17,6 +17,11 @@
  *             (`scenario:write <rel>`), then its successful tool_result;
  *             the driver's stash-time existsSync reads the workspace, so
  *             a pre-existing target derives "edit" and a fresh one "add"
+ *   lostwrite — a Write tool_use whose tool_result never arrives; the
+ *             turn's result frame ends it with the call unanswered
+ *   latewrite — the delayed tool_result for the PREVIOUS turn's
+ *             lostwrite call, under the same id: confirms nothing (the
+ *             candidate died with its turn, review round 259)
  *   ask     — a can_use_tool request for Bash; the turn continues only
  *             after the control_response, and the tool_result reports
  *             the behavior: the substituted input on allow, the denial
@@ -165,6 +170,12 @@ const runTurn = (scenario: string, text: string): void => {
       return;
     case "write":
       scenarios.write(text);
+      return;
+    case "lostwrite":
+      scenarios.lostwrite();
+      return;
+    case "latewrite":
+      scenarios.latewrite();
       return;
     case "ask":
       scenarios.ask();

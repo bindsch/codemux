@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { opencodePlainResult } from "../src/plain-unwrap.js";
+import { OpenCodePlainFold, opencodePlainResult } from "../src/plain-unwrap.js";
 import { finished, part, stepFinish } from "./helpers/plain-unwrap.js";
 
 describe("opencodePlainResult", () => {
@@ -102,6 +102,45 @@ describe("opencodePlainResult", () => {
     const out = opencodePlainResult(finished("hello\n"));
     expect(out).toEqual(finished("hello\n"));
     expect(out.usage).toBeUndefined();
+  });
+
+  test("a zero-exit run that printed nothing is a failed run, not an empty success (round 259)", () => {
+    // Both arms of the fold: the whole-capture verdict and the streaming
+    // sink (whose finish() answers the raw bytes the runner puts on
+    // stdout). Before round 259 empty stdout took the escape hatch and a
+    // harness that exited zero without its stream kept a success with no
+    // reply.
+    for (const stdout of ["", "  \n"]) {
+      const out = opencodePlainResult(finished(stdout));
+      expect(out.success, JSON.stringify(stdout)).toBe(false);
+      expect(out.exitCode, JSON.stringify(stdout)).toBe(1);
+      expect(out.stdout, JSON.stringify(stdout)).toBe("");
+      expect(out.stderr, JSON.stringify(stdout)).toContain("produced no output");
+    }
+    const stream = new OpenCodePlainFold();
+    expect(stream.verdict(finished("")).success).toBe(false);
+    const failedRun = { stdout: "", stderr: "boom", exitCode: 2, success: false };
+    expect(opencodePlainResult(failedRun)).toEqual(failedRun);
+  });
+
+  test("a lone malformed event is a failed structured stream, never a plain reply (round 259)", () => {
+    // A JSON-object line IS the wire's grammar even when the event's
+    // payload breaks it — here a text line with no part, its sessionID
+    // validated. Before round 259 such a line left the hatch open, so the
+    // raw JSON passed through verbatim as a successful reply. It is wire
+    // evidence now: the run fails with the break named and no wire on
+    // stdout. A JSON object without a sessionID fails the same way; plain
+    // text (the test above) still takes the hatch.
+    const malformed = JSON.stringify({ type: "text", sessionID: "ses_0123456789abcdef" });
+    const out = opencodePlainResult(finished(`${malformed}\n`));
+    expect(out.success).toBe(false);
+    expect(out.stdout).toBe("");
+    expect(out.stdout).not.toContain("sessionID");
+    expect(out.stderr).toContain("no assistant text");
+    expect(out.stderr).toContain("a text line carries no text part");
+    const noSession = opencodePlainResult(finished('{"type":"text"}\n'));
+    expect(noSession.success).toBe(false);
+    expect(noSession.stderr).toContain("carries no sessionID");
   });
 
   test("an error line fails the run even at exit 0", () => {

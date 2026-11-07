@@ -32,6 +32,20 @@ describe("agyPlainResult", () => {
     expect(out.usage).toBeUndefined();
   });
 
+  test("a zero-exit run that printed nothing is a failed run, not an empty success (round 259)", () => {
+    // The claude family's empty-success rule (round 259) in agy's twin:
+    // empty stdout took the escape hatch and kept a success with no reply.
+    for (const stdout of ["", "  \n"]) {
+      const out = agyPlainResult(finished(stdout));
+      expect(out.success, JSON.stringify(stdout)).toBe(false);
+      expect(out.exitCode, JSON.stringify(stdout)).toBe(1);
+      expect(out.stdout, JSON.stringify(stdout)).toBe("");
+      expect(out.stderr, JSON.stringify(stdout)).toContain("produced no output");
+    }
+    const failedRun = { stdout: "", stderr: "boom", exitCode: 2, success: false };
+    expect(agyPlainResult(failedRun)).toEqual(failedRun);
+  });
+
   test("an error status fails the run", () => {
     const out = agyPlainResult(
       finished(JSON.stringify({ status: "ERROR", error: "quota", response: null }))

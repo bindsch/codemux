@@ -68,8 +68,13 @@ function foldOpenCodeLine(line: string, state: OpenCodeFoldState): void {
       noteOpenCodeBreak(state, `an unparseable line of ${parse.bytes} bytes`);
       break;
     case "grammar_error":
+      // A grammar error parsed as a JSON object — the wire's own grammar —
+      // so it is wire evidence whatever broke (round 259): a stream whose
+      // only line is such an event is a malformed structured stream, never
+      // plain text that passes through verbatim as the reply. The
+      // session-mismatch arm carries the stronger fact and fails the run.
+      state.sawWire = true;
       if (parse.reason === "session-mismatch") {
-        state.sawWire = true;
         state.errorMessage ??= parse.message;
       } else {
         noteOpenCodeBreak(state, parse.message);
@@ -99,19 +104,31 @@ function foldOpenCodeLine(line: string, state: OpenCodeFoldState): void {
 }
 
 /** The verdict every opencode path shares: with no wire evidence the run
- * passes through unchanged (the escape hatch); with any, the reply is the
- * folded text, the usage the folded `step_finish` count, an `error` line
- * or a session mismatch fails the run like a nonzero exit does, and lines
- * that were not the wire become a bounded stderr diagnostic (a timeout
- * can cut the last write mid-line; review ul3). The verdict is never
- * reached for a stream that latched the capture bound — the runner fails
- * that run at exit 125 before post-processing runs — so this function
- * answers only streams whose every line the fold could read. */
+ * passes through unchanged (the escape hatch) — except empty stdout,
+ * which fails as the claude family's empty success does (round 259): a
+ * zero-exit run that printed nothing produced neither the wire nor a
+ * reply. With any wire evidence, the reply is the folded text, the usage
+ * the folded `step_finish` count, an `error` line or a session mismatch
+ * fails the run like a nonzero exit does, and lines that were not the
+ * wire become a bounded stderr diagnostic (a timeout can cut the last
+ * write mid-line; review ul3). The verdict is never reached for a stream
+ * that latched the capture bound — the runner fails that run at exit 125
+ * before post-processing runs — so this function answers only streams
+ * whose every line the fold could read. */
 export function opencodeVerdict(result: RunResult, data: OpenCodeResultData): RunResult {
   const { sawWire, text, usage, errorMessage, broken, brokenCount } = data;
   if (!sawWire) {
     // No line is the wire: the whole stdout is plain text from a binary
-    // that ignored `--format json` (an older binary, a wrapper, a fake).
+    // that ignored `--format json` (an older binary, a wrapper, a fake) —
+    // but a binary that printed nothing at all answered neither way.
+    if (result.success && result.stdout.trim() === "") {
+      return failed(
+        result,
+        "codemux: opencode produced no output: a --format json run prints " +
+          "its event stream, so an empty success is not a plain reply",
+        ""
+      );
+    }
     return result;
   }
   // A break beside wire evidence is a diagnostic, never a lost run: the

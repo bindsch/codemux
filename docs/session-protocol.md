@@ -238,7 +238,9 @@ Clients must be able to send that prompt before seeing `session_started`.
 message is echoed on acceptance, potentially without a turn ID.
 
 A successful derived Claude/ZAI file change follows its matching successful
-tool result. Its raw line is the earlier tool-call line. Native Codex file
+tool result. Its raw line is the earlier tool-call line. A candidate whose
+result never arrived is dropped when its turn completes, so no later turn's
+reused or delayed call id can confirm it. Native Codex file
 changes omit `derived`. Permissions are resolved once, including expiry and
 supersession on completion, interrupt, or shutdown. Requests arriving during
 the shutdown drain are denied immediately. On Claude/ZAI every deny — a

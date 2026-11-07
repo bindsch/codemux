@@ -128,6 +128,54 @@ export const makeScenarioHandlers = (deps: ScenarioDeps) => ({
     deps.finishTurn();
   },
 
+  lostwrite: (): void => {
+    // A Write tool_use whose tool_result never arrives: the result frame
+    // ends the turn with the call unanswered. The candidate must die with
+    // the turn — the LATEWRITE scenario reuses the call id in the next
+    // turn and reports the result then, which must derive nothing (review
+    // round 259).
+    const filePath = join(process.env.FAKE_CWD ?? process.cwd(), "lost.txt");
+    write({
+      type: "assistant",
+      message: {
+        id: "msg-lostwrite",
+        content: [
+          { type: "tool_use", id: "toolu_lw_1", name: "Write", input: { file_path: filePath, content: "x" } },
+        ],
+      },
+    });
+    write({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      session_id: sessionId,
+      usage: { input_tokens: 8, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    });
+    deps.finishTurn();
+  },
+
+  latewrite: (): void => {
+    // The delayed tool_result for the call the PREVIOUS turn made
+    // (lostwrite), under the same call id a harness could reuse: with the
+    // candidate cleared at turn completion this confirms nothing; before
+    // round 259 it emitted a file_change outside its originating turn.
+    write({
+      type: "user",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "toolu_lw_1", content: "Wrote (late)", is_error: false }],
+      },
+    });
+    write({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      session_id: sessionId,
+      usage: { input_tokens: 6, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    });
+    deps.finishTurn();
+  },
+
   ask: (): void => {
     write({
       type: "assistant",

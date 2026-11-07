@@ -50,6 +50,39 @@ describe("version comparison", () => {
     expect(compareVersions("1.5.99999999999999999999999999", "1.6")).toBeLessThan(0);
     expect(parseVersionParts("1.5.9007199254740993")).not.toBeNull();
   });
+
+  test("a prerelease orders below its own release, and two prereleases by semver identifiers (round 259)", () => {
+    // The probe patterns' numeric-prefix capture used to strip the suffix,
+    // so `1.18.10-beta.1` passed the `1.18.10` minimum. Semver orders a
+    // prerelease below its release; the comparison now carries that.
+    expect(compareVersions("1.18.10-beta.1", "1.18.10")).toBeLessThan(0);
+    expect(compareVersions("1.18.10", "1.18.10-beta.1")).toBeGreaterThan(0);
+    expect(compareVersions("1.18.10-beta.1", "1.18.10")).not.toBe(0);
+    // The numeric core still decides first: a prerelease of a HIGHER
+    // release is above the lower release, and of a lower one below.
+    expect(compareVersions("1.18.11-beta.1", "1.18.10")).toBeGreaterThan(0);
+    expect(compareVersions("1.18.9-rc.1", "1.18.10")).toBeLessThan(0);
+    // Identifier rules: numeric identifiers numerically (and exactly),
+    // numeric below alphanumeric, alphanumeric lexically, fewer fields
+    // below more (semver §11.4's own example order).
+    expect(compareVersions("1.0.0-alpha", "1.0.0-alpha.1")).toBeLessThan(0);
+    expect(compareVersions("1.0.0-alpha.1", "1.0.0-alpha.beta")).toBeLessThan(0);
+    expect(compareVersions("1.0.0-alpha.beta", "1.0.0-beta")).toBeLessThan(0);
+    expect(compareVersions("1.0.0-beta", "1.0.0-beta.2")).toBeLessThan(0);
+    expect(compareVersions("1.0.0-beta.2", "1.0.0-beta.11")).toBeLessThan(0);
+    expect(compareVersions("1.0.0-beta.11", "1.0.0-rc.1")).toBeLessThan(0);
+    expect(compareVersions("1.0.0-rc.1", "1.0.0")).toBeLessThan(0);
+    expect(compareVersions("1.0.0-2", "1.0.0-10")).toBeLessThan(0);
+    expect(compareVersions("1.0.0-1", "1.0.0-alpha")).toBeLessThan(0);
+    expect(compareVersions("1.0.0-beta.1", "1.0.0-beta.1")).toBe(0);
+    // A malformed suffix is still not a version, and the numeric core of a
+    // prerelease still parses for the kimi major-version read.
+    for (const malformed of ["1.0.0-", "1.0.0-beta.", "1.0.0-beta..1"]) {
+      expect(parseVersionParts(malformed), malformed).toBeNull();
+      expect(() => compareVersions(malformed, "1.0.0"), malformed).toThrow(HarnessVersionError);
+    }
+    expect(parseVersionParts("2.5.0-beta.1")).toEqual([2, 5, 0]);
+  });
 });
 
 describe("version extraction", () => {
@@ -71,6 +104,23 @@ describe("version extraction", () => {
       expect(extractHarnessVersion(contract, output)).toBe(expected);
     });
   }
+
+  test("keeps a semver prerelease suffix in the extracted version, so the gate sees it (round 259)", () => {
+    // The regression end to end: the probe output carries the prerelease,
+    // extraction keeps it, and the floor refuses the prerelease of the
+    // minimum. Before round 259 extraction answered `1.18.10` — the
+    // minimum itself, passing as supported.
+    const version = extractHarnessVersion(opencode, "1.18.10-beta.1");
+    expect(version).toBe("1.18.10-beta.1");
+    const verdict = evaluateHarnessVersion("opencode", opencode, version!, "low", false);
+    expect(verdict.kind).toBe("refuse");
+    expect(verdict.reason).toBe("below-minimum");
+    // A prerelease of a release ABOVE the floor stays inside the audited
+    // band, and one past the ceiling stays above it: the core decides
+    // against the boundaries exactly as a release does.
+    expect(evaluateHarnessVersion("opencode", opencode, "1.18.11-beta.1", "low", false).kind).not.toBe("refuse");
+    expect(evaluateHarnessVersion("opencode", opencode, "1.19.6-rc.1", "low", true).reason).toBe("unaudited");
+  });
 
   test("returns null when the output does not carry a version", () => {
     expect(extractHarnessVersion(opencode, "command not found")).toBeNull();

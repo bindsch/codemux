@@ -264,15 +264,19 @@ printf 'OK'
     // `none` while claude refused it. A2 made `none` the CLI's "send no
     // effort flag" spelling on every adapter whose level list omits it,
     // so the claude launch succeeds and sends no flag — the surface
-    // difference is gone by design, and this pins its replacement.
+    // difference is gone by design, and this pins its replacement. The
+    // silent fake then fails the plain unwrap's empty-output rule (round
+    // 259): the run reached result processing, which is the point — the
+    // effort mapping neither refused nor failed the launch.
     const fake = createFakeBinaryEnv({ claude: "exit 0" });
     try {
       const { stderr, exitCode } = await runCli(
         ["run", "--no-sandbox", "--auto", "high", "-a", "claude", "--effort", "none", "-p", "test"],
         fake.env
       );
-      expect(exitCode).toBe(0);
+      expect(exitCode).toBe(1);
       expect(stderr).not.toContain("does not support reasoning effort 'none'");
+      expect(stderr).toContain("produced no output");
     } finally {
       fake.cleanup();
     }

@@ -148,7 +148,9 @@ null. Missing counts remain null, with one exception: Kimi Code 2.5.0 leaves
 `inputCacheRead` out of a record that read nothing from cache, and that
 absent field counts as zero, as it does in Kimi's own total. The wire log is read before hermetic home
 cleanup, with a 16 MiB limit. A missing session ID, missing log, malformed
-stream/log, or error event fails the run and reports a diagnostic.
+stream/log, or error event fails the run and reports a diagnostic; when an error
+event is present it is the diagnostic, and a resume hint that never arrived after
+it is that failure's consequence, not the report.
 An experiment provider attempt that fails without usage and without tool calls emits `harness_retry`
 with its step UUID and no `turn`, including attempts with partial content.
 An error step with tool calls emits a `turn` and fails later with `harness_log_missing` if usage is absent.
@@ -212,8 +214,12 @@ untrusted sandbox runs cannot write that fallback file and do not request it.
 
 OpenCode malformed/truncated streams retain text and usage folded before the
 error, with a diagnostic. Claude-family/Agy JSON that is not a valid result
-fails instead of becoming plain reply text. Output that never uses the
-requested structured grammar can pass through as plain text without usage.
+fails instead of becoming plain reply text, and an OpenCode JSON-object line
+that breaks the event grammar is wire evidence, not plain text. Output that
+never uses the requested structured grammar can pass through as plain text
+without usage; empty output cannot — a zero-exit run that printed nothing on
+Claude, Z.AI, Agy, or OpenCode fails rather than passing through as an empty
+success.
 The Codex fallback can recover a blended `tokens used` stderr total only, and
 only when the figure is plain digits, digit groups of three (`1,234,567`),
 or Indian grouping (`12,34,567`), with one separator style throughout;

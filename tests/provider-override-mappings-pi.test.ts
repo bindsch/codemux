@@ -201,9 +201,30 @@ describe("pi provider override", () => {
     );
     const request: RunRequest = { agent: "pi", prompt: "p", cwd: cwdOf() };
     expect(() => adapter.validateRunRequest(request))
-      .toThrow("must not contain '{' or '}'");
+      .toThrow("must not contain '$', '{', or '}'");
     expect(() => adapter.prepareRun(request))
-      .toThrow("must not contain '{' or '}'");
+      .toThrow("must not contain '$', '{', or '}'");
+    expect(existsSync(join(home, ".pi"))).toBe(false);
+  });
+
+  test("a model with a bare $VAR is refused: pi expands $VAR templates too (round 259)", () => {
+    // The brace refusal missed the template form without them: pi expands
+    // `$VAR` exactly like `${VAR}` (resolve-config-value.js), so a model id
+    // `glm-$CODEMUX_PI_PROVIDER_API_KEY` landed in models.json verbatim and
+    // was expanded at auth time — changing the selected model and putting
+    // the key's VALUE into the config a diagnostic could print. The model
+    // refuses every template character, before launch and before the write.
+    const home = mkdtempSync(join(tmpdir(), "codemux-pi-home-"));
+    scratch.push(home);
+    const adapter = new PiAdapter(
+      { ...ZAI_PI, CODEMUX_PI_PROVIDER_MODEL: "glm-$CODEMUX_PI_PROVIDER_API_KEY" },
+      home
+    );
+    const request: RunRequest = { agent: "pi", prompt: "p", cwd: cwdOf() };
+    expect(() => adapter.validateRunRequest(request))
+      .toThrow("must not contain '$', '{', or '}'");
+    expect(() => adapter.prepareRun(request))
+      .toThrow("must not contain '$', '{', or '}'");
     expect(existsSync(join(home, ".pi"))).toBe(false);
   });
 

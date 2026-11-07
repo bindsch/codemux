@@ -109,6 +109,15 @@ export function kimiResult(result: RunResult, request: RunRequest, brandHome: st
     .map((event) => (event.content as string).replace(/\r\n/g, "\n").replace(/\n+$/, ""))
     .join("\n\n");
   text = reply ? `${reply}\n` : "";
+  // The provider's own error event outranks every failure derived below,
+  // and it must be read before the hint requirement throws (round 259): a
+  // failed provider run prints its error and never reaches the resume
+  // hint, so the hint's absence is that failure's consequence, and
+  // reporting it instead hid the error that explains the run.
+  const errorEvents = events.filter((event) => event.type === "error");
+  if (errorEvents.length > 0) {
+    outputFailure ??= `kimi reported an error event: ${JSON.stringify(errorEvents[0])}`;
+  }
   try {
     const hints = events.filter((event) => event.role === "meta" && event.type === "session.resume_hint");
     const nativeSession = hints.at(-1)?.session_id;
@@ -121,9 +130,7 @@ export function kimiResult(result: RunResult, request: RunRequest, brandHome: st
     if (context) context.kimiWireLogPath = path;
     usage = kimiWireUsage(path);
     if (request.experimentMcp) wireSurface = readBoundedKimiFile(path, MAX_KIMI_WIRE_BYTES);
-    const errors = events.filter((event) => event.type === "error");
-    outputFailure ??= errors.length ? `kimi reported an error event: ${JSON.stringify(errors[0])}` :
-      !reply.trim() ? "kimi printed no assistant reply in stream-json" : null;
+    outputFailure ??= !reply.trim() ? "kimi printed no assistant reply in stream-json" : null;
   } catch (error) {
     outputFailure ??= error instanceof Error ? error.message : String(error);
   }

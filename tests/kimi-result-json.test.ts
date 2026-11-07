@@ -226,6 +226,33 @@ describe("Kimi result-json", () => {
     } finally { f.cleanup(); }
   });
 
+  test("an error-only stream reports the provider error, not the missing resume hint (round 259)", () => {
+    // A provider failure (quota exhausted) prints one error event and
+    // never reaches the resume hint. Before round 259 the hint requirement
+    // was read first, so the run reported only the missing
+    // session.resume_hint and hid the error that explains why no hint
+    // exists. The error event is the diagnostic; the hint is a
+    // consequence. The plain path keeps the same rule (no reply on
+    // stdout, the error on stderr).
+    const f = fixture();
+    try {
+      const result = f.processResult(stream([{ type: "error", message: "quota exhausted" }]));
+      expect(result.success).toBe(false);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("kimi reported an error event");
+      expect(result.stderr).toContain("quota exhausted");
+      expect(result.stderr).not.toContain("session.resume_hint");
+      const plain = f.adapter.processRunResult(
+        { ...success, stdout: stream([{ type: "error", message: "quota exhausted" }]) },
+        { ...f.request, resultJson: false }, f.context
+      );
+      expect(plain.success).toBe(false);
+      expect(plain.stderr).toContain("quota exhausted");
+      expect(plain.stderr).not.toContain("session.resume_hint");
+      expect(plain.stdout).toBe("");
+    } finally { f.cleanup(); }
+  });
+
   test("usage preserves zero and missing components without double counting step events", () => {
     const f = fixture();
     try {

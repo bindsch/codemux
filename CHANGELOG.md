@@ -125,6 +125,16 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 259, whole tree: the pi provider override model refuses a bare `$VAR` as well
+  as braces, because pi expands `$VAR` templates inside its models.json too; a zero-exit
+  claude/zai, agy, or opencode plain run that printed nothing fails instead of reporting an
+  empty success; a lone malformed OpenCode event that is still a JSON object counts as wire
+  evidence and fails the plain result rather than passing through as one; a Claude file-change
+  candidate whose tool result never arrived is dropped when its turn completes, so no later
+  turn can confirm it; a semver prerelease now orders below its own release, so a version like
+  `1.18.10-beta.1` no longer clears a `1.18.10` minimum; and a kimi run that ends with only
+  an error event reports the provider's error message, not the missing resume hint that
+  masked it.
 - Review round 232, whole tree: docs/sessions.md states the descendant capture's limit: a
   descendant that forks and exits between two five-second samples, or before the first, is one
   no walk can attribute (a sample at spawn was tried and withdrawn: its synchronous process

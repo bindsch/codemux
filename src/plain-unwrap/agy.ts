@@ -7,16 +7,26 @@ import { diagnosticExcerpt, failed, jsonShapedStdout, plainText } from "./common
 
 /**
  * agy: stdout should be the `--output-format=json` result object. Anything
- * that is not JSON passes through verbatim — except JSON that is not the
- * envelope: the envelope is one JSON object, so a JSON value the parser
- * cannot take (an array or a scalar, a complete but unrecognized object,
- * or an object a kill or the capture cap cut mid-write) is a structured
- * result that broke, not a plain reply, and fails the run with nothing on
- * stdout — the claude family's rule (reviews ul4, ul7).
+ * that is not JSON passes through verbatim — except empty stdout, which
+ * fails like the claude family's empty success (round 259), and except
+ * JSON that is not the envelope: the envelope is one JSON object, so a
+ * JSON value the parser cannot take (an array or a scalar, a complete but
+ * unrecognized object, or an object a kill or the capture cap cut
+ * mid-write) is a structured result that broke, not a plain reply, and
+ * fails the run with nothing on stdout — the claude family's rule
+ * (reviews ul4, ul7).
  */
 export function agyPlainResult(result: RunResult): RunResult {
   const parsed = parseAgyResultEnvelope(result.stdout);
   if (parsed === null) {
+    if (result.success && result.stdout.trim() === "") {
+      return failed(
+        result,
+        "codemux: agy produced no output: an --output-format=json run " +
+          "prints its result object, so an empty success is not a plain reply",
+        ""
+      );
+    }
     if (!jsonShapedStdout(result.stdout)) return result;
     return failed(
       result,

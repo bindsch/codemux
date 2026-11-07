@@ -78,14 +78,15 @@ export function piProviderModelSelector(model: string): string {
  * expands `$VAR`/`${VAR}` templates in models.json from the environment
  * at auth time (the same expansion the `${…}` key reference rides), and
  * the model lands in the file verbatim — in the entry's `id` and `name`
- * — so a model carrying braces could splice an environment variable's
- * value into the config codemux writes (h6 review; the base URL refuses
- * them for the same reason).
+ * — so a model carrying a `$` or a brace could splice an environment
+ * variable's value into the config codemux writes (h6 review; round 259
+ * added the bare `$VAR` form; the base URL refuses braces for the same
+ * reason).
  */
 export function piProviderBareModel(model: string): string {
-  if (model.includes("{") || model.includes("}")) {
+  if (model.includes("$") || model.includes("{") || model.includes("}")) {
     throw new UsageRefusalError(
-      "the pi provider override model must not contain '{' or '}': pi expands $VAR/${VAR} templates inside models.json, so a brace could splice another value into it"
+      "the pi provider override model must not contain '$', '{', or '}': pi expands $VAR/${VAR} templates inside models.json, so one of them could splice another value into it"
     );
   }
   return model;

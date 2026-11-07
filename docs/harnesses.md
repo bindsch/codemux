@@ -63,7 +63,7 @@ The [dated evidence report](archive/isolation-verification.md) names retained so
 
 Before launch, codemux resolves and trust-checks the executable, probes its version with a sanitized environment, and checks its file identity to detect replacement between probe and launch.
 
-- Below minimum: refuse.
+- Below minimum: refuse. A semver prerelease orders below its own release, so `1.18.10-beta.1` is below a `1.18.10` minimum; the probe reads and compares the full version including the suffix.
 - Minimum through audited ceiling: proceed without a version warning.
 - Above audited ceiling: warn and proceed unless a known incompatible change applies.
 - Unknown version: warn for ordinary contracts; Copilot refuses because its contract requires `--binary-version`.

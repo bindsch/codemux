@@ -47,7 +47,8 @@ export interface HarnessBreak {
 }
 
 export interface HarnessContract {
-  /** `semver` for major.minor.patch; `calendar` for rolling YYYY.MM.DD builds. */
+  /** `semver` for major.minor.patch (plus an optional prerelease suffix);
+   * `calendar` for rolling YYYY.MM.DD builds. */
   scheme: "semver" | "calendar";
   versionArgs: readonly string[];
   pattern: RegExp;
@@ -89,6 +90,18 @@ export interface HarnessContract {
  * each entry's comment names its own dated evidence. Bump an entry and the
  * matching docs/harnesses.md table row together, with live-gate evidence.
  */
+
+/** The prerelease half of every semver pattern's version capture: a probe
+ * reporting `1.18.10-beta.1` says the prerelease, and the numeric-prefix
+ * capture dropped it (round 259) — `1.18.10-beta.1` then passed the
+ * `1.18.10` minimum although semver orders a prerelease below its own
+ * release. The capture keeps the suffix (dot-separated identifiers of
+ * digits, letters, and hyphens; build metadata after `+` is precedence-free
+ * and stays uncaptured), and compareVersions orders it below the release
+ * (harness-compatibility.ts). Calendar builds append a git hash cursor-style
+ * (`2026.08.11-e8db854`), not a prerelease, so their pattern is unchanged. */
+const SEMVER_PRERELEASE = "(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?";
+
 export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract>>> = {
   agy: {
     // Ceiling 1.5.2 from the 2026-11-06 live gate (read-only, medium shell,
@@ -105,14 +118,14 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
     // covers only slash-command and skill expansion in print mode.
     scheme: "semver",
     versionArgs: ["--version"],
-    pattern: /^(\d+\.\d+\.\d+)/,
+    pattern: new RegExp(`^(\\d+\\.\\d+\\.\\d+${SEMVER_PRERELEASE})`),
     min: "1.2.14",
     maxAudited: "1.5.2",
   },
   aider: {
     scheme: "semver",
     versionArgs: ["--version"],
-    pattern: /aider (\d+\.\d+\.\d+)/,
+    pattern: new RegExp(`aider (\\d+\\.\\d+\\.\\d+${SEMVER_PRERELEASE})`),
     min: "0.86.0",
     maxAudited: "0.86.2",
   },
@@ -120,7 +133,7 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
     // Ceiling 2.1.317 from the 2026-11-06 live gate (docs/harnesses.md names the probes).
     scheme: "semver",
     versionArgs: ["--version"],
-    pattern: /^(\d+\.\d+\.\d+)/,
+    pattern: new RegExp(`^(\\d+\\.\\d+\\.\\d+${SEMVER_PRERELEASE})`),
     min: "2.1.220",
     maxAudited: "2.1.317",
   },
@@ -128,7 +141,7 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
     // Ceiling 0.166.0 from the 2026-11-06 live gate (docs/harnesses.md names the probes).
     scheme: "semver",
     versionArgs: ["--version"],
-    pattern: /codex-cli (\d+\.\d+\.\d+)/,
+    pattern: new RegExp(`codex-cli (\\d+\\.\\d+\\.\\d+${SEMVER_PRERELEASE})`),
     min: "0.146.0",
     maxAudited: "0.166.0",
   },
@@ -155,7 +168,7 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
     // help lists no `--effort`. So codemux was emitting the alias, not the flag, and every release
     // at or above `min` accepts what it emits now.
     versionArgs: ["--binary-version"],
-    pattern: /Copilot binary version: (\d+\.\d+\.\d+)/,
+    pattern: new RegExp(`Copilot binary version: (\\d+\\.\\d+\\.\\d+${SEMVER_PRERELEASE})`),
     // `min` is the floor below which a release enforces a policy this Codemux no longer
     // translates, per the tier definition above. It is not a floor for every feature. The
     // 2026-09-21 audit was flag-surface only and found one change: the `--effort` shorthand alias
@@ -236,7 +249,7 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
   droid: {
     scheme: "semver",
     versionArgs: ["--version"],
-    pattern: /^(\d+\.\d+\.\d+)/,
+    pattern: new RegExp(`^(\\d+\\.\\d+\\.\\d+${SEMVER_PRERELEASE})`),
     min: "0.186.0",
     maxAudited: "0.186.0",
   },
@@ -244,7 +257,7 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
     // Ceiling 2.5.0 from the 2026-11-06 live gate (docs/harnesses.md names the probes).
     scheme: "semver",
     versionArgs: ["--version"],
-    pattern: /^(\d+\.\d+\.\d+)/,
+    pattern: new RegExp(`^(\\d+\\.\\d+\\.\\d+${SEMVER_PRERELEASE})`),
     min: "0.31.0",
     maxAudited: "2.5.0",
   },
@@ -252,14 +265,14 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
     scheme: "semver",
     versionArgs: ["--version"],
     // The banner reports the SDK version; the CLI version follows "OpenHands CLI".
-    pattern: /OpenHands CLI (\d+\.\d+\.\d+)/,
+    pattern: new RegExp(`OpenHands CLI (\\d+\\.\\d+\\.\\d+${SEMVER_PRERELEASE})`),
     min: "1.16.0",
     maxAudited: "1.16.0",
   },
   opencode: {
     scheme: "semver",
     versionArgs: ["--version"],
-    pattern: /^(\d+\.\d+\.\d+)/,
+    pattern: new RegExp(`^(\\d+\\.\\d+\\.\\d+${SEMVER_PRERELEASE})`),
     min: "1.18.10",
     // Ceiling 1.19.5 from the 2026-11-06 live gate (docs/harnesses.md names the probes).
     maxAudited: "1.19.5",
@@ -285,7 +298,7 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
     // Ceiling 2.1.317 from the 2026-11-06 live gate (docs/harnesses.md names the probes).
     scheme: "semver",
     versionArgs: ["--version"],
-    pattern: /^(\d+\.\d+\.\d+)/,
+    pattern: new RegExp(`^(\\d+\\.\\d+\\.\\d+${SEMVER_PRERELEASE})`),
     min: "2.1.220",
     maxAudited: "2.1.317",
   },

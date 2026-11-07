@@ -57,6 +57,13 @@ export abstract class ClaudeDriverTurns extends ClaudeDriverPermissions {
    * ledger's session_turn records carry each turn's own duration. */
   protected readonly turnStartedAt = new Map<string, number>();
 
+  /** Empties the derived file-change candidates the finishing turn leaves
+   * behind (§4.3): a tool_use whose result never arrived belongs to the
+   * turn that ends now, and a later turn's reused or delayed call id must
+   * not confirm it (review round 259). Implemented one class down, where
+   * the candidate map lives (driver-events.ts). */
+  protected abstract dropPendingFileChanges(): void;
+
   protected completeTurn(
     parse: Extract<ClaudeParse, { kind: "turn_completed" }>,
     rawLine: string
@@ -125,6 +132,12 @@ export abstract class ClaudeDriverTurns extends ClaudeDriverPermissions {
     // turn runs next — the same supersede every other turn-closing path
     // applies (review live11, the codex sibling's finding).
     this.supersedePendingDeny();
+    // The derived file-change candidates die with their turn the same way
+    // (§4.3): a write tool call whose result never arrived cannot be
+    // confirmed by a later turn's reused or delayed call id, which would
+    // emit a file_change attributed outside its originating turn (review
+    // round 259).
+    this.dropPendingFileChanges();
     // Cost rides outside the token sums: the result's `total_cost_usd`
     // is the harness's own session-lifetime figure (each turn's already
     // includes the earlier ones), so the cumulative adopts it rather

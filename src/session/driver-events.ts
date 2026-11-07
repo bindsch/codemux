@@ -22,13 +22,23 @@ export abstract class ClaudeDriverEvents extends ClaudeDriverTurns {
    * (§4.3): stashed when the tool_use frame arrives — before the
    * permission round-trip — and emitted as `file_change` only when the
    * matching tool_result reports success. A denied or failed call
-   * changed nothing, so its candidate is dropped silently; entries left
-   * behind at session end (a tool that never reported) stay unreported
-   * the same way — an unknown outcome is not a change (review live10). */
+   * changed nothing, so its candidate is dropped silently; a candidate
+   * whose turn completed without its result is dropped with the turn,
+   * so no later turn's reused or delayed call id can confirm it (review
+   * round 259); and entries left behind at session end (a tool that
+   * never reported) stay unreported the same way — an unknown outcome is
+   * not a change (review live10). */
   private readonly pendingFileChanges = new Map<
     string,
     { path: string; action: "add" | "edit"; rawLine: string }
   >();
+
+  /** Turn completion's half of the candidate rule (completeTurn calls
+   * this beside the permission supersede): the map belongs to the open
+   * turn, so it empties when the turn ends. */
+  protected dropPendingFileChanges(): void {
+    this.pendingFileChanges.clear();
+  }
 
   protected applyParse(parse: ClaudeParse, rawLine: string): void {
     switch (parse.kind) {

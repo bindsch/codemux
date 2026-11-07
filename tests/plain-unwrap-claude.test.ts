@@ -46,6 +46,25 @@ describe("claudeFamilyPlainResult", () => {
     expect(out.servedModel).toBeUndefined();
   });
 
+  test("a zero-exit run that printed nothing is a failed run, not an empty success (round 259)", () => {
+    // Before round 259 empty stdout fell to the escape hatch: a harness
+    // that exited zero without its envelope kept success with no reply,
+    // hiding the failed invocation. Only nonempty plain text takes the
+    // hatch; whitespace-only is no reply either (the result-text rule).
+    for (const stdout of ["", "  \n"]) {
+      const out = claudeFamilyPlainResult(finished(stdout), "claude");
+      expect(out.success, JSON.stringify(stdout)).toBe(false);
+      expect(out.exitCode, JSON.stringify(stdout)).toBe(1);
+      expect(out.stdout, JSON.stringify(stdout)).toBe("");
+      expect(out.stderr, JSON.stringify(stdout)).toContain("produced no output");
+      expect(out.usage).toBeUndefined();
+    }
+    // A failed run's empty stdout is not re-judged: the harness already
+    // failed it, and its stderr is the diagnostic.
+    const failedRun = { stdout: "", stderr: "boom", exitCode: 2, success: false };
+    expect(claudeFamilyPlainResult(failedRun, "claude")).toEqual(failedRun);
+  });
+
   test("a truncated envelope never passes through: failed run, empty stdout (ul3)", () => {
     // The envelope is one write at the end, so a timeout or the capture
     // cap can cut it mid-object. Before ul3 the JSON fragment passed

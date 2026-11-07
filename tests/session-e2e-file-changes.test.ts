@@ -8,6 +8,35 @@ afterAll(async () => {
 });
 
 describe("claude session driver e2e", () => {
+  test("a write whose result never arrived in its turn derives nothing later", async () => {
+    // Review round 259: turn completion cleared the pending permissions
+    // but not the derived file-change candidates, so a Write tool_use
+    // left unanswered by its own turn stayed stashed — and a later turn
+    // reporting a tool_result under the same (reused or delayed) call id
+    // confirmed it, emitting a file_change attributed outside its
+    // originating turn. The candidate now dies with its turn, beside the
+    // permission supersede.
+    const session = await startSession();
+    send(session.driver, { type: "user", text: "scenario:lostwrite" });
+    await waitFor(session.events, of("session_started"), "session_started");
+    const call = await waitFor(session.events, of("tool_call"), "tool_call");
+    expect(call.name).toBe("Write");
+    await waitFor(session.events, of("turn_completed"), "turn_completed");
+    expect(of("file_change")(session.events)).toBeUndefined();
+    // The next turn reports the delayed result under the same call id:
+    // it confirms nothing, and the session still ends clean.
+    send(session.driver, { type: "user", text: "scenario:latewrite" });
+    await waitFor(
+      session.events,
+      (events) => events.filter((event) => event.type === "turn_completed")[1],
+      "second turn_completed"
+    );
+    expect(session.events.filter((event) => event.type === "file_change")).toHaveLength(0);
+    send(session.driver, { type: "shutdown" });
+    await waitFor(session.events, of("session_ended"), "session_ended");
+    expect(await session.code).toBe(0);
+  });
+
   test("a denied edit derives no file_change", async () => {
     // Review live10, correctness 5: the derived change used to fire at
     // the tool_use frame — before the permission round-trip — so a call

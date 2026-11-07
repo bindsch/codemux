@@ -50,15 +50,23 @@
  * through verbatim with the run unchanged: no usage is recorded, except
  * on codex's hatch, whose blended `tokens used` stderr figure becomes the
  * run's usage (codexPlainResult) — the escape hatch that keeps every
- * binary codemux did not structure its output for working. The opencode
- * and claude-family/agy hatches open only when nothing on stdout is the
- * wire: one broken line among wire lines (opencode, where a timeout can
- * cut the last write mid-line) or a stdout that parses as JSON or opens
- * like the envelope but is not it (the claude family and agy, where the
- * envelope is one write a kill can halve — any JSON value, an array
- * included, not only a leading `{`; review ul7) is a structured stream
- * that broke, not a plain reply — the text and usage folded so far stay,
- * and the break becomes a codemux diagnostic on stderr (review ul3).
+ * binary codemux did not structure its output for working. Empty stdout
+ * never takes the hatch (round 259): a zero-exit run that printed
+ * nothing produced neither the structured output nor a reply, so
+ * claude/zai, agy, and opencode fail it as an empty success — the rule
+ * kimi's stream-json path already had (review round 46). The opencode and
+ * claude-family/agy hatches open only when nothing on stdout is the wire:
+ * one broken line among wire lines (opencode, where a timeout can cut the
+ * last write mid-line), a JSON-object line that broke the event grammar
+ * alone (opencode, round 259: a line that parses as a JSON object IS the
+ * wire's grammar, so a malformed event stream fails as a structured
+ * stream, never passes through as plain text), or a stdout that parses as
+ * JSON or opens like the envelope but is not it (the claude family and
+ * agy, where the envelope is one write a kill can halve — any JSON value,
+ * an array included, not only a leading `{`; review ul7) is a structured
+ * stream that broke, not a plain reply — the text and usage folded so far
+ * stay, and the break becomes a codemux diagnostic on stderr (review
+ * ul3).
  * Codex's hatch is decided once per stream, by the FIRST non-empty line
  * (round al30, rule 3): the launch always passes `--json`, and a binary
  * that honored it prints `thread.started` as the first non-empty line of
