@@ -1,8 +1,8 @@
 // Review round 286: the protocol cleanup grace was armed only for signals
 // (round 174). After a timeout or a capture failure, a closeProtocol that
 // never settles held the run open forever even though the configured
-// timeout had expired and the child was dead. Both paths now arm the same
-// bounded grace the signal path already had.
+// timeout had expired and the child was dead. Round 322: the same after a
+// normal exit, whose run timeout is cleared by then. Every close is bounded.
 import { expect, test } from "bun:test";
 import { runCapturedCommand, type StdoutSink } from "../src/process-runner.js";
 
@@ -41,4 +41,15 @@ test("a run whose protocol cleanup never settles still fails after a capture fai
   }
   expect(failure).toBeInstanceOf(Error);
   expect((failure as Error).message).toContain("protocol cleanup remains incomplete after the cleanup grace");
+}, 15_000);
+
+test("a run whose protocol cleanup never settles still returns after a normal exit (round 322)", async () => {
+  // The child exits cleanly; the run timeout is cleared; the sink's close
+  // never settles. The bounded grace ends the command with the note.
+  const result = await runCapturedCommand(
+    [process.execPath, "-e", "process.exit(0)"],
+    { cwd: process.cwd(), env: {}, timeoutMs: 60_000, stdoutSink: hungSink() }
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.stderr).toContain("protocol cleanup remains incomplete after the cleanup grace");
 }, 15_000);

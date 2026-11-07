@@ -134,6 +134,10 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 322, whole tree: every protocol close of a captured run is bounded by the cleanup
+  grace, a normal exit's included (the run timeout is cleared by then, so a close that never
+  settled held the command open); and a codex envelope that dropped its events to fit the
+  capture limit reports the truncation instead of presenting itself as complete.
 - Review round 307, whole tree: a codex run whose hermetic or provider home cannot be removed
   now fails the run's result instead of printing the failure, so leftover model output and
   credentials cannot read as success; grouped `calls --sum --by` totals share one session fold,

@@ -397,7 +397,10 @@ export async function runCapturedCommand(
     let cleanupNote: string | undefined;
     try {
       closingProtocol = true;
-      if (signaled || timedOut || captureFailed) armProtocolGrace();
+      // Every close is bounded, a normal exit's too: the run timeout is
+      // cleared by now, so a protocol close that never settled after a
+      // clean exit held the command open forever (review round 322).
+      armProtocolGrace();
       const closed = (async () => { await options.stdoutSink?.closeProtocol?.(); return true; })();
       if (!(await Promise.race([closed, protocolGrace.then(() => false)]))) {
         throw new Error("protocol cleanup remains incomplete after the cleanup grace");

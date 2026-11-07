@@ -12,9 +12,11 @@ export function boundedCodexEnvelope(envelope: Record<string, unknown>): { stdou
   const serialize = () => JSON.stringify(envelope) + "\n";
   let stdout = serialize();
   if (Buffer.byteLength(stdout) <= MAX_CAPTURE_BYTES) return { stdout, truncated: false };
+  // Dropping the events is a truncation too: the caller must say so
+  // instead of presenting the envelope as complete (review round 322).
   delete envelope.events;
   stdout = serialize();
-  if (Buffer.byteLength(stdout) <= MAX_CAPTURE_BYTES) return { stdout, truncated: false };
+  if (Buffer.byteLength(stdout) <= MAX_CAPTURE_BYTES) return { stdout, truncated: true };
   const originalResult = envelope.result;
   envelope.result = typeof originalResult === "string" ? TRUNCATION_NOTE : originalResult;
   const block = envelope.codemux as CodemuxResultBlock;
