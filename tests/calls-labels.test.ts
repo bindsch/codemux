@@ -266,6 +266,28 @@ describe("codemux calls labels", () => {
     expect(beta).toContain("unreported");
   });
 
+  test("a session split across label groups counts once across the groups (round 307)", async () => {
+    // A session's turn carries one label and its cumulative closing another
+    // (a session relabeled between runs). Per-group folds made the closing's
+    // group count the session's tokens again beside the turn's group, so the
+    // displayed groups summed to twice the session's usage. The fold is one
+    // object per pass now: the turn's group counts the tokens, the closing's
+    // group carries only what no turn reported — the cost.
+    const result = await callsWith([
+      { model: "turn", labels: { project: "alpha" }, kind: "session_turn", sessionId: "s1", input: 10 },
+      { model: "closing", labels: { project: "beta" }, kind: "session", sessionId: "s1", input: 10, cost: 0.5 },
+    ], ["--sum", "--by", "project"]);
+    expect(result.exitCode).toBe(0);
+    const alpha = result.stdout.split("\n").find((line) => line.startsWith("Totals") && line.includes("project=alpha"));
+    const beta = result.stdout.split("\n").find((line) => line.startsWith("Totals") && line.includes("project=beta"));
+    expect(alpha).toContain("input=10");
+    expect(beta).toContain("cost=$0.5000");
+    // The closing's tokens are the turn's tokens; beta's group must not
+    // count them again.
+    expect(beta).not.toContain("input=10");
+    expect(beta).toContain("1 session summary folded");
+  });
+
   test("grouping applies after filters, over every matching record", async () => {
     // -n 1 lists one record while the totals still group both task=build
     // records: the limit bounds the listing only, never the totals.

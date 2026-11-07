@@ -120,8 +120,13 @@ export function frameCallerStdin(
       // The cap applies to every complete line, not only to an
       // unterminated run: a line whose newline arrived in the same chunk
       // as the bytes that took it past the cap used to be delivered
-      // (review live18).
-      const oversize = newline > MAX_INPUT_LINE_BYTES;
+      // (review live18). It compares the delivered payload — a trailing
+      // CR is stripped at delivery, so it does not count against the cap
+      // (round 307): a CRLF line of exactly MAX_INPUT_LINE_BYTES payload
+      // bytes was rejected while its LF twin was accepted.
+      const payloadBytes =
+        newline - (newline > 0 && buffer[newline - 1] === 0x0d ? 1 : 0);
+      const oversize = payloadBytes > MAX_INPUT_LINE_BYTES;
       // A copy: the compaction below overwrites these bytes.
       const bytes = oversize ? null : Buffer.from(buffer.subarray(0, newline));
       buffer.copyWithin(0, newline + 1, length);
@@ -165,7 +170,11 @@ export function frameCallerStdin(
       append(chunk);
     }
     deliver();
-    if (length > MAX_INPUT_LINE_BYTES) {
+    // A trailing CR does not count here either (review round 310): with
+    // the CR in one chunk and the LF in the next, an exact-cap CRLF line
+    // used to be rejected before its newline arrived.
+    const unterminated = length - (length > 0 && buffer[length - 1] === 0x0d ? 1 : 0);
+    if (unterminated > MAX_INPUT_LINE_BYTES) {
       // What remains after delivery holds no newline: one unterminated
       // run past the cap. Reject the line once, then resync at its
       // newline — without the discard the remainder would re-accumulate

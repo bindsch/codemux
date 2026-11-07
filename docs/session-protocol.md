@@ -45,7 +45,9 @@ operation can return `unsupported` before its fields are inspected.
 | `shutdown` | none | none | End the session with the configured grace period |
 
 `text` may be empty, cannot contain NUL, and is at most 16 MiB of UTF-8.
-The whole input line is at most 17 MiB. Transport wrapping and escaping can
+The whole input line is at most 17 MiB, measured on the delivered payload:
+the carriage return of a CRLF-terminated line is stripped before delivery
+and does not count against the cap. Transport wrapping and escaping can
 make a smaller text undeliverable and produce `text_too_long`. Aider and
 Kimi impose a stricter 32 KiB limit on harness-bound text, including the
 author prefix, because they pass the prompt in argv.

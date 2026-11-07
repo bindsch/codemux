@@ -49,13 +49,35 @@ export const sessionKey = (record: CallRecord): string | null =>
     ? null
     : JSON.stringify([record.agent, record.session_id]);
 
+/** The session fold's cross-group state (review round 307): which usage
+ * fields each session's turns reported, and each session's newest closing
+ * record with the group it arrived in. One object is shared by every group
+ * of one pass and by nothing else, because these are facts about a session,
+ * not about a label: a resumed session can carry different labels on its
+ * records, so a session's turn can land in one group and its closing in
+ * another. Per-group copies let the closing's group count again the tokens
+ * the turn's group had already counted, so the groups summed to more usage
+ * than the session incurred; the shared fold keeps each session's usage
+ * counted once, wherever its records land. The newest closing carries its
+ * owning group so only that group folds it. */
+interface SessionFold {
+  readonly turnsReported: Map<string, Set<UsageField>>;
+  readonly newestClosing: Map<string, { record: CallRecord; owner: GroupTotals }>;
+}
+
+const freshSessionFold = (): SessionFold => ({
+  turnsReported: new Map(),
+  newestClosing: new Map(),
+});
+
 /**
  * Running totals for one group — the whole ledger, or one `--by` label
  * value — built one record at a time so a streaming pass never holds the
  * matching history. Retained memory is proportional to the number of
  * distinct sessions, never to the ledger's length: the usage fields each
  * session's turns reported (a set of field names keyed by session key)
- * and one closing record per session, the newest. A null sum is the
+ * and one closing record per session, the newest. Groups of one pass share
+ * one `SessionFold`; a standalone group owns its own. A null sum is the
  * honest "unknown", never a zero, and `unknown` counts the records that
  * did not report the field, so a partial picture says which part is
  * missing. Token sums follow the envelope's safe rule (safeTokenSum):
@@ -65,6 +87,10 @@ export const sessionKey = (record: CallRecord): string | null =>
  * the same sticky way (review round 90).
  */
 class GroupTotals {
+  private readonly fold: SessionFold;
+  constructor(fold: SessionFold = freshSessionFold()) {
+    this.fold = fold;
+  }
   private readonly sums: Record<UsageField, number | null> = {
     input_tokens: null,
     cached_input_tokens: null,
@@ -100,8 +126,10 @@ class GroupTotals {
   // total and the harness estimate overflow independently.
   private costOverflowed = false;
   private costEstimatedOverflowed = false;
-  private readonly turnsReported = new Map<string, Set<UsageField>>();
-  private readonly newestClosing = new Map<string, CallRecord>();
+  /** The fold's turn picture, read through the constructor-assigned fold. */
+  private get turnsReported(): Map<string, Set<UsageField>> {
+    return this.fold.turnsReported;
+  }
 
   /** One token count into its field's running sum, under the envelope's
    * safe-sum rule (safeTokenSum): a sum that would leave the safe-integer
@@ -177,16 +205,22 @@ class GroupTotals {
     // those closings would double-count it. Token counters restart per
     // driver; retaining only the newest summary can omit earlier tokens
     // when turns are absent. The pass feeds records oldest first, so the
-    // closing seen last is the newest one and wins. The ledger has no
-    // invocation identifier or persisted cost baseline to reconstruct
-    // exact usage for arbitrary filtered histories.
+    // closing seen last is the newest one and wins — across every group
+    // of the pass, since the fold is shared: only the group of the
+    // newest closing folds it (round 307). The ledger has no invocation
+    // identifier or persisted cost baseline to reconstruct exact usage
+    // for arbitrary filtered histories.
     this.keyedClosings++;
-    this.newestClosing.set(key, record);
+    this.fold.newestClosing.set(key, { record, owner: this });
   }
 
-  /** Records held: the newest closing per keyed session, nothing else. */
+  /** Records held: the newest closings this group owns, nothing else. */
   get retained(): number {
-    return this.newestClosing.size;
+    let owned = 0;
+    for (const entry of this.fold.newestClosing.values()) {
+      if (entry.owner === this) owned++;
+    }
+    return owned;
   }
 
   print(heading: string): void {
@@ -214,7 +248,14 @@ class GroupTotals {
     // skip the addition that overflowed and show the partial sum where
     // the first print showed unknown (review round 133).
     const overflowed = new Set(this.overflowed);
-    for (const [key, closing] of this.newestClosing) {
+    let foldedSummaries = 0;
+    for (const [key, entry] of this.fold.newestClosing) {
+      // Only the group whose closing is the session's newest folds it;
+      // another group's older copy of the same session stays unfolded
+      // (superseded), wherever its turns landed.
+      if (entry.owner !== this) continue;
+      foldedSummaries++;
+      const closing = entry.record;
       const reported = this.turnsReported.get(key);
       for (const { field, pick } of USAGE_FIELDS) {
         if (reported?.has(field) === true) continue;
@@ -239,7 +280,6 @@ class GroupTotals {
         else this.addCount(field, value, sums, overflowed);
       }
     }
-    const foldedSummaries = this.newestClosing.size;
     const supersededSummaries = this.keyedClosings - foldedSummaries;
     const counted = this.nonSessionRecords + foldedSummaries;
     const parts = USAGE_FIELDS.map(({ label, field }) => {
@@ -314,6 +354,10 @@ export class CallTotals {
   private readonly by: string | undefined;
   private readonly single = new GroupTotals();
   private readonly groups = new Map<string | null, GroupTotals>();
+  /** One fold for every group of a grouped pass (round 307): a session's
+   * records can carry different labels, so the turn picture and the
+   * newest-closing rule must follow the session across groups. */
+  private readonly groupedFold = freshSessionFold();
 
   constructor(by?: string) {
     this.by = by;
@@ -333,7 +377,7 @@ export class CallTotals {
     // record; printing it backwards is the newest-group-first order.
     const existing = this.groups.get(value);
     if (existing !== undefined) this.groups.delete(value);
-    const group = existing ?? new GroupTotals();
+    const group = existing ?? new GroupTotals(this.groupedFold);
     group.add(record);
     this.groups.set(value, group);
   }

@@ -85,7 +85,12 @@ export class PiAdapter extends BaseAdapter {
   /**
    * The agent directory a plain run reads: `~/.pi/agent`, or the
    * operator's passed-through PI_CODING_AGENT_DIR (which replaces every
-   * path pi derives from it).
+   * path pi derives from it). The value is used exactly as the child
+   * receives it, untrimmed: trimming it here made codemux write its
+   * private provider directory under the whitespace-free path while pi
+   * itself resolved the value as passed (round 307). A value that is
+   * whitespace-only is not absolute and refuses at the same boundary as
+   * a relative one.
    */
   private realAgentDir(request: RunRequest): string {
     if (this.homeDirectory !== undefined && !isAbsolute(this.homeDirectory)) {
@@ -95,7 +100,7 @@ export class PiAdapter extends BaseAdapter {
     const base = home && isAbsolute(home) ? home : homedir();
     const passedThrough =
       request.passthroughEnv?.includes(PI_AGENT_DIR_ENV) ?? false;
-    const configured = this.environment[PI_AGENT_DIR_ENV]?.trim();
+    const configured = this.environment[PI_AGENT_DIR_ENV];
     if (passedThrough && configured) {
       if (!isAbsolute(configured)) {
         // A caller mistake at the flag boundary, the sibling rule of

@@ -197,7 +197,11 @@ child through the shared process group on its own, and a second interrupt
 makes several harnesses quit. A SIGINT sent to codemux alone (`kill -INT` on
 its pid) therefore does not stop the child; stop a tui from outside with
 SIGTERM or SIGHUP. Three SIGINTs within a second still force the child's
-SIGTERM-then-SIGKILL termination.
+SIGTERM-then-SIGKILL termination. Interactive children are tracked without
+their own process group, so termination remembers their descendants through
+a read of the process table; when the table cannot be read (`ps` missing or
+timing out), the degraded mode reaches only the immediate child, and a
+descendant may survive the signal.
 
 Droid and OpenCode TUI refuse `--effort` with a level (exit 64): the interactive
 entry has no effort carrier; `--effort none` (no flag) and `run` remain. On every

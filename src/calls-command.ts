@@ -33,13 +33,13 @@
  */
 
 import type { Command } from "commander";
-import { statSync } from "node:fs";
 import { statEntryPresent } from "./file-io.js";
 import {
   CALL_LOG_ENV,
   callLogPath,
   sanitizeReportedString,
   streamCallLog,
+  type CallLogIdentity,
   type CallRecord,
 } from "./call-log.js";
 import { timestampMs } from "./calendar.js";
@@ -380,20 +380,26 @@ export function registerCallsCommand(
           return true;
         };
         const sessionsWithTurnsInside = new Set<string>();
-        // Both passes stop at the size the ledger had here: a record
+        // The first pass pins the ledger's identity — device, inode, and
+        // the byte its read stopped at — and the second carries the pin:
+        // an atomic replacement of the ledger between the passes used to
+        // let session ids collected from one file admit records from
+        // another, a view of neither ledger; the stream now refuses the
+        // different file (round 307). The pinned byte also keeps both
+        // passes at the size the ledger had at the first open: a record
         // appended while they run belongs to the next invocation, so the
         // two passes cannot disagree about a session (round 28, edges 2).
-        const endAt = statSync(path).size;
+        let pinned: CallLogIdentity | undefined;
         if (cutoff !== null) {
           // First pass, `--since` only: the complete set of sessions with
           // an in-window turn, so a closing that PRECEDES a resumed
           // session's in-window turns is kept like any other closing
           // (round 23, edges 4).
-          streamCallLog(path, (entry) => {
+          pinned = streamCallLog(path, (entry) => {
             const record = entry.record;
             if (record === null || !passesFilters(record)) return;
             collectSessionWithTurn(record, cutoff, sessionsWithTurnsInside);
-          }, { endAt });
+          }).identity;
         }
         // The second pass keeps adding to the same set, so a turn and its
         // closing appended between the passes follow the one-pass rule: the
@@ -407,7 +413,7 @@ export function registerCallsCommand(
           }
           listing.push({ record, line: keepLine ? entry.line : null });
           totals?.add(record);
-        }, { endAt });
+        }, pinned === undefined ? {} : { endAt: pinned.size, identity: pinned });
         malformed = stream.malformed;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

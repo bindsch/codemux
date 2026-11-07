@@ -71,15 +71,21 @@ const readJsonIfPresent = (path: string): Record<string, unknown> | null | "unre
 };
 
 // A credential store is a regular, non-empty file: a directory, a dangling
-// link, or an empty file at the path is no login (review round 44).
-const fileExistsModeOk = (path: string): boolean => {
+// link, or an empty file at the path is no login (review round 44); any
+// other stat failure is "unreadable" — the caller's `unknown`, not a
+// missing login (round 307).
+const fileExistsModeOk = (path: string): boolean | "unreadable" => {
   try {
     const stat = statSync(path);
     return stat.isFile() && stat.size > 0;
-  } catch {
-    return false;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    return code === "ENOENT" || code === "ENOTDIR" ? false : "unreadable";
   }
 };
+
+// The unreadable answer as a login state (round 307).
+const storeUnreadable = (store: string): LoginState => ({ state: "unknown", store, note: "the store exists but could not be inspected; this is not a missing login" });
 
 const firstSetEnv = (environment: NodeJS.ProcessEnv, names: readonly string[]): string | null => {
   for (const name of names) {
@@ -230,7 +236,8 @@ export function zaiLoginState(home: string, environment: NodeJS.ProcessEnv): Log
     return { state: "logged-in", store: "ZAI_API_KEY" };
   }
   const path = join(home, ".zai");
-  if (!fileExistsModeOk(path)) return { state: "no-credential", store };
+  const file = fileExistsModeOk(path);
+  if (file !== true) return file === "unreadable" ? storeUnreadable(store) : { state: "no-credential", store };
   try {
     const stats = statSync(path);
     if (!stats.isFile()) {
@@ -288,36 +295,35 @@ export const loginHome = (environment: NodeJS.ProcessEnv): string => {
  * sandboxed run consumes. */
 export function agyLoginState(home: string, environment: NodeJS.ProcessEnv): LoginState {
   const store = "~/.gemini/antigravity-cli/antigravity-oauth-token";
-  if (fileExistsModeOk(join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"))) {
-    return { state: "logged-in", store };
-  }
+  const file = fileExistsModeOk(join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"));
+  if (file === true) return { state: "logged-in", store };
   const envName = firstSetEnv(environment, ALLOWED_CREDENTIAL_ENV.agy);
-  return envName === null
-    ? { state: "no-credential", store }
-    : { state: "logged-in", store: envName };
+  if (envName !== null) return { state: "logged-in", store: envName };
+  if (file === "unreadable") return storeUnreadable(store);
+  return { state: "no-credential", store };
 }
 
 /** gemini: `~/.gemini/oauth_creds.json`, else an API key. */
 export function geminiLoginState(home: string, environment: NodeJS.ProcessEnv): LoginState {
   const store = "~/.gemini/oauth_creds.json";
-  if (fileExistsModeOk(join(home, ".gemini", "oauth_creds.json"))) {
-    return { state: "logged-in", store };
-  }
+  const file = fileExistsModeOk(join(home, ".gemini", "oauth_creds.json"));
+  if (file === true) return { state: "logged-in", store };
   const envName = firstSetEnv(environment, ALLOWED_CREDENTIAL_ENV.gemini);
-  return envName === null ? { state: "no-credential", store } : { state: "logged-in", store: envName };
+  if (envName !== null) return { state: "logged-in", store: envName };
+  if (file === "unreadable") return storeUnreadable(store);
+  return { state: "no-credential", store };
 }
 
 /** goose: a configured provider in `~/.config/goose/config.yaml` (the
  * file `goose doctor` itself reads), else an API key. */
 export function gooseLoginState(home: string, environment: NodeJS.ProcessEnv): LoginState {
   const store = "~/.config/goose/config.yaml";
-  if (fileExistsModeOk(join(home, ".config", "goose", "config.yaml"))) {
-    return { state: "logged-in", store };
-  }
+  const file = fileExistsModeOk(join(home, ".config", "goose", "config.yaml"));
+  if (file === true) return { state: "logged-in", store };
   const envName = firstSetEnv(environment, ALLOWED_CREDENTIAL_ENV.goose);
-  return envName === null
-    ? { state: "no-credential", store, note: "goose doctor says: no provider configured" }
-    : { state: "logged-in", store: envName };
+  if (envName !== null) return { state: "logged-in", store: envName };
+  if (file === "unreadable") return storeUnreadable(store);
+  return { state: "no-credential", store, note: "goose doctor says: no provider configured" };
 }
 
 /** copilot: a GitHub token in the environment, else `~/.copilot/config.json`. */
@@ -325,9 +331,9 @@ export function copilotLoginState(home: string, environment: NodeJS.ProcessEnv):
   const envName = firstSetEnv(environment, ALLOWED_CREDENTIAL_ENV.copilot);
   if (envName !== null) return { state: "logged-in", store: envName };
   const store = "~/.copilot/config.json";
-  if (fileExistsModeOk(join(home, ".copilot", "config.json"))) {
-    return { state: "unknown", store, note: "the config exists; whether it carries a login needs copilot itself" };
-  }
+  const config = fileExistsModeOk(join(home, ".copilot", "config.json"));
+  if (config === "unreadable") return storeUnreadable(store);
+  if (config) return { state: "unknown", store, note: "the config exists; whether it carries a login needs copilot itself" };
   return { state: "no-credential", store };
 }
 

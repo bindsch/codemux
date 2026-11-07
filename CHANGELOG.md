@@ -134,6 +134,19 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 307, whole tree: a codex run whose hermetic or provider home cannot be removed
+  now fails the run's result instead of printing the failure, so leftover model output and
+  credentials cannot read as success; grouped `calls --sum --by` totals share one session fold,
+  so a session whose records carry different labels no longer counts its usage in two groups;
+  the two-pass `calls --since` scan pins the ledger's device and inode, so a ledger replaced
+  between the passes is refused instead of being read as one file; a credential store that
+  exists but cannot be inspected (agy, gemini, goose, copilot, zai) reports unknown instead of
+  prescribing a login; a passed-through `PI_CODING_AGENT_DIR` ending in whitespace is used
+  exactly as the child receives it; an input line of exactly the 17 MiB cap is accepted with a
+  CRLF ending like its LF twin; the machine-check label carries milliseconds, the process id,
+  and a per-process counter, so concurrent paid checks never share one; and the tui docs now
+  state that when the process table cannot be read, termination reaches only the immediate
+  child.
 - Review round 292, whole tree: a codex provider session's settlement confirms the home it
   renames onto the session key is the directory the run created (device and inode remembered at
   creation), so a sandboxed child can no longer park a replacement directory there and have it

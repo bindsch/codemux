@@ -7,9 +7,9 @@
  * spends a request.
  */
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { rmSync } from "node:fs";
-import { spendProbe } from "../src/doctor-spend.js";
+import { machineCheckLabelValue, spendProbe } from "../src/doctor-spend.js";
 import { loginFingerprint } from "../src/harness-health.js";
 import { fakeScodeHelp, fakeUsagemux, fixtureHome, readPathMarker, runDoctor } from "./helpers/doctor.js";
 import { createFakeBinaryEnv } from "./helpers/cli.js";
@@ -82,11 +82,30 @@ describe("the spend stage", () => {
       expect(calls.trim().split("\n")).toHaveLength(1);
       expect(calls).toContain("-a claude --auto read-only");
       expect(calls).toContain("--label machine-check=");
-      // One value per run, to the second (review round 52).
-      expect(calls).toMatch(/--label machine-check=\d{4}-\d{2}-\d{2}T\d{6}Z/);
+      // One value per run, to the millisecond (review round 52; round 307
+      // kept the milliseconds, so two checks inside one second differ).
+      expect(calls).toMatch(/--label machine-check=\d{4}-\d{2}-\d{2}T\d{6}\.\d{3}Z-\d+-\d+/);
       expect(calls).toContain("--timeout 120");
     } finally {
       fake.cleanup();
+    }
+  });
+
+  test("two checks inside one millisecond get different machine-check labels (rounds 307, 310)", () => {
+    // Two `doctor --spend` runs beginning in the same second used to mint
+    // one shared second-resolution label, so the documented
+    // `calls --label machine-check=<date> --sum` merged their spend into
+    // one total. Milliseconds alone still collided inside one millisecond,
+    // so the stamp carries the process id and a per-process counter.
+    const stamps = spyOn(Date.prototype, "toISOString").mockReturnValue("2026-11-07T18:30:00.000Z");
+    try {
+      const first = machineCheckLabelValue();
+      const second = machineCheckLabelValue();
+      expect(first).toMatch(new RegExp(`^2026-11-07T183000\\.000Z-${process.pid}-\\d+$`));
+      expect(second).toMatch(new RegExp(`^2026-11-07T183000\\.000Z-${process.pid}-\\d+$`));
+      expect(second).not.toBe(first);
+    } finally {
+      stamps.mockRestore();
     }
   });
 

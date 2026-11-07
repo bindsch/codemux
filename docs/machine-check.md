@@ -102,7 +102,9 @@ re-deriving the rule.
 
 `--spend` adds one real `codemux check` request per eligible harness — the
 harnesses whose free row is clean enough to try. Each request carries the
-label `machine-check=<timestamp>` (the run's start, `YYYY-MM-DDTHHMMSSZ`, one value per run), so `codemux calls --sum` reports exactly what
+label `machine-check=<stamp>` (the run's start as `YYYY-MM-DDTHHMMSS.sssZ`, then
+the process id and a per-process counter, so two checks that start in the
+same millisecond still get their own values; one value per run), so `codemux calls --sum` reports exactly what
 the stage spent; `--spend-cap <n>` bounds the number of probes and
 `--spend-unreadable` extends the stage to harnesses whose usage row is
 unreadable. `make machine-check` never passes `--spend`: the target stays

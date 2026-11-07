@@ -295,4 +295,35 @@ describe("pi provider override", () => {
     expect(() => relative.prepareRun(request as RunRequest))
       .toThrow(UsageRefusalError);
   });
+
+  test("an absolute PI_CODING_AGENT_DIR is used untrimmed (round 307)", () => {
+    // The value is what pi itself receives, exactly as passed. Trimming it
+    // here made codemux write the private provider directory under the
+    // whitespace-free path while pi resolved the value as passed — two
+    // different directories, one of them never chosen by the operator.
+    const env: NodeJS.ProcessEnv = { ...ZAI_PI };
+    const passed = mkdtempSync(join(tmpdir(), "codemux-pi-passed-"));
+    scratch.push(passed);
+    const home = mkdtempSync(join(tmpdir(), "codemux-pi-home-"));
+    scratch.push(home);
+    const request = {
+      agent: "pi" as const,
+      prompt: "p",
+      cwd: cwdOf(),
+      passthroughEnv: ["PI_CODING_AGENT_DIR"],
+    };
+    const base = `${join(passed, "agent")} `;
+    env.PI_CODING_AGENT_DIR = base;
+    const adapter = new PiAdapter(env, home);
+    expect(() => adapter.validateRunRequest(request as RunRequest)).not.toThrow();
+    const context = prepare(adapter, request as RunRequest);
+    const value = adapter.getRunEnv(request as RunRequest, context).PI_CODING_AGENT_DIR!;
+    expect(value.startsWith(join(base, ".codemux", `provider-${process.pid}-`))).toBe(true);
+    expect(value).not.toContain(join(passed, "agent", ".codemux"));
+    // A whitespace-only value is not absolute and refuses at the boundary.
+    env.PI_CODING_AGENT_DIR = " ";
+    const blank = new PiAdapter(env, home);
+    expect(() => blank.validateRunRequest(request as RunRequest))
+      .toThrow("passed-through PI_CODING_AGENT_DIR must be an absolute path");
+  });
 });

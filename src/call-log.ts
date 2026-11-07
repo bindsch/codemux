@@ -61,7 +61,7 @@ export {
   MAX_CALL_LOG_LINE_BYTES,
   type CallLogEntry,
   type CallLogContents,
-  type StreamedCallLog,
+  type StreamedCallLog, type CallLogIdentity,
 } from "./call-log-reader.js";
 
 export const CALL_LOG_ENV = "CODEMUX_CALL_LOG";

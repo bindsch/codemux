@@ -221,6 +221,41 @@ describe("CLI - caller stdin framing", () => {
     expect(lines).toEqual(["oversize", "next"]);
   });
 
+  test("an exact-cap CRLF line is accepted like its LF twin (round 307)", () => {
+    // Delivery strips the trailing CR, and the cap compares the delivered
+    // payload: a CRLF line of exactly MAX_INPUT_LINE_BYTES payload bytes
+    // used to be rejected as oversized while the same line ending in LF
+    // alone was accepted.
+    const lines: string[] = [];
+    const input = new StubInput();
+    frameCallerStdin(
+      {
+        handleCallerLine: (line: string) => lines.push(line),
+        handleCallerEnd: () => {},
+      },
+      input
+    );
+    const payload = Buffer.alloc(MAX_INPUT_LINE_BYTES, 0x61);
+    input.emitData(Buffer.concat([payload, Buffer.from("\r\nnext\n")]));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]!.length).toBe(MAX_INPUT_LINE_BYTES);
+    expect(lines[1]).toBe("next");
+    // One byte over the cap still rejects with or without the CR.
+    lines.length = 0;
+    input.emitData(
+      Buffer.concat([Buffer.alloc(MAX_INPUT_LINE_BYTES + 1, 0x62), Buffer.from("\r\n")])
+    );
+    expect(lines).toEqual(["oversize"]);
+    // The CR in one chunk and the LF in the next (review round 310): the
+    // unterminated-run check must not count the CR either.
+    lines.length = 0;
+    input.emitData(Buffer.concat([Buffer.alloc(MAX_INPUT_LINE_BYTES, 0x63), Buffer.from("\r")]));
+    input.emitData(Buffer.from("\nnext\n"));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]!.length).toBe(MAX_INPUT_LINE_BYTES);
+    expect(lines[1]).toBe("next");
+  });
+
   test("a line that is not valid UTF-8 is rejected, never decoded lossily (review live20)", () => {
     // Contracts major 1: the caller framer decoded with Buffer#toString,
     // which substitutes U+FFFD, so a line carrying one bad byte was

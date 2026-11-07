@@ -173,8 +173,18 @@ function isCallRecord(parsed: unknown): parsed is StoredCallRecord {
   );
 }
 
+/** What one open of the ledger read: the file's identity (device and
+ * inode, the pair a replacement at the same path cannot keep) and the
+ * byte its read stopped at. A second pass that must see the same file
+ * carries this and refuses anything else (round 307). */
+export interface CallLogIdentity {
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly size: number;
+}
+
 /** Opens the ledger once and answers a validated descriptor with its
- * size, the rule both readers share: O_NONBLOCK so a FIFO with no writer
+ * identity, the rule both readers share: O_NONBLOCK so a FIFO with no writer
  * never parks the open, O_NOFOLLOW so a final symlink is refused, never
  * read through, and only a regular file is a ledger. Opening first and
  * judging the descriptor closes the pathname-then-open window a swap
@@ -182,7 +192,7 @@ function isCallRecord(parsed: unknown): parsed is StoredCallRecord {
  * different object than it validated (review round 147). The descriptor
  * is closed before a validation error escapes; the caller closes it on
  * success. */
-function openCallLogDescriptor(path: string): { fd: number; size: number } {
+function openCallLogDescriptor(path: string): { fd: number; identity: CallLogIdentity } {
   const noFollowFlag = process.platform !== "win32" ? constants.O_NOFOLLOW : 0;
   let fd: number;
   try {
@@ -193,11 +203,11 @@ function openCallLogDescriptor(path: string): { fd: number; size: number } {
     throw error;
   }
   try {
-    const ledgerStat = fstatSync(fd);
+    const ledgerStat = fstatSync(fd, { bigint: true });
     if (!ledgerStat.isFile()) {
       throw new Error(`the call log at ${path} is not a regular file`);
     }
-    return { fd, size: ledgerStat.size };
+    return { fd, identity: { dev: ledgerStat.dev, ino: ledgerStat.ino, size: Number(ledgerStat.size) } };
   } catch (error) {
     closeSync(fd);
     throw error;
@@ -274,7 +284,8 @@ function splitLineBytes(windowBytes: Buffer, dropFirstLine: boolean): Buffer[] {
  * place of the bytes on disk (review round 223).
  */
 export function readCallLog(path: string): CallLogContents {
-  const { fd, size } = openCallLogDescriptor(path);
+  const { fd, identity } = openCallLogDescriptor(path);
+  const size = identity.size;
   try {
     let windowBytes: Buffer;
     let truncated = false;
@@ -356,6 +367,10 @@ function parseLine(line: string): { record: CallRecord | null; malformed: boolea
 export interface StreamedCallLog {
   /** Lines with malformed records or labels, counted like readCallLog. */
   malformed: number;
+  /** What this pass read — the file's device and inode, and the byte the
+   * read stopped at. A second pass over the same ledger carries this in
+   * its options, so both passes see one file. */
+  identity: CallLogIdentity;
 }
 
 /**
@@ -366,22 +381,35 @@ export interface StreamedCallLog {
  * as malformed once and is skipped without being held; a final line
  * without a trailing newline is still a line, as readCallLog's split
  * treats it. Throws on read errors like readCallLog; invalid UTF-8 and
- * wrong-shaped lines are malformed, never fatal.
+ * wrong-shaped lines are malformed, never fatal. `options.identity` is
+ * the identity an earlier pass of the same command read; a ledger whose
+ * device or inode differs — an atomic replacement at the same path — is
+ * refused, never read as one file with the first pass's records (round
+ * 307). `endAt` still fixes the byte the read stops at, so two passes
+ * over a ledger that is still being appended to see the same records
+ * (round 28, edges 2): bytes past it, a partial line included, are the
+ * next invocation's business.
  */
 export function streamCallLog(
   path: string,
   visit: (entry: CallLogEntry) => void,
-  options: { endAt?: number } = {}
+  options: { endAt?: number; identity?: CallLogIdentity } = {}
 ): StreamedCallLog {
   // The open-and-validate rule both readers share: openCallLogDescriptor
   // above (O_NONBLOCK, O_NOFOLLOW, only a regular file — review rounds 90
-  // and 56). `endAt` fixes the byte the read stops at, so two passes over
-  // a ledger that is still being appended to see the same records (round
-  // 28, edges 2): bytes past it, a partial line included, are the next
-  // invocation's business.
-  const { fd, size } = openCallLogDescriptor(path);
+  // and 56).
+  const { fd, identity } = openCallLogDescriptor(path);
+  if (
+    options.identity !== undefined &&
+    (identity.dev !== options.identity.dev || identity.ino !== options.identity.ino)
+  ) {
+    closeSync(fd);
+    throw new Error(
+      `the call ledger at ${path} was replaced while being read; refusing to combine two files into one view`
+    );
+  }
   try {
-    const endAt = Math.min(options.endAt ?? size, size);
+    const endAt = Math.min(options.endAt ?? identity.size, identity.size);
     const chunk = Buffer.alloc(STREAM_CHUNK_BYTES);
     // An incomplete line is held as the chunks that carry it and joined
     // once, at its newline: joining it on every chunk made a 16 MiB line
@@ -441,7 +469,11 @@ export function streamCallLog(
     }
     if (oversized) malformed++;
     else if (carryBytes > 0) emit(Buffer.concat(carryParts));
-    return { malformed };
+    // The pinned size is what this pass read, not what it meant to read: a
+    // ledger that shrank under the pass reached EOF early, and a second
+    // pass pinned to the planned end would read bytes the first never saw
+    // (review round 316).
+    return { malformed, identity: { dev: identity.dev, ino: identity.ino, size: position } };
   } finally {
     closeSync(fd);
   }

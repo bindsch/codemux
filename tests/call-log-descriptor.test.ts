@@ -71,3 +71,31 @@ test("a small ledger that shrinks between the size check and the read yields onl
     cleanup();
   }
 });
+
+test("a second pass refuses a ledger replaced between the passes (round 307)", () => {
+  // `calls --since` reads the ledger twice. Both passes stopped at one
+  // pinned byte, but each reopened the pathname, so an atomic replacement
+  // between them — a rename putting a different inode at the same path —
+  // let session ids collected from the first file admit records from the
+  // second: one view built from two ledgers. The first pass answers the
+  // identity it read; the second carries it and refuses a different file.
+  const { dir, cleanup } = tempEnv();
+  try {
+    const path = join(dir, "calls.jsonl");
+    writeFileSync(path, `${JSON.stringify(BASE_RECORD)}\n`);
+    const first = streamCallLog(path, () => {});
+    // The replacement: a rename lands a different inode at the path.
+    const replacement = join(dir, "replacement.jsonl");
+    writeFileSync(replacement, `${JSON.stringify({ ...BASE_RECORD, model: "other" })}\n`);
+    fs.renameSync(replacement, path);
+    expect(() =>
+      streamCallLog(path, () => {}, { endAt: first.identity.size, identity: first.identity })
+    ).toThrow("was replaced while being read");
+    // Without the pin the same open reads the new file without complaint:
+    // the refusal is the pin's, not the descriptor rule's.
+    const fresh = streamCallLog(path, () => {});
+    expect(fresh.identity.ino).not.toBe(first.identity.ino);
+  } finally {
+    cleanup();
+  }
+});

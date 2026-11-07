@@ -8,10 +8,19 @@
  */
 
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeLoginState, codexLoginState, kimiLoginState } from "../src/harness-health.js";
+import {
+  agyLoginState,
+  claudeLoginState,
+  codexLoginState,
+  copilotLoginState,
+  geminiLoginState,
+  gooseLoginState,
+  kimiLoginState,
+  zaiLoginState,
+} from "../src/harness-health.js";
 
 test("a FIFO at the claude mirror path is unknown and the read returns at once", () => {
   const home = mkdtempSync(join(tmpdir(), "codemux-doctor-fifo-"));
@@ -61,6 +70,53 @@ test("a store over the size bound is unknown; a dangling link and a missing pare
     writeFileSync(join(home, ".codex"), "");
     expect(codexLoginState(home, {}).state).toBe("no-credential");
   } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a store that exists but cannot be inspected is unknown, never a missing login (round 307)", () => {
+  // A stat failure that is not absence — here a parent directory without
+  // execute permission — used to read as no-credential for every store
+  // checked by existence, so doctor prescribed a login for a store it
+  // simply could not reach. The unreadable store is `unknown` now.
+  const home = mkdtempSync(join(tmpdir(), "codemux-doctor-unreadable-"));
+  try {
+    mkdirSync(join(home, ".gemini", "antigravity-cli"), { recursive: true });
+    writeFileSync(join(home, ".gemini", "oauth_creds.json"), "{}");
+    writeFileSync(join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"), "t");
+    chmodSync(join(home, ".gemini"), 0o600);
+    expect(geminiLoginState(home, {}).state).toBe("unknown");
+    expect(agyLoginState(home, {}).state).toBe("unknown");
+    // The store one level down, blocked on its own directory.
+    chmodSync(join(home, ".gemini"), 0o755);
+    chmodSync(join(home, ".gemini", "antigravity-cli"), 0o600);
+    expect(agyLoginState(home, {}).state).toBe("unknown");
+    chmodSync(join(home, ".gemini", "antigravity-cli"), 0o755);
+    // Reachable again: the same store reads as a login.
+    expect(geminiLoginState(home, {}).state).toBe("logged-in");
+    expect(agyLoginState(home, {}).state).toBe("logged-in");
+
+    mkdirSync(join(home, ".config", "goose"), { recursive: true });
+    writeFileSync(join(home, ".config", "goose", "config.yaml"), "provider: x\n");
+    chmodSync(join(home, ".config", "goose"), 0o600);
+    expect(gooseLoginState(home, {}).state).toBe("unknown");
+    chmodSync(join(home, ".config", "goose"), 0o755);
+
+    mkdirSync(join(home, ".copilot"), { recursive: true });
+    writeFileSync(join(home, ".copilot", "config.json"), "{}");
+    chmodSync(join(home, ".copilot"), 0o600);
+    expect(copilotLoginState(home, {}).state).toBe("unknown");
+    chmodSync(join(home, ".copilot"), 0o755);
+
+    writeFileSync(join(home, ".zai"), "k");
+    chmodSync(home, 0o600);
+    expect(zaiLoginState(home, {}).state).toBe("unknown");
+    chmodSync(home, 0o755);
+    // With the store reachable, an env key still wins over the file.
+    expect(zaiLoginState(home, { ZAI_API_KEY: "k" }).state).toBe("logged-in");
+    expect(zaiLoginState(home, {}).state).not.toBe("unknown");
+  } finally {
+    chmodSync(home, 0o755);
     rmSync(home, { recursive: true, force: true });
   }
 });

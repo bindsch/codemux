@@ -282,8 +282,19 @@ export class CodexAdapter extends CodexPolicy {
           // means the caller never receives the context — cleanupRun
           // cannot run — so the home and its process-exit listener would
           // sit until termination, one per failed launch. Finalize what
-          // the context holds here, then let the failure through.
-          this.cleanupRunSync(context);
+          // the context holds here, then let the failure through. The
+          // finalizers now throw on a kept home (review round 307); that
+          // failure rides the original error's message instead of
+          // replacing it (the agy prepare catch's rule).
+          try {
+            this.cleanupRunSync(context);
+          } catch (cleanupError) {
+            if (error instanceof Error) {
+              error.message += `; cleanup failed: ${
+                cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+              }`;
+            }
+          }
           throw error;
         }
       }
@@ -299,7 +310,18 @@ export class CodexAdapter extends CodexPolicy {
         context.experimentRecording = experiment.startedRecordingPath;
         context.stdoutSink = experiment;
       } catch (error) {
-        this.cleanupRunSync(context);
+        // The same rule as the hermetic home above (review round 313): a
+        // cleanup that fails rides the setup error's message, never
+        // replaces the actionable cause.
+        try {
+          this.cleanupRunSync(context);
+        } catch (cleanupError) {
+          if (error instanceof Error) {
+            error.message += `; cleanup failed: ${
+              cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+            }`;
+          }
+        }
         throw error;
       }
     }
@@ -368,13 +390,19 @@ export class CodexAdapter extends CodexPolicy {
         );
       }
     }
+    // Both homes finalize even when one fails, and a failure reaches the
+    // caller (base.ts's contract): the launcher appends it to the run's
+    // result, so per-run state — model output, copied credentials,
+    // provider configuration — cannot outlive the run unnoticed (review
+    // round 307; the catches here used to print and swallow it, and the
+    // launcher reported success with the home still on disk). The exit
+    // backstop and the homes' own exit hooks catch what this throws and
+    // keep the retry they already own.
+    const failures: unknown[] = [];
     try {
       context.hermeticHome?.finalize();
     } catch (error) {
-      console.error(
-        "codemux: could not remove codex's private hermetic home: " +
-          `${error instanceof Error ? error.message : String(error)}`
-        );
+      failures.push(error);
     }
     try {
       // A hermetic override run has no codexProviderHome — its config rides
@@ -382,9 +410,15 @@ export class CodexAdapter extends CodexPolicy {
       // home this launch created.
       context.codexProviderHome?.finalize();
     } catch (error) {
-      console.error(
-        "codemux: could not remove codex's provider-override home: " +
-          `${error instanceof Error ? error.message : String(error)}`
+      failures.push(error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(
+        failures,
+        `codemux: codex cleanup failed ${failures.length} times: ${failures
+          .map((failure) => failure instanceof Error ? failure.message : String(failure))
+          .join("; ")}`
       );
     }
   }

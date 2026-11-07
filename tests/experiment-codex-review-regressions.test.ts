@@ -118,15 +118,18 @@ test("Codex launch returns a failed envelope when private-home cleanup fails", a
   } finally { prepare.mockRestore(); floor.mockRestore(); finalize.mockRestore(); run.mockRestore(); }
 });
 
-test.each([false, true])("ordinary Codex cleanup retains its logging behavior; synchronous=%s", async (synchronous) => {
+test.each([false, true])("ordinary Codex cleanup failures reach the caller, not a printed line; synchronous=%s", async (synchronous) => {
   const { adapter, context } = fixture();
   const finalize = spyOn(context.hermeticHome!, "finalize").mockImplementation(() => { throw new Error("ordinary cleanup failure"); });
   const output = spyOn(console, "error").mockImplementation(() => {});
   try {
     const ordinaryContext = { hermeticHome: context.hermeticHome };
-    if (synchronous) expect(() => adapter.cleanupRunSync(ordinaryContext)).not.toThrow();
-    else await adapter.cleanupRun(ordinaryContext);
-    expect(output).toHaveBeenCalledWith("codemux: could not remove codex's private hermetic home: ordinary cleanup failure");
+    // The base contract allows a throw or a rejection; the ordinary path
+    // delegates synchronously (base.ts does the same), so both arrive as
+    // throws to the launcher's cleanup wrapper.
+    const attempt = () => (synchronous ? adapter.cleanupRunSync(ordinaryContext) : adapter.cleanupRun(ordinaryContext));
+    expect(attempt).toThrow("ordinary cleanup failure");
+    expect(output).not.toHaveBeenCalled();
   } finally { finalize.mockRestore(); output.mockRestore(); }
 });
 

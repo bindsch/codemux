@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import type { RunContext } from "../src/run-context.js";
 import {
+  chmodSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -244,6 +246,67 @@ describe("hermetic runs: codex", () => {
     const parent = join(home, ".codex", ".codemux-hermetic");
     expect(readdirSync(parent).filter((entry) => entry.startsWith("run-"))).toEqual([]);
     expect(newSignalListeners(baseline)).toBe(0);
+  });
+
+  test("a cleanup failure reaches the caller instead of a printed line (round 307)", () => {
+    const home = fakeHome();
+    const adapter = codexAdapter({}, home);
+    const request: RunRequest = { agent: "codex", prompt: "p", hermetic: true };
+    // prepareRun directly, not the prepare() helper: this context's cleanup
+    // is the test's own business and must not hit the afterEach sweep.
+    const context = adapter.prepareRun(request);
+    // An unwritable parent keeps the home: the finalizer refuses, and that
+    // refusal must leave cleanupRunSync as a throw the launcher appends to
+    // the run's result (base.ts's contract) — not a console line the
+    // launcher never sees.
+    const parent = join(home, ".codex", ".codemux-hermetic");
+    chmodSync(parent, 0o500);
+    try {
+      expect(() => adapter.cleanupRunSync(context)).toThrow(/could not remove the private hermetic home/);
+    } finally {
+      chmodSync(parent, 0o700);
+      // The retry the kept home still allows: it succeeds, removes the
+      // home, and unregisters the home's exit hook.
+      adapter.cleanupRunSync(context);
+    }
+    expect(() => statSync(context.hermeticHome!.home)).toThrow();
+  });
+
+  test("a cleanup failure during experiment setup rides the setup error, never replaces it (round 313)", () => {
+    // The experiment path's catch cleaned up and rethrew; with the cleanup
+    // throwing since round 307, its failure replaced the actionable setup
+    // error. Both now arrive in one message.
+    const home = fakeHome();
+    // A valid model cache, so setup reaches the experiment branch, where
+    // the missing spec is the setup error.
+    writeFileSync(join(home, ".codex", "models_cache.json"), JSON.stringify({
+      client_version: "0.165.0", fetched_at: "2026-10-29T00:00:00Z", models: [{ slug: "gpt-5.5", tool_mode: "direct" }],
+    }));
+    const adapter = codexAdapter({}, home);
+    // The real cleanup runs first, so the home and its signal handlers go;
+    // the throw stands in for a finalizer that kept the home.
+    const realCleanup = adapter.cleanupRunSync.bind(adapter);
+    const failing = spyOn(adapter, "cleanupRunSync").mockImplementation(((context: RunContext) => {
+      realCleanup(context);
+      throw new Error("the private home was kept");
+    }) as typeof adapter.cleanupRunSync);
+    try {
+      let caught: unknown;
+      try {
+        adapter.prepareRun({
+          agent: "codex", prompt: "p", hermetic: true, model: "gpt-5.5",
+          experimentMcp: join(home, "no-such-spec.json"),
+        });
+      } catch (error) {
+        caught = error;
+      }
+      const message = caught instanceof Error ? caught.message : String(caught);
+      expect(message).toContain("no-such-spec.json");
+      expect(message).toContain("; cleanup failed: the private home was kept");
+      expect(message.startsWith("cleanup failed")).toBe(false);
+    } finally {
+      failing.mockRestore();
+    }
   });
 
   test("launching without prepareRun is refused on the codemux side", () => {

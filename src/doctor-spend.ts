@@ -73,10 +73,15 @@ export const runSpendProbe = async (agent: AgentId, isoDate: string): Promise<Sp
   }
 };
 
-// One label per run, to the second: two checks on one day must not fold
-// into one `calls --label` total (review round 52). Colons are dropped so
-// the value stays a plain label token.
-const ISO_DATE = (): string => new Date().toISOString().replace(/\.\d{3}Z$/, "Z").replace(/:/g, "");
+// One label per run: two checks on one day must not fold into one
+// `calls --label` total (review round 52), nor two started inside one
+// second (round 307), nor two inside one millisecond (round 310): the
+// stamp carries the process id and a per-process counter after the
+// millisecond timestamp. Colons are dropped so the value stays a plain
+// label token.
+let machineCheckLabelSerial = 0;
+export const machineCheckLabelValue = (): string =>
+  `${new Date().toISOString().replace(/:/g, "")}-${process.pid}-${++machineCheckLabelSerial}`;
 
 export async function applySpendStage(
   rows: HarnessRow[],
@@ -101,7 +106,7 @@ export async function applySpendStage(
       (flags.spendUnreadable === true || row.usageReadable || row.overrideActive)
   );
   const cap = flags.spendCap ?? eligible.length;
-  const isoDate = ISO_DATE();
+  const isoDate = machineCheckLabelValue();
   for (const row of eligible.slice(0, cap)) {
     const outcome = await runSpendProbe(row.id, isoDate);
     row.spend = outcome;
