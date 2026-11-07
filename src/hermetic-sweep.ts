@@ -7,10 +7,11 @@
  * importer keeps one address.
  */
 
-import { lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { pidProbeAlive } from "./process-table.js";
 import { sessionHoldState, sessionRegistryPath, type SessionHold } from "./session/registry.js";
+import { assertTrustedParentUnchanged, recordTrustedParent, removeUnderTrustedParent, type TrustedParentRecord } from "./safe-remove.js";
 
 // A codemux that died without its exit handler may leave a Codex child
 // running in its home for as long as a run is allowed to last; a run
@@ -152,18 +153,22 @@ function directoryMtimeMs(path: string): number | null {
  * reaches prepareRunDirParent until someone removed it by hand. The
  * entry stays (retrying never cleans it either), the sweep moves on, and
  * the operator learns why — the other sweeps' rule (opencode-hermetic,
- * the provider settings, the aider session directories). */
-function removeSweepEntry(path: string, what: string): void {
-  try {
-    rmSync(path, { recursive: true, force: true });
-  } catch (error) {
-    const detail = error instanceof Error ? `: ${error.message}` : "";
-    console.error(`codemux: could not remove the ${what} ${path}${detail}`);
-  }
+ * the provider settings, the aider session directories).
+ *
+ * Every removal also revalidates the parent's recorded identity first
+ * (review round 292): the sweep enumerates and then removes, and a
+ * writable parent swapped for a symlink in between would aim the
+ * recursive rm through it — rm follows an intermediate component — into
+ * a same-named directory outside codemux's storage tree. The shared
+ * trusted-parent removal (src/safe-remove.ts) refuses and reports
+ * instead. */
+function removeSweepEntry(path: string, record: TrustedParentRecord, what: string): void {
+  removeUnderTrustedParent(path, record, `the ${what} ${path}`);
 }
 
 function sweepStaleRunDirs(
   parent: string,
+  record: TrustedParentRecord,
   holdStateOf: (id: string) => SessionHold = (id) =>
     sessionHoldState(sessionRegistryPath(), id),
   spareEntry?: string
@@ -196,7 +201,7 @@ function sweepStaleRunDirs(
       // leftover goes by its own age.
       const newest = newestMtimeMs(path) ?? directoryMtimeMs(path);
       if (newest === null || Date.now() - newest < STALE_RUN_DIR_MS) continue;
-      removeSweepEntry(path, "stale run directory");
+      removeSweepEntry(path, record, "stale run directory");
       continue;
     }
     if (entry.startsWith("session-home-")) {
@@ -228,7 +233,7 @@ function sweepStaleRunDirs(
       // registry key — no proof exists — and keeps the D7 spare, as does
       // an unstatable directory.
       if (newest === null && (id === undefined || own === null)) continue;
-      removeSweepEntry(path, "stale session home");
+      removeSweepEntry(path, record, "stale session home");
       continue;
     }
     const sessionDirMatch =
@@ -256,7 +261,7 @@ function sweepStaleRunDirs(
       // already passed the gate: `free` is the ownership proof, the run
       // branch's D9 rule under that proof.
       if (newest === null || Date.now() - newest < STALE_RUN_DIR_MS) continue;
-      removeSweepEntry(path, "stale project-settings session directory");
+      removeSweepEntry(path, record, "stale project-settings session directory");
       continue;
     }
     // Any other entry is not this sweep's to judge — never walked, never
@@ -307,7 +312,15 @@ export function prepareRunDirParent(
 ): string {
   const parent = join(codexHome, name);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
-  assertTrustedDirectory(parent);
-  sweepStaleRunDirs(parent, holdStateOf, spareEntry);
+  // The parent's identity is recorded before the sweep runs, and every
+  // removal the sweep makes revalidates it (removeSweepEntry, review
+  // round 292): the enumeration and the removals are separate steps, so
+  // a writable parent swapped in between must be caught at the removal.
+  const record = recordTrustedParent(parent);
+  sweepStaleRunDirs(parent, record, holdStateOf, spareEntry);
+  // A parent the sweep found swapped kept its entries and reported; the
+  // run must not create its home through the replacement either (review
+  // round 295).
+  assertTrustedParentUnchanged(record, "the run directory parent");
   return parent;
 }

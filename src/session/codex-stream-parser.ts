@@ -67,16 +67,21 @@ export class CodexStreamParser {
     // The raw newline becomes the two-character escape it should have
     // been, which is what makes the rejoined message parse.
     const candidate = `${pending.text}\\n${line}`;
+    // The bounds govern the BUFFER, whatever the parse says (review round
+    // 292): a continuation that closes valid JSON used to reach the parse
+    // first and bypass them, so a frame the buffer was never allowed to
+    // hold classified. Checked here, before the parse, every rejoined
+    // frame meets them.
+    const lines = pending.lines + 1;
+    if (utf8Bytes(candidate) > PARSE_BUFFER_MAX_BYTES || lines > PARSE_BUFFER_MAX_LINES) {
+      this.pendingParse = null;
+      return [{ kind: "unusable", ...unusableFacts(candidate) }];
+    }
     let parsed: unknown;
     try {
       parsed = JSON.parse(candidate);
     } catch (error) {
-      const lines = pending.lines + 1;
-      if (
-        bufferable(candidate, error) &&
-        utf8Bytes(candidate) <= PARSE_BUFFER_MAX_BYTES &&
-        lines <= PARSE_BUFFER_MAX_LINES
-      ) {
+      if (bufferable(candidate, error)) {
         this.pendingParse = { text: candidate, lines };
         return [];
       }

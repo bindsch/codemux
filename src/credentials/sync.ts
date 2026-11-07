@@ -9,6 +9,7 @@ import { dirname } from "node:path";
 import {
   accessTokenLive,
   carriesRefreshToken,
+  refreshTokenLive,
   claudeOauth,
   claudeOauthObject,
   hasUsableToken,
@@ -248,9 +249,19 @@ export function syncKeychainCredential(
   //     adapter warns.
   if (keychainOauth === null) {
     if (read.kind === "missing") {
-      // Untouched either way; an emptied stub with no Keychain behind it
-      // still leaves the child nothing to authenticate with, so say so.
-      return hasUsableToken(file.oauth) ? "missing" : "failed";
+      // Untouched either way. What the child can authenticate with decides
+      // the report: a refresh token mints a fresh access token, and a live
+      // access token works alone, so both stay silent ("missing"). An
+      // access-only credential past its expiry used to count as usable —
+      // token PRESENCE was the test — so the stale-credential warning
+      // never fired before the sandboxed launch failed authentication
+      // (review round 292); it is "failed" now, and so is a refresh token
+      // whose own recorded expiry has passed: it mints nothing (review
+      // round 301). An emptied stub leaves the child nothing either way,
+      // so it says so too.
+      return refreshTokenLive(file.oauth) || accessTokenLive(file.oauth)
+        ? "missing"
+        : "failed";
     }
     if (read.kind === "error") {
       // The entry exists but could not be read (locked keychain over SSH,

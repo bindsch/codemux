@@ -306,7 +306,10 @@ exit 0`;
     // have failed).
     expect(outcome.stdout).toContain("/claude\n");
     expect(outcome.stdout).toContain("\n-p\n");
-    expect(outcome.stdout).not.toContain("OK");
+    // The reply a run would print is a line of its own; a substring check
+    // tripped over a temp directory name that happened to contain "OK"
+    // (lane F32, 2026-11-07).
+    expect(outcome.stdout.split("\n")).not.toContain("OK");
   });
 
   test("--print-sandbox prints a multi-line prompt argument as one line", async () => {

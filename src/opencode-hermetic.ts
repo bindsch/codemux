@@ -41,13 +41,12 @@ import {
   openSync,
   readSync,
   readdirSync,
-  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { pidProbeAlive } from "./process-table.js";
-import { recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
+import { assertTrustedParentUnchanged, recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook, type TrustedParentRecord } from "./safe-remove.js";
 
 export interface OpencodeHermeticHome {
   /** The private HOME, also the root of the redirected XDG directories. */
@@ -64,8 +63,9 @@ const RUN_PREFIX = "run-";
 // swept only once it is older than the longest run plus a margin.
 const STALE_HOME_MS = 2 * 86_400_000;
 
-/** Removes homes left behind by codemux processes that no longer exist. */
-function sweepStaleHomes(parent: string): void {
+/** Removes homes left behind by codemux processes that no longer exist.
+ * Exported for the sweep's regression test (review round 292). */
+export function sweepStaleHomes(parent: string, record: TrustedParentRecord): void {
   let entries: string[];
   try {
     entries = readdirSync(parent);
@@ -91,11 +91,17 @@ function sweepStaleHomes(parent: string): void {
     // h4 hardening missed this sweep — the sixth — so an unremovable home
     // still failed every later OpenCode hermetic launch until the h6
     // review caught it.
+    //
+    // The removal revalidates the parent's recorded identity first (review
+    // round 292): the enumeration and the removal are separate steps, and
+    // a writable parent swapped for a symlink in between aimed the
+    // recursive rm through it into a same-named directory outside
+    // codemux's storage tree. Refused and reported instead.
     try {
-      rmSync(path, { recursive: true, force: true });
+      removeUnderTrustedParentOrThrow(path, record, `the stale hermetic home ${path}`);
     } catch (error) {
-      const detail = error instanceof Error ? `: ${error.message}` : "";
-      console.error(`opencode: could not remove the stale hermetic home ${path}${detail}`);
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error(`opencode: ${detail}`);
     }
   }
 }
@@ -200,7 +206,10 @@ export function createOpencodeHermeticHome(
   // parent with a symlink, pointing the sweep's rm elsewhere; the record
   // also lets the finalizer revalidate the parent (src/safe-remove.ts).
   const parentRecord = recordTrustedParent(parent);
-  sweepStaleHomes(parent);
+  sweepStaleHomes(parent, parentRecord);
+  // A parent the sweep found swapped kept its entries and reported; the
+  // new home must not be made through the replacement (review round 295).
+  assertTrustedParentUnchanged(parentRecord, "the hermetic home parent");
   const home = mkdtempSync(join(parent, `${RUN_PREFIX}${process.pid}-`));
 
   // Cleanup is registered before anything else touches the home: a copy

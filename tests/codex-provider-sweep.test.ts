@@ -5,6 +5,9 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
   unlinkSync,
   utimesSync,
   writeFileSync,
@@ -336,5 +339,59 @@ describe("codex provider session homes (review D1)", () => {
     expect(opened.codexHome).toBe(keyed);
     expect(readFileSync(join(keyed, "config.toml"), "utf8")).toBe("prior session state");
     expect(existsSync(sibling)).toBe(false);
+  });
+
+  test("a parent swapped for a symlink after enumeration never receives the sweep's removal (review round 292)", () => {
+    // The sweep enumerated the parent and then removed stale entries with
+    // a bare recursive rm, so a writable parent swapped for a symlink in
+    // between aimed the removal through it: rm follows an intermediate
+    // component, and the same-named directory outside codemux's storage
+    // tree went with it. Every removal now revalidates the parent's
+    // recorded identity first. The holdStateOf seam stands in for the
+    // race: the swap lands after the enumeration, right before the
+    // session home's removal.
+    const home = makeCodexHome();
+    try {
+      const parent = prepareRunDirParent(home, ".codemux-provider");
+      const entryName = "session-home-abc123def456-4444444444444444";
+      const staleHome = join(parent, entryName);
+      mkdirSync(staleHome);
+      const monthAgo = new Date(Date.now() - 30 * 86_400_000);
+      utimesSync(staleHome, monthAgo, monthAgo);
+      // The victim tree a naive removal would reach into: a same-named
+      // stale home inside a directory outside the parent.
+      const victim = join(home, "victim");
+      const victimChild = join(victim, entryName);
+      mkdirSync(victimChild, { recursive: true });
+      writeFileSync(join(victimChild, "marker.txt"), "kept\n");
+      // The whole victim tree must read as stale, or the age walk spares
+      // the entry before any removal is attempted.
+      utimesSync(join(victimChild, "marker.txt"), monthAgo, monthAgo);
+      utimesSync(victimChild, monthAgo, monthAgo);
+      const moved = join(home, "parent-moved");
+      const swapAndFree = (_id: string): "free" => {
+        renameSync(parent, moved);
+        symlinkSync(victim, parent);
+        return "free";
+      };
+      const errors: string[] = [];
+      const realError = console.error;
+      console.error = ((message: string) => errors.push(String(message))) as typeof console.error;
+      try {
+        // The run itself is refused: its home must not be created through
+        // the replacement either (review round 295).
+        expect(() => prepareRunDirParent(home, ".codemux-provider", swapAndFree))
+          .toThrow("was replaced after it was recorded; refusing to use it");
+      } finally {
+        console.error = realError;
+      }
+      expect(readFileSync(join(victimChild, "marker.txt"), "utf8")).toBe("kept\n");
+      expect(errors.join("\n")).toContain("the directory was kept");
+      // The real parent's entry was never removed through the link either;
+      // it survives under the moved name for a later sweep.
+      expect(existsSync(join(moved, entryName))).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

@@ -312,6 +312,24 @@ describe("provider override: validation", () => {
       { CODEMUX_AIDER_PROVIDER_BASE_URL: "https://api.z.ai/{env:SECRET}", CODEMUX_AIDER_PROVIDER_API_KEY: "k" },
       "CODEMUX_AIDER_PROVIDER_BASE_URL must not contain braces",
     ],
+    // Regression (review round 292): WHATWG URL parsing silently strips
+    // tabs and newlines, so the validated URL named a different endpoint
+    // than the string the validator returned and the adapter wrote.
+    [
+      "base URL with an embedded tab",
+      { CODEMUX_AIDER_PROVIDER_BASE_URL: "https://api.exa\tmple.com/v1", CODEMUX_AIDER_PROVIDER_API_KEY: "k" },
+      "CODEMUX_AIDER_PROVIDER_BASE_URL must not contain control or whitespace characters",
+    ],
+    [
+      "base URL with an embedded newline",
+      { CODEMUX_AIDER_PROVIDER_BASE_URL: "https://api.z.ai/v1\nx-api-host: other", CODEMUX_AIDER_PROVIDER_API_KEY: "k" },
+      "CODEMUX_AIDER_PROVIDER_BASE_URL must not contain control or whitespace characters",
+    ],
+    [
+      "base URL with a NUL byte",
+      { CODEMUX_AIDER_PROVIDER_BASE_URL: "https://api.z.ai/v1\u0000.evil.example/v1", CODEMUX_AIDER_PROVIDER_API_KEY: "k" },
+      "CODEMUX_AIDER_PROVIDER_BASE_URL must not contain control or whitespace characters",
+    ],
     [
       "api key with a space",
       { CODEMUX_AIDER_PROVIDER_API_KEY: "k 1" },

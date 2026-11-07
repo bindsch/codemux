@@ -182,6 +182,16 @@ const MIRROR_KEYS = ["accessToken", "expiresAt", "scopes", "subscriptionType", "
 
 /** Whether a mirror still holds a refresh token — something the mirror must
  * never carry (see the module header). */
+/** A refresh token the child can still use: present, and not past the
+ * expiry the credential records for it (`refreshTokenExpiresAt`, epoch
+ * milliseconds); a credential without that field is judged on presence.
+ * An expired refresh token mints nothing (review round 301). */
+export function refreshTokenLive(oauth: Record<string, unknown>, now: number = Date.now()): boolean {
+  if (!carriesRefreshToken(oauth)) return false;
+  const until = oauth["refreshTokenExpiresAt"];
+  return typeof until !== "number" || !Number.isFinite(until) || until > now;
+}
+
 export function carriesRefreshToken(oauth: Record<string, unknown>): boolean {
   return typeof oauth.refreshToken === "string" && oauth.refreshToken.length > 0;
 }

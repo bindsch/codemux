@@ -26,7 +26,7 @@
  * code and skips the hooks after it.
  */
 
-import { lstatSync, realpathSync, rmSync } from "node:fs";
+import { type BigIntStats, lstatSync, realpathSync, rmSync } from "node:fs";
 import { assertTrustedDirectory } from "./hermetic-sweep.js";
 
 /** A parent directory recorded at creation time for later revalidation. */
@@ -51,6 +51,23 @@ export function recordTrustedParent(parent: string): TrustedParentRecord {
   assertTrustedDirectory(parent);
   const stat = lstatSync(parent, { bigint: true });
   return { path: parent, real: realpathSync(parent), dev: stat.dev, ino: stat.ino };
+}
+
+/** Refuses to go on when the recorded parent is no longer the directory
+ * at its path: a sweep that found the parent swapped keeps the entries
+ * and reports, but the caller must not then create its next directory
+ * through the replacement (review round 295). The check is by identity
+ * (device and inode), the same the removals apply. */
+export function assertTrustedParentUnchanged(record: TrustedParentRecord, what: string): void {
+  let stat: BigIntStats;
+  try {
+    stat = lstatSync(record.path, { bigint: true });
+  } catch (error) {
+    throw new Error(`${what} ${record.path} is gone (${reasonOf(error)}); refusing to use it`);
+  }
+  if (!stat.isDirectory() || stat.dev !== record.dev || stat.ino !== record.ino) {
+    throw new Error(`${what} ${record.path} was replaced after it was recorded; refusing to use it`);
+  }
 }
 
 function reasonOf(error: unknown): string {

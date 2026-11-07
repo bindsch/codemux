@@ -113,6 +113,20 @@ export function readProviderOverride(
   }
 
   if (baseUrl !== undefined) {
+    // Control and whitespace characters are refused before the URL parser
+    // runs (review round 292): WHATWG parsing silently strips tabs and
+    // newlines, so a URL like `https://api.exa<TAB>mple.com/v1` parses as
+    // the host `api.example.com` while the ORIGINAL string is what this
+    // function returns and the adapters write — the configured endpoint
+    // could differ from the supplied value, spending the provider
+    // credential on a host the operator never named.
+    if (/[\u0000-\u001F\u007F-\u009F\s]/.test(baseUrl)) {
+      throw new UsageRefusalError(
+        `${names.baseUrl} must not contain control or whitespace characters: ` +
+          "URL parsing removes them silently, so the endpoint could differ " +
+          "from the value supplied"
+      );
+    }
     // Braces are template syntax in the config files overrides write —
     // OpenCode substitutes {env:…}/{file:…} in config text (the reason
     // opencodeBareModel refuses them in models) and droid and pi expand

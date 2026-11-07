@@ -134,6 +134,21 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 292, whole tree: a codex provider session's settlement confirms the home it
+  renames onto the session key is the directory the run created (device and inode remembered at
+  creation), so a sandboxed child can no longer park a replacement directory there and have it
+  persisted as resume state; the stale-entry sweeps (codex `.codemux-provider` and the OpenCode
+  hermetic parent) revalidate the parent's recorded identity immediately before every recursive
+  removal, so a parent swapped for a symlink after enumeration can no longer aim a removal into
+  a same-named directory outside codemux's storage tree; the codex stream parser applies its
+  rejoin byte and line bounds before the parse, so a continuation that closes valid JSON can no
+  longer bypass them; a resumed agy session treats a result with an absent, empty, or non-string
+  conversation id as a grammar error instead of attributing it to the resumed conversation; a
+  provider override base URL containing control or whitespace characters is refused before URL
+  parsing, because the parser strips them silently and the configured endpoint could differ from
+  the value supplied; and an access-only Claude credential file whose token has expired reports
+  failed when no Keychain entry exists, so the stale-credential warning fires before a sandboxed
+  launch fails authentication.
 - Review round 286, whole tree: a protocol cleanup that never settles after a timeout or a
   capture failure no longer holds the run open past its own end (the signal path's cleanup
   grace now covers those paths too); a relative passed-through `PI_CODING_AGENT_DIR`, a

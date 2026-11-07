@@ -277,6 +277,38 @@ describe("syncKeychainCredential — a mirror of an existing file", () => {
     }, stub);
   });
 
+  test("an expired access token with no Keychain entry fails loudly (review round 292)", () => {
+    // The missing-entry branch judged the file by token PRESENCE, so an
+    // expired access-only credential answered "missing" — no warning —
+    // and the sandboxed launch hit the 401 this module exists to name. A
+    // refresh token still lets the child mint a fresh access token, and a
+    // live access token authenticates alone, so both stay silent.
+    const expired = JSON.stringify({ claudeAiOauth: { accessToken: "old", refreshToken: "", expiresAt: Date.now() - 1000 } });
+    const live = JSON.stringify({ claudeAiOauth: { accessToken: "ok", refreshToken: "", expiresAt: FUTURE } });
+    withTarget((target) => {
+      expect(syncKeychainCredential("svc", target, missing, BACKUPS(target))).toBe("failed");
+      expect(readFileSync(target, "utf8").trim()).toBe(expired); // untouched, just reported
+    }, expired);
+    withTarget((target) => {
+      expect(syncKeychainCredential("svc", target, missing, BACKUPS(target))).toBe("missing");
+    }, live);
+    // A refresh token past its own recorded expiry mints nothing (review
+    // round 301): with the access token expired too, the file is "failed".
+    // One with a future expiry, or none recorded, still counts.
+    const deadRefresh = JSON.stringify({ claudeAiOauth: { accessToken: "old", refreshToken: "r", expiresAt: Date.now() - 1000, refreshTokenExpiresAt: Date.now() - 1000 } });
+    const liveRefresh = JSON.stringify({ claudeAiOauth: { accessToken: "old", refreshToken: "r", expiresAt: Date.now() - 1000, refreshTokenExpiresAt: FUTURE } });
+    const undatedRefresh = JSON.stringify({ claudeAiOauth: { accessToken: "old", refreshToken: "r", expiresAt: Date.now() - 1000 } });
+    withTarget((target) => {
+      expect(syncKeychainCredential("svc", target, missing, BACKUPS(target))).toBe("failed");
+    }, deadRefresh);
+    withTarget((target) => {
+      expect(syncKeychainCredential("svc", target, missing, BACKUPS(target))).toBe("missing");
+    }, liveRefresh);
+    withTarget((target) => {
+      expect(syncKeychainCredential("svc", target, missing, BACKUPS(target))).toBe("missing");
+    }, undatedRefresh);
+  });
+
   test("an unrecognized stub is reported even without a Keychain credential", () => {
     const odd = JSON.stringify({
       claudeAiOauth: { provider: "custom", accessToken: "", refreshToken: "", expiresAt: 0, scopes: [] },

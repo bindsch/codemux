@@ -130,6 +130,42 @@ describe("codex provider session homes (review D1)", () => {
     expect(existsSync(keyed)).toBe(true);
   });
 
+  test("settle persists only the directory this run created — a swapped home is refused (review round 292)", () => {
+    // The resumable branch revalidated the parent and the owner of
+    // codexHome but not the home's IDENTITY: the shared parent is
+    // writable by every sandboxed codex child, so one could rename the
+    // real home away and park another user-owned directory at its name —
+    // a replacement that passes every check and is then renamed onto the
+    // session key, where a later resume loads it as state.
+    const home = makeCodexHome();
+    try {
+      const session = createCodexSessionProviderHome(home, OVERRIDE, MODEL, null);
+      const keyed = codexSessionProviderHomePath(home, OVERRIDE.baseUrl, SESSION_ID);
+      const moved = join(home, "home-moved");
+      renameSync(session.codexHome, moved);
+      const replacement = mkdtempSync(join(home, "replacement-"));
+      writeFileSync(join(replacement, "planted-config.toml"), "not this session's state\n");
+      renameSync(replacement, session.codexHome);
+      const errors: string[] = [];
+      const realError = console.error;
+      console.error = ((message: string) => errors.push(String(message))) as typeof console.error;
+      try {
+        expect(session.settle(SESSION_ID, true)).toBe(false);
+      } finally {
+        console.error = realError;
+      }
+      expect(errors.join("\n")).toContain("could not set aside");
+      // The replacement never reached the key, and both directories stay
+      // for the sweep; the real home survives under its moved name.
+      expect(existsSync(keyed)).toBe(false);
+      expect(existsSync(session.codexHome)).toBe(true);
+      expect(existsSync(join(moved, "config.toml"))).toBe(false); // the real one: empty until prepareConfig
+      expect(existsSync(moved)).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test("opening a missing keyed home refuses instead of silently remaking it (review D2)", () => {
     // The registry vouches for a session whose home is gone (a settle
     // that failed, or a codemux death before it, or the sweep). Creating

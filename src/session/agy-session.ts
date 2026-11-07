@@ -203,6 +203,20 @@ export function parseAgySessionLine(
   if (conversationId !== null && !AGY_CONVERSATION_ID_PATTERN.test(conversationId)) {
     return { kind: "grammar_error", message: "a result names an invalid conversation id" };
   }
+  // A RESUMED session must hear its own conversation named (review round
+  // 292): absent, empty, and non-string ids all read as null, and a null
+  // beside a known id used to pass the mismatch check below — a successful
+  // result with no readable identity was attributed to the resumed
+  // conversation. On a fresh session (no known id) a null id stays
+  // parsable; the driver owns that verdict (the auth-failure fixture
+  // carries an empty id).
+  if (context.knownConversationId !== null && conversationId === null) {
+    return {
+      kind: "grammar_error",
+      message:
+        `a result names no conversation, not ${context.knownConversationId}`,
+    };
+  }
   if (
     context.knownConversationId !== null &&
     conversationId !== null &&

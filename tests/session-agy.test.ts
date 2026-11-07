@@ -250,6 +250,24 @@ describe("agy session - parser tiers", () => {
     expect(parse.message).toContain("conv-1");
   });
 
+  test("a resumed session requires a string conversation id — absent, empty, or non-string is tier-2 (review round 292)", () => {
+    // A frame with no readable identity used to parse as a successful
+    // result of the resumed conversation: the mismatch check rejected only
+    // a NON-NULL id that differed, so `null` (absent, empty, numeric)
+    // slipped past it and the driver attributed the turn to conv-1.
+    for (const fields of [
+      { status: "SUCCESS", response: "hi" },
+      { conversation_id: "", status: "SUCCESS", response: "hi" },
+      { conversation_id: 7, status: "SUCCESS", response: "hi" },
+      { conversation_id: null, status: "SUCCESS", response: "hi" },
+    ]) {
+      const parse = parseAgySessionLine(envelope(fields), { knownConversationId: "conv-1" });
+      expect(parse.kind).toBe("grammar_error");
+      if (parse.kind !== "grammar_error") return;
+      expect(parse.message).toContain("conv-1");
+    }
+  });
+
   test("an empty conversation id parses (the driver owns the no-identity verdict)", () => {
     const parse = parseAgySessionLine(
       envelope({

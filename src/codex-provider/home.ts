@@ -3,7 +3,7 @@
 // them. src/codex-provider.ts owns the override and re-exports this.
 
 import { createHash } from "node:crypto";
-import { mkdtempSync, renameSync } from "node:fs";
+import { lstatSync, mkdtempSync, renameSync } from "node:fs";
 import { basename, join } from "node:path";
 import { assertTrustedDirectory, prepareRunDirParent } from "../hermetic-home.js";
 import {
@@ -155,6 +155,15 @@ export function createCodexSessionProviderHome(
   // session's home was made under.
   const parentRecord = recordTrustedParent(parent);
   const codexHome = mkdtempSync(join(parent, `run-${process.pid}-`));
+  // The home's own identity, remembered at creation (review round 292):
+  // the shared parent is writable by every sandboxed codex child, so one
+  // can rename this home away and park another user-owned directory at
+  // its name. That replacement passes the parent, shape, and owner checks
+  // below, and `settle`'s move would persist it onto the session key —
+  // resume state a later session loads. The device and inode pair is the
+  // one fact a rename-and-replace cannot forge (the agy probe homes'
+  // sameDirectory rule, src/adapters/agy-homes.ts).
+  const homeIdentity = lstatSync(codexHome, { bigint: true });
   const prepareConfig = (): void => {
     writeCodexProviderConfigInto(codexHome, override, model, multiAgent);
   };
@@ -169,9 +178,16 @@ export function createCodexSessionProviderHome(
     try {
       // Both components revalidated: a sandboxed child could have swapped
       // either for a symlink during the session, and rename resolves the
-      // parent components while moving the name at codexHome itself.
+      // parent components while moving the name at codexHome itself. The
+      // home's IDENTITY too (review round 292): the checks above accept
+      // any user-owned replacement parked at the name, and the move would
+      // persist that replacement as this session's resume state.
       assertTrustedDirectory(parent);
       assertTrustedDirectory(codexHome);
+      const homeNow = lstatSync(codexHome, { bigint: true });
+      if (homeNow.dev !== homeIdentity.dev || homeNow.ino !== homeIdentity.ino) {
+        throw new Error(`${codexHome} is no longer the directory this session created`);
+      }
       renameSync(codexHome, target);
       return true;
     } catch (error) {
