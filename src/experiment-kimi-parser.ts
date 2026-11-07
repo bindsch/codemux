@@ -22,6 +22,9 @@ interface Step {
   uuid: string; calls: KimiNativeCall[]; parts: JsonObject[]; end?: JsonObject;
   turnTime?: number; usage?: ExperimentUsage; usageTime?: number; usageRecords: number;
   retry?: boolean; firstPartTime?: number;
+  /** The end arrived before any content or call — Kimi's early-usage shape,
+   * whose content parts are still flushed after it. */
+  lateContent?: boolean;
 }
 
 export class KimiWireParser {
@@ -92,10 +95,15 @@ export class KimiWireParser {
         if (!kimiObject(event.part)) throw new ExperimentFailure(Code.Protocol, "Invalid Kimi content.part");
         const step = this.step(event.stepUuid);
         if (step.retry) throw new ExperimentFailure(Code.Protocol, "Kimi response item follows a failed retry step");
+        // A step whose end arrived after its content or calls is finalized:
+        // a later part would mutate what the assistant-message comparison
+        // checks (review round 331). The early-usage shape — usage recorded
+        // before the step's first content — still flushes its parts after
+        // the end and keeps emitting its turn from them.
+        if (step.end && !step.lateContent) throw new ExperimentFailure(Code.Protocol, "Kimi content.part follows step.end");
         const t = timestamp(line.time);
         step.firstPartTime ??= t;
         step.parts.push(event.part);
-        // Failed provider attempts can flush partial content before step.end.
         if (step.end) this.emitTurn(step, line.time);
       } else if (event.type === "step.end") this.acceptStep(event, line.time);
       else if (event.type === "tool.result") {
@@ -196,6 +204,7 @@ export class KimiWireParser {
     }
     const usage = event.usage == null ? undefined : normalizedUsage(event.usage);
     if (step.firstPartTime !== undefined) this.emitTurn(step, time);
+    step.lateContent = step.parts.length === 0 && step.calls.length === 0;
     step.usageTime = timestamp(time);
     step.usage = usage;
     step.end = event;

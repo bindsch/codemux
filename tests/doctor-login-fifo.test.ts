@@ -7,7 +7,7 @@
  * way, with no second lookup of the path between the check and the read.
  */
 
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +21,74 @@ import {
   kimiLoginState,
   zaiLoginState,
 } from "../src/harness-health.js";
+
+test("a tokenless claude mirror is no credential even with a future expiry (round 331)", () => {
+  const home = mkdtempSync(join(tmpdir(), "codemux-doctor-mirror-"));
+  try {
+    mkdirSync(join(home, ".claude"));
+    const mirror = join(home, ".claude", ".credentials.json");
+    const future = Date.now() + 3_600_000;
+    // The stub shape Claude Code leaves once the Keychain owns the
+    // credential, and a mirror missing the field outright: neither can
+    // authenticate a sandboxed launch.
+    writeFileSync(mirror, JSON.stringify({ claudeAiOauth: { accessToken: "", expiresAt: future } }));
+    expect(claudeLoginState(home).state).toBe("no-credential");
+    writeFileSync(mirror, JSON.stringify({ claudeAiOauth: { expiresAt: future } }));
+    expect(claudeLoginState(home).state).toBe("no-credential");
+    // A present token beside the future expiry is the working login, and
+    // an expired one stays expired: presence never overrides the expiry.
+    writeFileSync(mirror, JSON.stringify({ claudeAiOauth: { accessToken: "fixture-token", expiresAt: future } }));
+    expect(claudeLoginState(home).state).toBe("logged-in");
+    writeFileSync(mirror, JSON.stringify({ claudeAiOauth: { accessToken: "fixture-token", expiresAt: Date.now() - 1 } }));
+    expect(claudeLoginState(home).state).toBe("expired");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("empty codex token strings are no credential (round 331)", () => {
+  const home = mkdtempSync(join(tmpdir(), "codemux-doctor-codex-"));
+  try {
+    mkdirSync(join(home, ".codex"));
+    const auth = join(home, ".codex", "auth.json");
+    writeFileSync(auth, JSON.stringify({ tokens: { refresh_token: "" } }));
+    expect(codexLoginState(home, {}).state).toBe("no-credential");
+    writeFileSync(auth, JSON.stringify({ tokens: { access_token: "", refresh_token: "" } }));
+    expect(codexLoginState(home, {}).state).toBe("no-credential");
+    // A non-empty token field is still a login, empty ones beside it aside.
+    writeFileSync(auth, JSON.stringify({ tokens: { access_token: "", refresh_token: "r" } }));
+    expect(codexLoginState(home, {}).state).toBe("logged-in");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a linked or foreign-owned zai key file is no credential (round 331)", () => {
+  if (process.platform === "win32") return;
+  const home = mkdtempSync(join(tmpdir(), "codemux-doctor-zai-"));
+  try {
+    const target = join(home, "key");
+    writeFileSync(target, "k", { mode: 0o600 });
+    symlinkSync(target, join(home, ".zai"));
+    // The launch path refuses a final symlink; so does the login read.
+    expect(zaiLoginState(home, {}).state).toBe("no-credential");
+    rmSync(join(home, ".zai"));
+    writeFileSync(join(home, ".zai"), "k", { mode: 0o600 });
+    // Ownership: the adapter requires the current user, so a key owned by
+    // someone else is refused here too, without reading its value.
+    const real = process.getuid!();
+    const foreign = real === 12345 ? 12346 : 12345;
+    const getuid = spyOn(process, "getuid").mockReturnValue(foreign);
+    try {
+      expect(zaiLoginState(home, {}).state).toBe("no-credential");
+    } finally {
+      getuid.mockRestore();
+    }
+    expect(zaiLoginState(home, {}).state).toBe("logged-in");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
 
 test("a FIFO at the claude mirror path is unknown and the read returns at once", () => {
   const home = mkdtempSync(join(tmpdir(), "codemux-doctor-fifo-"));

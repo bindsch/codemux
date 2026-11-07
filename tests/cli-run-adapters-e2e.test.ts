@@ -158,10 +158,12 @@ describe("run e2e - gemini", () => {
     ]);
     // The prompt rides argv; nothing is delivered over stdin.
     expect(run.stdin).toBe("");
-    // The one environment variable the adapter injects on every run.
-    expect(envValue(run.stdout, "GEMINI_CLI_SYSTEM_SETTINGS_PATH")).toBe(
-      join(REPO_ROOT, "resources", "gemini-system-settings.json")
-    );
+    // The settings variable is named only where the Gemini CLI would load
+    // the file, which needs a root-owned chain; a checkout is user-owned,
+    // so the run carries no variable instead of one the CLI would skip
+    // with a warning (live matrix 2026-11-07; tests/adapters-gemini.test.ts
+    // covers the root-owned case through the host seam).
+    expect(envValue(run.stdout, "GEMINI_CLI_SYSTEM_SETTINGS_PATH")).toBe("unset");
   });
 
   test("read-only under scode: plan approval mode survives the sandbox wrapper", async () => {

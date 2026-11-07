@@ -166,7 +166,11 @@ describe("information commands", () => {
         path: fake.env.PATH!,
         home: fixtureHome(
           {
-            ".claude/.credentials.json": JSON.stringify({ claudeAiOauth: { expiresAt: Date.now() + 3_600_000 } }),
+            ".claude/.credentials.json": JSON.stringify({
+              // A fresh expiry alone is no login since review round 331
+              // (item 15): the mirror must carry an access token.
+              claudeAiOauth: { accessToken: "synthetic-access-token", expiresAt: Date.now() + 3_600_000 },
+            }),
             ".gemini/oauth_creds.json": "{}",
           },
           homes

@@ -2,6 +2,7 @@ import type { BaseAdapter } from "./base.js";
 import type { AutonomyLevel, ReasoningEffort } from "../types.js";
 import { guardedWait } from "../process-runner.js";
 import { assertExecutablesUnchanged } from "../executable-security.js";
+import { launchRedirectCheck } from "../cli-runtime.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 
 export async function runInteractive(
@@ -57,7 +58,13 @@ export async function runInteractive(
     passthroughEnv
   );
 
-  assertExecutablesUnchanged(command, this.id);
+  // The redirect target (OPENCODE_BIN_PATH) the gate resolved and probed
+  // is re-statted beside the command's own positions (review round 331,
+  // item 5), as on every other launch path.
+  const redirectCheck = launchRedirectCheck(
+    this.id, process.env as Record<string, string>, passthroughEnv, workdir
+  );
+  assertExecutablesUnchanged(command, this.id, undefined, redirectCheck === null ? [] : [redirectCheck]);
   // The spawn rides the wait itself (review round 223): guardedWait
   // installs its signal handlers before running it, so a SIGTERM or SIGHUP
   // cannot land between the spawn and the handlers and orphan the child.

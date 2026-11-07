@@ -12,7 +12,11 @@ it is refused with exit 64 instead of silently falling back to the option's
 default. Environment variables and config files keep their own convention,
 where a blank value means unset. On run, tui, check, and session every
 request check runs before the harness and scode are looked up, so a usage
-error exits 64 even when the harness is not installed. There is no generic pass-through
+error exits 64 even when the harness is not installed. A passed-through
+executable redirect (`OPENCODE_BIN_PATH`) whose value is not one trusted
+absolute executable — existing, owned by the user or root, not group- or
+world-writable, outside the working directory — is refused with exit 64,
+because the OpenCode launcher execs exactly that value. There is no generic pass-through
 for arbitrary harness flags.
 
 ## Shared launch options

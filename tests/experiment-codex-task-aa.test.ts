@@ -70,6 +70,34 @@ test("Codex refuses a top_level_tools map without the experiment tools (review r
   expect(full.parser.inventoryChecked).toBe(true);
 });
 
+test("Codex refuses two spellings of one experiment tool in top_level_tools (round 331)", () => {
+  // The map's accepted spellings of one tool are aliases of one callable:
+  // a world state exposing two at once is not the exact experiment-only
+  // inventory, whatever subset rule allowed each on its own.
+  const duplicate = parserFixture();
+  expect(() => duplicate.parser.accept(world({ ...TOOLS, "mcp__experiment__lookup": "hash" })))
+    .toThrow(/duplicate spellings.*mcp__experiment\.lookup.*mcp__experiment__lookup/);
+  expect(duplicate.parser.inventoryChecked).toBe(false);
+  // The resource trio carries two spellings too: a bare name beside its
+  // functions-qualified alias is the same duplicate.
+  const resource = parserFixture();
+  expect(() => resource.parser.accept(world({ ...TOOLS, read_mcp_resource: "hash" })))
+    .toThrow(expect.objectContaining({ code: "inventory_mismatch" }));
+});
+
+test("Codex refuses an additional_tools catalog that drifts from the first one (round 331)", () => {
+  // Two catalogs in one rollout, each individually valid against the relay
+  // definitions, is schema drift during the experiment: the second must
+  // equal the first, not merely satisfy the same subset rule on its own.
+  // Here the second omits the whole parameter object (a permitted prune),
+  // so only the catalog-to-catalog comparison catches it.
+  const { parser } = parserFixture();
+  parser.accept(world());
+  parser.accept(codexCatalog(["lookup"]));
+  expect(() => parser.accept(codexCatalog([{ name: "lookup", description: "", inputSchema: {} }])))
+    .toThrow(/additional_tools catalog changed during the rollout/);
+});
+
 test("Codex rechecks a changed top-level inventory after the initial full snapshot", () => {
   const { parser, records } = parserFixture();
   parser.accept(world());

@@ -331,6 +331,68 @@ describe("CLI runtime keep-env exemptions", () => {
     }
   });
 
+  test("the keep-env cache keys on the executable's identity, so a replaced scode at the same path is re-probed (review 331, item 7)", async () => {
+    // The key named the executable's path, but the verdict describes the
+    // bytes behind it: a scode replaced or upgraded at the same path in a
+    // long-lived process reused the old capability verdict — rendering an
+    // exemption to a binary that never documented it (or silently dropping
+    // one a new binary supports). The stub below documents --keep-env; the
+    // launch after its replacement must probe again and refuse.
+    const dir = mkdtempSync(join(tmpdir(), "codemux-keepenv-idkey-"));
+    const bin = join(dir, "bin");
+    const workdir = join(dir, "work");
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(workdir);
+    const argvFile = join(dir, "scode-argv.txt");
+    const scode = join(bin, "scode");
+    const supports =
+      `#!/bin/sh\nif [ "$1" = --version ]; then echo 'scode 0.2.0'; exit 0; fi\nif [ "$1" = --help ]; then echo 'Usage: scode [options] command'; echo '  --keep-env NAME[,NAME...]  keep named variables under --scrub-env'; exit 0; fi\nprintf '%s\\n' "$@" > '${argvFile}'\nwhile [ "$1" != -- ]; do shift; done\nshift\nexec "$@"\n`;
+    const lacks =
+      `#!/bin/sh\nif [ "$1" = --version ]; then echo 'scode 0.2.0'; exit 0; fi\nif [ "$1" = --help ]; then echo 'Usage: scode [options] command'; exit 0; fi\nprintf '%s\\n' "$@" > '${argvFile}'\nwhile [ "$1" != -- ]; do shift; done\nshift\nexec "$@"\n`;
+    writeFileSync(scode, supports);
+    chmodSync(scode, 0o755);
+    const options = {
+      trust: "standard" as const,
+      scrubEnv: true,
+      keepEnv: ["ANTHROPIC_AUTH_TOKEN"],
+      keepEnvRequired: true,
+    };
+    try {
+      // First launch: the exemption renders, and its "supported" is cached.
+      const rendered = await runSandboxedWithStdin(
+        [process.execPath, "-e", "process.stdout.write('ok')"],
+        null,
+        workdir,
+        { PATH: bin },
+        "read-only",
+        options,
+        2_000
+      );
+      expect(rendered.exitCode).toBe(0);
+      expect(readFileSync(argvFile, "utf8").split("\n")).toContain("--keep-env");
+
+      // The scode at that exact path is replaced by one without the flag:
+      // same path, same environment, same directory. A path-only key would
+      // render the exemption to the new bytes; the executable's identity
+      // in the key makes the second launch probe them and refuse.
+      writeFileSync(scode, lacks);
+      chmodSync(scode, 0o755);
+      rmSync(argvFile);
+      await expect(runSandboxedWithStdin(
+        [process.execPath, "-e", "process.exit(0)"],
+        null,
+        workdir,
+        { PATH: bin },
+        "read-only",
+        options,
+        2_000
+      )).rejects.toThrow("has no --keep-env");
+      expect(existsSync(argvFile)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a non-required exemption is dropped, not rendered, on a scode without the flag", async () => {
     await withKeepEnvStub(
       "echo 'Usage: scode [options] command'; exit 0",

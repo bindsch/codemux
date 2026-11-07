@@ -18,14 +18,20 @@ export function summarizeAgyStream(stdout: string) {
   const commandActions = new Set(["command", "unsandboxed", "run_command"]);
   const stepTypes = new Set<string>();
   const textSteps = new Set(["user_input", "agent_response"]);
+  let initSeen = false;
   for (const line of stdout.split("\n").filter((line) => line.trim())) {
     try {
       const frame = JSON.parse(line);
       if (!frame || typeof frame !== "object" || resultCount) { malformed = true; continue; }
+      // The stream opens with its init frame: anything before it is
+      // pre-initialization evidence a truncated or reordered stream must
+      // not certify (review round 331).
+      if (frame.event !== "init" && !initSeen) { malformed = true; continue; }
       if (frame.event === "init") {
         if (init !== null || !frame.init || typeof frame.init !== "object" || Array.isArray(frame.init)) malformed = true;
         init = frame.init;
         tools = frame.init?.tools ?? null;
+        initSeen = true;
       } else if (frame.event === "step_update") {
         if (typeof frame.step_update?.step_type !== "string") malformed = true;
         else {

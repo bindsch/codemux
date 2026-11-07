@@ -363,6 +363,25 @@ export function assertNoDroidProjectExecutionConfig(cwd: string): void {
   );
 }
 
+/**
+ * The Gemini CLI exports the first `.env` it finds walking up from the
+ * working directory into its own process (API key, endpoint, sandbox and
+ * telemetry settings). codemux turns that off through the system settings
+ * layer (`advanced.ignoreLocalEnv`), which the CLI loads only from a
+ * root-owned path; on a user-owned install prefix (Homebrew) the layer
+ * never loads (gemini.ts), so a repository `.env` is refused there instead
+ * (live matrix, 2026-11-07). `.gemini/.env` is refused on every install.
+ */
+export function assertNoGeminiRepositoryEnv(cwd: string): void {
+  assertNoProjectExecutionConfig(
+    cwd,
+    "Gemini CLI",
+    [".env"],
+    [],
+    "refuses a repository .env it would load, because this install's system settings layer cannot load"
+  );
+}
+
 export function assertNoGeminiProjectExecutionConfig(cwd: string): void {
   assertNoProjectExecutionConfig(
     cwd,

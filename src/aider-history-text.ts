@@ -67,7 +67,11 @@ export function aiderReplyAfterHeader(text: string): string {
   let started = false;
   for (const raw of text.split("\n")) {
     const line = raw.replace(/\s+$/, "");
-    if (line.startsWith(">")) {
+    // Aider's own mark is `> ` (a bare `>` is the same line rstripped):
+    // a `>`-without-space line is text the model wrote and stays in the
+    // answer, so discarding it cannot rescue an exact-answer check
+    // (review round 331).
+    if (line.startsWith("> ") || line === ">") {
       // Blockquoted tool chatter: skip before the answer, end at it after.
       if (started) break;
       pendingBlank = [];
@@ -162,9 +166,12 @@ export function aiderDeltaRecordsUnansweredPrompt(
 // `<thinking-content-…>` tags ("reasoning tokens" display, aider 0.86); the
 // model's visible answer follows them. Only a LEADING block is stripped —
 // reasoning later in the reply stays and fails the check; a reply that is
-// nothing but the leading block strips to the empty string.
+// nothing but the leading block strips to the empty string. The opening and
+// closing identifiers must match (the backreference): mismatched tags are
+// text the model wrote, and stripping between them would again discard
+// assistant text an exact-answer check must see (review round 331).
 const LEADING_THINKING =
-  /^<thinking-content-[0-9a-fA-F]+>\r?\n?[\s\S]*?\r?\n?<\/thinking-content-[0-9a-fA-F]+>\r?\n?/;
+  /^<thinking-content-([0-9a-fA-F]+)>\r?\n?[\s\S]*?\r?\n?<\/thinking-content-\1>\r?\n?/;
 
 export function stripLeadingThinking(reply: string): string {
   return reply.replace(LEADING_THINKING, "");

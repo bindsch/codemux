@@ -32,6 +32,7 @@ import {
   releaseSessionRecord,
 } from "./registry.js";
 import { spawnSessionChild } from "./spawn.js";
+import { launchRedirectCheck } from "../cli-runtime.js";
 import { UsageRefusalError } from "../validation.js";
 
 // The modules the action is split into, re-exported so this path keeps
@@ -385,9 +386,16 @@ export function registerSessionCommand(
               // --mcp-config argument (review round 110): the spawn re-stats
               // it beside the command's own positions, immediately before
               // the child exists.
-              ...(claudeBuilt?.playwrightMcpCheck != null
-                ? { extraExecutableChecks: [claudeBuilt.playwrightMcpCheck] }
-                : {}),
+              // The redirect target (OPENCODE_BIN_PATH) the session gate
+              // resolved and probed joins the same pin (review round 331,
+              // item 5), so a replacement between the probe and the
+              // spawn fails the re-stat.
+              extraExecutableChecks: [
+                ...(claudeBuilt?.playwrightMcpCheck != null ? [claudeBuilt.playwrightMcpCheck] : []),
+                ...((check) => check === null ? [] : [check])(
+                  launchRedirectCheck(agentId, process.env as Record<string, string>, passthroughEnv, workdir)
+                ),
+              ],
             }, {
               onLine: (line) => driver.handleHarnessLine(line),
               onFatal: (fatal) => driver.handleFatal(fatal),

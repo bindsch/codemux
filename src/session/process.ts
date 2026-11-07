@@ -43,6 +43,11 @@ export const DEFAULT_SHUTDOWN_GRACE_MS = 10_000;
 export const SESSION_SIGNAL_EXIT_CODE = 143;
 
 const DESCENDANT_CAPTURE_MS = 5_000;
+/** One more descendant sample this long after the stop signal (review
+ * round 331, item 3): a harness handling SIGTERM often starts its cleanup
+ * helper then — in its own process group — and exits before the next
+ * tick. Asynchronous; never a synchronous read on the signal path. */
+const DESCENDANT_SAMPLE_AFTER_STOP_MS = 300;
 // After the end path's SIGKILL, how much longer to keep reading stdout
 // before abandoning it: an orphan no signal can reach (reparented before
 // any snapshot) may hold it open forever; settled must still resolve.
@@ -140,6 +145,7 @@ export class SessionProcess {
   private killDeadline = 0;
   private killTimer: ReturnType<typeof setTimeout> | null = null;
   private captureTimer: ReturnType<typeof setInterval> | null = null;
+  private stopSampleTimer: ReturnType<typeof setTimeout> | null = null;
   private childExited = false;
 
   /** Resolved when the child has exited, the grace has run its course, the
@@ -248,14 +254,22 @@ export class SessionProcess {
   requestStop(): void {
     if (this.stopArmed) return;
     this.stopArmed = true;
-    this.stopCapture();
     // A child that already exited needs no signal, and its end path has
-    // already run its tree kill and cleared timers: arming the SIGKILL
-    // timer now would hold the event loop for the grace and then signal a
-    // reaped process group (review live18).
+    // already run its tree kill and cleared its timers (review live18).
     if (this.childExited) return;
-    // The driver first allows the protocol shutdown to finish.
+    // The driver first allows the protocol shutdown to finish. The capture
+    // keeps sampling through the stop grace, and one extra asynchronous
+    // sample (review round 331, item 3) remembers a helper the harness
+    // starts while handling SIGTERM before it exits past the next tick. A
+    // helper whose parent exits at once is reparented before any sample and
+    // unattributable: the documented limit (docs/sessions.md, round 334).
     signalProcess(this.target, "SIGTERM", "process");
+    this.stopSampleTimer = setTimeout(() => {
+      this.stopSampleTimer = null;
+      try {
+        rememberDescendants(this.target, readProcessTable());
+      } catch { /* one lost sample, not the session */ }
+    }, DESCENDANT_SAMPLE_AFTER_STOP_MS);
     this.killDeadline = performance.now() + this.graceMs;
     this.killTimer = setTimeout(() => {
       signalProcess(this.target, "SIGKILL", "tree");
@@ -274,7 +288,7 @@ export class SessionProcess {
   escalateStop(): void {
     if (this.escalatedChild) return;
     this.escalatedChild = true;
-    this.stopCapture();
+    // The capture stays armed; the end path's finally stops it (round 331, item 3).
     signalProcess(this.target, "SIGKILL", "tree");
   }
 
@@ -452,10 +466,8 @@ export class SessionProcess {
   }
 
   private stopCapture(): void {
-    if (this.captureTimer !== null) {
-      clearInterval(this.captureTimer);
-      this.captureTimer = null;
-    }
+    if (this.captureTimer !== null) { clearInterval(this.captureTimer); this.captureTimer = null; }
+    if (this.stopSampleTimer !== null) { clearTimeout(this.stopSampleTimer); this.stopSampleTimer = null; }
   }
 
   private async runEndPath(stdoutDone: Promise<void>): Promise<void> {

@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { probeEnvironment } from "../src/environment.js";
 import { assertHarnessSupported } from "../src/cli-runtime.js";
+import { UsageRefusalError } from "../src/validation.js";
 import {
   ALLOW_UNTESTED_ENV,
   assertSupportedHarnessVersion,
@@ -87,13 +88,16 @@ describe("the gate itself", () => {
   // fake lives under the OS temp root, which on Linux is /tmp itself, and a
   // working directory that is its ancestor makes the trust check refuse the
   // fake for the wrong reason.
-  test("an active redirect warns and still refuses a below-floor binary", async () => {
-    // The fallback half of the redirect rule: the value names no binary
-    // codemux can validate (/opt/oc/1.0.0 does not exist), so the verdict
-    // cannot be read from it. Say the version is unconfirmed and keep gating
-    // the PATH-resolved binary -- here below the floor, so the run refuses
-    // unless the operator overrides. The resolved half is the next two
-    // tests: there the redirect itself answers the gate.
+  test("an active redirect codemux cannot resolve refuses the run before the version gate", async () => {
+    // Review round 331, item 4: the value names no binary codemux can
+    // validate (/opt/oc/1.0.0 does not exist), and on a direct run the
+    // launcher would exec exactly that unvalidated value outside any
+    // sandbox. The old fallback warned about the version and kept gating
+    // the PATH binary; the gate now refuses on the redirect itself, before
+    // any version verdict — the below-floor PATH binary is never reached,
+    // and the untested override does not downgrade a trust refusal. The
+    // resolved half is the next two tests: there the redirect itself
+    // answers the gate.
     const fake = fakeHarness("1.0.0");
     const env = {
       PATH: join(fake.path, ".."),
@@ -104,20 +108,20 @@ describe("the gate itself", () => {
         "opencode", "opencode", process.cwd(), env, "low", false, ["OPENCODE_BIN_PATH"]
       );
     // The documented override may already be on in the caller's
-    // environment; this test needs it off for its refusal half, and it must
+    // environment; this test needs it off for its first half, and it must
     // not strip the caller's value on the way out (round10: running the
     // suite with the override exported failed here once and deleted it).
     const savedOverride = process.env[ALLOW_UNTESTED_ENV];
     delete process.env[ALLOW_UNTESTED_ENV];
     try {
       const warnings = await captureWarnings(async () => {
-        await expect(call()).rejects.toThrow("older than");
+        await expect(call()).rejects.toThrow(UsageRefusalError);
+        await expect(call()).rejects.toThrow("OPENCODE_BIN_PATH");
       });
-      expect(warnings.join("\n")).toContain("cannot confirm the version");
+      expect(warnings.join("\n")).not.toContain("cannot confirm the version");
       process.env[ALLOW_UNTESTED_ENV] = "1";
       try {
-        const overridden = await captureWarnings(call);
-        expect(overridden.join("\n")).toContain(ALLOW_UNTESTED_ENV);
+        await expect(call()).rejects.toThrow("OPENCODE_BIN_PATH");
       } finally {
         if (savedOverride === undefined) {
           delete process.env[ALLOW_UNTESTED_ENV];

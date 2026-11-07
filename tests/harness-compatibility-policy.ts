@@ -133,14 +133,14 @@ describe("the version probe runs before any sandbox, so it scrubs its own enviro
   test("a redirect is named so the caller can refuse to speak for the launch", async () => {
     // OpenCode's launcher picks its binary from OPENCODE_BIN_PATH. The name is listed so
     // `assertHarnessSupported` can answer it: resolve the value to a trusted executable and
-    // read the verdict from that binary, or -- when it cannot -- warn rather than measuring
-    // the default binary and calling it confirmed.
+    // read the verdict from that binary, or -- when it cannot (review round 331, item 4) --
+    // refuse the run rather than measuring the default binary and calling it confirmed.
     const { EXECUTABLE_REDIRECTS, activeRedirects } = await import("../src/environment.js");
     expect(EXECUTABLE_REDIRECTS.opencode).toContain("OPENCODE_BIN_PATH");
 
     // It is in play only for the harness that reads it, and only when actually set. A flat set
     // made `--pass-env OPENCODE_BIN_PATH` skip the version check for every agent, even with the
-    // variable unset -- a universal bypass in place of a narrow "cannot confirm".
+    // variable unset -- a universal bypass in place of a narrow refusal.
     const set = { OPENCODE_BIN_PATH: "/opt/oc" };
     expect(activeRedirects("opencode", set, ["OPENCODE_BIN_PATH"])).toEqual(["OPENCODE_BIN_PATH"]);
     expect(activeRedirects("claude", set, ["OPENCODE_BIN_PATH"])).toEqual([]);
@@ -157,7 +157,7 @@ describe("the version probe runs before any sandbox, so it scrubs its own enviro
       new URL("../src/cli-runtime.ts", import.meta.url)
     ).text();
     expect(runtime).toContain("activeRedirects(");
-    expect(runtime).toContain("cannot confirm the version");
+    expect(runtime).toContain("does not name one trusted absolute executable");
   });
 
   test("the probe environment is a subset of the launch environment", async () => {

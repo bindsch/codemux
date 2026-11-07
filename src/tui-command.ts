@@ -8,6 +8,7 @@ import {
   resolveAutonomyForAdapter,
   resolveEffortForAdapter,
   assertHarnessSupported,
+  launchRedirectCheck,
 } from "./cli-runtime.js";
 import { getAdapter, AGENT_IDS } from "./adapters/index.js";
 import { resolveModel } from "./config.js";
@@ -279,7 +280,11 @@ export function registerTuiCommand(
             ),
             adapter.getEnvOmissions(),
             Boolean(options.printSandbox),
-            nestedChecks[0] ?? null
+            nestedChecks[0] ?? null,
+            // The redirect target's identity (review round 331, item 5):
+            // the gate above resolved and probed it; the spawn re-stats
+            // it like the run paths do.
+            launchRedirectCheck(agentId, process.env as Record<string, string>, passthroughEnv, workdir)
           );
           process.exitCode = exitCode;
         } else {

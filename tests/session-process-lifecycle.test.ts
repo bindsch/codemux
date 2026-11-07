@@ -1,6 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { join } from "node:path";
 import { installSessionSignalHandlers } from "../src/session/process.js";
+import * as processTable from "../src/process-table.js";
+import type { ProcessTable } from "../src/process-table.js";
 import { harness, tmp, waitGone, waitUntil } from "./helpers/session-process.js";
 
 describe("session process runner", () => {
@@ -41,6 +43,69 @@ describe("session process runner", () => {
       const grandchild = Number(lines[0]);
       await done;
       expect(await waitGone(grandchild, 10_000)).toBe(true);
+    },
+    30_000
+  );
+
+  test(
+    "requestStop keeps the capture alive: a separate-group helper spawned while handling SIGTERM dies (review 331, item 3)",
+    async () => {
+      // The finding: requestStop stopped the descendant capture before
+      // sending SIGTERM, so a harness that starts a cleanup helper — in
+      // its own process group, so no group signal reaches it — while
+      // handling the signal could exit before the next five-second tick,
+      // and the helper survived settlement. The capture now samples
+      // through the stop grace and takes one extra asynchronous sample
+      // shortly after the signal; the helper below must be remembered by
+      // that sample and die with the tree. The harness is a real program
+      // with a SIGTERM handler (a shell trap does not survive the spawn:
+      // bash under `sh -c` dies on the default action instead), and
+      // discovery runs against a synthetic self-consistent process table
+      // (this suite can run where enumeration is denied), while every
+      // signal and every process is real.
+      let harnessPid = 0;
+      let helperPid = 0;
+      const snapshot = (): ProcessTable => {
+        const table: ProcessTable = new Map();
+        if (harnessPid > 0) {
+          table.set(harnessPid, { ppid: 1, pgid: harnessPid, start: "synthetic" });
+        }
+        if (helperPid > 0 && harnessPid > 0) {
+          table.set(helperPid, { ppid: harnessPid, pgid: helperPid, start: "synthetic" });
+        }
+        return table;
+      };
+      const read = spyOn(processTable, "readProcessTable").mockImplementation(snapshot);
+      const harnessScript = [
+        `exec ${process.execPath} -e '`,
+        `process.on("SIGTERM", () => {`,
+        `  const child = Bun.spawn(["/usr/bin/perl", "-e", "setpgrp(0,0); sleep 60"], { detached: true, stdin: "ignore", stdout: "ignore", stderr: "ignore" });`,
+        `  console.log("HELPER " + child.pid);`,
+        `  setTimeout(() => process.exit(0), 1200);`,
+        `});`,
+        `console.log("READY " + process.pid);`,
+        `await new Promise((resolve) => setTimeout(resolve, 30000));`,
+        `'`,
+      ].join("\n");
+      const { proc, lines, done } = harness(harnessScript, 2_000);
+      try {
+        await waitUntil(() => lines.length >= 1, 10_000);
+        harnessPid = Number(/READY (\d+)/.exec(lines[0] ?? "")?.[1] ?? 0);
+        expect(harnessPid).toBeGreaterThan(0);
+        proc.requestStop();
+        // The handler prints the helper's pid on its way out.
+        await waitUntil(() => lines.length >= 2, 10_000);
+        helperPid = Number(/HELPER (\d+)/.exec(lines[1] ?? "")?.[1] ?? 0);
+        expect(helperPid).toBeGreaterThan(0);
+        await done;
+        expect(await waitGone(helperPid, 10_000)).toBe(true);
+      } finally {
+        // The failing case leaves the helper alive; never leak it.
+        if (helperPid > 0) {
+          try { process.kill(helperPid, "SIGKILL"); } catch { /* already gone */ }
+        }
+        read.mockRestore();
+      }
     },
     30_000
   );

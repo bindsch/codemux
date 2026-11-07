@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { PIPE_GIVE_UP_MS, type StdoutSink } from "./process-runner.js";
+import { BRIDGE_CLOSE_ABANDON_MS, PIPE_GIVE_UP_MS, type StdoutSink } from "./process-runner.js";
 import type { ExperimentSpec } from "./experiment-mcp.js";
 import { ExperimentServer, MAX_EXPERIMENT_MESSAGE_BYTES, type JsonObject } from "./experiment-server.js";
 import { canonicalWorkingDirectory, compareSpill } from "./experiment-spill.js";
@@ -51,6 +51,9 @@ export class ExperimentBridge implements StdoutSink {
   private closing?: Promise<void>;
   private closeFailure?: ExperimentFailure;
   private closeFailureReported = false;
+  /** Set once the bounded wait abandoned a never-settling cleanup (below). */
+  private closeAbandoned = false;
+  private closeGrace?: { expired: Promise<void>; timer: ReturnType<typeof setTimeout> };
   private initialized = false;
   private inventoryValidated = false;
   private initRequest = randomUUID();
@@ -400,14 +403,47 @@ export class ExperimentBridge implements StdoutSink {
 
   async close(): Promise<void> {
     // Cache a settled outcome, so launcher and exit cleanup cannot replay a
-    // finalization rejection already reported by the protocol owner.
-    await (this.closing ??= this.finalize().catch((error) => {
-      this.closeFailure = experimentFailure(error);
-    }));
+    // finalization rejection already reported by the protocol owner. The
+    // wait is also bounded (review round 331, item 18): a finalization
+    // that never settles must not hang the launcher's cleanup after the
+    // runner returned the child's result with a note. Past the bound
+    // (BRIDGE_CLOSE_ABANDON_MS) the cleanup is abandoned (abandonClose).
+    this.closing ??= this.finalize().catch((error) => {
+      this.closeFailure ??= experimentFailure(error);
+    });
+    if (this.closeGrace === undefined) {
+      let expire: () => void = () => {};
+      const expired = new Promise<void>((resolve) => { expire = resolve; });
+      const timer = setTimeout(() => { this.abandonClose(); expire(); }, BRIDGE_CLOSE_ABANDON_MS);
+      this.closeGrace = { expired, timer };
+      // A finalization that settles -- either way -- disarms the grace.
+      void this.closing.then(() => clearTimeout(timer));
+    }
+    await Promise.race([this.closing, this.closeGrace.expired]);
     if (this.closeFailure !== undefined && !this.closeFailureReported) {
       this.closeFailureReported = true;
       throw this.closeFailure;
     }
+  }
+
+  /** The bounded-close abandonment path (review round 331, item 18): the
+   * runner already noted this cleanup as failed; a finalization still
+   * unsettled must not hold the launcher's cleanup open. Records the
+   * failure, stops the protocol, closes the recording, and wakes every
+   * waiter. Idempotent. */
+  private abandonClose(): void {
+    if (this.closeAbandoned) return;
+    this.closeAbandoned = true;
+    this.closeFailure ??= new ExperimentFailure(
+      ExperimentFailureCode.Protocol,
+      "asynchronous experiment cleanup did not complete within the cleanup grace"
+    );
+    const failure = this.closeFailure;
+    try { this.record("failure", { code: failure.code, message: failure.message }); }
+    catch { console.error(`codemux: experiment recording failed: ${failure.message}`); }
+    try { this.terminateProtocol(); }
+    catch { /* already down; its close never settling is why we are here */ }
+    this.closeRecording(failure.message);
   }
 
   private async finalize(): Promise<void> {
@@ -432,7 +468,10 @@ export class ExperimentBridge implements StdoutSink {
       }
       catch (error) {
         // An operational cleanup error is evidence to retain, not a new
-        // protocol abort that can replace the completed child's result.
+        // protocol abort that can replace the completed child's result. An
+        // abandoned cleanup keeps the failure abandonClose already
+        // recorded, and its recording is closed; there is nothing to add.
+        if (this.closeAbandoned) throw error;
         this.closeFailure = experimentFailure(error);
         this.record("failure", { code: this.closeFailure.code, message: this.closeFailure.message });
         throw error;

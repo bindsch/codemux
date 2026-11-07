@@ -163,9 +163,10 @@ const FORBIDDEN_PREFIXES = [
  *
  * When a passed-through name could change which executable runs, the gate answers it one level
  * up, in `assertHarnessSupported` (see `EXECUTABLE_REDIRECTS`): it resolves the redirect to a
- * trusted executable itself and reads the verdict from that binary, or warns that the version
- * is unconfirmed when it cannot. The probe environment stays selector-free either way: a probe
- * that runs whatever a variable names is not recoverable the way a visible "cannot confirm" is.
+ * trusted executable itself and reads the verdict from that binary, or refuses the run when it
+ * cannot (review round 331, item 4 — a direct launch would exec the unvalidated value). The
+ * probe environment stays selector-free either way: a probe that runs whatever a variable
+ * names is not recoverable the way a visible refusal is.
  */
 const EXECUTABLE_SELECTORS: ReadonlySet<string> = new Set();
 
@@ -216,8 +217,8 @@ export function probeEnvironment(
   // launcher is validated, so honoring the variable would run an unvalidated binary outside the
   // sandbox. The launch-versus-probe difference is handled one level up instead:
   // `activeRedirects` names what the launch keeps that the probe dropped, and the gate either
-  // resolves the redirect to a trusted executable and probes that binary directly, or warns
-  // "cannot confirm" and still gates the default binary below the floor.
+  // resolves the redirect to a trusted executable and probes that binary directly, or refuses
+  // the run on a redirect it cannot resolve (review round 331, item 4).
   // One rule for both sources. Filtering only `explicitPassthrough` left adapter-injected names
   // crossing unchecked, which is the same hole half-closed: the question is whether a name
   // selects an executable, not who supplied it. The filter stays even with an empty selector

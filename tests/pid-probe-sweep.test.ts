@@ -11,10 +11,10 @@
  */
 
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { prepareRunDirParent } from "../src/hermetic-home.js";
+import { assertTrustedDirectory, prepareRunDirParent } from "../src/hermetic-home.js";
 import { createOpencodeHermeticHome } from "../src/opencode-hermetic.js";
 import { writeOpencodeProviderConfig } from "../src/opencode-provider.js";
 import { createAiderHistoryFile } from "../src/aider-history.js";
@@ -172,5 +172,29 @@ test.each(families)("%s: old pid-0 and out-of-range names go, fresh and live one
     expect(kept).toContain(`${prefix}${process.pid}-live${suffix}`);
   } finally {
     done();
+  }
+});
+
+/** Review round 331, item 6: the trusted-directory check tested type and
+ * ownership but not write permissions, so a pre-existing group- or
+ * world-writable `.codemux-hermetic` parent passed, and anyone with write
+ * access could replace run-directory entries between runs. Both shapes must
+ * refuse — at the shared check and at the parent-preparation entry point a
+ * run actually takes. */
+test("a group- or world-writable run-directory parent is refused", () => {
+  const root = mkdtempSync(join(tmpdir(), "cmx-trusted-dir-"));
+  try {
+    const parent = join(root, ".codemux-hermetic");
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    for (const mode of [0o770, 0o702] as const) {
+      chmodSync(parent, mode);
+      expect(() => assertTrustedDirectory(parent)).toThrow("group- or world-writable");
+      expect(() => prepareRunDirParent(root, ".codemux-hermetic")).toThrow("group- or world-writable");
+    }
+    chmodSync(parent, 0o700);
+    expect(() => assertTrustedDirectory(parent)).not.toThrow();
+    expect(() => prepareRunDirParent(root, ".codemux-hermetic")).not.toThrow();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

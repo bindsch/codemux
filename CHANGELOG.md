@@ -134,6 +134,31 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Live matrix of 2026-11-07 (installed 0.15.1, codemux-side): an OpenHands run that exits 0 with
+  "Headless mode requires existing settings" is a failed run (exit 1, diagnostic, `success:
+  false`), not a reply; the Gemini CLI's system settings file is named only where the CLI will
+  load it (a root-owned chain), and on a user-owned prefix a repository `.env` the CLI would export
+  is refused instead of a warning on every run; the executable redirect target's identity is
+  pinned on the tui and session spawn paths too; Antigravity's per-model effort levels are
+  documented.
+- Review round 331, whole tree (parsers and health): aider keeps a `>`-without-space model line and
+  strips a reasoning block only when its identifiers match; Codex refuses duplicate spellings of one
+  tool in `top_level_tools` and an `additional_tools` catalog that drifts from the first one; Kimi
+  refuses a `content.part` after a finalized `step.end` (the early-usage shape still flushes); the
+  agy stream is malformed unless its init frame comes first; doctor runs binary trust before the
+  no-contract return, and no longer reports logged-in for a claude mirror without an access token,
+  empty codex token strings, or a zai key file that is a symlink or owned by another user.
+- Review round 331, whole tree (process, trust, usage): a stop keeps the descendant capture
+  armed and samples once more shortly after the signal, so a cleanup helper a harness starts
+  while handling SIGTERM in its own process group dies with the tree; an executable redirect
+  that does not resolve to one trusted absolute executable (`OPENCODE_BIN_PATH`) refuses the
+  run instead of warning, and both launch paths pin the resolved target beside the command's
+  own positions for the pre-spawn re-stat; a hermetic run-directory parent that is group- or
+  world-writable is refused; the scode `--keep-env` probe cache keys on the executable's
+  dev/ino/size/mtime, so a replaced scode at the same path is probed again; the experiment
+  bridge bounds its own close by the same cleanup grace as the runner, so a never-settling
+  cleanup can no longer hang the launcher's cleanup after the run result was already returned
+  with a note.
 - Review round 322, whole tree: every protocol close of a captured run is bounded by the cleanup
   grace, a normal exit's included (the run timeout is cleared by then, so a close that never
   settled held the command open); and a codex envelope that dropped its events to fit the

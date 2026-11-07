@@ -1,6 +1,8 @@
 import { BaseAdapter } from "./base.js";
-import { assertNoGeminiProjectExecutionConfig } from "../project-safety.js";
+import { assertNoGeminiProjectExecutionConfig, assertNoGeminiRepositoryEnv } from "../project-safety.js";
 import { validateWorkingDirectory } from "../validation.js";
+import { statSync } from "node:fs";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   AgentId,
@@ -15,6 +17,36 @@ export const GEMINI_SYSTEM_SETTINGS_PATH = fileURLToPath(
   new URL("../../resources/gemini-system-settings.json", import.meta.url)
 );
 
+/** The file reads behind the loadability check, injectable for tests. */
+export const geminiSettingsHost = {
+  statSync,
+  platform: (): NodeJS.Platform => process.platform,
+};
+
+/**
+ * Whether the Gemini CLI will load codemux's system settings file. The CLI
+ * loads the file `GEMINI_CLI_SYSTEM_SETTINGS_PATH` names only when it and
+ * every ancestor directory are owned by root; otherwise it prints "Skipping
+ * system settings file ... is not owned by root" and loads none of it. A
+ * checkout and a Homebrew prefix are user-owned, so the layer, and the
+ * `advanced.ignoreLocalEnv` protection it carries, never load there (live
+ * matrix, 2026-11-07). An unreadable path counts as not loadable.
+ */
+export function geminiSystemSettingsLoadable(path: string = GEMINI_SYSTEM_SETTINGS_PATH): boolean {
+  if (geminiSettingsHost.platform() === "win32") return true;
+  try {
+    let current = path;
+    for (;;) {
+      if (geminiSettingsHost.statSync(current).uid !== 0) return false;
+      const parent = dirname(current);
+      if (parent === current) return true;
+      current = parent;
+    }
+  } catch {
+    return false;
+  }
+}
+
 export class GeminiAdapter extends BaseAdapter {
   // The environment the adapter sees is the one its factory was handed:
   // `verify` passes only PATH so an exported override cannot
@@ -26,7 +58,13 @@ export class GeminiAdapter extends BaseAdapter {
   readonly binaryName = "gemini";
 
   override getEnv(): Record<string, string> {
-    return { GEMINI_CLI_SYSTEM_SETTINGS_PATH: GEMINI_SYSTEM_SETTINGS_PATH };
+    // Named only when the CLI will load it: on a user-owned prefix the
+    // variable bought a warning on every run and no protection, and the
+    // repository .env it was meant to shut out is refused instead
+    // (validateRunRequest, assertNoGeminiRepositoryEnv).
+    return geminiSystemSettingsLoadable()
+      ? { GEMINI_CLI_SYSTEM_SETTINGS_PATH: GEMINI_SYSTEM_SETTINGS_PATH }
+      : {};
   }
 
   capabilities(): AdapterCapabilities {
@@ -82,9 +120,9 @@ export class GeminiAdapter extends BaseAdapter {
 
   override validateRunRequest(request: RunRequest): void {
     super.validateRunRequest(request);
-    assertNoGeminiProjectExecutionConfig(
-      validateWorkingDirectory(request.cwd) ?? process.cwd()
-    );
+    const workdir = validateWorkingDirectory(request.cwd) ?? process.cwd();
+    assertNoGeminiProjectExecutionConfig(workdir);
+    if (!geminiSystemSettingsLoadable()) assertNoGeminiRepositoryEnv(workdir);
   }
 
   override validateTuiRequest(
@@ -96,9 +134,9 @@ export class GeminiAdapter extends BaseAdapter {
     enablePlaywrightMcp = false
   ): void {
     super.validateTuiRequest(model, cwd, autonomy, effort, passthroughEnv, enablePlaywrightMcp);
-    assertNoGeminiProjectExecutionConfig(
-      validateWorkingDirectory(cwd) ?? process.cwd()
-    );
+    const workdir = validateWorkingDirectory(cwd) ?? process.cwd();
+    assertNoGeminiProjectExecutionConfig(workdir);
+    if (!geminiSystemSettingsLoadable()) assertNoGeminiRepositoryEnv(workdir);
   }
 
   buildTuiCommand(

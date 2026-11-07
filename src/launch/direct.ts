@@ -8,6 +8,7 @@ import {
   trustCheckedCommandChecks,
   trustCheckedCommandPaths,
 } from "../executable-security.js";
+import { launchRedirectCheck } from "../cli-runtime.js";
 import type { RunRequest, RunResult } from "../types.js";
 import { validateWorkingDirectory } from "../validation.js";
 
@@ -45,11 +46,23 @@ export async function runDirect(
   // argument (review round 110): re-stat it like the command's own
   // positions. Null on every direct run that built no such argument.
   const playwrightCheck = context.playwrightMcpCheck ?? null;
-  const stdinInput = adapter.getStdinInput(request);
   const env = adapter.buildExecutionEnv(
     adapter.getRunEnv(request, context),
     request.passthroughEnv
   );
+  // The executable an active redirect (OPENCODE_BIN_PATH) selected in the
+  // environment this run will spawn with (review round 331, item 5): the
+  // harness's own launcher execs it, so it is invisible to the command
+  // re-check above and is pinned here instead, captured before any
+  // adapter hook below runs. The gate has already refused a redirect it
+  // could not resolve, so null only means no redirect is active.
+  const redirectCheck = launchRedirectCheck(
+    adapter.id,
+    env,
+    request.passthroughEnv,
+    cwd
+  );
+  const stdinInput = adapter.getStdinInput(request);
   return runCapturedCommand(command, {
     cwd,
     env,
@@ -65,6 +78,10 @@ export async function runDirect(
     stdoutSink: context.stdoutSink,
     onSignaled,
     requiredPaths,
-    checks: [...checks, ...(playwrightCheck === null ? [] : [playwrightCheck])],
+    checks: [
+      ...checks,
+      ...(playwrightCheck === null ? [] : [playwrightCheck]),
+      ...(redirectCheck === null ? [] : [redirectCheck]),
+    ],
   });
 }

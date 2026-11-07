@@ -31,7 +31,9 @@ Environment rows, then one row per installed harness.
 Each harness row runs the free checks a launch would run, in the same
 order: binary trust, version contract, feature floors, the scode floor for
 harnesses that need a newer sandbox, provider override validity, login
-state, and the usage window behind the quota gate. The row's state is the
+state, and the usage window behind the quota gate. Binary trust runs even
+when a harness has no version contract, so an untrusted or missing binary
+never prints as `no contract`. The row's state is the
 first broken candidate, else the first warn candidate, else `OK`; the row
 also carries a remedy line naming the fix.
 
@@ -47,7 +49,7 @@ also carries a remedy line naming the fix.
 | `VERSION-UNREADABLE` | warn | The version probe returned nothing parseable (a timeout, a missing binary, or a spawn error names which). |
 | `KNOWN-BREAK` | warn or broken | A recorded break removes enforcement at named autonomy levels. Broken unless the sandbox mitigates it and scode is present; a mitigated row says so and warns. |
 | `FEATURE-FLOOR` | broken | A feature this codemux gates (hermetic runs, result JSON, sessions, experiment MCP) needs a newer harness than the installed one. |
-| `NO-LOGIN` | broken | No credential store where the adapter looks for one. |
+| `NO-LOGIN` | broken | No credential store where the adapter looks for one — or a store the launch path refuses: a claude mirror without an access token, empty codex token strings, or a zai key file that is a symlink or owned by another user. |
 | `LOGIN-EXPIRED` | broken | The stored credential is expired and the harness cannot renew it. Kimi's access token lives 15 minutes and kimi renews it from its refresh token on its next run, so a kimi store with a refresh token is `logged-in`; the row notes an aged-out access token. |
 | `LOGIN-UNKNOWN` | warn | The adapter cannot tell (a mirror may be absent, or a config file ambiguous). |
 | `QUOTA-LOW` | broken | The quota gate would refuse the launch: the usage window is below the ceiling. |

@@ -293,6 +293,54 @@ test.each(["timeout", "limit", "success", "failure"].flatMap((kind) => ["server"
   }
 }, 6000);
 
+test("a never-settling bridge cleanup does not hang the launcher's cleanup (review 331, item 18)", async () => {
+  // The finding: the runner bounds its closeProtocol wait with the cleanup
+  // grace, but the bridge's own close() awaited finalization with no bound,
+  // so a server close that never settled held the launcher's cleanup open
+  // forever — the run's result, already returned with a cleanup note, never
+  // reached the caller. The bridge bounds the same wait (past the server's
+  // own shutdown bounds, BRIDGE_CLOSE_ABANDON_MS), abandons the cleanup
+  // (failure recorded, server terminated, recording closed), and resolves
+  // the launcher's await; the first protocol owner reports the synthesized
+  // failure, later callers resolve.
+  const cwd = mkdtempSync(join(tmpdir(), "codemux-close-hang-"));
+  const bridge = new ExperimentBridge({ name: "experiment", command: process.execPath, args: [], env: [], recording: cwd }, cwd, "probe");
+  const finalize = spyOn(ExperimentServer.prototype, "close").mockImplementation(() => new Promise<void>(() => {}));
+  let retained = "";
+  class BridgeAdapter extends ClaudeAdapter {
+    override prepareRun() {
+      return { experimentBridge: bridge, stdoutSink: {
+        push(chunk: string) { retained += chunk; }, finish() { return retained; },
+        keptBytes() { return retained.length; },
+        closeProtocol() { return bridge.closeProtocol(); },
+      } };
+    }
+    override buildRunCommand() {
+      return [process.execPath, "-e", 'process.stdout.write("partial output"); setInterval(() => {}, 1000);'];
+    }
+  }
+  const spawn = bufferedChild(0);
+  try {
+    const result = await launchRunRequest(new BridgeAdapter({}),
+      { agent: "claude", prompt: "probe", cwd, autonomy: "high", sandboxed: false, timeoutMs: 5000 },
+      { sandbox: false, requestedAutonomy: "high", cwd });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("partial output");
+    expect(result.stderr.match(/cleanup failed:/g)).toHaveLength(1);
+    await expect(bridge.close()).resolves.toBeUndefined();
+    await expect(bridge.closeProtocol()).rejects.toThrow("asynchronous experiment cleanup did not complete within the cleanup grace");
+    expect(finalize).toHaveBeenCalledTimes(1);
+    const records = readFileSync(bridge.recordingPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(records.filter((record) => record.kind === "run_end")).toHaveLength(1);
+    expect(records.filter((record) => record.kind === "failure")).toHaveLength(1);
+  } finally {
+    spawn.mockRestore();
+    await bridge.close().catch(() => {});
+    finalize.mockRestore();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 15_000);
+
 test("pipe abandonment also releases an exit promise held open by inherited stdio", async () => {
   const spawn = spyOn(Bun, "spawn").mockReturnValue({
     pid: 2147483647, kill: () => {}, stdin: { write: () => 0, end: () => 0 },

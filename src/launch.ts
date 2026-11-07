@@ -1,5 +1,5 @@
 import type { BaseAdapter, RunContext } from "./adapters/base.js";
-import { assertCompatibleScode, assertHarnessSupported, resolveScodeExecutableForEnv, runSandboxedWithStdin } from "./cli-runtime.js";
+import { assertCompatibleScode, assertHarnessSupported, launchRedirectCheck, resolveScodeExecutableForEnv, runSandboxedWithStdin } from "./cli-runtime.js";
 import { foldedSinkUsage } from "./plain-unwrap.js";
 import { ExperimentFailure, experimentFailure } from "./experiment-records.js";
 import { experimentFailedResult } from "./result-envelope/experiment.js";
@@ -353,6 +353,21 @@ export async function launchRunRequest(
       injectedEnv,
       adapter.providerOverrideActive()
     );
+    // The executable an active redirect (OPENCODE_BIN_PATH) selected in
+    // the launch environment (review round 331, item 5): the harness's
+    // own launcher execs it inside the sandbox, invisible to the command
+    // re-check, so it is pinned here and revalidated beside the runner's
+    // own positions immediately before the spawn — captured as a
+    // statement, so every adapter hook between here and the call
+    // (getStdinInput below) runs after the identity was taken. The gate
+    // has already refused a redirect it could not resolve, so null only
+    // means no redirect is active.
+    const redirectCheck = launchRedirectCheck(
+      adapter.id,
+      envArg,
+      request.passthroughEnv,
+      effectiveWorkingDirectory(options.cwd)
+    );
     // The direct path's `captured` rule, mirrored: a capture failure of a
     // run that spawned (scode included — the harness ran under it) or a
     // processRunResult throw owes the failure receipt; a refusal before
@@ -385,7 +400,11 @@ export async function launchRunRequest(
       // The repeating decline carrier (review round 153): aider's canned
       // negatives feed the child for its whole lifetime, never a one-shot
       // block whose EOF a yes-default prompt would read as acceptance.
-      adapter.stdinRepeats(request)
+      adapter.stdinRepeats(request),
+      // The redirect target's pin, captured above: revalidated beside the
+      // runner's own positions immediately before the spawn (review round
+      // 331, item 5).
+      redirectCheck
     );
     if (options.printSandbox) {
       // The argv was already printed inside the runner (after every probe

@@ -32,6 +32,16 @@ export const FORCE_KILL_DELAY_MS = 2_000;
 // (orphaned into another process group before the first snapshot) may hold
 // them open forever; the run must still return.
 export const PIPE_GIVE_UP_MS = 1_000;
+/**
+ * How long the experiment bridge's close() waits for finalization before
+ * abandoning it (review round 331, item 18). Strictly longer than
+ * finalization's own bounds, so the abandonment never replaces a real
+ * outcome: the server's close drains for FORCE_KILL_DELAY_MS +
+ * PIPE_GIVE_UP_MS, the inventory recheck waits PIPE_GIVE_UP_MS more, and
+ * one PIPE_GIVE_UP_MS is margin (review round 334: an equal bound raced
+ * the server's shutdown and won).
+ */
+export const BRIDGE_CLOSE_ABANDON_MS = FORCE_KILL_DELAY_MS + 3 * PIPE_GIVE_UP_MS;
 // What a signaled run's cleanup can take once the signal has landed (the
 // force-kill delay, the pipe give-up, the protocol cleanup's grace, and
 // the interruption receipt's grace), plus a second of margin so a peer

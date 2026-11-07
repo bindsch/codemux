@@ -44,6 +44,21 @@ export class CodexTopLevelInventory {
     const extra = Object.keys(tools).filter((name) => !allowed.has(name));
     if (extra.length) throw new ExperimentFailure(Code.InventoryMismatch,
       `Codex top_level_tools contains tools outside the experiment set: ${extra.join(", ")}`);
+    // The accepted spellings of one tool are aliases of one callable, so a
+    // map exposing two at once is not the exact experiment-only inventory
+    // (review round 331); each tool — the resource trio included — appears
+    // under at most one spelling.
+    const duplicates: string[] = [];
+    for (const spellings of expectedTools) {
+      const present = spellings.filter((spelling) => Object.hasOwn(tools, spelling));
+      if (present.length > 1) duplicates.push(present.join(", "));
+    }
+    for (const name of CODEX_RESOURCE_TOOLS) {
+      const present = [name, `functions.${name}`].filter((spelling) => Object.hasOwn(tools, spelling));
+      if (present.length > 1) duplicates.push(present.join(", "));
+    }
+    if (duplicates.length) throw new ExperimentFailure(Code.InventoryMismatch,
+      `Codex top_level_tools exposes duplicate spellings of one tool: ${duplicates.join("; ")}`);
     // The catalog defines the experiment's tools as the namespace's own
     // function entries (the additional_tools payload): a checked map
     // must carry the namespace and every one of them, under any accepted

@@ -130,7 +130,9 @@ const COST = (value: unknown): number | null =>
  * (reportedTokenCount and safeTokenSum, src/result-envelope/common.ts): a
  * count is a whole non-negative safe integer, and a cache read at the
  * ceiling plus two written tokens is null, never a rounded number (review
- * round 80).
+ * round 80). Whether `tokens.input` itself includes cache reads is not
+ * established by any recorded OpenCode run (every live fixture reports
+ * nulls), so it is taken as the non-cached input and published unchanged.
  */
 export function normalizeOpenCodeUsage(part: Record<string, unknown>): ResultUsageBlock {
   const tokens = isRecord(part["tokens"]) ? (part["tokens"] as Record<string, unknown>) : {};

@@ -2,7 +2,7 @@
 // capability probes, keep-env sandbox option resolution, and the
 // accounting-sink checks. src/cli-runtime.ts owns the run paths that
 // call these.
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { runCapturedCommand } from "../process-runner.js";
@@ -183,8 +183,10 @@ async function probeScodeKeepEnvSupportOnce(
 // launch asking. Repeated spawns reuse the answer only while that key
 // stays the same. An opencode override creates a fresh OPENCODE_CONFIG
 // directory each turn, so each turn probes again. The key names the
-// executable plus the two facts about the lookup that can change what
-// the probe actually runs: a digest of the WHOLE probe environment
+// executable (its path and its stat identity, so a scode replaced at the
+// same path is probed again; review round 331, item 7) plus the two
+// facts about the lookup that can change what the probe actually runs:
+// a digest of the WHOLE probe environment
 // (buildSandboxEnv of extraEnv, sorted name/value pairs — every variable
 // the probe runs with, not just PATH, so no environment-sensitive
 // wrapper can poison another environment's answer by dispatching on a
@@ -201,14 +203,33 @@ async function probeScodeKeepEnvSupportOnce(
 // Concurrent callers share the in-flight probe; it never rejects.
 const scodeKeepEnvProbes = new Map<string, Promise<ScodeKeepEnvSupport>>();
 
-/** The cache key: the executable plus what identifies the lookup around
- * it — a sha256 digest of the whole probe environment (sorted, so the
- * key is stable across calls) and the working directory. */
+/** The executable's stat identity for the cache key (review round 331,
+ * item 7): a scode replaced or upgraded at the same path in a long-lived
+ * process is different bytes behind the same key, so its dev, inode,
+ * size, and mtime ride the key and the replacement is probed again.
+ * Null when the executable cannot be stat'd — the probe then runs once
+ * and caches nothing, the same rule as "unprobeable". */
+function scodeExecutableIdentity(scode: string): string | null {
+  try {
+    const stat = statSync(scode, { bigint: true });
+    return `${stat.dev}-${stat.ino}-${stat.size}-${stat.mtimeNs}`;
+  } catch {
+    return null;
+  }
+}
+
+/** The cache key: the executable (path AND stat identity, so replacing
+ * the binary at the path re-probes) plus what identifies the lookup
+ * around it — a sha256 digest of the whole probe environment (sorted, so
+ * the key is stable across calls) and the working directory. Null when
+ * the executable cannot be stat'd: nothing is cached under it. */
 function scodeKeepEnvProbeKey(
   scode: string,
   workdir: string,
   extraEnv?: Record<string, string>
-): string {
+): string | null {
+  const identity = scodeExecutableIdentity(scode);
+  if (identity === null) return null;
   const env = buildSandboxEnv(extraEnv);
   const digest = createHash("sha256");
   for (const name of Object.keys(env).sort()) {
@@ -217,7 +238,7 @@ function scodeKeepEnvProbeKey(
     digest.update(env[name] ?? "");
     digest.update("\0");
   }
-  return [scode, digest.digest("hex"), workdir].join("\0");
+  return [scode, identity, digest.digest("hex"), workdir].join("\0");
 }
 
 async function probeScodeKeepEnvSupport(
@@ -226,6 +247,9 @@ async function probeScodeKeepEnvSupport(
   extraEnv?: Record<string, string>
 ): Promise<ScodeKeepEnvSupport> {
   const key = scodeKeepEnvProbeKey(scode, workdir, extraEnv);
+  // An executable that cannot even be stat'd is mid-replacement: probe
+  // once, cache nothing (the "unprobeable" rule).
+  if (key === null) return probeScodeKeepEnvSupportOnce(scode, workdir, extraEnv);
   let probe = scodeKeepEnvProbes.get(key);
   if (probe === undefined) {
     probe = probeScodeKeepEnvSupportOnce(scode, workdir, extraEnv).then((support) => {

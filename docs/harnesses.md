@@ -84,9 +84,13 @@ Use `codemux list` for discovery, `codemux doctor` for local configuration diagn
 
 Cursor resolves the explicit `CODEMUX_CURSOR_ENTRY=cursor` opt-in first, then `cursor-agent`, then `agent`. Pass the opt-in with `--pass-env CODEMUX_CURSOR_ENTRY`. The desktop wrapper can install or update the standalone agent; codemux does not invoke it automatically. Its version probe is `cursor agent --version`, not the desktop app's version.
 
+Antigravity's accepted `--effort` values depend on the model: the binary's help lists `low`, `medium`, `high`, `xhigh`, and `max`, and codemux accepts those five, but a model such as `gemini-4-argon` takes `low`, `medium`, and `high` only and fails after the spawn on the others (live matrix, 2026-11-07). A model name that ends in an effort suffix (`gemini-3.8-flash-low`) already carries its effort, and codemux refuses `--effort` beside it.
+
 Antigravity binds its prompt as `--print=<prompt>` and uses equals forms for enum flags. **The prompt reaches process argv even when codemux reads it from `-f` or stdin.** Kimi and OpenHands also use argv prompt transport. Codemux avoids printing those prompts, but input-file or stdin selection cannot hide them from process inspection when the upstream interface requires argv.
 
 ## Headless reply output
+
+OpenHands without stored settings prints "Headless mode requires existing settings." and exits 0 without running the task. Codemux reports that run as failed: exit 1, a diagnostic on stderr, and `success: false` in the result envelope (live matrix, 2026-11-07). Run `openhands` once to configure it.
 
 Kimi's headless bullet format was observed on 2.3.2: each reply block starts with a `• ` prefix, and continuation lines use two spaces. When the installed version probe reports major version 2 or higher and all stdout follows this format, codemux removes those prefixes and indents, joins blocks with one blank line, and ends the reply with one newline. For example, `• A\n  B\n\n` becomes `A\nB\n`. Versions 0.x and 1.x and unknown versions keep their output unchanged. Plain replies and other output stay unchanged. Stderr stays unchanged.
 

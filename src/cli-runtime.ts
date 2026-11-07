@@ -68,10 +68,9 @@ export function handleUnexpectedError(error: unknown): never {
  * the launcher's for the launch, codemux's own cwd for a realpath here --
  * and those can differ, so codemux cannot name the file it would validate)
  * and must pass the same trust check the PATH-resolved binary does, because
- * the probe runs it before scode exists. Null is the caller's fallback,
- * never a throw: a redirect codemux cannot resolve to a trusted executable
- * is a warning about the version being unconfirmed, not a refusal of the
- * run -- the launch may still sandbox it.
+ * the probe runs it before scode exists. Null is never a throw; the
+ * callers refuse on it (the gate with a usage refusal, the launch paths
+ * by never seeing one -- the gate has already refused).
  */
 function resolveRedirectedBinary(
   name: string,
@@ -85,6 +84,40 @@ function resolveRedirectedBinary(
   } catch {
     return null;
   }
+}
+
+/** The refusal the gate and the launch paths share for a redirect that
+ * does not name one trusted absolute executable. */
+function redirectRefusal(agent: AgentId, redirects: readonly string[]): UsageRefusalError {
+  return new UsageRefusalError(
+    `${redirects.join(", ")} is set but does not name one trusted absolute executable for ` +
+      `${agent}: point it at an absolute path to an existing executable owned by you or ` +
+      `root that is not group- or world-writable and outside the working directory, or ` +
+      `unset it`
+  );
+}
+
+/** The pre-spawn identity check for the executable an active redirect
+ * selected (review round 331, item 5): every launch path pins it beside
+ * the command's own positions -- the way the Playwright binary is pinned
+ * -- so replacing the redirect target after its version probe but before
+ * the spawn fails the re-stat. Null only when no redirect is active. An
+ * active redirect that no longer resolves to one trusted executable --
+ * replaced, removed, or made writable in the seconds between the gate
+ * and this capture -- is REFUSED here, never treated as absent (review
+ * round 337): a null for it would spawn with no pin and, on a direct
+ * run, exec the new bytes outside any sandbox. */
+export function launchRedirectCheck(
+  agent: AgentId,
+  environment: Record<string, string>,
+  explicitPassthrough: readonly string[] | undefined,
+  workdir: string
+): ExecutableCheck | null {
+  const redirects = activeRedirects(agent, environment, explicitPassthrough ?? []);
+  if (redirects.length === 0) return null;
+  const resolved = redirects.length === 1 ? resolveRedirectedBinary(redirects[0]!, environment, workdir) : null;
+  if (resolved === null) throw redirectRefusal(agent, redirects);
+  return executableCheck(resolved);
 }
 
 /**
@@ -128,9 +161,10 @@ export async function assertHarnessSupported(
   // supported redirect behind an old one. resolveTrustedExecutable holds the redirect to the
   // PATH binary's own rule -- real file, not group/world-writable, owned by the user or root --
   // which is what makes probing it outside the sandbox acceptable. A redirect that cannot be
-  // so resolved -- not absolute, missing, or failing the trust check -- keeps the fallback: say
-  // the version is unconfirmed, and keep gating the PATH binary, because the operator's
-  // redirect does not make a below-minimum launcher acceptable.
+  // so resolved -- not absolute, missing, failing the trust check, or more than one active --
+  // REFUSES the run instead of warning (review round 331, item 4): on a direct run the
+  // launcher would exec exactly that value outside any sandbox, and the operator's untested
+  // override never covered a trust refusal, so it does not downgrade this one.
   const redirects = activeRedirects(agent, environment, explicitPassthrough);
   let gateBinary = resolveTrustedExecutable(binary, binaryName, workdir);
   if (redirects.length > 0) {
@@ -139,11 +173,7 @@ export async function assertHarnessSupported(
     if (redirected !== null) {
       gateBinary = redirected;
     } else {
-      console.warn(
-        `Warning: ${redirects.join(", ")} can change which ${agent} executable runs, so Codemux ` +
-          `cannot confirm the version of the binary this run will use. Autonomy may not behave ` +
-          `as documented.`
-      );
+      throw redirectRefusal(agent, redirects);
     }
   }
   return assertSupportedHarnessVersion({
@@ -189,7 +219,11 @@ export async function runSandboxed(
    * where the argument was built, invisible to the command re-check, and
    * revalidated here immediately before the spawn. Null when the command
    * embeds none. */
-  nestedExecutable?: ExecutableCheck | null
+  nestedExecutable?: ExecutableCheck | null,
+  /** The executable an active redirect selected (launchRedirectCheck,
+   * review round 331, item 5): the tui's sandboxed launch pins it the way
+   * runSandboxedWithStdin does. Null when no redirect is active. */
+  redirectCheck?: ExecutableCheck | null
 ): Promise<number> {
   const workdir = validateWorkingDirectory(cwd) ?? process.cwd();
   assertNoProjectScodePolicy(workdir);
@@ -254,7 +288,8 @@ export async function runSandboxed(
     ...trustCheckedCommandPaths(resolvedCommand),
     scode,
   ], [...trustCheckedCommandChecks(resolvedCommand), ...(carriedScodeCheck === null ? [] : [carriedScodeCheck]),
-    ...(nestedExecutable == null ? [] : [nestedExecutable])]);
+    ...(nestedExecutable == null ? [] : [nestedExecutable]),
+    ...(redirectCheck == null ? [] : [redirectCheck])]);
   // The interactive branch's spawn rides the guarded wait (review round
   // 223): the wait installs its signal handlers before running it, so a
   // SIGTERM or SIGHUP cannot land between the spawn and the handlers and
@@ -300,7 +335,12 @@ export async function runSandboxedWithStdin(
   /** The adapter's `stdinRepeats`: feed the block for the child's whole
    * lifetime instead of one write plus the half-close (review round 153;
    * src/process-stdin-repeat.ts). */
-  stdinRepeats?: boolean
+  stdinRepeats?: boolean,
+  /** The executable an active redirect selected (launchRedirectCheck,
+   * review round 331, item 5): pinned beside the command's own positions
+   * so a replacement between the version probe and the spawn fails the
+   * pre-spawn re-stat. Null when no redirect is active. */
+  redirectCheck?: ExecutableCheck | null
 ): Promise<RunResult> {
   const workdir = validateWorkingDirectory(cwd) ?? process.cwd();
   assertNoProjectScodePolicy(workdir);
@@ -358,12 +398,14 @@ export async function runSandboxedWithStdin(
   // scodeCmd[0] is pinned by the check carried from that resolution
   // (round 19, edges 2; round 20, minor 7): the same rule the
   // inherited-stdio runner above applies. The nested executable joins
-  // the same pin (review round 110).
+  // the same pin (review round 110), and so does the redirect target
+  // (review round 331, item 5).
   assertExecutablesUnchanged(scodeCmd, "sandbox command", [
     ...trustCheckedCommandPaths(resolvedCommand),
     scode,
   ], [...trustCheckedCommandChecks(resolvedCommand), ...(carriedScodeCheck === null ? [] : [carriedScodeCheck]),
-    ...(nestedExecutable == null ? [] : [nestedExecutable])]);
+    ...(nestedExecutable == null ? [] : [nestedExecutable]),
+    ...(redirectCheck == null ? [] : [redirectCheck])]);
   return runCapturedCommand(scodeCmd, {
     cwd: workdir,
     env,
@@ -378,6 +420,7 @@ export async function runSandboxedWithStdin(
     // edges 1).
     requiredPaths: [...trustCheckedCommandPaths(resolvedCommand), scode],
     checks: [...trustCheckedCommandChecks(resolvedCommand), ...(carriedScodeCheck === null ? [] : [carriedScodeCheck]),
-      ...(nestedExecutable == null ? [] : [nestedExecutable])],
+      ...(nestedExecutable == null ? [] : [nestedExecutable]),
+      ...(redirectCheck == null ? [] : [redirectCheck])],
   });
 }

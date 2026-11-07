@@ -80,6 +80,9 @@ export class CodexRolloutParser {
   private lastCompleted?: { responseId: string; counters: JsonObject; totals: unknown };
   private responseIds = new Set<string>();
   private turnIds = new Set<string>();
+  /** The first accepted additional_tools catalog's normalized declarations;
+   * every later catalog must deeply equal them. */
+  private catalogDeclarations?: JsonObject[];
   private catalogSeen = false;
   private turns = 0;
   private usageRecords = 0;
@@ -268,6 +271,15 @@ export class CodexRolloutParser {
       const missing = [...this.toolNames()].filter((name) => !experimentNames.has(name));
       if (missing.length) throw new ExperimentFailure(Code.InventoryMismatch,
         `Codex additional_tools omits experiment tools: ${missing.join(", ")}`);
+      // Every catalog in one rollout must equal the first accepted one
+      // (review round 331): each is individually valid against the relay
+      // definitions, so only comparing their normalized declarations
+      // catches a tool schema that drifted mid-experiment.
+      if (this.catalogDeclarations === undefined) this.catalogDeclarations = declarations;
+      else if (!isDeepStrictEqual(this.catalogDeclarations, declarations)) {
+        throw new ExperimentFailure(Code.InventoryMismatch,
+          "Codex additional_tools catalog changed during the rollout");
+      }
       this.catalogSeen = true;
     } finally {
       this.record("harness_tool_catalog", { tools: payload.tools, item: payload, declarations });

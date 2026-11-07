@@ -1,4 +1,5 @@
 import { BaseAdapter } from "./base.js";
+import { appendDiagnostic } from "../result-envelope.js";
 import { assertNoOpenHandsProjectExecutionConfig } from "../project-safety.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import {
@@ -11,8 +12,10 @@ import type {
   AgentId,
   AutonomyLevel,
   RunRequest,
+  RunResult,
   AdapterCapabilities,
 } from "../types.js";
+import type { RunContext } from "../run-context.js";
 import { envKeyLoginState, type LoginState } from "../harness-health.js";
 
 /**
@@ -36,6 +39,27 @@ import { envKeyLoginState, type LoginState } from "../harness-health.js";
  * LLM_BASE_URL from the environment it would otherwise ignore — the same
  * channel a provider override rides.
  */
+/** The line OpenHands prints before it exits 0 without a task. */
+export const OPENHANDS_NO_SETTINGS_MARKER = "Headless mode requires existing settings.";
+const OPENHANDS_NO_SETTINGS_HINT =
+  "codemux: openhands ran no task: headless mode requires existing settings; run `openhands` once to configure it";
+const ANSI_SGR = /\u001b\[[0-9;]*m/g;
+
+/**
+ * Whether stdout is OpenHands' complete no-settings startup output: the
+ * marker line, then its "Please run: ... --headless" instruction, then a
+ * "Goodbye!" line, each a whole line once its color codes are removed. A
+ * reply that merely quotes the marker does not match (review round 334).
+ */
+export function openHandsRanNoTask(stdout: string): boolean {
+  const lines = stdout.split("\n").map((line) => line.replace(ANSI_SGR, "").trimEnd());
+  const marker = lines.indexOf(OPENHANDS_NO_SETTINGS_MARKER);
+  if (marker < 0) return false;
+  const instruction = lines[marker + 1] ?? "";
+  if (!instruction.startsWith("Please run:") || !instruction.includes("--headless")) return false;
+  return lines.slice(marker + 2).includes("Goodbye!");
+}
+
 export class OpenHandsAdapter extends BaseAdapter {
   readonly id: AgentId = "openhands";
   readonly binaryName = "openhands";
@@ -186,6 +210,26 @@ export class OpenHandsAdapter extends BaseAdapter {
 
   override getStdinInput(_request: RunRequest): string | null {
     return null;
+  }
+
+  /**
+   * OpenHands 1.16 without stored settings prints "Headless mode requires
+   * existing settings." and "Goodbye!" to stdout and exits 0 without
+   * running the task (live matrix, 2026-11-07). Reported as what it is: a
+   * failed run with exit 1 and a diagnostic, never a reply, so a caller
+   * reading the exit code or the result envelope cannot count the setup
+   * text as the model's answer. Only an exit-0 run is reclassified, and
+   * only on the complete startup output (openHandsRanNoTask): a nonzero
+   * exit is already a failure, and a reply quoting the phrase is a reply.
+   */
+  override processRunResult(result: RunResult, _request: RunRequest, _context?: RunContext): RunResult {
+    if (result.exitCode !== 0 || !openHandsRanNoTask(result.stdout)) return result;
+    return {
+      ...result,
+      success: false,
+      exitCode: 1,
+      stderr: appendDiagnostic(result.stderr, OPENHANDS_NO_SETTINGS_HINT),
+    };
   }
 
   override validateRunRequest(request: RunRequest): void {

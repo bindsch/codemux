@@ -8,10 +8,11 @@
 
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { doctorTimeoutMs, validateAgentFilter } from "../src/doctor-machine-check.js";
 import { UsageRefusalError } from "../src/validation.js";
-import { VERSION_VERDICT_PROBE_TIMEOUT_MS } from "../src/harness-health.js";
+import { VERSION_VERDICT_PROBE_TIMEOUT_MS, probeVersionVerdict } from "../src/harness-health.js";
 import { fakeScodeHelp, fakeUsagemux, fixtureHome, readPathMarker, runDoctor } from "./helpers/doctor.js";
 import { createFakeBinaryEnv } from "./helpers/cli.js";
 
@@ -30,7 +31,7 @@ const greenBinaries = (claudeReading: string): Record<string, string> => ({
 });
 
 const claudeMirror = (expiresAt: number): string =>
-  JSON.stringify({ claudeAiOauth: { expiresAt } });
+  JSON.stringify({ claudeAiOauth: { accessToken: "fixture-token", expiresAt } });
 
 describe("validateAgentFilter", () => {
   test("--only keeps adapter order; --skip subtracts; commas split", () => {
@@ -47,6 +48,24 @@ describe("validateAgentFilter", () => {
     expect(() => validateAgentFilter(["claude"], ["claude"])).toThrow(
       /--only and --skip both name claude/
     );
+  });
+});
+
+describe("probeVersionVerdict", () => {
+  test("trust runs before the no-contract return (round 331)", async () => {
+    // An agent without a version contract still gets its binary checked:
+    // doctor must not print "no contract" for a binary the launch path
+    // refuses to run — here a group-writable one.
+    const dir = mkdtempSync(join(tmpdir(), "codemux-doctor-trust-"));
+    scratchDirs.push(dir);
+    const qwen = join(dir, "qwen");
+    writeFileSync(qwen, "#!/bin/sh\nexit 0\n");
+    chmodSync(qwen, 0o775);
+    const workdir = mkdtempSync(join(tmpdir(), "codemux-doctor-cwd-"));
+    scratchDirs.push(workdir);
+    expect((await probeVersionVerdict("qwen", "qwen", { binary: qwen, workdir })).kind).toBe("untrusted");
+    chmodSync(qwen, 0o755);
+    expect((await probeVersionVerdict("qwen", "qwen", { binary: qwen, workdir })).kind).toBe("no-contract");
   });
 });
 

@@ -97,6 +97,9 @@ Hermetic flags also disable native app, plugin, memory, and goal sources.
 Before dispatching any `tools/call`, Codemux reads the first rollout
 `world_state.state.top_level_tools`. This is a map of tool names to hashes.
 It permits only the qualified experiment names and the resource trio below.
+One tool appears under at most one accepted spelling, the resource trio included:
+two spellings of one callable, such as `mcp__experiment.lookup` beside
+`mcp__experiment__lookup`, fail with `inventory_mismatch`.
 Namespace header keys are permitted only for those allowed members. The producer
 stores both headers and qualified leaves at
 `core/src/context/world_state/top_level_tools.rs:51-76,90-94,133`.
@@ -137,7 +140,9 @@ Declarations must belong to the qualified experiment inventory or
 the exact built-in set below. A different namespace, name, or declaration
 type fails with `inventory_mismatch`, even when the tool was never called.
 Each catalog must contain every experiment tool exactly once. Duplicate
-declarations fail. A missing or incomplete catalog before the first
+declarations fail. Every catalog after the first accepted one must equal it
+declaration for declaration; a tool schema that changed mid-rollout fails with
+`inventory_mismatch`. A missing or incomplete catalog before the first
 `function_call` fails with `inventory_mismatch`.
 Codex `protocol/src/models.rs:1053-1061` defines the item's optional `id`,
 `role`, and raw `tools` array.

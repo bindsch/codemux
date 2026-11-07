@@ -31,7 +31,7 @@ const probeThrough = (env: Record<string, string>): void => {
 
 const MINUTE = 60_000;
 const claudeGreen = `if [ "$1" = "--version" ]; then printf '2.1.300 (Claude Code)\\n'; exit 0; fi`;
-const claudeHome = { ".claude/.credentials.json": JSON.stringify({ claudeAiOauth: { expiresAt: Date.now() + 30 * MINUTE } }) };
+const claudeHome = { ".claude/.credentials.json": JSON.stringify({ claudeAiOauth: { accessToken: "fixture-token", expiresAt: Date.now() + 30 * MINUTE } }) };
 
 /** A fake codemux: it records every `check` argv beside itself and either
  * answers OK or fails with one stderr line, per `fail`. */

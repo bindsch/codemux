@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { OpenHandsAdapter } from "../src/adapters/openhands.js";
+import { OPENHANDS_NO_SETTINGS_MARKER, OpenHandsAdapter, openHandsRanNoTask } from "../src/adapters/openhands.js";
 
 const adapter = new OpenHandsAdapter();
 
@@ -57,6 +57,40 @@ describe("OpenHandsAdapter", () => {
     const cmd = adapter.buildRunCommand({ agent: "openhands", prompt: "hello" });
     expect(cmd.slice(-2)).toEqual(["--task", "hello"]);
     expect(adapter.capabilities().supportsEffort).toBe(false);
+  });
+
+  test("a settings-missing exit 0 is a failed run, not a reply (live matrix 2026-11-07)", () => {
+    const request = { agent: "openhands" as const, prompt: "Reply with OK" };
+    const stdout = [
+      "OpenHands CLI terminal UI may not work correctly in this environment",
+      `\u001b[38;2;255;107;107m${OPENHANDS_NO_SETTINGS_MARKER}\u001b[0m`,
+      "Please run: openhands to configure your settings before using --headless.",
+      "Goodbye!",
+      "",
+    ].join("\n");
+    const processed = adapter.processRunResult(
+      { stdout, stderr: "", exitCode: 0, success: true },
+      request
+    );
+    expect(processed.success).toBe(false);
+    expect(processed.exitCode).toBe(1);
+    expect(processed.stderr).toContain("headless mode requires existing settings");
+    // A nonzero exit keeps its own code; a real reply passes untouched.
+    expect(adapter.processRunResult({ stdout, stderr: "", exitCode: 2, success: false }, request).exitCode).toBe(2);
+    const ok = { stdout: "OK\n", stderr: "", exitCode: 0, success: true };
+    expect(adapter.processRunResult(ok, request)).toEqual(ok);
+    // A reply that quotes the phrase, or carries the marker without the
+    // instruction and farewell lines, is a reply (review round 334).
+    for (const quoted of [
+      `The CLI said "${OPENHANDS_NO_SETTINGS_MARKER}" once.\nGoodbye!\n`,
+      `${OPENHANDS_NO_SETTINGS_MARKER}\nOK\n`,
+      `${OPENHANDS_NO_SETTINGS_MARKER}\nPlease run: openhands to configure your settings before using --headless.\nOK\n`,
+    ]) {
+      expect(openHandsRanNoTask(quoted)).toBe(false);
+      const reply = { stdout: quoted, stderr: "", exitCode: 0, success: true };
+      expect(adapter.processRunResult(reply, request)).toEqual(reply);
+    }
+    expect(openHandsRanNoTask(stdout)).toBe(true);
   });
 
   test("requires the scode boundary below high", () => {

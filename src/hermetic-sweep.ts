@@ -270,12 +270,16 @@ function sweepStaleRunDirs(
 }
 
 /**
- * Refuses a path that is not a real directory owned by the current user.
- * `prepareRunDirParent` applies this to a parent at creation time; the
- * `--output-last-message` reader applies it to the per-run directory and
- * that parent again at read time, because a run with write access to
- * ~/.codex could have swapped either for a symlink in between, pointing a
- * read or a delete through it into a directory codemux never chose.
+ * Refuses a path that is not a real directory owned by the current user and
+ * not writable by group or world (review round 331, item 6): a writable
+ * `.codemux-hermetic`/`.codemux-scratch`/`.codemux-provider` parent lets
+ * another user replace run-directory entries and redirect subsequent
+ * credential and config writes. `prepareRunDirParent` applies this to a
+ * parent at creation time; the `--output-last-message` reader applies it to
+ * the per-run directory and that parent again at read time, because a run
+ * with write access to ~/.codex could have swapped either for a symlink in
+ * between, pointing a read or a delete through it into a directory codemux
+ * never chose.
  */
 export function assertTrustedDirectory(path: string): void {
   const stat = lstatSync(path);
@@ -283,9 +287,12 @@ export function assertTrustedDirectory(path: string): void {
     !stat.isDirectory() ||
     (process.platform !== "win32" &&
       typeof process.getuid === "function" &&
-      stat.uid !== process.getuid())
+      stat.uid !== process.getuid()) ||
+    (process.platform !== "win32" && (stat.mode & 0o022) !== 0)
   ) {
-    throw new Error(`${path} must be a directory owned by the current user`);
+    throw new Error(
+      `${path} must be a directory owned by the current user and not group- or world-writable`
+    );
   }
 }
 

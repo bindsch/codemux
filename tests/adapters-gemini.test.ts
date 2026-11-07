@@ -1,9 +1,22 @@
-import { describe, test, expect } from "bun:test";
+import { afterEach, describe, test, expect, spyOn } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   GEMINI_SYSTEM_SETTINGS_PATH,
   GeminiAdapter,
+  geminiSettingsHost,
+  geminiSystemSettingsLoadable,
 } from "../src/adapters/gemini.js";
 import type { RunRequest } from "../src/types.js";
+
+/** Pretend every path on the settings file's chain is owned by `uid`. */
+function ownChain(uid: number): void {
+  spyOn(geminiSettingsHost, "platform").mockReturnValue("darwin");
+  spyOn(geminiSettingsHost, "statSync").mockImplementation(
+    (() => ({ uid })) as unknown as typeof geminiSettingsHost.statSync
+  );
+}
 
 describe("GeminiAdapter", () => {
   const adapter = new GeminiAdapter();
@@ -13,10 +26,53 @@ describe("GeminiAdapter", () => {
     expect(adapter.binaryName).toBe("gemini");
   });
 
-  test("disables repository .env loading with authoritative settings", () => {
+  afterEach(() => {
+    spyOn(geminiSettingsHost, "platform").mockRestore();
+    spyOn(geminiSettingsHost, "statSync").mockRestore();
+  });
+
+  test("names the system settings file only where the Gemini CLI will load it (root-owned chain)", () => {
+    ownChain(0);
+    expect(geminiSystemSettingsLoadable()).toBe(true);
     expect(adapter.getEnv()).toEqual({
       GEMINI_CLI_SYSTEM_SETTINGS_PATH: GEMINI_SYSTEM_SETTINGS_PATH,
     });
+  });
+
+  test("omits the settings variable on a user-owned prefix, where the CLI skips the file (live matrix 2026-11-07)", () => {
+    ownChain(501);
+    expect(geminiSystemSettingsLoadable()).toBe(false);
+    expect(adapter.getEnv()).toEqual({});
+  });
+
+  test("an unreadable settings path is not loadable", () => {
+    spyOn(geminiSettingsHost, "platform").mockReturnValue("darwin");
+    spyOn(geminiSettingsHost, "statSync").mockImplementation((() => {
+      throw new Error("ENOENT");
+    }) as unknown as typeof geminiSettingsHost.statSync);
+    expect(geminiSystemSettingsLoadable()).toBe(false);
+  });
+
+  test("refuses a repository .env when the settings layer cannot load, and accepts it when it can", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-gemini-env-"));
+    try {
+      writeFileSync(join(cwd, ".env"), "GEMINI_API_KEY=planted\n");
+      const request: RunRequest = { agent: "gemini", prompt: "test", cwd };
+      ownChain(501);
+      expect(() => adapter.validateRunRequest(request)).toThrow(/refuses a repository \.env/);
+      expect(() => adapter.validateTuiRequest(undefined, cwd, "high")).toThrow(/refuses a repository \.env/);
+      spyOn(geminiSettingsHost, "statSync").mockRestore();
+      ownChain(0);
+      expect(() => adapter.validateRunRequest(request)).not.toThrow();
+      expect(() => adapter.validateTuiRequest(undefined, cwd, "high")).not.toThrow();
+      // Without a .env the user-owned prefix runs as before.
+      rmSync(join(cwd, ".env"));
+      spyOn(geminiSettingsHost, "statSync").mockRestore();
+      ownChain(501);
+      expect(() => adapter.validateRunRequest(request)).not.toThrow();
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   test("capabilities are correct", () => {

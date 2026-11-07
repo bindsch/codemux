@@ -312,10 +312,14 @@ A second signal with no child alive only latches and changes nothing.
 
 The descendant capture samples the process tree every five seconds while a
 session runs, so the end path's SIGKILL reaches processes whose parent exited
-long before. A descendant that forks and exits between two samples, or before
-the first one, leaves a process the reaper owns and no walk can attribute; that
-is a known limit, and closing it needs kernel help the sandbox boundary does
-not provide.
+long before. The sampling continues through a stop's grace period, and one
+extra asynchronous sample follows the stop signal itself, so a cleanup helper
+the harness starts while handling SIGTERM is remembered before the harness
+exits. A descendant that forks and exits between two samples, or before
+the first one, or a harness that starts its helper and exits at once after
+the stop signal, leaves a process the reaper owns and no walk can attribute;
+that is a known limit, and closing it needs kernel help the sandbox boundary
+does not provide.
 
 On Windows codemux has no process table reader and no process groups, so a
 tree-scoped termination reaches the immediate child only; descendants the

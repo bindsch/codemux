@@ -18,7 +18,7 @@ afterAll(() => {
 
 const MINUTE = 60_000;
 const claudeMirror = (expiresAt: number): string =>
-  JSON.stringify({ claudeAiOauth: { expiresAt } });
+  JSON.stringify({ claudeAiOauth: { accessToken: "fixture-token", expiresAt } });
 
 const KIMI_STORE = ".kimi-code/credentials/kimi-code.json";
 const KIMI_LABEL = "~/.kimi-code/credentials/kimi-code.json";

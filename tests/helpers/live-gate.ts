@@ -45,10 +45,10 @@ export function reportInput(overrides: Partial<ReportInput> = {}): ReportInput {
 
 /** One synthetic credential file per store codemux can read, under a
  * throwaway HOME. No value here is a real credential: the login readers
- * touch existence, mode, and expiry only, and the fake values never leave
- * the fixture. */
+ * touch existence, mode, expiry, and token-field presence only, and the
+ * fake values never leave the fixture. */
 const LOGGED_IN_FILES: Record<string, [string, number?]> = {
-  ".claude/.credentials.json": ["{ \"claudeAiOauth\": { \"expiresAt\": 4102444800000 } }"],
+  ".claude/.credentials.json": ["{ \"claudeAiOauth\": { \"accessToken\": \"synthetic\", \"expiresAt\": 4102444800000 } }"],
   ".codex/auth.json": ["{ \"auth_mode\": \"chatgpt\", \"tokens\": { \"refresh_token\": \"synthetic\" } }"],
   ".kimi-code/credentials/kimi-code.json": ["{ \"expires_at\": 4102444800, \"refresh_token\": \"synthetic\" }"],
   ".zai": ["synthetic", 0o600],

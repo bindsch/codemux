@@ -84,6 +84,30 @@ test.each(["missing-end", "missing-usage", "duplicate-usage"])("Kimi requires ex
   expect(f.byKind("turn_usage")).toHaveLength(mode === "duplicate-usage" ? 1 : 0);
 });
 
+test("Kimi refuses a content.part after a finalized step.end (round 331)", () => {
+  // A step that already carried content when its end arrived is finalized:
+  // a later part would mutate what the final assistant-message comparison
+  // checks, and a message matching the mutation passed as a valid order.
+  const f = fixture();
+  f.accept(contentPart, 1000);
+  f.accept(stepEnd(), 1100);
+  expect(() => f.accept({ type: "content.part", stepUuid: "step-1", part: { type: "text", text: "late" } }, 1200))
+    .toThrow(expect.objectContaining({ code: Code.Protocol, message: expect.stringContaining("step.end") }));
+});
+
+test("Kimi still flushes every late part of the early-usage shape", () => {
+  // The pinned early-usage order (usage before the step's first content)
+  // can flush several parts after the end; all of them belong to the turn.
+  const f = fixture();
+  f.accept(stepEnd(), 1000);
+  f.accept(contentPart, 1100);
+  f.accept({ type: "content.part", stepUuid: "step-1", part: { type: "text", text: " more" } }, 1150);
+  f.assistant([{ type: "text", text: "answer" }, { type: "text", text: " more" }], []);
+  f.parser.finish();
+  expect(f.byKind("turn")).toHaveLength(1);
+  expect(f.byKind("turn_usage")).toHaveLength(1);
+});
+
 test("Kimi refuses invalid time on the first call before native ID resolution", () => {
   const f = fixture();
   expect(() => f.accept(toolCall(), NaN)).toThrow(expect.objectContaining({ code: Code.Protocol }));
