@@ -6,7 +6,7 @@ import type { SandboxPolicyOverrides } from "../sandbox-policy.js";
 import { SCODE_TRUST_LEVELS, type ScodeTrustLevel } from "../sandbox.js";
 import { AUTONOMY_LEVELS, REASONING_EFFORT_LEVELS, TOOL_SELECTIONS, isAutonomyLevel, isReasoningEffort, isToolSelection, type AdapterCapabilities, type AgentId, type AutonomyLevel, type ReasoningEffort, type ToolSelection } from "../types.js";
 import { canonicalSandboxBlockPaths } from "../session/registry/format.js";
-import { MAX_PASSTHROUGH_ENV_NAMES, UsageRefusalError, validateEnvironmentNames } from "../validation.js";
+import { BUDGET_USD_PATTERN, MAX_PASSTHROUGH_ENV_NAMES, UsageRefusalError, validateEnvironmentNames } from "../validation.js";
 
 function failInvalidOption(
   optionName: string,
@@ -53,6 +53,29 @@ export function parseTimeoutOption(value: string): number {
     );
   }
   return Math.ceil(seconds * 1_000);
+}
+
+/** The spend limit `run --max-budget-usd` carries on the request: a
+ * positive dollar amount with at most ten integer digits and at most two
+ * fraction digits. Digits only, so no sign, exponent, separator, or the
+ * Number("NaN")/Number("Infinity") shapes ever pass, and zero is refused
+ * by value, not by shape — a well-formed `0.00` is a limit of nothing and
+ * must not launch. The digit bound keeps the amount exact through the
+ * number the request carries: twelve significant digits round-trip, while
+ * a longer amount would reach the harness rounded, as more than the
+ * caller wrote (review round 274). */
+export function parseBudgetUsdOption(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!BUDGET_USD_PATTERN.test(value)) {
+    throw new UsageRefusalError(
+      "--max-budget-usd must be a positive dollar amount written as a decimal with at most ten integer digits and two fraction digits"
+    );
+  }
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new UsageRefusalError("--max-budget-usd must be greater than zero");
+  }
+  return amount;
 }
 
 export function parsePassthroughEnvOption(value?: string): string[] {

@@ -60,6 +60,10 @@ export function registerSessionOptions(command: Command, defaultAgent: string): 
       "Refused for sessions together with --sandbox-account; use run or tui"
     )
     .option(
+      "--max-budget-usd <amount>",
+      "Refused for sessions: Claude Code applies the spend limit to headless runs only; use run"
+    )
+    .option(
       "--quota-ceiling <percent>",
       "Refuse the session when a bounding usage window is below this percent remaining; overrides the config quota ceiling for this invocation"
     )

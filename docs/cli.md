@@ -111,6 +111,7 @@ printf 'Reply with OK.\n' | codemux run -a claude -f -
 | `--experiment-mcp <spec.json>` | Unset; experiment MCP server for `claude`, `zai`, `codex`, or `kimi`; requires hermetic mode, tools none, and read-only scode |
 | `--label <KEY=VALUE>` | Repeatable; metadata stored with the run; otherwise read `CODEMUX_LABELS` |
 | `--result-json` | Off; structured result with harness-specific normalization |
+| `--max-budget-usd <amount>` | Unset; a spend threshold for the run, a positive decimal with at most ten integer digits and two fraction digits (`2.5`, `0.75`), so the amount reaches the harness exactly as written. Claude and Z.AI only: Claude Code's own `--max-budget-usd` flag, which upstream applies to headless runs. The threshold is soft: Claude Code compares its own client-side estimate of the spend against it and stops the run once the estimate passes it, so the final cost can exceed the amount, and the estimate uses Anthropic's prices, which for a Z.AI run or a provider override are not the provider's billing. Every other agent refuses the flag before launch |
 
 Claude and Z.AI headless `--auto medium` runs use `--permission-mode acceptEdits`
 with `--allowedTools Edit(//<launch dir>/**) Bash WebSearch WebFetch`. Shell
@@ -126,6 +127,12 @@ Timeouts must be finite and greater than zero, at most 86400 seconds.
 Fractional seconds are accepted and rounded up to milliseconds. The timeout
 is not an end-to-end wall-clock cap: input collection, execution, setup, and
 shutdown are distinct phases.
+
+When a budgeted run passes its spend threshold, Claude Code stops on its
+own error result and the result-envelope path fails the run on it; see
+[results](results-and-usage.md#run-results). The threshold is an estimate
+compared on the client, not a billing limit: a run can cost more than the
+amount before it stops.
 
 See [isolation](isolation.md), [experiment MCP](experiment-mcp.md), and
 [results](results-and-usage.md) for these contracts.
@@ -179,7 +186,8 @@ Use the [session reference](session-protocol.md) for session-specific input boun
 `codemux tui -a claude` inherits the terminal and defaults to `read-only`.
 Its full option set is the shared launch table, accounting options, and
 Playwright option above. It has no prompt/file, timeout, result-JSON, hermetic,
-tool-selection, or experiment-MCP option.
+tool-selection, or experiment-MCP option, and `--max-budget-usd` is refused
+(exit 64): Claude Code applies the spend limit to headless runs only.
 
 Signals end a tui run the way the exit-code table promises. After SIGTERM or
 SIGHUP the exit is 143 whatever the child itself exited with, so a harness
@@ -237,7 +245,9 @@ Its additional options and resume restrictions are defined once in the
 [session guide](sessions.md#options).
 The [protocol reference](session-protocol.md) defines JSONL input and output.
 It supports Claude, Z.AI, Codex, Agy, OpenCode, Aider, and Kimi.
-Tool selection is refused for sessions, and so is a plain `--hermetic`; the
+Tool selection is refused for sessions, and so is a plain `--hermetic`, and
+`--max-budget-usd` (Claude Code applies the spend limit to headless runs
+only; use run); the
 one hermetic session mode is `--hermetic --experiment-project-settings`
 (Claude/Z.AI), which runs the session in a private per-session Claude config
 directory with the repository's own settings — see
@@ -301,7 +311,7 @@ protocol compatibility, and unavailable results.
 
 | Command | Options and behavior |
 |---|---|
-| `list` | `--json` prints the same facts machine-readable (schema `codemux-list-1`: each agent's id, availability, binary name, and the `hermetic`, `resultJson`, `toolsNoneRequiresHermetic`, `toolsNoneRequiresReadOnly`, `isolationRequiresReadOnly`, `providerOverride`, `sessions`, `model`, and `effort` capability booleans, `effortLevels` (the accepted values, or null), plus `experimentMcp`, `experimentPrefix`, and `servedModelEvidence`); without it, available adapters and capability labels (`model`, `autonomy`, `effort`, `hermetic`, `tools`, `provider`, `result-json`, `sessions`). A label carries the condition the adapter enforces: `tools(read-only)` (codex, agy: `--tools none` needs `--auto read-only`), `tools(hermetic)` (OpenCode: `--tools none` on hermetic runs only), `hermetic(read-only)` (agy: read-only scode and a clean `--cwd`) |
+| `list` | `--json` prints the same facts machine-readable (schema `codemux-list-1`: each agent's id, availability, binary name, and the `hermetic`, `resultJson`, `budgetLimit`, `toolsNoneRequiresHermetic`, `toolsNoneRequiresReadOnly`, `isolationRequiresReadOnly`, `providerOverride`, `sessions`, `model`, and `effort` capability booleans, `effortLevels` (the accepted values, or null), plus `experimentMcp`, `experimentPrefix`, and `servedModelEvidence`); without it, available adapters and capability labels (`model`, `autonomy`, `effort`, `hermetic`, `tools`, `provider`, `result-json`, `sessions`). A label carries the condition the adapter enforces: `tools(read-only)` (codex, agy: `--tools none` needs `--auto read-only`), `tools(hermetic)` (OpenCode: `--tools none` on hermetic runs only), `hermetic(read-only)` (agy: read-only scode and a clean `--cwd`) |
 | `autonomy` | No command options; per-harness autonomy mappings |
 | `doctor` | `--format <format>` (`text`, the default, or `json`, schema `codemux-doctor-1`), `--only <agents>`/`--skip <agents>` (narrow the harness set, comma-separated), `--timeout <seconds>` (per-probe bound for one version verdict, default 10; a number of seconds from 0.001 to 60 with at most three decimals, whole milliseconds from 1 to 60000), `--strict` (warnings count as broken for the exit code), `--capabilities` (print only the per-harness capabilities block, the pre-2.0 output), and the paid stage `--spend`, `--spend-cap <n>` (at most n spend probes, default one per eligible harness), `--spend-unreadable` (spend on harnesses whose usage row is unreadable too; each spend probe is one real `codemux check` request labeled `machine-check=<date>`). Without `--spend` it makes no model requests: installation, configuration, scode, optional usagemux status. Per installed harness it also prints the capability rows and a version-contract verdict: `ok`, `above audited ceiling` (newer than this codemux audited), `below minimum` (older than this codemux enforces), `known break at <levels> autonomy from <version> (sandbox mitigates or no mitigation)` (a recorded contract break names the autonomy levels it affects), `no contract` (no version contract exists for that harness), `untrusted binary (<reason>)` (the probe refused to run a binary that fails the same trust check as a launch: not a regular file owned by the invoking user or by root, group- or world-writable, or inside the working directory), `unreadable` (the version probe returned nothing parseable), or `unreadable (timed out)` (the probe exceeded its 10 s bound), `unreadable (binary not found)`, or `unreadable (<reason>)` (the probe failed before producing output: a spawn error with its cause). Version probes run in parallel |
 | `verify` | `-a, --agent <agent>`, `--show-scode`, `--sandbox-trust <level>`, `--sandbox-no-net`, `--sandbox-scrub-env` |

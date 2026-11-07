@@ -235,6 +235,7 @@ export function registerInfoCommands(
             capabilities: {
               hermetic: caps.supportsHermetic === true,
               resultJson: caps.supportsResultJson === true,
+              budgetLimit: caps.budgetLimit === true,
               toolsNoneRequiresHermetic: caps.toolsNoneRequiresHermetic === true,
               toolsNoneRequiresReadOnly: caps.toolsNoneRequiresReadOnly === true || caps.isolationRequiresReadOnly === true,
               isolationRequiresReadOnly: caps.isolationRequiresReadOnly === true,

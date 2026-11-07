@@ -161,6 +161,9 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
       supportsToolSelection: true,
       supportsResultJson: true,
       supportsProviderOverride: true,
+      // Claude Code 2.1.317 takes --max-budget-usd (a headless --print
+      // flag — exactly this adapter's spawn shape), so run carries it.
+      budgetLimit: true,
     };
   }
 
@@ -327,6 +330,14 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
     // No run of this adapter persists a session, so the harness is told so
     // explicitly: nothing a later run could resume is left behind.
     cmd.push("--no-session-persistence");
+    // The run's spend cap, Claude Code's own flag: it applies to --print
+    // runs only, which is exactly this spawn (-p), and it survives every
+    // branch above (--safe-mode, project settings) because none of them
+    // touches billing. The one spelling of the parsed number, so the cap
+    // the harness enforces is the cap the caller wrote.
+    if (request.maxBudgetUsd !== undefined) {
+      cmd.push("--max-budget-usd", String(request.maxBudgetUsd));
+    }
     // Always the single-result envelope, plain runs included: the reply
     // under `result`, plus `usage`, `modelUsage`, and `total_cost_usd`.
     // `--result-json` re-emits it with the codemux block appended; a plain

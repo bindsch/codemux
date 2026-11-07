@@ -11,6 +11,7 @@ import {
   validateTimeout,
 } from "../process-runner.js";
 import {
+  BUDGET_USD_PATTERN,
   UsageRefusalError,
   validateAutonomy,
   validateEffort,
@@ -130,6 +131,33 @@ export function validateRunRequestFor(
     throw new UsageRefusalError(
       `${adapter.id} cannot return a structured result envelope; --result-json is unsupported`
     );
+  }
+  if (request.maxBudgetUsd !== undefined) {
+    // The CLI parses the flag before the request exists, so a programmatic
+    // caller is the only one that can hand over a raw value: the same
+    // shape rule applies to it before the capability is read.
+    // The same shape the CLI accepts (BUDGET_USD_PATTERN): a programmatic
+    // 0.001, 1e100, or eleven-digit amount would otherwise reach the
+    // harness rounded or as a cap the caller did not write (review round
+    // 277).
+    if (
+      typeof request.maxBudgetUsd !== "number" ||
+      !Number.isFinite(request.maxBudgetUsd) ||
+      request.maxBudgetUsd <= 0 ||
+      !BUDGET_USD_PATTERN.test(String(request.maxBudgetUsd))
+    ) {
+      throw new UsageRefusalError(
+        "maxBudgetUsd must be a positive amount with at most ten integer digits and two fraction digits"
+      );
+    }
+    if (!caps.budgetLimit) {
+      // A dropped limit would run uncapped under a caller who set one, so
+      // the request is refused before any spawn, the same rule
+      // --result-json has.
+      throw new UsageRefusalError(
+        `${adapter.id} has no spend limit flag; --max-budget-usd is unsupported`
+      );
+    }
   }
   if (request.hermetic && !caps.supportsHermetic) {
     // Capabilities explicitly opt in; docs/isolation.md records each

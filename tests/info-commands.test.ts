@@ -108,7 +108,7 @@ describe("information commands", () => {
         available: boolean;
         binary: string;
         capabilities: {
-          hermetic: boolean; resultJson: boolean; toolsNoneRequiresHermetic: boolean;
+          hermetic: boolean; resultJson: boolean; budgetLimit: boolean; toolsNoneRequiresHermetic: boolean;
           toolsNoneRequiresReadOnly: boolean; isolationRequiresReadOnly: boolean; effortLevels: string[] | null;
           providerOverride: boolean; sessions: boolean; model: boolean; effort: boolean;
           experimentMcp: boolean; experimentPrefix: string | null; servedModelEvidence: boolean;
@@ -127,6 +127,7 @@ describe("information commands", () => {
       expect(agent.capabilities, agent.id).toEqual({
         hermetic: caps.supportsHermetic === true,
         resultJson: caps.supportsResultJson === true,
+        budgetLimit: caps.budgetLimit === true,
         toolsNoneRequiresHermetic: caps.toolsNoneRequiresHermetic === true,
         toolsNoneRequiresReadOnly: caps.toolsNoneRequiresReadOnly === true || caps.isolationRequiresReadOnly === true,
         isolationRequiresReadOnly: caps.isolationRequiresReadOnly === true,
@@ -140,6 +141,13 @@ describe("information commands", () => {
         effort: caps.supportsEffort === true,
       });
     }
+    // The spend-limit capability is claude and zai only (Claude Code's own
+    // --max-budget-usd, one binary): stated here so a new adapter that
+    // gains a native cap shows up as a deliberate change to this test.
+    const byId = new Map(listing.agents.map((agent) => [agent.id, agent.capabilities.budgetLimit]));
+    expect(byId.get("claude")).toBe(true);
+    expect(byId.get("zai")).toBe(true);
+    expect([...byId.entries()].filter(([id]) => id !== "claude" && id !== "zai").every(([, value]) => value === false)).toBe(true);
   });
 
   test("doctor's trailing block prints result-json, sessions, and the version-contract verdict", async () => {

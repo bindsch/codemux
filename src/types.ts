@@ -104,6 +104,13 @@ export interface RunRequest {
   // `codemux` block (usage, model, session id), and stdout that is not the envelope the
   // launch asked for fails the run rather than passing through as plain text.
   resultJson?: boolean;
+  // The maximum dollar amount the harness may spend on API calls for this
+  // run (--max-budget-usd, Claude Code's own flag; claude and zai). A
+  // positive decimal with at most two fraction digits, parsed once at the
+  // CLI and re-rendered as the plain decimal spelling of the number in the
+  // child's argv. A harness without the flag refuses the request before
+  // launch (the budgetLimit capability).
+  maxBudgetUsd?: number;
   // Which built-in tools the harness exposes; undefined means "default".
   // "none" removes the harness's own tool set; a harness that cannot drop
   // one of them (Codex's apply_patch) says so in its adapter.
@@ -226,6 +233,10 @@ export interface AdapterCapabilities {
   // The harness can return a structured result envelope carrying token usage
   // (`--result-json`). Absent means unsupported and the flag is refused.
   supportsResultJson?: boolean;
+  // The harness enforces a spend limit on a headless run (`--max-budget-usd`,
+  // Claude Code's own flag; claude and zai run the same binary). Absent
+  // means unsupported and the flag is refused.
+  budgetLimit?: boolean;
   // The harness can route a run to an operator-named provider endpoint
   // (`CODEMUX_<AGENT>_PROVIDER_*`, src/provider-override.ts). Absent means
   // unsupported and a set override fails the run before launch.

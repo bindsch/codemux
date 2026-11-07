@@ -38,7 +38,7 @@ const LISTING = {
       // this checkout's tables (claude here HAS an experiment mechanism,
       // opencode does not): whatever the listing says is what the gate
       // probes with (round 20, edges 2).
-      capabilities: { hermetic: true, resultJson: true, toolsNoneRequiresHermetic: false, providerOverride: true, sessions: true, experimentMcp: false, experimentPrefix: null, servedModelEvidence: true, model: true, effort: true },
+      capabilities: { hermetic: true, resultJson: true, budgetLimit: true, toolsNoneRequiresHermetic: false, providerOverride: true, sessions: true, experimentMcp: false, experimentPrefix: null, servedModelEvidence: true, model: true, effort: true },
     },
     {
       id: "opencode",
@@ -46,14 +46,14 @@ const LISTING = {
       // A renamed binary this checkout's adapters never spell: the
       // contract column must still probe the id (round 19, edges 4).
       binary: "opencode-candidate",
-      capabilities: { hermetic: true, resultJson: true, toolsNoneRequiresHermetic: true, providerOverride: false, sessions: true, experimentMcp: true, experimentPrefix: "opencode-wall-time", servedModelEvidence: false, model: true, effort: true },
+      capabilities: { hermetic: true, resultJson: true, budgetLimit: false, toolsNoneRequiresHermetic: true, providerOverride: false, sessions: true, experimentMcp: true, experimentPrefix: "opencode-wall-time", servedModelEvidence: false, model: true, effort: true },
     },
     {
       // Installed nowhere on the candidate's machine: listed, not probed.
       id: "aider",
       available: false,
       binary: "aider",
-      capabilities: { hermetic: false, resultJson: false, toolsNoneRequiresHermetic: false, providerOverride: false, sessions: true, experimentMcp: false, experimentPrefix: null, servedModelEvidence: false, model: false, effort: false },
+      capabilities: { hermetic: false, resultJson: false, budgetLimit: false, toolsNoneRequiresHermetic: false, providerOverride: false, sessions: true, experimentMcp: false, experimentPrefix: null, servedModelEvidence: false, model: false, effort: false },
     },
   ],
 };
@@ -72,8 +72,8 @@ describe("candidate listing parsing", () => {
     // contradicts this checkout's tables: claude declares no experiment
     // mechanism (probe G UNSUPPORTED for it) and opencode declares one
     // with its own wall-time prefix.
-    expect(parsed.facts[0]).toMatchObject({ id: "claude", hermetic: true, resultJson: true, toolsNoneRequiresHermetic: false, sessions: true, providerOverride: true, experiment: false, experimentPrefixes: [], servedModelEvidence: true });
-    expect(parsed.facts[1]).toMatchObject({ id: "opencode", toolsNoneRequiresHermetic: true, experiment: true, experimentPrefixes: ["opencode-wall-time"], servedModelEvidence: false });
+    expect(parsed.facts[0]).toMatchObject({ id: "claude", hermetic: true, resultJson: true, budgetLimit: true, toolsNoneRequiresHermetic: false, sessions: true, providerOverride: true, experiment: false, experimentPrefixes: [], servedModelEvidence: true });
+    expect(parsed.facts[1]).toMatchObject({ id: "opencode", budgetLimit: false, toolsNoneRequiresHermetic: true, experiment: true, experimentPrefixes: ["opencode-wall-time"], servedModelEvidence: false });
     // The contract column's input covers the same available ids, each
     // with the candidate's own binary name — including one this
     // checkout's adapters never spell.
@@ -104,6 +104,12 @@ describe("candidate listing parsing", () => {
       { schema: "codemux-list-1", agents: [{ id: "claude", available: true, capabilities: { ...LISTING.agents[0]!.capabilities, sessions: "yes" } }] },
       "src"
     )).toThrow("sessions must be a boolean");
+    // The spend-limit fact is carried, not probed, so a malformed value is
+    // refused while an absent one (an older listing) reads false below.
+    expect(() => candidateFacts(
+      { schema: "codemux-list-1", agents: [{ id: "claude", available: true, capabilities: { ...LISTING.agents[0]!.capabilities, budgetLimit: "yes" } }] },
+      "src"
+    )).toThrow("budgetLimit must be a boolean");
     // Audit D7: the alias+effort facts (probe I) are required booleans —
     // a listing from an older build is refused, never patched with this
     // checkout's own capabilities.
@@ -140,6 +146,20 @@ describe("candidate listing parsing", () => {
       { schema: "codemux-list-1", agents: [{ id: "claude", available: true, capabilities: { ...LISTING.agents[0]!.capabilities, experimentPrefix: 7 } }] },
       "src"
     )).toThrow("experimentPrefix must be a string or null");
+  });
+
+  test("a listing without budgetLimit reads false instead of refusing", () => {
+    // No probe keys on the spend-limit fact, so a candidate listing from
+    // a build without the field is carried with the false default, the
+    // same way an absent capability reads everywhere else — never patched
+    // from this checkout's adapters and never refused.
+    const { budgetLimit, ...older } = LISTING.agents[0]!.capabilities;
+    expect(budgetLimit).toBe(true);
+    const parsed = candidateFacts(
+      { schema: "codemux-list-1", agents: [{ id: "claude", available: true, binary: "claude", capabilities: older }] },
+      "src"
+    );
+    expect(parsed.facts[0]!.budgetLimit).toBe(false);
   });
 
   test("the gate's static tables are the src tables, so a checkout's facts and its candidate facts cannot drift (round 20, edges 2)", async () => {

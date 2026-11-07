@@ -175,7 +175,8 @@ records nothing; a refused resume has already written its ownership claim to
 the registry (the claim precedes the gate), and the refusal releases it, so
 the record stays resumable for the next attempt.
 
-A plain `--hermetic` and every `--tools` value are refused for sessions;
+A plain `--hermetic`, every `--tools` value, and `--max-budget-usd` (the
+spend limit applies to headless runs; use run) are refused for sessions;
 the one hermetic mode is `--hermetic --experiment-project-settings`
 (below). `--effort none` sends no effort field on every session harness, codex included.
 `--enable-playwright-mcp` is supported only for Claude/ZAI and requires

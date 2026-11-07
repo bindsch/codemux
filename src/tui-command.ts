@@ -59,6 +59,10 @@ export function registerTuiCommand(
     )
     .option("--auto <level>", "Autonomy level: read-only, low, medium, high")
     .option("--effort <level>", "Reasoning effort: none, minimal, low, medium, high, xhigh, max, ultra")
+    .option(
+      "--max-budget-usd <amount>",
+      "Refused on tui: Claude Code applies the spend limit to headless runs only; use run"
+    )
     .option("--pass-env <names>", "Pass comma-separated sensitive environment names")
     .option("--enable-playwright-mcp", "Enable local Playwright MCP inside the sandbox")
     .option("--cwd <path>", "Working directory")
@@ -89,6 +93,15 @@ export function registerTuiCommand(
         }
         if (enablePlaywrightMcp && !supportsPlaywrightMcpAgent(agentId)) {
           throw new UsageRefusalError("--enable-playwright-mcp is supported only by claude and zai");
+        }
+        // Registered so the flag is refused by name (exit 64) instead of
+        // commander's generic parse error (exit 1): Claude Code's own flag
+        // works with --print only, so an interactive session cannot carry
+        // it, whatever the agent.
+        if (options.maxBudgetUsd !== undefined) {
+          throw new UsageRefusalError(
+            "--max-budget-usd is not supported on tui: Claude Code applies the spend limit to headless runs only; use run"
+          );
         }
         const sandboxPolicyOverrides = parseSandboxPolicyOverrides({
           sandbox: Boolean(options.sandbox),

@@ -91,4 +91,17 @@ describe("instruction directory validation", () => {
       rmSync(base, { recursive: true, force: true });
     }
   });
+
+  test("a programmatic spend limit keeps the CLI's shape (review round 277)", () => {
+    // launchRunRequest callers hand over a number directly: 0.001, 1e100,
+    // or an eleven-digit amount would reach the harness rounded or as a
+    // cap nobody wrote, so validation applies the one shape rule.
+    const adapter = new ClaudeAdapter({});
+    for (const maxBudgetUsd of [0.001, 1e100, 10000000000, 0, -1, Number.NaN]) {
+      expect(() => adapter.validateRunRequest({ agent: "claude", prompt: "p", maxBudgetUsd }))
+        .toThrow("maxBudgetUsd must be a positive amount with at most ten integer digits and two fraction digits");
+    }
+    expect(() => adapter.validateRunRequest({ agent: "claude", prompt: "p", maxBudgetUsd: 0.75 })).not.toThrow();
+    expect(() => adapter.validateRunRequest({ agent: "claude", prompt: "p", maxBudgetUsd: 9999999999.99 })).not.toThrow();
+  });
 });

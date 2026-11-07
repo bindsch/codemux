@@ -49,6 +49,21 @@ describe("ZaiAdapter", () => {
     expect(cmd).toEqual([...safeHeadlessArgs, "--model", "opus"]);
   });
 
+  test("zai declares the spend limit flag (same binary as claude)", () => {
+    expect(adapter.capabilities().budgetLimit).toBe(true);
+  });
+
+  test("buildRunCommand carries --max-budget-usd once on plain, hermetic, and result-json runs", () => {
+    // Same binary and flag as claude: neither --safe-mode (hermetic) nor
+    // the envelope switch may drop or duplicate it, and the harness
+    // receives the one spelling of the parsed number.
+    for (const extra of [{}, { hermetic: true }, { resultJson: true }]) {
+      const cmd = adapter.buildRunCommand({ agent: "zai", prompt: "t", maxBudgetUsd: 1.25, ...extra });
+      expect(cmd.filter((argument) => argument === "--max-budget-usd"), JSON.stringify(extra)).toHaveLength(1);
+      expect(cmd[cmd.indexOf("--max-budget-usd") + 1], JSON.stringify(extra)).toBe("1.25");
+    }
+  });
+
   test("buildRunCommand with explicit model", () => {
     const request: RunRequest = { agent: "zai", prompt: "test", model: "sonnet" };
     const cmd = adapter.buildRunCommand(request);

@@ -3,6 +3,7 @@ import {
   handleUnexpectedError,
   isScodeAvailable,
   parseAutonomyOption,
+  parseBudgetUsdOption,
   parseEffortOption,
   parsePassthroughEnvOption,
   parseSandboxPolicyOverrides,
@@ -153,6 +154,10 @@ export function registerRunCommand(
       "--result-json",
       "Return a structured result with harness-specific normalization and reported token usage"
     )
+    .option(
+      "--max-budget-usd <amount>",
+      "Maximum dollar amount the harness may spend on API calls (claude, zai); a positive amount with at most two fraction digits"
+    )
     .option("-s, --sandbox", "Run in sandbox (default; requires scode)", true)
     .option("--no-sandbox", "Run without the scode boundary (autonomy below high is unavailable)")
     .option(
@@ -261,8 +266,11 @@ export function registerRunCommand(
 
         // Parsed before the prompt is read: a `-f -` read is bounded by the
         // same timeout the run itself honors, and an invalid value should
-        // fail before anything consumes stdin.
+        // fail before anything consumes stdin. The spend limit parses here
+        // for the same reason — a malformed amount is the caller's mistake
+        // and must not wait on a stdin producer.
         const timeoutMs = parseTimeoutOption(options.timeout);
+        const maxBudgetUsd = parseBudgetUsdOption(options.maxBudgetUsd);
 
         // The prompt resolves before the availability checks, with one
         // exception (round10). An ambiguous -p/-f pair, a missing prompt,
@@ -364,6 +372,7 @@ export function registerRunCommand(
           tools,
           web: options.web !== false,
           resultJson: Boolean(options.resultJson),
+          maxBudgetUsd,
         };
         failureRequest = request;
         // Preflight: refuse an unsupported hermetic, tools, or result-json

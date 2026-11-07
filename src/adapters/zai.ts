@@ -76,6 +76,9 @@ export class ZaiAdapter extends BaseAdapter {
       supportsToolSelection: true,
       // Same binary as claude, so the same --output-format json envelope.
       supportsResultJson: true,
+      // Same binary as claude, so the same --max-budget-usd spend cap
+      // (Claude Code 2.1.317, a headless --print flag).
+      budgetLimit: true,
     };
   }
 
@@ -348,6 +351,11 @@ export class ZaiAdapter extends BaseAdapter {
     // No run of this adapter persists a session (same binary and rule as
     // claude): nothing a later run could resume is left behind.
     cmd.push("--no-session-persistence");
+    // The run's spend cap (same binary and flag as claude): the one
+    // spelling of the parsed number, on every branch above.
+    if (request.maxBudgetUsd !== undefined) {
+      cmd.push("--max-budget-usd", String(request.maxBudgetUsd));
+    }
     // Always the single-result envelope, plain runs included (same binary
     // and rule as claude): `--result-json` re-emits it with the codemux
     // block appended; a plain run unwraps it back to the reply text

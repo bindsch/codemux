@@ -72,6 +72,49 @@ describe("ClaudeAdapter", () => {
     ).toThrow(/--result-json is unsupported/);
   });
 
+  test("claude declares the spend limit flag", () => {
+    expect(adapter.capabilities().budgetLimit).toBe(true);
+  });
+
+  test("buildRunCommand carries --max-budget-usd once on plain, hermetic, and result-json runs", () => {
+    // Claude Code takes the flag on --print runs (2.1.317), which is this
+    // adapter's spawn shape (-p). Neither --safe-mode (hermetic) nor the
+    // envelope switch (--result-json) may drop or duplicate it, and the
+    // harness receives the one spelling of the parsed number.
+    for (const extra of [{}, { hermetic: true }, { resultJson: true }]) {
+      const cmd = adapter.buildRunCommand({ agent: "claude", prompt: "t", maxBudgetUsd: 2.5, ...extra });
+      expect(cmd.filter((argument) => argument === "--max-budget-usd"), JSON.stringify(extra)).toHaveLength(1);
+      expect(cmd[cmd.indexOf("--max-budget-usd") + 1], JSON.stringify(extra)).toBe("2.5");
+    }
+  });
+
+  test("a provider override run carries the spend limit flag once too", () => {
+    // The override changes the environment the child runs in, never the
+    // argv path, so the same build carries the cap under it.
+    const override = new ClaudeAdapter({
+      CODEMUX_CLAUDE_PROVIDER_BASE_URL: "https://provider.test/v1",
+      CODEMUX_CLAUDE_PROVIDER_API_KEY: "sk-test",
+      CODEMUX_CLAUDE_PROVIDER_MODEL: "glm-5.3",
+    });
+    const cmd = override.buildRunCommand({ agent: "claude", prompt: "t", maxBudgetUsd: 0.75 });
+    expect(cmd.filter((argument) => argument === "--max-budget-usd")).toHaveLength(1);
+    expect(cmd[cmd.indexOf("--max-budget-usd") + 1]).toBe("0.75");
+  });
+
+  test("a programmatic budget outside the CLI's rule is refused on the value", () => {
+    // The CLI parses the flag before a request exists; a programmatic
+    // caller can hand over any value, so the shared validator judges the
+    // number itself before the capability is read.
+    for (const value of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, "5" as unknown as number]) {
+      expect(() =>
+        adapter.validateRunRequest({ agent: "claude", prompt: "t", maxBudgetUsd: value })
+      ).toThrow(/maxBudgetUsd must be a positive amount with at most ten integer digits and two fraction digits/);
+    }
+    expect(() =>
+      adapter.validateRunRequest({ agent: "claude", prompt: "t", maxBudgetUsd: 1.5 })
+    ).not.toThrow();
+  });
+
   test("resultJson must be a boolean", () => {
     expect(() =>
       adapter.validateRunRequest({

@@ -7,28 +7,30 @@ Codemux supports the adapters below; run `codemux --version` to identify an inst
 
 ## Headless capabilities
 
-This matrix describes `codemux run`. “Yes” means the adapter implements the option; it does not mean every model or installed upstream version supports every value. Every adapter accepts the four autonomy levels, with scode required below high. An unsupported hermetic, tools-none, result-json, or provider-override request is refused before launch.
+This matrix describes `codemux run`. “Yes” means the adapter implements the option; it does not mean every model or installed upstream version supports every value. Every adapter accepts the four autonomy levels, with scode required below high. An unsupported hermetic, tools-none, result-json, spend-limit, or provider-override request is refused before launch.
 
-| Agent | Model | Autonomy | Effort values | Hermetic | Tools none | Result JSON | Provider override |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| agy | yes | all four | low, medium, high, xhigh, max | yes, clean cwd and read-only scode | yes, denial/attempt detection | yes | no |
-| aider | yes | all four | none, minimal, low, medium, high, xhigh, max | no | no | no | yes |
-| claude | yes | all four | low, medium, high, xhigh, max | yes | yes | yes | yes |
-| cline | yes | all four | none, low, medium, high, xhigh | no | no | no | no |
-| codex | yes | all four | minimal, low, medium, high, xhigh, max, ultra | yes | read-only only; two tools remain | yes | yes |
-| copilot | yes | all four | none, minimal, low, medium, high, xhigh, max | no | no | no | no |
-| cursor | yes | all four | unsupported | no | no | no | no |
-| droid | yes | all four | none, minimal, low, medium, high, xhigh, max | no | yes; ToolSearch remains | no | yes |
-| goose | yes | all four | unsupported | no | yes | no | yes |
-| gemini | yes | all four | unsupported | no | no | no | no |
-| kimi | yes | all four | unsupported | yes | yes | yes | yes |
-| openhands | yes | all four | unsupported | no | no | no | yes |
-| opencode | yes | all four | low, medium, high | yes | hermetic only | yes | yes |
-| pi | yes | all four | none, minimal, low, medium, high, xhigh, max | no | yes | no | yes |
-| qwen | current binary only | all four | unsupported | no | no | no | no |
-| zai | yes; non-catalog ids ride picker settings | all four | none, low, medium, high, xhigh, max | yes | yes | yes | no |
+| Agent | Model | Autonomy | Effort values | Hermetic | Tools none | Result JSON | Provider override | Spend limit |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| agy | yes | all four | low, medium, high, xhigh, max | yes, clean cwd and read-only scode | yes, denial/attempt detection | yes | no | no |
+| aider | yes | all four | none, minimal, low, medium, high, xhigh, max | no | no | no | yes | no |
+| claude | yes | all four | low, medium, high, xhigh, max | yes | yes | yes | yes | yes |
+| cline | yes | all four | none, low, medium, high, xhigh | no | no | no | no | no |
+| codex | yes | all four | minimal, low, medium, high, xhigh, max, ultra | yes | read-only only; two tools remain | yes | yes | no |
+| copilot | yes | all four | none, minimal, low, medium, high, xhigh, max | no | no | no | no | no |
+| cursor | yes | all four | unsupported | no | no | no | no | no |
+| droid | yes | all four | none, minimal, low, medium, high, xhigh, max | no | yes; ToolSearch remains | no | yes | no |
+| goose | yes | all four | unsupported | no | yes | no | yes | no |
+| gemini | yes | all four | unsupported | no | no | no | no | no |
+| kimi | yes | all four | unsupported | yes | yes | yes | yes | no |
+| openhands | yes | all four | unsupported | no | no | no | yes | no |
+| opencode | yes | all four | low, medium, high | yes | hermetic only | yes | yes | no |
+| pi | yes | all four | none, minimal, low, medium, high, xhigh, max | no | yes | no | yes | no |
+| qwen | current binary only | all four | unsupported | no | no | no | no | no |
+| zai | yes; non-catalog ids ride picker settings | all four | none, low, medium, high, xhigh, max | yes | yes | yes | no | yes |
 
 `--effort none` is the CLI's "send no effort flag" spelling on every adapter: a harness whose effort list has no native `none` launches with no effort flag, and the adapters that carry a native `none` (aider, cline, copilot, droid, pi, zai) send their own mapping of it. Other values outside a row are refused. Qwen's legacy `qwen-coder` fallback has no model selection and requires scode even at high autonomy. [Isolation](isolation.md) defines the tool exceptions and clean-directory requirements. [Result envelopes](results-and-usage.md) describe the six structured adapters. [Provider overrides](provider-overrides.md) cover endpoint and token-limit constraints.
+
+The Spend limit column is Claude Code's own `--max-budget-usd` flag, forwarded on headless `claude` and `zai` runs only (upstream applies it to `--print` runs). It is a soft threshold against Claude Code's client-side estimate of the spend, priced at Anthropic's rates: the final cost can exceed it, and for Z.AI the estimate is not the provider's billing. A run stopped at the threshold ends on Claude Code's own error result, which the [result envelope](results-and-usage.md#run-results) path already fails.
 
 Codex sessions carry one recorded parity gap with hermetic runs. A hermetic run ignores execpolicy rules (`~/.codex/rules`), but the app-server thread config has no verified carrier for that setting, so a codex session still loads them. The thread config skips only AGENTS.md discovery (`project_doc_max_bytes: 0` and an empty fallback list); it is not the session equivalent of run's `--ignore-rules`. A pinned test (tests/session-codex-wire.test.ts) asserts the config carries exactly those two keys, so the gap stays visible.
 

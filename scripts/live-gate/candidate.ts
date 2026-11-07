@@ -106,9 +106,17 @@ export function candidateFacts(
     if (effortField === undefined) {
       throw new Error(`${where}: capabilities.effort is absent; the listing is from an older build`);
     }
+    // The spend-limit fact rides the listing too, but no probe keys on it,
+    // so a listing without the field (an older build) is not refused: the
+    // fact reads false, and a malformed value still is.
+    const budgetLimitField = (caps as Record<string, unknown>).budgetLimit;
+    if (budgetLimitField !== undefined && typeof budgetLimitField !== "boolean") {
+      throw new Error(`${where}: capabilities.budgetLimit must be a boolean`);
+    }
     facts.push(harnessFacts(id, {
       supportsHermetic: booleanField((caps as Record<string, unknown>).hermetic, `${where}: capabilities.hermetic`),
       supportsResultJson: booleanField((caps as Record<string, unknown>).resultJson, `${where}: capabilities.resultJson`),
+      budgetLimit: budgetLimitField === true,
       toolsNoneRequiresHermetic: booleanField((caps as Record<string, unknown>).toolsNoneRequiresHermetic, `${where}: capabilities.toolsNoneRequiresHermetic`),
       supportsProviderOverride: booleanField((caps as Record<string, unknown>).providerOverride, `${where}: capabilities.providerOverride`),
       supportsModel: booleanField(modelField, `${where}: capabilities.model`),

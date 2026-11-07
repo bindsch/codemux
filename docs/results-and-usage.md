@@ -84,6 +84,11 @@ Codex reroute events can identify the served model and produce a stderr note.
 See [label syntax and environment defaults](cli.md#labels).
 Unsupported structured-result adapters refuse `--result-json`; capability
 support is listed in [harnesses](harnesses.md).
+A claude or zai run may carry `--max-budget-usd <amount>`, a soft spend
+threshold Claude Code compares against its own estimate; when that estimate
+stops the run, the stop surfaces as Claude Code's own error result, and the
+envelope path already fails a run whose envelope reports `is_error` — the
+envelope is still emitted, with the codemux diagnostic on stderr.
 
 Run `codemux.session_id` is always null: codemux does not register a run for resume.
 Claude/Z.AI request `--no-session-persistence`; ordinary Codex runs request

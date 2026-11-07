@@ -145,3 +145,11 @@ export function validateWorkingDirectory(cwd: unknown): string | undefined {
   }
   return canonical;
 }
+
+/** The one shape a spend limit (`run --max-budget-usd`) may take, on the CLI
+ * and on a programmatic RunRequest alike: a decimal with at most ten
+ * integer digits and two fraction digits. Twelve significant digits
+ * round-trip exactly through a number, so the amount reaches the harness
+ * as the caller wrote it (review rounds 274 and 277). */
+export const BUDGET_USD_PATTERN = /^\d{1,10}(?:\.\d{1,2})?$/;
+

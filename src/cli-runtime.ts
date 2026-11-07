@@ -31,6 +31,7 @@ export {
   parseEffortOption,
   parseToolsOption,
   parseTimeoutOption,
+  parseBudgetUsdOption,
   parsePassthroughEnvOption,
   parseSandboxPolicyOverrides,
   resolveAutonomyForAdapter,

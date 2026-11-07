@@ -51,6 +51,15 @@ implementation narrative behind it is preserved in the
 
 ### Added
 
+- `codemux run --max-budget-usd <amount>` passes a spend threshold to a
+  headless `claude` or `zai` run as Claude Code's own flag (a positive amount
+  with at most ten integer digits and two fraction digits, so it reaches the
+  harness as written; every other agent refuses the flag before launch, and so
+  do tui and session, where upstream applies it to `--print` runs only). The
+  threshold is soft: Claude Code stops the run once its client-side estimate
+  of the spend, at Anthropic's prices, passes it, so the final cost can exceed
+  the amount and a Z.AI run's estimate is not its provider's billing. `list
+  --json` reports the new `budgetLimit` capability.
 - Experiment MCP on Codex and Kimi through an authenticated loopback HTTP
   relay, with explicit result-header opt-ins (`codex-wall-time`,
   `kimi-wall-time`), a per-run model catalog override for Codex, and held

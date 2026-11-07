@@ -103,6 +103,15 @@ export function registerSessionCommand(
             "--sandbox-account and --sandbox-account-id are not supported for sessions: the per-turn agents spawn several children with no single accounting stream; use run or tui"
           );
         }
+        // Registered so the flag is refused by name (exit 64) instead of
+        // commander's generic parse error (exit 1): Claude Code's own flag
+        // works with --print only, so a multi-turn session cannot carry it,
+        // whatever the agent.
+        if (options.maxBudgetUsd !== undefined) {
+          throw new UsageRefusalError(
+            "--max-budget-usd is not supported for sessions: Claude Code applies the spend limit to headless runs only; use run"
+          );
+        }
         const {
           agentId,
           sessionSupport,
