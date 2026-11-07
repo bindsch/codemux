@@ -26,6 +26,7 @@ import {
   claudeGatewayEnv,
   claudeGatewayOmissions,
   claudeModelArgv,
+  resolveInstructionDir,
 } from "../claude-family.js";
 import {
   assertProviderCap,
@@ -313,8 +314,9 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
     // review round 87): raw strings let equivalent spellings of one
     // directory silently disable the project source.
     const instructionDirs = request.instructionDirs ?? [];
-    const cwd = canonicalInstructionDir(request.cwd ?? process.cwd());
-    const cwdIsInstructionDir = instructionDirs.some((dir) => canonicalInstructionDir(dir) === cwd);
+    const base = request.cwd ?? process.cwd();
+    const cwd = canonicalInstructionDir(base);
+    const cwdIsInstructionDir = instructionDirs.some((dir) => canonicalInstructionDir(resolveInstructionDir(dir, base)) === cwd);
     if (!playwrightRefused) {
       cmd.push(
         "--setting-sources",

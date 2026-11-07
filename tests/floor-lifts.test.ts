@@ -8,6 +8,7 @@ import {
   signalDescendants,
   type TerminationTarget,
 } from "../src/process-tree.js";
+import { signalProcess } from "../src/process-signal.js";
 import type { ProcessEntry, ProcessTable } from "../src/process-table.js";
 import * as processTable from "../src/process-table.js";
 import { OutputLimitError, MAX_CAPTURE_BYTES, readBounded } from "../src/process-capture.js";
@@ -123,6 +124,30 @@ describe("the process-tree walk over a synthetic table", () => {
       expect(kill).toHaveBeenCalledWith(102, "SIGKILL");
     } finally {
       table.mockRestore();
+      kill.mockRestore();
+    }
+  });
+
+  test("the Windows arm reaches the immediate child only, the documented limit (review rounds 232, 235)", () => {
+    // Windows has no process groups and no process table reader, so a
+    // tree-scoped signal cannot reach descendants; docs/sessions.md states
+    // the limit. The platform is stubbed; the case never runs on Windows.
+    const kill = spyOn(process, "kill").mockImplementation(() => true);
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    const childKills: NodeJS.Signals[] = [];
+    try {
+      expect(process.platform as string).toBe("win32");
+      const tree = target(100, new Map([[101, entry(100, 101)]]));
+      (tree.proc as { kill: (signal: NodeJS.Signals) => void }).kill = (signal) => {
+        childKills.push(signal);
+      };
+      signalProcess(tree, "SIGKILL", "tree");
+      signalProcess(tree, "SIGTERM", "process");
+      expect(childKills).toEqual(["SIGKILL", "SIGTERM"]);
+      expect(kill).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, "platform", platform);
       kill.mockRestore();
     }
   });

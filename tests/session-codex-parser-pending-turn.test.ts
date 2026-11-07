@@ -31,6 +31,44 @@ describe("codex session - stream parser, pending turn", () => {
     ).toEqual([{ kind: "assistant_delta", threadId: THREAD, turnId: TURN, text: "x" }]);
   });
 
+  test("a lifecycle notification for the provisional turn is accepted the way a delta is (review round 232)", () => {
+    // A fast server can emit turn/started or turn/completed before the
+    // turn/start response that names the turn; the window accepts them
+    // on the provisional id like any scoped notification, holds to that
+    // id, and still rejects another turn and a closed turn's echo.
+    const first = feed({ method: "turn/started", params: { threadId: THREAD, turn: { id: "turn-a" } } },
+      { threadId: THREAD, activeTurnId: null, turnPending: true });
+    expect(first).toEqual([{ kind: "turn_started", threadId: THREAD, turnId: "turn-a" }]);
+    const held = { threadId: THREAD, activeTurnId: null, turnPending: true, pendingTurnId: "turn-a" };
+    expect(
+      feed({ method: "turn/completed", params: { threadId: THREAD, turn: { id: "turn-a", status: "completed" } } }, held)
+    ).toEqual([{ kind: "turn_completed", threadId: THREAD, turnId: "turn-a", finish: "end", reason: null }]);
+    expect(
+      feed({ method: "turn/completed", params: { threadId: THREAD, turn: { id: "turn-b", status: "completed" } } }, held)
+    ).toEqual([
+      { kind: "grammar_error", message: "a turn/completed notification for turn turn-b arrived while the starting turn's notifications name turn-a" },
+    ]);
+    // A closed turn's lifecycle notification never completes the
+    // starting turn: only item, delta, and usage stragglers are tier-1.
+    const closed = { threadId: THREAD, activeTurnId: null, turnPending: true, pendingTurnId: "turn-a",
+      closedTurnIds: new Set([TURN]) };
+    expect(
+      feed({ method: "turn/completed", params: { threadId: THREAD, turn: { id: TURN, status: "completed" } } }, closed)[0]!.kind
+    ).toBe("grammar_error");
+    expect(
+      feed({ method: "turn/completed", params: { threadId: THREAD, turn: { id: "turn-a" } } }, held)[0]!.kind
+    ).toBe("turn_completed");
+    // An empty id is no id (review round 250): neither a lifecycle
+    // notification nor a delta may name the provisional turn "".
+    const open = { threadId: THREAD, activeTurnId: null, turnPending: true };
+    expect(
+      feed({ method: "turn/completed", params: { threadId: THREAD, turn: { id: "", status: "completed" } } }, open)
+    ).toEqual([{ kind: "grammar_error", message: "a turn/completed notification carries no turn id while a turn is starting" }]);
+    expect(
+      feed({ method: "item/agentMessage/delta", params: { threadId: THREAD, turnId: "", itemId: "m", delta: "x" } }, open)[0]!.kind
+    ).toBe("grammar_error");
+  });
+
   test("a scoped notification with no turn id during the window is a grammar error (review round 70)", () => {
     // With no id the window cannot hold to it and the turn/start response
     // cannot contradict it, so the event would be charged to the starting

@@ -7,6 +7,7 @@
 import { isAcceptableRequestId, normalizeCodexTokenUsage } from "./codex-protocol-builders.js";
 import { CODEX_APPROVAL_METHODS, fileChangePaths } from "./codex-session-approvals.js";
 import { bufferable, CODEX_THREAD_ID_PATTERN, isRecord, PARSE_BUFFER_MAX_BYTES, PARSE_BUFFER_MAX_LINES, type PendingParse } from "./codex-parse-facts.js";
+import { checkThread, lifecycleTurnId, scopedParams, threadScopedParams } from "./codex-parse-scope.js";
 import { unusableFacts } from "./process.js";
 import type { CodexParse, CodexParseContext } from "./codex-session.js";
 
@@ -14,8 +15,6 @@ const UTF8 = new TextEncoder();
 /** The rejoin bounds are byte bounds: a string's `.length` counts UTF-16
  * code units and under-reports text outside basic Latin (review round 64). */
 const utf8Bytes = (text: string): number => UTF8.encode(text).byteLength;
-
-type ScopedParams = { params: Record<string, unknown> | null; threadId: string; turnId: string | null; error: CodexParse | null };
 
 /**
  * Parse the app-server NDJSON stream, one line at a time, under the §4.2
@@ -154,7 +153,7 @@ export class CodexStreamParser {
     if (typeof thread !== "string" || typeof turn !== "string") {
       return [{ kind: "unparseable_approval", id, method }];
     }
-    const threadError = this.checkThread(thread, context);
+    const threadError = checkThread(thread, context);
     if (threadError !== null) return [threadError];
     if (context.activeTurnId === null) {
       return [
@@ -225,51 +224,22 @@ export class CodexStreamParser {
       }
       case "turn/started": {
         // Turn-lifecycle notifications carry the turn as an object, not a
-        // params-level turnId (the fixture's shape).
-        const scoped = this.threadScopedParams(params, context);
+        // params-level turnId (the fixture's shape). The id check — the
+        // open turn outside the turn/start window, the provisional id
+        // inside it — is codex-parse-scope's (review round 232).
+        const scoped = threadScopedParams(params, context);
         if (scoped.error !== null) return [scoped.error];
-        const turn = isRecord(scoped.params?.["turn"]) ? (scoped.params["turn"] as Record<string, unknown>) : null;
-        const turnId = turn !== null ? turn["id"] : undefined;
-        if (context.activeTurnId === null) {
-          return [
-            {
-              kind: "grammar_error",
-              message: "turn/started arrived before the turn/start response named the turn",
-            },
-          ];
-        }
-        if (typeof turnId !== "string" || turnId !== context.activeTurnId) {
-          return [
-            {
-              kind: "grammar_error",
-              message: `turn/started names ${String(turnId)}, expected ${context.activeTurnId}`,
-            },
-          ];
-        }
+        const turnId = lifecycleTurnId(scoped.params, "turn/started", context);
+        if (typeof turnId !== "string") return [turnId];
         return [{ kind: "turn_started", threadId: scoped.threadId, turnId }];
       }
       case "turn/completed": {
-        const scoped = this.threadScopedParams(params, context);
+        const scoped = threadScopedParams(params, context);
         if (scoped.error !== null) return [scoped.error];
-        const turn = isRecord(scoped.params?.["turn"]) ? (scoped.params["turn"] as Record<string, unknown>) : null;
-        const turnId = turn !== null ? turn["id"] : undefined;
-        if (context.activeTurnId === null) {
-          return [
-            {
-              kind: "grammar_error",
-              message: `turn/completed for ${String(turnId)} arrived with no open turn`,
-            },
-          ];
-        }
-        if (typeof turnId !== "string" || turnId !== context.activeTurnId) {
-          return [
-            {
-              kind: "grammar_error",
-              message: `turn/completed names ${String(turnId)} but the open turn is ${context.activeTurnId}`,
-            },
-          ];
-        }
-        const status = turn?.["status"];
+        const turnId = lifecycleTurnId(scoped.params, "turn/completed", context);
+        if (typeof turnId !== "string") return [turnId];
+        const turn = scoped.params?.["turn"] as Record<string, unknown>;
+        const status = turn["status"];
         if (status === "completed") {
           return [{ kind: "turn_completed", threadId: scoped.threadId, turnId, finish: "end", reason: null }];
         }
@@ -302,7 +272,7 @@ export class CodexStreamParser {
         ];
       }
       case "item/agentMessage/delta": {
-        const scoped = this.scopedParams(params, context);
+        const scoped = scopedParams(params, context);
         if (scoped.error !== null) return [scoped.error];
         const delta = scoped.params?.["delta"];
         if (typeof delta !== "string" || delta.length === 0) return [{ kind: "unknown" }];
@@ -318,7 +288,7 @@ export class CodexStreamParser {
       case "item/started":
       case "item/updated":
       case "item/completed": {
-        const scoped = this.scopedParams(params, context);
+        const scoped = scopedParams(params, context);
         if (scoped.error !== null) return [scoped.error];
         const item = isRecord(scoped.params?.["item"]) ? (scoped.params["item"] as Record<string, unknown>) : null;
         if (item === null) return [{ kind: "unknown" }];
@@ -398,7 +368,7 @@ export class CodexStreamParser {
         return [{ kind: "unknown" }];
       }
       case "thread/tokenUsage/updated": {
-        const scoped = this.scopedParams(params, context);
+        const scoped = scopedParams(params, context);
         if (scoped.error !== null) return [scoped.error];
         const tokenUsage = scoped.params?.["tokenUsage"];
         const last = isRecord(tokenUsage) ? tokenUsage["last"] : undefined;
@@ -418,7 +388,7 @@ export class CodexStreamParser {
         if (params === null) return [{ kind: "unknown" }];
         const thread = params["threadId"];
         if (typeof thread !== "string") return [{ kind: "unknown" }];
-        const error = this.checkThread(thread, context);
+        const error = checkThread(thread, context);
         if (error !== null) return [error];
         return [{ kind: "unknown" }];
       }
@@ -427,74 +397,5 @@ export class CodexStreamParser {
         // newer: valid harness events codemux does not map.
         return [{ kind: "unknown" }];
     }
-  }
-
-  /** The thread-scope check every translated notification passes: the
-   * event must reference the one thread this session owns. */
-  private checkThread(threadId: string, context: CodexParseContext): CodexParse | null {
-    if (context.threadId !== null && threadId !== context.threadId) {
-      return {
-        kind: "grammar_error",
-        message: `an event references thread ${threadId}, expected ${context.threadId}`,
-      };
-    }
-    return null;
-  }
-
-  /** Validate the thread-scoped params turn-lifecycle notifications
-   * carry ({threadId, turn}): the turn identity rides the object. */
-  private threadScopedParams(
-    params: Record<string, unknown> | null,
-    context: CodexParseContext
-  ): { params: Record<string, unknown> | null; threadId: string; error: CodexParse | null } {
-    if (params === null) {
-      return { params: null, threadId: "", error: { kind: "grammar_error", message: "a turn notification carries no params" } };
-    }
-    const threadId = params["threadId"];
-    if (typeof threadId !== "string") {
-      return { params: null, threadId: "", error: { kind: "grammar_error", message: "a turn notification carries no thread id" } };
-    }
-    const threadError = this.checkThread(threadId, context);
-    if (threadError !== null) {
-      return { params: null, threadId: "", error: threadError };
-    }
-    return { params, threadId, error: null };
-  }
-
-  /** Validate the {threadId, turnId} scope item and turn notifications
-   * share, plus the open-turn requirement once a turn is involved. */
-  private scopedParams(
-    params: Record<string, unknown> | null,
-    context: CodexParseContext
-  ): ScopedParams {
-    const grammar = (message: string): ScopedParams =>
-      ({ params: null, threadId: "", turnId: null, error: { kind: "grammar_error", message } });
-    if (params === null) return grammar("a scoped notification carries no params");
-    const threadId = params["threadId"];
-    if (typeof threadId !== "string") return grammar("a scoped notification carries no thread id");
-    const threadError = this.checkThread(threadId, context);
-    if (threadError !== null) return { params: null, threadId: "", turnId: null, error: threadError };
-    const turnId = params["turnId"];
-    const straggler = typeof turnId === "string" && context.closedTurnIds?.has(turnId) === true;
-    if (context.turnPending === true && context.activeTurnId === null) {
-      // The turn/start window: the first id seen is provisional; a second
-      // or missing id is a grammar error (rounds 67 and 70).
-      const pending = context.pendingTurnId;
-      if (typeof turnId !== "string") {
-        return grammar("a scoped notification with no turn id arrived while a turn was starting");
-      }
-      if (typeof pending === "string" && turnId !== pending && !straggler) {
-        return grammar(`a scoped notification for turn ${turnId} arrived while the starting turn's notifications name ${pending}`);
-      }
-    } else if (turnId !== context.activeTurnId && !straggler) {
-      // Idle: no turn to own the event (round 64); closed turns' stragglers
-      // stay accepted (real codex sends usage after turn/completed).
-      return grammar(context.activeTurnId === null
-        ? typeof turnId === "string"
-          ? `a scoped notification for turn ${turnId} arrived with no open turn`
-          : "a scoped notification with no turn id arrived while no turn is open"
-        : `an event references turn ${String(turnId)} but the open turn is ${context.activeTurnId}`);
-    }
-    return { params, threadId, turnId: typeof turnId === "string" ? turnId : null, error: null };
   }
 }

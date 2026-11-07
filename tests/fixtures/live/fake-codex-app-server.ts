@@ -74,6 +74,10 @@
  *                then holds (review live22)
  *   otherturnid — a delta naming another turn before the turn/start
  *                response names the real one (review round 67)
+ *   earlydone  — the whole turn lifecycle (turn/started, an
+ *                agentMessage, turn/completed) runs before the
+ *                turn/start response, which names the finished turn
+ *                (review round 232)
  *   crash      — one agentMessage, then exit 1
  *   garbage    — a non-JSON line, then nothing (tier-3 fatal)
  *   rawnewline — one JSON frame split by a raw newline inside a string
@@ -281,6 +285,10 @@ const handleTurnStart = (id: unknown, params: Record<string, unknown>): void => 
     releaseTurnStart(id, "wait", turnId);
     return;
   }
+  if (scenario === "earlydone" || scenario === "earlyother" || scenario === "earlyhold" || scenario === "earlyerror" || scenario === "earlystray") {
+    scenarios.early(turnId, scenario, id);
+    return;
+  }
   if (process.env.FAKE_HOLD_TURNSTART === "1") {
     // The turn/start response (and notification) is held until the
     // shutdown SIGTERM arrives: codemux's end path begins while the
@@ -289,6 +297,16 @@ const handleTurnStart = (id: unknown, params: Record<string, unknown>): void => 
     // (review live11, major 1's window).
     state.heldTurnStart = { id, params };
     return;
+  }
+  if (state.heldEarly !== null) {
+    // Review round 238: the new turn's first notification lands before
+    // the held response of the turn that completed early, so the
+    // provisional id belongs to the new turn when that old response is
+    // read.
+    const held = state.heldEarly;
+    state.heldEarly = null;
+    notify("item/agentMessage/delta", { threadId: THREAD_ID, turnId, itemId: "msg-next", delta: "next" });
+    respond(held.id, { turn: { id: held.turnId, items: [], itemsView: "notLoaded", status: "completed", error: null, startedAt: Math.floor(Date.now() / 1000), completedAt: Math.floor(Date.now() / 1000), durationMs: 3 } });
   }
   const turnStartDelayMs = Number(process.env.FAKE_TURNSTART_DELAY ?? "0");
   if (turnStartDelayMs > 0) {

@@ -33,7 +33,8 @@
  */
 
 import type { Command } from "commander";
-import { existsSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
+import { statEntryPresent } from "./file-io.js";
 import {
   CALL_LOG_ENV,
   callLogPath,
@@ -331,7 +332,20 @@ export function registerCallsCommand(
       if (path === null) {
         return fail(`the call ledger is disabled (${CALL_LOG_ENV}=off)`);
       }
-      if (!existsSync(path)) {
+      // ENOENT and ENOTDIR mean nothing is recorded yet; any other
+      // inspection failure (an unreadable parent, an I/O error) is a
+      // read failure, never an empty ledger: existsSync folded those
+      // into "absent" and the command answered exit 0 (review round
+      // 232).
+      let present: boolean;
+      try {
+        present = statEntryPresent(path, (code) => {
+          throw new Error(`could not inspect the call ledger at ${path} (${code})`);
+        });
+      } catch (error) {
+        return fail(error instanceof Error ? error.message : String(error));
+      }
+      if (!present) {
         console.error(`codemux: no calls recorded yet (${path} does not exist)`);
         return;
       }

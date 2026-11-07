@@ -209,6 +209,17 @@ export function claudeChildProject(environment: NodeJS.ProcessEnv, passthroughEn
  * its resolved form: buildRunCommand also serves previews that never ran
  * the validator, and both sides of the comparison fail the same way there.
  */
+/** A relative instruction directory names a path under the run's working
+ * directory: the harness resolves `--add-dir` there, so validation and
+ * the project-source check resolve it there too, never under codemux's
+ * own process directory (review rounds 232 and 238). The base is the
+ * working directory's real path, because the child's `..` climbs the real
+ * tree: with a symlinked working directory a lexical resolve named a
+ * sibling of the link, not of its target (review round 244). */
+export function resolveInstructionDir(dir: string, cwd: string): string {
+  return isAbsolute(dir) ? dir : resolve(canonicalInstructionDir(cwd), dir);
+}
+
 export function canonicalInstructionDir(dir: string): string {
   const absolute = resolve(dir);
   try {

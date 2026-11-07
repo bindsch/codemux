@@ -125,6 +125,22 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 232, whole tree: docs/sessions.md states the descendant capture's limit: a
+  descendant that forks and exits between two five-second samples, or before the first, is one
+  no walk can attribute (a sample at spawn was tried and withdrawn: its synchronous process
+  table read changed the order in which a harness's first output and exit were seen); codex
+  turn/started and turn/completed notifications accept the provisional turn id during the
+  turn/start window the way deltas do, so a fast server that completes a turn before its
+  turn/start response no longer crashes the session, while a late response naming a turn the
+  session never saw complete still does, a late response is consumed even after the next turn's
+  notifications began, a late error response for a completed turn no longer fails the turn that
+  followed it, and the completed turn's unanswered request no longer keeps the idle session in
+  the turn/start window; docs/sessions.md states that on Windows, which has no process table
+  reader, a tree-scoped termination reaches the immediate child only; an unreadable call ledger
+  fails the `calls` command instead of reporting no calls at exit 0; and relative instruction
+  directories resolve against the run's working directory, not codemux's own process directory,
+  both for validation and for the project setting source, and an empty or NUL-bearing entry is
+  refused before it is resolved.
 - Review round 223, whole tree: the interactive wait takes the spawn itself and installs its
   signal handlers before running it, so a SIGTERM or SIGHUP can no longer land between the spawn
   and the handlers, end codemux by the default disposition, and leave the tui child and its

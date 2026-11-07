@@ -76,6 +76,13 @@ export function signalProcess(
     }
     return;
   }
+  // The platform without process groups and without a process table
+  // reader (readProcessTable answers empty on win32): a tree-scoped
+  // signal reaches the immediate child only, and descendants the harness
+  // created survive. A KNOWN LIMITATION, stated in docs/sessions.md:
+  // closing it needs a Windows job object or a taskkill tree walk, and
+  // every Windows path that spawns a process tree of its own (the
+  // experiments) is refused already (review rounds 232 and 235).
   // The same pid-reuse guard on the platform without process groups.
   if (target.childExited) return;
   try {

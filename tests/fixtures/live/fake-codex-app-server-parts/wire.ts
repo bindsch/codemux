@@ -63,6 +63,10 @@ export interface CodexFakeState {
   // FAKE_HOLD_TURNSTART=1 state: the turn/start request held until the
   // shutdown SIGTERM releases it inside the drain window.
   heldTurnStart: { id: unknown; params: Record<string, unknown> } | null;
+  // earlyhold state: a completed turn whose turn/start response is held
+  // until the next turn/start has sent its first notification (review
+  // round 238).
+  heldEarly: { id: unknown; turnId: string } | null;
   // staleinterrupt state: the interrupt whose response is held until a
   // later interrupt flushes the rejection first.
   staleInterruptId: string | number | undefined;
@@ -90,6 +94,7 @@ export const state: CodexFakeState = {
   drainApprovalPending: false,
   heldInterruptId: undefined,
   heldTurnStart: null,
+  heldEarly: null,
   staleInterruptId: undefined,
   heldInitId: undefined,
   laggardTurnId: null,

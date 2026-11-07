@@ -108,6 +108,23 @@ export abstract class CodexDriverTurns extends CodexDriverApprovals {
     this.interruptQueuedSeq = null;
     this.interruptCallId = null;
     this.clearTurnTimer();
+    // A turn that completed while its turn/start response was still in
+    // flight (a fast server emits turn/completed before the response,
+    // review round 232): the provisional id is the only name the harness
+    // gave it, so it is adopted here to be remembered as closed — the
+    // late response then names a closed turn instead of scoping a later
+    // window to a dead id, and this turn's stragglers stay recognized.
+    if (this.harnessTurnId === null && this.pendingTurnId !== null) {
+      this.harnessTurnId = this.pendingTurnId;
+      // The request that started this turn is still unanswered: its
+      // response must name this id, and that record outlives the bounded
+      // closed-turn set (review round 244).
+      for (const call of this.pendingCalls.values()) {
+        if (typeof call === "object" && call.kind === "turn_start" && call.turnId === turnId) {
+          call.completedHarnessTurnId = this.pendingTurnId;
+        }
+      }
+    }
     this.closeHarnessTurn();
     // A turn the app-server ended by itself may still hold approvals
     // open: they belong to a turn that no longer exists, and a later
@@ -410,8 +427,15 @@ export abstract class CodexDriverTurns extends CodexDriverApprovals {
   }
 
   protected turnStartInFlight(): boolean {
+    // Only the active codemux turn's own request counts: the unanswered
+    // request of a turn that completed early stays in the map for its
+    // response's correlation, and must not keep the idle session in the
+    // turn/start window, where a scoped notification for a turn nobody
+    // started would be accepted (review round 247).
+    const active = this.fsm.activeTurn;
+    if (active === null) return false;
     for (const pending of this.pendingCalls.values()) {
-      if (typeof pending === "object" && pending.kind === "turn_start") return true;
+      if (typeof pending === "object" && pending.kind === "turn_start" && pending.turnId === active) return true;
     }
     return false;
   }

@@ -23,6 +23,7 @@ import {
   claudeGatewayEnv,
   claudeGatewayOmissions,
   claudeModelArgv,
+  resolveInstructionDir,
 } from "../claude-family.js";
 import type {
   AgentId,
@@ -334,8 +335,9 @@ export class ZaiAdapter extends BaseAdapter {
     // the operator's ~/.claude/settings.json directly, exactly as claude
     // runs do, because both run the same binary against the same store.
     const instructionDirs = request.instructionDirs ?? [];
-    const cwd = canonicalInstructionDir(request.cwd ?? process.cwd());
-    const cwdIsInstructionDir = instructionDirs.some((dir) => canonicalInstructionDir(dir) === cwd);
+    const base = request.cwd ?? process.cwd();
+    const cwd = canonicalInstructionDir(base);
+    const cwdIsInstructionDir = instructionDirs.some((dir) => canonicalInstructionDir(resolveInstructionDir(dir, base)) === cwd);
     if (!playwrightRefused) {
       cmd.push(
         "--setting-sources",

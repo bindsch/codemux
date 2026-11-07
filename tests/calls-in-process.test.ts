@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
@@ -226,6 +226,43 @@ describe("codemux calls in-process", () => {
     } finally {
       done();
     }
+  });
+
+  test("a ledger that cannot be inspected fails instead of reporting none (review round 232)", async () => {
+    // A mode-000 parent makes even the look fail with EACCES; existsSync
+    // folded that into "absent", and the command answered an empty
+    // ledger at exit 0 — a false result for any automation reading it.
+    // Root ignores directory modes, so the case cannot be built there.
+    if (typeof process.getuid === "function" && process.getuid() === 0) return;
+    const dir = mkdtempSync(join(tmpdir(), "codemux-calls-locked-"));
+    const parent = join(dir, "locked");
+    mkdirSync(parent);
+    writeFileSync(join(parent, "calls.jsonl"), `${record({ ts: iso(MINUTE), input: 3 })}\n`);
+    chmodSync(parent, 0o000);
+    const previous = process.env[CALL_LOG_ENV];
+    process.env[CALL_LOG_ENV] = join(parent, "calls.jsonl");
+    const captured: { out: string[]; err: string[]; code: number } = { out: [], err: [], code: 0 };
+    const out = console.log;
+    const err = console.error;
+    console.log = (line: string) => void captured.out.push(line);
+    console.error = (line: string) => void captured.err.push(line);
+    try {
+      const program = new Command();
+      registerCallsCommand(program, (code) => {
+        captured.code = code;
+      });
+      await program.parseAsync(["calls"], { from: "user" });
+    } finally {
+      console.log = out;
+      console.error = err;
+      if (previous === undefined) delete process.env[CALL_LOG_ENV];
+      else process.env[CALL_LOG_ENV] = previous;
+      chmodSync(parent, 0o700);
+      rmSync(dir, { recursive: true, force: true });
+    }
+    expect(captured.code).toBe(1);
+    expect(captured.err.join("\n")).toContain("could not inspect the call ledger");
+    expect(captured.err.join("\n")).not.toContain("no calls recorded yet");
   });
 
   test("ledger absence and an unreadable ledger are distinct messages", async () => {

@@ -199,6 +199,32 @@ export abstract class CodexDriverResponses extends CodexDriverTurns {
         void this.finish("crash", 1);
         return;
       }
+      if (pending.turnId !== this.fsm.activeTurn) {
+        // The response's turn completed before the response arrived (a
+        // fast server emits turn/completed first, review round 232): the
+        // codemux turn is closed, its harness id was adopted and closed
+        // at completion, and adopting the id here would scope the next
+        // turn's window to a dead id. The response must still name the
+        // turn that completion adopted for this very request (recorded on
+        // the pending call, so neither the bounded closed-turn set nor a
+        // second request's turn can stand in for it: review rounds 235
+        // and 244). This branch runs before the pending-id comparison
+        // below, because by now a later turn may own the pending id — its
+        // first notification arrived while this response was still in
+        // flight — and that id is no contradiction of this one (review
+        // round 238). A turn that closed with no harness id at all (ended
+        // before any notification named it) keeps the older rule: the
+        // response is consumed. The buffered interrupt and steers were
+        // cleared at completion; nothing else is owed.
+        if (pending.completedHarnessTurnId !== undefined && pending.completedHarnessTurnId !== turnId) {
+          this.emitGrammarViolation(
+            rawLine,
+            `the turn/start response names turn ${turnId}, which this session never saw complete`
+          );
+          void this.finish("crash", 1);
+        }
+        return;
+      }
       if (this.pendingTurnId !== null && this.pendingTurnId !== turnId) {
         // The window's notifications were charged to the starting turn on
         // the strength of their id; a response naming another turn means
@@ -271,6 +297,17 @@ export abstract class CodexDriverResponses extends CodexDriverTurns {
       return;
     }
     if (typeof pending === "object" && pending.kind === "turn_start") {
+      if (pending.turnId !== this.fsm.activeTurn) {
+        // The turn this request started already completed through its
+        // notifications (the early-completion ordering of review round
+        // 232) and may have drained the next turn into the active slot:
+        // failing the open turn would fail that later turn while the
+        // harness still runs it (review round 241). The completed turn
+        // reported its own finish; the late refusal is recorded and
+        // changes nothing.
+        this.emit(buildUnknownEvent(++this.seq, this.sessionIdOrEmpty(), rawLine));
+        return;
+      }
       this.failOpenTurn(message, rawLine);
       return;
     }

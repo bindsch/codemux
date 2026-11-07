@@ -4,7 +4,7 @@
  * scenario switch that dispatches into them.
  */
 import { join } from "node:path";
-import { FAKE_CWD, THREAD_ID, notify, serverRequest, state, type CodexPendingApproval } from "./wire.js";
+import { FAKE_CWD, THREAD_ID, notify, respond, respondError, serverRequest, state, type CodexPendingApproval } from "./wire.js";
 import { agentMessageCompleted, askApproval, completeTurn, itemParams, usage } from "./items.js";
 
 export const basic = (turnId: string): void => {
@@ -316,4 +316,44 @@ export const badstatus = (turnId: string): void => {
 export const defaultArm = (turnId: string): void => {
   agentMessageCompleted(turnId, "msg-default", "Done.");
   completeTurn(turnId, "completed");
+};
+
+/** Review rounds 232 to 238: the whole turn lifecycle runs before the
+ * turn/start response that names the turn, a fast server's ordering.
+ * "earlydone" then answers naming the completed turn; "earlyother" names
+ * another turn, which no session of codemux ever saw; "earlyhold" keeps
+ * the response until the next turn/start has sent its first notification
+ * (the main file releases it there); "earlyerror" answers with an error; "earlystray" holds the response and sends a stray usage frame. */
+export const early = (turnId: string, scenario: string, id: unknown): void => {
+  const now = Math.floor(Date.now() / 1000);
+  notify("turn/started", {
+    threadId: THREAD_ID,
+    turn: { id: turnId, items: [], itemsView: "notLoaded", status: "inProgress", error: null, startedAt: now, completedAt: null, durationMs: null },
+  });
+  agentMessageCompleted(turnId, "msg-early", "Early.");
+  completeTurn(turnId, "completed");
+  if (scenario === "earlyhold") {
+    state.heldEarly = { id, turnId };
+    return;
+  }
+  if (scenario === "earlystray") {
+    // Review round 247: with the response still held, a usage frame for a
+    // turn nobody started arrives in the idle gap; the session must refuse
+    // it rather than fold it into its totals.
+    state.heldEarly = { id, turnId };
+    notify("thread/tokenUsage/updated", {
+      threadId: THREAD_ID,
+      turnId: "turn-never-started",
+      tokenUsage: { total: usage(5, 0, 0, 1), last: usage(5, 0, 0, 1), modelContextWindow: 258400 },
+    });
+    return;
+  }
+  if (scenario === "earlyerror") {
+    // Review round 241: the response to the completed turn's request is
+    // an error, landing after the turn's own completion.
+    respondError(id, "late refusal of a turn that already completed");
+    return;
+  }
+  const named = scenario === "earlyother" ? `${turnId}-other` : turnId;
+  respond(id, { turn: { id: named, items: [], itemsView: "notLoaded", status: "completed", error: null, startedAt: now, completedAt: now, durationMs: 3 } });
 };

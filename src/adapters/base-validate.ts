@@ -4,6 +4,7 @@
  * delegate here; subclasses keep overriding and calling super. */
 
 import { validateExperimentRequest } from "../experiment-mcp.js";
+import { resolveInstructionDir } from "../claude-family.js";
 import { assertProjectSettingsAgent } from "../claude-project-settings.js";
 import {
   MAX_ARGV_PROMPT_BYTES,
@@ -152,7 +153,22 @@ export function validateRunRequestFor(
     if (!Array.isArray(request.instructionDirs)) {
       throw new Error("instructionDirs must be an array of directories");
     }
-    for (const dir of request.instructionDirs) validateWorkingDirectory(dir);
+    // A relative instruction directory reaches the harness unchanged
+    // (--add-dir, --read), and the harness resolves it against the run's
+    // working directory — the same base the spawn uses — so that is the
+    // tree it is validated against. Resolving against codemux's own
+    // process directory passed or refused for the wrong repository
+    // (review round 232).
+    const base = request.cwd ?? process.cwd();
+    for (const dir of request.instructionDirs) {
+      // The raw entry is judged first: resolving an empty string against
+      // the base would make it the working directory itself, pass, and
+      // reach the harness as an empty argument (review round 241).
+      if (typeof dir !== "string" || dir.length === 0 || dir.includes("\0")) {
+        throw new UsageRefusalError("instructionDirs entries must be non-empty paths without NUL bytes");
+      }
+      validateWorkingDirectory(resolveInstructionDir(dir, base));
+    }
   }
   if (request.timeoutMs !== undefined) validateTimeout(request.timeoutMs);
   // The argv rules key on where the prompt goes (promptInArgv), not on

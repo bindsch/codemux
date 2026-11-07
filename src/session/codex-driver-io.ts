@@ -103,7 +103,9 @@ export type PendingCall =
   | "initialize"
   | "thread_start"
   | "thread_resume"
-  | { kind: "turn_start"; turnId: string }
+  /** `completedHarnessTurnId`: the harness id a turn that completed before
+   * this response arrived adopted; the response must name it (round 244). */
+  | { kind: "turn_start"; turnId: string; completedHarnessTurnId?: string }
   /** The caller lines one steer request carries, so a rejection names
    * them (review live23). */
   | { kind: "steer"; inputSeqs: number[]; turnId: string | null }

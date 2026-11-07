@@ -1,13 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getAdapter } from "../src/adapters/index.js";
@@ -78,10 +70,22 @@ describe("hermetic runs: claude and zai", () => {
         return cmd[cmd.indexOf("--setting-sources") + 1]!;
       };
       const dotted = join(repo, ".");
+      mkdirSync(join(repo, "sub"));
+      const link = join(repo, "link");
+      symlinkSync(join(repo, "sub"), link);
       for (const adapter of [new ClaudeAdapter(), new ZaiAdapter()]) {
         expect(sources(adapter, repo, [dotted])).toBe("user,project");
         expect(sources(adapter, dotted, [repo])).toBe("user,project");
         expect(sources(adapter, repo, [join(tmpdir(), "codemux-elsewhere-")])).toBe("user");
+        // A relative instruction directory resolves against the run's
+        // working directory, where the harness resolves it, not against
+        // codemux's own process directory (review rounds 232 and 238).
+        expect(sources(adapter, repo, ["."])).toBe("user,project");
+        expect(sources(adapter, repo, ["elsewhere"])).toBe("user");
+        // A relative path climbs the real tree, as the child's `..` does:
+        // through a symlinked working directory the lexical parent would
+        // be the link's directory, not the target's (review round 244).
+        expect(sources(adapter, link, ["../sub"])).toBe("user,project");
       }
     } finally {
       rmSync(repo, { recursive: true, force: true });
