@@ -22,6 +22,33 @@ test.each([false, true])("shared inventory rejects Kimi underscore collisions ac
   expect(inventory.names.size).toBe(0);
 });
 
+test("pagination past the page bound is refused instead of collected without end", async () => {
+  // Review round 286: every cursor a server offers must be unique, so a
+  // server that keeps answering with empty pages and fresh cursors kept
+  // collection — and its mcp_request records — running without end. The
+  // pre-fix code accepted this server's 150 pages; the bound refuses
+  // past it. The last page here carries a real tool, so without a bound
+  // the collection would have completed.
+  let requests = 0;
+  const inventory = new ExperimentInventory("experiment", async (request) => {
+    requests += 1;
+    return {
+      jsonrpc: "2.0", id: request.id,
+      ...(requests > 150
+        ? { result: { tools: [{ name: "tool-a" }] } }
+        : { result: { tools: [], nextCursor: `cursor-${requests}` } }),
+    };
+  }, () => {}, () => {}, () => true);
+  await expect(inventory.accept(
+    { jsonrpc: "2.0", id: 1, result: { tools: [], nextCursor: "cursor-0" } }, null
+  )).rejects.toMatchObject({
+    code: ExperimentFailureCode.InventoryMismatch,
+    message: expect.stringContaining("tools/list pages"),
+  });
+  expect(inventory.definitions).toBeUndefined();
+  expect(requests).toBeLessThanOrEqual(100);
+});
+
 function fixture() {
   const parent = resolve("scratch/session-14c66a93/exp/inventory-collision-fixtures");
   mkdirSync(parent, { recursive: true });

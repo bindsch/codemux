@@ -70,7 +70,9 @@ sampling, elicitation, and requests with an `id`, is refused. Forwarded JSON-RPC
 are fatal. Claude and Z.AI forward `ping` and also fail on its errors.
 
 `tools/list` must produce a complete nonempty inventory, following pagination
-without repeated cursors. Tool names are unique, match `[A-Za-z0-9_-]{1,64}`,
+without repeated cursors and within 100 pages; a server whose pagination
+exceeds that bound fails the run instead of being collected without end.
+Tool names are unique, match `[A-Za-z0-9_-]{1,64}`,
 and keep the namespaced name `mcp__<name>__<tool>` within 64 characters, the
 bound Claude Code 2.1.300's SDK bridge applies to tool names. The shared inventory validator rejects sanitized-name collisions,
 such as `foo-bar` and `foo_bar`, with `inventory_mismatch` for every harness before any calls.

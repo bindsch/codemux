@@ -1,22 +1,25 @@
 // Entry point and re-export hub for the live gate. Implementation modules:
-// runner.ts (option parsing, probe runner), probes.ts (probe definitions and
-// per-harness facts), contracts.ts (zero-quota version/usage columns),
-// report.ts (formatting), run.ts (orchestration). Tests import everything
-// from here. main() lives HERE, not in run.ts: only spawned child processes
-// run it (tests drive its pieces in process), so it belongs to this
-// child-only entry file, which the coverage floor waives for exactly that
-// reason (review round 8, edges).
+// runner.ts (the probe runner), options.ts (CLI parsing and preflights),
+// probes.ts (probe definitions and per-harness facts), contracts.ts
+// (zero-quota version/usage columns), report.ts (formatting), run.ts
+// (orchestration). Tests import everything from here. main() lives HERE,
+// not in run.ts: only spawned child processes run it (tests drive its
+// pieces in process), so it belongs to this child-only entry file, which
+// the coverage floor waives for exactly that reason (review round 8,
+// edges).
 import { CommanderError } from "commander";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getAvailableAdapters } from "../src/adapters/index.js";
 import { contractsAfterPool, runContractColumn, runUsageCheck, stampCodemuxVersion, type ContractRow, type UsageCheck } from "./live-gate/contracts.js";
 import { formatReport, gateFailed, type ReportInput } from "./live-gate/report.js";
-import { ProbeRunner, isDefaultCodemux, parseOptions } from "./live-gate/runner.js";
+import { ProbeRunner, isDefaultCodemux } from "./live-gate/runner.js";
+import { parseOptions } from "./live-gate/options.js";
 import { discoverCandidate } from "./live-gate/candidate.js";
 import { createReportDirectory, runProbes, sessionHarnessFacts } from "./live-gate/run.js";
 
-export { escapeControls, isDefaultCodemux, parseOptions, providerOverridePreflight, runPool, ProbeRunner } from "./live-gate/runner.js";
+export { escapeControls, isDefaultCodemux, runPool, ProbeRunner } from "./live-gate/runner.js";
+export { parseOptions, providerOverridePreflight } from "./live-gate/options.js";
 export {
   DEFAULT_PROBES,
   EXPERIMENT_HARNESSES,
@@ -60,7 +63,8 @@ export {
   verifyAliasEnvelope,
 } from "./live-gate/run.js";
 import { keychainBaselineRefusal, keychainDrift, keychainSnapshot } from "./live-gate/keychain.js";
-export type { CapturedOutput, GateOptions, ProbeResult, StdinScript, Verifier } from "./live-gate/runner.js";
+export type { CapturedOutput, ProbeResult, StdinScript, Verifier } from "./live-gate/runner.js";
+export type { GateOptions } from "./live-gate/options.js";
 export type { ContractRow, UsageCheck } from "./live-gate/contracts.js";
 export type { GateRow, ReportInput } from "./live-gate/report.js";
 export type { HarnessFacts, ProbeLetter } from "./live-gate/probes.js";

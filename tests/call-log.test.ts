@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { appendCallRecord, appendLedgerPath, CALL_LOG_ENV, CALL_LOG_TEST_ENV, callLogPath, providerHost, resetCallLogWarningForTests } from "../src/call-log.js";
+import { sessionRegistryPath } from "../src/session/registry.js";
 import { BASE_RECORD, tempEnv } from "./helpers/call-log.js";
 
 afterEach(() => {
@@ -46,6 +48,20 @@ describe("callLogPath", () => {
     } finally {
       cleanup();
     }
+  });
+
+  test("a relative HOME is refused, not resolved against the working directory", () => {
+    // Review round 286: the default ledger path joined HOME without an
+    // absolute check, so a relative HOME placed call metadata under the
+    // current working directory — inside an inspected repository.
+    expect(() => callLogPath({ HOME: "relative/home" }, "darwin")).toThrow("HOME must be an absolute path");
+    expect(() => callLogPath({ HOME: "relative/home" }, "linux")).toThrow("HOME must be an absolute path");
+    // An empty HOME still means "the account home", as before. The
+    // expected directory comes from the registry seam, not spelled here:
+    // tests must not restate the default layout by hand.
+    expect(callLogPath({ HOME: "" }, "darwin")).toBe(
+      join(dirname(sessionRegistryPath(homedir(), "darwin")), "calls.jsonl")
+    );
   });
 
   test("CODEMUX_CALL_LOG relocates; a relative value resolves against cwd", () => {

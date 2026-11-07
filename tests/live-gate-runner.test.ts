@@ -145,11 +145,34 @@ test("live gate scripted stdin stays open through a running turn and ends after 
   expect(result.status).toBe("PASS");
 });
 
+test("live gate contains an EPIPE on a scripted frame answered after the child closed stdin", async () => {
+  // The answer write (not the open write) can meet a closed stdin: this
+  // child closes its read end 250 ms before the line that triggers the
+  // answer, so the write cannot land (destroy() alone does not close the
+  // fd in bun; closeSync(0) does). The probe is still judged by its
+  // captured output, never by that write (round 11, edges 10; the arm is
+  // back under test so runner.ts keeps its function floor after the
+  // options split, review round 286).
+  const result = await new ProbeRunner().capture(
+    [process.execPath, "-e", `
+      await Bun.sleep(150);
+      (await import("node:fs")).closeSync(0);
+      await Bun.sleep(100);
+      process.stdout.write("frame\\n");
+      await Bun.sleep(400);
+    `],
+    (captured) => (captured.stdout.trim() === "frame" && captured.exit === 0 ? null : "wrong capture"),
+    15,
+    undefined,
+    { open: "", next: () => "answer\n" });
+  expect(result.status).toBe("PASS");
+}, 15000);
+
 test("live gate capture fails closed when stdout exceeds the capture limit", async () => {
   // Review round 4, edges finding 5: a truncated capture used to PASS on
   // the verifier's word, but the verifier judged a prefix — the proof it
-  // accepted may simply have sat beyond the limit. The full stdout still
-  // reaches the report file.
+  // accepted may simply have sat beyond the limit. The report file is
+  // capped at the same limit (review round 286).
   const directory = fixtureDirectory();
   try {
     const prefix = join(directory, "oversize");
@@ -158,7 +181,7 @@ test("live gate capture fails closed when stdout exceeds the capture limit", asy
       () => null, 30, prefix);
     expect(oversize.status).toBe("FAIL");
     expect(oversize.stderr).toBe("stdout exceeded the capture limit; the verifier saw a prefix only");
-    expect(readFileSync(`${prefix}.out`, "utf8").length).toBe(600 * 1024);
+    expect(readFileSync(`${prefix}.out`).length).toBe(512 * 1024);
     // A reply that ends exactly at the limit dropped nothing: complete,
     // not a prefix, so a passing verifier still passes.
     const exact = await new ProbeRunner().capture(
@@ -178,6 +201,29 @@ test("live gate capture fails closed when stdout exceeds the capture limit", asy
       () => null, 30);
     expect(late.status).toBe("FAIL");
     expect(late.stderr).toBe("stdout exceeded the capture limit; the verifier saw a prefix only");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("live gate caps the bytes a probe appends to its report files", async () => {
+  // Review round 286: drain appended every chunk to the .out and .err
+  // report files with no byte limit, so a noisy or broken harness could
+  // exhaust the disk before its own probe timeout. The append now stops
+  // at CAPTURE_LIMIT bytes per file and the row's note names the
+  // truncation.
+  const directory = fixtureDirectory();
+  try {
+    const prefix = join(directory, "flood");
+    const result = await new ProbeRunner().capture(
+      [process.execPath, "-e",
+        'process.stdout.write("o".repeat(600 * 1024)); process.stderr.write("e".repeat(600 * 1024));'],
+      () => null, 30, prefix);
+    expect(result.status).toBe("FAIL");
+    expect(readFileSync(`${prefix}.out`).length).toBe(512 * 1024);
+    expect(readFileSync(`${prefix}.err`).length).toBe(512 * 1024);
+    expect(result.note).toContain("stdout report file truncated at 524288 bytes");
+    expect(result.note).toContain("stderr report file truncated at 524288 bytes");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

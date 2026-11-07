@@ -51,7 +51,7 @@ import {
   writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { AgentId, AutonomyLevel, ResultUsageBlock } from "./types.js";
 import { MAX_CALL_LOG_LINE_BYTES } from "./call-log-reader.js";
 export {
@@ -194,6 +194,9 @@ function defaultStateDir(
   platform: NodeJS.Platform
 ): string {
   const home = environment.HOME?.trim() || homedir();
+  // A relative HOME would place the ledger under the working directory,
+  // so it is refused like the adapters' own HOME check (review round 286).
+  if (!isAbsolute(home)) throw new Error("HOME must be an absolute path");
   if (platform === "darwin") {
     return join(home, "Library", "Application Support", "codemux");
   }

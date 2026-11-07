@@ -32,8 +32,9 @@ export const KIMI_HERMETIC_ENV_OMISSIONS = [
 export const KIMI_HERMETIC_ENV_ASSIGNMENTS = ["KIMI_CODE_NO_AUTO_UPDATE=1", "KIMI_CODE_REPEAT_BREAKER=false"] as const;
 const MCP_TIMEOUT_KEYS = ["startup_timeout_ms", "tool_timeout_ms"] as const;
 const MAX_CONFIG_BYTES = 1024 * 1024;
-/** `region` and `device_id` are short identifiers; 4096 bytes is ample. */
-const MAX_KIMI_STATE_BYTES = 4096;
+/** `region` and `device_id` are short identifiers; 4096 bytes is ample.
+ * Shared with the isolation probe (kimi-isolation-probe.ts). */
+export const MAX_KIMI_STATE_BYTES = 4096;
 const liveHomes = new Set<() => void>();
 const signals = [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const;
 const handlers = new Map<NodeJS.Signals, () => void>();

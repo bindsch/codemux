@@ -7,6 +7,7 @@
 
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { UsageRefusalError } from "../validation.js";
 
 /** The user home a run sees: the seam, else $HOME, else the account home. */
 function opencodeEffectiveHome(
@@ -71,4 +72,27 @@ export function opencodeRealStateDir(
     return join(configured, "opencode");
   }
   return join(opencodeEffectiveHome(environment, homeDirectory), ".local", "state", "opencode");
+}
+
+/** Refuses an inherited XDG directory a relative value would relocate
+ * beneath the run's working directory. The sanitized child environment
+ * forwards XDG_CONFIG_HOME, XDG_DATA_HOME, and XDG_STATE_HOME on every
+ * opencode run (environment.ts INERT_ENV) — no --pass-env needed — and
+ * OpenCode resolves a relative value against its working directory, so
+ * configuration the adapter's project-config walk never sees would load
+ * (review round 286). Both launch boundaries call this before any spawn;
+ * the values are read exactly as the child receives them, the same rule
+ * as the data and state readers above (review round 45). An unset or
+ * empty value means no relocation and is left alone. */
+export function assertAbsoluteOpencodeXdgHome(environment: NodeJS.ProcessEnv): void {
+  for (const name of ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"] as const) {
+    const configured = environment[name];
+    if (configured === undefined || configured === "") continue;
+    if (configured.includes("\0")) {
+      throw new UsageRefusalError(`${name} must not contain a NUL byte`);
+    }
+    if (!isAbsolute(configured)) {
+      throw new UsageRefusalError(`${name} must be an absolute path`);
+    }
+  }
 }

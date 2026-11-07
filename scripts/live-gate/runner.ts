@@ -1,29 +1,19 @@
-// CLI parsing and the probe runner for the live gate. Kept separate from
+// The probe runner for the live gate. Kept separate from
 // scripts/live-gate.ts (the entry hub) so no module in scripts/live-gate/
 // imports the hub back: a static cycle there deadlocks bun's loader when the
 // hub is the entry file.
 
-import { Command, InvalidArgumentError } from "commander";
-import { accessSync, appendFileSync, constants, writeFileSync, statSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ReadableStreamDefaultReader } from "node:stream/web";
-import { AGENT_IDS } from "../../src/adapters/index.js";
-import { FORCE_KILL_DELAY_MS, MAX_RUN_TIMEOUT_MS, PIPE_GIVE_UP_MS, signalProcess } from "../../src/process-runner.js";
+import { FORCE_KILL_DELAY_MS, PIPE_GIVE_UP_MS, signalProcess } from "../../src/process-runner.js";
 import { createTerminationTarget, waitForDescendantsGrace, type TerminationTarget } from "../../src/process-tree.js";
-import type { AgentId } from "../../src/types.js";
 
-import { DEFAULT_PROBES, PROVIDER_OVERRIDE_OPT_IN, parseProbeList, probeApplies, type HarnessFacts, type ProbeLetter } from "./probes.js";
-
-// 600: the codex experiment probe runs its code-mode model for six to
-// eight minutes (395 s and 495 s on 2026-11-02), and the canonical
-// `make live-gate` must be able to run every probe it requires (round 36).
-const DEFAULT_TIMEOUT_SECONDS = 600;
-const MAX_JOBS = 4;
 const STDERR_LIMIT = 160;
 const STDOUT_LIMIT = 80;
 const CAPTURE_LIMIT = 512 * 1024;
 const ROOT = resolve(import.meta.dir, "../..");
-const DEFAULT_CODEMUX = join(ROOT, "bin/codemux");
+export const DEFAULT_CODEMUX = join(ROOT, "bin/codemux");
 
 /** This checkout's own launcher: when --codemux names it, discovery and
  * capabilities may come from the in-process adapter registry (the
@@ -31,28 +21,6 @@ const DEFAULT_CODEMUX = join(ROOT, "bin/codemux");
  * candidate and answers `list --json` instead (candidate.ts). */
 export function isDefaultCodemux(codemux: string): boolean {
   return codemux === DEFAULT_CODEMUX;
-}
-
-export interface GateOptions {
-  codemux: string;
-  timeout: number;
-  jobs: number;
-  skip: Set<AgentId>;
-  only?: Set<AgentId>;
-  passEnv?: string;
-  probes: readonly ProbeLetter[];
-  /** The `-m` value the codex experiment probe carries (`worker` by default:
-   * the operator's alias; a codex experiment refuses a request without a
-   * model). */
-  codexModel: string;
-  allowStaleContracts: boolean;
-  /** KNOWN-BREAK has its own allowance (audit D15); a sandbox-mitigated
-   * break never fails, flag or no flag. */
-  allowKnownBreaks: boolean;
-  /** Harnesses that run even when the gate's login pre-check (audit D8)
-   * detects no credentials — the operator says the store is wrong. */
-  probeAnyway: Set<AgentId>;
-  allowVersionMismatch: boolean;
 }
 
 export interface ProbeResult {
@@ -68,110 +36,6 @@ export interface CapturedOutput {
 }
 
 export type Verifier = (captured: CapturedOutput) => string | null;
-
-function positiveInteger(maximum: number): (value: string) => number {
-  return (value) => {
-    const number = Number(value);
-    if (!/^\d+$/.test(value) || !Number.isSafeInteger(number) || number < 1 || number > maximum) {
-      throw new InvalidArgumentError(`Expected an integer from 1 to ${maximum}.`);
-    }
-    return number;
-  };
-}
-
-function agentList(values: (string | undefined)[], label: string): Set<AgentId> {
-  const agents = new Set<AgentId>();
-  for (const name of values.flatMap((value) => value?.split(",") ?? [])) {
-    const agent = name.trim();
-    if (!agent) continue;
-    if (!AGENT_IDS.includes(agent as AgentId)) throw new Error(`${label} list contains an unknown harness name.`);
-    agents.add(agent as AgentId);
-  }
-  return agents;
-}
-
-export function parseOptions(args: string[], skipEnv = process.env.LIVE_GATE_SKIP, env: Record<string, string | undefined> = process.env): GateOptions {
-  const command = new Command()
-    .name("live-gate")
-    .description("Spend quota to check every installed harness under the default sandbox.")
-    .option("--codemux <path>", "Codemux executable to test", DEFAULT_CODEMUX)
-    .option("--timeout <seconds>", "Timeout per probe in seconds", positiveInteger(MAX_RUN_TIMEOUT_MS / 1000), DEFAULT_TIMEOUT_SECONDS)
-    .option("--jobs <count>", "Concurrent probes (1 to 4)", positiveInteger(MAX_JOBS), MAX_JOBS)
-    .option("--skip <agents>", "Comma-separated harnesses without credentials (adds to LIVE_GATE_SKIP)")
-    .option("--only <agents>", "Run only these comma-separated installed harnesses")
-    .option("--pass-env <names>", "Forward this comma-separated environment list to every probe")
-    .option("--probe <probes>", "Run only these comma-separated probes (letters or names; default: every probe but H, which is opt-in)")
-    .option("--skip-probe <probes>", "Exclude these comma-separated probes")
-    .option("--codex-model <alias>", "The -m value the codex experiment probe carries (a codex experiment refuses a request without one)", "worker")
-    .option("--allow-stale-contracts", "Report stale version contracts without failing the gate")
-    .option("--allow-known-breaks", "Report known-broken version contracts without failing the gate (a break the sandbox mitigates never fails, flag or no flag)")
-    .option("--probe-anyway <agents>", "Run these harnesses even when the gate detects no credentials (the login pre-check would skip them)")
-    .option("--allow-version-mismatch", "Test a candidate whose --version differs from this checkout anyway (its probe matrix still comes from the candidate)")
-    .exitOverride();
-  command.parse(args, { from: "user" });
-  const options = command.opts<{ codemux: string; timeout: number; jobs: number; skip?: string; only?: string; passEnv?: string; probe?: string; skipProbe?: string; probeAnyway?: string; codexModel: string; allowStaleContracts?: boolean; allowKnownBreaks?: boolean; allowVersionMismatch?: boolean }>();
-  const codemux = resolve(options.codemux);
-  try {
-    if (!statSync(codemux).isFile()) throw new Error("not a file");
-    accessSync(codemux, constants.X_OK);
-  } catch {
-    command.error(`--codemux must name an existing executable file: ${escapeControls(codemux)}`, { exitCode: 2 });
-  }
-  // A list flag given with an empty value — the whole value or one
-  // comma-separated entry — is a caller mistake, not an absent flag:
-  // the list parsers skip empty entries, so `--skip ""` would silently
-  // select every harness (review round 159). The env merge
-  // (LIVE_GATE_SKIP) keeps its own convention: blank means unset.
-  for (const [flag, value] of [["--skip", options.skip], ["--only", options.only], ["--pass-env", options.passEnv],
-    ["--probe", options.probe], ["--skip-probe", options.skipProbe], ["--probe-anyway", options.probeAnyway]] as const) {
-    if (value?.split(",").some((entry) => entry.trim() === "")) {
-      throw new Error(`${flag} takes a comma-separated list; an entry is empty.`);
-    }
-  }
-  const skip = agentList([skipEnv, options.skip], "Skip");
-  const only = options.only === undefined ? undefined : agentList([options.only], "Only");
-  if (only?.size === 0) throw new Error("Only list must contain at least one harness name.");
-  const selected = options.probe === undefined ? [...DEFAULT_PROBES] : parseProbeList([options.probe], "Probe");
-  if (selected.length === 0) throw new Error("Probe list must contain at least one probe.");
-  const probes = selected.filter((letter) => !parseProbeList([options.skipProbe], "Skip-probe").includes(letter));
-  if (probes.length === 0) throw new Error("Probe selection is empty after --skip-probe.");
-  if (env[PROVIDER_OVERRIDE_OPT_IN] !== undefined && env[PROVIDER_OVERRIDE_OPT_IN] !== "1") {
-    throw new Error(`${PROVIDER_OVERRIDE_OPT_IN} must be 1 when set.`);
-  }
-  if (options.codexModel.trim() === "" || options.codexModel.includes("\0")) throw new Error("--codex-model must be a nonempty model name or alias.");
-  return { codemux, timeout: options.timeout, jobs: options.jobs, skip, only, passEnv: options.passEnv, probes, codexModel: options.codexModel, allowStaleContracts: options.allowStaleContracts === true, allowKnownBreaks: options.allowKnownBreaks === true, probeAnyway: agentList([options.probeAnyway], "Probe-anyway"), allowVersionMismatch: options.allowVersionMismatch === true };
-}
-
-/** The opt-in preflight for probe H (review round 4, edges finding H): a
- * harness that will run the provider-override probe must export all three
- * of its CODEMUX_<AGENT>_PROVIDER_{BASE_URL,API_KEY,MODEL} variables,
- * nonempty. A missing or empty one made the probe run WITHOUT the
- * override — the adapter never saw it and answered from the operator's
- * default credentials, a PASS that verified nothing and spent quota
- * outside the account the opt-in names. Refused before any probe runs,
- * naming the variable; unset the opt-in to skip probe H instead. */
-export function providerOverridePreflight(
-  facts: readonly HarnessFacts[],
-  options: Pick<GateOptions, "probes" | "skip" | "only">,
-  env: Record<string, string | undefined> = process.env
-): void {
-  if (env[PROVIDER_OVERRIDE_OPT_IN] !== "1") return;
-  const running = facts.filter((fact) =>
-    (!options.only || options.only.has(fact.id)) &&
-    !options.skip.has(fact.id) &&
-    options.probes.includes("H") &&
-    probeApplies("H", fact));
-  for (const fact of running) {
-    for (const suffix of ["BASE_URL", "API_KEY", "MODEL"] as const) {
-      const name = `CODEMUX_${fact.id.toUpperCase()}_PROVIDER_${suffix}`;
-      if (!env[name]) {
-        throw new Error(
-          `${PROVIDER_OVERRIDE_OPT_IN}=1 runs probe H on ${fact.id}, but ${name} is missing or empty; export it or unset ${PROVIDER_OVERRIDE_OPT_IN}`
-        );
-      }
-    }
-  }
-}
 
 export function escapeControls(value: string): string {
   return value.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, (character) => {
@@ -189,23 +53,45 @@ export function escapeControls(value: string): string {
 // harness cannot grow the note without bound.
 const STDERR_WARNING_CAP = 3;
 
+/** A stdin end or a reader cancel that fails after the child is gone never
+ * fails the probe itself: every rejection the runner can outlive lands on
+ * this no-op handler (round 11, edges 10). */
+const ignoreRejection = (): void => {};
+
+/** Streams one probe output to its consumer and, when a path is given, to
+ * the report file — at most CAPTURE_LIMIT bytes of it: a noisy or broken
+ * harness must not be able to exhaust the disk under a probe that is
+ * still inside its timeout (review round 286). Returns whether the file
+ * write dropped bytes. */
 async function drain(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   consume: (chunk: string) => void,
   path?: string,
-): Promise<void> {
+): Promise<boolean> {
   const decoder = new TextDecoder();
+  let written = 0;
+  let fileTruncated = false;
   try {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      if (path) appendFileSync(path, value);
+      if (path && !fileTruncated) {
+        const room = CAPTURE_LIMIT - written;
+        if (value.length <= room) {
+          appendFileSync(path, value);
+          written += value.length;
+        } else {
+          if (room > 0) appendFileSync(path, value.subarray(0, room));
+          fileTruncated = true;
+        }
+      }
       consume(decoder.decode(value, { stream: true }));
     }
     consume(decoder.decode());
   } finally {
     reader.releaseLock();
   }
+  return fileTruncated;
 }
 
 /** A scripted stdin exchange for a probe whose child must keep reading
@@ -306,8 +192,8 @@ export class ProbeRunner {
       deadline = performance.now() + FORCE_KILL_DELAY_MS;
       killTimer = setTimeout(() => signalProcess(target, "SIGKILL", "tree"), FORCE_KILL_DELAY_MS);
       giveUpTimer = setTimeout(() => {
-        void stdoutReader.cancel().catch(() => {});
-        void stderrReader.cancel().catch(() => {});
+        void stdoutReader.cancel().catch(ignoreRejection);
+        void stderrReader.cancel().catch(ignoreRejection);
         giveUpExit();
       }, FORCE_KILL_DELAY_MS + PIPE_GIVE_UP_MS);
       signalProcess(target, "SIGTERM", "tree");
@@ -327,7 +213,7 @@ export class ProbeRunner {
       // below reads stdout while the bytes flush.
       try {
         proc.stdin.write(stdin);
-        void Promise.resolve(proc.stdin.end()).catch(() => {});
+        void Promise.resolve(proc.stdin.end()).catch(ignoreRejection);
       } catch {
         // The stdin bytes did not land; the run proceeds.
       }
@@ -347,7 +233,8 @@ export class ProbeRunner {
     // so the second call is the no-op.
     if (this.interrupted) stop("interrupted");
 
-    // Keep a bounded preview while writing the full response to disk.
+    // Keep a bounded preview while writing the response to the report
+    // file, capped at CAPTURE_LIMIT bytes (review round 286).
     let output = "";
     let captured = "";
     let truncated = false;
@@ -370,9 +257,8 @@ export class ProbeRunner {
         if (answer === null || answer === undefined) continue;
         try {
           proc.stdin.write(answer);
-          Promise.resolve(proc.stdin.end()).catch(() => {
-            // The last frame did not land; the run proceeds.
-          });
+          // A last frame that never landed never fails the probe.
+          Promise.resolve(proc.stdin.end()).catch(ignoreRejection);
         } catch {
           // The last frame did not land; the run proceeds.
         }
@@ -426,7 +312,7 @@ export class ProbeRunner {
           finishLine();
           // Bounded read: stop once the first ordinary line and the
           // warning cap are both covered; the raw bytes still reach the
-          // report file.
+          // report file, up to its byte cap.
           if (stderr && warnings.length >= STDERR_WARNING_CAP) collectingStderr = false;
         } else if (pendingLine.length < STDERR_LIMIT && (pendingLine || character.trim())) {
           pendingLine += character;
@@ -434,13 +320,15 @@ export class ProbeRunner {
       }
     }, stderrPath);
     try {
-      const [exit] = await Promise.all([
+      const [exit, stdoutFileTruncated, stderrFileTruncated] = await Promise.all([
         Promise.race([proc.exited, abandonedExit]), stdout, errors,
       ]);
       finishLine();
       const note = [
         ...warnings,
         ...(truncated ? [`stdout truncated at ${CAPTURE_LIMIT} characters`] : []),
+        ...(stdoutFileTruncated ? [`stdout report file truncated at ${CAPTURE_LIMIT} bytes`] : []),
+        ...(stderrFileTruncated ? [`stderr report file truncated at ${CAPTURE_LIMIT} bytes`] : []),
       ].join("; ");
       if (reason) return failed(reason, note);
       if (expected !== undefined) {
@@ -451,8 +339,8 @@ export class ProbeRunner {
       }
       // A capture that dropped bytes is a FAIL (review round 4, edges
       // finding 5): the verifier judged a prefix, so a PASS here could
-      // mean the proof simply sat beyond the limit. The full stdout still
-      // landed in the report file (drain appends every chunk).
+      // mean the proof simply sat beyond the limit. The report file keeps
+      // the first CAPTURE_LIMIT bytes (drain caps its appends).
       if (truncated) {
         return failed("stdout exceeded the capture limit; the verifier saw a prefix only", note === "" ? undefined : note);
       }
@@ -463,18 +351,19 @@ export class ProbeRunner {
         : failed(verifierFailure || stderr || `exit ${exit ?? "without a status"}${preview ? `; stdout: ${escapeControls(preview)}` : ""}`, note === "" ? undefined : note);
     } catch {
       stop("could not capture probe output");
-      void stdoutReader.cancel().catch(() => {});
-      void stderrReader.cancel().catch(() => {});
-      await Promise.race([proc.exited, abandonedExit]).catch(() => {});
+      void stdoutReader.cancel().catch(ignoreRejection);
+      void stderrReader.cancel().catch(ignoreRejection);
+      await Promise.race([proc.exited, abandonedExit]).catch(ignoreRejection);
       finishLine();
       return failed(reason || stderr, warnings[0]);
     } finally {
       // A script whose last frame never fired (the child exited before any
       // line matched) leaves the write end open; close it so nothing
-      // dangles past the probe. An already-ended sink is a no-op.
+      // dangles past the probe. An already-ended sink is a no-op; a
+      // rejection is ignored like every other the runner outlives.
       if (script !== undefined) {
         try {
-          Promise.resolve(proc.stdin.end()).catch(() => {});
+          Promise.resolve(proc.stdin.end()).catch(ignoreRejection);
         } catch {
           // Already closed; nothing to do.
         }

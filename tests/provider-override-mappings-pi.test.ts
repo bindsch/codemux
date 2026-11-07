@@ -228,6 +228,29 @@ describe("pi provider override", () => {
     expect(existsSync(join(home, ".pi"))).toBe(false);
   });
 
+  test("a relative passed-through PI_CODING_AGENT_DIR is refused on a plain run and a TUI launch", () => {
+    // Review round 286: the check lived on the override path alone, so an
+    // ordinary run or TUI launch that passed the variable through sent the
+    // relative value to pi, which resolves it against the working
+    // directory — agent configuration and extensions from the repository.
+    const request = {
+      agent: "pi" as const,
+      prompt: "p",
+      cwd: cwdOf(),
+      passthroughEnv: ["PI_CODING_AGENT_DIR"],
+    };
+    const adapter = adapterOf({ PI_CODING_AGENT_DIR: "relative/path" });
+    expect(() => adapter.validateRunRequest(request as RunRequest))
+      .toThrow("passed-through PI_CODING_AGENT_DIR must be an absolute path");
+    expect(() => adapter.validateTuiRequest(undefined, cwdOf(), "read-only", undefined, ["PI_CODING_AGENT_DIR"]))
+      .toThrow("passed-through PI_CODING_AGENT_DIR must be an absolute path");
+    // Not passed through: the sanitized environment drops the variable, so
+    // the ambient value never reaches pi and the launch proceeds.
+    const ambient = adapterOf({ PI_CODING_AGENT_DIR: "relative/path" });
+    expect(() => ambient.validateRunRequest({ ...request, passthroughEnv: undefined } as RunRequest)).not.toThrow();
+    expect(() => ambient.validateTuiRequest(undefined, cwdOf())).not.toThrow();
+  });
+
   test("the tui refuses the override; without one it is unchanged", () => {
     const plain = adapterOf();
     expect(() => plain.validateTuiRequest(undefined, cwdOf())).not.toThrow();

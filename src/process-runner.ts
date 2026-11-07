@@ -190,10 +190,12 @@ export async function runCapturedCommand(
     }
     if (starting) signalProcess(tree, "SIGTERM", "tree");
   };
-  // After a signal the protocol cleanup gets the same grace the receipt
-  // gets: closeProtocol has no deadline of its own, and one that never
-  // settled kept the interruption receipt from being written and codemux
-  // from exiting (review round 174).
+  // After a signal, a timeout, or a capture failure the protocol cleanup
+  // gets the same grace the receipt gets: closeProtocol has no deadline of
+  // its own, and one that never settled kept the interruption receipt from
+  // being written and codemux from exiting (review round 174); after a
+  // timeout or a capture failure the same never-settling cleanup held the
+  // run open past its own configured end (review round 286).
   let closingProtocol = false;
   let protocolGraceTimer: ReturnType<typeof setTimeout> | null = null;
   let expireProtocolGrace: () => void = () => {};
@@ -395,10 +397,10 @@ export async function runCapturedCommand(
     let cleanupNote: string | undefined;
     try {
       closingProtocol = true;
-      if (signaled) armProtocolGrace();
+      if (signaled || timedOut || captureFailed) armProtocolGrace();
       const closed = (async () => { await options.stdoutSink?.closeProtocol?.(); return true; })();
       if (!(await Promise.race([closed, protocolGrace.then(() => false)]))) {
-        throw new Error("protocol cleanup remains incomplete after the signal cleanup grace");
+        throw new Error("protocol cleanup remains incomplete after the cleanup grace");
       }
     } catch (error) {
       const note = `cleanup failed: ${error instanceof Error ? error.message : String(error)}`;

@@ -288,7 +288,7 @@ test("a peer whose protocol cleanup never settles still writes its receipt and c
   try {
     expect(run.exit).toBe(143);
     expect(existsSync(join(run.cwd, "receipt"))).toBe(true);
-    expect(run.stderr).toContain("protocol cleanup remains incomplete after the signal cleanup grace");
+    expect(run.stderr).toContain("protocol cleanup remains incomplete after the cleanup grace");
     expect(run.elapsedMs).toBeLessThan(15_000);
     expect(await allGone(run.pids)).toBe(true);
     expect(run.stderr.split("codemux: interrupted; the agent's process tree was terminated").length - 1).toBe(1);

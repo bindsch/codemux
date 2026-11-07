@@ -134,6 +134,18 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 286, whole tree: a protocol cleanup that never settles after a timeout or a
+  capture failure no longer holds the run open past its own end (the signal path's cleanup
+  grace now covers those paths too); a relative passed-through `PI_CODING_AGENT_DIR`, a
+  relative inherited `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_STATE_HOME` on an OpenCode run or
+  session launch, and a relative `HOME` when the call ledger resolves its default location
+  are each refused before any spawn or write, because the harness would resolve them beneath
+  the working directory; the kimi isolation probe reads `region` and `device_id` through the
+  bounded no-follow reader, so a FIFO or symlink at either path is refused instead of
+  blocking the probe or copying an unintended target; an experiment MCP server whose
+  `tools/list` pagination exceeds 100 pages fails the run instead of being collected without
+  end; and the live gate caps each probe's `.out`/`.err` report files at the capture limit,
+  noting the truncation in the row, so a noisy harness cannot exhaust the disk.
 - Review round 265, whole tree: codex rollout evidence timestamps must carry a zone (the RFC
   3339 rule the rest of the protocol applies), so the same evidence no longer records different
   instants on hosts in different zones; and the timeout and signal diagnostics a captured run

@@ -8,7 +8,8 @@ import { SESSION_AGENTS } from "../../src/session/cli.js";
 import { sessionRegistryPath } from "../../src/session/registry.js";
 import type { AgentId, CodemuxConfig } from "../../src/types.js";
 import { MARKER as EXPERIMENT_MARKER } from "../../tests/fixtures/experiment-mcp.js";
-import { isDefaultCodemux, providerOverridePreflight, runPool, type GateOptions, type ProbeResult, type ProbeRunner } from "./runner.js";
+import { isDefaultCodemux, runPool, type ProbeResult, type ProbeRunner } from "./runner.js";
+import { providerOverridePreflight, type GateOptions } from "./options.js";
 import {
   PROVIDER_OVERRIDE_OPT_IN,
   harnessFacts,

@@ -22,7 +22,7 @@ import {
   tempWorkdir,
 } from "./helpers/session-command.js";
 import { codexSessionProviderHomePath } from "../src/codex-provider.js";
-import { parseOptions } from "../scripts/live-gate/runner.js";
+import { parseOptions } from "../scripts/live-gate/options.js";
 
 const doctorHomes: string[] = [];
 

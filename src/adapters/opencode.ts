@@ -34,7 +34,7 @@ import {
   OPENCODE_NO_TOOLS_PERMISSION,
   PLAIN_NO_TOOLS_REFUSAL,
 } from "./opencode-env.js";
-import { opencodeRealDataDir, opencodeRealDataParent, opencodeRealStateDir } from "./opencode-home.js";
+import { assertAbsoluteOpencodeXdgHome, opencodeRealDataDir, opencodeRealDataParent, opencodeRealStateDir } from "./opencode-home.js";
 import { fileStoreLoginState, type LoginState } from "../harness-health.js";
 
 export { opencodeRealDataParent, opencodeRealDataDir } from "./opencode-home.js";
@@ -105,17 +105,6 @@ export class OpencodeAdapter extends BaseAdapter {
 
   override supportsTuiEffort(): boolean {
     return false;
-  }
-
-  /**
-   * The XDG data parent a plain run sees, holding the real OpenCode data
-   * directory and its login: the sanitized child environment passes
-   * XDG_DATA_HOME through, so an operator who relocated it keeps their
-   * login in both kinds of run. Shared with the session CLI (see
-   * opencodeRealDataParent).
-   */
-  private realDataParent(): string {
-    return opencodeRealDataParent(this.environment, this.homeDirectory);
   }
 
   /**
@@ -217,7 +206,10 @@ export class OpencodeAdapter extends BaseAdapter {
       envPrefix.push(
         ...OPENCODE_HERMETIC_ENV(
           home,
-          this.realDataParent(),
+          // The XDG data parent a plain run sees (opencode-home.ts):
+          // XDG_DATA_HOME passes through the sanitized child environment,
+          // so an operator who relocated it keeps their login.
+          opencodeRealDataParent(this.environment, this.homeDirectory),
           context?.opencodeProviderConfig?.path ?? null,
           request.experimentProjectSettings === true
         )
@@ -403,6 +395,10 @@ export class OpencodeAdapter extends BaseAdapter {
 
   override validateRunRequest(request: RunRequest): void {
     super.validateRunRequest(request);
+    // The inherited XDG directories are refused while still relative,
+    // before any walk or spawn: OpenCode resolves them against the run's
+    // working directory, past every check below (review round 286).
+    assertAbsoluteOpencodeXdgHome(this.environment);
     // The project-settings gates, surfaced early with their reasons (the
     // build path fails closed on the same two rules).
     if (request.experimentProjectSettings) {
@@ -464,6 +460,10 @@ export class OpencodeAdapter extends BaseAdapter {
       passthroughEnv,
       enablePlaywrightMcp
     );
+    // The inherited XDG directories, the run boundary's rule (review
+    // round 286): a relative value resolves beneath the session's working
+    // directory inside OpenCode, past the walk below.
+    assertAbsoluteOpencodeXdgHome(this.environment);
     assertNoOpenCodeProjectExecutionConfig(
       validateWorkingDirectory(cwd) ?? process.cwd()
     );

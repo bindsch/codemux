@@ -280,6 +280,7 @@ OpenCode cost sums the steps in the current invocation.
 The append-only ledger is `calls.jsonl` under
 `~/Library/Application Support/codemux/` on macOS or
 `~/.local/state/codemux/` elsewhere. It is derived from HOME, not XDG_STATE_HOME.
+A relative HOME is refused rather than resolved against the working directory.
 `CODEMUX_CALL_LOG=<path>` relocates it (relative paths use cwd);
 `CODEMUX_CALL_LOG=off` disables it.
 

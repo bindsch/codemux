@@ -9,6 +9,13 @@ const EXPERIMENT_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 // Claude's SDK bridge bounds injected names at 64 characters. Applying the
 // same bound to the namespaced name satisfies both raw and prefixed checks.
 const MAX_NAMESPACED_TOOL_NAME = 64;
+/** The most tools/list pages one collection follows. MCP puts no bound on
+ * pagination, and every cursor must be unique, so a server that keeps
+ * answering with empty pages and fresh cursors would otherwise keep
+ * collection — and its mcp_request records — running without end (review
+ * round 286). A hundred pages sits an order above any real inventory
+ * (docs/experiment-mcp.md calls a hundred tools large). */
+const MAX_TOOLS_LIST_PAGES = 100;
 
 /** A complete, immutable tool inventory, shared by both MCP transports. */
 export class ExperimentInventory {
@@ -80,6 +87,10 @@ export class ExperimentInventory {
       if (cursor === undefined) break;
       if (typeof cursor !== "string" || cursors.has(cursor)) throw new ExperimentFailure(ExperimentFailureCode.InventoryMismatch, "invalid or repeated experiment tools/list cursor");
       cursors.add(cursor);
+      if (cursors.size >= MAX_TOOLS_LIST_PAGES) {
+        throw new ExperimentFailure(ExperimentFailureCode.InventoryMismatch,
+          `experiment server exceeds ${MAX_TOOLS_LIST_PAGES} tools/list pages`);
+      }
       page = await this.page(controlId, cursor);
       if (!this.active()) return [];
       if (!page) throw new Error("experiment MCP response id mismatch");

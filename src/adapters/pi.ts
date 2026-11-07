@@ -108,6 +108,25 @@ export class PiAdapter extends BaseAdapter {
     return join(base, ".pi", "agent");
   }
 
+  /** Refuses a passed-through PI_CODING_AGENT_DIR that pi would resolve
+   * against the run's working directory. Pi reads the variable on every
+   * launch, not only the override's, so both boundaries check every
+   * request — a relative value reached ordinary runs and TUI sessions
+   * unrefused (review round 286) — and a NUL-carrying value never reaches
+   * a spawn. The value is read exactly as the child receives it; an unset
+   * or empty value means no relocation and is left alone. */
+  private assertAbsoluteAgentDir(passthroughEnv: readonly string[] | undefined): void {
+    if (!passthroughEnv?.includes(PI_AGENT_DIR_ENV)) return;
+    const configured = this.environment[PI_AGENT_DIR_ENV];
+    if (configured === undefined || configured === "") return;
+    if (configured.includes("\0")) {
+      throw new UsageRefusalError(`passed-through ${PI_AGENT_DIR_ENV} must not contain a NUL byte`);
+    }
+    if (!isAbsolute(configured)) {
+      throw new UsageRefusalError(`passed-through ${PI_AGENT_DIR_ENV} must be an absolute path`);
+    }
+  }
+
   override prepareRun(request: RunRequest): RunContext {
     // One private agent directory per run with an override, never shared
     // and never recorded on the adapter: the launcher owns the returned
@@ -230,14 +249,16 @@ export class PiAdapter extends BaseAdapter {
 
   override validateRunRequest(request: RunRequest): void {
     super.validateRunRequest(request);
+    // Every launch reads a passed-through PI_CODING_AGENT_DIR, so every
+    // launch is checked for it, before the quota gate or any spawn.
+    this.assertAbsoluteAgentDir(request.passthroughEnv);
     // Fail before launch on a half-configured override, surface the model
     // requirement early (pi's own default provider, google, would
     // otherwise silently answer), and refuse a model models.json cannot
     // carry verbatim: pi expands $VAR/${VAR} templates inside it
-    // (pi-provider.ts). A passed-through PI_CODING_AGENT_DIR is checked
-    // here too, with the override active (the only launches that read
-    // it), so a relative value refuses at the boundary instead of after
-    // the quota gate.
+    // (pi-provider.ts). With the override active, the agent directory the
+    // private models.json replaces is resolved here too, so a relative
+    // value refuses at the same boundary.
     const resolved = this.modelFor(request.model);
     if (resolved !== undefined && this.validatedProvider() !== null) {
       piProviderBareModel(resolved);
@@ -254,6 +275,9 @@ export class PiAdapter extends BaseAdapter {
     enablePlaywrightMcp = false
   ): void {
     super.validateTuiRequest(model, cwd, autonomy, effort, passthroughEnv, enablePlaywrightMcp);
+    // The TUI reads a passed-through PI_CODING_AGENT_DIR like a run does,
+    // so the same boundary check applies before the session spawns.
+    this.assertAbsoluteAgentDir(passthroughEnv);
     // The private agent directory's lifecycle rides prepareRun, which only
     // the headless launch path calls; an interactive session has no hook
     // to write and remove it.
