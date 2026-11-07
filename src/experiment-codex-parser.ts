@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { calendarValid } from "./calendar.js";
+import { timestampMs, timestampValid } from "./calendar.js";
 import { object } from "./experiment-codex-content.js";
 import { assertCodexToolDefinition } from "./experiment-codex-catalog.js";
 import { CodexTopLevelInventory, isCodexResourceCall } from "./experiment-codex-inventory.js";
@@ -100,12 +100,14 @@ export class CodexRolloutParser {
     // here, but this parser is exported and driven directly: Date.parse
     // alone normalizes a nonexistent calendar date (2026-02-30 reads as
     // March 2), recording evidence under a different instant (review
-    // round 64).
-    if (typeof line.timestamp !== "string" || !Number.isFinite(Date.parse(line.timestamp)) ||
-        !calendarValid(line.timestamp)) {
+    // round 64), and reads a zone-less timestamp in the host's zone
+    // (review round 265): the RFC 3339 rule, zone included, applies.
+    if (typeof line.timestamp !== "string" || !timestampValid(line.timestamp)) {
       throw new ExperimentFailure(Code.HarnessLogMissing, `Invalid Codex rollout timestamp '${String(line.timestamp)}'`);
     }
-    const t = Date.parse(line.timestamp) / 1000;
+    // timestampMs, not Date.parse: the validator accepts an RFC 3339 leap
+    // second, which Date.parse reads as NaN (review round 268).
+    const t = timestampMs(line.timestamp) / 1000;
     if (line.type === "world_state") { this.inventory.accept(payload, t); return; }
     if (line.type === "token_usage_record") {
       if (payload.thread_id !== this.threadId || typeof payload.response_id !== "string" || !payload.response_id) {

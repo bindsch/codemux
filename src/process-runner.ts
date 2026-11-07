@@ -353,13 +353,17 @@ export async function runCapturedCommand(
       ? "Note: a process out of the runner's reach kept the output open after " +
         "the timeout; it may still be running\n"
       : "";
+    // The diagnostic starts its own line: a child whose last stderr line
+    // had no newline would otherwise share it (review round 265).
+    const captured = stderrResult.value ?? "";
+    const separated = captured === "" || captured.endsWith("\n") ? captured : `${captured}\n`;
     const result = {
       stdout: stdoutResult.value ?? "",
       stderr: timedOut
-        ? `${stderrResult.value ?? ""}Error: agent timed out after ${timeoutMs}ms\n${abandonedNote}`
+        ? `${separated}Error: agent timed out after ${timeoutMs}ms\n${abandonedNote}`
         : signaled
-          ? `${stderrResult.value ?? ""}Error: agent interrupted by a signal\n`
-          : stderrResult.value ?? "",
+          ? `${separated}Error: agent interrupted by a signal\n`
+          : captured,
       exitCode: timedOut ? TIMEOUT_EXIT_CODE : signaled ? SIGNAL_EXIT_CODE : exitCode,
       success: !timedOut && !signaled && exitCode === 0,
       ...(timedOut ? { timedOut: true as const } : {}),

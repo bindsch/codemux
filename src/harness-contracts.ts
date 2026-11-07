@@ -104,7 +104,7 @@ const SEMVER_PRERELEASE = "(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?";
 
 export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract>>> = {
   agy: {
-    // Ceiling 1.5.2 from the 2026-11-06 live gate (read-only, medium shell,
+    // Ceiling 1.5.3 from the 2026-11-07 live gate (read-only, medium shell,
     // result JSON, hermetic check, one session turn, and the two zero-quota
     // sandbox probes; docs/harnesses.md).
     // Pinned 2026-10-04 against 1.2.14, the installed release, by probing
@@ -120,7 +120,7 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
     versionArgs: ["--version"],
     pattern: new RegExp(`^(\\d+\\.\\d+\\.\\d+${SEMVER_PRERELEASE})`),
     min: "1.2.14",
-    maxAudited: "1.5.2",
+    maxAudited: "1.5.3",
   },
   aider: {
     scheme: "semver",

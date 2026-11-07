@@ -125,6 +125,11 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 265, whole tree: codex rollout evidence timestamps must carry a zone (the RFC
+  3339 rule the rest of the protocol applies), so the same evidence no longer records different
+  instants on hosts in different zones; and the timeout and signal diagnostics a captured run
+  appends to the child's stderr start on their own line when the child's last line had no
+  newline.
 - Review round 259, whole tree: the pi provider override model refuses a bare `$VAR` as well
   as braces, because pi expands `$VAR` templates inside its models.json too; a zero-exit
   claude/zai, agy, or opencode plain run that printed nothing fails instead of reporting an
@@ -198,7 +203,7 @@ implementation narrative behind it is preserved in the
   requests behind a credential failure, and bounds its launch at 120 seconds. The contract
   column is read again after the probes and names a harness that updated itself while they ran;
   the report saved before that second reading is marked preliminary. Audited ceilings raised on
-  live passes of every supported probe: agy 1.5.2, claude and zai 2.1.317, codex 0.166.0, cursor
+  live passes of every supported probe: agy 1.5.3, claude and zai 2.1.317, codex 0.166.0, cursor
   2026.11.05, kimi 2.5.0, opencode 1.19.5.
 - Review round 169, whole tree: the process exit code after a session is the one `session_ended`
   reported even when a signal lands while the final event is still being flushed (it used to become

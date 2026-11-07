@@ -33,6 +33,15 @@ test("the Codex rollout parser refuses a normalized calendar date and accepts ye
   const parser = new CodexRolloutParser("thread", "experiment", () => new Set(["bash"]), () => {}, () => codexDefinitions(["bash"]));
   // The check fires before any payload is read: the nonexistent instant
   // is the failure, whatever the line carries.
+  // A timestamp without a zone reads in the host's zone (review round
+  // 265): the same evidence named different instants on different hosts,
+  // so the RFC 3339 rule, zone included, applies to rollout lines too.
+  expect(() => parser.accept({ timestamp: "2026-10-29T01:02:03", type: "world_state", payload: {} }))
+    .toThrow("Invalid Codex rollout timestamp '2026-10-29T01:02:03'");
+  // A leap second is a valid RFC 3339 instant the validator accepts; the
+  // conversion must not read it as NaN (review round 268).
+  expect(() => parser.accept({ ...codexCatalog(["bash"]), timestamp: "2016-12-31T23:59:60Z" })).not.toThrow();
+  expect(timestampMs("2016-12-31T23:59:60Z")).toBe(Date.parse("2017-01-01T00:00:00Z"));
   expect(() => parser.accept({ timestamp: "2026-02-30T00:00:00Z", type: "world_state", payload: {} }))
     .toThrow(expect.objectContaining({ code: "harness_log_missing" }));
   // The earliest instants stay valid: setUTCFullYear reads year 1 as

@@ -64,8 +64,8 @@ describe("current harness documentation and the version gate agree", () => {
     // Column 4 is the release-machine install, dated in the cell when it
     // was read on 2026-11-06; the dated installed evidence the gate relies
     // on is the column after it.
-    expect(rows.get("agy")?.[5]).toContain("1.5.2");
-    expect(rows.get("agy")?.[3]).toBe("1.5.2");
+    expect(rows.get("agy")?.[5]).toContain("1.5.3");
+    expect(rows.get("agy")?.[3]).toBe("1.5.3");
     expect(rows.get("claude")?.[5]).toContain("2.1.317");
     expect(rows.get("claude")?.[3]).toBe("2.1.317");
   });
