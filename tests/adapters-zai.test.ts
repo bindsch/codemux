@@ -185,7 +185,10 @@ describe("ZaiAdapter", () => {
     const originalPath = process.env.PATH;
     process.env.PATH = `${root}:${originalPath ?? ""}`;
     try {
-      const cmd = adapter.buildRunCommand({
+      // The binary resolves through the adapter's own PATH view (review
+      // round 391, item 13), so this test's adapter carries the fake's root.
+      const pathAdapter = new ZaiAdapter({ ZAI_API_KEY: "test-key-123", PATH: process.env.PATH });
+      const cmd = pathAdapter.buildRunCommand({
         agent: "zai", prompt: "t", sandboxed: true, enablePlaywrightMcp: true, cwd,
       });
       expect(cmd).toContain("--setting-sources");

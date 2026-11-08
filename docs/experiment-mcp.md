@@ -57,7 +57,14 @@ Omitting the harness's prefix refuses the run before launch. Unknown prefixes, d
 The server speaks newline-delimited JSON-RPC 2.0. Responses must match pending
 request IDs (strings or safe integers) and contain exactly one of result/error.
 The transport permits at most 256 pending requests, including held calls. Request/response and Claude
-control frames are limited to 1 MiB. This prompt bound applies only to Claude and Z.AI. Codex retains its 16 MiB stdin prompt limit; Kimi retains its 32 KiB argv bound. A server notification with method
+control frames are limited to 1 MiB. For the server transport the limit is
+measured on the JSON body alone, never on a framing newline; for Claude's
+control channel it is measured on the whole frame, escaping and the
+control_response envelope included, because that is the limit Claude applies
+to the line it reads. A server reply body within the envelope's overhead of
+1 MiB therefore fails at the sender after the reader admitted it; the run
+fails closed at either point (review round 391). A line that is blank after
+stripping CR — a CRLF-framing server's blank line — is skipped. This prompt bound applies only to Claude and Z.AI. Codex retains its 16 MiB stdin prompt limit; Kimi retains its 32 KiB argv bound. A server notification with method
 `notifications/tools/list_changed` and no `id` is recorded as
 `server_notification`. The bridge rechecks the full paginated `tools/list`
 against the validated inventory and records `tool_inventory_recheck` with

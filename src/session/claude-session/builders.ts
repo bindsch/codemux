@@ -24,6 +24,10 @@ export interface ClaudeSessionCommand {
   sandboxed?: boolean;
   /** Enable the local Playwright MCP inside the sandbox (run parity). */
   enablePlaywrightMcp?: boolean;
+  /** The PATH the Playwright binary resolves through: the session child's
+   * environment PATH, the same source the spawn's own command resolution
+   * uses (review round 391, item 13) — never the ambient one. */
+  pathEnv: string;
   /** The inline `--settings` payload for a session whose model is not a
    * binary catalog id: the modelPicker row mapping it onto a tier the
    * catalog knows (claude-family.ts). Set for a provider override's
@@ -149,6 +153,7 @@ export function buildClaudeSessionCommand(
   const playwright = buildPlaywrightSandboxMcp(command.sandboxed, {
     enabled: command.enablePlaywrightMcp,
     forbiddenRoot: launchDir,
+    pathEnv: command.pathEnv,
   });
   argv.push(...playwright.args);
   if (command.model !== undefined) {

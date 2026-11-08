@@ -99,3 +99,42 @@ test("a second pass refuses a ledger replaced between the passes (round 307)", (
     cleanup();
   }
 });
+
+test("a second pass refuses a same-inode rewrite between the passes (review round 391, item 14)", () => {
+  // The pin compared only the device and inode, so an external
+  // truncate-and-rewrite that kept the inode — same dev, same ino, and
+  // the same size when the rewrite wrote an equal number of bytes —
+  // passed it and mixed two contents into one view. A rewrite moves the
+  // mtime, so the pin compares it beside the size.
+  const { dir, cleanup } = tempEnv();
+  try {
+    const path = join(dir, "calls.jsonl");
+    writeFileSync(path, `${JSON.stringify(BASE_RECORD)}\n`);
+    const first = streamCallLog(path, () => {});
+    // The in-place rewrite: same inode, same size, different content (a
+    // provider of the same length, so the byte count stands).
+    const rewrite = JSON.stringify({ ...BASE_RECORD, provider: "swapped" }) + "\n";
+    expect(Buffer.byteLength(rewrite)).toBe(first.identity.size);
+    writeFileSync(path, rewrite);
+    const kept = fs.statSync(path, { bigint: true });
+    expect(kept.ino).toBe(first.identity.ino);
+    expect(Number(kept.size)).toBe(first.identity.size);
+    expect(() =>
+      streamCallLog(path, () => {}, { endAt: first.identity.size, identity: first.identity })
+    ).toThrow("was replaced while being read");
+    // Growth alone is an append, never refused (round 28, edges 2): the
+    // writer only ever appends, so a ledger that grew between the passes
+    // still reads the pinned window as the same file.
+    const grown = join(dir, "grown.jsonl");
+    writeFileSync(grown, `${JSON.stringify(BASE_RECORD)}\n`);
+    const firstGrow = streamCallLog(grown, () => {});
+    fs.appendFileSync(grown, `${JSON.stringify({ ...BASE_RECORD, model: "later" })}\n`);
+    const secondGrow = streamCallLog(grown, () => {}, {
+      endAt: firstGrow.identity.size,
+      identity: firstGrow.identity,
+    });
+    expect(secondGrow.identity.size).toBe(firstGrow.identity.size);
+  } finally {
+    cleanup();
+  }
+});

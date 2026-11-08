@@ -150,9 +150,12 @@ export async function prepareSessionLaunch({
         effort,
         cwd: workdir,
         // Run parity for --enable-playwright-mcp (§4.5): the same
-        // sandbox-scoped carrier, in run's argv position.
+        // sandbox-scoped carrier, in run's argv position. The binary
+        // resolves through the session child's environment PATH, the same
+        // source the spawn's command resolution uses (round 391, item 13).
         sandboxed: Boolean(options.sandbox),
         enablePlaywrightMcp,
+        pathEnv: adapter.executionPathEnv(),
         // The picker mapping the run paths' one rule adds whenever the
         // resolved model is not a binary catalog id (claude-family.ts):
         // an override's provider-format model on claude, and a zai

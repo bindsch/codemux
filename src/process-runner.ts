@@ -260,6 +260,10 @@ export async function runCapturedCommand(
   process.on("SIGHUP", onSignal);
   beginCapturedCommand(onSignal);
   let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+  const disarmTimeout = (): void => {
+    if (timeoutTimer !== null) clearTimeout(timeoutTimer);
+    timeoutTimer = null;
+  };
   let spawned: Bun.Subprocess<"pipe", "pipe", "pipe"> | undefined;
   try {
     spawned = Bun.spawn(command, {
@@ -327,6 +331,12 @@ export async function runCapturedCommand(
       // abandonment must release this wait as well as the readers.
       Promise.race([proc.exited, exitGiveUp.then(() => TIMEOUT_EXIT_CODE)]),
     ]);
+    // The exit and both captures are settled: the run's outcome is fixed, and
+    // the timeout has nothing left to terminate. Disarm it before the bounded
+    // stdin wait below, so a deadline landing inside that window cannot
+    // recast a child that exited cleanly as 124 "agent timed out" (round
+    // 391, item 4).
+    disarmTimeout();
     // Every write issued before the exit is in stdin's chain by now, so
     // the wait starts only here: started with the captures it could drain
     // an empty chain before a protocol sink's first write (round 68).
@@ -404,7 +414,7 @@ export async function runCapturedCommand(
     throw firstError;
   } finally {
     cleanupStarted = true;
-    clearTimeout(timeoutTimer);
+    disarmTimeout();
     if (forceKillTimer) clearTimeout(forceKillTimer);
     if (giveUpTimer) clearTimeout(giveUpTimer);
     // The leader may exit on SIGTERM while a descendant closes the pipes

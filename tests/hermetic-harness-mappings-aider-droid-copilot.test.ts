@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getAdapter } from "../src/adapters/index.js";
@@ -25,24 +25,60 @@ describe("hermetic runs: aider", () => {
   });
 
   test("instruction directories become --read files in plain runs only", () => {
-    const cmd = adapter().buildRunCommand({
-      agent: "aider",
-      prompt: "p",
-      instructionDirs: ["/tmp/canary"],
-    });
-    expect(cmd).toContain("--read");
-    expect(cmd[cmd.indexOf("--read") + 1]).toBe("/tmp/canary/AGENTS.md");
-    expect(cmd).toContain("/tmp/canary/CLAUDE.md");
-    // Under --hermetic the channel codemux controls is simply not passed:
-    // aider would load anything it is handed.
-    const hermetic = adapter().buildRunCommand({
-      agent: "aider",
-      prompt: "p",
-      hermetic: true,
-      instructionDirs: ["/tmp/canary"],
-    });
-    expect(hermetic).not.toContain("--read");
-    expect(hermetic).toContain("--map-tokens");
+    const dir = mkdtempSync(join(tmpdir(), "codemux-aider-read-"));
+    try {
+      writeFileSync(join(dir, "AGENTS.md"), "# agents\n");
+      writeFileSync(join(dir, "CLAUDE.md"), "# claude\n");
+      const cmd = adapter().buildRunCommand({
+        agent: "aider",
+        prompt: "p",
+        instructionDirs: [dir],
+      });
+      expect(cmd).toContain("--read");
+      expect(cmd[cmd.indexOf("--read") + 1]).toBe(join(dir, "AGENTS.md"));
+      expect(cmd).toContain(join(dir, "CLAUDE.md"));
+      // Under --hermetic the channel codemux controls is simply not passed:
+      // aider would load anything it is handed.
+      const hermetic = adapter().buildRunCommand({
+        agent: "aider",
+        prompt: "p",
+        hermetic: true,
+        instructionDirs: [dir],
+      });
+      expect(hermetic).not.toContain("--read");
+      expect(hermetic).toContain("--map-tokens");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("--read carries only the instruction files that exist (review round 391, item 9)", () => {
+    // Aider 0.86.2 exits 1 at argv parse when a --read file is missing,
+    // so an unconditional AGENTS.md + CLAUDE.md pair made an instruction
+    // directory holding only one of the two a validated request whose
+    // command was guaranteed to die. Only files that exist ride the argv.
+    const one = mkdtempSync(join(tmpdir(), "codemux-aider-one-"));
+    const none = mkdtempSync(join(tmpdir(), "codemux-aider-none-"));
+    try {
+      writeFileSync(join(one, "AGENTS.md"), "# agents\n");
+      const cmdOne = adapter().buildRunCommand({
+        agent: "aider",
+        prompt: "p",
+        instructionDirs: [one],
+      });
+      expect(cmdOne).toContain("--read");
+      expect(cmdOne[cmdOne.indexOf("--read") + 1]).toBe(join(one, "AGENTS.md"));
+      expect(cmdOne).not.toContain(join(one, "CLAUDE.md"));
+      const cmdNone = adapter().buildRunCommand({
+        agent: "aider",
+        prompt: "p",
+        instructionDirs: [none],
+      });
+      expect(cmdNone).not.toContain("--read");
+    } finally {
+      rmSync(one, { recursive: true, force: true });
+      rmSync(none, { recursive: true, force: true });
+    }
   });
 
   test("aider refuses --hermetic on its config layers and --tools none on its empty tool set", () => {

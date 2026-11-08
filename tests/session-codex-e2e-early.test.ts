@@ -84,6 +84,51 @@ describe("codex session e2e - review round 232", () => {
     expect(await session.code).toBe(0);
   });
 
+  test("a second interrupt queued in the turn/start window is reported dropped by its input_seq (round 391)", async () => {
+    // Round 341 made the queued interrupt's fate reported; a second
+    // interrupt arriving in the same window used to overwrite the recorded
+    // seq, so the first acked interrupt's fate was never reported again.
+    // Every acked interrupt is now answered: the queued one keeps its place
+    // and its late-drop notice, and the second is answered at once as
+    // dropped, named by its own input_seq.
+    const message = (event: unknown) => String((event as { message?: unknown } | undefined)?.message);
+    const session = await startAndWait();
+    send(session.driver, { type: "user", text: "scenario:earlydone one" });
+    send(session.driver, { type: "interrupt" });
+    send(session.driver, { type: "interrupt" });
+    const first = await waitFor(
+      session.events,
+      (events) => events.find((event) => event.type === "turn_completed" && event.turn_id === "t1"),
+      "turn_completed t1"
+    );
+    expect(first.finish).toBe("end");
+    // The second interrupt (input_seq 3) is answered at once as dropped.
+    const second = session.events.find(
+      (event) => event.type === "error" && message(event).includes("a second interrupt") && message(event).includes("input_seq 3")
+    );
+    expect(message(second)).toContain("was dropped");
+    // The first (input_seq 2) keeps its place: the early completion reports
+    // it too, the round-341 notice.
+    const notice = session.events.find(
+      (event) =>
+        event.type === "error" &&
+        message(event).includes("the interrupt accepted while the turn was starting (input_seq 2)")
+    );
+    expect(message(notice)).toContain("was dropped");
+    // The session continues: the held response is consumed and the next
+    // turn runs and ends cleanly.
+    send(session.driver, { type: "user", text: "scenario:basic two" });
+    const next = await waitFor(
+      session.events,
+      (events) => events.find((event) => event.type === "turn_completed" && event.turn_id === "t2"),
+      "turn_completed t2"
+    );
+    expect(next.finish).toBe("end");
+    send(session.driver, { type: "shutdown" });
+    await waitFor(session.events, of("session_ended"), "session_ended");
+    expect(await session.code).toBe(0);
+  });
+
   test("a late turn/start response naming a turn the session never saw complete crashes the session (review round 235)", async () => {
     // The turn completed inside the window under its provisional id, so
     // the pending id is gone when the response lands; the closed set is

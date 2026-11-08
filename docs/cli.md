@@ -90,7 +90,8 @@ It requires Claude or Z.AI and sandboxing; sessions also require `--auto low`.
 It is incompatible with `--hermetic` and `--tools none`; the sessions spelling
 of hermetic isolation, `--hermetic --experiment-project-settings`, is refused
 the same way. The locally installed
-`playwright-mcp` must pass executable trust checks, revalidated immediately
+`playwright-mcp`, resolved through the adapter-built child environment's PATH
+(the same source every other launch binary resolves by), must pass executable trust checks, revalidated immediately
 before the spawn; codemux cannot control the moment Claude starts the server
 after that, so a swap in the later window is the sandbox's to contain. Codemux does not download
 it or execute an unpinned package. See [authentication and integrations](authentication.md).

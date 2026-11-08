@@ -97,6 +97,7 @@ async function startSession(
     harnessArgs ??
     buildClaudeSessionCommand({
       agent: "zai",
+      pathEnv: process.env.PATH ?? "",
       sessionId: options.sessionId,
       autonomy: options.autonomy,
       cwd: options.cwd,
@@ -229,6 +230,7 @@ describe("zai session driver e2e", () => {
     // endpoint, credential, or model on the command line.
     const built = buildClaudeSessionCommand({
       agent: "zai",
+      pathEnv: process.env.PATH ?? "",
       sessionId: session.options.sessionId,
       autonomy: session.options.autonomy,
       cwd: session.options.cwd,
@@ -337,6 +339,7 @@ describe("zai session driver e2e", () => {
 
     const argv = buildClaudeSessionCommand({
       agent: "zai",
+      pathEnv: process.env.PATH ?? "",
       resumeId: id,
       autonomy: probe.autonomy,
       cwd: created.options.cwd,

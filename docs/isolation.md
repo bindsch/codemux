@@ -48,6 +48,8 @@ The Kimi command redirects HOME after scode starts, so scode derives its policy 
 The filtered config retains `default_provider` alongside model definitions.
 Kimi 2.3.2 accepts that key and uses it when a model has no explicit provider.
 
+Plain aider runs map instruction directories onto `--read` for each directory's `AGENTS.md` and `CLAUDE.md`, passing only files that exist: aider exits 1 at argv parse when a `--read` file is missing, so an unconditional pair would kill a launch whose directory holds only one of the two names.
+
 [Authentication](authentication.md) explains credential linking, mirrors, rotation, and recovery.
 
 ## Verification

@@ -201,6 +201,13 @@ export abstract class AiderDriverCore {
     this.clearTimers();
     const proc = this.turnProc;
     const spawn = this.turnSpawn;
+    // The child THIS end path drained, if any (review round 391, item 5):
+    // the drain verdict reports only this child. `lastChildOutcome` keeps
+    // the last turn's exit for session_ended's harness_exit, but a turn
+    // that failed and was answered as a failed turn_completed is not a
+    // drain failure — reusing its exit claimed the child "exited during
+    // the shutdown drain" minutes after it exited.
+    let drainOutcome: SessionChildOutcome | null = null;
     // The turn's process to drain, once landed: the one already running,
     // or — on a graceful end — the one that lands while this path waits.
     let drain: SessionProcess | null = proc;
@@ -303,7 +310,7 @@ export abstract class AiderDriverCore {
           if (!escalated) late.requestStop();
           await late.settled;
           this.lastChildOutcome = await late.exited;
-
+          drainOutcome = this.lastChildOutcome;
         }
       }
     }
@@ -318,7 +325,7 @@ export abstract class AiderDriverCore {
       if (!this.stopEscalation.escalateIfRequested(drain)) drain.requestStop();
       await drain.settled;
       this.lastChildOutcome = await drain.exited;
-
+      drainOutcome = this.lastChildOutcome;
       this.turnProc = null;
     }
     if (this.sawHarnessFailure) {
@@ -326,8 +333,8 @@ export abstract class AiderDriverCore {
       reason = "harness_failed";
     }
     // Every nonzero code and signal exit fails, including during shutdown.
-    const drainFailureCode = harnessFailed(this.lastChildOutcome)
-      ? this.lastChildOutcome!.code ?? 1
+    const drainFailureCode = harnessFailed(drainOutcome)
+      ? drainOutcome!.code ?? 1
       : null;
     if (drainFailureCode !== null) {
       reason = "harness_failed";
@@ -335,7 +342,7 @@ export abstract class AiderDriverCore {
       if (this.firstFatal === null) this.emitError(
         true,
         "harness",
-        drainFailureMessage("aider", this.lastChildOutcome!, this.fsm.state === "turn_active")
+        drainFailureMessage("aider", drainOutcome!, this.fsm.state === "turn_active")
       );
     }
     // Captured before the block below: the transition inside it moves
@@ -368,7 +375,7 @@ export abstract class AiderDriverCore {
               reason === "crash"
                 ? crashSynthesisReason(this.firstFatal)
                 : drainFailureCode !== null
-                  ? drainFailureMessage("aider", this.lastChildOutcome!, true)
+                  ? drainFailureMessage("aider", drainOutcome!, true)
                   : this.firstFatal !== null
                     ? crashSynthesisReason(this.firstFatal)
                     : `the session ended (${reason}) before the turn completed`,
@@ -414,7 +421,7 @@ export abstract class AiderDriverCore {
       ownsRecord &&
       this.endExitCode === 0 &&
       !this.unansweredPromptRecorded &&
-      !openTurnInterrupted && !harnessFailed(this.lastChildOutcome);
+      !openTurnInterrupted && !harnessFailed(drainOutcome);
     // The exit code the report carries, read once here: a signal or a
     // failure landing during the final flush (through `finish`'s re-entry
     // arm) no longer changes the process exit code — the session had

@@ -66,6 +66,16 @@ export abstract class BaseAdapter {
     return this.binaryName;
   }
 
+  /** The PATH this adapter's child environment carries: its environment
+   * view's PATH (sanitizeEnvironment keeps it; no adapter injects one), so
+   * every executable a launch embeds inside an argument resolves through
+   * it like the command's own positions do (review round 391, item 13).
+   * Reads the view alone, never getEnv: zai's credential resolution must
+   * stay behind the session resume guards (rounds al15/al16). */
+  executionPathEnv(): string {
+    return this.environment.PATH ?? "";
+  }
+
   abstract capabilities(): AdapterCapabilities;
 
   /**

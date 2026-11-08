@@ -204,4 +204,29 @@ describe("quota gate window kinds (audit round 2)", () => {
       warnings.restore();
     }
   });
+
+  test("an overdrawn credit balance reports its own figure, not 0 (review round 391, item 11)", () => {
+    // parseCredits accepts any finite remaining, negatives included: an
+    // overdrawn -2.5 printed "(0 credits left)" before, hiding the
+    // overdraft behind a figure the provider never reported.
+    const warnings = captureWarnings();
+    try {
+      expect(() =>
+        gateOnResult(
+          "codex",
+          result({
+            client: "codex",
+            windows: [window({ kind: "primary", usedPercent: 58, remainingPercent: 42, windowMinutes: 300 })],
+            credits: { remaining: -2.5, unit: "credits" },
+          }),
+          POLICY
+        )
+      ).not.toThrow();
+      expect(warnings.lines).toEqual([
+        "Warning: quota gate: codex: credits exhausted (-2.5 credits left); proceeding",
+      ]);
+    } finally {
+      warnings.restore();
+    }
+  });
 });

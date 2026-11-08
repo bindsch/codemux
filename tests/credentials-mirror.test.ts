@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { syncKeychainCredential } from "../src/credentials.js";
 import { BACKUPS, FUTURE, SECRET, gives, withTarget } from "./helpers/credentials.js";
 
@@ -181,5 +183,33 @@ describe("syncKeychainCredential — a mirror of an existing file", () => {
       expect(syncKeychainCredential("svc", target, gives(SECRET), BACKUPS(target))).toBe("foreign");
       expect(readFileSync(target, "utf8")).toBe("not json at all\n");
     }, "not json at all");
+  });
+
+  test("an operator-owned symlinked ancestor above the mirror is never written through (review round 391, item 12)", () => {
+    // The refusal used to check only the file's own entry and its
+    // immediate parent, so a symlinked higher ancestor (~/.claude's
+    // home, or $HOME itself) redirected the atomic mirror rename into
+    // another tree and scrubbed a file through the link. Every ancestor
+    // between the filesystem root and the file is checked now: this
+    // launch is refused "unsafe" (a Keychain entry exists and the file
+    // behind the link carries a refresh token) and the file is untouched.
+    const real = mkdtempSync(join(tmpdir(), "codemux-cred-real-"));
+    const linked = mkdtempSync(join(tmpdir(), "codemux-cred-link-"));
+    try {
+      mkdirSync(join(real, ".claude"), { recursive: true });
+      const leaked = JSON.stringify({ claudeAiOauth: { accessToken: "t", refreshToken: "r", expiresAt: 5000 } });
+      const target = join(real, ".claude", ".credentials.json");
+      writeFileSync(target, `${leaked}\n`, { mode: 0o600 });
+      symlinkSync(real, join(linked, "home"));
+      const through = join(linked, "home", ".claude", ".credentials.json");
+      // The backup dir sits OUTSIDE the link, so only the ancestor walk
+      // can refuse: a backup path through the link fails on its own and
+      // would mask the difference this test pins.
+      expect(syncKeychainCredential("svc", through, gives(SECRET), { backupDir: join(linked, "backups") })).toBe("unsafe");
+      expect(readFileSync(target, "utf8")).toBe(`${leaked}\n`);
+    } finally {
+      rmSync(real, { recursive: true, force: true });
+      rmSync(linked, { recursive: true, force: true });
+    }
   });
 });

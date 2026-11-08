@@ -2,8 +2,16 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import { statSync } from "node:fs";
 import { readUtf8FileBounded } from "./file-io.js";
 import { UsageRefusalError } from "./validation.js";
-import { experimentUserFrameBytes, MAX_EXPERIMENT_MESSAGE_BYTES } from "./experiment-bridge.js";
+import { MAX_EXPERIMENT_MESSAGE_BYTES } from "./experiment-server.js";
 import type { AgentId, RunRequest } from "./types.js";
+
+/** Measure the serialized user frame, including its envelope and newline.
+ * Prompt preflight and the bridge's frames share one byte bound, so the
+ * frame this computes is what `--experiment-mcp` refuses to carry (round
+ * 391 moved it here from experiment-bridge.ts, which stays at its cap). */
+export function experimentUserFrameBytes(prompt: string): number {
+  return Buffer.byteLength(JSON.stringify({ type: "user", message: { role: "user", content: prompt } }) + "\n");
+}
 
 /** The harnesses `--experiment-mcp` supports and, for each, the wall-time
  * prefix codemux itself prepends to that harness's model-bound MCP

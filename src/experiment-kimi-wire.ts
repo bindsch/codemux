@@ -51,6 +51,9 @@ export class KimiWireCursor {
   private decoder = new TextDecoder("utf-8", { fatal: true });
   private digest = createHash("sha256");
   private line = 0;
+  /** Decoded byte count: the quantity the final read re-encodes and compares.
+   * `offset` stays the raw read position for readSync and the size check. */
+  private decoded = 0;
 
   constructor(private readonly home: string, private readonly accept: (line: JsonObject) => void) {}
 
@@ -83,10 +86,10 @@ export class KimiWireCursor {
     try {
       const value = readUtf8FileBounded(path, { maxBytes: MAX_KIMI_WIRE_BYTES, label: `Kimi wire log ${path}`, noFollow: true });
       const bytes = Buffer.from(value);
-      if (bytes.length < this.offset || createHash("sha256").update(bytes.subarray(0, this.offset)).digest("hex") !== this.digest.copy().digest("hex")) {
+      if (bytes.length < this.decoded || createHash("sha256").update(bytes.subarray(0, this.decoded)).digest("hex") !== this.digest.copy().digest("hex")) {
         throw new Error("wire log changed after live evidence was emitted");
       }
-      this.consume(bytes.subarray(this.offset));
+      this.consume(bytes.subarray(this.decoded));
       this.partial += this.decoder.decode();
       if (this.partial || !value.endsWith("\n")) throw new Error("incomplete JSONL record");
       return path;
@@ -95,8 +98,16 @@ export class KimiWireCursor {
 
   private consume(bytes: Buffer): void {
     this.offset += bytes.length;
-    this.digest.update(bytes);
-    this.partial += this.decoder.decode(bytes, { stream: true });
+    const text = this.decoder.decode(bytes, { stream: true });
+    // Hash what finish() compares (round 391, item 2): the final read decodes
+    // first, and the decoder strips a leading BOM, so hashing raw read bytes
+    // made a BOM-prefixed wire log always fail the tamper check. Valid UTF-8
+    // re-encodes byte-identically, so the decoded text is one quantity on
+    // both sides.
+    const encoded = Buffer.from(text);
+    this.decoded += encoded.length;
+    this.digest.update(encoded);
+    this.partial += text;
     let newline: number;
     while ((newline = this.partial.indexOf("\n")) !== -1) {
       const raw = this.partial.slice(0, newline);

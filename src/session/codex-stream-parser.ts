@@ -160,7 +160,14 @@ export class CodexStreamParser {
     }
     const threadError = checkThread(thread, context);
     if (threadError !== null) return [threadError];
-    if (context.activeTurnId === null) {
+    // The turn/start window's provisional id (round 391, item 16): rounds
+    // 232 to 247 gave scoped notifications and lifecycle events that window,
+    // and an approval request naming the id the window already holds to is
+    // the starting turn's own request the same way. Without a held id there
+    // is nothing to name, so the request stays a grammar error.
+    const provisional = context.turnPending === true && context.activeTurnId === null &&
+      typeof context.pendingTurnId === "string" && turn === context.pendingTurnId;
+    if (context.activeTurnId === null && !provisional) {
       return [
         {
           kind: "grammar_error",
@@ -168,7 +175,7 @@ export class CodexStreamParser {
         },
       ];
     }
-    if (turn !== context.activeTurnId) {
+    if (context.activeTurnId !== null && turn !== context.activeTurnId) {
       return [
         {
           kind: "grammar_error",

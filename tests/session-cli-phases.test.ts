@@ -30,7 +30,7 @@ describe("the harness-home resolvers", () => {
     expect(cliHomes.kimiHarnessHome(["KIMI_CODE_HOME"])).toBe(join(homedir(), ".kimi-code"));
   });
 
-  test("codexHarnessHome refuses an empty passed-through CODEX_HOME like the adapter (round 384)", () => {
+  test("codexHarnessHome refuses an empty passed-through CODEX_HOME like the adapter (round 381)", () => {
     const saved = process.env.CODEX_HOME;
     process.env.CODEX_HOME = "";
     try {

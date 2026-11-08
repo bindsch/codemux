@@ -54,6 +54,7 @@ describe("spawnSessionChild scode parity", () => {
     try {
       const { argv } = buildClaudeSessionCommand({
         agent: "claude",
+        pathEnv: process.env.PATH ?? "",
         autonomy: "medium",
         cwd: workDir,
       });

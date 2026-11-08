@@ -280,6 +280,7 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
     const playwright = buildPlaywrightSandboxMcp(request.sandboxed, {
       enabled: request.enablePlaywrightMcp,
       forbiddenRoot: request.cwd ?? process.cwd(),
+      pathEnv: this.executionPathEnv(),
     });
     // True when the request asked for the Playwright server and none can
     // be attached (an unsandboxed launch: the build returns no
@@ -463,6 +464,7 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
     const playwright = buildPlaywrightSandboxMcp(sandboxed, {
       enabled: enablePlaywrightMcp,
       forbiddenRoot: cwd ?? process.cwd(),
+      pathEnv: this.executionPathEnv(),
     });
     const cmd = playwright.args.length > 0
       ? ["claude", "--setting-sources", "user", "--strict-mcp-config"]

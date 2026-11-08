@@ -296,6 +296,35 @@ describe("opencode session e2e - lifecycle", () => {
     expect(ended.resumable).toBe(true);
   });
 
+  test("a shutdown after an answered failed turn emits no drain failure (review round 391, item 5)", async () => {
+    // The failed turn's exit 1 stayed in lastChildOutcome after the turn
+    // was answered as a failed turn_completed. A later shutdown drained
+    // nothing (the turn's process had exited long before), yet the end
+    // path re-read that stale outcome and emitted a fatal harness error
+    // claiming the child exited "during the shutdown drain". The end path
+    // now judges only the child it drained itself; the latch still makes
+    // the exit code 1 and the session resumable.
+    const session = await startSession();
+    send(session.driver, { type: "user", text: "scenario:basic one" });
+    await waitFor(session.events, of("turn_completed"), "turn_completed");
+    send(session.driver, { type: "user", text: "scenario:silentfail" });
+    const failed = await waitFor(
+      session.events,
+      (events) => events.filter((event) => event.type === "turn_completed")[1],
+      "second turn_completed"
+    );
+    expect(failed.finish).toBe("failed");
+    send(session.driver, { type: "shutdown" });
+    expect(await session.code).toBe(1);
+    const ended = session.events[session.events.length - 1] as Event;
+    expect(ended.type).toBe("session_ended");
+    expect(ended.resumable).toBe(true);
+    const fatal = session.events.find(
+      (event) => event.type === "error" && event.fatal === true
+    );
+    expect(fatal).toBeUndefined();
+  });
+
   test("a first turn that never names a session id ends the untrackable session", async () => {
     const session = await startSession();
     send(session.driver, { type: "user", text: "scenario:crash" });

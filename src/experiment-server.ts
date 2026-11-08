@@ -154,7 +154,11 @@ export class ExperimentServer {
           if (newline > MAX_EXPERIMENT_MESSAGE_BYTES) throw new Error("experiment MCP response exceeds 1 MiB");
           const line = this.buffer.subarray(0, newline);
           this.buffer = this.buffer.subarray(newline + 1);
-          if (line.length === 0) continue;
+          // A line that is blank after stripping CR is skipped (round 391,
+          // item 3): a CRLF-framing server emits its blank line as a bare CR,
+          // which the bridge's reader also skips. JSON.parse accepts the
+          // trailing CR of a framed reply, so only the blank line needs this.
+          if (line.length === 0 || (line.length === 1 && line[0] === 13)) continue;
           const message = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(line));
           if (!message || message.jsonrpc !== "2.0") throw new Error("invalid experiment MCP JSON-RPC response");
           if (message.method === "notifications/tools/list_changed" && !("id" in message)) {

@@ -243,10 +243,12 @@ export const gateOnResult = (
   // Credits are a prepaid meter the windows do not carry (codex reports
   // them beside its weekly window): zero means every API-key call fails,
   // so it warns before any window logic can return early (audit round 2,
-  // B10).
+  // B10). The remaining value prints as reported (review round 391, item
+  // 11): the parser accepts any finite number, and an overdrawn account
+  // answers -2.5, not a hardcoded 0.
   if (result.credits !== null && result.credits.remaining <= 0) {
     console.error(
-      `Warning: quota gate: ${agent}: credits exhausted (0 ${escapeForTerminal(result.credits.unit)} left); proceeding`
+      `Warning: quota gate: ${agent}: credits exhausted (${escapeForTerminal(String(result.credits.remaining))} ${escapeForTerminal(result.credits.unit)} left); proceeding`
     );
   }
   if (binding.length === 0) {

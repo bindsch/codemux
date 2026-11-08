@@ -372,7 +372,7 @@ describe("executable re-stat before spawn", () => {
       // Replaced (a different inode) between the argument build and the
       // recheck: refused.
       const playwrightPath = script(bin, "playwright-mcp");
-      const replaced = buildPlaywrightSandboxMcp(true, { enabled: true, binaryPath: playwrightPath });
+      const replaced = buildPlaywrightSandboxMcp(true, { enabled: true, binaryPath: playwrightPath, pathEnv: process.env.PATH ?? "" });
       expect(replaced.args[0]).toBe("--mcp-config");
       expect(replaced.check).not.toBeNull();
       replace(playwrightPath);
@@ -382,14 +382,14 @@ describe("executable re-stat before spawn", () => {
       // Made group-writable in between: refused the same way.
       rmSync(playwrightPath);
       const fresh = script(bin, "playwright-mcp");
-      const widened = buildPlaywrightSandboxMcp(true, { enabled: true, binaryPath: fresh });
+      const widened = buildPlaywrightSandboxMcp(true, { enabled: true, binaryPath: fresh, pathEnv: process.env.PATH ?? "" });
       chmodSync(fresh, 0o664);
       await expect(launch(widened)).rejects.toThrow(
         "sandbox command executable changed after its trust check"
       );
       // Unchanged: the launch runs (the fake scode exits 0).
       chmodSync(fresh, 0o755);
-      const unchanged = buildPlaywrightSandboxMcp(true, { enabled: true, binaryPath: fresh });
+      const unchanged = buildPlaywrightSandboxMcp(true, { enabled: true, binaryPath: fresh, pathEnv: process.env.PATH ?? "" });
       await expect(launch(unchanged)).resolves.toBeTruthy();
     } finally {
       probe.mockRestore();

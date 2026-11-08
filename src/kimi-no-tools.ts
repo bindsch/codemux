@@ -39,7 +39,6 @@ import {
   lstatSync,
   mkdirSync,
   readdirSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -100,19 +99,23 @@ function sweepStaleFiles(parent: string, record: TrustedParentRecord): void {
     // content codemux never created.
     const identity = lstatSync(path, { throwIfNoEntry: false });
     if (identity === undefined) continue;
+    // The age comes from the lstat itself, and the stale gate runs before
+    // the report (review round 391, item 17): statSync would follow a
+    // symlink to time its target, and a fresh non-regular entry was
+    // reported "stale ... kept" before the gate could say it was not.
+    if (Date.now() - identity.mtimeMs < STALE_FILE_MS) continue;
+    // A regular file is the only entry this sweep owns: the no-tools files
+    // codemux writes. Anything else carrying the name — a directory planted
+    // at one, a symlink — stays with a report, the h4 review's rule: the
+    // removal was never recursive, and recursing through
+    // removeUnderTrustedParent would not add safety, only a choice about
+    // content codemux never created.
     if (!identity.isFile()) {
       console.error(
         `codemux: the stale kimi no-tools agent file ${path} is not a regular file; the file was kept`
       );
       continue;
     }
-    let age: number;
-    try {
-      age = Date.now() - statSync(path).mtimeMs;
-    } catch {
-      continue;
-    }
-    if (age < STALE_FILE_MS) continue;
     // One bad entry must not block the run, or every later run: the entry
     // stays, the sweep moves on, and the operator learns why (an entry the
     // sweep cannot remove is never cleaned up by retrying it either). The

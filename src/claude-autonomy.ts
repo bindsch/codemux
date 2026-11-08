@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import type { AutonomyLevel } from "./types.js";
+import { UsageRefusalError } from "./validation.js";
 
 /**
  * Shared autonomy mapping for the adapters that drive the Claude Code CLI:
@@ -67,9 +68,11 @@ export function grantRule(launchDir: string): string {
   // pattern layers, and glob metacharacters would match siblings instead
   // of the launch directory. A comma or a space inside one rule value
   // stays literal (verified against the installed 2.1.258 parser). All of
-  // these refuse the launch rather than misgrant.
+  // these refuse the launch rather than misgrant — as a usage refusal
+  // (exit 64), because only the caller's --cwd spelling can fix them
+  // (review round 391, item 10).
   if (/[()\\[\]{}*?!]/.test(absolute)) {
-    throw new Error(
+    throw new UsageRefusalError(
       `cannot build a safe permission grant for "${absolute}": the path ` +
         "contains a parenthesis, a backslash, or a glob metacharacter " +
         "(* ? [ ] { } !), which the rule grammar cannot represent literally"
@@ -80,7 +83,7 @@ export function grantRule(launchDir: string): string {
   // even decodes back to a space), which would silently retarget the
   // grant to a sibling directory. Refuse rather than misgrant.
   if (/[\t\n\r]/.test(absolute) || /\s$/.test(absolute)) {
-    throw new Error(
+    throw new UsageRefusalError(
       `cannot build a safe permission grant for "${absolute}": the path ` +
         "contains a tab or line break, or ends with whitespace, which the " +
         "rule matcher cannot represent"

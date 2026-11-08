@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   createFakeBinaryEnv,
@@ -53,6 +53,18 @@ const scodePolicyTree = (() => {
   return directory;
 })();
 process.on("exit", () => rmSync(scodePolicyTree, { recursive: true, force: true }));
+
+// A working directory whose name the claude grant grammar cannot quote
+// (a parenthesis): the directory exists and is accessible, so the grant
+// build is what refuses — caller-fixable, exit 64 (review round 391,
+// item 10).
+const parenCwd = (() => {
+  const directory = mkdtempSync(join(resolve("scratch"), "exit64-paren-"));
+  const nested = join(directory, "repo (main)");
+  mkdirSync(nested);
+  return nested;
+})();
+process.on("exit", () => rmSync(parenCwd, { recursive: true, force: true }));
 
 describe("CLI - run pre-launch usage refusals exit 64", () => {
   // One exit code (64) for every pre-launch refusal of a caller mistake,
@@ -194,6 +206,15 @@ describe("CLI - run pre-launch usage refusals exit 64", () => {
       binaries: { claude: "exit 0" },
       argv: ["run", "-a", "claude", "-p", "test", "--cwd", "/definitely/not/a/dir", "--no-sandbox", "--auto", "high"],
       message: "cwd is not accessible",
+    },
+    {
+      // Review round 391, item 10: the grant-rule refusal for a --cwd the
+      // rule grammar cannot quote used to be a plain Error (exit 1); only
+      // the caller's --cwd spelling can fix it, so it is 64.
+      label: "a --cwd that breaks the grant rule",
+      binaries: { claude: "exit 0", scode: "exit 0" },
+      argv: ["run", "-a", "claude", "-p", "test", "--cwd", parenCwd, "--auto", "medium", "--sandbox"],
+      message: "cannot build a safe permission grant for",
     },
     {
       // Review round 5, contracts-2 finding 2: the plain-run --tools none

@@ -304,8 +304,8 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
     // argument, where the spawn's command re-check cannot see it, so the
     // launcher re-stats it through the recorded check instead.
     const playwright = buildPlaywrightSandboxMcp(request.sandboxed, {
-      enabled: request.enablePlaywrightMcp,
-      forbiddenRoot: request.cwd ?? process.cwd(),
+      enabled: request.enablePlaywrightMcp, forbiddenRoot: request.cwd ?? process.cwd(),
+      pathEnv: this.executionPathEnv(),
     });
     // True when the request asked for the Playwright server and none can
     // be attached (an unsandboxed launch: the build returns no
@@ -469,8 +469,8 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
     // attaches nothing, and user settings with no MCP configuration to
     // load from them is the baseline lost for nothing.
     const playwright = buildPlaywrightSandboxMcp(sandboxed, {
-      enabled: enablePlaywrightMcp,
-      forbiddenRoot: cwd ?? process.cwd(),
+      enabled: enablePlaywrightMcp, forbiddenRoot: cwd ?? process.cwd(),
+      pathEnv: this.executionPathEnv(),
     });
     const cmd = playwright.args.length > 0
       ? ["claude", "--setting-sources", "user", "--strict-mcp-config"]

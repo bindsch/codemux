@@ -39,6 +39,7 @@ describe("zai session - identity", () => {
 
   test("the spawn argv is the claude-family argv — there is no zai binary", () => {
     const zai = buildZaiSessionCommand({
+      pathEnv: process.env.PATH ?? "",
       resumeId: "11111111-2222-3333-4444-555555555555",
       model: "opus",
       autonomy: "high",
@@ -46,6 +47,7 @@ describe("zai session - identity", () => {
     });
     const claude = buildClaudeSessionCommand({
       agent: "claude",
+      pathEnv: process.env.PATH ?? "",
       resumeId: "11111111-2222-3333-4444-555555555555",
       model: "opus",
       autonomy: "high",

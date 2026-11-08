@@ -103,7 +103,8 @@ export abstract class KimiDriverIo {
    * and settled). finishDone awaits it — past done, by design — before
    * releasing the registry record, for a release is a promise no child
    * is coming. A spawn that never settles holds the record until this
-   * process dies. */
+   * process dies — unless no record ever landed, where the wait is
+   * skipped (round 391, item 15). */
   protected readonly holdReleased: Promise<void>;
   protected resolveHold: (() => void) | null = null;
   /** True once the hold resolved (the abandoned spawn can no longer

@@ -3,8 +3,8 @@
 // it, and which outcome the adapter acts on. src/credentials.ts owns the
 // mirror lifecycle and re-exports this.
 
-import { lstatSync, statSync } from "node:fs";
-import { dirname } from "node:path";
+import { lstatSync, realpathSync, statSync } from "node:fs";
+import { join, parse, resolve, sep, dirname } from "node:path";
 
 import {
   accessTokenLive,
@@ -30,6 +30,45 @@ import { FileContentError, readUtf8FileBounded } from "../file-io.js";
  * regular file past it is refused (the shared bounded reader,
  * src/file-io.ts, which also refuses non-regular files the same way the
  * lstat above does). */
+
+/** Whether any directory between the filesystem root and the file is a
+ * symbolic link this side refuses to write through. The immediate-parent
+ * check this replaces (review round 391, item 12) missed a link higher up
+ * — `$HOME` itself, say — which redirects the atomic mirror write's
+ * rename into whatever tree it points at just the same. The walk follows
+ * the backup side's rule (src/credentials/backups.ts): the one link
+ * accepted is one root owns (macOS's /var, /tmp), because neither the
+ * operator nor the sandboxed child can create it; the walk continues from
+ * its real path. Every other link — and any ancestor that is not a
+ * directory — answers true: the file is then judged through the link (the
+ * `linked` arm below) and never written through. An unreadable ancestor
+ * fails closed the same way the parent lstat always did. */
+function linkedAncestor(target: string): { linked: boolean } | { failed: true } {
+  try {
+    // The final component was judged by the caller (a link at the file
+    // itself); the walk covers the ancestors above it, by the PARTS of
+    // the parent path: a root-owned link rebases `current` onto its real
+    // path, so the parts can no longer be compared against the original
+    // spelling (the first cut did, and walked into the file itself).
+    const parent = dirname(resolve(target));
+    let current = parse(parent).root;
+    for (const part of parent.slice(current.length).split(sep)) {
+      if (part === "") continue;
+      const candidate = join(current, part);
+      const entry = lstatSync(candidate);
+      if (entry.isSymbolicLink()) {
+        if (entry.uid !== 0) return { linked: true };
+        current = realpathSync(candidate);
+        continue;
+      }
+      if (!entry.isDirectory()) return { linked: true };
+      current = candidate;
+    }
+    return { linked: false };
+  } catch {
+    return { failed: true };
+  }
+}
 
 /** One bounded read of the mirror. The direct-path reads refuse a
  * final-component symlink at open time (the lstat above already refused
@@ -171,22 +210,21 @@ export function syncKeychainCredential(
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "failed";
   }
-  // A symlinked mirror, or a symlinked parent (~/.claude linked elsewhere),
-  // is never written through: the write would land wherever the link
-  // points, e.g. a repository. Whether it may be launched through is decided
-  // after the Keychain read below: when a Keychain entry exists, the file is
-  // a mirror, and one that carries a refresh token behind a link would hand
-  // the child that token — "unsafe"; when there is no entry at all the file
-  // is Claude Code's own store (a dotfile-managed ~/.claude on Linux is the
-  // common case) and the launch proceeds as "failed" — nothing synced,
-  // nothing refused.
+  // A symlinked mirror, or a symlinked ancestor anywhere between the
+  // filesystem root and the file (~/.claude, or $HOME itself, linked
+  // elsewhere), is never written through: the write would land wherever
+  // the link points, e.g. a repository. Whether it may be launched
+  // through is decided after the Keychain read below: when a Keychain
+  // entry exists, the file is a mirror, and one that carries a refresh
+  // token behind a link would hand the child that token — "unsafe"; when
+  // there is no entry at all the file is Claude Code's own store (a
+  // dotfile-managed ~/.claude on Linux is the common case) and the launch
+  // proceeds as "failed" — nothing synced, nothing refused.
   let linked = info.isSymbolicLink() || !info.isFile();
   if (!linked) {
-    try {
-      linked = lstatSync(dirname(target)).isSymbolicLink();
-    } catch {
-      return "failed";
-    }
+    const ancestor = linkedAncestor(target);
+    if ("failed" in ancestor) return "failed";
+    linked = ancestor.linked;
   }
 
   // Read the Keychain first (its lookup can take up to 3s), tolerating an

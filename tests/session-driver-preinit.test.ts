@@ -56,4 +56,34 @@ describe("claude-family driver - input accepted before the init frame", () => {
     // Nothing turned the acked interrupt into a turn: no turn ever opened.
     expect(of("turn_started")(session.events)).toBeUndefined();
   });
+
+  test("a pre-init user line whose write is refused keeps only the delivery fatal (review round 391, item 6)", async () => {
+    // The line is accepted before the init frame and its forward is
+    // refused (a dead harness stdin): writeToHarness already emits the
+    // true fatal — "could not deliver a line" — and starts the crash end.
+    // The opener notice must not follow it claiming the line "was already
+    // forwarded": the pending flag is set only when the write was
+    // accepted, so the crash carries one story, not two.
+    const session = await startSession();
+    session.proc.writeLine = () => ({ ok: false, reason: "closed" });
+    send(session.driver, { type: "user", text: "scenario:wait hold" });
+    const error = await waitFor(
+      session.events,
+      (events) => events.find((event) => event.type === "error" && event.fatal),
+      "fatal error"
+    );
+    expect(error.source).toBe("codemux");
+    expect(error.message).toContain("could not deliver a line to the harness");
+    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
+    expect(ended.reason).toBe("crash");
+    expect(await session.code).toBe(1);
+    // No non-fatal codemux notice contradicts the fatal.
+    const notices = session.events.filter(
+      (event) => event.type === "error" && event.fatal === false && event.source === "codemux"
+    );
+    expect(notices).toHaveLength(0);
+    expect(
+      session.events.some((event) => event.type === "error" && event.message.includes("already forwarded"))
+    ).toBe(false);
+  });
 });

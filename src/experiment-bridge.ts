@@ -24,11 +24,6 @@ const CLAUDE_FRAME_TYPES = new Set([
 /** Prompt preflight and bridge frames use the same byte bound. */
 export { MAX_EXPERIMENT_MESSAGE_BYTES };
 
-/** Measure the serialized user frame, including its envelope and newline. */
-export function experimentUserFrameBytes(prompt: string): number {
-  return Buffer.byteLength(JSON.stringify({ type: "user", message: { role: "user", content: prompt } }) + "\n");
-}
-
 /** Claude's SDK control transport. Raw stdio and the harness's emitted
  * model-bound tool_result blocks are different evidence and remain separate.
  */
@@ -118,6 +113,12 @@ export class ExperimentBridge implements StdoutSink {
 
   private send(message: JsonObject): void {
     const line = JSON.stringify(message) + "\n";
+    // The bound is the whole control frame, escaping and envelope included
+    // (rounds 73, 75): Claude's control channel applies it to the line it
+    // reads, so measuring the reply body alone would pass a frame the
+    // receiver refuses. A reply body within the envelope's overhead of the
+    // bound fails here after the reader admitted it (docs/experiment-mcp.md
+    // names the residual; review round 391, item 1).
     if (Buffer.byteLength(line) > MAX_EXPERIMENT_MESSAGE_BYTES) throw new Error("experiment control frame exceeds 1 MiB");
     this.record("control_stdin", { bytes_base64: Buffer.from(line).toString("base64") });
     this.write!(line);

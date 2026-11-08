@@ -1,4 +1,5 @@
 import { BaseAdapter, type RunContext } from "./base.js";
+import { existsSync } from "node:fs";
 import { devNull, homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -275,12 +276,17 @@ export class AiderAdapter extends BaseAdapter {
     } else if (request.instructionDirs) {
       // Aider discovers no instruction files of its own, so an instruction
       // directory maps onto --read, the only channel that adds a file's
-      // content to the chat. It is deliberately not passed under --hermetic:
-      // nothing harness-side would ignore it, so passing it would leak by
-      // construction.
+      // content to the chat. Only a file that exists is passed (review
+      // round 391, item 9): aider 0.86.2 exits 1 at argv parse when a
+      // --read file is missing, so an unconditional pair made a directory
+      // holding only one of the two names a validated request whose
+      // command was guaranteed to die. It is deliberately not passed under
+      // --hermetic: nothing harness-side would ignore it, so passing it
+      // would leak by construction.
       for (const dir of request.instructionDirs) {
         for (const name of ["AGENTS.md", "CLAUDE.md"]) {
-          cmd.push("--read", join(dir, name));
+          const file = join(dir, name);
+          if (existsSync(file)) cmd.push("--read", file);
         }
       }
     }

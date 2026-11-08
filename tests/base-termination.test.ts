@@ -279,6 +279,54 @@ describe("captured process execution", () => {
     expect(performance.now() - started).toBeLessThan(3_500);
   }, 12_000);
 
+  test("keeps the child's clean exit when the deadline lands in the stdin-wait window", async () => {
+    // Review round 391, item 4: after the exit and both captures settle, the
+    // runner still waits up to PIPE_GIVE_UP_MS (1 s) on stdin.settled(). The
+    // timeout timer used to stay armed through that wait, so a deadline
+    // landing inside it set timedOut and recast a child that exited 0 well
+    // before the deadline as 124 "agent timed out". The timer is now cleared
+    // the moment the exit and captures resolve, before the stdin wait: the
+    // run's outcome is fixed and the timeout has nothing left to terminate.
+    // The park is staged at the same subprocess seam as the test above.
+    if (process.platform === "win32") return;
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-stdin-window-"));
+    const real = Bun.spawn(["/bin/sh", "-c", "exit 0"], {
+      cwd, env: {}, stdin: "pipe", stdout: "pipe", stderr: "pipe", detached: true,
+    });
+    expect(await real.exited).toBe(0);
+    const parked = new Promise<number>(() => {});
+    const staged = {
+      exited: real.exited,
+      pid: real.pid,
+      kill: (signal?: NodeJS.Signals) => real.kill(signal),
+      stdin: { write: () => parked, end: () => parked },
+      stdout: real.stdout,
+      stderr: real.stderr,
+    } as unknown as Bun.Subprocess<"pipe", "pipe", "pipe">;
+    const command = ["/bin/sh", "-c", "exit 0"];
+    const spawn = spyOn(Bun, "spawn").mockReturnValueOnce(staged);
+    let pending: ReturnType<typeof runCapturedCommand>;
+    try {
+      pending = runCapturedCommand(command, {
+        cwd,
+        env: {},
+        // Past the pipe buffer, so the one-shot write parks like the
+        // orphan case above.
+        stdinInput: "x".repeat(1024 * 1024),
+        // The deadline fires inside the bounded stdin wait (1 s), long
+        // after this child exited 0.
+        timeoutMs: 300,
+      });
+    } finally {
+      spawn.mockRestore();
+    }
+    const result = await pending;
+    expect(result.exitCode).toBe(0);
+    expect(result.success).toBe(true);
+    expect(result.stderr).toContain("kept the input open");
+    expect(result.stderr).not.toContain("agent timed out");
+  }, 12_000);
+
   test("rejects invalid reusable timeout values before spawning", async () => {
     for (const timeoutMs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
       await expect(runCapturedCommand([bun, "-e", "process.exit(0)"], {

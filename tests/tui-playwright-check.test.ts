@@ -17,9 +17,13 @@ import { ZaiAdapter } from "../src/adapters/zai.js";
 import { assertExecutablesUnchanged, type ExecutableCheck } from "../src/executable-security.js";
 import { buildPlaywrightSandboxMcp } from "../src/mcp.js";
 
+// The adapter view carries the PATH the helper sets before each build:
+// the Playwright binary resolves through the adapter's environment view,
+// the same source the child's own command resolution uses (round 391,
+// item 13), so an empty view would resolve nothing.
 const BUILDERS = [
-  ["claude", () => new ClaudeAdapter({})],
-  ["zai", () => new ZaiAdapter({ ZAI_API_KEY: "test-key-123" })],
+  ["claude", () => new ClaudeAdapter({ PATH: process.env.PATH ?? "" })],
+  ["zai", () => new ZaiAdapter({ ZAI_API_KEY: "test-key-123", PATH: process.env.PATH ?? "" })],
 ] as const;
 
 function withPlaywrightOnPath(run: (binaryPath: string, write: () => void) => void): void {
@@ -61,7 +65,7 @@ describe("buildTuiCommand's nested executable checks", () => {
       );
       // A second resolution made now would accept the replacement, which
       // is why the launch must not make one.
-      const second = buildPlaywrightSandboxMcp(true, { enabled: true, forbiddenRoot: process.cwd() });
+      const second = buildPlaywrightSandboxMcp(true, { enabled: true, forbiddenRoot: process.cwd(), pathEnv: process.env.PATH ?? "" });
       expect(() => assertExecutablesUnchanged([], "tui command", undefined, [second.check!])).not.toThrow();
     });
   });

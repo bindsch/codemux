@@ -145,12 +145,18 @@ export abstract class KimiDriverFinalize extends KimiDriverIo {
     this.signals.dispose();
   }
 
+  /** Whether a registry record for this session exists to release: the
+   * recorded start of a session that named its id, or a resume's claim. */
+  private hasRegistryRecord(): boolean {
+    return this.options.registryPath !== null && this.state.sessionId !== null &&
+      (this.state.registryRecorded || this.state.resumeClaimed);
+  }
+
   /** The registry release, once no child of this session can exist
    * anymore (children_settled, or the hold's tail). */
   protected releaseRegistryRecord(): void {
-    if (this.options.registryPath === null || this.state.sessionId === null) return;
-    if (!this.state.registryRecorded && !this.state.resumeClaimed) return;
-    releaseSessionRecord(this.options.registryPath, this.state.sessionId);
+    if (!this.hasRegistryRecord()) return;
+    releaseSessionRecord(this.options.registryPath!, this.state.sessionId!);
   }
 
   /** The final step: flush what remains of the event stream, then hand
@@ -160,7 +166,10 @@ export abstract class KimiDriverFinalize extends KimiDriverIo {
    * only the registry record waits, behind the abandoned spawn's
    * settling. The signal handlers come down only after that wait
    * (round al30, edges major 3): a second SIGINT/SIGTERM while the hold
-   * runs escalates instead of being absorbed. */
+   * runs escalates instead of being absorbed. A recordless session —
+   * its start record never landed, and no resume was claimed — never
+   * awaits: the release it would guard cannot happen, so the wait
+   * protected nothing and the end disposes at once (round 391, item 15). */
   protected async finishDone(code: number): Promise<void> {
     const delivered = await awaitFinalFlush(this.out);
     const exitCode = delivered ? code : Math.max(code, 1);
@@ -175,7 +184,7 @@ export abstract class KimiDriverFinalize extends KimiDriverIo {
       );
     }
     this.resolveDone(exitCode);
-    if (this.state.spawnAbandoned) {
+    if (this.state.spawnAbandoned && this.hasRegistryRecord()) {
       await this.holdReleased;
       this.releaseRegistryRecord();
     }

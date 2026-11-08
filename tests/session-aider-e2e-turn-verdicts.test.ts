@@ -121,4 +121,26 @@ describe("aider session e2e - turn verdicts", () => {
     expect(ended.reason).toBe("crash");
     expect(ended.resumable).toBe(false);
   });
+
+  test("a shutdown after an answered failed turn emits no drain failure (review round 391, item 5)", async () => {
+    // The failed turn was the LAST turn, so lastChildOutcome still held
+    // its exit 1 at the shutdown; nothing was draining. The end path
+    // re-read that stale outcome and emitted a fatal harness error
+    // claiming the child exited "during the shutdown drain" — an exit
+    // that happened minutes earlier. It now judges only the child it
+    // drained itself; the latch still makes the exit code 1.
+    const session = await startSession();
+    send(session.driver, { type: "user", text: "scenario:errorturn" });
+    const failed = await waitFor(session.events, of("turn_completed"), "turn_completed");
+    expect(failed.finish).toBe("failed");
+    send(session.driver, { type: "shutdown" });
+    expect(await session.code).toBe(1);
+    const ended = session.events[session.events.length - 1] as Event;
+    expect(ended.type).toBe("session_ended");
+    // Not resumable, by the latch's pre-existing rule (a session that
+    // ended on a failure exit code), not by any drain verdict.
+    expect(ended.resumable).toBe(false);
+    const fatal = session.events.find((event) => event.type === "error" && event.fatal === true);
+    expect(fatal).toBeUndefined();
+  });
 });

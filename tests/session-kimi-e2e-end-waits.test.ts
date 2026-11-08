@@ -31,13 +31,10 @@ afterAll(async () => {
 // still holding the process's signal handlers would fire in any later
 // test that raises one. A kimi driver whose spawn hold is still settling
 // keeps its handlers past dispose by design (al30) and drops them once
-// the hold lands, so the assertion waits (settleMs). The two tests that
-// model a hung spawn with a promise that never settles call
-// `exemptNeverSettlingHold`: their driver's handlers outlive the test by
-// design, the assertion then requires exactly the driver's own three
-// (one per signal), and the reference-based baseline keeps them from
-// counting as new in later tests.
-const { exemptNeverSettlingHold } = registerNoLeakedSignals(
+// the hold lands, so the assertion waits (settleMs). Every never-settling
+// spawn this file builds is recordless, where round 391 skips the hold
+// and the handlers drop at once — no exemption is needed.
+registerNoLeakedSignals(
   async (mark) => { while (cleanups.length > mark) await cleanups.pop()!(); },
   () => cleanups.length,
   { settleMs: 5_000 }
@@ -110,10 +107,9 @@ describe("kimi session e2e - end paths", () => {
       sessionTimeoutMs: 100,
       spawnTurn: () => new Promise<SessionProcess>(() => {}),
     });
-    // The hold never settles, so the driver's handlers outlive this test
-    // by design (see the afterEach note): exempt, checked for exactly
-    // the driver's own three.
-    exemptNeverSettlingHold();
+    // The hold never settles, but the session is recordless (no child
+    // ever existed), so round 391 skips the wait: the handlers come down
+    // at once and the afterEach's ordinary zero-listener rule holds.
     send(session.driver, { type: "user", text: "scenario:basic one" });
     await waitFor(session.events, of("turn_started"), "turn_started");
 
@@ -135,6 +131,35 @@ describe("kimi session e2e - end paths", () => {
     // Nothing ever spawned, and done still resolved.
     expect(session.order).toEqual(["done"]);
   });
+
+  test("a recordless session ends at once instead of waiting out an abandoned spawn's hold (round 391)", async () => {
+    // The hold guards one thing: the registry release past done. When a
+    // fresh session's start record never landed — no child ever existed,
+    // so no session id and no resume claim — releaseRegistryRecord
+    // returns at its first guard and the wait protects nothing: codemux
+    // sat past session_ended with its signal handlers installed until the
+    // abandoned spawn's own probes gave up. Never await a release that
+    // cannot happen: the end path disposes at once.
+    const session = await startSession({
+      spawnTurn: () => new Promise<SessionProcess>(() => {}),
+    });
+    send(session.driver, { type: "user", text: "scenario:basic one" });
+    await waitFor(session.events, of("turn_started"), "turn_started");
+    process.kill(process.pid, "SIGTERM");
+    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
+    expect(ended.reason).toBe("signal");
+    expect(await session.code).toBe(SESSION_SIGNAL_EXIT_CODE);
+    // The recordless end takes the signal handlers down at once; without
+    // the fix this wait outlives every abandoned-spawn probe.
+    const internals = session.driver as unknown as { signalsDisposed: boolean };
+    const deadline = Date.now() + 5_000;
+    while (!internals.signalsDisposed) {
+      if (Date.now() > deadline) {
+        throw new Error("the signal handlers stayed installed past the recordless end");
+      }
+      await Bun.sleep(5);
+    }
+  }, 10_000);
 
   test("a stdin close while the turn's spawn is still in flight runs that turn to completion (review D11, correctness 2 1)", async () => {
     // The exact trigger: one prompt, then immediate EOF — `printf one
@@ -281,9 +306,8 @@ describe("kimi session e2e - end paths", () => {
       sessionTimeoutMs: 100,
       spawnTurn: () => new Promise<SessionProcess>(() => {}),
     });
-    // Same as above: the hold never settles, so the handlers outlive the
-    // test by design; exempt and checked for exactly three.
-    exemptNeverSettlingHold();
+    // Same as above: recordless, so round 391 skips the hold and the
+    // handlers come down at once — no exemption.
     send(session.driver, { type: "user", text: "scenario:basic one" });
     await waitFor(session.events, of("turn_started"), "turn_started");
     session.driver.handleCallerEnd();

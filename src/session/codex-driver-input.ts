@@ -16,6 +16,7 @@ import {
   parseInputLine,
 } from "./protocol.js";
 import { CodexDriverEvents } from "./codex-driver-events.js";
+import { inputSeqList } from "./codex-turns.js";
 
 /** Bounds on each in-memory hold of caller input (review live19): the
  * lines parked behind the handshake, the user inputs queued behind an
@@ -226,12 +227,33 @@ export abstract class CodexDriverInput extends CodexDriverEvents {
         // A refused decline above already started the end, whose own
         // interrupt must stay the pending one, so nothing more is written.
         this.supersedeApprovals();
+        // Whether an interrupt is already queued for the turn/start
+        // response: sendInterrupt below sets the flag when it queues this
+        // one (round 391, item 8).
+        const alreadyQueued = this.interruptQueued;
         if (!this.finished) this.sendInterrupt();
         if (this.finished) {
           this.rejectUndelivered(inputSeq);
           return;
         }
-        if (this.interruptQueued) this.interruptQueuedSeq = inputSeq;
+        if (this.interruptQueued) {
+          if (alreadyQueued) {
+            // A second interrupt in the same window used to overwrite the
+            // recorded seq, so the first acked interrupt's fate was never
+            // reported (round 341's rule: every acked line's fate is
+            // reported). The queued one keeps its place; this one is
+            // answered at once as dropped, named by its seq.
+            this.ack(inputSeq, true);
+            if (this.finished) return;
+            this.emitError(
+              false,
+              "codemux",
+              `a second interrupt arrived while another was still queued for the starting turn and was dropped (${inputSeqList([inputSeq])})`
+            );
+            return;
+          }
+          this.interruptQueuedSeq = inputSeq;
+        }
         this.ack(inputSeq, true);
         return;
       }

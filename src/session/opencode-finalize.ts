@@ -170,6 +170,13 @@ export abstract class OpenCodeDriverCore {
     this.clearTimers();
     const proc = this.turnProc;
     const spawn = this.turnSpawn;
+    // The child THIS end path drained, if any (review round 391, item 5):
+    // the drain verdict below reports only this child. `lastChildOutcome`
+    // keeps the last turn's exit for session_ended's harness_exit, but a
+    // turn that failed and was answered as a failed turn_completed is not
+    // a drain failure — reusing its exit claimed the child "exited during
+    // the shutdown drain" minutes after it exited.
+    let drainOutcome: SessionChildOutcome | null = null;
     // The turn's process to drain, once landed: the one already running,
     // or — on a graceful end — the one that lands while this path waits.
     let drain: SessionProcess | null = proc;
@@ -265,7 +272,7 @@ export abstract class OpenCodeDriverCore {
           if (!escalated) late.requestStop();
           await late.settled;
           this.lastChildOutcome = await late.exited;
-
+          drainOutcome = this.lastChildOutcome;
         }
       }
     }
@@ -280,7 +287,7 @@ export abstract class OpenCodeDriverCore {
       if (!this.stopEscalation.escalateIfRequested(drain)) drain.requestStop();
       await drain.settled;
       this.lastChildOutcome = await drain.exited;
-
+      drainOutcome = this.lastChildOutcome;
       this.turnProc = null;
     }
     if (this.sawHarnessFailure) {
@@ -288,8 +295,8 @@ export abstract class OpenCodeDriverCore {
       reason = "harness_failed";
     }
     // Every nonzero code and signal exit fails, including during shutdown.
-    const drainFailureCode = harnessFailed(this.lastChildOutcome)
-      ? this.lastChildOutcome!.code ?? 1
+    const drainFailureCode = harnessFailed(drainOutcome)
+      ? drainOutcome!.code ?? 1
       : null;
     if (drainFailureCode !== null) {
       reason = "harness_failed";
@@ -297,7 +304,7 @@ export abstract class OpenCodeDriverCore {
       if (this.firstFatal === null) this.emitError(
         true,
         "harness",
-        drainFailureMessage("opencode", this.lastChildOutcome!, this.fsm.state === "turn_active")
+        drainFailureMessage("opencode", drainOutcome!, this.fsm.state === "turn_active")
       );
     }
     // A start record still pending at the summary never lands: `settled`
@@ -343,7 +350,7 @@ export abstract class OpenCodeDriverCore {
                 : reason === "crash"
                   ? crashSynthesisReason(this.firstFatal)
                   : drainFailureCode !== null
-                    ? drainFailureMessage("opencode", this.lastChildOutcome!, true)
+                    ? drainFailureMessage("opencode", drainOutcome!, true)
                     : this.firstFatal !== null
                       ? crashSynthesisReason(this.firstFatal)
                       : `the session ended (${reason}) before the turn completed`,

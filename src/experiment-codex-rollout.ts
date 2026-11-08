@@ -47,6 +47,9 @@ export class CodexRolloutCursor {
   private digest = createHash("sha256");
   private lineCount = 0;
   private sessionSeen = false;
+  /** Decoded byte count: the quantity the final read re-encodes and compares.
+   * `offset` stays the raw read position for readSync and the size check. */
+  private decoded = 0;
 
   constructor(private readonly home: string, private readonly threadId: string,
     private readonly accept: (line: JsonObject) => void) {}
@@ -78,10 +81,10 @@ export class CodexRolloutCursor {
     try {
       const text = readUtf8FileBounded(path, { maxBytes: MAX_ROLLOUT_BYTES, label: `Codex rollout ${path}`, noFollow: true });
       const bytes = Buffer.from(text);
-      if (bytes.length < this.offset || createHash("sha256").update(bytes.subarray(0, this.offset)).digest("hex") !== this.digest.copy().digest("hex")) {
+      if (bytes.length < this.decoded || createHash("sha256").update(bytes.subarray(0, this.decoded)).digest("hex") !== this.digest.copy().digest("hex")) {
         throw new Error("rollout changed after live records were emitted");
       }
-      this.consume(bytes.subarray(this.offset));
+      this.consume(bytes.subarray(this.decoded));
       this.partial += this.decoder.decode();
       if (this.partial || !text.endsWith("\n")) throw new Error("incomplete JSONL record");
       if (!this.sessionSeen) throw new Error("session_meta does not match the exec thread id");
@@ -91,9 +94,18 @@ export class CodexRolloutCursor {
 
   private consume(bytes: Buffer): void {
     this.offset += bytes.length;
-    this.digest.update(bytes);
-    try { this.partial += this.decoder.decode(bytes, { stream: true }); }
+    let text: string;
+    try { text = this.decoder.decode(bytes, { stream: true }); }
     catch { throw new Error("must contain valid UTF-8"); }
+    // Hash what finish() compares (round 391, item 2): the final read decodes
+    // first, and the decoder strips a leading BOM, so hashing raw read bytes
+    // made a BOM-prefixed rollout always fail the tamper check. Valid UTF-8
+    // re-encodes byte-identically, so the decoded text is one quantity on
+    // both sides.
+    const encoded = Buffer.from(text);
+    this.decoded += encoded.length;
+    this.digest.update(encoded);
+    this.partial += text;
     let newline: number;
     while ((newline = this.partial.indexOf("\n")) !== -1) {
       const raw = this.partial.slice(0, newline);

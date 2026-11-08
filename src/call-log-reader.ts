@@ -174,13 +174,16 @@ function isCallRecord(parsed: unknown): parsed is StoredCallRecord {
 }
 
 /** What one open of the ledger read: the file's identity (device and
- * inode, the pair a replacement at the same path cannot keep) and the
- * byte its read stopped at. A second pass that must see the same file
- * carries this and refuses anything else (round 307). */
+ * inode, the pair a replacement at the same path cannot keep), the byte
+ * its read stopped at, and the mtime the open saw. A second pass that
+ * must see the same file carries this and refuses anything else (round
+ * 307; round 391, item 14 added the mtime: an in-place rewrite keeps the
+ * inode, and only a changed mtime or size betrays it). */
 export interface CallLogIdentity {
   readonly dev: bigint;
   readonly ino: bigint;
   readonly size: number;
+  readonly mtimeNs: bigint;
 }
 
 /** Opens the ledger once and answers a validated descriptor with its
@@ -207,7 +210,10 @@ function openCallLogDescriptor(path: string): { fd: number; identity: CallLogIde
     if (!ledgerStat.isFile()) {
       throw new Error(`the call log at ${path} is not a regular file`);
     }
-    return { fd, identity: { dev: ledgerStat.dev, ino: ledgerStat.ino, size: Number(ledgerStat.size) } };
+    return {
+      fd,
+      identity: { dev: ledgerStat.dev, ino: ledgerStat.ino, size: Number(ledgerStat.size), mtimeNs: ledgerStat.mtimeNs },
+    };
   } catch (error) {
     closeSync(fd);
     throw error;
@@ -383,9 +389,10 @@ export interface StreamedCallLog {
  * treats it. Throws on read errors like readCallLog; invalid UTF-8 and
  * wrong-shaped lines are malformed, never fatal. `options.identity` is
  * the identity an earlier pass of the same command read; a ledger whose
- * device or inode differs — an atomic replacement at the same path — is
- * refused, never read as one file with the first pass's records (round
- * 307). `endAt` still fixes the byte the read stops at, so two passes
+ * device or inode differs — an atomic replacement — or that was rewritten
+ * in place (a shrink, or a same-size file whose mtime moved; round 391,
+ * item 14) is refused, never read as one file with the first pass's
+ * records (round 307). `endAt` still fixes the byte the read stops at, so two passes
  * over a ledger that is still being appended to see the same records
  * (round 28, edges 2): bytes past it, a partial line included, are the
  * next invocation's business.
@@ -399,14 +406,20 @@ export function streamCallLog(
   // above (O_NONBLOCK, O_NOFOLLOW, only a regular file — review rounds 90
   // and 56).
   const { fd, identity } = openCallLogDescriptor(path);
-  if (
-    options.identity !== undefined &&
-    (identity.dev !== options.identity.dev || identity.ino !== options.identity.ino)
-  ) {
-    closeSync(fd);
-    throw new Error(
-      `the call ledger at ${path} was replaced while being read; refusing to combine two files into one view`
-    );
+  if (options.identity !== undefined) {
+    // A replacement (a new inode, round 307) or an in-place rewrite
+    // (round 391, item 14): a shrink, or a same-size file whose mtime
+    // moved. Growth alone is an append (round 28, edges 2), allowed.
+    const pinned = options.identity;
+    const replaced = identity.dev !== pinned.dev || identity.ino !== pinned.ino;
+    const rewritten = identity.size < pinned.size ||
+      (identity.size === pinned.size && identity.mtimeNs !== pinned.mtimeNs);
+    if (replaced || rewritten) {
+      closeSync(fd);
+      throw new Error(
+        `the call ledger at ${path} was replaced while being read; refusing to combine two files into one view`
+      );
+    }
   }
   try {
     const endAt = Math.min(options.endAt ?? identity.size, identity.size);
@@ -473,7 +486,7 @@ export function streamCallLog(
     // ledger that shrank under the pass reached EOF early, and a second
     // pass pinned to the planned end would read bytes the first never saw
     // (review round 316).
-    return { malformed, identity: { dev: identity.dev, ino: identity.ino, size: position } };
+    return { malformed, identity: { dev: identity.dev, ino: identity.ino, size: position, mtimeNs: identity.mtimeNs } };
   } finally {
     closeSync(fd);
   }

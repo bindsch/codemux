@@ -134,6 +134,28 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 391, whole tree (experiment, runner, codex sessions): the Claude bridge's frame
+  bound stays on the whole control frame (Claude's own limit) and the docs name the residual, a
+  reply body within the envelope's overhead of 1 MiB fails at the sender after the reader
+  admitted it; the Codex rollout and Kimi wire tamper checks hash
+  decoded text on both sides, so a leading BOM is no longer a false change; the experiment
+  server reader skips a blank CRLF line; the run timeout disarms once the child's exit and
+  captures settle, so a deadline in the stdin-wait window cannot recast a clean exit as 124; an
+  explicit null turnId is the absent case for scoped codex notifications; a second interrupt
+  queued in the turn/start window is reported dropped by its input_seq; an approval naming the
+  provisional turn id during that window is accepted like a notification; and a kimi session
+  whose registry record never landed no longer waits out an abandoned spawn's hold past
+  session_ended.
+- Review round 391, whole tree (sessions, adapters, credentials): the opencode and aider end
+  paths no longer report an answered failed turn's exit as a shutdown-drain failure; a refused
+  pre-init input write keeps only its delivery fatal instead of also claiming the line was
+  forwarded; aider passes an instruction file to `--read` only when it exists; the claude/zai
+  grant-rule refusals for an unquotable `--cwd` exit 64 as the caller's mistake; the quota
+  gate reports an overdrawn credit balance as reported instead of 0; the credential mirror
+  sync refuses a symlinked ancestor anywhere above the file, never writing through it;
+  `playwright-mcp` resolves through the adapter-built child environment's PATH like every
+  other launch binary; the calls `--since` pin refuses a same-inode rewrite by size and mtime
+  beside device and inode; and the kimi no-tools sweep reports only stale non-regular entries.
 - Review round 381, whole tree (aider reply): the chatter test reads the raw history line, so
   aider's blank tool-output line (`>  `) is chatter again; after round 372 its rstripped `>`
   read as the answer and the extraction stopped at the next chatter line, returning `>`.

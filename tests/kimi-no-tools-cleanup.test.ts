@@ -197,4 +197,53 @@ describe("kimi no-tools cleanup (round 104)", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("a fresh non-regular entry at a swept name is silent; only a stale one is reported (review round 391, item 17)", () => {
+    // The not-a-regular-file check and its "stale ... was kept" report
+    // ran before the age gate, so a fresh entry — a directory planted at
+    // a no-tools-<dead-pid>- name — was reported as stale on every
+    // writeKimiNoToolsFile call. The age comes first now, and the entry's
+    // own lstat mtime times it (statSync would follow a symlink to time
+    // its target); fresh entries stay silent, as the opencode sweep's
+    // are. A genuinely stale non-regular entry is still reported, kept.
+    const root = freshRoot();
+    const capture = (): string[] => {
+      const lines: string[] = [];
+      console.error = ((message: string) => lines.push(String(message))) as typeof console.error;
+      return lines;
+    };
+    try {
+      const brand = join(root, ".kimi-code");
+      mkdirSync(brand);
+      const parent = join(brand, ".codemux");
+      mkdirSync(parent);
+      mkdirSync(join(parent, "no-tools-999999999-fresh"));
+      const realError = console.error;
+      const freshErrors = capture();
+      let file: ReturnType<typeof writeKimiNoToolsFile> | undefined;
+      try {
+        file = writeKimiNoToolsFile(brand);
+      } finally {
+        console.error = realError;
+      }
+      file?.finalize();
+      expect(freshErrors).toEqual([]);
+
+      mkdirSync(join(parent, "no-tools-999999998-stale"));
+      const threeDaysAgo = new Date(Date.now() - 3 * 86_400_000);
+      utimesSync(join(parent, "no-tools-999999998-stale"), threeDaysAgo, threeDaysAgo);
+      const staleErrors = capture();
+      let second: ReturnType<typeof writeKimiNoToolsFile> | undefined;
+      try {
+        second = writeKimiNoToolsFile(brand);
+      } finally {
+        console.error = realError;
+      }
+      second?.finalize();
+      expect(staleErrors.join("\n")).toContain("no-tools-999999998-stale is not a regular file");
+      expect(existsSync(join(parent, "no-tools-999999998-stale"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

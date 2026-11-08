@@ -71,7 +71,11 @@ export function scopedParams(
   if (typeof threadId !== "string") return grammar("a scoped notification carries no thread id");
   const threadError = checkThread(threadId, context);
   if (threadError !== null) return { params: null, threadId: "", turnId: null, error: threadError };
-  const turnId = params["turnId"];
+  // An explicit null turnId is the absent case (round 391, item 7): the raw
+  // null once equaled the idle branch's null activeTurnId, slipping a stray
+  // usage event past the no-open-turn grammar check and into the session's
+  // cumulative bucket.
+  const turnId = params["turnId"] ?? undefined;
   const straggler = typeof turnId === "string" && context.closedTurnIds?.has(turnId) === true;
   if (context.turnPending === true && context.activeTurnId === null) {
     // The turn/start window: the first id seen is provisional; a second

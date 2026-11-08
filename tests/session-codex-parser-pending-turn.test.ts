@@ -98,4 +98,49 @@ describe("codex session - stream parser, pending turn", () => {
     expect(approval("a".repeat(MAX_ID_CHARS + 1)).kind).toBe("grammar_error");
     expect(approval("").kind).toBe("grammar_error");
   });
+
+  test("an explicit null turnId is the absent case (review round 391, item 7)", () => {
+    // With no turn open, `"turnId": null` passed the idle check (null === the
+    // idle activeTurnId) where an absent key was a tier-2 grammar error, and
+    // a stray thread/tokenUsage/updated with a null turnId folded its usage
+    // into the session's cumulative bucket, inflating session_ended.usage.
+    // An explicit null is the absent case in every branch.
+    const idle = { threadId: THREAD, activeTurnId: null };
+    expect(feed({ method: "thread/tokenUsage/updated",
+      params: { threadId: THREAD, turnId: null, tokenUsage: { last: { totalTokens: 3 } } } }, idle)).toEqual([
+      { kind: "grammar_error", message: "a scoped notification with no turn id arrived while no turn is open" },
+    ]);
+    expect(feed({ method: "item/agentMessage/delta", params: { threadId: THREAD, turnId: null, delta: "x" } }, idle)).toEqual([
+      { kind: "grammar_error", message: "a scoped notification with no turn id arrived while no turn is open" },
+    ]);
+    // Inside the window a non-string id was already the round-70 error; the
+    // null now answers the same way it does when idle.
+    const held = { threadId: THREAD, activeTurnId: null, turnPending: true, pendingTurnId: "turn-a" };
+    expect(feed({ method: "thread/tokenUsage/updated",
+      params: { threadId: THREAD, turnId: null, tokenUsage: { last: { totalTokens: 3 } } } }, held)).toEqual([
+      { kind: "grammar_error", message: "a scoped notification with no turn id arrived while a turn was starting" },
+    ]);
+  });
+
+  test("an approval request naming the provisional turn id is accepted during the window (review round 391, item 16)", () => {
+    // Rounds 232 to 247 gave scoped notifications and lifecycle events the
+    // turn/start window's provisional id; an approval request naming it was
+    // still an unconditional grammar error, though a fast server can emit the
+    // approval before the turn/start response that names the turn. The
+    // approval follows the notification rule: the window holds to its id,
+    // and without a held id there is nothing to name.
+    const held = { threadId: THREAD, activeTurnId: null, turnPending: true, pendingTurnId: "turn-a" };
+    const approval = (ctx: Parameters<CodexStreamParser["feed"]>[1], turnId: unknown) =>
+      feed({ id: 5, method: "item/commandExecution/requestApproval",
+        params: { threadId: THREAD, turnId, itemId: "c1", command: ["ls"], cwd: "/" } }, ctx)[0]!;
+    const accepted = approval(held, "turn-a") as { kind: string; requestId?: string };
+    expect(accepted.kind).toBe("permission_request");
+    expect(accepted.requestId).toBe("5");
+    expect(approval(held, "turn-b")).toEqual(
+      { kind: "grammar_error", message: "an approval request for turn turn-b arrived with no open turn" }
+    );
+    expect(approval({ threadId: THREAD, activeTurnId: null, turnPending: true }, "turn-a").kind).toBe("grammar_error");
+    // Outside the window nothing changes: no open turn, no approval.
+    expect(approval({ threadId: THREAD, activeTurnId: null }, "turn-a").kind).toBe("grammar_error");
+  });
 });

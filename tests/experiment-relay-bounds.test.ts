@@ -2,7 +2,8 @@
  * The experiment message bound at the HTTP relay and the stdio forwarder
  * (review rounds 73 and 74): the JSON body alone counts, a tools/call is
  * measured in its final forwarded form before it is registered, and a
- * refusal consumes no relay index.
+ * refusal consumes no relay index. Round 391 pins the same rule at the
+ * bridge's sender and the reader's blank-line handling.
  */
 import { afterEach, expect, test } from "bun:test";
 import { ExperimentFailureCode } from "../src/experiment-records.js";
@@ -10,8 +11,10 @@ import { MAX_NATIVE_CALL_ID_CHARS } from "../src/experiment-relay-respond.js";
 import { MAX_EXPERIMENT_MESSAGE_BYTES } from "../src/experiment-server.js";
 import { MARKER } from "./fixtures/experiment-mcp.js";
 import { cleanupRelays, http, list, records, rpc, setup } from "./helpers/experiment-relay-fixture.js";
+import { cleanupPeers } from "./helpers/experiment-peer.js";
 
 afterEach(cleanupRelays);
+afterEach(cleanupPeers);
 
 test("a body of exactly the bound is accepted end to end; one byte more never reaches the server (review round 73)", async () => {
   const relay = await setup();
@@ -121,4 +124,23 @@ test("a server response body of exactly the bound is accepted; one byte more fai
       expect(relay.failureCode).not.toBeNull();
     }
   }
+});
+
+test("a blank line before a CRLF server's reply is skipped, not a protocol failure (review round 391, item 3)", async () => {
+  // A server framing with CRLF emits its blank line as a bare CR; the stdio
+  // reader used to hand "\r" to JSON.parse and fail the run, while the
+  // bridge's reader skips the same bytes (experiment-bridge.ts frames only
+  // non-blank-after-trim lines). A line that is blank after stripping CR is
+  // skipped on both readers of one transport family.
+  const relay = await setup(`import { createInterface } from 'node:readline';
+    for await (const line of createInterface({input:process.stdin})) {
+      const m = JSON.parse(line); if (m.id === undefined) continue;
+      if (m.method !== 'tools/list') { process.stdout.write(JSON.stringify({jsonrpc:'2.0', id:m.id, result:{}})+'\\n'); continue; }
+      const reply = JSON.stringify({jsonrpc:'2.0', id:m.id, result:{tools:[{name:'bash', description:''}]}});
+      process.stdout.write('\\r\\n');
+      process.stdout.write(reply+'\\r\\n');
+    }`);
+  const response = await list(relay);
+  expect(response.status).toBe(200);
+  expect(relay.failureCode).toBeNull();
 });

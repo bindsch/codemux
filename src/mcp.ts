@@ -5,6 +5,13 @@ export interface PlaywrightMcpOptions {
   enabled?: boolean;
   binaryPath?: string | null;
   forbiddenRoot?: string;
+  /** The PATH the binary resolves through when no explicit binaryPath is
+   * given: the adapter-built child environment's PATH, never the ambient
+   * process environment (review round 391, item 13) — the same source
+   * every other launch binary resolves by, so a custom-environment launch
+   * embeds the binary its child would run, not one the ambient PATH
+   * happened to hold (or is wrongly refused for lack of). */
+  pathEnv: string;
 }
 
 /** The one list of agents whose command builders can attach the Playwright
@@ -33,8 +40,8 @@ export interface PlaywrightSandboxMcp {
 }
 
 export function buildPlaywrightSandboxMcp(
-  sandboxed?: boolean,
-  options: PlaywrightMcpOptions = {}
+  sandboxed: boolean | undefined,
+  options: PlaywrightMcpOptions
 ): PlaywrightSandboxMcp {
   const enabled = options.enabled ?? false;
   if (!sandboxed || !enabled) {
@@ -43,7 +50,7 @@ export function buildPlaywrightSandboxMcp(
 
   const binaryPath = options.binaryPath !== undefined
     ? options.binaryPath
-    : Bun.which("playwright-mcp", { PATH: process.env.PATH });
+    : Bun.which("playwright-mcp", { PATH: options.pathEnv });
   if (!binaryPath) {
     throw new Error(
       "--enable-playwright-mcp requires a locally installed playwright-mcp binary"
@@ -69,9 +76,16 @@ export function buildPlaywrightSandboxMcp(
   return { args: ["--mcp-config", config], check };
 }
 
+/** The preview form (no trust check returned): `pathEnv` may be omitted,
+ * in which case the ambient PATH stands in — fine for a printed preview,
+ * never for a launch (every launch path passes the child's PATH through
+ * buildPlaywrightSandboxMcp directly). */
 export function getPlaywrightSandboxMcpArgs(
   sandboxed?: boolean,
-  options: PlaywrightMcpOptions = {}
+  options: Omit<PlaywrightMcpOptions, "pathEnv"> & { pathEnv?: string } = {}
 ): string[] {
-  return buildPlaywrightSandboxMcp(sandboxed, options).args;
+  return buildPlaywrightSandboxMcp(sandboxed, {
+    ...options,
+    pathEnv: options.pathEnv ?? process.env.PATH ?? "",
+  }).args;
 }

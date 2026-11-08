@@ -99,6 +99,7 @@ describe("claude session driver e2e - review live20", () => {
     expect(claim.outcome).toBe("ok");
     const argv = buildClaudeSessionCommand({
       agent: "claude",
+      pathEnv: process.env.PATH ?? "",
       resumeId: id,
       autonomy: "read-only",
       cwd: created.options.cwd,

@@ -83,12 +83,13 @@ export abstract class ClaudeDriverInput extends ClaudeDriverEvents {
         // the child and its stdin from that moment, so the turn's line is
         // never written into a closing session.
         if (this.finished) return;
-        // Set only now, with the write that makes it true (review round
-        // 156): the end path reads this flag as "a pre-init line was
-        // already forwarded", so an end that began inside the echo above
-        // must not see it for a line that was never written.
-        if (turnId === null) this.openerPending = true;
-        this.writeToHarness(harnessLine);
+        // Set only when the write was accepted (review round 156 set it
+        // before the write; review round 391, item 6 closed the gap): a
+        // refused write has already emitted its own fatal — "could not
+        // deliver a line" — and started the crash end, whose opener
+        // notice must not then claim the line "was already forwarded".
+        const written = this.writeToHarness(harnessLine);
+        if (turnId === null) this.openerPending = written;
         return;
       }
       case "interrupt": {

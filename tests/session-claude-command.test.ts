@@ -58,6 +58,7 @@ describe("buildClaudeSessionCommand", () => {
   test("fresh spawn carries the carrier, verbose, replay, and the codemux session id", () => {
     const { argv, sessionId } = buildClaudeSessionCommand({
       agent: "claude",
+      pathEnv: process.env.PATH ?? "",
       autonomy: "read-only",
       cwd: "/tmp/launch",
     });
@@ -79,6 +80,7 @@ describe("buildClaudeSessionCommand", () => {
   test("the resume id precedes every autonomy-derived flag", () => {
     const { argv } = buildClaudeSessionCommand({
       agent: "claude",
+      pathEnv: process.env.PATH ?? "",
       resumeId: FLOOR_ID,
       autonomy: "read-only",
       cwd: "/tmp/launch",
@@ -93,12 +95,14 @@ describe("buildClaudeSessionCommand", () => {
   test("a session created at high and resumed read-only emits exactly read-only's flags", () => {
     const high = buildClaudeSessionCommand({
       agent: "claude",
+      pathEnv: process.env.PATH ?? "",
       resumeId: FLOOR_ID,
       autonomy: "high",
       cwd: "/tmp/launch",
     }).argv;
     const readOnly = buildClaudeSessionCommand({
       agent: "claude",
+      pathEnv: process.env.PATH ?? "",
       resumeId: FLOOR_ID,
       autonomy: "read-only",
       cwd: "/tmp/launch",
@@ -127,6 +131,7 @@ describe("buildClaudeSessionCommand", () => {
     // own rules, which safe mode would ignore.
     const { argv } = buildClaudeSessionCommand({
       agent: "claude",
+      pathEnv: process.env.PATH ?? "",
       autonomy: "low",
       cwd: "/tmp/launch",
       projectSettings: true,
@@ -140,6 +145,7 @@ describe("buildClaudeSessionCommand", () => {
   test("a plain session keeps the user source and its skills", () => {
     const { argv } = buildClaudeSessionCommand({
       agent: "claude",
+      pathEnv: process.env.PATH ?? "",
       autonomy: "low",
       cwd: "/tmp/launch",
     });
@@ -154,6 +160,7 @@ describe("buildClaudeSessionCommand", () => {
     const pinned = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
     const fresh = buildClaudeSessionCommand({
       agent: "claude",
+      pathEnv: process.env.PATH ?? "",
       autonomy: "low",
       cwd: "/tmp/launch",
       sessionId: pinned,
@@ -162,6 +169,7 @@ describe("buildClaudeSessionCommand", () => {
     expect(fresh.argv[fresh.argv.indexOf("--session-id") + 1]).toBe(pinned);
     const resumed = buildClaudeSessionCommand({
       agent: "claude",
+      pathEnv: process.env.PATH ?? "",
       autonomy: "low",
       cwd: "/tmp/launch",
       resumeId: FLOOR_ID,
@@ -182,6 +190,7 @@ describe("buildClaudeSessionCommand", () => {
       // A real directory: the carrier's forbidden-root check resolves it.
       const { argv } = buildClaudeSessionCommand({
         agent: "claude",
+        pathEnv: process.env.PATH ?? "",
         autonomy: "read-only",
         cwd: process.cwd(),
         model: "some-model",
@@ -206,6 +215,7 @@ describe("buildClaudeSessionCommand", () => {
     expect(
       buildClaudeSessionCommand({
         agent: "claude",
+        pathEnv: process.env.PATH ?? "",
         autonomy: "read-only",
         cwd: "/tmp/launch",
         sandboxed: true,
@@ -226,6 +236,7 @@ describe("buildClaudeSessionCommand", () => {
     try {
       const { playwrightMcpCheck } = buildClaudeSessionCommand({
         agent: "claude",
+        pathEnv: process.env.PATH ?? "",
         autonomy: "read-only",
         cwd: process.cwd(),
         sandboxed: true,
@@ -248,6 +259,7 @@ describe("buildClaudeSessionCommand", () => {
     expect(
       buildClaudeSessionCommand({
         agent: "claude",
+        pathEnv: process.env.PATH ?? "",
         autonomy: "read-only",
         cwd: "/tmp/launch",
         sandboxed: true,
@@ -262,6 +274,7 @@ describe("buildClaudeSessionCommand", () => {
     // contract.
     const { argv } = buildClaudeSessionCommand({
       agent: "claude",
+      pathEnv: process.env.PATH ?? "",
       autonomy: "read-only",
       cwd: "/tmp/launch",
       model: "clawvm-qwen32b-coder",
@@ -281,6 +294,7 @@ describe("buildClaudeSessionCommand", () => {
     expect(
       buildClaudeSessionCommand({
         agent: "claude",
+        pathEnv: process.env.PATH ?? "",
         autonomy: "read-only",
         cwd: "/tmp/launch",
         model: "some-model",
