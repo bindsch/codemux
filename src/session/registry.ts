@@ -33,6 +33,7 @@ export {
   probeRegistryForStart,
   recordSessionEnd,
   recordSessionStart,
+  recordSessionStartOffStream,
   releaseSessionRecord,
   touchSession,
   type NewSessionRecord,

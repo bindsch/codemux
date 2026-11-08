@@ -24,7 +24,9 @@ import {
   buildCodexSessionCommand,
   codexSessionCapabilities,
   codexSessionPolicy,
+  steerElementBytes,
 } from "../src/session/codex-session.js";
+import { utf8ByteLength } from "../src/session/stdin-writer.js";
 import { CWD } from "./helpers/session-codex.js";
 
 function parseJson(line: string): Record<string, any> {
@@ -235,6 +237,30 @@ describe("codex session - method allowlist and builders", () => {
         { type: "text", text: "second", text_elements: [] },
       ],
     });
+  });
+
+  test("the incremental steer byte count matches the built frame exactly (round 341)", () => {
+    // flushSteer batches steers by counting bytes incrementally
+    // (steerElementBytes) instead of re-serializing the batch per
+    // increment. The count must equal the built frame's own bytes for
+    // every prefix — the batching decision and the cap the sent frame is
+    // judged by cannot drift. The texts exercise JSON escaping and
+    // multi-byte characters, where string length and byte length differ.
+    const texts = [
+      "first",
+      'quote " and \\ backslash',
+      "line\nbreak\ttab",
+      "é中文 🚀",
+      "s".repeat(4096),
+    ];
+    const base = utf8ByteLength(buildSteerRequest(5, "0123456789abcdef", "turn-1", []));
+    let counted = base;
+    for (const [index, text] of texts.entries()) {
+      counted += steerElementBytes(text, index > 0);
+      expect(counted).toBe(
+        utf8ByteLength(buildSteerRequest(5, "0123456789abcdef", "turn-1", texts.slice(0, index + 1)))
+      );
+    }
   });
 
   test("interrupt carries both ids", () => {

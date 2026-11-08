@@ -10,6 +10,7 @@ import { resolveTrustedExecutable } from "../executable-security.js";
 import { statEntryPresent } from "../file-io.js";
 import { UsageRefusalError } from "../validation.js";
 import { buildSandboxEnv, type SandboxOptions } from "../sandbox.js";
+import { compareVersions } from "../harness-compatibility.js";
 
 export const SCODE_MINIMUM_VERSION = "0.2.0";
 const SCODE_VERSION_TIMEOUT_MS = 5_000;
@@ -73,6 +74,25 @@ export function parseVersion(value: string): readonly [number, number, number] |
   return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
 
+/** The version token a `--version` line carries, prerelease suffix included
+ * (`0.6.0-rc1`), or null when the output holds none. The floor comparison
+ * below orders a prerelease below its own release (the rule
+ * src/harness-compatibility.ts states for harness versions), so the suffix
+ * must reach the comparison instead of being stripped to the numeric core —
+ * a `0.6.0-rc1` used to pass the agy floor `0.6.0` (review round 341,
+ * item 3). Build metadata past a `+` is not captured: semver ignores it for
+ * precedence, and the comparison below drops it the same way. */
+const SCODE_VERSION_TOKEN = /\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)\b/;
+
+/** The version token of a `scode --version` line, prerelease suffix
+ * included, or null when the output carries none. The closing boundary
+ * keeps a glued suffix (`1.2.3dev`) from reading as its numeric core
+ * (review round 344); doctor reads the same token so its floors agree
+ * with the launch gate's. */
+export function extractScodeVersion(output: string): string | null {
+  return SCODE_VERSION_TOKEN.exec(output)?.[1] ?? null;
+}
+
 export function isVersionAtLeast(
   actual: readonly [number, number, number],
   minimum: readonly [number, number, number]
@@ -102,16 +122,29 @@ export async function assertCompatibleScode(
       `could not verify scode version (requires ${minimumVersion} or newer)${output ? `: ${output}` : ""}`
     );
   }
-  const actual = parseVersion(output);
-  const minimum = parseVersion(minimumVersion)!;
-  if (!actual) {
+  // The floor comparison runs on the version string, never the numeric
+  // triple alone: a prerelease of the minimum is below the minimum (the
+  // rule src/harness-compatibility.ts states for harness versions), and a
+  // token this cannot compare is refused rather than read as its numeric
+  // core. The plain triple parse above stays for the report surfaces
+  // (doctor), which print the numeric core of whatever they found.
+  const actual = extractScodeVersion(output);
+  let order: number | null = null;
+  if (actual !== null) {
+    try {
+      order = compareVersions(actual, minimumVersion);
+    } catch {
+      order = null;
+    }
+  }
+  if (actual === null || order === null) {
     throw new Error(
       `could not parse scode version '${output}' (requires ${minimumVersion} or newer)`
     );
   }
-  if (!isVersionAtLeast(actual, minimum)) {
+  if (order < 0) {
     throw new Error(
-      `scode ${actual.join(".")} is too old; ${minimumVersion} or newer is required`
+      `scode ${actual} is too old; ${minimumVersion} or newer is required`
     );
   }
 }

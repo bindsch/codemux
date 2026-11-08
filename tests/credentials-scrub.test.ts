@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { syncKeychainCredential } from "../src/credentials.js";
+import { pruneOlderBackups } from "../src/credentials/backups.js";
 import { BACKUPS, FUTURE, LATER, SECRET, errors, gives, missing, withTarget } from "./helpers/credentials.js";
 
 /** Root may own every link it creates, and the backup walk accepts a link
@@ -292,6 +293,63 @@ describe("syncKeychainCredential — a mirror of an existing file", () => {
         expect(names).toContain("credentials-notes.json");
         expect(names).toHaveLength(4); // the three kept above plus this sync's own backup
       }, leaked);
+    } finally {
+      probe.mockRestore();
+    }
+  });
+
+  test("same-millisecond backups order by the parsed pid, never by name (review 341, item 4)", () => {
+    // The fixed-width ISO stamp is followed by a variable-width pid, so a
+    // backup name's lexical order breaks at the pid-digit boundary:
+    // "…-9999-1.json" sorts after the later "…-10000-1.json", and a dead
+    // writer's promised copy read as older and was deleted. Pruning orders
+    // by the parsed stamp, then pid, then sequence, each a number. The
+    // liveness probe is stubbed, so the test answers for the pids it names
+    // and nothing else.
+    const livePid = 999_999_201;
+    const probe = spyOn(process, "kill").mockImplementation(((pid: number, signal?: number | string) => {
+      if (signal === 0 && pid === livePid) return true;
+      const error = new Error(`no such process ${pid}`) as NodeJS.ErrnoException;
+      error.code = "ESRCH";
+      throw error;
+    }) as typeof process.kill);
+    const name = (stamp: string, pid: number | string, seq: number) =>
+      `credentials-${stamp}-${pid}-${seq}.json`;
+    const sameMs = "2026-11-08T00-00-00-000Z";
+    const earlierMs = "2026-11-07T23-59-59-999Z";
+    try {
+      withTarget((_target, dir) => {
+        const backupDir = join(dir, "backups");
+        require("node:fs").mkdirSync(backupDir, { mode: 0o700 });
+        // This launch's own backup: pid 9999, sequence 1, same millisecond
+        // as the two below it.
+        const ownName = name(sameMs, 9999, 1);
+        const own = join(backupDir, ownName);
+        writeFileSync(own, "ours\n", { mode: 0o600 });
+        // The finding: a dead writer's LATER copy from the same
+        // millisecond — pid 10000 — whose name sorts BEFORE ours, so the
+        // lexical order read it as older and deleted it.
+        const promised = name(sameMs, 10000, 1);
+        writeFileSync(join(backupDir, promised), "promised\n", { mode: 0o600 });
+        // Genuinely older copies, each still pruned under the parsed
+        // ordering: a lower pid and a lower sequence from the same
+        // millisecond, and an earlier stamp.
+        writeFileSync(join(backupDir, name(sameMs, 9998, 1)), "older pid\n", { mode: 0o600 });
+        writeFileSync(join(backupDir, name(sameMs, 9999, 0)), "older sequence\n", { mode: 0o600 });
+        writeFileSync(join(backupDir, name(earlierMs, 777, 5)), "older stamp\n", { mode: 0o600 });
+        // The round-137 rule intact beside the new one: an older stamp by
+        // a LIVE foreign writer stays.
+        const liveOlder = name(earlierMs, livePid, 3);
+        writeFileSync(join(backupDir, liveOlder), "live writer\n", { mode: 0o600 });
+        writeFileSync(join(backupDir, "credentials-notes.json"), "operator file\n", { mode: 0o600 });
+        pruneOlderBackups(own);
+        expect(readdirSync(backupDir).sort()).toEqual([
+          liveOlder,
+          promised,
+          ownName,
+          "credentials-notes.json",
+        ]);
+      }, JSON.stringify({ claudeAiOauth: { accessToken: "a", refreshToken: "LIVE" } }));
     } finally {
       probe.mockRestore();
     }

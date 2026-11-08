@@ -9,7 +9,7 @@
 
 import { quotaTimeoutSecondsFor, snapshotFreshnessIssue } from "./quota-gate.js";
 import type { BaseAdapter } from "./adapters/base.js";
-import { isVersionAtLeast, parseVersion } from "./cli-runtime.js";
+import { scodeBelowFloor } from "./doctor-environment.js";
 import { compareVersions } from "./harness-compatibility.js";
 import {
   FEATURE_FLOORS,
@@ -90,8 +90,7 @@ const sandboxLine = (agent: AgentId, scode: ScodeFacts): { line: string; state: 
   if (scode.version === null) {
     return { line: `scode ${scode.label}${floor !== undefined ? ` (needs >= ${floor}; version unreadable)` : ""}`, state: "SANDBOX-TOO-OLD", floor: floor ?? null };
   }
-  const minimum = floor !== undefined ? parseVersion(floor) : null;
-  if (minimum !== null && !isVersionAtLeast(scode.version, minimum)) {
+  if (floor !== undefined && scodeBelowFloor(scode, floor)) {
     return { line: `scode ${scode.label} below the ${agent} floor ${floor}`, state: "SANDBOX-TOO-OLD", floor: floor ?? null };
   }
   return { line: `scode ${scode.label}`, state: null, floor: null };

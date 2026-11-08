@@ -134,26 +134,47 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 341, whole tree (runtime and credentials): a scode prerelease now orders below
+  its own release, so `0.6.0-rc1` no longer passes a `0.6.0` floor; credential backups prune by
+  the parsed timestamp and pid, never lexically, so same-millisecond names across pid-digit
+  widths cannot delete a newer dead writer's copy; the opencode hermetic sweep ages a home by
+  the newest mtime in its tree, so an orphaned child writing only under redirected XDG
+  directories is not deleted mid-run; the agy template lock's stale reclaim is won by one atomic
+  claim, so two waiters cannot delete each other's fresh lock and both hold; `runInteractive`
+  pins the executable redirect from the child's environment, not `process.env`; the run version
+  gate reads the redirect from the same adapter-built environment the launch path pins.
+- Review round 341, whole tree (envelopes and sessions): the codex reroute notice parses any
+  reason inside the parentheses; an interrupt acked while turn/start was in flight reports its
+  input_seq when an early completion drops it; a kimi result envelope past the byte bound keeps
+  the failure diagnostic already set beside the bound notice; the codex steer batching probe
+  counts batch bytes incrementally instead of re-serializing the batch per increment; a first
+  turn's registry record takes one lock attempt on the live stream and retries a busy lock on a
+  timer instead of freezing the event loop for the full budget; the final stdout flush's give-up
+  scales with the queued backlog under a hard cap; an agy isolation probe without --cwd is a
+  usage refusal, not a crash at its diagnostic write; a direct unsandboxed launch refuses a
+  request claiming sandbox policy flags, and the run command never claims --sandbox-no-net on an
+  unsandboxed run.
 - Live matrix of 2026-11-07 (installed 0.15.1, codemux-side): an OpenHands run that exits 0 with
   "Headless mode requires existing settings" is a failed run (exit 1, diagnostic, `success:
   false`), not a reply; the Gemini CLI's system settings file is named only where the CLI will
-  load it (a root-owned chain), and on a user-owned prefix a repository `.env` the CLI would export
-  is refused instead of a warning on every run; the executable redirect target's identity is
-  pinned on the tui and session spawn paths too; Antigravity's per-model effort levels are
+  load it (a root-owned chain), and on a user-owned prefix a repository `.env` the CLI would
+  export is refused instead of a warning on every run; the executable redirect target's identity
+  is pinned on the tui and session spawn paths too; Antigravity's per-model effort levels are
   documented.
-- Review round 331, whole tree (parsers and health): aider keeps a `>`-without-space model line and
-  strips a reasoning block only when its identifiers match; Codex refuses duplicate spellings of one
-  tool in `top_level_tools` and an `additional_tools` catalog that drifts from the first one; Kimi
-  refuses a `content.part` after a finalized `step.end` (the early-usage shape still flushes); the
-  agy stream is malformed unless its init frame comes first; doctor runs binary trust before the
-  no-contract return, and no longer reports logged-in for a claude mirror without an access token,
-  empty codex token strings, or a zai key file that is a symlink or owned by another user.
+- Review round 331, whole tree (parsers and health): aider keeps a `>`-without-space model line
+  and strips a reasoning block only when its identifiers match; Codex refuses duplicate
+  spellings of one tool in `top_level_tools` and an `additional_tools` catalog that drifts from
+  the first one; Kimi refuses a `content.part` after a finalized `step.end` (the early-usage
+  shape still flushes); the agy stream is malformed unless its init frame comes first; doctor
+  runs binary trust before the no-contract return, and no longer reports logged-in for a claude
+  mirror without an access token, empty codex token strings, or a zai key file that is a symlink
+  or owned by another user.
 - Review round 331, whole tree (process, trust, usage): a stop keeps the descendant capture
   armed and samples once more shortly after the signal, so a cleanup helper a harness starts
   while handling SIGTERM in its own process group dies with the tree; an executable redirect
-  that does not resolve to one trusted absolute executable (`OPENCODE_BIN_PATH`) refuses the
-  run instead of warning, and both launch paths pin the resolved target beside the command's
-  own positions for the pre-spawn re-stat; a hermetic run-directory parent that is group- or
+  that does not resolve to one trusted absolute executable (`OPENCODE_BIN_PATH`) refuses the run
+  instead of warning, and both launch paths pin the resolved target beside the command's own
+  positions for the pre-spawn re-stat; a hermetic run-directory parent that is group- or
   world-writable is refused; the scode `--keep-env` probe cache keys on the executable's
   dev/ino/size/mtime, so a replaced scode at the same path is probed again; the experiment
   bridge bounds its own close by the same cleanup grace as the runner, so a never-settling

@@ -12,10 +12,11 @@ import {
   CODEX_THREAD_ID_PATTERN,
 } from "./codex-session.js";
 import { buildEvent, buildUnknownEvent } from "./protocol.js";
-import { CodexDriverTurns, inputSeqList } from "./codex-turns.js";
+import { CodexDriverSteer } from "./codex-steer.js";
+import { inputSeqList } from "./codex-turns.js";
 import type { PendingCall } from "./codex-driver-io.js";
 
-export abstract class CodexDriverResponses extends CodexDriverTurns {
+export abstract class CodexDriverResponses extends CodexDriverSteer {
   /** Run the session-start machinery both start paths share: the FSM
    * transition, the registry record, the announcement, and the buffered
    * input replay. The announcement follows the record's verdict: a
@@ -215,7 +216,8 @@ export abstract class CodexDriverResponses extends CodexDriverTurns {
         // round 238). A turn that closed with no harness id at all (ended
         // before any notification named it) keeps the older rule: the
         // response is consumed. The buffered interrupt and steers were
-        // cleared at completion; nothing else is owed.
+        // cleared at completion, each with the notice naming its seq
+        // (review round 341); nothing else is owed here.
         if (pending.completedHarnessTurnId !== undefined && pending.completedHarnessTurnId !== turnId) {
           this.emitGrammarViolation(
             rawLine,

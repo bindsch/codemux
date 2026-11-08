@@ -41,11 +41,11 @@ import {
   openSync,
   readSync,
   readdirSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { pidProbeAlive } from "./process-table.js";
+import { directoryMtimeMs, newestMtimeMs } from "./hermetic-sweep.js";
 import { assertTrustedParentUnchanged, recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook, type TrustedParentRecord } from "./safe-remove.js";
 
 export interface OpencodeHermeticHome {
@@ -78,13 +78,17 @@ export function sweepStaleHomes(parent: string, record: TrustedParentRecord): vo
     const pid = Number(match[1]);
     if (pid === process.pid || pidProbeAlive(pid)) continue;
     const path = join(parent, entry);
-    let age: number;
-    try {
-      age = Date.now() - statSync(path).mtimeMs;
-    } catch {
-      continue;
-    }
-    if (age < STALE_HOME_MS) continue;
+    // Age by the NEWEST mtime anywhere in the home's tree, never the top
+    // directory's own: the redirected XDG writes land in subdirectories
+    // (home/.local/..., home/.config/...), which do not move the parent's
+    // mtime, so a top-dir age deleted the home of an orphaned OpenCode
+    // child still writing only under them (review round 341, item 6 — the
+    // codex sweep's rule, hermetic-sweep.ts). The pid gate above has
+    // already shown no codemux owns the tree, so a walk past its entry cap
+    // falls back to the directory's own mtime, the same proof the codex
+    // run branch uses.
+    const newest = newestMtimeMs(path) ?? directoryMtimeMs(path);
+    if (newest === null || Date.now() - newest < STALE_HOME_MS) continue;
     // One bad entry must not block the run, or every later run: the entry
     // stays, the sweep moves on, and the operator learns why (an entry the
     // sweep cannot remove is never cleaned up by retrying it either). The

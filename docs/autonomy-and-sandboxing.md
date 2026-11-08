@@ -62,7 +62,7 @@ Codemux maps read-only to scode `--ro` and other levels to `--rw`. Standard trus
 | `--sandbox-scrub-env` | Scrub ambient environment. Codemux's deliberately injected variables use the conditional exemption below. |
 | `--sandbox-account`, `--sandbox-account-id` | Request scode scratch accounting. Keep its output sink outside the child's writable area; hiding the variables is not protection against file tampering. |
 
-Scode enforcement depends on the installed scode version and platform. The version check verifies the stated minimum, not every operating-system restriction. Harness-native enforcement also remains version-sensitive.
+Scode enforcement depends on the installed scode version and platform. The version check verifies the stated minimum, not every operating-system restriction; a prerelease of the minimum (for example `0.6.0-rc1` against the `0.6.0` floor) counts as below it, the same ordering harness versions follow. Harness-native enforcement also remains version-sensitive.
 
 ### Conditional scode requirements
 

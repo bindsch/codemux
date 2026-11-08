@@ -234,6 +234,33 @@ describe("parseCodexEventStream grammar and model attribution", () => {
     expect(inTurn.finalMessage).toBe("the reply");
   });
 
+  test("a reroute reason containing parentheses does not bleed into the model name (round 341)", () => {
+    // The reason is Debug-formatted upstream, so it can carry parentheses
+    // of its own. The old pattern's greedy second group read the target
+    // as "gpt-5.3-mini (config fallback" -- a model that never existed --
+    // and servedModel carried it into the envelope's model fields, the
+    // stderr reroute note, and the ledger. The model tokens now carry no
+    // spaces or parentheses and the reason is everything inside the outer
+    // parentheses.
+    const stream = parseCodexEventStream(codexStream([
+      { type: "thread.started", thread_id: "t" },
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "item_0", type: "error", message: "model rerouted: gpt-5.3 -> gpt-5.3-mini (config fallback (secondary))" } },
+      { type: "item.completed", item: { id: "item_1", type: "agent_message", text: "the reply" } },
+      { type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 5 } },
+    ]))!;
+    expect(stream.servedModel).toBe("gpt-5.3-mini");
+    // A reason with no parentheses still parses whole.
+    const plain = parseCodexEventStream(codexStream([
+      { type: "thread.started", thread_id: "t" },
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "item_0", type: "error", message: "model rerouted: gpt-5.3 -> gpt-5.3-mini (Unavailable)" } },
+      { type: "item.completed", item: { id: "item_1", type: "agent_message", text: "the reply" } },
+      { type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 5 } },
+    ]))!;
+    expect(plain.servedModel).toBe("gpt-5.3-mini");
+  });
+
   test("a pre-turn completed error item with a plain message is a startup warning, and only that (al35)", () => {
     // Round al35 (correctness major 1): codex reports non-fatal startup
     // warnings as completed `error` items between thread.started and

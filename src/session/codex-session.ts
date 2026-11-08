@@ -122,6 +122,7 @@ export {
   codemuxClientVersion,
   codexSessionPolicy,
   normalizeCodexTokenUsage,
+  steerElementBytes,
   CODEX_SESSION_METHODS,
 } from "./codex-protocol-builders.js";
 export type {

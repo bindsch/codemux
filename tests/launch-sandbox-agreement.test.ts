@@ -186,6 +186,48 @@ describe("sandboxed launch agreement (review round 100)", () => {
     }
   });
 
+  test("a direct launch refuses a request claiming --sandbox-no-net before validation (round 341)", async () => {
+    // The pre-fix direct branch ignored the claim and ran unrestricted
+    // while the request said restricted.
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-agree-"));
+    const launch = harness(
+      { agent: "claude", prompt: "t", cwd, sandboxNoNet: true },
+      { sandbox: false, requestedAutonomy: "read-only", cwd }
+    );
+    try {
+      const refusal = await launch.run().then(() => null, (error: unknown) => error);
+      expect(refusal).toBeInstanceOf(UsageRefusalError);
+      expect((refusal as Error).message).toContain(
+        "cannot honor sandbox policy flags on a direct run"
+      );
+      expect(launch.validated()).toBe(0);
+      expect(launch.spawned()).toBe(0);
+    } finally {
+      launch.restore();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("a direct launch refuses a request claiming a sandbox trust level before validation (round 341)", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-agree-"));
+    const launch = harness(
+      { agent: "claude", prompt: "t", cwd, sandboxTrust: "untrusted" },
+      { sandbox: false, requestedAutonomy: "read-only", cwd }
+    );
+    try {
+      const refusal = await launch.run().then(() => null, (error: unknown) => error);
+      expect(refusal).toBeInstanceOf(UsageRefusalError);
+      expect((refusal as Error).message).toContain(
+        "cannot honor sandbox policy flags on a direct run"
+      );
+      expect(launch.validated()).toBe(0);
+      expect(launch.spawned()).toBe(0);
+    } finally {
+      launch.restore();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   test("an untrusted sandbox counts as network-restricted in the guard and on the receipt (review round 102)", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "codemux-agree-"));
     const ledger = join(cwd, "calls.jsonl");

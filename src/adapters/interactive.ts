@@ -60,9 +60,14 @@ export async function runInteractive(
 
   // The redirect target (OPENCODE_BIN_PATH) the gate resolved and probed
   // is re-statted beside the command's own positions (review round 331,
-  // item 5), as on every other launch path.
+  // item 5), as on every other launch path. The check reads `env`, the
+  // environment the child is spawned with below — the one that decides
+  // whether the launcher execs a redirect at all — and never process.env,
+  // which for an adapter with its own environment view can disagree (a
+  // redirect visible to the child but absent here escaped both the pin
+  // and the gate; review round 338, item 13).
   const redirectCheck = launchRedirectCheck(
-    this.id, process.env as Record<string, string>, passthroughEnv, workdir
+    this.id, env, passthroughEnv, workdir
   );
   assertExecutablesUnchanged(command, this.id, undefined, redirectCheck === null ? [] : [redirectCheck]);
   // The spawn rides the wait itself (review round 223): guardedWait

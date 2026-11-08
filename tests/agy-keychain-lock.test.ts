@@ -9,13 +9,14 @@
  * the blocking cases prove themselves in milliseconds.
  */
 
-import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   AGY_TEMPLATE_NAME,
   agyKeychainHost,
   agyKeychainStateDir,
+  reclaimStaleLock,
 } from "../src/agy-keychain.js";
 import { cleanup, setup } from "./helpers/agy-keychain.js";
 
@@ -120,4 +121,87 @@ test("a FIFO at the lock path fails the launch at once instead of blocking the o
   expect(() => adapter.prepareRun(request)).toThrow("agy template lock must be a regular file");
   expect(Date.now() - started).toBeLessThan(5_000);
   expect(existsSync(lock)).toBe(true);
+});
+
+test("a stale lock's reclaim removes it and leaves no claim file (review 341, item 7)", () => {
+  setup();
+  const lock = plantLock("", 61_000); // malformed and old: stale
+  reclaimStaleLock(lock, lstatSync(lock));
+  expect(existsSync(lock)).toBe(false);
+  expect(readdirSync(agyKeychainStateDir()).filter((entry) => entry.includes(".reclaim-"))).toEqual([]);
+});
+
+test("a late reclaim on a judged-stale incarnation never removes the winner's fresh lock (review 341, item 7)", () => {
+  // The interleave the old lstat-then-unlink could not survive: waiter A
+  // reclaims the stale lock and creates its own, then waiter B — which
+  // judged the SAME stale incarnation before A ran — reclaims late. B's
+  // link aliases A's FRESH lock, the identity check fails, and B leaves
+  // A's lock alone. The stale incarnation stays pinned under a second
+  // name for the whole test, so the fresh lock can never reuse its inode
+  // and the incarnations stay distinguishable.
+  setup();
+  const lock = plantLock("", 61_000);
+  const keep = `${lock}.keep`;
+  linkSync(lock, keep);
+  const staleIdentity = lstatSync(lock);
+  try {
+    reclaimStaleLock(lock, staleIdentity); // waiter A wins the claim
+    expect(existsSync(lock)).toBe(false);
+    writeFileSync(lock, String(process.pid), { mode: 0o600 }); // A's fresh lock
+    reclaimStaleLock(lock, staleIdentity); // waiter B, late on the old incarnation
+    expect(existsSync(lock)).toBe(true);
+    expect(readFileSync(lock, "utf8")).toBe(String(process.pid));
+    expect(readdirSync(agyKeychainStateDir()).filter((entry) => entry.includes(".reclaim-"))).toEqual([]);
+  } finally {
+    unlinkSync(keep);
+  }
+});
+
+test("a second waiter on an already-claimed incarnation does not remove the lock (review 341, item 7)", () => {
+  // While one waiter's claim is in place, another waiter on the same
+  // stale incarnation answers EEXIST and polls — it never unlinks.
+  setup();
+  const lock = plantLock("", 61_000);
+  const identity = lstatSync(lock);
+  const claim = `${lock}.reclaim-${identity.dev}-${identity.ino}`;
+  linkSync(lock, claim); // the winner's claim, mid-reclaim
+  try {
+    reclaimStaleLock(lock, identity); // the loser
+    expect(existsSync(lock)).toBe(true);
+    expect(existsSync(claim)).toBe(true);
+  } finally {
+    unlinkSync(claim);
+  }
+});
+
+test("a refused hard link fails the reclaim at once instead of posing as a rival (review 344)", () => {
+  // EEXIST and ENOENT mean another waiter or a vanished lock and the
+  // waiter polls again; any other refusal (a directory that denies hard
+  // links) can never be won, so it is an error now, not a deadline later.
+  setup();
+  const lock = plantLock("", 61_000);
+  const denied = spyOn(agyKeychainHost, "linkSync").mockImplementation(() => {
+    throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+  });
+  cleanup.push(() => denied.mockRestore());
+  const started = Date.now();
+  expect(() => reclaimStaleLock(lock, lstatSync(lock))).toThrow("hard link refused (EPERM)");
+  expect(Date.now() - started).toBeLessThan(1_000);
+  expect(existsSync(lock)).toBe(true);
+  denied.mockImplementation(() => {
+    throw Object.assign(new Error("EEXIST: file exists"), { code: "EEXIST" });
+  });
+  expect(() => reclaimStaleLock(lock, lstatSync(lock))).not.toThrow();
+  expect(existsSync(lock)).toBe(true);
+});
+
+test("the lock wait deadline names a leftover reclaim file (review 341, item 7)", () => {
+  const { adapter, request } = setup();
+  shortenLockWait(250);
+  const lock = plantLock(String(process.pid), 0); // a live owner blocks
+  const identity = lstatSync(lock);
+  const claim = `${lock}.reclaim-${identity.dev}-${identity.ino}`;
+  writeFileSync(claim, ""); // a reclaim wedged beside it
+  cleanup.push(() => { try { unlinkSync(claim); } catch { /* advisory */ } });
+  expect(() => adapter.prepareRun(request)).toThrow(`${claim} is a leftover reclaim file`);
 });

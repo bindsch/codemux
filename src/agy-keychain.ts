@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, readFileSync, realpathSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
+import { chmodSync, closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, linkSync, mkdirSync, openSync, readSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, sep } from "node:path";
 import { assertExecutablesUnchanged, executableCheck, resolveTrustedExecutable } from "./executable-security.js";
@@ -24,6 +24,9 @@ export const agyKeychainHost = {
   securityPath: (_environment: NodeJS.ProcessEnv): string | undefined =>
     existsSync("/usr/bin/security") ? "/usr/bin/security" : undefined,
   spawnSync: Bun.spawnSync,
+  /** The hard link behind the stale-lock claim, injectable so tests can
+   * prove the refused-link path without a filesystem that denies links. */
+  linkSync,
   /** The lock wait and poll cadence, injectable so tests can prove the
    * waiting behavior without sitting out the production minute. */
   lockWaitMs: LOCK_WAIT_MS,
@@ -270,6 +273,50 @@ function readLockFacts(fd: number): LockFacts {
   return { identity, owner: read === buffer.length ? buffer.toString("utf8") : null };
 }
 
+/** Removes a judged-stale lock incarnation so that exactly one waiter can
+ * win. The old shape — lstat the identity, then unlink — was two syscalls:
+ * a second waiter's lstat could confirm the stale inode before the first
+ * waiter's unlink, and the second waiter's unlink then land after the
+ * first had already recreated a fresh lock, deleting it; both waiters held
+ * the lock at once and interleaved template creation and search-list
+ * restores (review round 341, item 7). The claim makes the removal
+ * conditional-atomic instead: a hard link under a name derived from the
+ * stale incarnation's own identity can be created by exactly one waiter
+ * (link answers EEXIST to every other, and the loser polls again — it
+ * meets the winner's fresh lock), and the winner re-verifies the alias
+ * before unlinking the lock's name, so a lock replaced between the link
+ * and the unlink is never removed. A holder that crashes between its link
+ * and its unlink wedges the claim (later waiters poll to the deadline,
+ * which names the leftover); the residual that a deleted stale lock's
+ * inode is reused by a fresh lock before the winner's unlink predates this
+ * fix. Exported for the lock's regression tests. */
+export function reclaimStaleLock(path: string, identity: Stats): void {
+  const claim = `${path}.reclaim-${identity.dev}-${identity.ino}`;
+  try {
+    agyKeychainHost.linkSync(path, claim);
+  } catch (error) {
+    // Another waiter holds this incarnation's claim (EEXIST), or the lock
+    // is already gone (ENOENT): either way this waiter polls again. Any
+    // other refusal -- a directory or filesystem that denies hard links --
+    // makes the claim impossible, so it is reported now instead of being
+    // read as a rival until the deadline (review round 344).
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST" || code === "ENOENT") return;
+    throw new Error(
+      `cannot reclaim the stale agy template lock ${path}: hard link refused (${code ?? String(error)})`,
+      { cause: error }
+    );
+  }
+  try {
+    const linked = lstatSync(claim, { throwIfNoEntry: false });
+    if (linked !== undefined && linked.ino === identity.ino && linked.dev === identity.dev) {
+      unlinkSync(path);
+    }
+  } finally {
+    try { unlinkSync(claim); } catch { /* the alias is already gone */ }
+  }
+}
+
 /** Synchronous preparation uses an exclusive, process-owned lock across launches. */
 function templateLock(path: string): () => void {
   const deadline = Date.now() + agyKeychainHost.lockWaitMs;
@@ -315,14 +362,27 @@ function templateLock(path: string): () => void {
       const stale = ownerPid !== null && ownerPid <= MAX_PID ? !pidProbeAlive(ownerPid)
         : ageMs() > EMPTY_LOCK_STALE_MS;
       if (stale) {
-        const current = lstatSync(path);
-        if (current.ino === identity.ino && current.dev === identity.dev) unlinkSync(path);
+        reclaimStaleLock(path, identity);
         continue;
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    if (Date.now() >= deadline) throw new Error("timed out waiting for agy template keychain lock");
+    if (Date.now() >= deadline) {
+      // A reclaim wedged by a crash between its link and its unlink answers
+      // EEXIST to every later waiter; name the leftover so the operator can
+      // clear it.
+      let wedged: string | null = null;
+      try {
+        wedged = readdirSync(dirname(path)).find((entry) =>
+          entry.startsWith(`${basename(path)}.reclaim-`)) ?? null;
+      } catch { /* the listing is advisory */ }
+      throw new Error(
+        wedged === null
+          ? "timed out waiting for agy template keychain lock"
+          : `timed out waiting for agy template keychain lock; ${join(dirname(path), wedged)} is a leftover reclaim file — delete it`
+      );
+    }
     Atomics.wait(pause, 0, 0, agyKeychainHost.lockPollMs);
   }
 }

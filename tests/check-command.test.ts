@@ -246,8 +246,10 @@ describe("CLI - check pre-launch usage refusals exit 64", () => {
 /** The plain (non-hermetic) check flow in process: the launch is mocked,
  * so the command's own branch on the probe outcome is what is measured. */
 async function runPlainCheck(
-  result: { exitCode: number; stdout: string; stderr?: string }
-): Promise<{ stdout: string; stderr: string; exitCode: number | undefined }> {
+  result: { exitCode: number; stdout: string; stderr?: string },
+  extraArgv: string[] = []
+): Promise<{ stdout: string; stderr: string; exitCode: number | undefined; request: RunRequest | null }> {
+  let request: RunRequest | null = null;
   const program = new Command();
   registerCheckCommand(program, getDefaultConfig(), () => {});
   const stdoutChunks: string[] = [];
@@ -261,27 +263,32 @@ async function runPlainCheck(
   const error = spyOn(console, "error").mockImplementation((...values: unknown[]) => {
     stderrLines.push(values.map(String).join(" "));
   });
+  const warn = spyOn(console, "warn").mockImplementation((...values: unknown[]) => {
+    stderrLines.push(values.map(String).join(" "));
+  });
   const stderrWrite = spyOn(process.stderr, "write").mockImplementation(((chunk: Uint8Array | string) => {
     stderrLines.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
     return true;
   }) as typeof process.stderr.write);
   const fake = createFakeBinaryEnv({ claude: "exit 0", scode: "exit 0" });
   const mocks = [
-    write, error, stderrWrite,
+    write, error, warn, stderrWrite,
     spyOn(cliRuntime, "isScodeAvailable").mockReturnValue(true),
     spyOn(cliRuntime, "assertHarnessSupported").mockResolvedValue("2.1.220"),
-    spyOn(launcher, "launchRunRequest").mockImplementation(async () => ({
-      success: result.exitCode === 0, ...result, stderr: result.stderr ?? "",
-    })),
+    spyOn(launcher, "launchRunRequest").mockImplementation(async (_adapter, launched) => {
+      request = launched;
+      return { success: result.exitCode === 0, ...result, stderr: result.stderr ?? "" };
+    }),
   ];
   process.env.PATH = fake.env.PATH;
   try {
-    await program.parseAsync(["check", "-a", "claude"], { from: "user" });
+    await program.parseAsync(["check", "-a", "claude", ...extraArgv], { from: "user" });
     const resolved = process.exitCode;
     return {
       stdout: stdoutChunks.join(""),
       stderr: stderrLines.join("\n"),
       exitCode: typeof resolved === "number" ? resolved : undefined,
+      request,
     };
   } finally {
     for (const mock of mocks) mock.mockRestore();
@@ -292,6 +299,19 @@ async function runPlainCheck(
 }
 
 describe("the plain check probe outcomes in process", () => {
+  test("an unsandboxed check drops --sandbox-no-net after its warning instead of claiming it (round 341)", async () => {
+    // The launcher refuses a direct run that claims a sandbox policy flag
+    // (round 341, item 12); the check command, like run, warns and drops
+    // the flag before building its probe request, so the claim never
+    // reaches the launcher.
+    const outcome = await runPlainCheck({ exitCode: 0, stdout: "OK\n", stderr: "" },
+      ["--no-sandbox", "--auto", "high", "--sandbox-no-net"]);
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.stderr).toContain("sandbox policy flags require --sandbox, ignoring");
+    expect(outcome.request?.sandboxed).toBe(false);
+    expect(outcome.request?.sandboxNoNet).toBe(false);
+  });
+
   test("an OK line passes the check", async () => {
     const outcome = await runPlainCheck({ exitCode: 0, stdout: "OK\n", stderr: "" });
     expect(outcome.exitCode).toBe(0);

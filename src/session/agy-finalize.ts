@@ -17,7 +17,7 @@ import {
   type SessionChildOutcome,
 } from "./process.js";
 import { buildEvent } from "./protocol.js";
-import { recordSessionStart, releaseSessionRecord } from "./registry.js";
+import { recordSessionStartOffStream, releaseSessionRecord } from "./registry.js";
 import { AgyDriverIo, type SessionEndReason } from "./agy-driver-io.js";
 
 export abstract class AgyFinalize extends AgyDriverIo {
@@ -26,67 +26,84 @@ export abstract class AgyFinalize extends AgyDriverIo {
    * the registry record. Codemux-originated, so raw is null — the
    * claude-family driver's precedent for the same synthesis. */
   protected override announceSessionStarted(): void {
-    this.recordStart();
     // The announcement follows the record's verdict: a required record
     // that failed must not announce — §4.8's fail-closed rule, nothing
-    // is vouchable — while a record that succeeded announces even while
-    // an end path drains (a first result naming the conversation arrived
-    // inside the grace window). A null registryPath records nothing and
-    // always announces.
-    if (
-      this.settled ||
-      (this.options.registryPath !== null && !this.registryRecorded)
-    ) {
-      return;
-    }
-    this.emit(
-      buildEvent(++this.seq, this.sessionIdOrEmpty(), "session_started", null, {
-        agent: "agy",
-        model: this.options.model ?? null,
-        autonomy: this.options.autonomy,
-        cwd: this.options.cwd,
-        sandboxed: this.options.sandboxed,
-        sandbox_trust: this.options.sandboxTrust,
-        capabilities: this.capabilities,
-        protocol: "codemux-live-session/1",
-      })
-    );
+    // is vouchable. A null registryPath records nothing and always
+    // announces. The record itself runs off the turn's output stream
+    // (review round 341): one lock attempt here, a busy lock retried on
+    // a timer, never the synchronous full-budget wait that froze the
+    // event loop mid-turn — the announcement lands when the verdict
+    // does.
+    this.recordStart(() => {
+      if (this.settled) return;
+      this.emit(
+        buildEvent(++this.seq, this.sessionIdOrEmpty(), "session_started", null, {
+          agent: "agy",
+          model: this.options.model ?? null,
+          autonomy: this.options.autonomy,
+          cwd: this.options.cwd,
+          sandboxed: this.options.sandboxed,
+          sandbox_trust: this.options.sandboxTrust,
+          capabilities: this.capabilities,
+          protocol: "codemux-live-session/1",
+        })
+      );
+    });
   }
 
-  private recordStart(): void {
-    if (this.options.registryPath === null || this.conversationId === null) return;
-    const outcome = recordSessionStart(this.options.registryPath, {
-      id: this.conversationId,
-      agent: "agy",
-      cwd: this.options.cwd,
-      hermetic: false,
-      harness_home: this.options.harnessHome,
-      model: this.options.model ?? null,
-      autonomy: this.options.autonomy,
-      sandboxed: this.options.sandboxed,
-      sandbox_trust: this.options.sandboxTrust,
-      sandbox_no_net: this.options.sandboxNoNet,
-      sandbox_scrub_env: this.options.sandboxScrubEnv,
-      sandbox_block: [...(this.options.sandboxBlock ?? [])],
-      pass_env: [...this.options.passEnv],
-      // The CLI refuses --enable-playwright-mcp outside the claude family.
-      playwright_mcp: false,
-      provider_base_url: this.options.providerBaseUrl,
-      project_settings: false,
-    });
-    if (!outcome.ok) {
-      // An untracked live session must not run (§4.8): the registry is
-      // what makes resume's guards answerable, so failing to record it
-      // fails the session closed.
-      this.emitError(
-        true,
-        "codemux",
-        `cannot record the session in the registry: ${outcome.error}`
-      );
-      void this.finish("crash", 1);
+  private recordStart(onRecorded: () => void): void {
+    // A null registryPath records nothing and announces; a null
+    // conversation id is the unreachable defensive case and announces
+    // nothing (the old guard's exact behavior).
+    if (this.options.registryPath === null) {
+      onRecorded();
       return;
     }
-    this.registryRecorded = true;
+    if (this.conversationId === null) return;
+    recordSessionStartOffStream(
+      this.options.registryPath,
+      {
+        id: this.conversationId,
+        agent: "agy",
+        cwd: this.options.cwd,
+        hermetic: false,
+        harness_home: this.options.harnessHome,
+        model: this.options.model ?? null,
+        autonomy: this.options.autonomy,
+        sandboxed: this.options.sandboxed,
+        sandbox_trust: this.options.sandboxTrust,
+        sandbox_no_net: this.options.sandboxNoNet,
+        sandbox_scrub_env: this.options.sandboxScrubEnv,
+        sandbox_block: [...(this.options.sandboxBlock ?? [])],
+        pass_env: [...this.options.passEnv],
+        // The CLI refuses --enable-playwright-mcp outside the claude family.
+        playwright_mcp: false,
+        provider_base_url: this.options.providerBaseUrl,
+        project_settings: false,
+      },
+      () => this.settled,
+      (outcome) => {
+        if (!outcome.ok) {
+          // An untracked live session must not run (§4.8): the registry is
+          // what makes resume's guards answerable, so failing to record it
+          // fails the session closed.
+          this.emitError(
+            true,
+            "codemux",
+            `cannot record the session in the registry: ${outcome.error}`
+          );
+          void this.finish("crash", 1);
+          return;
+        }
+        this.registryRecorded = true;
+        onRecorded();
+      },
+      (error) =>
+        console.error(
+          `codemux: the registry lock is busy recording session ${this.conversationId} ` +
+            `(${error}); retrying in the background`
+        )
+    );
   }
 
   // --- end path ----------------------------------------------------------

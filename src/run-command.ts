@@ -361,7 +361,11 @@ export function registerRunCommand(
           effort,
           cwd: options.cwd,
           sandboxed: Boolean(options.sandbox),
-          sandboxNoNet: Boolean(options.sandboxNoNet),
+          // The claim rides only a sandboxed run: unsandboxed, the policy
+          // flags were already warned about and dropped (round 341), and a
+          // request claiming a restriction its launch cannot apply is
+          // refused by the launcher.
+          sandboxNoNet: Boolean(options.sandbox && options.sandboxNoNet),
           sandboxTrust: sandboxPolicyOverrides?.trust,
           timeoutMs,
           passthroughEnv,
@@ -437,7 +441,16 @@ export function registerRunCommand(
           agentId,
           adapter.binaryName,
           options.cwd,
-          undefined,
+          // The environment the launch will use, built the way the launch
+          // paths build it from the adapter's own view: a redirect an
+          // adapter injects through its environment (OPENCODE_BIN_PATH)
+          // is trust-pinned by the launch but was invisible to a gate
+          // reading process.env, so the binary it probed was not the one
+          // about to run (review round 338, item 14). getRunEnv is
+          // deliberately absent: it needs the run context prepareRun
+          // builds, which the gate precedes, and no production adapter
+          // injects a redirect through it.
+          adapter.buildExecutionEnv(adapter.getEnv(), passthroughEnv),
           request.autonomy,
           Boolean(options.sandbox),
           // The names the launch will keep. One of them may choose which executable runs --

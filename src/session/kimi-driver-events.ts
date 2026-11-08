@@ -22,7 +22,7 @@ import {
   buildUnknownEvent,
   buildUserMessage,
 } from "./protocol.js";
-import { recordSessionStart, touchSession } from "./registry.js";
+import { recordSessionStartOffStream, touchSession } from "./registry.js";
 import { KimiDriverFinalize } from "./kimi-driver-finalize.js";
 
 export abstract class KimiDriverEvents extends KimiDriverFinalize {
@@ -140,29 +140,44 @@ export abstract class KimiDriverEvents extends KimiDriverFinalize {
         // Unreachable otherwise: the machine issues record_start only
         // with a registry and a named session.
         if (registryPath === null || sessionId === null) return;
-        const outcome = recordSessionStart(registryPath, {
-          id: sessionId,
-          agent: "kimi",
-          cwd: this.options.cwd,
-          hermetic: this.options.hermetic,
-          harness_home: this.options.harnessHome,
-          model: this.options.model ?? null,
-          autonomy: this.options.autonomy,
-          sandboxed: this.options.sandboxed,
-          sandbox_trust: this.options.sandboxTrust,
-          sandbox_no_net: this.options.sandboxNoNet,
-          sandbox_scrub_env: this.options.sandboxScrubEnv,
-          sandbox_block: [...(this.options.sandboxBlock ?? [])],
-          pass_env: [...this.options.passEnv],
-          playwright_mcp: false,
-          provider_base_url: this.options.providerBaseUrl,
-          project_settings: false,
-        });
-        this.deliver({
-          kind: "record_outcome",
-          ok: outcome.ok,
-          ...(outcome.ok ? {} : { error: outcome.error }),
-        });
+        // The record runs off the stream's lock budget (review round
+        // 341): one attempt here, and a busy lock retries on a timer
+        // while the turn's output keeps flowing, instead of the
+        // synchronous full-budget wait that froze the event loop
+        // mid-turn. The machine keeps waiting for the one outcome.
+        recordSessionStartOffStream(
+          registryPath,
+          {
+            id: sessionId,
+            agent: "kimi",
+            cwd: this.options.cwd,
+            hermetic: this.options.hermetic,
+            harness_home: this.options.harnessHome,
+            model: this.options.model ?? null,
+            autonomy: this.options.autonomy,
+            sandboxed: this.options.sandboxed,
+            sandbox_trust: this.options.sandboxTrust,
+            sandbox_no_net: this.options.sandboxNoNet,
+            sandbox_scrub_env: this.options.sandboxScrubEnv,
+            sandbox_block: [...(this.options.sandboxBlock ?? [])],
+            pass_env: [...this.options.passEnv],
+            playwright_mcp: false,
+            provider_base_url: this.options.providerBaseUrl,
+            project_settings: false,
+          },
+          () => this.state.phase === "ended",
+          (outcome) =>
+            this.deliver({
+              kind: "record_outcome",
+              ok: outcome.ok,
+              ...(outcome.ok ? {} : { error: outcome.error }),
+            }),
+          (error) =>
+            console.error(
+              `codemux: the registry lock is busy recording session ${sessionId} ` +
+                `(${error}); retrying in the background`
+            )
+        );
         return;
       }
       case "end_path":

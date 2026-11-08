@@ -46,6 +46,44 @@ describe("codex session e2e - review round 232", () => {
     expect(await session.code).toBe(0);
   });
 
+  test("an interrupt acked while turn/start was in flight is not dropped silently by the early completion (round 341)", async () => {
+    // The interrupt lands between the turn/start write and the lifecycle
+    // notifications, so it is queued to ride the response and acked. The
+    // turn then completes before that response, and the queued interrupt
+    // can never be delivered: the caller now hears the drop named by its
+    // input_seq — the same notice the sibling drop paths emit — instead
+    // of an acked line whose fate is never reported again.
+    const session = await startAndWait();
+    send(session.driver, { type: "user", text: "scenario:earlydone one" });
+    send(session.driver, { type: "interrupt" });
+    const first = await waitFor(
+      session.events,
+      (events) => events.find((event) => event.type === "turn_completed" && event.turn_id === "t1"),
+      "turn_completed t1"
+    );
+    expect(first.finish).toBe("end");
+    const notice = session.events.find(
+      (event) =>
+        event.type === "error" &&
+        String((event as { message?: unknown }).message).includes(
+          "the interrupt accepted while the turn was starting (input_seq 2)"
+        )
+    );
+    expect(String((notice as { message?: unknown } | undefined)?.message)).toContain("was dropped");
+    // The session continues: the late response is consumed and the next
+    // turn runs and ends cleanly.
+    send(session.driver, { type: "user", text: "scenario:basic two" });
+    const second = await waitFor(
+      session.events,
+      (events) => events.find((event) => event.type === "turn_completed" && event.turn_id === "t2"),
+      "turn_completed t2"
+    );
+    expect(second.finish).toBe("end");
+    send(session.driver, { type: "shutdown" });
+    await waitFor(session.events, of("session_ended"), "session_ended");
+    expect(await session.code).toBe(0);
+  });
+
   test("a late turn/start response naming a turn the session never saw complete crashes the session (review round 235)", async () => {
     // The turn completed inside the window under its provisional id, so
     // the pending id is gone when the response lands; the closed set is

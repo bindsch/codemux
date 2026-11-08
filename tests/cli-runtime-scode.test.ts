@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  assertCompatibleScode,
   getScodeCompatibilityStatus,
   isScodeAvailable,
   resolveScodeExecutable,
@@ -148,6 +149,50 @@ describe("CLI runtime scode resolution and gating", () => {
     } finally {
       if (originalPath === undefined) delete process.env.PATH;
       else process.env.PATH = originalPath;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a scode prerelease of the floor is below the floor (review 341, item 3)", async () => {
+    // parseVersion stripped prerelease suffixes, so "0.6.0-rc1" parsed as
+    // [0,6,0] and passed a floor set at exactly its numeric core (agy's
+    // SCODE_FLOORS entry "0.6.0"). The floor comparison runs on the
+    // extracted token — suffix included — under the rule harness versions
+    // already follow: a prerelease orders below its own release.
+    const dir = mkdtempSync(join(tmpdir(), "codemux-runtime-rc-scode-"));
+    const binaryDir = join(dir, "bin");
+    const workdir = join(dir, "work");
+    mkdirSync(binaryDir);
+    mkdirSync(workdir);
+    const writeScode = (version: string): string => {
+      const path = join(binaryDir, `scode-${version}`);
+      writeFileSync(
+        path,
+        `#!/bin/sh\nif [ "$1" = --version ]; then echo 'scode ${version}'; exit 0; fi\nexit 99\n`
+      );
+      chmodSync(path, 0o755);
+      return path;
+    };
+    const env = { PATH: `${binaryDir}:${process.env.PATH ?? ""}` };
+    try {
+      await expect(
+        assertCompatibleScode(writeScode("0.6.0-rc1"), workdir, env, "0.6.0")
+      ).rejects.toThrow("scode 0.6.0-rc1 is too old; 0.6.0 or newer is required");
+      // Controls: the release itself passes its own floor, and a
+      // prerelease above the floor passes — only a prerelease of the
+      // minimum is below the minimum.
+      await expect(
+        assertCompatibleScode(writeScode("0.6.0"), workdir, env, "0.6.0")
+      ).resolves.toBeUndefined();
+      await expect(
+        assertCompatibleScode(writeScode("0.7.0-beta"), workdir, env, "0.6.0")
+      ).resolves.toBeUndefined();
+      // A glued suffix is no version at all: the token's closing boundary
+      // refuses it instead of reading its numeric core (review round 344).
+      await expect(
+        assertCompatibleScode(writeScode("1.2.3dev"), workdir, env, "0.6.0")
+      ).rejects.toThrow("could not parse scode version");
+    } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });

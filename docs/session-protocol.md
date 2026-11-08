@@ -307,7 +307,7 @@ approval offering no refusal choice also interrupts its turn.
 | Unread harness stdin backlog | 64 MiB; refusal is fatal |
 | Each Codex pre-handshake / user / steer hold | 256 lines or 32 MiB; queued user/steer overflow is `busy`; handshake overflow is fatal |
 | Reserved terminal queue | 8 extra slots; at most 7 fatals, reserving one for the final event |
-| Final stdout flush | 1 second before abandoning delivery and exiting nonzero |
+| Final stdout flush | 1 s floor plus 5 ms per queued event and 256 ms per queued MiB, capped at 15 s, before abandoning delivery and exiting nonzero |
 
 Accepted events are not silently truncated to fit. Terminal capacity does
 not guarantee delivery to a broken or stalled reader. Keep draining stdout

@@ -168,7 +168,7 @@ export function claimForResume(path: string, id: string, probe: ResumeProbe): Re
   );
   const judged = verdict as ResumeLookup | null;
   if (judged !== null && (judged.outcome !== "ok" || outcome.ok)) return judged;
-  if (!outcome.ok && outcome.kind === "unavailable") {
+  if (!outcome.ok && (outcome.kind === "busy" || outcome.kind === "unavailable")) {
     return { outcome: "unavailable", reason: outcome.error };
   }
   return {

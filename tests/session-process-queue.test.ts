@@ -4,6 +4,10 @@ import {
   BoundedOutboundQueue,
   TERMINAL_LANE_CAPACITY,
 } from "../src/session/process.js";
+import {
+  FINAL_FLUSH_CAP_MS,
+  finalFlushBudgetMs,
+} from "../src/session/process-outbound.js";
 import type { OutboundFailure } from "../src/session/process-outbound.js";
 import { waitUntil } from "./helpers/session-process.js";
 
@@ -304,5 +308,64 @@ describe("bounded outbound queue", () => {
     );
     broke.enqueue("final");
     expect(await awaitFinalFlush(broke, 1_000)).toBe(false);
+  });
+
+  test("the final flush budget scales with the queued backlog and caps out (round 341)", () => {
+    // The default budget is a floor plus allowances for what is actually
+    // queued, with a hard cap: an empty queue keeps the old 1 s, an
+    // event-heavy backlog buys per-event time, a byte-heavy one buys
+    // per-MiB time, and nothing buys more than the cap.
+    const empty = new BoundedOutboundQueue(
+      () => {},
+      () => {}
+    );
+    expect(finalFlushBudgetMs(empty)).toBe(1_000);
+    const lines = Array.from({ length: 200 }, (_, index) => `line ${index}`);
+    const eventful = new BoundedOutboundQueue(
+      () => {},
+      () => {}
+    );
+    for (const line of lines) eventful.enqueue(line);
+    // 200 queued events: the floor plus 200 x 5 ms, no byte allowance to
+    // speak of.
+    expect(finalFlushBudgetMs(eventful)).toBeGreaterThanOrEqual(1_000 + 200 * 5);
+    const fat = new BoundedOutboundQueue(
+      () => {},
+      () => {}
+    );
+    fat.enqueue(`${"x".repeat(4 * 1024 * 1024)}`);
+    // One 4 MiB line: the floor plus 4 x 256 ms.
+    expect(finalFlushBudgetMs(fat)).toBeGreaterThanOrEqual(1_000 + 4 * 256);
+    // The cap: a backlog of the queue's full 64 MiB bound still waits no
+    // more than the ceiling.
+    const huge = new BoundedOutboundQueue(
+      () => {},
+      () => {}
+    );
+    for (let index = 0; index < 16; index++) {
+      huge.enqueue(`${"x".repeat(4 * 1024 * 1024)}`);
+    }
+    expect(finalFlushBudgetMs(huge)).toBe(FINAL_FLUSH_CAP_MS);
+  });
+
+  test("a slow-but-live sink with a real backlog is not abandoned at the old fixed second (round 341)", async () => {
+    // 120 queued lines on a sink that answers in 10 ms each: about 1.2 s
+    // of honest draining — past the old fixed 1 s give-up, which
+    // abandoned this sink mid-drain and reported the final event
+    // undelivered. The backlog-scaled default budget (1 s floor +
+    // 120 x 5 ms = 1.6 s) sees it through.
+    const delivered: string[] = [];
+    const queue = new BoundedOutboundQueue(
+      async (line) => {
+        await Bun.sleep(10);
+        delivered.push(line);
+      },
+      () => {}
+    );
+    for (let index = 0; index < 120; index++) {
+      queue.enqueue(`line ${index}`);
+    }
+    expect(await awaitFinalFlush(queue)).toBe(true);
+    expect(delivered).toHaveLength(120);
   });
 });

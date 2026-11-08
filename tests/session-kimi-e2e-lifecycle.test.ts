@@ -8,7 +8,11 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
+import { rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { basename, dirname, join } from "node:path";
 import { readRegistry } from "../src/session/registry.js";
+import { currentProcessIdentity } from "../src/session/registry-io.js";
 import {
   cleanups,
   fakeRecord,
@@ -353,5 +357,63 @@ describe("kimi session e2e - lifecycle", () => {
     expect(
       registry.outcome === "ok" && registry.file.sessions.some((r) => r.id === OTHER)
     ).toBe(true);
+  });
+
+  test("a busy registry lock on the first turn's record retries off the stream instead of freezing it (round 341)", async () => {
+    // The record of a fresh session's identity runs when the first turn's
+    // closing hint names it — inside the live output stream. A rival's
+    // live held lock on the registry used to freeze the whole event loop
+    // for the lock's full ~10 s budget mid-turn; the record now takes one
+    // attempt, says so once, and retries on a timer while the turns keep
+    // running, and once the rival is gone the record lands and the
+    // deferred session_started follows.
+    const session = await startSession();
+    const registryPath = session.options.registryPath as string;
+    const lockPath = `${registryPath}.lock`;
+    const identity = currentProcessIdentity();
+    const rival = join(
+      dirname(lockPath),
+      `.${basename(lockPath)}.${identity.pid}.${randomBytes(8).toString("hex")}.held`
+    );
+    writeFileSync(rival, `${identity.pid}\n${identity.start ?? ""}\n`, { mode: 0o600 });
+    const notices: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      notices.push(args.map(String).join(" "));
+    };
+    try {
+      send(session.driver, { type: "user", text: "scenario:basic one" });
+      // While the lock is still held: both turns complete — the stream
+      // never froze — and the deferred announcement has not come.
+      await waitFor(
+        session.events,
+        (events) => events.find((event) => event.type === "turn_completed" && event.turn_id === "t1"),
+        "turn_completed t1",
+        3_000
+      );
+      send(session.driver, { type: "user", text: "scenario:basic two" });
+      await waitFor(
+        session.events,
+        (events) => events.find((event) => event.type === "turn_completed" && event.turn_id === "t2"),
+        "turn_completed t2",
+        3_000
+      );
+      expect(notices.filter((line) => line.includes("registry lock is busy recording session"))).toHaveLength(1);
+      expect(session.events.find((event) => event.type === "session_started")).toBeUndefined();
+      // The rival goes away; the next timer retry records and the
+      // deferred announcement follows, before the session ends cleanly.
+      rmSync(rival);
+      await waitFor(session.events, of("session_started"), "session_started", 4_000);
+      send(session.driver, { type: "shutdown" });
+      await waitFor(session.events, of("session_ended"), "session_ended");
+      expect(await session.code).toBe(0);
+      const registry = readRegistry(registryPath);
+      expect(
+        registry.outcome === "ok" && registry.file.sessions.some((record) => record.id === ID)
+      ).toBe(true);
+    } finally {
+      console.error = originalError;
+      rmSync(rival, { force: true });
+    }
   });
 });

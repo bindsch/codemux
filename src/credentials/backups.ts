@@ -205,25 +205,56 @@ function backupCredential(backupDir: string, current: string): string | null {
  * <sequence>.json`, the stamp being the ISO time with `:` and `.` replaced
  * by `-`. Anchored, so a name of any other shape is never a prune
  * candidate. */
-const BACKUP_NAME = /^credentials-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-(\d+)-\d+\.json$/;
+const BACKUP_NAME = /^credentials-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)-(\d+)-(\d+)\.json$/;
+
+/** A backup name's ordering key. The stamp is fixed width — every field is
+ * zero-padded and every separator constant — so its lexical order IS its
+ * chronological order; the pid and sequence are variable width and compare
+ * as numbers, never lexically: a same-millisecond `…-9999-1.json` used to
+ * sort after the later `…-10000-1.json`, so a dead writer's promised copy
+ * read as older and was deleted (review round 341, item 4). */
+interface BackupOrder {
+  stamp: string;
+  pid: number;
+  sequence: number;
+}
+
+function parseBackupOrder(name: string): BackupOrder | null {
+  const match = BACKUP_NAME.exec(name);
+  if (match === null) return null;
+  return { stamp: match[1]!, pid: Number(match[2]), sequence: Number(match[3]) };
+}
+
+/** Whether `candidate` is strictly older than `own` on the parsed ordering:
+ * stamp first (fixed width, so lexical is chronological), then pid, then
+ * sequence, each as numbers. */
+function isOlderBackup(candidate: BackupOrder, own: BackupOrder): boolean {
+  if (candidate.stamp !== own.stamp) return candidate.stamp < own.stamp;
+  if (candidate.pid !== own.pid) return candidate.pid < own.pid;
+  return candidate.sequence < own.sequence;
+}
 
 /** After a rewrite succeeded, drop the backups OLDER than the one this
- * launch wrote (names start with an ISO timestamp, so they sort by age).
- * Never a newer one: a parallel launch may have written it and may still
- * need it. An older one written by ANOTHER LIVE PROCESS stays too: its
- * writer may not have finished its own rewrite, and deleting its backup
- * could destroy the operator's only refresh-token copy while the code
- * reports one was kept — that process prunes it once its rewrite
- * succeeds, and a later launch prunes it once the writer is gone. A
- * matching name whose pid is this process's own is always ours to drop;
- * one whose pid no kernel assigns (pidProbeAlive refuses 0, negatives,
- * and out-of-range values) reads as not alive. A name of any other shape
- * is left alone. Never before the rename: until then the one just written
- * is the only copy the operator was told about, and a failed rewrite must
- * leave every earlier copy where it was (review round 137). */
-function pruneOlderBackups(backup: string): void {
+ * launch wrote — older by the parsed ordering above (stamp, then pid and
+ * sequence as numbers), never by name. Never a newer one: a parallel
+ * launch may have written it and may still need it. An older one written
+ * by ANOTHER LIVE PROCESS stays too: its writer may not have finished its
+ * own rewrite, and deleting its backup could destroy the operator's only
+ * refresh-token copy while the code reports one was kept — that process
+ * prunes it once its rewrite succeeds, and a later launch prunes it once
+ * the writer is gone. A matching name whose pid is this process's own is
+ * always ours to drop; one whose pid no kernel assigns (pidProbeAlive
+ * refuses 0, negatives, and out-of-range values) reads as not alive. A
+ * name of any other shape is left alone, and a launch whose own backup
+ * name does not parse prunes nothing — without its own position,
+ * "older than ours" is a guess. Never before the rename: until then the
+ * one just written is the only copy the operator was told about, and a
+ * failed rewrite must leave every earlier copy where it was (review round
+ * 137). Exported for the pruning regression tests. */
+export function pruneOlderBackups(backup: string): void {
   const dir = dirname(backup);
-  const own = basename(backup);
+  const own = parseBackupOrder(basename(backup));
+  if (own === null) return;
   let names: string[];
   try {
     names = readdirSync(dir);
@@ -231,10 +262,9 @@ function pruneOlderBackups(backup: string): void {
     return;
   }
   for (const name of names) {
-    const match = BACKUP_NAME.exec(name);
-    if (match === null || name >= own) continue;
-    const pid = Number(match[1]);
-    if (pid !== process.pid && pidProbeAlive(pid) && !olderThanAnyRun(join(dir, name))) continue;
+    const order = parseBackupOrder(name);
+    if (order === null || !isOlderBackup(order, own)) continue;
+    if (order.pid !== process.pid && pidProbeAlive(order.pid) && !olderThanAnyRun(join(dir, name))) continue;
     removeQuietly(join(dir, name));
   }
 }

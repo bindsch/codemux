@@ -1,8 +1,9 @@
 /**
- * The codex driver's turn machinery: the turn queue, steer buffering and
- * batching, interrupt delivery, the turn timers, and turn completion
- * (harness-named, failed, or synthesized). src/session/codex-driver.ts
- * owns the lifecycle.
+ * The codex driver's turn machinery: the turn queue, interrupt delivery,
+ * the turn timers, and turn completion (harness-named, failed, or
+ * synthesized). The steer buffering and batching live in
+ * src/session/codex-steer.ts (split at the 500-line cap); the lifecycle
+ * is src/session/codex-driver.ts's.
  */
 
 import type { ResultUsageBlock } from "../types.js";
@@ -10,11 +11,9 @@ import { appendSessionTurnCallRecord } from "../call-log.js";
 import { emptyUsage } from "../result-envelope.js";
 import {
   buildInterruptRequest,
-  buildSteerRequest,
   buildTurnStartRequest,
   type CodexParse,
 } from "./codex-session.js";
-import { harnessLineDeliverable } from "./process.js";
 import { buildEvent } from "./protocol.js";
 import { touchSession } from "./registry.js";
 import { addTurnUsage } from "./usage.js";
@@ -28,7 +27,7 @@ export abstract class CodexDriverTurns extends CodexDriverApprovals {
   /** User inputs accepted mid-turn, submitted as turns in order. */
   protected readonly turnQueue: { text: string; inputSeq: number }[] = [];
   /** Steer texts held until the harness turn id is known; flushed as one
-   * batched turn/steer. */
+   * batched turn/steer (codex-steer.ts). */
   protected readonly steerBuffer: Array<{ text: string; inputSeq: number }> = [];
 
   protected turnCounter = 0;
@@ -104,8 +103,7 @@ export abstract class CodexDriverTurns extends CodexDriverApprovals {
         ? "turn-timeout"
         : parse.reason;
     this.interruptFromTimeout = false;
-    this.interruptQueued = false;
-    this.interruptQueuedSeq = null;
+    this.clearQueuedInterrupt();
     this.interruptCallId = null;
     this.clearTurnTimer();
     // A turn that completed while its turn/start response was still in
@@ -198,8 +196,7 @@ export abstract class CodexDriverTurns extends CodexDriverApprovals {
       return;
     }
     this.interruptFromTimeout = false;
-    this.interruptQueued = false;
-    this.interruptQueuedSeq = null;
+    this.clearQueuedInterrupt();
     this.interruptCallId = null;
     this.clearTurnTimer();
     this.closeHarnessTurn();
@@ -249,6 +246,24 @@ export abstract class CodexDriverTurns extends CodexDriverApprovals {
     // the end path owns.
     if (this.finished) return;
     this.sendTurnStart(turnId, next.text);
+  }
+
+  /** Clear an interrupt queued for the turn/start response, reporting it
+   * when the caller's line was acked: the turn completed (or failed its
+   * start) before the response the interrupt rode, so it can never be
+   * delivered — the same notice the sibling drop paths emit, naming the
+   * seq (review round 341: this clear used to be silent, the one acked
+   * line whose fate the caller never heard). */
+  protected clearQueuedInterrupt(): void {
+    const queuedSeq = this.interruptQueuedSeq;
+    this.interruptQueued = false;
+    this.interruptQueuedSeq = null;
+    if (queuedSeq === null) return;
+    this.emitError(
+      false,
+      "codemux",
+      `the interrupt accepted while the turn was starting (input_seq ${queuedSeq}) arrived too late for its turn and was dropped`
+    );
   }
 
   /** Report and clear steer texts that can no longer reach a turn — the
@@ -342,72 +357,6 @@ export abstract class CodexDriverTurns extends CodexDriverApprovals {
         this.options.effort
       )
     );
-  }
-
-  /** `currentSeq` is the steer line being handled now, which its caller
-   * rejects itself when the write is refused; every other line in a
-   * refused batch was acked earlier and is named here (review live23). */
-  protected flushSteer(currentSeq: number | null = null): void {
-    if (this.steerBuffer.length === 0 || this.harnessTurnId === null) return;
-    const threadId = this.threadId ?? "";
-    const expectedTurnId = this.harnessTurnId;
-    // Batch greedily but never past the 17 MiB write cap (review live14):
-    // every buffered text passed the pre-ack check alone, and joining
-    // them can cross the cap — a frame writeToHarness would refuse as
-    // oversize, ending the session after each steer in it was already
-    // acked. `call` assigns `requestCounter + 1` as the id, so the probe
-    // frame is byte-identical to the one that is then sent. Splitting is
-    // the wire's common shape anyway: one request per steer once the
-    // turn is open; batching only happens while turn/start was in
-    // flight.
-    while (this.steerBuffer.length > 0) {
-      let count = 0;
-      while (
-        count < this.steerBuffer.length &&
-        harnessLineDeliverable(
-          buildSteerRequest(
-            this.requestCounter + 1,
-            threadId,
-            expectedTurnId,
-            this.steerBuffer.slice(0, count + 1).map((entry) => entry.text)
-          )
-        )
-      ) {
-        count += 1;
-      }
-      if (count === 0) {
-        // The pre-ack margin guarantees a single text fits; zero can
-        // only mean the buffer holds something that check should have
-        // refused. Drop it with the notice rather than spin forever.
-        this.dropBufferedSteer();
-        return;
-      }
-      const entries = this.steerBuffer.splice(0, count);
-      const texts = entries.map((entry) => entry.text);
-      const sent = this.call(
-        {
-          kind: "steer",
-          inputSeqs: entries.map((entry) => entry.inputSeq),
-          turnId: this.fsm.activeTurn,
-        },
-        (id) => buildSteerRequest(id, threadId, expectedTurnId, texts)
-      );
-      // A refused write started the crash end; the rest cannot follow.
-      if (sent === null) {
-        const acked = [...entries, ...this.steerBuffer]
-          .map((entry) => entry.inputSeq)
-          .filter((seq) => seq !== currentSeq);
-        this.steerBuffer.length = 0;
-        if (acked.length > 0) {
-          this.emitError(
-            false,
-            "codemux",
-            `steering input could not be delivered to the harness (${inputSeqList(acked)})`
-          );
-        }
-        return;
-      }
-    }
   }
 
   /** Whether the interrupt was written or will ride the turn/start

@@ -38,6 +38,8 @@ export function markAgyIsolationProbe(request: RunRequest, mode: AgyProbeMode, o
       request.hermetic || request.tools === "none" || request.experimentMcp) {
     throw new Error("agy isolation probes require a plain read-only scode request");
   }
+  // Diagnostics write beside --cwd (round 341); without one they crash there.
+  if (!request.cwd) throw new UsageRefusalError("agy isolation probes require an explicit --cwd for their diagnostics");
   isolationProbes.set(request, { mode, operatorHome });
 }
 
@@ -395,9 +397,9 @@ export class AgyAdapter extends BaseAdapter {
 
   override processRunResult(result: RunResult, request: RunRequest, context?: RunContext): RunResult {
     if (context?.agyProbe && context.agyProbe.mode !== "plain") {
-      if (context.agyProbe.diagnostic) {
-        writeFileSync(join(request.cwd!, "..", "native-events.jsonl"), result.stdout, { mode: 0o600 });
-        writeFileSync(join(request.cwd!, "..", "native-stderr.txt"), result.stderr, { mode: 0o600 });
+      if (context.agyProbe.diagnostic && request.cwd) {
+        writeFileSync(join(request.cwd, "..", "native-events.jsonl"), result.stdout, { mode: 0o600 });
+        writeFileSync(join(request.cwd, "..", "native-stderr.txt"), result.stderr, { mode: 0o600 });
       }
       // Extract the terminal envelope, then use ordinary result handling.
       // An absent event becomes invalid JSON-shaped output and fails there.

@@ -166,6 +166,17 @@ export async function launchRunRequest(
           "cannot attest an external sandbox on a direct run; use the sandbox runner"
         );
       }
+      // The same impossible attestation for the policy flags a sandbox
+      // would carry: a direct run has no network boundary and no trust
+      // level to apply, so a request still claiming one would run
+      // unrestricted while saying restricted — silently before round 341.
+      // The CLI's warning path drops the flags before building the
+      // request, so only a caller that bypassed it lands here.
+      if (request.sandboxNoNet || request.sandboxTrust !== undefined) {
+        throw new UsageRefusalError(
+          "cannot honor sandbox policy flags on a direct run; use the sandbox runner"
+        );
+      }
       // An unset autonomy is pinned on an EFFECTIVE copy, never the caller's
       // object: leaning on the autonomy refusal below alone left the run
       // claiming no autonomy was requested, and the day an adapter enforces

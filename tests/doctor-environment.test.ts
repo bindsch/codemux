@@ -20,8 +20,7 @@ import {
   readScodeFacts,
   scodeEnvironmentRow,
   usagemuxRowFrom,
-  type ScodeFacts,
-} from "../src/doctor-environment.js";
+  type ScodeFacts, scodeBelowFloor } from "../src/doctor-environment.js";
 import { isNamespaceCapabilityFailure } from "../src/scode-namespace.js";
 import * as processRunner from "../src/process-runner.js";
 import { USAGEMUX_MINIMUM_VERSION } from "../src/usage.js";
@@ -159,6 +158,21 @@ describe("the scode environment row", () => {
     const old = await scodeEnvironmentRow(facts({ version: [0, 1, 0], label: "0.1.0" }));
     expect(old.state).toBe("SANDBOX-TOO-OLD");
     expect(old.detail).toContain("below the global minimum");
+  });
+
+  test("a prerelease of a floor is below the floor, as on the launch gate (review 344)", async () => {
+    // The gate orders 0.6.0-rc1 below the 0.6.0 agy floor; doctor's rows
+    // compared the numeric core and called the same scode healthy.
+    const rc = facts({ version: [0, 6, 0], label: "0.6.0-rc1", semver: "0.6.0-rc1" });
+    expect(scodeBelowFloor(rc, "0.6.0")).toBe(true);
+    expect(scodeBelowFloor(rc, "0.5.0")).toBe(false);
+    expect(scodeBelowFloor(facts({ version: [0, 6, 0], label: "0.6.0", semver: "0.6.0" }), "0.6.0")).toBe(false);
+    // Facts without a token (built elsewhere) keep the numeric rule.
+    expect(scodeBelowFloor(facts({ version: [0, 6, 0], label: "0.6.0" }), "0.6.0")).toBe(false);
+    expect(scodeBelowFloor(facts({ version: [0, 5, 9], label: "0.5.9" }), "0.6.0")).toBe(true);
+    // The global minimum row follows the same rule.
+    const minimumRc = await scodeEnvironmentRow(facts({ version: [0, 2, 0], label: "0.2.0-rc1", semver: "0.2.0-rc1" }));
+    expect(minimumRc.state).toBe("SANDBOX-TOO-OLD");
   });
 
   test("the namespace probe's three outcomes shape the row", async () => {

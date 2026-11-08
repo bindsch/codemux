@@ -53,8 +53,10 @@ export const MTIME_WALK_ENTRY_CAP = 4096;
  * entry cap above — a run directory then falls back to its own mtime
  * (directoryMtimeMs, below), and so does a session home the registry
  * has positively freed; any other session home is spared —
- * a removal needs a positive reading, never an exhausted probe. */
-function newestMtimeMs(path: string): number | null {
+ * a removal needs a positive reading, never an exhausted probe. Exported
+ * for the opencode hermetic sweep (opencode-hermetic.ts), which ages its
+ * homes by the same tree-newest rule (review round 341, item 6). */
+export function newestMtimeMs(path: string): number | null {
   let newest: number | null = null;
   let budget = MTIME_WALK_ENTRY_CAP;
   const consider = (mtimeMs: number): void => {
@@ -96,8 +98,9 @@ function newestMtimeMs(path: string): number | null {
  * not spare it forever — a crashed run whose caches filled its HOME past
  * the cap leaked the directory under `~/.codex` and cost every later run
  * a walk to the cap. Null when the path cannot be stat'd, when the sweep
- * leaves the entry alone. */
-function directoryMtimeMs(path: string): number | null {
+ * leaves the entry alone. Exported beside newestMtimeMs for the opencode
+ * hermetic sweep, whose dead-owner pid gate carries the same proof. */
+export function directoryMtimeMs(path: string): number | null {
   try {
     return lstatSync(path).mtimeMs;
   } catch {

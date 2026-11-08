@@ -1,9 +1,15 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
-import { chmodSync, existsSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { acquireLock, listHeldLocks } from "../src/session/registry-io.js";
-import { recordSessionStart, touchSession } from "../src/session/registry.js";
+import {
+  readRegistry,
+  recordSessionStart,
+  recordSessionStartOffStream,
+  touchSession,
+  type UpdateOutcome,
+} from "../src/session/registry.js";
 import { DEAD_PID, makeRoot, newRecord, registryIn } from "./helpers/session-registry.js";
 
 describe("the writer lock", () => {
@@ -42,6 +48,85 @@ describe("the writer lock", () => {
     // Contention was the only problem: with the lock free again, the same
     // single-attempt touch succeeds.
     expect(touchSession(path, "sess-1", { attempts: 1 }).ok).toBe(true);
+  });
+
+  test("an off-stream session-start record fails fast, says so once, and retries on a timer (round 341)", async () => {
+    const root = makeRoot();
+    const path = registryIn(root);
+    // The registry's directory exists before the rival plants its lock
+    // (updateRegistry would create it, but the rival never gets that far).
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    // A live rival holds the writer lock, the way a concurrent codemux
+    // registry write would.
+    const rival = acquireLock(`${path}.lock`, { attempts: 1 });
+    const notices: string[] = [];
+    const outcomes: UpdateOutcome[] = [];
+    try {
+      const began = Date.now();
+      recordSessionStartOffStream(
+        path,
+        newRecord(),
+        () => false,
+        (outcome) => outcomes.push(outcome),
+        (error) => notices.push(error)
+      );
+      // One attempt, no synchronous wait: the pre-fix full-budget call
+      // slept ~10 s of Atomics.wait on the main thread before failing.
+      expect(Date.now() - began).toBeLessThan(1_000);
+      expect(outcomes).toHaveLength(0);
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toMatch(/live writer/);
+      rival.release();
+      // The next timer retry records and delivers exactly one outcome;
+      // the busy notice is not repeated.
+      const deadline = Date.now() + 2_000;
+      while (outcomes.length === 0 && Date.now() < deadline) await Bun.sleep(20);
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0]!.ok).toBe(true);
+      expect(notices).toHaveLength(1);
+      const read = readRegistry(path);
+      expect(read.outcome).toBe("ok");
+      if (read.outcome === "ok") {
+        expect(read.file.sessions.some((entry) => entry.id === newRecord().id)).toBe(true);
+      }
+    } finally {
+      rival.release();
+    }
+    // A settled caller stops the retries: no attempt, no outcome.
+    const late: UpdateOutcome[] = [];
+    recordSessionStartOffStream(
+      registryIn(makeRoot()),
+      newRecord(),
+      () => true,
+      (outcome) => late.push(outcome),
+      () => {}
+    );
+    expect(late).toHaveLength(0);
+  });
+
+  test("an off-stream session-start record does not retry an I/O failure (round 341)", () => {
+    const root = makeRoot();
+    // A file where the registry's directory belongs: every retry fails
+    // the same way, so the first attempt delivers the failure at once —
+    // the busy-lock retry rule must not stretch an unrecoverable I/O
+    // failure into a 10 s delayed crash.
+    const blocker = join(root, "blocker");
+    writeFileSync(blocker, "not a directory");
+    const outcomes: UpdateOutcome[] = [];
+    const notices: string[] = [];
+    const began = Date.now();
+    recordSessionStartOffStream(
+      join(blocker, "reg", "live-sessions.json"),
+      newRecord(),
+      () => false,
+      (outcome) => outcomes.push(outcome),
+      (error) => notices.push(error)
+    );
+    expect(Date.now() - began).toBeLessThan(1_000);
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.ok).toBe(false);
+    if (!outcomes[0]!.ok) expect(outcomes[0]!.kind).toBe("unavailable");
+    expect(notices).toHaveLength(0);
   });
 
   test("an unreadable lock corpse is never stolen (audit round 2, test 6)", () => {

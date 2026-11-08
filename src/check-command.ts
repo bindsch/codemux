@@ -140,7 +140,7 @@ export function registerCheckCommand(
         }
         validateExperimentRequest({ agent: agentId, prompt: "probe", experimentMcp: options.experimentMcp,
           hermetic, tools, autonomy: requestedAutonomy, sandboxed: Boolean(options.sandbox),
-          sandboxNoNet: Boolean(options.sandboxNoNet), sandboxTrust: sandboxPolicyOverrides?.trust });
+          sandboxNoNet: Boolean(options.sandbox && options.sandboxNoNet), sandboxTrust: sandboxPolicyOverrides?.trust });
         if (options.experimentMcp && agentId === "codex") {
           throw new UsageRefusalError("Codex --experiment-mcp supports run only; the paired check requires a non-hermetic control and is supported only by claude, zai, and kimi");
         }
@@ -215,7 +215,12 @@ export function registerCheckCommand(
           effort,
           cwd: options.cwd,
           sandboxed: Boolean(options.sandbox),
-          sandboxNoNet: Boolean(options.sandboxNoNet),
+          // The claim rides only a sandboxed probe, as on the run command:
+          // unsandboxed, the policy flags were warned about and dropped
+          // (parseSandboxPolicyOverrides), and the launcher refuses a
+          // request claiming a restriction a direct run cannot apply
+          // (review round 341, item 12).
+          sandboxNoNet: Boolean(options.sandbox && options.sandboxNoNet),
           sandboxTrust: sandboxPolicyOverrides?.trust,
           passthroughEnv,
           timeoutMs,

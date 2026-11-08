@@ -207,6 +207,46 @@ describe("executable redirects (review 331, items 4 and 5)", () => {
     }
   });
 
+  test("runInteractive pins the redirect from the child's environment, not process.env (review 338, item 13)", async () => {
+    // The child's environment is built from the adapter's own view, so a
+    // redirect present there but not in process.env decided whether the
+    // launcher execs a redirect while the pin read process.env and saw
+    // none — escaping both the pin and the gate. The check must read the
+    // environment the child is spawned with; a relative value is the
+    // refusal the pin owns.
+    const stage = stageRedirect(false);
+    const saved = process.env.OPENCODE_BIN_PATH;
+    delete process.env.OPENCODE_BIN_PATH;
+    class TuiRedirectAdapter extends ClaudeAdapter {
+      override readonly id = "opencode" as const;
+      constructor() {
+        super({ ...stage.fake.env, OPENCODE_BIN_PATH: "./elsewhere/opencode" });
+      }
+      override prepareRun() {
+        return {};
+      }
+      override buildTuiCommand() {
+        return ["opencode"];
+      }
+      override processRunResult(raw: RunResult) {
+        return raw;
+      }
+    }
+    try {
+      await expect(
+        new TuiRedirectAdapter().runInteractive(
+          undefined, stage.cwd, "high", undefined, false, ["OPENCODE_BIN_PATH"]
+        )
+      ).rejects.toThrow("does not name one trusted absolute executable");
+    } finally {
+      if (saved === undefined) delete process.env.OPENCODE_BIN_PATH;
+      else process.env.OPENCODE_BIN_PATH = saved;
+      stage.fake.cleanup();
+      rmSync(join(stage.target, ".."), { recursive: true, force: true });
+      rmSync(stage.cwd, { recursive: true, force: true });
+    }
+  });
+
   test("launchRedirectCheck answers null with no redirect active", () => {
     const stage = stageRedirect(false);
     try {

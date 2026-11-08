@@ -213,11 +213,18 @@ export function registerTuiCommand(
         // A print-only launch spends nothing (review round 56).
         if (quotaPolicy !== null && !options.printSandbox) await assertQuotaHeadroomForLaunch(adapter, quotaPolicy);
 
+        // The environment the gate probes in is the one the launch will
+        // use, built from the adapter's own view (review round 338, item
+        // 14, as on the run path): a redirect an adapter injects through
+        // getEnv is otherwise trust-pinned by the launch but never
+        // version-gated. getTuiEnv is absent on purpose: it may need the
+        // sandbox preparation that follows the gate.
+        const gateEnv = adapter.buildExecutionEnv(adapter.getEnv(), passthroughEnv);
         await assertHarnessSupported(
           agentId,
           adapter.binaryName,
           options.cwd,
-          undefined,
+          gateEnv,
           autonomy,
           Boolean(options.sandbox),
           passthroughEnv
@@ -283,8 +290,9 @@ export function registerTuiCommand(
             nestedChecks[0] ?? null,
             // The redirect target's identity (review round 331, item 5):
             // the gate above resolved and probed it; the spawn re-stats
-            // it like the run paths do.
-            launchRedirectCheck(agentId, process.env as Record<string, string>, passthroughEnv, workdir)
+            // it like the run paths do, read from the child's own
+            // environment (review round 338, item 13).
+            launchRedirectCheck(agentId, adapterEnv, passthroughEnv, workdir)
           );
           process.exitCode = exitCode;
         } else {

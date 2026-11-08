@@ -4,7 +4,7 @@
 import { linkSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { readProcessTable } from "../../process-table.js";
-import { REGISTRY_DIR_MODE, acquireLock, currentProcessIdentity, processIdentityAlive, registryPlacementProblem, resolveRegistryPath, writeRegistryAtomic, type LockHandle, type LockOptions } from "../registry-io.js";
+import { LOCK_ATTEMPTS, LOCK_RETRY_MS, REGISTRY_DIR_MODE, LockBusyError, acquireLock, currentProcessIdentity, processIdentityAlive, registryPlacementProblem, resolveRegistryPath, writeRegistryAtomic, type LockHandle, type LockOptions } from "../registry-io.js";
 import { readRegistry, validRegistryFile, REGISTRY_MAX_BYTES, REGISTRY_MAX_ENTRIES, type RegistryFile, type SessionRecord } from "./format.js";
 
 /** The bytes one record adds to the written file: its pretty-printed
@@ -71,12 +71,15 @@ function prune(file: RegistryFile): void {
 /** A failed update names its class (review live22): `untrusted` is a
  * registry codemux will not vouch from (placement, owner or mode, a
  * corrupt file under the "fail" policy, a write no reader would accept)
- * or a refusal the mutation named; `unavailable` is an I/O failure that
- * says nothing about the file's trust — a lock held past the budget,
- * ENOSPC, EACCES — and may pass on a retry. */
+ * or a refusal the mutation named; `busy` is the writer lock held by a
+ * live writer past the budget — contention, and the one class the
+ * off-stream session start retries behind; `unavailable` is an I/O
+ * failure that says nothing about the file's trust — ENOSPC, EACCES, a
+ * directory that cannot be created — and failing the update again on a
+ * timer would only delay the same verdict. */
 export type UpdateOutcome =
   | { ok: true }
-  | { ok: false; error: string; kind: "untrusted" | "unavailable" };
+  | { ok: false; error: string; kind: "untrusted" | "busy" | "unavailable" };
 
 /** Serialize on the lock, read strictly, mutate, prune, write atomically.
  * `mutate` returns null on success or the specific failure message — a
@@ -99,7 +102,11 @@ export type UpdateOutcome =
  * budget, because their writes are load-bearing (a failed start fails
  * the session closed, a failed end leaves a live-looking owner) and
  * they run at session boundaries, where a wait delays the boundary
- * rather than a live exchange (review live13). */
+ * rather than a live exchange (review live13). The one start that runs
+ * inside a live exchange — an agent whose first turn's own output names
+ * the session id (kimi, opencode, agy) — records off the stream instead:
+ * one attempt here, then the deferred retries of
+ * `recordSessionStartOffStream` (review round 341). */
 export function updateRegistry(
   originalPath: string,
   mutate: (file: RegistryFile) => string | null,
@@ -160,7 +167,11 @@ export function updateRegistry(
     writeRegistryAtomic(path, payload);
     return { ok: true };
   } catch (error) {
-    return { ok: false, error: `cannot update the session registry: ${error instanceof Error ? error.message : String(error)}`, kind: "unavailable" };
+    return {
+      ok: false,
+      error: `cannot update the session registry: ${error instanceof Error ? error.message : String(error)}`,
+      kind: error instanceof LockBusyError ? "busy" : "unavailable",
+    };
   } finally {
     // A release that cannot remove the lock file reports the leftover and
     // never throws: this update already wrote the registry file, so its
@@ -188,7 +199,11 @@ export type NewSessionRecord = Omit<
  * registry-start fatal, exit 1) with the same `session_busy` refusal
  * resume uses. This decides who owns the record — a lookup hint, never
  * an authorization boundary. */
-export function recordSessionStart(path: string, record: NewSessionRecord): UpdateOutcome {
+export function recordSessionStart(
+  path: string,
+  record: NewSessionRecord,
+  lockOptions?: LockOptions
+): UpdateOutcome {
   const now = new Date().toISOString();
   const identity = currentProcessIdentity();
   return updateRegistry(
@@ -231,8 +246,52 @@ export function recordSessionStart(path: string, record: NewSessionRecord): Upda
       }
       return null;
     },
-    "backup-and-reset"
+    "backup-and-reset",
+    lockOptions
   );
+}
+
+/** The session-start record for a driver that learns its session id from
+ * its first turn's own output stream (kimi, opencode, agy): one lock
+ * attempt inside the stream, and when the failure is merely contention
+ * (`busy` — a live writer holds the lock) the same total budget retried
+ * on a timer off the stream, so the event loop keeps reading harness
+ * output, caller events and signals instead of freezing in the lock's
+ * synchronous Atomics.wait (review round 341). `busy` exhausts the
+ * budget and delivers the failure; `untrusted` and `unavailable`
+ * outcomes deliver at once — nothing a timer can change (an ENOTDIR
+ * blocker or an unwritable directory fails every retry identically) —
+ * so the caller's fail-closed rule is unchanged. `settled` stops the
+ * retries once the session no longer exists to be recorded. */
+export function recordSessionStartOffStream(
+  path: string,
+  record: NewSessionRecord,
+  settled: () => boolean,
+  deliver: (outcome: UpdateOutcome) => void,
+  warn: (error: string) => void
+): void {
+  let attemptsLeft = LOCK_ATTEMPTS;
+  let warned = false;
+  const attempt = (): void => {
+    if (settled()) return;
+    const outcome = recordSessionStart(path, record, { attempts: 1 });
+    if (outcome.ok || outcome.kind !== "busy") {
+      deliver(outcome);
+      return;
+    }
+    attemptsLeft -= 1;
+    if (attemptsLeft <= 0) {
+      deliver(outcome);
+      return;
+    }
+    if (!warned) {
+      warned = true;
+      warn(outcome.error);
+    }
+    const timer = setTimeout(attempt, LOCK_RETRY_MS);
+    timer.unref?.();
+  };
+  attempt();
 }
 
 /** The pre-spawn check for a fresh agy session, whose id only its first

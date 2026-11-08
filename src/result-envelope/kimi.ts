@@ -2,7 +2,7 @@ import { join } from "node:path";
 import type { RunContext } from "../run-context.js";
 import type { CodemuxResultBlock, RunRequest, RunResult } from "../types.js";
 import { findKimiWireLog, kimiWireUsage, MAX_KIMI_WIRE_BYTES, readBoundedKimiFile } from "../kimi-wire-log.js";
-import { appendDiagnostic, emptyUsage } from "./common.js";
+import { appendDiagnostic, emptyUsage, envelopeBoundLine } from "./common.js";
 import { experimentFailure, type ExperimentFailure } from "../experiment-records.js";
 import { MAX_CAPTURE_BYTES, OUTPUT_LIMIT_EXIT_CODE } from "../process-runner.js";
 import { kimiWireShapedLine, parseKimiStreamLine } from "../session/kimi-session.js";
@@ -175,9 +175,15 @@ export function kimiResult(result: RunResult, request: RunRequest, brandHome: st
   // named on stderr. A plain non-envelope run never serializes for output
   // (kimiPlainResult keeps only the reply), so it is not refused here.
   if (request.resultJson && Buffer.byteLength(serialized) > MAX_CAPTURE_BYTES) {
-    const separator = result.stderr === "" || result.stderr.endsWith("\n") ? "" : "\n";
-    return { ...result, success: false, exitCode: OUTPUT_LIMIT_EXIT_CODE, usage, servedModel: null, stdout: "",
-      stderr: `${result.stderr}${separator}kimi result envelope exceeds the ${MAX_CAPTURE_BYTES}-byte capture bound once JSON-escaped; the reply is dropped\n` };
+    // The refusal keeps the failure fields an earlier diagnosis already
+    // set (a parse error, a missing reply) and appends the bound notice
+    // beside them, the way every other agent's bound refusal does
+    // (common.ts; review round 341 — the diagnostic used to vanish
+    // behind the output-limit exit).
+    const base = "stderr" in failureFields ? failureFields.stderr ?? "" : result.stderr;
+    return { ...result, ...failureFields, success: false, exitCode: OUTPUT_LIMIT_EXIT_CODE,
+      usage, servedModel: null, stdout: "",
+      stderr: appendDiagnostic(base, envelopeBoundLine("kimi")) };
   }
   return { ...result, stdout: serialized, usage, servedModel: null, ...experimentFields, ...failureFields };
 }

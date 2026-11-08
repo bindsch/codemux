@@ -4,10 +4,12 @@
  * bare recursive rm, so a parent swapped for a symlink after the record
  * aimed the removal into a same-named directory outside codemux's storage
  * tree. The removal now goes through the shared trusted-parent check.
+ * Review round 341, item 6: the sweep also ages a home by the newest mtime
+ * in its tree, never the top directory's own.
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertTrustedParentUnchanged, recordTrustedParent } from "../src/safe-remove.js";
@@ -35,7 +37,12 @@ describe("opencode hermetic - stale-home sweep (review round 292)", () => {
       const victimChild = join(victim, "run-999999999-gone");
       mkdirSync(victimChild, { recursive: true });
       writeFileSync(join(victimChild, "marker.txt"), "kept\n");
+      // The victim's whole tree is backdated: the sweep ages by the newest
+      // mtime in the tree (review 341, item 6), and a fresh marker inside
+      // the victim would spare the entry before the removal this test
+      // drives ever runs — the safe direction, but not this scenario.
       utimesSync(victimChild, threeDaysAgo, threeDaysAgo);
+      utimesSync(join(victimChild, "marker.txt"), threeDaysAgo, threeDaysAgo);
       symlinkSync(victim, parent);
       const errors: string[] = [];
       const realError = console.error;
@@ -55,6 +62,39 @@ describe("opencode hermetic - stale-home sweep (review round 292)", () => {
       // parent instead of making a directory through it (review round 295).
       expect(() => assertTrustedParentUnchanged(record, "the hermetic home parent"))
         .toThrow("was replaced after it was recorded; refusing to use it");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a home whose tree holds a fresh write is not swept by its top directory's age (review 341, item 6)", () => {
+    // The redirected XDG writes land in subdirectories that never move the
+    // top directory's mtime, so an orphaned OpenCode child writing only
+    // under home/.local/... had its HOME deleted mid-run once the top
+    // directory passed the two-day age. The sweep ages by the newest mtime
+    // in the tree (hermetic-sweep.ts), the codex sweep's rule.
+    const root = mkdtempSync(join(tmpdir(), "cmx-ocsw2-"));
+    try {
+      const parent = join(root, "data", ".codemux-hermetic");
+      mkdirSync(parent, { recursive: true });
+      const threeDaysAgo = new Date(Date.now() - 3 * 86_400_000);
+      // A dead-owner home, old at the top, with one fresh write deep under
+      // the redirected XDG data tree: the exact orphan the old top-dir age
+      // deleted.
+      const orphan = join(parent, "run-999999998-orphan");
+      mkdirSync(join(orphan, ".local", "share", "opencode"), { recursive: true });
+      writeFileSync(join(orphan, ".local", "share", "opencode", "state.json"), "{}\n");
+      utimesSync(orphan, threeDaysAgo, threeDaysAgo);
+      // A control: a dead-owner home with nothing fresh anywhere is swept.
+      const gone = join(parent, "run-999999997-gone");
+      mkdirSync(gone);
+      writeFileSync(join(gone, "f"), "old\n");
+      utimesSync(join(gone, "f"), threeDaysAgo, threeDaysAgo);
+      utimesSync(gone, threeDaysAgo, threeDaysAgo);
+      const record = recordTrustedParent(parent);
+      sweepStaleHomes(parent, record);
+      expect(existsSync(join(orphan, ".local", "share", "opencode", "state.json"))).toBe(true);
+      expect(existsSync(gone)).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

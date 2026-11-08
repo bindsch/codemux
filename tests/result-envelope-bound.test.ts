@@ -10,6 +10,7 @@ import {
   claudeFamilyResult,
   codexResult,
 } from "../src/result-envelope.js";
+import { kimiResult } from "../src/result-envelope/kimi.js";
 import { MAX_CAPTURE_BYTES } from "../src/process-runner.js";
 import type { RunRequest } from "../src/types.js";
 import {
@@ -88,6 +89,24 @@ describe("the envelope's own size (review round 127)", () => {
     });
     expect(past.servedModel).toBeNull();
   });
+  test("kimi: an oversized envelope that was already diagnosed keeps its diagnostic beside the bound notice (round 341)", () => {
+    const request: RunRequest = { agent: "kimi", prompt: "p", resultJson: true };
+    // One capture, two failures: the malformed second line is diagnosed
+    // while parsing, and the huge first event pushes the serialized
+    // envelope past the bound. The refusal keeps the diagnostic and
+    // appends the bound notice beside it, as every other agent's does.
+    const oversized = "x".repeat(MAX_CAPTURE_BYTES);
+    const stdout = `${JSON.stringify({ role: "tool", tool_call_id: "call-1", content: oversized })}\n{broken\n`;
+    const past = kimiResult(finished(stdout), request, "brand-home");
+    expect(past.stdout).toBe("");
+    expect(past.success).toBe(false);
+    expect(past.exitCode).toBe(125);
+    expect(past.stderr).toContain("codemux: kimi stream-json line 2:");
+    expect(past.stderr).toContain(
+      `kimi result envelope exceeds the ${MAX_CAPTURE_BYTES}-byte capture bound once JSON-escaped; the reply is dropped`
+    );
+  });
+
   const codexWith = (text: string) =>
     codexStream([
       { type: "thread.started", thread_id: "0192b8d4-4d4f-7c4a-9d0e-6f5a4b3c2d1e" },

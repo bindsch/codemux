@@ -297,19 +297,56 @@ export class BoundedOutboundQueue {
   }
 }
 
+/** The final flush's floor: enough for an empty or near-empty queue to
+ * settle on a sink that answers at memory speed. */
+export const FINAL_FLUSH_BASE_MS = 1_000;
+
+/** Per queued event: each one is a sink round trip, and a slow-but-live
+ * sink (a caller draining a full pipe in chunks) needs real time per
+ * line, not per byte alone. */
+export const FINAL_FLUSH_PER_EVENT_MS = 5;
+
+/** Per MiB queued: fat lines (a capture-capped harness event can be
+ * 16 MiB) move as fast as the reader drains, which is bytes per second,
+ * not events per second. */
+export const FINAL_FLUSH_PER_MIB_MS = 256;
+
+/** The ceiling whatever the backlog: a dead sink (a reader that never
+ * comes back) fails within it, so the end path stays bounded. */
+export const FINAL_FLUSH_CAP_MS = 15_000;
+
+/** The give-up the final flush actually uses (review round 341): a
+ * fixed 1 s abandoned a live sink that still had a large backlog to
+ * push, reporting the final event undelivered while the sink was
+ * draining in good faith. The budget scales with what is queued at the
+ * moment of the wait — a floor, a per-event and per-MiB allowance, and
+ * a hard cap — so a small backlog keeps the old 1 s and no backlog can
+ * buy more than the cap. */
+export function finalFlushBudgetMs(queue: BoundedOutboundQueue): number {
+  const { events, bytes } = queue.pending;
+  const scaled =
+    FINAL_FLUSH_BASE_MS +
+    events * FINAL_FLUSH_PER_EVENT_MS +
+    (bytes / (1024 * 1024)) * FINAL_FLUSH_PER_MIB_MS;
+  return Math.min(Math.ceil(scaled), FINAL_FLUSH_CAP_MS);
+}
+
 /**
  * Wait for the queue's final flush with a bounded give-up (§4.6): true
  * only when every queued line — `session_ended` included — actually
- * reached the sink. On timeout the queue is abandoned, which is what
- * lets `finish` both report the final event as undelivered (exit-code
- * honesty) and still resolve: without the abandon, the flush poll loop
- * would wait on a sink that never settles and hold the process open
- * after it already gave up (found by review live3). A sink failure
- * during the flush is false, not a rejection riding the end path.
+ * reached the sink. The default budget is `finalFlushBudgetMs` on the
+ * backlog queued when the wait starts; an explicit `giveUpMs` overrides
+ * it (tests and callers that want their own bound). On timeout the
+ * queue is abandoned, which is what lets `finish` both report the final
+ * event as undelivered (exit-code honesty) and still resolve: without
+ * the abandon, the flush poll loop would wait on a sink that never
+ * settles and hold the process open after it already gave up (found by
+ * review live3). A sink failure during the flush is false, not a
+ * rejection riding the end path.
  */
 export async function awaitFinalFlush(
   queue: BoundedOutboundQueue,
-  giveUpMs: number = 1_000
+  giveUpMs: number = finalFlushBudgetMs(queue)
 ): Promise<boolean> {
   // The rejection handler is attached before the race so a failure that
   // lands after the give-up won is still consumed, never an unhandled

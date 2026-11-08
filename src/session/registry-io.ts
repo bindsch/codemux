@@ -33,8 +33,20 @@ export { REGISTRY_FILE_MODE, registryPlacementProblem, resolveRegistryPath } fro
 import { REGISTRY_FILE_MODE } from "./registry-placement.js";
 
 export const REGISTRY_DIR_MODE = 0o700;
-const LOCK_RETRY_MS = 250;
-const LOCK_ATTEMPTS = 40;
+export const LOCK_RETRY_MS = 250;
+export const LOCK_ATTEMPTS = 40;
+
+/** The lock's own contention failure: the wait budget ran out behind a
+ * live (or unjudgeable) writer. Typed so `updateRegistry` can classify
+ * the update as busy — the one transient class the off-stream session
+ * start retries — instead of guessing from the message (review round
+ * 341). */
+export class LockBusyError extends Error {
+  constructor(lockPath: string) {
+    super(`the session registry lock ${lockPath} is held by a live writer`);
+    this.name = "LockBusyError";
+  }
+}
 
 /** Synchronous, timer-free sleep for the lock's bounded retry loop. */
 function sleepSync(ms: number): void {
@@ -389,7 +401,7 @@ export function acquireLock(lockPath: string, options: LockOptions = {}): LockHa
     attempt += 1;
     if (attempt < attempts) sleepSync(retryMs + Math.floor(Math.random() * retryMs));
   }
-  throw new Error(`the session registry lock ${lockPath} is held by a live writer`);
+  throw new LockBusyError(lockPath);
 }
 
 /** Write the whole payload and flush it to disk before the rename: a

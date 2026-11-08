@@ -7,6 +7,7 @@
 
 import { readFileSync } from "node:fs";
 import { markOverflowed } from "./usage.js";
+import { utf8ByteLength } from "./stdin-writer.js";
 import type { AutonomyLevel, ReasoningEffort, ResultUsageBlock } from "../types.js";
 import { reportedTokenCount, safeTokenSum } from "../result-envelope/common.js";
 import { isRecord } from "./codex-parse-facts.js";
@@ -243,6 +244,21 @@ export function buildSteerRequest(
     expectedTurnId,
     input: texts.map((text) => ({ type: "text", text, text_elements: [] })),
   });
+}
+
+/** The serialized bytes one steer text adds to a batched frame: the exact
+ * element buildSteerRequest spells above (one element literal, so the
+ * frame and this count cannot drift) plus the "," JSON.stringify joins it
+ * with when it is not the first element. The frame is a linear join of
+ * these elements, so the batching probe keeps a running byte count
+ * instead of re-serializing the whole batch per increment — which was
+ * quadratic up to the 256-line / 32 MiB buffer caps and stalled harness
+ * reads in one synchronous block (review round 341). */
+export function steerElementBytes(text: string, joined: boolean): number {
+  return (
+    utf8ByteLength(JSON.stringify({ type: "text", text, text_elements: [] })) +
+    (joined ? 1 : 0)
+  );
 }
 
 export function buildInterruptRequest(

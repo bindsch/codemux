@@ -17,14 +17,18 @@ export function codexWarningNote(message: string): string {
 
 /** A reroute notice's shape: `model rerouted: <from> -> <to> (<reason>)`,
  * the message codex formats for a rerouted model (ModelRerouted in
- * exec_events.rs; the reason is Debug-formatted upstream), matched as one
- * unit so a reason containing parentheses still parses. The one spelling
+ * exec_events.rs; the reason is Debug-formatted upstream). The model
+ * tokens carry no spaces or parentheses (`(\S+)`), so neither group can
+ * bleed into the reason, and the reason is everything inside the OUTER
+ * parentheses (review round 341: a greedy `(.+)` second group read a
+ * reason like "config fallback (secondary)" as part of the model name).
+ * The one spelling
  * that separates a reroute notice from the warnings it shares an item
  * shape with — both arrive as completed `error` items, and only the
  * notice attributes a model, so only it needs a turn to attribute onto
  * (round al35, correctness major 1). */
 function parseRerouteNotice(message: string): RegExpExecArray | null {
-  return /^model rerouted: (.+) -> (.+) \((.*)\)$/.exec(message);
+  return /^model rerouted: (\S+) -> (\S+) \((.*)\)$/.exec(message);
 }
 
 /** The rendered note's UTF-8 size, newline included — the plain fold's
@@ -259,9 +263,10 @@ export class CodexEventReducer {
           // A reroute notice is the one error item this reduction reads:
           // codex reports a rerouted model as a completed `error` item
           // (ModelRerouted in exec_events.rs), with the message formatted
-          // `model rerouted: <from> -> <to> (<reason>)` -- the reason is
-          // Debug-formatted upstream, so the parenthetical is matched as a
-          // unit and a reason containing parentheses still parses
+          // `model rerouted: <from> -> <to> (<reason>)` -- the model tokens
+          // carry no spaces or parentheses and the reason is everything
+          // inside the outer parentheses, so a Debug-formatted reason with
+          // parentheses of its own still parses whole
           // (parseRerouteNotice above, shared with the outside-a-turn
           // guard, which needs the same spelling to tell a warning from a
           // notice). The last

@@ -35,7 +35,7 @@ import { SessionStopEscalation } from "./stop-escalation.js";
 import { awaitSpawnWithGrace, holdAbandonedSpawn } from "./spawn-wait.js";
 import { buildEvent } from "./protocol.js";
 import {
-  recordSessionStart,
+  recordSessionStartOffStream,
   releaseSessionRecord,
   touchSession,
 } from "./registry.js";
@@ -412,37 +412,58 @@ export abstract class OpenCodeDriverCore {
   }
 
   // --- helpers ---------------------------------------------------------------
-  protected recordStart(): void {
-    if (this.options.registryPath === null || this.sessionId === null) return;
-    const outcome = recordSessionStart(this.options.registryPath, {
-      id: this.sessionId,
-      agent: "opencode",
-      cwd: this.options.cwd,
-      hermetic: this.options.hermetic,
-      harness_home: this.options.harnessHome,
-      model: this.options.model ?? null,
-      autonomy: this.options.autonomy,
-      sandboxed: this.options.sandboxed,
-      sandbox_trust: this.options.sandboxTrust,
-      sandbox_no_net: this.options.sandboxNoNet,
-      sandbox_scrub_env: this.options.sandboxScrubEnv,
-      sandbox_block: [...(this.options.sandboxBlock ?? [])],
-      pass_env: [...this.options.passEnv],
-      playwright_mcp: false,
-      provider_base_url: this.options.providerBaseUrl,
-      project_settings: false,
-    });
-    if (!outcome.ok) {
-      // An untracked live session must not run (§4.8).
-      this.emitError(
-        true,
-        "codemux",
-        `cannot record the session in the registry: ${outcome.error}`
-      );
-      void this.finish("crash", 1);
+  /** The start record, one lock attempt at a time: a busy lock retries on
+   * a timer off the turn's output stream (review round 341), never the
+   * synchronous full-budget wait; `onRecorded` runs once the verdict is
+   * in. A null registryPath records nothing and reports success at once;
+   * a null session id reports nothing (the old guard's exact behavior). */
+  protected recordStart(onRecorded: () => void): void {
+    if (this.options.registryPath === null) {
+      onRecorded();
       return;
     }
-    this.registryRecorded = true;
+    if (this.sessionId === null) return;
+    recordSessionStartOffStream(
+      this.options.registryPath,
+      {
+        id: this.sessionId,
+        agent: "opencode",
+        cwd: this.options.cwd,
+        hermetic: this.options.hermetic,
+        harness_home: this.options.harnessHome,
+        model: this.options.model ?? null,
+        autonomy: this.options.autonomy,
+        sandboxed: this.options.sandboxed,
+        sandbox_trust: this.options.sandboxTrust,
+        sandbox_no_net: this.options.sandboxNoNet,
+        sandbox_scrub_env: this.options.sandboxScrubEnv,
+        sandbox_block: [...(this.options.sandboxBlock ?? [])],
+        pass_env: [...this.options.passEnv],
+        playwright_mcp: false,
+        provider_base_url: this.options.providerBaseUrl,
+        project_settings: false,
+      },
+      () => this.settled,
+      (outcome) => {
+        if (!outcome.ok) {
+          // An untracked live session must not run (§4.8).
+          this.emitError(
+            true,
+            "codemux",
+            `cannot record the session in the registry: ${outcome.error}`
+          );
+          void this.finish("crash", 1);
+          return;
+        }
+        this.registryRecorded = true;
+        onRecorded();
+      },
+      (error) =>
+        console.error(
+          `codemux: the registry lock is busy recording session ${this.sessionId} ` +
+            `(${error}); retrying in the background`
+        )
+    );
   }
 
   /** The turn path's best-effort activity stamp: single-attempt lock,

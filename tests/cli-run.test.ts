@@ -134,6 +134,30 @@ describe("CLI - Run validation", () => {
     }
   });
 
+  test("an unsandboxed run drops --sandbox-no-net after its warning instead of refusing at launch (round 341)", async () => {
+    // The request build once claimed sandboxNoNet on an unsandboxed run:
+    // the launcher's direct branch ignored it (a restricted-looking
+    // request running unrestricted), and once it began refusing, the CLI
+    // would have failed the run the warning had promised to ignore. The
+    // claim now rides only a sandboxed run, so the run completes and the
+    // warning stays truthful.
+    const fake = createFakeBinaryEnv({
+      claude: "printf 'ran\\n'",
+    });
+    try {
+      const result = await runCli(
+        ["run", "-a", "claude", "--no-sandbox", "--auto", "high", "--sandbox-no-net", "-p", "test"],
+        fake.env
+      );
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("ran\n");
+      expect(result.stderr).toContain("sandbox policy flags require --sandbox, ignoring");
+      expect(result.stderr).not.toContain("cannot honor sandbox policy flags");
+    } finally {
+      fake.cleanup();
+    }
+  });
+
   test("Playwright MCP requires an explicit sandboxed CLI grant", async () => {
     const fake = createFakeBinaryEnv({
       claude: "exit 0",

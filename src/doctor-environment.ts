@@ -14,6 +14,8 @@ import {
   parseVersion,
   SCODE_MINIMUM_VERSION,
 } from "./cli-runtime.js";
+import { extractScodeVersion } from "./cli-runtime/scode.js";
+import { compareVersions } from "./harness-compatibility.js";
 import { remedyFor } from "./doctor-remedies.js";
 import type { EnvironmentRow, HarnessRow, RowSeverity } from "./doctor-model.js";
 import { resolveTrustedExecutable } from "./executable-security.js";
@@ -24,6 +26,23 @@ import { readUsagemuxVersion, USAGEMUX_MINIMUM_VERSION } from "./usage.js";
 import { escapeForTerminal } from "./usage-protocol.js";
 import type { AgentId, CodemuxConfig } from "./types.js";
 
+/** Whether the scode facts fall below a floor, by the launch gate's rule:
+ * the full token when the facts carry one (a prerelease of the floor is
+ * below it), the numeric triple otherwise (facts built elsewhere). */
+export function scodeBelowFloor(facts: ScodeFacts, floor: string): boolean {
+  if (facts.semver) {
+    try {
+      return compareVersions(facts.semver, floor) < 0;
+    } catch {
+      // An uncomparable token: the gate refuses it; the row says too old.
+      return true;
+    }
+  }
+  if (facts.version === null) return true;
+  const minimum = parseVersion(floor);
+  return minimum !== null && !isVersionAtLeast(facts.version, minimum);
+}
+
 export interface ScodeFacts {
   present: boolean;
   /** The trusted scode path, when one resolved. */
@@ -32,6 +51,10 @@ export interface ScodeFacts {
   version: readonly [number, number, number] | null;
   /** The version as printed, for rows and floors. */
   label: string;
+  /** The version token with its prerelease suffix, when one was read: the
+   * floor comparisons use it the way the launch gate does, so a
+   * prerelease of a floor is below the floor on both (review round 344). */
+  semver?: string | null;
   /** Why the facts are missing, when they are. */
   issue: string | null;
 }
@@ -66,10 +89,11 @@ export const readScodeFacts = async (
       return { present: true, path: trusted, version: null, label: "unreadable", issue: `scode --version exited ${result.exitCode}` };
     }
     const version = parseVersion(output);
-    if (version === null) {
+    const semver = extractScodeVersion(output);
+    if (version === null || semver === null) {
       return { present: true, path: trusted, version: null, label: "unreadable", issue: `could not parse scode version '${output}'` };
     }
-    return { present: true, path: trusted, version, label: version.join("."), issue: null };
+    return { present: true, path: trusted, version, label: semver, semver, issue: null };
   } catch (error) {
     return {
       present: true,
@@ -251,8 +275,7 @@ export const scodeEnvironmentRow = async (facts: ScodeFacts): Promise<Environmen
       remedy: "reinstall scode (brew reinstall bindsch/tap/scode)",
     };
   }
-  const minimum = parseVersion(SCODE_MINIMUM_VERSION)!;
-  if (!isVersionAtLeast(facts.version, minimum)) {
+  if (scodeBelowFloor(facts, SCODE_MINIMUM_VERSION)) {
     return {
       state: "SANDBOX-TOO-OLD",
       severity: "broken",

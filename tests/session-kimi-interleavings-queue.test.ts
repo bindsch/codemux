@@ -114,7 +114,7 @@ describe("kimi session interleavings (round al28)", () => {
       expect(late.alive).toBe(false); // the default child dies to the stop
       const code = await Promise.race([
         rig.code,
-        Bun.sleep(5_000).then(() => {
+        Bun.sleep(12_000).then(() => {
           throw new Error("run() never resolved after the parked fatal's end");
         }),
       ]);

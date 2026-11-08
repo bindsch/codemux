@@ -227,27 +227,26 @@ export abstract class OpenCodeTurns extends OpenCodeDriverCore {
 
   /** The deferred session_started (the agy pattern): the FSM has already
    * left `starting`; this is the caller-facing announcement and the
-   * registry record. Codemux-originated, so raw is null. */
+   * registry record. Codemux-originated, so raw is null. The record runs
+   * off the turn's output stream (review round 341): the announcement
+   * follows its verdict, which a busy lock delivers late from a timer
+   * retry instead of freezing the event loop mid-turn. */
   protected announceSessionStarted(): void {
-    this.recordStart();
-    if (
-      this.settled ||
-      (this.options.registryPath !== null && !this.registryRecorded)
-    ) {
-      return;
-    }
-    this.emit(
-      buildEvent(++this.seq, this.sessionIdOrEmpty(), "session_started", null, {
-        agent: "opencode",
-        model: this.options.model ?? null,
-        autonomy: this.options.autonomy,
-        cwd: this.options.cwd,
-        sandboxed: this.options.sandboxed,
-        sandbox_trust: this.options.sandboxTrust,
-        capabilities: this.capabilities,
-        protocol: "codemux-live-session/1",
-      })
-    );
+    this.recordStart(() => {
+      if (this.settled) return;
+      this.emit(
+        buildEvent(++this.seq, this.sessionIdOrEmpty(), "session_started", null, {
+          agent: "opencode",
+          model: this.options.model ?? null,
+          autonomy: this.options.autonomy,
+          cwd: this.options.cwd,
+          sandboxed: this.options.sandboxed,
+          sandbox_trust: this.options.sandboxTrust,
+          capabilities: this.capabilities,
+          protocol: "codemux-live-session/1",
+        })
+      );
+    });
   }
 
   /** Assign the next codemux turn id, open it in the FSM, and reset the
