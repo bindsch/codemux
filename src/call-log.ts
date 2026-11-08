@@ -17,17 +17,19 @@
  * the write's returned byte count is checked and a short write is
  * reported (review round 80); with no lock held nothing repairs the
  * file, so the reader marks the partial line malformed.
- * The file is created 0600 and tightened when it arrives with wider
- * permissions, and the append opens it without following a final symlink
- * (O_NOFOLLOW) and only after fstat confirms a regular file on the open
- * descriptor itself — a planted link or device is refused, never written
- * through. The directory is created 0700, but tightening an existing
- * directory is scoped to the default state directory alone: a directory
- * the operator named through `CODEMUX_CALL_LOG` — the working directory,
- * `$HOME`, `/tmp` — keeps the permissions it has (chmod on a shared
- * directory fails with EPERM, and a directory swapped for a symlink must
- * not be chmod'd through its link; `lstat` guards both), and a failure to
- * tighten never stops the append. A ledger failure never fails the run:
+ * The file is created 0600 and tightened when it arrives with wider (or
+ * narrower) permissions, and the append opens it without following a final
+ * symlink (O_NOFOLLOW) and only after fstat confirms a regular file on the
+ * open descriptor itself — a planted link or device is refused, never
+ * written through. The directory is created 0700, but tightening an
+ * existing directory is scoped to the default state directory alone: a
+ * directory the operator named through `CODEMUX_CALL_LOG` — the working
+ * directory, `$HOME`, `/tmp` — keeps the permissions it has (chmod on a
+ * shared directory fails with EPERM), and a failure to tighten never
+ * stops the append. Tightening (call-log-tighten.ts) opens the entry
+ * without following a final symlink and states the mode on the open
+ * descriptor, so an entry swapped for a link between the append and the
+ * tighten is never chmod'd through. A ledger failure never fails the run:
  * the first failure warns on stderr, later ones stay silent. Nothing here
  * writes to stdout — `run`'s stdout contract is the model's final message
  * and nothing else.
@@ -41,7 +43,6 @@
  */
 
 import {
-  chmodSync,
   closeSync,
   constants,
   fstatSync,
@@ -54,6 +55,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { AgentId, AutonomyLevel, ResultUsageBlock } from "./types.js";
 import { MAX_CALL_LOG_LINE_BYTES } from "./call-log-reader.js";
+import { tightenDirectory, tightenFile } from "./call-log-tighten.js";
 export {
   readCallLog,
   streamCallLog,
@@ -361,11 +363,12 @@ export function appendCallRecord(
     } finally {
       closeSync(fd);
     }
-    // Creation applies the restrictive mode; an existing file that arrived
-    // with group or other access is tightened instead. tightenFile lstats
-    // the path and chmods a regular file only, so a link swapped in after
-    // the write is never chmod'd through — and a tightening failure never
-    // undoes the appended record.
+    // Creation applies the restrictive mode; a file that arrived with
+    // wider (or umask-narrowed) permissions is stated instead.
+    // tightenFile opens without following a final symlink and fchmods the
+    // open descriptor, so a link swapped in after the write is never
+    // chmod'd through — and a tightening failure never undoes the
+    // appended record.
     tightenFile(path);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -381,38 +384,6 @@ function warnOnce(message: string): void {
   if (warnedAboutLog) return;
   warnedAboutLog = true;
   console.error(message);
-}
-
-/** Tightens one directory codemux owns: one this append just created, or
- * the default state directory. `lstat` refuses a symlink (chmod through a
- * swapped link would strip permissions from the link's target) and any
- * failure is swallowed — the append that follows must proceed even where
- * chmod cannot succeed (a shared directory such as /tmp, review ul2). */
-function tightenDirectory(path: string, owned: boolean): void {
-  if (!owned) return;
-  try {
-    const stat = lstatSync(path);
-    if (!stat.isDirectory()) return;
-    const mode = stat.mode & 0o777;
-    if ((mode & 0o077) !== 0) chmodSync(path, mode & ~0o077);
-  } catch {
-    // Tightening is hygiene; the append below proceeds regardless.
-  }
-}
-
-/** Same rule for the file: lstat first, and a failure to tighten never
- * reaches the caller — the record is already appended by the time this
- * runs. */
-function tightenFile(path: string): void {
-  try {
-    const stat = lstatSync(path);
-    if (!stat.isFile()) return;
-    const mode = stat.mode & 0o777;
-    if ((mode & 0o077) !== 0) chmodSync(path, mode & ~0o077);
-  } catch {
-    // The record is already on disk; loose file permissions are the
-    // operator's to fix, not a reason to warn or fail.
-  }
 }
 
 /** The fields every session-side record shares: what the driver knows about

@@ -1,5 +1,6 @@
 import { describe, test, expect, spyOn } from "bun:test";
 import * as adaptersIndex from "../src/adapters/index.js";
+import * as fs from "node:fs";
 import { AGENT_IDS, getAdapter } from "../src/adapters/index.js";
 import { CURSOR_ENTRY_ENV, CursorAdapter } from "../src/adapters/cursor.js";
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -8,6 +9,7 @@ import * as os from "node:os";
 import { join } from "node:path";
 import {
   buildEffectiveScodeCommands,
+  scratchCwdUnder,
   verificationCwd,
   verifyAgentWiring,
   verifyAgentsWiring,
@@ -260,6 +262,53 @@ describe("Verifier", () => {
       expect(efforts.every((effort) => effort === undefined)).toBe(true);
     } finally {
       registry.mockRestore();
+    }
+  });
+});
+
+describe("the scratch cwd refuses a name swapped mid-setup (round 401, item 10)", () => {
+  test("a fixed path swapped for a symlink between the trusted check and the marker is not reused", () => {
+    // The old code lstat'd the fixed path, then created the `.git` marker
+    // and handed the path to the run — a same-uid writer with access to
+    // the root could swap the name for a symlink inside that window and
+    // receive the marker (or the run's cwd) through it. The revalidation
+    // refuses the reused name and falls back to a fresh mkdtemp.
+    const root = mkdtempSync(join(tmpdir(), "codemux-verify-swap-"));
+    const uid = typeof process.getuid === "function" ? process.getuid() : null;
+    const fixed = join(root, `codemux-verify-${uid ?? "u"}`);
+    const evil = join(root, "evil");
+    try {
+      mkdirSync(evil, { mode: 0o700 });
+      // The first evaluation creates the fixed path and its marker.
+      expect(scratchCwdUnder(root)).toBe(fixed);
+      const realLstat = fs.lstatSync;
+      const realRename = fs.renameSync;
+      let statCalls = 0;
+      const lstat = spyOn(fs, "lstatSync").mockImplementation(((path: fs.PathLike, options?: fs.StatOptions) => {
+        if (String(path) === fixed) {
+          statCalls += 1;
+          // The third look at the fixed path (the revalidation, after the
+          // existed and trusted checks) finds the name swapped: the
+          // attacker took the directory and left a symlink behind.
+          if (statCalls === 3) {
+            realRename(fixed, join(root, "stolen"));
+            fs.symlinkSync(evil, fixed, "dir");
+          }
+        }
+        return realLstat(path, options);
+      }) as typeof fs.lstatSync);
+      try {
+        const dir = scratchCwdUnder(root);
+        expect(dir).not.toBe(fixed);
+        // The fallback is a fresh private scratch with its own marker.
+        expect(existsSync(join(dir, ".git"))).toBe(true);
+        // Nothing was created through the swapped link.
+        expect(fs.readdirSync(evil)).toEqual([]);
+      } finally {
+        lstat.mockRestore();
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

@@ -8,7 +8,6 @@ import {
   mkdirSync,
   readdirSync,
   realpathSync,
-  renameSync,
   rmSync,
   writeFileSync,
   lstatSync,
@@ -17,6 +16,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 
 import { readUtf8FileBounded } from "../file-io.js";
+import { renameIntoPlaceSync, stageExclusiveSync } from "../fs-durable.js";
 import { UNREADABLE_OWNER_STALE_MS, pidProbeAlive } from "../process-table.js";
 import { carriesRefreshToken, claudeOauthObject } from "./oauth.js";
 
@@ -34,11 +34,15 @@ function mergedCredential(current: string, claudeAiOauth: Record<string, unknown
  * (staging file + rename, 0600), re-checking immediately before the rename
  * that the WHOLE file is still exactly `current` — another writer (Claude
  * Code updating co-stored mcpOAuth, or deleting the file) must not be
- * clobbered. "conflict" means the file changed; "vanished" that it was
- * deleted (it is left deleted, never recreated); "error" that the write
- * itself failed. The residual window between the re-check and the rename is
- * microseconds, and a lost write self-heals on the next launch; nothing in
- * that window can reach the Keychain or the grant. */
+ * clobbered. The staging file is flushed to disk before the rename (the
+ * shared staging discipline, src/fs-durable.ts): a crash or power loss in
+ * the window could otherwise publish a torn mirror Claude Code then fails
+ * auth on (round 401, item 6). "conflict" means the file changed;
+ * "vanished" that it was deleted (it is left deleted, never recreated);
+ * "error" that the write itself failed. The residual window between the
+ * re-check and the rename is microseconds, and a lost write self-heals on
+ * the next launch; nothing in that window can reach the Keychain or the
+ * grant. */
 /** The mirror's size bound, read and written alike: a file over it is
  * refused unread (a child-writable directory can have enlarged it), and a
  * mirror that would exceed it is never written, or the next launch could
@@ -68,6 +72,10 @@ export function writeMirror(
     if (backup === null) return "error";
   }
   const staging = `${target}.${process.pid}.tmp`;
+  // Exclusive create, mode stated on the descriptor, whole payload, fsync:
+  // the shared staging discipline (fs-durable.ts). The second attempt is
+  // for a stray entry at the staging name — never a directory we own.
+  const stage = (): void => stageExclusiveSync(staging, `${merged}\n`, 0o600);
   // The backup exists for the rewrite. When the rewrite does not happen and
   // the file still holds its token (conflict, error), the copy is redundant
   // and is removed again, so repeated refusals cannot pile up copies. When
@@ -87,10 +95,10 @@ export function writeMirror(
   };
   try {
     try {
-      writeFileSync(staging, `${merged}\n`, { flag: "wx", mode: 0o600 });
+      stage();
     } catch {
       removeQuietly(staging); // a symlink/stray entry — never a directory we own
-      writeFileSync(staging, `${merged}\n`, { flag: "wx", mode: 0o600 });
+      stage();
     }
     let live: string;
     try {
@@ -112,7 +120,7 @@ export function writeMirror(
       kept("conflict");
       return "conflict";
     }
-    renameSync(staging, target);
+    renameIntoPlaceSync(staging, target);
     if (backup !== null) pruneOlderBackups(backup);
     kept("written");
     return "written";

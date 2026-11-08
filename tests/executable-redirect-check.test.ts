@@ -194,12 +194,12 @@ describe("executable redirects (review 331, items 4 and 5)", () => {
       for (const value of [join(stage.target, "..", "missing"), "redirected-opencode", stage.target]) {
         if (value === stage.target) chmodSync(stage.target, 0o777);
         expect(() =>
-          launchRedirectCheck("opencode", { ...stage.fake.env, OPENCODE_BIN_PATH: value }, ["OPENCODE_BIN_PATH"], stage.cwd)
+          launchRedirectCheck("opencode", { ...stage.fake.env, OPENCODE_BIN_PATH: value }, stage.cwd)
         ).toThrow(/does not name one trusted absolute executable/);
       }
       chmodSync(stage.target, 0o755);
       expect(
-        launchRedirectCheck("opencode", { ...stage.fake.env, OPENCODE_BIN_PATH: stage.target }, ["OPENCODE_BIN_PATH"], stage.cwd)
+        launchRedirectCheck("opencode", { ...stage.fake.env, OPENCODE_BIN_PATH: stage.target }, stage.cwd)
       ).not.toBeNull();
     } finally {
       stage.fake.cleanup();
@@ -247,14 +247,20 @@ describe("executable redirects (review 331, items 4 and 5)", () => {
     }
   });
 
-  test("launchRedirectCheck answers null with no redirect active", () => {
+  test("launchRedirectCheck answers null only when the environment carries no redirect (round 401, item 9)", () => {
+    // The scan reads the environment itself, whatever channel supplied the
+    // name: a redirect set by the adapter's own env (not `--pass-env`) is
+    // as active as a passed-through one. Only an unset or empty value
+    // answers null.
     const stage = stageRedirect(false);
     try {
       expect(
+        launchRedirectCheck("opencode", stage.fake.env, stage.cwd)
+      ).toBeNull();
+      expect(
         launchRedirectCheck(
           "opencode",
-          { ...stage.fake.env, OPENCODE_BIN_PATH: stage.target },
-          [],
+          { ...stage.fake.env, OPENCODE_BIN_PATH: "" },
           stage.cwd
         )
       ).toBeNull();
@@ -262,10 +268,78 @@ describe("executable redirects (review 331, items 4 and 5)", () => {
         launchRedirectCheck(
           "opencode",
           { ...stage.fake.env, OPENCODE_BIN_PATH: stage.target },
-          ["OPENCODE_BIN_PATH"],
           stage.cwd
         )
       ).not.toBeNull();
+    } finally {
+      stage.fake.cleanup();
+      rmSync(join(stage.target, ".."), { recursive: true, force: true });
+      rmSync(stage.cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+/** An adapter whose environment view carries no redirect but whose
+ * getEnv injects one — the adapter channel the scan used to miss. */
+class InjectedRedirectAdapter extends ClaudeAdapter {
+  override readonly id = "opencode" as const;
+  constructor(env: Record<string, string>) {
+    super(env);
+  }
+  override prepareRun() {
+    return {};
+  }
+  override buildRunCommand() {
+    return ["opencode", "run"];
+  }
+  override processRunResult(raw: RunResult) {
+    return raw;
+  }
+  override getEnv() {
+    return { OPENCODE_BIN_PATH: "./elsewhere/opencode" };
+  }
+}
+
+describe("executable redirects (review 401, item 9)", () => {
+  test("the gate refuses a redirect injected by the adapter env channel", async () => {
+    // The scan used to filter only the `--pass-env` list, so a redirect
+    // name that arrived through getEnv — kept in the child's environment
+    // by sanitizeEnvironment — bypassed the gate, the version check, and
+    // the pre-spawn pin entirely. The gate now scans the built execution
+    // environment, whatever channel supplied the name: an unresolvable
+    // value is refused here with the passthrough list empty.
+    const stage = stageRedirect(false);
+    try {
+      const adapter = new InjectedRedirectAdapter(stage.fake.env);
+      const built = adapter.buildExecutionEnv(adapter.getEnv(), []);
+      expect(built.OPENCODE_BIN_PATH).toBe("./elsewhere/opencode");
+      await expect(
+        assertHarnessSupported("opencode", "opencode", stage.cwd, built, "low", false, [])
+      ).rejects.toThrow("does not name one trusted absolute executable");
+    } finally {
+      stage.fake.cleanup();
+      rmSync(join(stage.target, ".."), { recursive: true, force: true });
+      rmSync(stage.cwd, { recursive: true, force: true });
+    }
+  });
+
+  test("a direct run refuses an adapter-injected redirect it cannot resolve", async () => {
+    // The same channel on the launch path: pre-fix the pin read the
+    // passthrough list, saw no redirect, and spawned the launcher, which
+    // exec'd a value nobody had resolved or pinned. The launch now scans
+    // the child's environment and refuses before the spawn.
+    const stage = stageRedirect(false);
+    try {
+      await expect(
+        launchRunRequest(
+          new InjectedRedirectAdapter(stage.fake.env),
+          {
+            agent: "opencode", prompt: "probe", cwd: stage.cwd, autonomy: "high",
+            sandboxed: false, passthroughEnv: [],
+          },
+          { sandbox: false, requestedAutonomy: "high", cwd: stage.cwd }
+        )
+      ).rejects.toThrow("does not name one trusted absolute executable");
     } finally {
       stage.fake.cleanup();
       rmSync(join(stage.target, ".."), { recursive: true, force: true });

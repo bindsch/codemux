@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { resolveScodeExecutable } from "../src/cli-runtime.js";
 import { signalProcess } from "../src/process-runner.js";
 import { createTerminationTarget } from "../src/process-tree.js";
+import * as processTable from "../src/process-table.js";
 import { buildClaudeSessionCommand } from "../src/session/claude-session.js";
 import { spawnSessionChild } from "../src/session/spawn.js";
 import { trackFixtureProcess } from "./setup.ts";
@@ -351,16 +352,26 @@ describe("signal delivery past an observed exit (al34)", () => {
           // Stand-in delivery: the group send "succeeds" without touching
           // a real process, so the spy itself can never leak a send.
         }) as unknown as typeof process.kill;
+        // A readable table with no member of the child's group: on a host
+        // that denies ps the unknown-table mode fires the group signal as
+        // it always did, so the table is synthetic here, as in
+        // tests/floor-lifts.test.ts (review round 401, item 8).
+        const table = spyOn(processTable, "readProcessTable").mockImplementation(
+          () => new Map([[1, { ppid: 0, pgid: 1, start: "s0" }]])
+        );
         process.kill = spy;
         try {
           signalProcess(target, "SIGTERM", "process");
           signalProcess(target, "SIGKILL", "tree");
         } finally {
           process.kill = realKill;
+          table.mockRestore();
         }
-        // Exactly one send flew — the tree call's group signal, negative —
-        // and the child's own pid was never addressed by either scope.
-        expect(calls).toEqual([-child.pid]);
+        // No send flew: the child's own pid was never addressed by either
+        // scope, and the tree call's group address is used after the exit
+        // only while the table lists another member of that group (review
+        // round 401, item 8) — this child left none.
+        expect(calls).toEqual([]);
       } finally {
         untrack();
         rmSync(dir, { recursive: true, force: true });

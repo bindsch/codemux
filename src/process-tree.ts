@@ -40,6 +40,15 @@ const DESCENDANT_POLL_MS = 200;
  * signaling trades precision for reach; that trade is the accepted
  * degraded mode, not a guarantee.
  *
+ * The group address itself (`-childPid`, sent by signalProcess) is used
+ * after the child's exit only when the table lists a member of that group
+ * other than the leader slot (review round 401, item 8): a process carries
+ * the child's group id only by descending from it, so a pid recycled into
+ * a stranger's group leader takes no group signal while an unremembered
+ * descendant still in the group keeps the address alive. Residual: the pid
+ * can be recycled into a new group leader between that table sample and
+ * the kill delivery — no platform offers an atomic check-and-kill.
+ *
  * KNOWN LIMITATION (accepted): the first snapshot is taken when the first
  * termination signal fires, so a descendant whose chain of parents back to
  * the child had already broken by then (its parent exited earlier in the
@@ -135,10 +144,10 @@ export function signalDescendant(pid: number, signal: NodeJS.Signals): void {
 export function signalDescendants(
   target: TerminationTarget,
   signal: NodeJS.Signals,
-  groupSignaled: number | null
+  groupSignaled: number | null,
+  table: ProcessTable = readProcessTable()
 ): number[] {
   const leftToGroup: number[] = [];
-  const table = readProcessTable();
   if (table.size === 0) {
     // Unknown, not empty: signal what is remembered, unverified, and
     // forget nothing, so a transient read failure cannot erase the

@@ -204,12 +204,15 @@ export async function prepareSessionLaunch({
 
   // The session floor, above the run contract (§4.3): the resume
   // ladder's reasoning and the permission carrier are only audited
-  // down to this build.
+  // down to this build. The gate scans the child's built environment,
+  // not process.env (round 401, item 9): an adapter-injected redirect
+  // name must be visible here, and a name that is ambient but not
+  // passed through is not.
   await assertHarnessSupported(
     agentId,
     adapter.binaryName,
     options.cwd,
-    undefined,
+    adapter.buildExecutionEnv(adapter.getEnv(), passthroughEnv),
     autonomy,
     Boolean(options.sandbox),
     passthroughEnv,

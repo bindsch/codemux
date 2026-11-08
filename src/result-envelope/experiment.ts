@@ -125,9 +125,40 @@ export function experimentFailedResult(
     if (block.model === null) servedModel = null;
     if (refused) stdout = "";
   }
-  const diagnostic = `codemux: experiment failure [${failure.code}]: ${failure.message}`;
-  // Replace an intermediate normalization diagnostic with the final cleanup outcome.
-  let stderr = raw.stderr.split("\n").filter((line) => !line.startsWith(`codemux: experiment failure [${failure.code}]: `)).join("\n");
+  const diagnosticPrefix = `codemux: experiment failure [${failure.code}]: `;
+  const diagnostic = `${diagnosticPrefix}${failure.message}`;
+  // Replace an intermediate normalization diagnostic with the final
+  // cleanup outcome. An earlier diagnostic of this failure starts with
+  // the same prefix; the final one repeats its message, extended by a
+  // cleanup note at most. The whole earlier block goes: its first line,
+  // then every continuation line that equals the final diagnostic's line
+  // at that position or is a leading part of it, stopping at a blank line
+  // (a blank separator is never part of a diagnostic; a message with an
+  // interior blank line leaves the lines past it, the stated residual). A
+  // message containing a newline made the old first-line filter leave the
+  // continuation lines behind, so the appended diagnostic duplicated the
+  // tail (review round 401, item 7).
+  const diagnosticLines = diagnostic.split("\n");
+  const dropDiagnosticBlocks = (text: string): string => {
+    const lines = text.split("\n");
+    const kept: string[] = [];
+    for (let i = 0; i < lines.length; ) {
+      if (!lines[i]!.startsWith(diagnosticPrefix)) {
+        kept.push(lines[i]!);
+        i += 1;
+        continue;
+      }
+      let length = 1;
+      while (length < diagnosticLines.length && i + length < lines.length) {
+        const line = lines[i + length]!;
+        if (line === "" || !diagnosticLines[length]!.startsWith(line)) break;
+        length += 1;
+      }
+      i += length;
+    }
+    return kept.join("\n");
+  };
+  let stderr = dropDiagnosticBlocks(raw.stderr);
   if (truncated) stderr = appendDiagnostic(stderr, CODEX_TRUNCATED_LINE);
   const settled: RunResult = { ...raw, stdout, usage, servedModel, success: false, exitCode: raw.exitCode || 1,
     stderr: appendDiagnostic(stderr, diagnostic) };

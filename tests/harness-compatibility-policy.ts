@@ -140,19 +140,19 @@ describe("the version probe runs before any sandbox, so it scrubs its own enviro
 
     // It is in play only for the harness that reads it, and only when actually set. A flat set
     // made `--pass-env OPENCODE_BIN_PATH` skip the version check for every agent, even with the
-    // variable unset -- a universal bypass in place of a narrow refusal.
+    // variable unset -- a universal bypass in place of a narrow refusal. The scan reads the
+    // environment itself (round 401, item 9), so an adapter-injected name is as active as a
+    // passed-through one.
     const set = { OPENCODE_BIN_PATH: "/opt/oc" };
-    expect(activeRedirects("opencode", set, ["OPENCODE_BIN_PATH"])).toEqual(["OPENCODE_BIN_PATH"]);
-    expect(activeRedirects("claude", set, ["OPENCODE_BIN_PATH"])).toEqual([]);
-    expect(activeRedirects("opencode", {}, ["OPENCODE_BIN_PATH"])).toEqual([]);
+    expect(activeRedirects("opencode", set)).toEqual(["OPENCODE_BIN_PATH"]);
+    expect(activeRedirects("claude", set)).toEqual([]);
+    expect(activeRedirects("opencode", {})).toEqual([]);
 
     // A set-but-empty value is not a redirect: OpenCode's launcher reads it as no override and
     // runs its default binary, which the probe can read. Counting it as one skipped the gate and
     // let a release below the floor run without the compatibility override.
-    expect(activeRedirects("opencode", { OPENCODE_BIN_PATH: "" }, ["OPENCODE_BIN_PATH"]))
-      .toEqual([]);
-    expect(activeRedirects("opencode", { OPENCODE_BIN_PATH: " " }, ["OPENCODE_BIN_PATH"]))
-      .toEqual(["OPENCODE_BIN_PATH"]);
+    expect(activeRedirects("opencode", { OPENCODE_BIN_PATH: "" })).toEqual([]);
+    expect(activeRedirects("opencode", { OPENCODE_BIN_PATH: " " })).toEqual(["OPENCODE_BIN_PATH"]);
     const runtime = await Bun.file(
       new URL("../src/cli-runtime.ts", import.meta.url)
     ).text();

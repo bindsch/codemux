@@ -113,10 +113,9 @@ function redirectRefusal(agent: AgentId, redirects: readonly string[]): UsageRef
 export function launchRedirectCheck(
   agent: AgentId,
   environment: Record<string, string>,
-  explicitPassthrough: readonly string[] | undefined,
   workdir: string
 ): ExecutableCheck | null {
-  const redirects = activeRedirects(agent, environment, explicitPassthrough ?? []);
+  const redirects = activeRedirects(agent, environment);
   if (redirects.length === 0) return null;
   const resolved = redirects.length === 1 ? resolveRedirectedBinary(redirects[0]!, environment, workdir) : null;
   if (resolved === null) throw redirectRefusal(agent, redirects);
@@ -168,7 +167,7 @@ export async function assertHarnessSupported(
   // REFUSES the run instead of warning (review round 331, item 4): on a direct run the
   // launcher would exec exactly that value outside any sandbox, and the operator's untested
   // override never covered a trust refusal, so it does not downgrade this one.
-  const redirects = activeRedirects(agent, environment, explicitPassthrough);
+  const redirects = activeRedirects(agent, environment);
   let gateBinary = resolveTrustedExecutable(binary, binaryName, workdir);
   if (redirects.length > 0) {
     const redirected =

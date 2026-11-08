@@ -134,6 +134,26 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 401, whole tree (registry, private writes, credentials): every rename-published
+  file states its mode on the descriptor or right after creation, so a umask like 0277 can
+  no longer leave a private file or directory masked wider than its rule; corrupt-registry
+  recovery keeps the live file until the replacement write lands and leaves a hard-linked
+  `.corrupt-` backup, keeping the newest five; the credential mirror's staging file is
+  fsynced before the rename; private writes and verify's scratch cwd revalidate the
+  directory identity around the staged write and refuse a name swapped for a symlink; the
+  call log tightens modes on the open descriptor, never chmod'ing a path a swapped symlink
+  could answer; and the authentication doc states the root-owned-link carve-out in the
+  ancestor walk.
+- Review round 401, whole tree (runner, signals, sessions, environment): a signal that lands in
+  the runner's cleanup window still SIGTERMs and force-kills the child tree before the signal
+  exit; a turn refused by its turn/start response adopts its provisional id, so a straggler
+  naming it after the next turn opens is consumed instead of crashing the session; a second
+  interrupt before the init frame is answered dropped and the first keeps its input_seq; a
+  multi-line experiment failure diagnostic replaces its earlier copy whole, without orphan
+  continuation lines; the post-exit group SIGKILL fires only while the process table still
+  lists a member of that group besides its leader slot, so a recycled pid takes no stranger's
+  group down; and the executable-redirect gate scans the child's built environment, closing the
+  adapter env channel that bypassed the trust gate, the version check, and the pre-spawn pin.
 - Review round 391, whole tree (experiment, runner, codex sessions): the Claude bridge's frame
   bound stays on the whole control frame (Claude's own limit) and the docs name the residual, a
   reply body within the envelope's overhead of 1 MiB fails at the sender after the reader

@@ -7,7 +7,6 @@ import { writeRunStdin } from "./process-stdin-repeat.js";
 import {
   beginCapturedCommand,
   endCapturedCommand,
-  finishSignaledRun,
   neverSettles,
   noteSignaledRun,
   signalShutdownPending,
@@ -26,30 +25,25 @@ export const DEFAULT_RUN_TIMEOUT_MS = 30 * 60 * 1000;
 export const MAX_ARGV_PROMPT_BYTES = 32 * 1024;
 export const MAX_RUN_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
-export const FORCE_KILL_DELAY_MS = 2_000;
-// After a timeout's SIGKILL escalation, how much longer to keep reading the
-// captured pipes before abandoning them. A descendant no signal can reach
-// (orphaned into another process group before the first snapshot) may hold
-// them open forever; the run must still return.
-export const PIPE_GIVE_UP_MS = 1_000;
-/**
- * How long the experiment bridge's close() waits for finalization before
- * abandoning it (review round 331, item 18). Strictly longer than
- * finalization's own bounds, so the abandonment never replaces a real
- * outcome: the server's close drains for FORCE_KILL_DELAY_MS +
- * PIPE_GIVE_UP_MS, the inventory recheck waits PIPE_GIVE_UP_MS more, and
- * one PIPE_GIVE_UP_MS is margin (review round 334: an equal bound raced
- * the server's shutdown and won).
- */
-export const BRIDGE_CLOSE_ABANDON_MS = FORCE_KILL_DELAY_MS + 3 * PIPE_GIVE_UP_MS;
-// What a signaled run's cleanup can take once the signal has landed (the
-// force-kill delay, the pipe give-up, the protocol cleanup's grace, and
-// the interruption receipt's grace), plus a second of margin so a peer
-// that used every deadline still runs its last continuation first.
-const SIGNALED_PEER_WAIT_MS = FORCE_KILL_DELAY_MS + PIPE_GIVE_UP_MS + 2 * FORCE_KILL_DELAY_MS + 1_000;
+// The termination timing constants, the signal exit code, and the signaled
+// exit tail live in process-runner-exit.ts (split at the 500-line cap,
+// review round 401, item 2); re-exported here so every existing import
+// path is unchanged.
+export {
+  BRIDGE_CLOSE_ABANDON_MS,
+  FORCE_KILL_DELAY_MS,
+  PIPE_GIVE_UP_MS,
+  SIGNAL_EXIT_CODE,
+} from "./process-runner-exit.js";
+import {
+  FORCE_KILL_DELAY_MS,
+  PIPE_GIVE_UP_MS,
+  SIGNAL_EXIT_CODE,
+  SIGNALED_PEER_WAIT_MS,
+  exitSignaledRun,
+} from "./process-runner-exit.js";
+
 const TIMEOUT_EXIT_CODE = 124;
-// 128 + SIGTERM: the child tree was terminated after a signal to codemux.
-export const SIGNAL_EXIT_CODE = 143;
 
 /** A capture failure of a command that ran: the child was spawned and a
  * stream's output could not be captured (invalid UTF-8). Wrapping marks the
@@ -165,6 +159,9 @@ export async function runCapturedCommand(
   let captureFailed = false;
   let protocolAborted = false;
   let cleanupStarted = false;
+  // Whether the finally's kill check already ended the tree: a signal that
+  // lands later in the cleanup window must still end it once, not twice.
+  let treeEnded = false;
   let terminationNote: string | undefined;
   let pipesAbandoned = false;
   let giveUpReads: () => void = () => {};
@@ -178,26 +175,38 @@ export async function runCapturedCommand(
   // synchronous stretch that installs it and spawns, but the handler
   // checks anyway, so the type says what the code does (review round 169).
   let target: TerminationTarget | null = null;
+  let terminationStarted = false;
   const terminateRun = (): void => {
     if (target === null) return;
     const tree = target;
-    const starting = !cleanupStarted && forceKillTimer === null;
-    // Arm forced reaping before protocol code can throw. The server still
-    // receives SIGTERM before the harness, so it stops accepting work first.
-    if (starting) {
+    // The first termination of this tree, whenever it lands: a signal
+    // inside the cleanup window (closeProtocol awaiting real I/O) is still
+    // the first, and the group may still have members (review round 401,
+    // item 2). Inside that window no timer is armed: the child has exited
+    // or been killed by then, the cleanup is bounded by the protocol
+    // grace, and the kill check at the end of the finally sends the
+    // SIGKILL once the cleanup settles, so a termination with nothing
+    // left to stop creates nothing.
+    const firstTermination = !terminationStarted;
+    terminationStarted = true;
+    // Arm forced reaping before protocol code can throw; the server gets
+    // SIGTERM before the harness, so it stops accepting work first.
+    if (firstTermination) {
       forceKillDeadline = performance.now() + FORCE_KILL_DELAY_MS;
-      forceKillTimer = setTimeout(() => signalProcess(tree, "SIGKILL", "tree"), FORCE_KILL_DELAY_MS);
-      giveUpTimer = setTimeout(() => {
-        pipesAbandoned = true;
-        giveUpReads();
-        giveUpExit();
-      }, FORCE_KILL_DELAY_MS + PIPE_GIVE_UP_MS);
+      if (!cleanupStarted) {
+        forceKillTimer = setTimeout(() => signalProcess(tree, "SIGKILL", "tree"), FORCE_KILL_DELAY_MS);
+        giveUpTimer = setTimeout(() => {
+          pipesAbandoned = true;
+          giveUpReads();
+          giveUpExit();
+        }, FORCE_KILL_DELAY_MS + PIPE_GIVE_UP_MS);
+      }
     }
     try { options.stdoutSink?.terminateProtocol?.({ timedOut }); }
     catch (error) {
       terminationNote ??= `protocol termination failed: ${error instanceof Error ? error.message : String(error)}`;
     }
-    if (starting) signalProcess(tree, "SIGTERM", "tree");
+    if (firstTermination) signalProcess(tree, "SIGTERM", "tree");
   };
   // After a signal, a timeout, or a capture failure the protocol cleanup
   // gets the same grace the receipt gets: closeProtocol has no deadline of
@@ -423,6 +432,7 @@ export async function runCapturedCommand(
     if (timedOut || signaled || captureFailed) {
       await waitForDescendantsGrace(target, forceKillDeadline);
       signalProcess(target, "SIGKILL", "tree");
+      treeEnded = true;
     }
     // Protocol cleanup can fail (a full recording disk): the runner's own
     // timers are cleared first. A protocol abort's diagnosis is never replaced.
@@ -469,27 +479,20 @@ export async function runCapturedCommand(
       process.off("SIGHUP", onSignal);
       endCapturedCommand(onSignal);
     }
+    // A signal that landed while the protocol cleanup awaited real I/O set
+    // `signaled` after the kill check above read it: re-read, and end the
+    // tree the same way before the exit below (review round 401, item 2).
+    if (!treeEnded && (timedOut || signaled || captureFailed)) {
+      await waitForDescendantsGrace(target, forceKillDeadline);
+      signalProcess(target, "SIGKILL", "tree");
+    }
     if (terminationNote) {
       if (failureResult) failureResult.stderr += `Note: ${terminationNote}\n`;
       if (firstError) firstError.message += `; ${terminationNote}`;
       if (signaled) console.error(`Note: ${terminationNote}`);
     }
     if (signaled) {
-      // The signal meant "stop codemux", not "skip this step": an
-      // interrupted version probe must not fall through to the launch. The
-      // launch's receipt is written first: recordCompletedLaunch never runs.
-      if (cleanupNote) console.error(`Note: ${cleanupNote}`);
-      // Other captured commands got the same signal and are still
-      // terminating their own trees: the first to finish must not exit
-      // under them (review round 169). This run returns to no caller
-      // either way. The last signaled run to finish prints the line and
-      // exits. Every step of a signaled run's cleanup is bounded, so the
-      // last one arrives; an earlier one still waits no longer than those
-      // bounds add up to and then exits itself, so nothing a peer does can
-      // hold codemux open after a signal (review rounds 171 and 174).
-      if (!finishSignaledRun()) await Bun.sleep(SIGNALED_PEER_WAIT_MS);
-      console.error("codemux: interrupted; the agent's process tree was terminated");
-      process.exit(SIGNAL_EXIT_CODE);
+      await exitSignaledRun({ cleanupNote, peerWaitMs: SIGNALED_PEER_WAIT_MS });
     }
     if (firstError && !failureResult) throw firstError;
     if (protocolAborted && !failureResult) throw new CapturedRunFailure("protocol capture aborted");

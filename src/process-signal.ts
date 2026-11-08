@@ -1,5 +1,5 @@
 import { rememberDescendants, signalDescendant, signalDescendants, type TerminationTarget } from "./process-tree.js";
-import { readProcessTable } from "./process-table.js";
+import { readProcessTable, type ProcessTable } from "./process-table.js";
 
 /**
  * Signal the child. `scope: "tree"` also signals its process group (when it
@@ -17,8 +17,12 @@ import { readProcessTable } from "./process-table.js";
  *
  * The child is signaled through its subprocess handle, which cannot
  * address a reused pid even before the exit continuation runs. After an
- * observed exit only tree cleanup runs: the group and remembered
- * descendants, with isStillOurs guarding remembered pid reuse.
+ * observed exit only tree cleanup runs: remembered descendants with
+ * isStillOurs guarding pid reuse, and the group address only when the
+ * table lists a member of that group besides the leader slot
+ * (groupAddressSafe below, review round 401, item 8) — a reaped child's pid may have been recycled
+ * into a stranger's group leader, and the group signal must not reach
+ * that group.
  *
  * A send that throws ESRCH is silent — the pid no longer exists.
  * Every other refusal names a process that exists (EPERM above
@@ -26,6 +30,30 @@ import { readProcessTable } from "./process-table.js";
  * stderr as a signal failure the operator should see, never taken to
  * mean the child is gone (round al35, edges major 3).
  */
+/** Whether the group address `-proc.pid` still names the child's own
+ * process group (review round 401, item 8). While the child lives the
+ * group is its own. After the exit the reaped pid may have been recycled
+ * into a stranger's group leader, so the address is used only when the
+ * table lists a member of that group other than the leader slot: a
+ * process carries the child's group id only by descending from the child
+ * (a stranger that reuses a pid inherits its own parent's group), so any
+ * such member, remembered or not, keeps the group ours and keeps the
+ * reach the group kill exists for (a descendant forked between two
+ * snapshots). A listed leader slot alone is the recycled pid and takes no
+ * signal. An unreadable table (size 0) keeps the old guarantee — the
+ * group signal fires as before rather than losing reach on a host that
+ * denies enumeration. Residual: a leader recycled inside the sampling
+ * window that has already forked a child of its own looks like a live
+ * group. */
+function groupAddressSafe(target: TerminationTarget, table: ProcessTable): boolean {
+  if (!target.childExited) return true;
+  if (table.size === 0) return true;
+  for (const [pid, entry] of table) {
+    if (pid !== target.proc.pid && entry.pgid === target.proc.pid) return true;
+  }
+  return false;
+}
+
 export function signalProcess(
   target: TerminationTarget,
   signal: NodeJS.Signals,
@@ -33,17 +61,29 @@ export function signalProcess(
 ): void {
   const { proc, processGroup } = target;
   if (process.platform !== "win32") {
+    // One table read serves the descendant walk and the group-address
+    // check, so the two never disagree about the same moment.
+    const table = readProcessTable();
     const groupSignaled = processGroup && scope === "tree" ? proc.pid : null;
     let leftToGroup: number[] = [];
     if (scope === "tree") {
-      leftToGroup = signalDescendants(target, signal, groupSignaled);
+      leftToGroup = signalDescendants(target, signal, groupSignaled, table);
     } else {
       // Remember the descendants a process-scoped send leaves alive, so
       // the later tree-scoped escalation can reach them (the tree-kill
       // mechanics above).
-      rememberDescendants(target, readProcessTable());
+      rememberDescendants(target, table);
     }
-    if (groupSignaled !== null) {
+    // After the child's exit the group address is refused unless the table
+    // shows a still-ours member of that group (round 401, item 8): a
+    // reaped pid recycled into a stranger's group leader must not take a
+    // group signal. The members left to the group are then reached one by
+    // one, exactly as a failed group send reaches them below.
+    const groupSafe = groupSignaled !== null && groupAddressSafe(target, table);
+    if (groupSignaled !== null && !groupSafe) {
+      for (const pid of leftToGroup) signalDescendant(pid, signal);
+    }
+    if (groupSignaled !== null && groupSafe) {
       try {
         process.kill(-proc.pid, signal);
         return; // the group send reached the child with it

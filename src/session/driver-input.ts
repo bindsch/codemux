@@ -98,6 +98,21 @@ export abstract class ClaudeDriverInput extends ClaudeDriverEvents {
           // turn as soon as it starts; the turn opens codemux-side with the
           // init frame, and the interrupt rides that moment.
           this.ack(inputSeq, true);
+          // A second interrupt in this window used to overwrite the
+          // recorded seq, so the first acked interrupt's fate was never
+          // reported (round 341's rule: every acked line's fate is
+          // reported). The parked one keeps its seq; this one is answered
+          // at once as dropped, named by its seq (review round 401, item 4;
+          // the codex sibling's rule, review round 391).
+          if (this.interruptBeforeInit) {
+            if (this.finished) return;
+            this.emitError(
+              false,
+              "codemux",
+              `a second interrupt arrived while another was still waiting for the session to start and was dropped (input_seq ${inputSeq})`
+            );
+            return;
+          }
           this.interruptBeforeInit = true;
           this.interruptBeforeInitSeq = inputSeq;
           return;

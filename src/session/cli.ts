@@ -393,7 +393,7 @@ export function registerSessionCommand(
               extraExecutableChecks: [
                 ...(claudeBuilt?.playwrightMcpCheck != null ? [claudeBuilt.playwrightMcpCheck] : []),
                 ...((check) => check === null ? [] : [check])(
-                  launchRedirectCheck(agentId, process.env as Record<string, string>, passthroughEnv, workdir)
+                  launchRedirectCheck(agentId, env, workdir)
                 ),
               ],
             }, {

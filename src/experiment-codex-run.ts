@@ -1,4 +1,4 @@
-import { renameSync, writeFileSync } from "node:fs";
+import { renameIntoPlaceSync, stageExclusiveSync } from "./fs-durable.js";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { readUtf8FileBounded, statEntryPresent } from "./file-io.js";
@@ -118,8 +118,9 @@ export class ExperimentCodexRun implements StdoutSink {
     const provider = this.relay.catalogUrl ? codexCatalogProviderTable(version!, this.relay.catalogUrl) : "";
     // A root key must precede any tables already in the private config.
     const selection = provider ? `model_provider = ${JSON.stringify(CODEX_EXPERIMENT_PROVIDER_ID)}\n` : "";
-    writeFileSync(temporary, `${selection}${previous}\n${provider}\n${table}\n`, { flag: "wx", mode: 0o600 });
-    renameSync(temporary, path);
+    // Mode stated on the descriptor, fsync before the rename (round 401).
+    stageExclusiveSync(temporary, `${selection}${previous}\n${provider}\n${table}\n`, 0o600);
+    renameIntoPlaceSync(temporary, path);
   }
 
   push(chunk: string): void {

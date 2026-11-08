@@ -57,6 +57,47 @@ describe("claude-family driver - input accepted before the init frame", () => {
     expect(of("turn_started")(session.events)).toBeUndefined();
   });
 
+  test("a second pre-init interrupt is answered dropped and the first keeps its seq (round 401, item 4)", async () => {
+    // The parked interrupt used to be overwritten by a second one, so the
+    // first acked interrupt's fate was never reported. Both are answered
+    // now: the first keeps its seq and rides the turn at init (reported
+    // dropped here, since the session ends before init), the second is
+    // answered at once as dropped, named by its own seq.
+    const session = await startSession();
+    send(session.driver, { type: "user", text: "scenario:wait hold" });
+    send(session.driver, { type: "interrupt" });
+    send(session.driver, { type: "interrupt" });
+    session.driver.handleCallerEnd();
+    const first = await waitFor(
+      session.events,
+      (events) =>
+        events.find(
+          (event) =>
+            event.type === "error" &&
+            event.fatal === false &&
+            event.message.includes("the interrupt accepted before the session started") &&
+            event.message.includes("input_seq 2")
+        ),
+      "the first interrupt's dropped notice"
+    );
+    expect(first.source).toBe("codemux");
+    expect(await session.code).toBe(0);
+    // All three accepted lines were acked before the end began.
+    expect(session.events.filter((event) => event.type === "input_accepted")).toHaveLength(3);
+    // The second interrupt's notice is emitted at line arrival; the opener
+    // and first-interrupt notices come from finish(), later.
+    const notices = session.events.filter(
+      (event) => event.type === "error" && event.fatal === false && event.source === "codemux"
+    );
+    expect(notices.map((event) => event.message)).toEqual([
+      expect.stringContaining(
+        "a second interrupt arrived while another was still waiting for the session to start and was dropped (input_seq 3)"
+      ),
+      expect.stringContaining("user input accepted before the session started"),
+      expect.stringContaining("the interrupt accepted before the session started"),
+    ]);
+  });
+
   test("a pre-init user line whose write is refused keeps only the delivery fatal (review round 391, item 6)", async () => {
     // The line is accepted before the init frame and its forward is
     // refused (a dead harness stdin): writeToHarness already emits the

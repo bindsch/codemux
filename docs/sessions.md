@@ -319,7 +319,14 @@ exits. A descendant that forks and exits between two samples, or before
 the first one, or a harness that starts its helper and exits at once after
 the stop signal, leaves a process the reaper owns and no walk can attribute;
 that is a known limit, and closing it needs kernel help the sandbox boundary
-does not provide.
+does not provide. After the harness exits, the process-group address is
+used only while the sampler still lists a member of that group other than
+the leader slot: the exited harness's pid may have been recycled into
+another process's group leader, and that group takes no signal, while a
+descendant that still carries the group id keeps the address alive. Two
+residuals: a pid recycled between the last sample and the kill delivery, and
+a host that denies process enumeration, where the table cannot be read and
+the group signal fires after the exit as it always did, keeping its reach.
 
 On Windows codemux has no process table reader and no process groups, so a
 tree-scoped termination reaches the immediate child only; descendants the
@@ -335,6 +342,11 @@ refused there.
 | 66 | No recorded entry for the requested resume ID |
 | 78 | Resume policy/trust refusal, including a corrupt or untrusted registry or a live owner |
 | 143 | Codemux's signal-stop convention |
+
+When a registry file is corrupt, the recovering write keeps the live file in
+place until its replacement lands, and leaves a hard-linked
+`<registry>.corrupt-<timestamp>` backup beside it, keeping the newest five.
+A failed replacement keeps the corrupt file, and a resume still exits 78.
 
 The exit status is the `exit_code` that `session_ended` reported. A signal
 that stops a session is reported in that event and exits 143. A signal that

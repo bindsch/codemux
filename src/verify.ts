@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, mkdtempSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -63,27 +63,51 @@ function platformTempRoot(): string {
 // `.git` directory ends the walk at the scratch dir itself.
 let neutralCwd: string | null = null;
 export function verificationCwd(): string {
-  if (neutralCwd === null) {
-    const root = platformTempRoot();
-    const uid = typeof process.getuid === "function" ? process.getuid() : null;
-    const fixed = join(root, `codemux-verify-${uid ?? "u"}`);
-    let dir = fixed;
-    try {
-      mkdirSync(fixed, { recursive: true, mode: 0o700 });
-      // lstat, not stat: a symlink planted at the fixed path (on the shared
-      // /tmp fallback) must be rejected, not followed to a directory the
-      // attacker happens to own. Require a real, self-owned directory.
-      const st = lstatSync(fixed);
-      if (!st.isDirectory() || (uid !== null && st.uid !== uid)) {
-        dir = mkdtempSync(join(root, "codemux-verify-"));
-      }
-    } catch {
-      dir = mkdtempSync(join(root, "codemux-verify-"));
-    }
-    mkdirSync(join(dir, ".git"), { recursive: true, mode: 0o700 });
-    neutralCwd = dir;
-  }
+  if (neutralCwd === null) neutralCwd = scratchCwdUnder(platformTempRoot());
   return neutralCwd;
+}
+
+/** The scratch-directory rule at one root, split out so tests can drive a
+ * private tree. The fixed name's mode is stated after creation (the umask
+ * would otherwise leave a directory the marker cannot be created in), and
+ * its identity is revalidated after the marker lands: between the trusted
+ * lstat and the marker's mkdir, a same-uid writer with access to the root
+ * can swap the name for a symlink and receive the marker — or the run's
+ * cwd — through it (review round 401, item 10). A changed identity
+ * refuses the reused name and a fresh mkdtemp is used; the residual is an
+ * empty marker planted through the link ahead of the revalidation. */
+export function scratchCwdUnder(root: string): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  const fixed = join(root, `codemux-verify-${uid ?? "u"}`);
+  const fresh = (): string => {
+    const dir = mkdtempSync(join(root, "codemux-verify-"));
+    chmodSync(dir, 0o700); // stated whatever the umask is
+    mkdirSync(join(dir, ".git"), { recursive: true, mode: 0o700 });
+    return dir;
+  };
+  try {
+    let existed = true;
+    try {
+      lstatSync(fixed);
+    } catch {
+      existed = false;
+    }
+    mkdirSync(fixed, { recursive: true, mode: 0o700 });
+    // lstat, not stat: a symlink planted at the fixed path (on the shared
+    // /tmp fallback) must be rejected, not followed to a directory the
+    // attacker happens to own. Require a real, self-owned directory.
+    const trusted = lstatSync(fixed);
+    if (!trusted.isDirectory() || (uid !== null && trusted.uid !== uid)) return fresh();
+    // The mode is stated only for a directory this call created: an
+    // existing one keeps the permissions it has.
+    if (!existed) chmodSync(fixed, 0o700);
+    mkdirSync(join(fixed, ".git"), { recursive: true, mode: 0o700 });
+    const after = lstatSync(fixed);
+    if (after.dev !== trusted.dev || after.ino !== trusted.ino) return fresh();
+    return fixed;
+  } catch {
+    return fresh();
+  }
 }
 
 // The environment half of static neutrality: verificationCwd pins the

@@ -64,6 +64,9 @@
  *   fragment   — writes half a delta frame with no newline, then exits:
  *                the stream ends inside a fragment (review live25)
  *   failstart  — answers turn/start with a JSON-RPC error
+ *   failstartlaggard — a delta naming the turn, then the turn/start
+ *                error, then stragglers naming that refused turn after
+ *                the next one is named (review round 401, item 3)
  *   usagefailstart — one tokenUsage update naming the turn, then the
  *                turn/start error (review live22: the update's usage
  *                must reach the session total)
@@ -129,6 +132,7 @@
 import * as scenarios from "./fake-codex-app-server-parts/scenarios.js";
 import { THREAD_ID, notify, record, respond, respondError, state, stateDir } from "./fake-codex-app-server-parts/wire.js";
 import { usage } from "./fake-codex-app-server-parts/items.js";
+import { startArm } from "./fake-codex-app-server-parts/start-arms.js";
 import {
   handleDecisionResponse,
   handleInitialize,
@@ -261,23 +265,7 @@ const handleTurnStart = (id: unknown, params: Record<string, unknown>): void => 
   const turnId = `turn-fake-${state.turnCounter}`;
   state.currentTurn = turnId;
   state.currentScenario = scenario;
-  if (scenario === "failstart") {
-    respondError(id, "the turn was refused");
-    return;
-  }
-  if (scenario === "usagefailstart") {
-    notify("thread/tokenUsage/updated", {
-      threadId: THREAD_ID,
-      turnId,
-      tokenUsage: { total: usage(400, 0, 0, 13), last: usage(400, 0, 0, 13), modelContextWindow: 258400 },
-    });
-    respondError(id, "the turn was refused");
-    return;
-  }
-  if (scenario === "noturnid") {
-    respond(id, { turn: { items: [], status: "inProgress" } });
-    return;
-  }
+  if (startArm(scenario, turnId, id)) return;
   if (scenario === "otherturnid") {
     // Early output names one turn, then the response names another
     // (review round 67): the window's provisional id is contradicted.

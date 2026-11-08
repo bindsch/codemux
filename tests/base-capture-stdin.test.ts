@@ -57,10 +57,12 @@ describe("captured command - stdin delivery", () => {
       );
       expect(rejection.name).toBe("CapturedRunFailure");
       expect(rejection.message).toBe("simulated EPIPE on first write");
-      // The stop ran (SIGTERM, then the escalation's SIGKILLs — the
-      // catch path and the finally cleanup each deliver one), and the
-      // child's exit settled before the run reported its failure.
-      expect(events).toEqual(["SIGTERM:group", "SIGKILL:group", "SIGKILL:group", "rejected"]);
+      // The stop ran (SIGTERM, and the child's exit settled on it) before
+      // the run reported its failure. The escalation's SIGKILLs address
+      // the group after the exit only while the table lists another
+      // member of it (review round 401, item 8); the stubbed table lists
+      // none, so none is sent.
+      expect(events).toEqual(["SIGTERM:group", "rejected"]);
       expect(hasActiveCapturedCommand()).toBe(false);
     } finally {
       Bun.spawn = originalSpawn;
@@ -115,7 +117,8 @@ describe("captured command - stdin delivery", () => {
       expect(rejection.message).toBe("simulated EPIPE after backpressure");
       expect(events[0]).toBe("SIGTERM:group");
       expect(events.at(-1)).toBe("rejected");
-      expect(events).toContain("SIGKILL:group");
+      // The group has no listed member after the exit (round 401, item 8).
+      expect(events).not.toContain("SIGKILL:group");
       expect(hasActiveCapturedCommand()).toBe(false);
     } finally {
       Bun.spawn = originalSpawn;

@@ -4,7 +4,8 @@
 // this.
 
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { renameIntoPlaceSync, stageExclusiveSync } from "../fs-durable.js";
 import { join } from "node:path";
 import { assertTrustedDirectory, prepareRunDirParent } from "../hermetic-home.js";
 import {
@@ -184,12 +185,11 @@ export function writeCodexProviderConfigInto(
   assertTrustedDirectory(codexHome);
   const target = join(codexHome, "config.toml");
   const temp = join(codexHome, `config.toml.${randomBytes(6).toString("hex")}.tmp`);
-  writeFileSync(temp, codexProviderToml(override, model, override.maxContextTokens, multiAgent), {
-    mode: 0o600,
-    flag: "wx",
-  });
+  // Exclusive staging with the mode stated on the descriptor and an fsync
+  // before the rename (fs-durable.ts, review round 401, items 1 and 6).
+  stageExclusiveSync(temp, codexProviderToml(override, model, override.maxContextTokens, multiAgent), 0o600);
   try {
-    renameSync(temp, target);
+    renameIntoPlaceSync(temp, target);
   } catch (error) {
     rmSync(temp, { force: true });
     throw error;

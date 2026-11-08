@@ -3,8 +3,9 @@
  * names it (review rounds 232 to 241): the lifecycle notifications carry
  * the provisional id, the late response names a closed turn and is
  * consumed, a response naming a never-seen turn crashes, and a late error
- * response changes nothing. Split from tests/session-codex-e2e-review.test.ts
- * at the 500-line cap.
+ * response changes nothing. The round-401 test below covers the sibling
+ * window: a turn the turn/start response refused. Split from
+ * tests/session-codex-e2e-review.test.ts at the 500-line cap.
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import { cleanupMark, cleanupSessions, cleanupSessionsSince, of, send, startAndWait, waitFor } from "./session-codex-e2e-helpers.js";
@@ -214,5 +215,38 @@ describe("codex session e2e - review round 232", () => {
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
     expect((ended as { reason?: unknown }).reason).toBe("crash");
     expect(await session.code).not.toBe(0);
+  });
+});
+
+describe("codex session e2e - review round 401", () => {
+  test("a turn refused by its turn/start response keeps its provisional id for stragglers (round 401, item 3)", async () => {
+    // A delta names the provisional id while the turn/start response is
+    // still in flight; the response then refuses the turn. The failed
+    // turn used to close without adopting that id, so the stragglers
+    // that arrive after the NEXT turn is named were judged against the
+    // new turn's id and killed the session as a grammar violation. The
+    // refusal now adopts the id the way the early completion does, and
+    // the stragglers land as that closed turn's own.
+    const session = await startAndWait();
+    send(session.driver, { type: "user", text: "scenario:failstartlaggard one" });
+    const first = await waitFor(
+      session.events,
+      (events) => events.find((event) => event.type === "turn_completed" && event.turn_id === "t1"),
+      "turn_completed t1"
+    );
+    expect(first.finish).toBe("failed");
+    // The next turn is named, then the refused turn's straggler delta and
+    // usage arrive naming the old id.
+    send(session.driver, { type: "user", text: "scenario:basic two" });
+    const second = await waitFor(
+      session.events,
+      (events) => events.find((event) => event.type === "turn_completed" && event.turn_id === "t2"),
+      "turn_completed t2"
+    );
+    expect(second.finish).toBe("end");
+    expect(session.events.find((event) => event.type === "error")).toBeUndefined();
+    send(session.driver, { type: "shutdown" });
+    await waitFor(session.events, of("session_ended"), "session_ended");
+    expect(await session.code).toBe(0);
   });
 });

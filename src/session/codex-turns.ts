@@ -199,6 +199,16 @@ export abstract class CodexDriverTurns extends CodexDriverApprovals {
     this.clearQueuedInterrupt();
     this.interruptCallId = null;
     this.clearTurnTimer();
+    // A scoped notification may have named the provisional id while the
+    // turn/start response was still in flight (the pending window of
+    // completeTurn, review round 232): that provisional id is the only
+    // name the harness gave the failed turn, so it is adopted here too —
+    // a late notification naming it then meets a closed turn instead of
+    // being judged against the next turn's id (review round 401, item 3;
+    // the failed turn's stragglers stay recognized).
+    if (this.harnessTurnId === null && this.pendingTurnId !== null) {
+      this.harnessTurnId = this.pendingTurnId;
+    }
     this.closeHarnessTurn();
     this.dropBufferedSteer();
     this.supersedeApprovals();

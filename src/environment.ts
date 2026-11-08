@@ -183,22 +183,24 @@ export const EXECUTABLE_REDIRECTS: Readonly<Partial<Record<string, readonly stri
 
 /** The redirects actually in play: named for this agent, and present in the environment.
  *
- * Both conditions matter. A name the operator passed through but never set redirects nothing,
- * and skipping enforcement for it is a bypass with no cause.
+ * Both conditions matter. A name that is not set redirects nothing, and skipping enforcement
+ * for it is a bypass with no cause. The scan reads the environment itself, whatever channel
+ * supplied the name (review round 401, item 9): sanitizeEnvironment keeps every adapter-provided
+ * key in the child's environment, so filtering only the `--pass-env` list left the adapter
+ * channel — `getEnv` or `getRunEnv` returning a redirect name — outside the trust gate, the
+ * version check, and the pre-spawn pin. Callers pass the built execution environment
+ * (`buildExecutionEnv` output), so the names this returns are the names the child runs with.
  */
 export function activeRedirects(
   agent: string,
-  environment: Record<string, string>,
-  explicitPassthrough: readonly string[]
+  environment: Record<string, string>
 ): string[] {
-  const known = new Set(EXECUTABLE_REDIRECTS[agent] ?? []);
+  const known = EXECUTABLE_REDIRECTS[agent] ?? [];
   // A set-but-empty value is not a redirect. OpenCode's launcher treats `OPENCODE_BIN_PATH=""`
   // as no override and runs its default binary, so counting it as one made the gate skip probing
   // a binary it could have read -- letting a release below the floor through without the explicit
   // compatibility override. Checked against the value, not merely its presence.
-  return explicitPassthrough.filter(
-    (name) => known.has(name) && (environment[name] ?? "") !== ""
-  );
+  return known.filter((name) => (environment[name] ?? "") !== "");
 }
 
 export type ProbeEnvironment = Record<string, string> & {

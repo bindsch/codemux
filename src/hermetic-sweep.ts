@@ -7,7 +7,7 @@
  * importer keeps one address.
  */
 
-import { lstatSync, mkdirSync, readdirSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { pidProbeAlive } from "./process-table.js";
 import { sessionHoldState, sessionRegistryPath, type SessionHold } from "./session/registry.js";
@@ -325,7 +325,22 @@ export function prepareRunDirParent(
   spareEntry?: string
 ): string {
   const parent = join(codexHome, name);
+  // Whether this call creates the parent decides if the mode may be
+  // stated: a pre-existing parent keeps the permissions it has — a
+  // widened one is refused below (review round 331, item 6), never
+  // silently tightened.
+  let parentExisted = true;
+  try {
+    lstatSync(parent);
+  } catch {
+    parentExisted = false;
+  }
   mkdirSync(parent, { recursive: true, mode: 0o700 });
+  if (!parentExisted) {
+    // The mode is stated whatever the umask is: a 0500 parent (umask
+    // 0277) would refuse the run's own home directory a few lines later.
+    chmodSync(parent, 0o700);
+  }
   // The parent's identity is recorded before the sweep runs, and every
   // removal the sweep makes revalidates it (removeSweepEntry, review
   // round 292): the enumeration and the removals are separate steps, so

@@ -16,17 +16,14 @@
 import { randomBytes } from "node:crypto";
 import {
   closeSync,
-  fsyncSync,
-  openSync,
   readdirSync,
-  renameSync,
   statSync,
   unlinkSync,
-  writeFileSync,
   writeSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { FileContentError, readUtf8FileBounded } from "../file-io.js";
+import { openStagingSync, renameIntoPlaceSync, writeAndFlushSync } from "../fs-durable.js";
 import { MAX_PID, pidProbeAlive, readProcessTable, type ProcessTable } from "../process-table.js";
 
 export { REGISTRY_FILE_MODE, registryPlacementProblem, resolveRegistryPath } from "./registry-placement.js";
@@ -296,7 +293,10 @@ export function acquireLock(lockPath: string, options: LockOptions = {}): LockHa
     // ever produce.
     const ourName = join(dir, `.${base}.${identity.pid}.${randomBytes(8).toString("hex")}.held`);
     try {
-      const fd = openSync(ourName, "wx", REGISTRY_FILE_MODE);
+      // openStagingSync states 0600 on the descriptor: the open mode is
+      // masked by the umask, and a masked lock file is one a hardened
+      // umask could wedge behind unremovable permissions (round 401, 1).
+      const fd = openStagingSync(ourName, REGISTRY_FILE_MODE);
       try {
         writeSync(fd, payload);
       } finally {
@@ -404,37 +404,30 @@ export function acquireLock(lockPath: string, options: LockOptions = {}): LockHa
   throw new LockBusyError(lockPath);
 }
 
-/** Write the whole payload and flush it to disk before the rename: a
- * single `writeSync` may write part of a large payload, and without the
- * fsync a crash after the rename can leave an empty or torn registry
- * (review live18). */
-function writeAndSync(fd: number, payload: string): void {
-  writeFileSync(fd, payload);
-  fsyncSync(fd);
-}
-
 /** Atomic replace: write a 0600 temp file in the registry directory,
  * flush it, revalidate the directory between temp-write and rename (same
- * identity), then rename over the target. Any failure after the temp
+ * identity), then rename over the target. The temp's mode is stated on
+ * the descriptor (openStagingSync), so the published registry is 0600
+ * whatever the umask (round 401, item 1). Any failure after the temp
  * file exists removes it before the error propagates (review live18 — a
  * failed write such as ENOSPC left it behind). `writePayload` is a test
  * seam for that failure. */
 export function writeRegistryAtomic(
   path: string,
   payload: string,
-  writePayload: (fd: number, payload: string) => void = writeAndSync
+  writePayload: (fd: number, payload: string) => void = writeAndFlushSync
 ): void {
   const dir = dirname(path);
   const before = statSync(dir);
   const temp = join(dir, `.${basename(path)}.${process.pid}.tmp`);
   let fd: number;
   try {
-    fd = openSync(temp, "wx", REGISTRY_FILE_MODE);
+    fd = openStagingSync(temp, REGISTRY_FILE_MODE);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== "EEXIST") throw error;
     unlinkSync(temp);
-    fd = openSync(temp, "wx", REGISTRY_FILE_MODE);
+    fd = openStagingSync(temp, REGISTRY_FILE_MODE);
   }
   try {
     try {
@@ -447,7 +440,7 @@ export function writeRegistryAtomic(
       throw new Error("the registry directory changed during the write");
     }
     // rename(2) replaces atomically; the mode travels with the temp file.
-    renameSync(temp, path);
+    renameIntoPlaceSync(temp, path);
   } catch (error) {
     try {
       unlinkSync(temp);

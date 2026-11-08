@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import {
   chmodSync,
   existsSync,
@@ -11,6 +12,7 @@ import {
 import { join } from "node:path";
 import { syncKeychainCredential, type SecretReadResult } from "../src/credentials.js";
 import { writeMirror } from "../src/credentials/backups.js";
+import { durableFs } from "../src/fs-durable.js";
 import { BACKUPS, FUTURE, SECRET, errors, gives, missing, withTarget } from "./helpers/credentials.js";
 
 const SAVED = ["CODEMUX_NO_KEYCHAIN_SYNC", "USER"] as const;
@@ -454,6 +456,36 @@ describe("writeMirror's vanished and conflict outcomes (C-8)", () => {
       const started = Date.now();
       expect(writeMirror(target, `${SECRET}\n`, scrubbed, join(dir, "backups"))).toBe("error");
       expect(Date.now() - started).toBeLessThan(2_000);
+    });
+  });
+
+  test("the staging file is fsynced on its own descriptor before the rename (round 401, item 6)", () => {
+    // A rename without a preceding fsync can publish a torn mirror after a
+    // crash or power loss, which Claude Code then fails auth on. Through
+    // the durableFs seam: the flush happens on the staging descriptor
+    // strictly before the rename replaces the live file.
+    withTarget((target, dir) => {
+      const order: string[] = [];
+      const realFsync = durableFs.fsyncSync;
+      const realRename = durableFs.renameSync;
+      durableFs.fsyncSync = (fd: number) => {
+        order.push(`fsync:${fd}`);
+        return realFsync(fd);
+      };
+      durableFs.renameSync = (from: fs.PathLike, to: fs.PathLike) => {
+        order.push("rename");
+        return realRename(from, to);
+      };
+      try {
+        expect(writeMirror(target, `${SECRET}\n`, scrubbed, join(dir, "backups"))).toBe("written");
+      } finally {
+        durableFs.fsyncSync = realFsync;
+        durableFs.renameSync = realRename;
+      }
+      const fsyncAt = order.map((entry) => entry.startsWith("fsync:")).lastIndexOf(true);
+      const renameAt = order.lastIndexOf("rename");
+      expect(fsyncAt).toBeGreaterThanOrEqual(0);
+      expect(renameAt).toBeGreaterThan(fsyncAt);
     });
   });
 });

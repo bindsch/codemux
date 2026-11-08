@@ -408,3 +408,17 @@ test("a Codex failure envelope is bounded by truncation, never refused, whatever
     expect(result.stderr).not.toContain("capture bound once JSON-escaped");
   }
 });
+
+test("a multi-line failure diagnostic replaces its earlier copy whole, continuation lines included (round 401, item 7)", () => {
+  // The de-dup filter used to drop only the first line of the earlier
+  // diagnostic; a failure message containing a newline left its
+  // continuation lines behind, and appending the full diagnostic again
+  // duplicated the tail. The whole block now goes, line by line, and one
+  // copy is appended at the end.
+  const request: RunRequest = { agent: "codex", prompt: "fixture", resultJson: true };
+  const failure = new records.ExperimentFailure(records.ExperimentFailureCode.ServerError, "server exited\nmid-shutdown");
+  const diagnostic = "codemux: experiment failure [server_error]: server exited\nmid-shutdown";
+  const raw: RunResult = { stdout: CODEX_EVENTS, stderr: `harness diagnostic\n${diagnostic}\n`, exitCode: 0, success: true };
+  const result = experimentFailedResult(raw, request, "/synthetic/recording.jsonl", failure);
+  expect(result.stderr).toBe(`harness diagnostic\n${diagnostic}\n`);
+});

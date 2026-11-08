@@ -387,7 +387,6 @@ export async function launchRunRequest(
     const redirectCheck = launchRedirectCheck(
       adapter.id,
       envArg,
-      request.passthroughEnv,
       effectiveWorkingDirectory(options.cwd)
     );
     // The direct path's `captured` rule, mirrored: a capture failure of a

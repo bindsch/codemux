@@ -296,7 +296,12 @@ export function registerCheckCommand(
         if (quotaPolicy !== null && !options.printSandbox) await assertQuotaHeadroomForLaunch(adapter, quotaPolicy);
 
         const harnessVersion = await assertHarnessSupported(
-          agentId, adapter.binaryName, options.cwd, undefined,
+          // The gate scans the child's built environment, not process.env
+          // (round 401, item 9): an adapter-injected redirect name must be
+          // visible here, and a name that is ambient but not passed through
+          // is not — the same environment the run gates decide against.
+          agentId, adapter.binaryName, options.cwd,
+          adapter.buildExecutionEnv(adapter.getEnv(), passthroughEnv),
           autonomy, Boolean(options.sandbox), passthroughEnv
         );
         if (options.agyIsolationProbe !== undefined) {

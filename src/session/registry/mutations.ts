@@ -1,8 +1,8 @@
 // Registry mutations: the locked atomic read-modify-write, the prune
 // to the reader's caps, and the start/touch/end/release/discard
 // operations on it. src/session/registry.ts owns the module surface.
-import { linkSync, mkdirSync, unlinkSync } from "node:fs";
-import { dirname } from "node:path";
+import { chmodSync, lstatSync, linkSync, mkdirSync, readdirSync, unlinkSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { readProcessTable } from "../../process-table.js";
 import { LOCK_ATTEMPTS, LOCK_RETRY_MS, REGISTRY_DIR_MODE, LockBusyError, acquireLock, currentProcessIdentity, processIdentityAlive, registryPlacementProblem, resolveRegistryPath, writeRegistryAtomic, type LockHandle, type LockOptions } from "../registry-io.js";
 import { readRegistry, validRegistryFile, REGISTRY_MAX_BYTES, REGISTRY_MAX_ENTRIES, type RegistryFile, type SessionRecord } from "./format.js";
@@ -125,9 +125,27 @@ export function updateRegistry(
     }
     const path = resolveRegistryPath(originalPath);
     const dir = dirname(path);
+    // Whether this update creates the directory decides if the mode may
+    // be stated: a pre-existing directory keeps the permissions it has —
+    // a read-only one the operator froze fails the write below, fail
+    // closed, instead of being silently repaired.
+    let dirExisted = true;
+    try {
+      lstatSync(dir);
+    } catch {
+      dirExisted = false;
+    }
     mkdirSync(dir, { recursive: true, mode: REGISTRY_DIR_MODE });
+    if (!dirExisted) {
+      // The mode is stated whatever the umask is (round 401, item 1): the
+      // mkdir mode is masked, and the reader enforces the unmasked value
+      // — a hardened umask would wedge every session command behind an
+      // untrusted registry.
+      chmodSync(dir, REGISTRY_DIR_MODE);
+    }
     lock = acquireLock(`${path}.lock`, lockOptions);
     let read = readRegistry(path);
+    let corruptBackup: string | null = null;
     if (read.outcome === "unavailable") {
       return { ok: false, error: read.reason, kind: "unavailable" };
     }
@@ -138,14 +156,20 @@ export function updateRegistry(
       if (onCorrupt === "fail") {
         return { ok: false, error: `corrupt session registry: ${read.reason}`, kind: "untrusted" };
       }
-      // Back the corrupt file up beside the registry, start fresh.
+      // Back the corrupt file up beside the registry, start fresh. The
+      // live file is NOT removed: the atomic write's rename replaces it
+      // once the replacement is known to be writable, so a refusal after
+      // this point (a payload the reader rejects) or a failed write
+      // leaves a registry the reader still judges — corrupt, fail-closed
+      // — instead of a missing one resumes answer not_found (round 401,
+      // item 5).
       const backup = `${path}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
       try {
         linkSync(path, backup);
-        unlinkSync(path);
       } catch (error) {
         return { ok: false, error: `cannot back up the corrupt session registry: ${error instanceof Error ? error.message : String(error)}`, kind: "unavailable" };
       }
+      corruptBackup = backup;
       read = { outcome: "missing" };
     }
     const file: RegistryFile =
@@ -165,6 +189,7 @@ export function updateRegistry(
       return { ok: false, error: "the update would leave a session registry no reader accepts; nothing was written", kind: "untrusted" };
     }
     writeRegistryAtomic(path, payload);
+    if (corruptBackup !== null) pruneCorruptBackups(path);
     return { ok: true };
   } catch (error) {
     return {
@@ -177,6 +202,34 @@ export function updateRegistry(
     // never throws: this update already wrote the registry file, so its
     // outcome stays `ok` (registry-io's release, review round 115).
     lock?.release();
+  }
+}
+
+/** How many `.corrupt-*` backups one registry keeps: repeated corruption
+ * must not accumulate copies until the disk fills (round 401, item 5). */
+const CORRUPT_BACKUPS_KEPT = 5;
+
+/** After a recovery wrote its replacement, drop the oldest corrupt
+ * backups beyond `CORRUPT_BACKUPS_KEPT`. The names carry fixed-width ISO
+ * stamps, so lexical order is chronological order; the newest stay. A
+ * removal failure is swallowed — the rotation is hygiene, the recovery
+ * it follows already succeeded, and the next recovery retries. */
+function pruneCorruptBackups(path: string): void {
+  const dir = dirname(path);
+  const prefix = `${basename(path)}.corrupt-`;
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  const backups = names.filter((name) => name.startsWith(prefix)).sort();
+  for (const name of backups.slice(0, Math.max(0, backups.length - CORRUPT_BACKUPS_KEPT))) {
+    try {
+      unlinkSync(join(dir, name));
+    } catch {
+      /* left behind; the next recovery retries */
+    }
   }
 }
 

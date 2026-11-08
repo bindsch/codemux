@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import * as fs from "node:fs";
 import { existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   readRegistry,
   recordSessionStart,
   REGISTRY_MAX_ENTRIES,
   type SessionRecord,
 } from "../src/session/registry.js";
+import { durableFs } from "../src/fs-durable.js";
 import { writeRegistryAtomic } from "../src/session/registry-io.js";
 import { craftEntry, makeRoot, newRecord, registryIn, seedRegistry } from "./helpers/session-registry.js";
 
@@ -156,5 +158,82 @@ describe("review live18", () => {
     ).toThrow("ENOSPC");
     expect(readdirSync(dirname(path)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
     expect(readFileSync(path, "utf8")).toBe(before);
+  });
+});
+
+describe("review round 401, item 5: corrupt-registry recovery", () => {
+  const corrupt = (path: string): void => {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    writeFileSync(path, "{ this is not the registry\n", { mode: 0o600 });
+  };
+
+  test("a recovery refused at the writer's own validation leaves the live file in place", () => {
+    // The old recovery unlinked the registry before it knew the
+    // replacement write would happen: a refusal after that (here a record
+    // the reader's validator rejects — a harness-supplied id past the
+    // cap) returned "nothing was written" with the registry gone, so
+    // resumes answered not_found instead of failing closed.
+    const path = registryIn(makeRoot());
+    corrupt(path);
+    expect(readRegistry(path).outcome).toBe("corrupt");
+    const outcome = recordSessionStart(path, newRecord({ id: "x".repeat(129) }));
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.error).toContain("nothing was written");
+    // The live file survived the refused recovery, so the reader still
+    // sees corrupt state — fail-closed — and the backup keeps the bytes.
+    expect(readRegistry(path).outcome).toBe("corrupt");
+    expect(readdirSync(dirname(path)).filter((name) => name.includes(".corrupt-"))).toHaveLength(1);
+  });
+
+  test("a recovery whose replacement write fails leaves the live file in place", () => {
+    const path = registryIn(makeRoot());
+    corrupt(path);
+    // The writer publishes through the durableFs seam, whose members are
+    // captured at module load, so the member itself is swapped; it renames
+    // to the resolved spelling of the registry path (/private/var for a
+    // /var temp root), so the live name is matched by its basename.
+    const realRename = durableFs.renameSync;
+    durableFs.renameSync = ((from: fs.PathLike, to: fs.PathLike) => {
+      if (basename(String(to)) === basename(path)) {
+        throw Object.assign(new Error("EISDIR: illegal operation on a directory"), {
+          code: "EISDIR",
+        });
+      }
+      return realRename(from, to);
+    }) as typeof fs.renameSync;
+    try {
+      const outcome = recordSessionStart(path, newRecord());
+      expect(outcome.ok).toBe(false);
+      if (!outcome.ok) expect(outcome.kind).toBe("unavailable");
+      expect(readRegistry(path).outcome).toBe("corrupt");
+    } finally {
+      durableFs.renameSync = realRename;
+    }
+  });
+
+  test("repeated corruption keeps the newest five backups and prunes the rest", () => {
+    // The corrupt backups had no rotation, so a repeatedly corrupting
+    // state accumulated one copy per start until the disk filled.
+    const path = registryIn(makeRoot());
+    const dir = dirname(path);
+    // The backup name is the ISO stamp; a same-millisecond repeat would
+    // collide, so each recovery is at least 2 ms after the last.
+    const wait = (): void => {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2);
+    };
+    const known: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      corrupt(path);
+      expect(recordSessionStart(path, newRecord({ id: `fresh-${i}` })).ok).toBe(true);
+      known.push(
+        ...readdirSync(dir).filter((name) => name.includes(".corrupt-") && !known.includes(name))
+      );
+      wait();
+    }
+    const remaining = readdirSync(dir).filter((name) => name.includes(".corrupt-")).sort();
+    expect(remaining).toHaveLength(5);
+    // The oldest of the six went; the newest five stay.
+    expect(remaining).not.toContain(known[0]);
+    expect(remaining).toContain(known[5]!);
   });
 });

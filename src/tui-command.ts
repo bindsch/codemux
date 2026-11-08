@@ -292,7 +292,7 @@ export function registerTuiCommand(
             // the gate above resolved and probed it; the spawn re-stats
             // it like the run paths do, read from the child's own
             // environment (review round 338, item 13).
-            launchRedirectCheck(agentId, adapterEnv, passthroughEnv, workdir)
+            launchRedirectCheck(agentId, adapterEnv, workdir)
           );
           process.exitCode = exitCode;
         } else {

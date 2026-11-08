@@ -1,4 +1,4 @@
-import { renameSync, writeFileSync } from "node:fs";
+import { renameIntoPlaceSync, stageExclusiveSync, writeOwnedSync } from "./fs-durable.js";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { assertTrustedDirectory } from "./hermetic-home.js";
@@ -29,8 +29,8 @@ function writeKimiToolTimeout(kimiHome: string, milliseconds: number): void {
   const table = Object.entries({ ...mcp as Record<string, unknown>, tool_timeout_ms: milliseconds })
     .map(([key, value]) => `${JSON.stringify(key)} = ${kimiTomlValue(value)}\n`).join("");
   const temporary = join(kimiHome, `config.${randomBytes(8).toString("hex")}.toml`);
-  writeFileSync(temporary, `${root}\n[mcp]\n${table}`, { flag: "wx", mode: 0o600 });
-  renameSync(temporary, path);
+  stageExclusiveSync(temporary, `${root}\n[mcp]\n${table}`, 0o600);
+  renameIntoPlaceSync(temporary, path);
 }
 
 /** Kimi 2.3.2 only applies wildcard entries to MCP tools; built-ins use exact names. */
@@ -57,10 +57,13 @@ export function writeKimiExperimentConfig(relay: ExperimentHttpRelay, kimiHome: 
     url: relay.url, headers: { Authorization: `Bearer ${relay.token}` },
     startupTimeoutMs: 120_000, toolTimeoutMs: milliseconds,
   } } };
-  writeFileSync(temporary, JSON.stringify(config) + "\n", { flag: "wx", mode: 0o600 });
-  renameSync(temporary, path);
-  writeFileSync(agentFile, ["---", "name: codemux-experiment",
+  // Modes stated on the descriptor, fsync before the rename (round 401).
+  stageExclusiveSync(temporary, JSON.stringify(config) + "\n", 0o600);
+  renameIntoPlaceSync(temporary, path);
+  // The agent file already exists (the hermetic home wrote the plain
+  // profile); it is replaced in place with the mode stated.
+  writeOwnedSync(agentFile, ["---", "name: codemux-experiment",
     "description: Private experiment profile with the default prompt.",
     `tools: ${JSON.stringify([kimiExperimentToolPattern(relay.spec.name)])}`,
-    "---", "", "${base_prompt}", ""].join("\n"), { mode: 0o600 });
+    "---", "", "${base_prompt}", ""].join("\n"), 0o600);
 }

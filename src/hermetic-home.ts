@@ -26,6 +26,7 @@
  */
 
 import {
+  chmodSync,
   linkSync,
   lstatSync,
   mkdirSync,
@@ -113,8 +114,10 @@ export function createCodexHermeticHome(
   const parent = prepareRunDirParent(sourceCodexHome, PARENT_DIR_NAME);
   // Recorded for the finalizer's revalidation (src/safe-remove.ts).
   const parentRecord = recordTrustedParent(parent);
-  // mkdtemp creates the directory mode 0700; the login inside is 0600.
+  // mkdtemp creates the directory mode 0700, which the umask can narrow;
+  // the mode is stated so the harness child can write its own home.
   const home = mkdtempSync(join(parent, `${RUN_PREFIX}${process.pid}-`));
+  chmodSync(home, 0o700); // the mode is stated whatever the umask is
   const codexHome = join(home, ".codex");
   const authLink = join(codexHome, "auth.json");
 
@@ -170,6 +173,7 @@ export function createCodexHermeticHome(
 
   try {
     mkdirSync(codexHome, { mode: 0o700 });
+    chmodSync(codexHome, 0o700); // the mode is stated whatever the umask is
     if (linkLogin) {
       try {
         loginLinks.hard(sourceAuth, authLink);

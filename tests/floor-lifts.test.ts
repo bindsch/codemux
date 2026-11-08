@@ -128,6 +128,69 @@ describe("the process-tree walk over a synthetic table", () => {
     }
   });
 
+  test("the post-exit group address is refused when no still-ours member holds it (round 401, item 8)", () => {
+    // The child was reaped and its pid may have been recycled into a
+    // stranger's group leader: a bare -pid SIGKILL then reaches that
+    // stranger's whole group. The group address is now used only when the
+    // table lists a member of that group that is still ours. Here the
+    // child's pid 100 is gone from the table and the only member with
+    // pgid 100 was deleted as not still ours — nothing holds the address,
+    // so no signal goes out at all.
+    const kill = spyOn(process, "kill").mockImplementation(() => true);
+    const table = spyOn(processTable, "readProcessTable").mockImplementation(
+      () => new Map([[500, entry(1, 500)]])
+    );
+    try {
+      const tree = target(100, new Map([[101, entry(100, 100)]]));
+      tree.childExited = true;
+      signalProcess(tree, "SIGKILL", "tree");
+      expect(kill).not.toHaveBeenCalled();
+
+      // Only the leader slot is listed, under the child's own pid: the
+      // child was reaped, so that entry is a recycled pid, and the address
+      // stays refused.
+      kill.mockClear();
+      table.mockImplementation(() => new Map([[100, entry(1, 100, "s9")]]));
+      const recycled = target(100, new Map([[101, entry(100, 100, "s0")]]));
+      recycled.childExited = true;
+      signalProcess(recycled, "SIGKILL", "tree");
+      expect(kill).not.toHaveBeenCalled();
+    } finally {
+      table.mockRestore();
+      kill.mockRestore();
+    }
+  });
+
+  test("a member still in the child's group keeps the post-exit group address (round 401, item 8)", () => {
+    // The control: the group's member is remembered and unchanged, so the
+    // old reach holds — the member is signaled individually at SIGKILL and
+    // the group address fires with it.
+    const kill = spyOn(process, "kill").mockImplementation(() => true);
+    const table = spyOn(processTable, "readProcessTable").mockImplementation(
+      () => new Map([[101, entry(100, 100)]])
+    );
+    try {
+      const tree = target(100, new Map([[101, entry(100, 100)]]));
+      tree.childExited = true;
+      signalProcess(tree, "SIGKILL", "tree");
+      expect(kill).toHaveBeenCalledWith(101, "SIGKILL");
+      expect(kill).toHaveBeenCalledWith(-100, "SIGKILL");
+
+      // A member nobody remembered (forked between two snapshots) carries
+      // the child's group id only by descending from the child, so it
+      // keeps the address alive: the group kill is what reaches it.
+      kill.mockClear();
+      table.mockImplementation(() => new Map([[102, entry(1, 100, "s9")]]));
+      const orphan = target(100, new Map());
+      orphan.childExited = true;
+      signalProcess(orphan, "SIGKILL", "tree");
+      expect(kill).toHaveBeenCalledWith(-100, "SIGKILL");
+    } finally {
+      table.mockRestore();
+      kill.mockRestore();
+    }
+  });
+
   test("the Windows arm reaches the immediate child only, the documented limit (review rounds 232, 235)", () => {
     // Windows has no process groups and no process table reader, so a
     // tree-scoped signal cannot reach descendants; docs/sessions.md states

@@ -59,7 +59,6 @@ export async function runDirect(
   const redirectCheck = launchRedirectCheck(
     adapter.id,
     env,
-    request.passthroughEnv,
     cwd
   );
   const stdinInput = adapter.getStdinInput(request);

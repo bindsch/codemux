@@ -66,9 +66,7 @@ export async function runInteractive(
   // which for an adapter with its own environment view can disagree (a
   // redirect visible to the child but absent here escaped both the pin
   // and the gate; review round 338, item 13).
-  const redirectCheck = launchRedirectCheck(
-    this.id, env, passthroughEnv, workdir
-  );
+  const redirectCheck = launchRedirectCheck(this.id, env, workdir);
   assertExecutablesUnchanged(command, this.id, undefined, redirectCheck === null ? [] : [redirectCheck]);
   // The spawn rides the wait itself (review round 223): guardedWait
   // installs its signal handlers before running it, so a SIGTERM or SIGHUP

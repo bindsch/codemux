@@ -3,7 +3,7 @@
 // them. src/codex-provider.ts owns the override and re-exports this.
 
 import { createHash } from "node:crypto";
-import { lstatSync, mkdtempSync, renameSync } from "node:fs";
+import { chmodSync, lstatSync, mkdtempSync, renameSync } from "node:fs";
 import { basename, join } from "node:path";
 import { assertTrustedDirectory, prepareRunDirParent } from "../hermetic-home.js";
 import {
@@ -155,6 +155,10 @@ export function createCodexSessionProviderHome(
   // session's home was made under.
   const parentRecord = recordTrustedParent(parent);
   const codexHome = mkdtempSync(join(parent, `run-${process.pid}-`));
+  // mkdtemp's 0700 is masked by the umask; the mode is stated whatever the
+  // umask is (review round 401, item 1): a 0500 home would refuse the
+  // config write below and end the session at its spawn.
+  chmodSync(codexHome, 0o700);
   // The home's own identity, remembered at creation (review round 292):
   // the shared parent is writable by every sandboxed codex child, so one
   // can rename this home away and park another user-owned directory at

@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
+import { writeOwnedSync } from "./fs-durable.js";
 import { join, resolve } from "node:path";
 import { prepareRunDirParent } from "./hermetic-home.js";
 import { hasActiveCapturedCommand } from "./process-runner.js";
@@ -109,6 +110,9 @@ export function createKimiHermeticHome(sourceBrandHome: string, toolsNone = fals
   // Recorded for the finalizer's revalidation (src/safe-remove.ts).
   const parentRecord = recordTrustedParent(parent);
   const home = mkdtempSync(join(parent, `run-${process.pid}-`));
+  // mkdtemp's and mkdir's modes are masked by the umask; each is stated
+  // right after creation, whatever the umask (review round 401, item 1).
+  chmodSync(home, 0o700);
   const kimiHome = join(home, ".kimi-code");
   const skillsDir = join(home, "skills-dir");
   const agentFile = join(home, "agent.md");
@@ -126,8 +130,10 @@ export function createKimiHermeticHome(sourceBrandHome: string, toolsNone = fals
   track(hook);
   try {
     mkdirSync(kimiHome, { mode: 0o700 });
+    chmodSync(kimiHome, 0o700);
     mkdirSync(skillsDir, { mode: 0o700 });
-    writeFileSync(join(kimiHome, "config.toml"), config, { mode: 0o600 });
+    chmodSync(skillsDir, 0o700);
+    writeOwnedSync(join(kimiHome, "config.toml"), config, 0o600);
     if (!printOnly) symlinkSync(resolve(sourceBrandHome, "credentials"), join(kimiHome, "credentials"), "dir");
     // `region` and `device_id` sit in the brand home a previous kimi child
     // could write, so they are read through the bounded no-follow reader:
@@ -144,11 +150,12 @@ export function createKimiHermeticHome(sourceBrandHome: string, toolsNone = fals
       }
     });
     for (const file of stateFiles) {
-      if (file) writeFileSync(join(kimiHome, file.name), file.bytes, { mode: 0o600 });
+      if (file) writeOwnedSync(join(kimiHome, file.name), file.bytes, 0o600);
     }
-    writeFileSync(agentFile, ["---", "name: codemux-hermetic",
+    // Modes stated on the descriptor, whatever the umask (round 401, item 1).
+    writeOwnedSync(agentFile, ["---", "name: codemux-hermetic",
       "description: Private profile with the default prompt.",
-      ...(toolsNone ? ["tools: []"] : []), "---", "", "${base_prompt}", ""].join("\n"), { mode: 0o600 });
+      ...(toolsNone ? ["tools: []"] : []), "---", "", "${base_prompt}", ""].join("\n"), 0o600);
     return { home, kimiHome, skillsDir, agentFile, finalize };
   } catch (error) { finalize(); throw error; }
 }
