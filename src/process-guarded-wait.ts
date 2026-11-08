@@ -95,15 +95,22 @@ export async function guardedWait(
   let timedOut = false;
 
   const onSigint = () => {
-    sigintCount++;
-    if (sigintCount >= 3) {
-      armForceKill();
-      return;
+    // A FIXED window from the burst's first interrupt, the one docs/cli.md
+    // documents ("three SIGINTs within a second"): re-arming the reset on
+    // every interrupt made the window slide, so presses at 0, 0.9 and
+    // 1.8 s -- never three inside one second -- still forced the child's
+    // termination (review round 351). The first interrupt of a burst
+    // starts the window; the timer ends it and the next interrupt starts
+    // a new one.
+    if (sigintCount === 0) {
+      if (sigintTimer) clearTimeout(sigintTimer);
+      sigintTimer = setTimeout(() => {
+        sigintCount = 0;
+        sigintTimer = null;
+      }, SIGNAL_BURST_WINDOW_MS);
     }
-    if (sigintTimer) clearTimeout(sigintTimer);
-    sigintTimer = setTimeout(() => {
-      sigintCount = 0;
-    }, SIGNAL_BURST_WINDOW_MS);
+    sigintCount++;
+    if (sigintCount >= 3) armForceKill();
   };
   const onSigterm = () => {
     armForceKill();

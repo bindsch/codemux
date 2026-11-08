@@ -343,6 +343,16 @@ nothing: the session had already ended, so the status stays what the event
 said, 0 after a clean end. Only a failed delivery of the event changes the
 status, to at least 1. Every agent follows this rule.
 
+Kimi, OpenCode, and agy learn a fresh session's id from the first turn's
+output and record it beside the stream: the session never waits on the
+registry lock mid-turn. A session that ends with that record still unwritten
+— the lock stayed busy until the end — ends as a crash: the fatal error
+`cannot record the session in the registry` is the verdict, the exit is
+nonzero (1, or the signal's 143 when a signal ended it), the registry holds
+no entry, and the session is not resumable. A resumed session is tracked by
+the record the CLI claimed before the spawn, so the verdict applies to fresh
+sessions only.
+
 Child failures can preserve another nonzero code. Any observed nonzero child
 exit or signal changes the final reason to `harness_failed`, including after
 a requested shutdown. A caller must inspect both exit status and events.

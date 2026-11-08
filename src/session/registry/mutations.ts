@@ -251,6 +251,15 @@ export function recordSessionStart(
   );
 }
 
+/** The fatal every driver reports when a session reaches its end with
+ * its start record still pending (review round 345): the retries stop
+ * at the session's summary with no verdict delivered, the record can
+ * never land, and the session ran untracked — the old synchronous
+ * record's fail-closed verdict, restored at the one point that still
+ * composes the end. */
+export const PENDING_RECORD_FATAL =
+  "cannot record the session in the registry: the lock stayed busy until the session ended";
+
 /** The session-start record for a driver that learns its session id from
  * its first turn's own output stream (kimi, opencode, agy): one lock
  * attempt inside the stream, and when the failure is merely contention
@@ -262,7 +271,9 @@ export function recordSessionStart(
  * outcomes deliver at once — nothing a timer can change (an ENOTDIR
  * blocker or an unwritable directory fails every retry identically) —
  * so the caller's fail-closed rule is unchanged. `settled` stops the
- * retries once the session no longer exists to be recorded. */
+ * retries once the session no longer exists to be recorded — and that
+ * stop delivers nothing, so the driver's end path owes the pending
+ * record its own fail-closed verdict (`PENDING_RECORD_FATAL`). */
 export function recordSessionStartOffStream(
   path: string,
   record: NewSessionRecord,

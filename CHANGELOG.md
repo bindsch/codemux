@@ -134,6 +134,10 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 345, changed scope: a fresh session ending with its first turn's registry record
+  still pending (the lock stayed busy until the end) now fails closed as a crash with the fatal
+  "cannot record the session in the registry" error and a nonzero exit (1, or the signal's 143)
+  on kimi, opencode, and agy; a resumed session is tracked by its claimed record already.
 - Review round 341, whole tree (runtime and credentials): a scode prerelease now orders below
   its own release, so `0.6.0-rc1` no longer passes a `0.6.0` floor; credential backups prune by
   the parsed timestamp and pid, never lexically, so same-millisecond names across pid-digit
@@ -303,7 +307,8 @@ implementation narrative behind it is preserved in the
   column is read again after the probes and names a harness that updated itself while they ran;
   the report saved before that second reading is marked preliminary. Audited ceilings raised on
   live passes of every supported probe: agy 1.5.3, claude and zai 2.1.317, codex 0.166.0, cursor
-  2026.11.05, kimi 2.5.0, opencode 1.19.5.
+  2026.11.05, kimi 2.5.2 (2.5.0 on 2026-11-06; 2.5.2 on 2026-11-08 after the binary's own
+  updater fetched it), opencode 1.19.5.
 - Review round 169, whole tree: the process exit code after a session is the one `session_ended`
   reported even when a signal lands while the final event is still being flushed (it used to become
   143), and the session's closing call-ledger line carries that same process exit code, nonzero when

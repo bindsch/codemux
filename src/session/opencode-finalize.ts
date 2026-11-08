@@ -35,9 +35,9 @@ import { SessionStopEscalation } from "./stop-escalation.js";
 import { awaitSpawnWithGrace, holdAbandonedSpawn } from "./spawn-wait.js";
 import { buildEvent } from "./protocol.js";
 import {
+  PENDING_RECORD_FATAL,
   recordSessionStartOffStream,
   releaseSessionRecord,
-  touchSession,
 } from "./registry.js";
 import { addUsage } from "./usage.js";
 import type { SessionEndReason } from "./agy-driver.js";
@@ -89,6 +89,9 @@ export abstract class OpenCodeDriverCore {
   protected turnUsage: ResultUsageBlock | null = null;
   protected turnError: string | null = null;
   protected registryRecorded = false;
+  /** A start record is out and its verdict has not landed: still out at
+   * the summary, the end path fails the session closed (review 345). */
+  protected recordPending = false;
   /** The CLI claimed the record for a resume before anything spawned
    * (`adoptResumeClaim`): every end path releases the claim. */
   protected resumeClaimed = false;
@@ -298,6 +301,15 @@ export abstract class OpenCodeDriverCore {
         drainFailureMessage("opencode", this.lastChildOutcome!, this.fsm.state === "turn_active")
       );
     }
+    // A start record still pending at the summary never lands: `settled`
+    // (set below, no yield between) stops the retries, so the session ran
+    // untracked — fail closed like the old synchronous record (round 345).
+    if (this.recordPending && !this.resumeClaimed) { // fresh sessions only (round 356)
+      this.recordPending = false;
+      reason = "crash";
+      this.endExitCode = Math.max(this.endExitCode, 1);
+      this.emitError(true, "codemux", PENDING_RECORD_FATAL);
+    }
     if (turnOpenAtFinish && this.fsm.state === "turn_active") {
       // The open turn's `turn_started` must be answered (review live10/
       // live12): synthesize the completion the harness cannot. Failed on
@@ -416,13 +428,16 @@ export abstract class OpenCodeDriverCore {
    * a timer off the turn's output stream (review round 341), never the
    * synchronous full-budget wait; `onRecorded` runs once the verdict is
    * in. A null registryPath records nothing and reports success at once;
-   * a null session id reports nothing (the old guard's exact behavior). */
+   * a null session id reports nothing (the old guard's exact behavior).
+   * A record still pending at the end fails the session closed
+   * (`finish`, review round 345). */
   protected recordStart(onRecorded: () => void): void {
     if (this.options.registryPath === null) {
       onRecorded();
       return;
     }
     if (this.sessionId === null) return;
+    this.recordPending = true;
     recordSessionStartOffStream(
       this.options.registryPath,
       {
@@ -445,6 +460,7 @@ export abstract class OpenCodeDriverCore {
       },
       () => this.settled,
       (outcome) => {
+        this.recordPending = false;
         if (!outcome.ok) {
           // An untracked live session must not run (§4.8).
           this.emitError(
@@ -466,21 +482,8 @@ export abstract class OpenCodeDriverCore {
     );
   }
 
-  /** The turn path's best-effort activity stamp: single-attempt lock,
-   * never a wait (review live13). */
-  protected stampActivity(): void {
-    if (!this.registryRecorded || this.options.registryPath === null) return;
-    const outcome = touchSession(this.options.registryPath, this.sessionId ?? "", {
-      attempts: 1,
-    });
-    if (!outcome.ok && !this.touchWarned) {
-      this.touchWarned = true;
-      console.error(
-        `codemux: cannot stamp the session registry for ${this.sessionId} ` +
-          `(${outcome.error}); activity tracking may lag`
-      );
-    }
-  }
+  // stampActivity (review live13) moved beside its only caller,
+  // opencode-driver.ts's completeTurn.
 
   protected sessionIdOrEmpty(): string {
     return this.sessionId ?? "";

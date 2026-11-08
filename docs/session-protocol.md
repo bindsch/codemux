@@ -239,6 +239,12 @@ Clients must be able to send that prompt before seeing `session_started`.
 `input_accepted` and `user_message` may therefore precede it. A queued Codex
 message is echoed on acceptance, potentially without a turn ID.
 
+A driver that defers `session_started` also defers the session's registry
+record beside the stream. A session that ends with that record still
+unwritten — the registry lock stayed busy until the end — ends as a crash: a
+fatal `cannot record the session in the registry` error, `reason: "crash"`,
+a nonzero summary exit, and `resumable: false`.
+
 A successful derived Claude/ZAI file change follows its matching successful
 tool result. Its raw line is the earlier tool-call line. A candidate whose
 result never arrived is dropped when its turn completes, so no later turn's

@@ -30,6 +30,7 @@ export {
 } from "./registry/format.js";
 export {
   discardUnconfirmedRecord,
+  PENDING_RECORD_FATAL,
   probeRegistryForStart,
   recordSessionEnd,
   recordSessionStart,

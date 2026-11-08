@@ -13,6 +13,7 @@ import {
   crashSynthesisReason,
   SESSION_SIGNAL_EXIT_CODE,
 } from "../process.js";
+import { PENDING_RECORD_FATAL } from "../registry.js";
 import {
   CAPABILITIES,
   type KimiEffect,
@@ -295,11 +296,37 @@ export function step(
     }
     case "children_settled": {
       if (state.end.cause === null) return []; // spurious: no end owns
+      const effects: KimiEffect[] = [];
+      // A start record still pending at the summary never lands: the
+      // off-stream retries stop the moment this transition ends the
+      // session (the driver's settled predicate reads the phase), so the
+      // session ran untracked — never announced, no record a --resume
+      // could find. Fail closed with the record failure's own verdict
+      // (review round 345): the fatal, a crash end, exit 1. The reason
+      // is the crash head-on, not the first cause's with a raised code —
+      // the one summary-time override besides sawHarnessFailure, because
+      // the untracked session is the outcome the caller must see. A
+      // resumed session is tracked already -- the CLI's claim wrote its
+      // record before the spawn -- so its pending run-start record is
+      // not this verdict (review round 356).
+      const untracked = state.recordPending && !state.resumeClaimed;
+      if (untracked) {
+        state.recordPending = false;
+        state.end.record({ reason: "crash", code: 1 });
+        state.fatalClosed = true;
+        state.fatalMessage ??= PENDING_RECORD_FATAL;
+        state.confirmed = false;
+        effects.push({
+          kind: "error",
+          fatal: true,
+          source: "codemux",
+          message: PENDING_RECORD_FATAL,
+        });
+      }
       const cause = state.end.cause;
       const failedChild = state.sawHarnessFailure;
-      const endReason = failedChild ? "harness_failed" : cause.reason;
+      const endReason = untracked ? "crash" : failedChild ? "harness_failed" : cause.reason;
       const endCode = Math.max(state.end.exitCode, failedChild ? 1 : 0);
-      const effects: KimiEffect[] = [];
       if (state.turn !== null) {
         // The turn_started the caller saw must be answered (the
         // synthesized completion): failed when any fatal owns the story

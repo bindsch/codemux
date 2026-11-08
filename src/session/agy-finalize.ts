@@ -17,10 +17,19 @@ import {
   type SessionChildOutcome,
 } from "./process.js";
 import { buildEvent } from "./protocol.js";
-import { recordSessionStartOffStream, releaseSessionRecord } from "./registry.js";
+import {
+  PENDING_RECORD_FATAL,
+  recordSessionStartOffStream,
+  releaseSessionRecord,
+} from "./registry.js";
 import { AgyDriverIo, type SessionEndReason } from "./agy-driver-io.js";
 
 export abstract class AgyFinalize extends AgyDriverIo {
+  /** A start record is out (`recordStart`) and its verdict has not
+   * landed: the end path fails the session closed when it is still out
+   * at the summary (review round 345) — the off-stream retries stop
+   * there, so no verdict can arrive after it. */
+  private recordPending = false;
   /** The deferred session_started (see the class comment): the FSM has
    * already left `starting`; this is the caller-facing announcement and
    * the registry record. Codemux-originated, so raw is null — the
@@ -54,12 +63,15 @@ export abstract class AgyFinalize extends AgyDriverIo {
   private recordStart(onRecorded: () => void): void {
     // A null registryPath records nothing and announces; a null
     // conversation id is the unreachable defensive case and announces
-    // nothing (the old guard's exact behavior).
+    // nothing (the old guard's exact behavior). A record still pending
+    // when the end path summarizes fails the session closed there
+    // (`finish`, review round 345).
     if (this.options.registryPath === null) {
       onRecorded();
       return;
     }
     if (this.conversationId === null) return;
+    this.recordPending = true;
     recordSessionStartOffStream(
       this.options.registryPath,
       {
@@ -83,6 +95,7 @@ export abstract class AgyFinalize extends AgyDriverIo {
       },
       () => this.settled,
       (outcome) => {
+        this.recordPending = false;
         if (!outcome.ok) {
           // An untracked live session must not run (§4.8): the registry is
           // what makes resume's guards answerable, so failing to record it
@@ -185,6 +198,21 @@ export abstract class AgyFinalize extends AgyDriverIo {
         "harness",
         drainFailureMessage("agy", childOutcome!, this.fsm.state === "turn_active")
       );
+    }
+    // A start record still pending at the summary never lands: `settled`
+    // (set a few lines below, with no yield between here and there) is
+    // the off-stream retries' stop predicate, so this is the record's
+    // last honest reading. The session ran untracked — the old
+    // synchronous record failed closed here, and the off-stream move
+    // must not lose that (review round 345): the fatal, a crash end,
+    // exit 1.
+    // A resumed conversation is tracked by the record the CLI's claim
+    // wrote before the spawn (review round 356): fresh sessions only.
+    if (this.recordPending && !this.resumeClaimed) {
+      this.recordPending = false;
+      reason = "crash";
+      this.endExitCode = Math.max(this.endExitCode, 1);
+      this.emitError(true, "codemux", PENDING_RECORD_FATAL);
     }
     if (turnOpenAtFinish && this.fsm.state === "turn_active") {
       // Review live10: agy has no interrupt carrier, so an end path with a

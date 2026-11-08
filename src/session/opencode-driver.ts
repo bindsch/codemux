@@ -44,6 +44,7 @@ import {
   type InputRejectionReason,
 } from "./protocol.js";
 import { addUsage } from "./usage.js";
+import { touchSession } from "./registry.js";
 import { OpenCodeTurns } from "./opencode-turns.js";
 import type { OpenCodeDriverOptions } from "./opencode-finalize.js";
 
@@ -388,6 +389,24 @@ export class OpenCodeSessionDriver extends OpenCodeTurns {
     );
     this.turnStartedAt.delete(turnId);
     this.stampActivity();
+  }
+
+  /** The turn path's best-effort activity stamp: single-attempt lock,
+   * never a wait (review live13). Lives beside its only caller
+   * (completeTurn); the registry lifecycle stays in
+   * opencode-finalize.ts. */
+  protected stampActivity(): void {
+    if (!this.registryRecorded || this.options.registryPath === null) return;
+    const outcome = touchSession(this.options.registryPath, this.sessionId ?? "", {
+      attempts: 1,
+    });
+    if (!outcome.ok && !this.touchWarned) {
+      this.touchWarned = true;
+      console.error(
+        `codemux: cannot stamp the session registry for ${this.sessionId} ` +
+          `(${outcome.error}); activity tracking may lag`
+      );
+    }
   }
 
   /** Queue one event line. The session's end events (the option) ride

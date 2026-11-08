@@ -5,7 +5,11 @@
  * harness writes, and failing or stalling sinks. */
 
 import { afterAll, describe, expect, test } from "bun:test";
+import { rmSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { basename, dirname, join } from "node:path";
 import { readRegistry } from "../src/session/registry.js";
+import { currentProcessIdentity } from "../src/session/registry-io.js";
 import {
   cleanups,
   fakeRecord,
@@ -394,5 +398,64 @@ describe("agy session e2e - lifecycle", () => {
     // run() must resolve (this await is the regression: it used to hang
     // behind the flush poll loop) and carry the delivery failure.
     expect(await session.code).toBe(1);
+  });
+
+  test("a session that ends with its start record still pending fails closed (review 345)", async () => {
+    // The first result names the conversation and the record retries off
+    // the stream behind a rival's live lock; a shutdown that lands while
+    // the lock is still held leaves the record pending, and the retries
+    // stop with no verdict delivered. The session ran untracked, so the
+    // end must fail closed the way the old synchronous record did: the
+    // fatal, a crash end, exit 1, and nothing in the registry.
+    const session = await startSession();
+    const registryPath = session.options.registryPath as string;
+    const lockPath = `${registryPath}.lock`;
+    const identity = currentProcessIdentity();
+    const rival = join(
+      dirname(lockPath),
+      `.${basename(lockPath)}.${identity.pid}.${randomBytes(8).toString("hex")}.held`
+    );
+    writeFileSync(rival, `${identity.pid}\n${identity.start ?? ""}\n`, { mode: 0o600 });
+    const notices: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      notices.push(args.map(String).join(" "));
+    };
+    try {
+      send(session.driver, { type: "user", text: "scenario:basic one" });
+      await waitFor(
+        session.events,
+        (events) => events.find((event) => event.type === "turn_completed" && event.turn_id === "t1"),
+        "turn_completed t1"
+      );
+      // The record is out and retrying behind the rival; the deferred
+      // announcement has not come.
+      expect(session.events.find((event) => event.type === "session_started")).toBeUndefined();
+      expect(
+        notices.filter((line) => line.includes("registry lock is busy recording session"))
+      ).toHaveLength(1);
+      send(session.driver, { type: "shutdown" });
+      const error = await waitFor(
+        session.events,
+        (events) => events.find((event) => event.type === "error" && event.fatal === true),
+        "the fatal error"
+      );
+      expect(error.source).toBe("codemux");
+      expect(error.message).toContain("cannot record the session in the registry");
+      expect(error.message).toContain("the lock stayed busy until the session ended");
+      expect(await session.code).toBe(1);
+      const ended = session.events[session.events.length - 1] as Event;
+      expect(ended.type).toBe("session_ended");
+      expect(ended.reason).toBe("crash");
+      expect(ended.resumable).toBe(false);
+      const registry = readRegistry(registryPath);
+      expect(
+        registry.outcome === "ok" &&
+          registry.file.sessions.some((record) => record.id === "conv-fake-1")
+      ).toBe(false);
+    } finally {
+      console.error = originalError;
+      rmSync(rival, { force: true });
+    }
   });
 });

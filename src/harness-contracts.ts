@@ -254,12 +254,13 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
     maxAudited: "0.186.0",
   },
   kimi: {
-    // Ceiling 2.5.0 from the 2026-11-06 live gate (docs/harnesses.md names the probes).
+    // Ceiling 2.5.2 from the 2026-11-08 live gate (docs/harnesses.md names the probes);
+    // 2.5.0 was the 2026-11-06 ceiling, and 2.5.2 kept every wire identifier codemux reads.
     scheme: "semver",
     versionArgs: ["--version"],
     pattern: new RegExp(`^(\\d+\\.\\d+\\.\\d+${SEMVER_PRERELEASE})`),
     min: "0.31.0",
-    maxAudited: "2.5.0",
+    maxAudited: "2.5.2",
   },
   openhands: {
     scheme: "semver",
