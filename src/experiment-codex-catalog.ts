@@ -81,7 +81,12 @@ function validateSchema(value: unknown): void {
       // Non-empty is a MUST ("MUST be a non-empty array"), like the shape.
       if (!Array.isArray(field) || field.length === 0) throw new Error(`Invalid MCP schema ${key}`);
       for (const child of field) validateSchema(child);
-    } else if (key === "items" || (key === "additionalProperties" && typeof field !== "boolean")) {
+    } else if ((key === "items" || key === "additionalProperties") && typeof field !== "boolean") {
+      // A boolean schema (items:false allows no elements, items:true or
+      // additionalProperties:true/false the draft's own literals) is valid
+      // JSON Schema with no fields to recurse into; the subset comparison
+      // below already holds it to deep equality with the original (round
+      // 381 — demanding an object here rejected an unchanged schema).
       validateSchema(field);
     }
   }

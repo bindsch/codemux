@@ -104,7 +104,7 @@ package cache persists between runs.
 ## Cursor on macOS
 
 Cursor's default login lives in the macOS Keychain, which scode blocks.
-For sandboxed headless runs, codemux sets `AGENT_CLI_CREDENTIAL_STORE=file`
+For sandboxed runs, headless and TUI alike, codemux sets `AGENT_CLI_CREDENTIAL_STORE=file`
 when `~/.cursor/auth.json` exists under the adapter's HOME, unless
 `AGENT_CLI_CREDENTIAL_STORE` is passed through with
 `--pass-env AGENT_CLI_CREDENTIAL_STORE` while set — an empty-string value

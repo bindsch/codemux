@@ -1,6 +1,8 @@
 import type { StdoutSink } from "./process-runner.js";
+import type { RunResult } from "./types.js";
 
 export const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
+export const OUTPUT_LIMIT_EXIT_CODE = 125;
 
 export class OutputLimitError extends Error {
   /** What the failure reports of the stream, itself bounded at the capture
@@ -26,6 +28,36 @@ export function boundedUtf8Prefix(text: string, maxBytes: number): string {
   let end = maxBytes;
   while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
   return bytes.subarray(0, end).toString("utf8");
+}
+
+/** The exit-125 result for a run that failed at the capture limit. Both
+ * streams can fail past the limit in one run: each keeps its own partial
+ * output, whichever failure settled first (review round 381 — the second
+ * stream's partial, up to the full limit, used to be discarded). */
+export function captureLimitFailure(
+  first: OutputLimitError,
+  stdout: { value?: string; error?: unknown },
+  stderr: { value?: string; error?: unknown }
+): RunResult {
+  const partialOf = (
+    streamName: "stdout" | "stderr",
+    captured: { value?: string; error?: unknown }
+  ): string =>
+    first.streamName === streamName
+      ? first.partialOutput
+      : captured.error instanceof OutputLimitError
+        ? captured.error.partialOutput
+        : captured.value ?? "";
+  const stderrOutput = partialOf("stderr", stderr);
+  const separator =
+    stderrOutput.length > 0 && !stderrOutput.endsWith("\n") ? "\n" : "";
+  return {
+    stdout: partialOf("stdout", stdout),
+    stderr: `${stderrOutput}${separator}Error: ${first.message}\n`,
+    exitCode: OUTPUT_LIMIT_EXIT_CODE,
+    success: false,
+    captureLimitExceeded: true,
+  };
 }
 
 

@@ -31,7 +31,10 @@ Environment rows, then one row per installed harness.
 Each harness row runs the free checks a launch would run, in the same
 order: binary trust, version contract, feature floors, the scode floor for
 harnesses that need a newer sandbox, provider override validity, login
-state, and the usage window behind the quota gate. Binary trust runs even
+state, and the usage window behind the quota gate. The usage summary's
+`week N% used` line names the weekly window with the quota gate's own rule:
+a kind that names a week or a one-week span within an hour of provider
+rounding, whatever the provider called the window. Binary trust runs even
 when a harness has no version contract, so an untrusted or missing binary
 never prints as `no contract`. The row's state is the
 first broken candidate, else the first warn candidate, else `OK`; the row

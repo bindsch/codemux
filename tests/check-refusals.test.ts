@@ -145,6 +145,27 @@ printf 'OK\\n'; printf ran >> ${JSON.stringify(ranMarker)}; exit 0`,
     }
   });
 
+  test("the codex experiment-mcp refusal precedes the spec-prefix demand (round 381)", async () => {
+    // A codex check is refused outright; an operator whose spec also lacks
+    // accept_harness_prefix used to be sent to fix the spec first.
+    const dir = mkdtempSync(join(tmpdir(), "codemux-check-codex-order-"));
+    const prefixless = join(dir, "spec.json");
+    writeFileSync(prefixless, JSON.stringify({ name: "probe", command: "/bin/true", args: [], env: [] }));
+    const fake = createFakeBinaryEnv({ codex: "exit 0" });
+    try {
+      const { stderr, exitCode } = await runCli(
+        ["check", "-a", "codex", "--hermetic", "--tools", "none", "--experiment-mcp", prefixless],
+        fake.env
+      );
+      expect(exitCode).toBe(64);
+      expect(stderr).toContain("Codex --experiment-mcp supports run only");
+      expect(stderr).not.toContain("accept_harness_prefix");
+    } finally {
+      fake.cleanup();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("an adapter refusal wins over the quota gate (round 12, edges 3)", async () => {
     // check used to run the gate before the request reached the adapter,
     // so a drained account reported the quota refusal and hid opencode's

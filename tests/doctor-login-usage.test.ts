@@ -249,6 +249,23 @@ describe("doctor usage rows over a fake usagemux", () => {
     expect(windowLine({ windows: [] } as never)).toBe("no window reported");
   });
 
+  test("a weekly span renders the week line whatever the window's name (review round 381)", () => {
+    // The gate's own rule (quota-gate.ts isWeekly) counts a one-week span
+    // as weekly without reading the name; the row's summary used the name
+    // test alone, so a weekly-by-span pool (the repo's own cursor-grok-bot
+    // example) never rendered a "week N% used" line.
+    const spanWindow = (windowMinutes: number) => ({
+      kind: "cursor-grok-bot",
+      usedPercent: 98,
+      remainingPercent: 2,
+      windowMinutes,
+      resetsAt: null,
+    });
+    expect(windowLine({ windows: [spanWindow(10_080)] } as never)).toContain("week 98% used");
+    // A longer span (a monthly cap) is not weekly, with or without the name.
+    expect(windowLine({ windows: [spanWindow(43_829)] } as never)).toBe("no window reported");
+  });
+
   test("a window below the ceiling is QUOTA-LOW and broken, with the gate's verdict", async () => {
     const fake = createFakeBinaryEnv(
       greenBase({ claude: claudeGreen, usagemux: fakeUsagemux({ remainingPercent: 5, usedPercent: 95 }) })

@@ -189,7 +189,7 @@ The Kimi envelope is bounded after serialization, like Codex's: an experiment en
 past the bound drops `events` and truncates the reply with the same note, while a
 plain `--result-json` run past the bound fails with exit 125, drops the reply, and
 names the byte bound on stderr beside any failure diagnostic the run had already
-set (a parse error's message survives the bound refusal). A plain run whose first stdout line is a one-line JSON object carrying a string `type` is read as the stream-json wire (the wire's forward-compatible events are typed), so a plain JSON answer of that shape fails as a broken wire instead of passing through; an untyped JSON value passes through as the answer. It names the error, preserves complete events before a malformed or truncated line, and reports `failure_code: null` for non-experiment runs.
+set (a parse error's message survives the bound refusal). A plain run whose first stdout line is a one-line JSON object carrying a string `type` is read as the stream-json wire (the wire's forward-compatible events are typed), so a plain JSON answer of that shape fails as a broken wire instead of passing through; an untyped JSON value passes through as the answer. It names the error, preserves complete events before a malformed or truncated line, and reports `failure_code: null` for non-experiment runs. When it reads a captured envelope back, a parse error says its line numbers count the reconstructed stream, not the original capture.
 
 Every `--result-json` path also measures the envelope it would emit — every
 original field plus the codemux block, JSON-escaped, with the final newline —

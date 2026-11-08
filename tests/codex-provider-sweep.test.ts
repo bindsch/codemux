@@ -394,4 +394,35 @@ describe("codex provider session homes (review D1)", () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  test("a session-home name with no registry id is spared, however stale (review round 381)", () => {
+    // The finding: an entry whose name yields no parseable id skipped the
+    // registry consult entirely (the gate tested only `id !== undefined`)
+    // and was removed by age alone, contradicting the branch's own rule
+    // that only a POSITIVE `free` ever removes. No id means no registry
+    // key, so no ownership proof exists: the entry keeps the D7 spare —
+    // while a keyed stale home the registry has freed still goes, so the
+    // branch itself stays live.
+    const home = makeCodexHome();
+    const parent = prepareRunDirParent(home, ".codemux-provider");
+    const stale = new Date(Date.now() - 30 * 86_400_000);
+    // Neither name carries the `session-home-<12 hex>-<id>` shape: one has
+    // no key at all, one ends at the hash with no id behind the dash.
+    const idless = join(parent, "session-home-nokeyedid");
+    const hashOnly = join(parent, "session-home-abc123def456");
+    for (const dir of [idless, hashOnly]) {
+      mkdirSync(dir);
+      utimesSync(dir, stale, stale);
+    }
+    const freed = join(parent, "session-home-abc123def456-cafecafecafecafe");
+    mkdirSync(freed);
+    utimesSync(freed, stale, stale);
+    // The next prepareRunDirParent (any session or run start) sweeps, with
+    // the registry answering `free` for the keyed home alone.
+    prepareRunDirParent(home, ".codemux-provider", (id) =>
+      id === "cafecafecafecafe" ? "free" : "unknown");
+    expect(existsSync(idless)).toBe(true);
+    expect(existsSync(hashOnly)).toBe(true);
+    expect(existsSync(freed)).toBe(false);
+  });
 });

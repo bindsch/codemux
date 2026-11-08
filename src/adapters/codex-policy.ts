@@ -109,11 +109,21 @@ export abstract class CodexPolicy extends BaseAdapter {
    * with surrounding whitespace is refused too: codex keeps the padding, so
    * the harness state would land in a directory whose name still carries it
    * (the round13 doc-drift finding -- the checks now match what the docs
-   * already promised).
+   * already promised). An empty value is refused rather than treated as
+   * unset (review round 381, kimi's rule): the child still receives the
+   * empty value while codemux falls back to the default home, so the run's
+   * directories and the harness state would disagree.
    */
   protected realCodexHome(request: RunRequest): string {
     const passedThrough = request.passthroughEnv?.includes("CODEX_HOME") ?? false;
     const configured = this.environment.CODEX_HOME;
+    if (passedThrough && configured === "") {
+      throw new UsageRefusalError(
+        "CODEX_HOME must not be empty when passed through; the child still " +
+          "receives the empty value while codemux falls back to the default " +
+          "home — unset the variable or give it an absolute path"
+      );
+    }
     if (passedThrough && configured) {
       if (!isAbsolute(configured)) {
         throw new UsageRefusalError("CODEX_HOME must be an absolute path");

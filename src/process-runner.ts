@@ -1,7 +1,7 @@
 import { signalProcess } from "./process-signal.js";
 export { signalProcess } from "./process-signal.js";
 import { assertExecutablesUnchanged, type ExecutableCheck } from "./executable-security.js";
-import { OutputLimitError, readBounded } from "./process-capture.js";
+import { captureLimitFailure, OutputLimitError, readBounded } from "./process-capture.js";
 import { trackStdinDelivery } from "./process-stdin.js";
 import { writeRunStdin } from "./process-stdin-repeat.js";
 import {
@@ -14,7 +14,7 @@ import {
 } from "./process-runner-signals.js";
 export { hasActiveCapturedCommand } from "./process-runner-signals.js";
 export { guardedWait } from "./process-guarded-wait.js";
-export { MAX_CAPTURE_BYTES } from "./process-capture.js";
+export { MAX_CAPTURE_BYTES, OUTPUT_LIMIT_EXIT_CODE } from "./process-capture.js";
 import {
   createTerminationTarget,
   waitForDescendantsGrace,
@@ -50,7 +50,6 @@ const SIGNALED_PEER_WAIT_MS = FORCE_KILL_DELAY_MS + PIPE_GIVE_UP_MS + 2 * FORCE_
 const TIMEOUT_EXIT_CODE = 124;
 // 128 + SIGTERM: the child tree was terminated after a signal to codemux.
 export const SIGNAL_EXIT_CODE = 143;
-export const OUTPUT_LIMIT_EXIT_CODE = 125;
 
 /** A capture failure of a command that ran: the child was spawned and a
  * stream's output could not be captured (invalid UTF-8). Wrapping marks the
@@ -354,22 +353,11 @@ export async function runCapturedCommand(
     if (stdin.failed()) throw new CapturedRunFailure(stdin.error());
     const captureError = firstCaptureError;
     if (captureError instanceof OutputLimitError) {
+      // Both streams can fail past the limit in one run; the failure
+      // result keeps each stream's own partial output (process-capture.ts).
+      const failure = captureLimitFailure(captureError, stdoutResult, stderrResult);
       firstError = new CapturedRunFailure(captureError);
-      const stdout = captureError.streamName === "stdout"
-        ? captureError.partialOutput
-        : stdoutResult.value ?? "";
-      const stderrOutput = captureError.streamName === "stderr"
-        ? captureError.partialOutput
-        : stderrResult.value ?? "";
-      const separator =
-        stderrOutput.length > 0 && !stderrOutput.endsWith("\n") ? "\n" : "";
-      return failureResult = {
-        stdout,
-        stderr: `${stderrOutput}${separator}Error: ${captureError.message}\n`,
-        exitCode: OUTPUT_LIMIT_EXIT_CODE,
-        success: false,
-        captureLimitExceeded: true,
-      };
+      return failureResult = failure;
     }
     if (captureError) {
       // The command ran and a stream failed to capture: the marker carries

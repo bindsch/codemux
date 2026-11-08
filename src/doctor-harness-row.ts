@@ -7,7 +7,7 @@
  * first warn candidate, else OK.
  */
 
-import { quotaTimeoutSecondsFor, snapshotFreshnessIssue } from "./quota-gate.js";
+import { isWeekly, quotaTimeoutSecondsFor, snapshotFreshnessIssue } from "./quota-gate.js";
 import type { BaseAdapter } from "./adapters/base.js";
 import { scodeBelowFloor } from "./doctor-environment.js";
 import { compareVersions } from "./harness-compatibility.js";
@@ -149,12 +149,14 @@ const notRunUsage = (reason: string): UsageOutcome => ({
 type UsageSnapshotResult = Awaited<ReturnType<typeof fetchUsageSnapshot>>["results"][number];
 
 /** The usage column's window summary. The weekly window is found with the
- * quota gate's own word-bounded test (quota-gate.ts isWeekly): "biweekly"
- * and "weekday" name other cadences and must not render as "week N% used"
- * (review round 361; the gate's round 20, minor 12). */
+ * quota gate's own predicate (quota-gate.ts isWeekly): a one-week span
+ * within an hour of rounding renders the week line whatever the provider
+ * named the window, and so does a kind that names a week; "biweekly" and
+ * "weekday" name other cadences and must not (review rounds 361 and 381;
+ * the gate's round 20, minor 12). */
 export const windowLine = (result: UsageSnapshotResult): string => {
   const primary = result.windows.find((window) => window.kind === "primary");
-  const weekly = result.windows.find((window) => /\bweek(ly)?\b/i.test(window.kind));
+  const weekly = result.windows.find(isWeekly);
   const parts: string[] = [];
   if (primary !== undefined) {
     const remaining =

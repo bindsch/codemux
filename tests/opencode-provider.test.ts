@@ -1,9 +1,11 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -20,6 +22,7 @@ import {
   writeOpencodeProviderConfig,
 } from "../src/opencode-provider.js";
 import type { RunRequest } from "../src/types.js";
+import * as processTable from "../src/process-table.js";
 
 // The provider override's opencode translation: a private config file under
 // the real data directory (OPENCODE_CONFIG) plus a key environment variable
@@ -339,6 +342,71 @@ describe("opencode provider override", () => {
       .toEqual(["provider-999999998-fresh"]);
     expect(statSync(fresh).isDirectory()).toBe(true);
     config.finalize();
+  });
+
+  test("a parent swapped for a symlink mid-sweep never receives the sweep's removal (review round 381)", () => {
+    // The sweep enumerated the parent and then removed stale entries with a
+    // bare recursive rm, although a trusted-parent record already existed
+    // for the finalizer and was never given to the sweep: an opencode child
+    // with write access to the data directory could replace `.codemux`
+    // with a symlink in between, and the rm resolved the intermediate
+    // component like any path operation — into a same-named directory
+    // outside the tree. Every removal now revalidates the recorded parent
+    // (src/safe-remove.ts), and the write refuses to continue through the
+    // replacement. The pid probe is the seam for the race: the swap lands
+    // after the enumeration, right before the stale entry's removal.
+    const home = homeOf();
+    const dataDir = join(home, ".local", "share", "opencode");
+    const parent = join(dataDir, ".codemux");
+    mkdirSync(parent, { recursive: true });
+    const entryName = "provider-999999999-swapped";
+    const stale = join(parent, entryName);
+    mkdirSync(stale);
+    writeFileSync(join(stale, "opencode.json"), "x");
+    const threeDaysAgo = new Date(Date.now() - 3 * 86_400_000);
+    utimesSync(join(stale, "opencode.json"), threeDaysAgo, threeDaysAgo);
+    utimesSync(stale, threeDaysAgo, threeDaysAgo);
+    // The victim tree a naive rm would reach into: a same-named stale
+    // entry inside a directory outside the parent. The whole tree must
+    // read as stale, or the age walk spares the entry before any removal
+    // is attempted.
+    const victim = join(home, "victim");
+    const victimChild = join(victim, entryName);
+    mkdirSync(victimChild, { recursive: true });
+    writeFileSync(join(victimChild, "opencode.json"), "kept\n");
+    utimesSync(join(victimChild, "opencode.json"), threeDaysAgo, threeDaysAgo);
+    utimesSync(victimChild, threeDaysAgo, threeDaysAgo);
+    const moved = join(home, "parent-moved");
+    let swapped = false;
+    const realProbe = processTable.pidProbeAlive;
+    const probe = spyOn(processTable, "pidProbeAlive").mockImplementation((pid: number) => {
+      if (!swapped) {
+        swapped = true;
+        renameSync(parent, moved);
+        symlinkSync(victim, parent);
+      }
+      return realProbe(pid);
+    });
+    const errors: string[] = [];
+    const realError = console.error;
+    console.error = ((message: string) => errors.push(String(message))) as typeof console.error;
+    try {
+      expect(() =>
+        writeOpencodeProviderConfig(
+          dataDir,
+          { baseUrl: ZAI.CODEMUX_OPENCODE_PROVIDER_BASE_URL, apiKey: "k" },
+          "glm-5.3"
+        )
+      ).toThrow("was replaced after it was recorded; refusing to use it");
+    } finally {
+      console.error = realError;
+      probe.mockRestore();
+    }
+    expect(readFileSync(join(victimChild, "opencode.json"), "utf8")).toBe("kept\n");
+    expect(errors.join("\n")).toContain("the directory was kept");
+    // The real parent's entry was never removed through the link either;
+    // it survives under the moved name for a later sweep.
+    expect(existsSync(join(moved, entryName))).toBe(true);
   });
 
   test("a symlinked .codemux parent is refused", () => {

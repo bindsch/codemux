@@ -246,8 +246,8 @@ must match on resume. See [CLI reference](cli.md).
 
 Claude/ZAI account redirects use `CLAUDE_CONFIG_DIR`, Codex uses `CODEX_HOME`,
 and Kimi uses `KIMI_CODE_HOME`, only when included in `--pass-env`. Values
-must be absolute; Claude/Codex reject whitespace padding, and Kimi rejects
-an empty value. OpenCode uses its resolved XDG data directory. Aider keeps
+must be absolute; Claude/Codex reject whitespace padding, and Kimi and
+Codex reject an empty value. OpenCode uses its resolved XDG data directory. Aider keeps
 history in `~/.aider`; Agy uses `~/.gemini/antigravity-cli`.
 
 ## Permissions and attribution

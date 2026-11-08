@@ -137,6 +137,21 @@ export function readExperimentSpec(path: string): ExperimentSpec {
   return spec;
 }
 
+/** The relay-bound harnesses (codex, kimi) need loopback: the sandbox
+ * policy flags that would cut it are refused. Shared with the check
+ * command, which runs this before its own codex refusal so the policy
+ * refusals keep their precedence there (review round 381). */
+export function assertExperimentLoopbackPolicy(
+  request: Pick<RunRequest, "agent" | "sandboxNoNet" | "sandboxTrust">
+): void {
+  if ((request.agent === "codex" || request.agent === "kimi") && request.sandboxNoNet) {
+    throw new UsageRefusalError(`--experiment-mcp on ${request.agent} uses a loopback HTTP relay and refuses --sandbox-no-net`);
+  }
+  if ((request.agent === "codex" || request.agent === "kimi") && request.sandboxTrust === "untrusted") {
+    throw new UsageRefusalError(`--experiment-mcp on ${request.agent} uses a loopback HTTP relay and refuses --sandbox-trust untrusted`);
+  }
+}
+
 export function validateExperimentRequest(request: RunRequest): void {
   assertExperimentMcpUnavailable(request.agent, request.experimentMcp);
   // Ahead of the --experiment-mcp early return: the field is internal to
@@ -147,12 +162,7 @@ export function validateExperimentRequest(request: RunRequest): void {
     throw new UsageRefusalError("kimiControlBrandHome is internal to the experiment control probe and cannot be set on a request");
   }
   if (request.experimentMcp === undefined) return;
-  if ((request.agent === "codex" || request.agent === "kimi") && request.sandboxNoNet) {
-    throw new UsageRefusalError(`--experiment-mcp on ${request.agent} uses a loopback HTTP relay and refuses --sandbox-no-net`);
-  }
-  if ((request.agent === "codex" || request.agent === "kimi") && request.sandboxTrust === "untrusted") {
-    throw new UsageRefusalError(`--experiment-mcp on ${request.agent} uses a loopback HTTP relay and refuses --sandbox-trust untrusted`);
-  }
+  assertExperimentLoopbackPolicy(request);
   if ((!request.hermetic && !canaryControls.has(request)) || request.tools !== "none" || request.autonomy !== "read-only" ||
       !request.sandboxed || request.enablePlaywrightMcp) {
     throw new UsageRefusalError("--experiment-mcp requires --hermetic --tools none --auto read-only with scode, and no Playwright MCP");

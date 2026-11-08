@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { Command } from "commander";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -44,9 +44,14 @@ interface Outcome {
 
 async function runCommand(
   args: string[],
-  binaries: Record<string, string> = { claude: FAKE_CLAUDE }
+  binaries: Record<string, string> = { claude: FAKE_CLAUDE },
+  // Runs after the fake binaries exist, before the parse: the private
+  // PATH's own bin directory (its first segment), for tests that need a
+  // planted shape on one of the fakes.
+  mutate?: (binDir: string) => void
 ): Promise<Outcome> {
   const fake = createFakeBinaryEnv(binaries);
+  if (mutate) mutate((fake.env.PATH ?? "").split(":")[0]!);
   const program = new Command();
   program.exitOverride();
   registerRunCommand(program, getDefaultConfig(), () => {});
@@ -278,6 +283,26 @@ exit 0`;
     const outcome = await runCommand(["run", "-a", "claude", "-p", "test"], { claude: FAKE_CLAUDE });
     expect(outcome.exitCode).toBe(1);
     expect(outcome.stderr).toContain("scode is not installed (required for --sandbox)");
+  });
+
+  test("an untrusted scode reports its refusal, not 'not installed' (review round 381)", async () => {
+    // The preflight's unconditional catch folded the trust refusal into
+    // false, and the operator read "scode is not installed" for a binary
+    // that was present — a world-writable one — and reinstalled it. The
+    // refusal now propagates from the availability check: exit 1 with the
+    // trust message, the same verdict the launch itself gives the same
+    // binary, and the "not installed" misdirection stays with a genuinely
+    // absent scode.
+    const outcome = await runCommand(
+      ["run", "-a", "claude", "-p", "test"],
+      { claude: FAKE_CLAUDE, scode: FAKE_SCODE_EXEC },
+      // Executable for every user, so Bun.which resolves it — and
+      // group/world-writable, so the trust check refuses it.
+      (binDir) => chmodSync(join(binDir, "scode"), 0o777)
+    );
+    expect(outcome.exitCode).toBe(1);
+    expect(outcome.stderr).toContain("scode binary is not a trusted executable");
+    expect(outcome.stderr).not.toContain("scode is not installed");
   });
 
   test("a sandboxed run execs the harness through scode", async () => {

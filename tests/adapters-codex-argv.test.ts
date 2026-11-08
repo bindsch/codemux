@@ -49,6 +49,38 @@ describe("CodexAdapter", () => {
     ).toThrow(/CODEX_HOME must not be whitespace-padded/);
   });
 
+  test("an empty passed-through CODEX_HOME is refused, not treated as unset", () => {
+    // Review round 381, kimi's rule: the guard read the empty value as
+    // unset (falsy) and fell back to the default home while the sanitized
+    // child environment still carried CODEX_HOME="" — two different homes
+    // for one run. The empty value is refused at validation, before
+    // prepareRun creates the run's directories under either.
+    const empty = new CodexAdapter({ CODEX_HOME: "" });
+    expect(() =>
+      empty.validateRunRequest({
+        agent: "codex",
+        prompt: "t",
+        resultJson: true,
+        passthroughEnv: ["CODEX_HOME"],
+      })
+    ).toThrow(/CODEX_HOME must not be empty when passed through/);
+    // Without the passthrough the sanitizer drops the empty value, so the
+    // default home is the one both sides use: no refusal.
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-codex-empty-home-"));
+    try {
+      expect(() =>
+        empty.validateRunRequest({
+          agent: "codex",
+          prompt: "t",
+          resultJson: true,
+          cwd,
+        })
+      ).not.toThrow();
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   test("capabilities are correct", () => {
     const caps = adapter.capabilities();
     expect(caps.supportsNonInteractive).toBe(true);

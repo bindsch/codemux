@@ -105,8 +105,11 @@ const testNoQuotaGate = (environment: Record<string, string>): boolean => {
 // a kind that names a week. A longer span (a monthly cap) is not weekly:
 // the weekly warning is about the weekly budget only (review round 14,
 // contracts 5). The kind test is word-bounded: "biweekly" and "weekday"
-// name other cadences (round 20, minor 12).
-const isWeekly = (window: UsageWindow): boolean =>
+// name other cadences (round 20, minor 12). Exported for the doctor row's
+// usage summary, which renders its "week N% used" line with this same
+// predicate (round 381: a weekly-by-span pool such as cursor-grok-bot
+// never matched the name test alone).
+export const isWeekly = (window: UsageWindow): boolean =>
   (window.windowMinutes !== null &&
     Math.abs(window.windowMinutes - WEEKLY_WINDOW_MINUTES) <= WEEKLY_WINDOW_TOLERANCE_MINUTES) ||
   /\bweek(ly)?\b/i.test(window.kind);

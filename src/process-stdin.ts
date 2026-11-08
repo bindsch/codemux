@@ -66,7 +66,14 @@ export function trackStdinDelivery(deps: {
         const settled = Promise.resolve().then(() => {
           if (childExited || failed || deps.superseded()) return;
           failed = true;
-          error = result;
+          // A sink that answers its own Error keeps that error's message;
+          // a bare boolean (Bun's closed sink) is wrapped, so the run's
+          // stderr names the child's stdin instead of printing "false"
+          // (round 381 — the stored raw value stringified to `Error: false`
+          // at the runner's diagnosis).
+          error = result instanceof Error
+            ? result
+            : new Error(`a write to the child's stdin was answered closed (${String(result)}); the bytes never left`);
           deps.abort();
         });
         pending = pending.then(() => settled);

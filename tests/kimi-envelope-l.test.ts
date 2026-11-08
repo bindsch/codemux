@@ -113,6 +113,20 @@ describe("Kimi failure-envelope recovery", () => {
     } finally { f.cleanup(); }
   });
 
+  test("a re-read envelope's parse error says its line numbers are reconstructed (round 381)", () => {
+    const f = fixture();
+    try {
+      // The envelope's events array carries no original line positions, so
+      // the re-parse counts the reconstructed join; the diagnostic used to
+      // cite "line 1" as though the capture had that line.
+      const envelope = `${JSON.stringify({ codemux: { agent: "kimi" }, events: [{ bogus: true }] })}\n`;
+      const result = f.adapter.processRunResult({ ...success, stdout: envelope }, f.request);
+      expect(result.success).toBe(false);
+      expect(result.stderr).toContain("no recognized role or type");
+      expect(result.stderr).toContain("reconstructed");
+    } finally { f.cleanup(); }
+  });
+
   for (const experiment of [false, true]) {
     test.each(["empty", "malformed", "missing hint", "missing wire", "unreadable wire"] as const)
       (`result-json errors always return an envelope; experiment=${experiment}: %s`, (mode) => {

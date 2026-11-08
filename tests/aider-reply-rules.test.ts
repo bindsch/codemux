@@ -6,7 +6,7 @@
  * isolation check certifies. */
 
 import { describe, expect, test } from "bun:test";
-import { aiderDeltaRecordsUnansweredPrompt, extractAiderReply } from "../src/aider-history-text.js";
+import { aiderDeltaRecordsUnansweredPrompt, extractAiderReply, aiderRestoresAssistantText } from "../src/aider-history-text.js";
 
 describe("tool-chatter lines in the reply extraction", () => {
   const history = (body: string): string =>
@@ -44,6 +44,19 @@ describe("tool-chatter lines in the reply extraction", () => {
     // input. The mirror's rule (aider's own) now decides both.
     expect(extractAiderReply(history("#### q\n\n>\n"))).toBe(">");
     expect(aiderDeltaRecordsUnansweredPrompt("#### q\n\n>\n", "q")).toBe(false);
+  });
+
+  test("a blank tool-output line (`>  `, aider's own shape) is chatter, not the answer (round 381)", () => {
+    // aider 0.86.2 writes a blank line inside multi-line tool output as
+    // ">  " (the empty text stripped, then two trailing spaces). Tested
+    // after rstrip it read as a bare ">" and became the answer, so the
+    // next chatter line ended the extraction before the real reply.
+    expect(extractAiderReply(history("#### q\n\n> running command  \n>  \n> done  \nthe answer\n")))
+      .toBe("the answer");
+    // The mirror and the extraction agree: the block restores an answer.
+    expect(aiderRestoresAssistantText("> running command  \n>  \n> done  \nthe answer\n")).toBe(true);
+    // A bare ">" with no trailing space is still the model's text.
+    expect(extractAiderReply(history("#### q\n\n>\n"))).toBe(">");
   });
 
   test("a > line without the space after the answer stays in the answer", () => {

@@ -230,6 +230,58 @@ describe("captured process execution", () => {
     }
   }, 12_000);
 
+  test("both streams past the capture limit keep their own partial output (review round 381)", async () => {
+    // The exit-125 result used to keep only the first-settled failure's
+    // partial; the other stream reported "" and up to 16 MiB of diagnostic
+    // output was discarded from the result.
+    if (process.platform === "win32") return;
+    const originalSpawn = Bun.spawn;
+    const originalSpawnSync = Bun.spawnSync;
+    const originalKill = process.kill;
+    try {
+      const flood = (byte: number) => {
+        let flooded = false;
+        return new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (flooded) return; // stall, as a process past its kill would
+            flooded = true;
+            controller.enqueue(Buffer.alloc(17 * 1024 * 1024, byte));
+          },
+        });
+      };
+      Bun.spawn = (() => ({
+        pid: 2147483647,
+        stdin: { write() { return 0; }, end() { return 0; } },
+        stdout: flood(111), // "o"
+        stderr: flood(101), // "e"
+        exited: Promise.resolve(0),
+        kill() {},
+      })) as unknown as typeof Bun.spawn;
+      Bun.spawnSync = (() => ({
+        exitCode: 0,
+        stdout: Buffer.from("1 0 1 S Sat Sep 5 00:00:00 2026\n"),
+      })) as unknown as typeof Bun.spawnSync;
+      process.kill = (() => true) as unknown as typeof process.kill;
+      const result = await runCapturedCommand(["fixture"], {
+        cwd: process.cwd(),
+        env: {},
+        timeoutMs: 60_000,
+      });
+      expect(result.exitCode).toBe(OUTPUT_LIMIT_EXIT_CODE);
+      expect(result.success).toBe(false);
+      expect(result.stderr).toContain("exceeded the");
+      // Each stream's partial survived: stdout kept its "o" bytes at the
+      // bound and stderr's "e" partial sits ahead of the error line.
+      expect(result.stdout.length).toBe(MAX_CAPTURE_BYTES);
+      expect(result.stdout[0]).toBe("o");
+      expect(result.stderr[0]).toBe("e");
+    } finally {
+      Bun.spawn = originalSpawn;
+      Bun.spawnSync = originalSpawnSync;
+      process.kill = originalKill;
+    }
+  }, 15_000);
+
   test("rejects invalid commands and malformed UTF-8 output", async () => {
     await expect(runCapturedCommand([], {
       cwd: process.cwd(),

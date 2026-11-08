@@ -29,14 +29,20 @@ import { randomBytes } from "node:crypto";
 import {
   mkdirSync,
   readdirSync,
-  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { pidProbeAlive } from "./process-table.js";
 import type { ProviderOverride } from "./provider-override.js";
-import { recordTrustedParent, removeUnderTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
+import {
+  assertTrustedParentUnchanged,
+  recordTrustedParent,
+  removeUnderTrustedParent,
+  removeUnderTrustedParentOrThrow,
+  reportingHook,
+  type TrustedParentRecord,
+} from "./safe-remove.js";
 import { UsageRefusalError } from "./validation.js";
 
 export interface OpencodeProviderConfig {
@@ -131,7 +137,7 @@ export function opencodeBareModel(model: string): string {
 const STALE_DIR_MS = 2 * 86_400_000;
 
 /** Removes directories left behind by codemux processes that no longer exist. */
-function sweepStaleDirectories(parent: string): void {
+function sweepStaleDirectories(parent: string, record: TrustedParentRecord): void {
   let entries: string[];
   try {
     entries = readdirSync(parent);
@@ -153,13 +159,13 @@ function sweepStaleDirectories(parent: string): void {
     if (age < STALE_DIR_MS) continue;
     // One bad entry must not block the run, or every later run: the entry
     // stays, the sweep moves on, and the operator learns why (an entry the
-    // sweep cannot remove is never cleaned up by retrying it either).
-    try {
-      rmSync(path, { recursive: true, force: true });
-    } catch (error) {
-      const detail = error instanceof Error ? `: ${error.message}` : "";
-      console.error(`opencode: could not remove the stale provider config directory ${path}${detail}`);
-    }
+    // sweep cannot remove is never cleaned up by retrying it either). The
+    // removal revalidates the recorded parent first (src/safe-remove.ts,
+    // review round 381): the enumeration and the removals are separate
+    // steps, and a parent swapped for a symlink in between must be caught
+    // at the removal, never recursed through — the hermetic sweep's rule
+    // (review round 292).
+    removeUnderTrustedParent(path, record, `the stale opencode provider config directory ${path}`);
   }
 }
 
@@ -180,10 +186,15 @@ export function writeOpencodeProviderConfig(
   const parent = join(dataDir, PARENT_DIR_NAME);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   // A run with write access to the data directory could have replaced the
-  // parent with a symlink, pointing the sweep's rm elsewhere; the record
-  // also lets the finalizer revalidate the parent (src/safe-remove.ts).
+  // parent with a symlink, pointing a removal elsewhere; every removal the
+  // sweep makes and the finalizer revalidates the recorded parent
+  // (src/safe-remove.ts; the sweep's guard is review round 381).
   const parentRecord = recordTrustedParent(parent);
-  sweepStaleDirectories(parent);
+  sweepStaleDirectories(parent, parentRecord);
+  // A parent the sweep found swapped kept its entries and reported; this
+  // run's own directory must not be created through the replacement either
+  // (the run-directory parent's rule, review round 295).
+  assertTrustedParentUnchanged(parentRecord, "the opencode provider config parent");
   const dir = join(parent, `${DIR_PREFIX}${process.pid}-${randomBytes(6).toString("hex")}`);
   // Everything between the directory's creation and its finalizer's
   // registration is guarded (review round 123): a write that fails here

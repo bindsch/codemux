@@ -71,8 +71,13 @@ export function aiderReplyAfterHeader(text: string): string {
     // parser reads as tool output (aiderRestoresAssistantText mirrors
     // it): a bare `>` and a `>`-without-space line are text the model
     // wrote, so they stay in the answer and extraction agrees with the
-    // resumability verdict (review round 331; round 372, item 12).
-    if (line.startsWith("> ")) {
+    // resumability verdict (review round 331; round 372, item 12). The
+    // test reads the RAW line, as the mirror does: a blank tool-output
+    // line is written as `">  "` (io.py strips the empty text, then
+    // appends two spaces), and the rstripped `">"` would otherwise read
+    // as the answer and end the extraction at the next chatter line
+    // (review round 381, blocker).
+    if (raw.startsWith("> ")) {
       // Blockquoted tool chatter: skip before the answer, end at it after.
       if (started) break;
       pendingBlank = [];

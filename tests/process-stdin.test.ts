@@ -106,6 +106,20 @@ test("a closed result issued after the child exited had nothing to reach (round 
   expect(aborts).toHaveLength(0);
 });
 
+test("a boolean closed-sink answer names the child's stdin, never the bare value (round 381)", async () => {
+  // Bun's sink answers false once closed; stored raw, the run's stderr
+  // read "Error: false" (process-runner.ts stringifies the stored error).
+  const { delivery, aborts } = make(new Promise(() => {}));
+  delivery.track(false);
+  await delivery.settled();
+  expect(delivery.failed()).toBe(true);
+  expect(aborts).toHaveLength(1);
+  const error = delivery.error();
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toContain("stdin");
+  expect((error as Error).message).not.toBe("false");
+});
+
 test("attempt() tracks a synchronous throw like a rejection (review round 71)", async () => {
   const { delivery, aborts } = make(new Promise(() => {}));
   expect(() => delivery.attempt(() => { throw new Error("sync EPIPE"); })).not.toThrow();

@@ -39,13 +39,13 @@ import {
   lstatSync,
   mkdirSync,
   readdirSync,
-  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { pidProbeAlive } from "./process-table.js";
 import {
+  assertTrustedParentUnchanged,
   recordTrustedParent,
   removeUnderTrustedParent,
   removeUnderTrustedParentOrThrow,
@@ -79,7 +79,7 @@ const AGENT_FILE_TEXT = [
 const STALE_FILE_MS = 2 * 86_400_000;
 
 /** Removes files left behind by codemux processes that no longer exist. */
-function sweepStaleFiles(parent: string): void {
+function sweepStaleFiles(parent: string, record: TrustedParentRecord): void {
   let entries: string[];
   try {
     entries = readdirSync(parent);
@@ -92,6 +92,20 @@ function sweepStaleFiles(parent: string): void {
     const pid = Number(match[1]);
     if (pid === process.pid || pidProbeAlive(pid)) continue;
     const path = join(parent, entry);
+    // A regular file is the only entry this sweep owns: the no-tools files
+    // codemux writes. Anything else carrying the name — a directory planted
+    // at one, a symlink — stays with a report, the h4 review's rule: the
+    // removal was never recursive, and recursing through
+    // removeUnderTrustedParent would not add safety, only a choice about
+    // content codemux never created.
+    const identity = lstatSync(path, { throwIfNoEntry: false });
+    if (identity === undefined) continue;
+    if (!identity.isFile()) {
+      console.error(
+        `codemux: the stale kimi no-tools agent file ${path} is not a regular file; the file was kept`
+      );
+      continue;
+    }
     let age: number;
     try {
       age = Date.now() - statSync(path).mtimeMs;
@@ -101,13 +115,13 @@ function sweepStaleFiles(parent: string): void {
     if (age < STALE_FILE_MS) continue;
     // One bad entry must not block the run, or every later run: the entry
     // stays, the sweep moves on, and the operator learns why (an entry the
-    // sweep cannot remove is never cleaned up by retrying it either).
-    try {
-      rmSync(path, { force: true });
-    } catch (error) {
-      const detail = error instanceof Error ? `: ${error.message}` : "";
-      console.error(`kimi: could not remove the stale no-tools agent file ${path}${detail}`);
-    }
+    // sweep cannot remove is never cleaned up by retrying it either). The
+    // removal revalidates the recorded parent first (src/safe-remove.ts,
+    // review round 381): the enumeration and the removals are separate
+    // steps, and a parent swapped for a symlink in between must be caught
+    // at the removal, never followed through it — the hermetic sweep's
+    // rule (review round 292).
+    removeUnderTrustedParent(path, record, `the stale kimi no-tools agent file ${path}`);
   }
 }
 
@@ -118,25 +132,21 @@ function sweepStaleFiles(parent: string): void {
 export function writeKimiNoToolsFile(brandHome: string): KimiNoToolsFile {
   const parent = join(brandHome, PARENT_DIR_NAME);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
-  // A run with write access to the brand home could have replaced the parent
-  // with a symlink, pointing the sweep's rm elsewhere.
-  const parentStat = lstatSync(parent);
-  if (
-    !parentStat.isDirectory() ||
-    (process.platform !== "win32" &&
-      typeof process.getuid === "function" &&
-      parentStat.uid !== process.getuid())
-  ) {
-    throw new Error(`${parent} must be a directory owned by the current user`);
-  }
-  sweepStaleFiles(parent);
-  // Recorded for the finalizer's revalidation (src/safe-remove.ts): a
-  // previous kimi child with write access to the brand home could have
-  // replaced `.codemux` between this run's creation and its cleanup, and a
-  // bare rm then removed the same-named file wherever the replacement
-  // points (review round 104). The parent is revalidated by device and
-  // inode, not only by the lstat above.
+  // Recorded BEFORE the sweep runs, and every removal the sweep makes
+  // revalidates the record (src/safe-remove.ts, review round 381): the
+  // enumeration and the removals are separate steps, and a kimi child with
+  // write access to the brand home could replace `.codemux` with a symlink
+  // in between, so a bare rm removed the same-named file wherever the
+  // replacement pointed. The record also carries the shape and ownership
+  // assertion the old inline lstat made (assertTrustedDirectory), so a bad
+  // parent still fails the write itself, and the finalizer revalidates the
+  // same record by device and inode (review round 104).
   const parentRecord: TrustedParentRecord = recordTrustedParent(parent);
+  sweepStaleFiles(parent, parentRecord);
+  // A parent the sweep found swapped kept its entries and reported; this
+  // run's own file must not be written through the replacement either
+  // (the run-directory parent's rule, review round 295).
+  assertTrustedParentUnchanged(parentRecord, "the kimi no-tools parent");
   const path = join(parent, `${FILE_PREFIX}${process.pid}-${randomBytes(6).toString("hex")}.md`);
   // Guarded from the file's creation to its finalizer's registration
   // (review round 123): a write that fails here removes the just-made file

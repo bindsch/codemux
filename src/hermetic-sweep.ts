@@ -144,7 +144,9 @@ export function directoryMtimeMs(path: string): number | null {
  * unreadable registry — a busy lock, an I/O error, a corrupt file)
  * spares the home, because a read failure folded into "not held"
  * deleted a live session's CODEX_HOME during a transient failure
- * (review D5, correctness 1). The default consults the machine's one
+ * (review D5, correctness 1), and so does a name with no parseable
+ * id — not a registry key, so no ownership proof exists (review
+ * round 381). The default consults the machine's one
  * registry (`sessionRegistryPath()`, derived from HOME exactly as the
  * session CLI derives it); the parameter exists so tests can point the
  * check at their own registry.
@@ -222,8 +224,11 @@ function sweepStaleRunDirs(
       // spared without paying for the tree at all — a live session's home
       // may sit past the walk cap, and walking it on every later codemux
       // run is exactly the recurring cost the cap exists to bound (the
-      // pid-gate reorder's twin, review D10, correctness-2 2).
-      if (id !== undefined && holdStateOf(id) !== "free") continue;
+      // pid-gate reorder's twin, review D10, correctness-2 2). A name
+      // with no parseable id is not a registry key — no ownership proof
+      // exists — so it keeps the same spare (review round 381: it used
+      // to skip the consult and be removed by age alone).
+      if (id === undefined || holdStateOf(id) !== "free") continue;
       const newest = newestMtimeMs(path);
       if (newest !== null && Date.now() - newest < STALE_SESSION_HOME_MS) continue;
       // An over-budget walk (null) falls back to the own mtime above —
@@ -232,10 +237,9 @@ function sweepStaleRunDirs(
       // branch's pid gate provides, so a home grown past the cap is
       // reclaimed by age instead of leaking and being re-walked to the
       // cap forever (review D10, correctness-2 2; the run branch's D9
-      // twin). An entry whose name carries no parseable id is not a
-      // registry key — no proof exists — and keeps the D7 spare, as does
-      // an unstatable directory.
-      if (newest === null && (id === undefined || own === null)) continue;
+      // twin). An unstatable directory keeps the spare, as does every
+      // no-id entry above.
+      if (newest === null && own === null) continue;
       removeSweepEntry(path, record, "stale session home");
       continue;
     }

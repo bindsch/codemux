@@ -39,12 +39,15 @@ export {
 } from "./cli-runtime/options.js";
 export type { SandboxCliOptions } from "./cli-runtime/options.js";
 
+/** False only when no scode is on PATH: a scode that resolves but fails
+ * the trust check (world-writable, foreign owner) throws its refusal
+ * instead — the unconditional catch folded that refusal into false, the
+ * callers printed "scode is not installed", and the operator was sent to
+ * reinstall a binary that was present (review round 381). Every caller
+ * sits in a catch that reports the refusal (exit 1, the launch's own
+ * verdict for the same binary). */
 export function isScodeAvailable(): boolean {
-  try {
-    return resolveScodeExecutable() !== null;
-  } catch {
-    return false;
-  }
+  return resolveScodeExecutable() !== null;
 }
 
 /** The exit code a failed launch rejects with: a usage refusal is EX_USAGE

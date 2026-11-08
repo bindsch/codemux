@@ -153,7 +153,9 @@ Its `parameters` must be a recursive subset of the original relay
 `inputSchema`. Every retained object key and array index must have the same
 path and value. Object keys and array suffix entries may be omitted; entries
 cannot move or change. Additions, substituted values, and shifted array
-entries fail with `inventory_mismatch`.
+entries fail with `inventory_mismatch`. A boolean schema value
+(`items: false` allows no elements, `items: true` allows any) is valid JSON
+Schema and compares equal only to itself.
 
 Each normalized experiment declaration records its omitted schema paths in
 `catalog_pruned_paths`, as JSON Pointers relative to the original `inputSchema`.

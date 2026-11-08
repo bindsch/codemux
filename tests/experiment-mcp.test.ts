@@ -115,7 +115,10 @@ describe("experiment MCP validates its harness result contract", () => {
         "--experiment-mcp", path, ...(command === "run" ? ["-f", "-"] : [])],
       { PATH: minimalPath() }, { stdin: "", holdStdin: true });
       expect(result.exitCode).not.toBe(0);
-      expect(result.stderr).toContain("Wall time:");
+      // run demands the spec prefix (its header names the wall-time
+      // wrapper); a codex check is refused outright before that demand
+      // (review round 381), so the operator is not sent to fix the spec.
+      expect(result.stderr).toContain(command === "run" ? "Wall time:" : "Codex --experiment-mcp supports run only");
       expect(result.stderr).not.toContain("not installed");
       expect(result.stderr).not.toContain("unknown option");
       expect(result.stdout).toBe("");

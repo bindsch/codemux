@@ -30,6 +30,21 @@ describe("the harness-home resolvers", () => {
     expect(cliHomes.kimiHarnessHome(["KIMI_CODE_HOME"])).toBe(join(homedir(), ".kimi-code"));
   });
 
+  test("codexHarnessHome refuses an empty passed-through CODEX_HOME like the adapter (round 384)", () => {
+    const saved = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = "";
+    try {
+      const empty = refusingCall(() => cliHomes.codexHarnessHome(["CODEX_HOME"]));
+      expect(empty.code).toBe(64);
+      expect(empty.message).toContain("CODEX_HOME must not be empty when passed through");
+      // Not passed through, the empty value is the operator's own shell state: the default home.
+      expect(cliHomes.codexHarnessHome(["OTHER"])).toBe(join(homedir(), ".codex"));
+    } finally {
+      if (saved === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = saved;
+    }
+  });
+
   test("codexHarnessHome returns the default without a passthrough", () => {
     expect(cliHomes.codexHarnessHome(["OTHER"])).toBe(join(homedir(), ".codex"));
   });

@@ -404,6 +404,10 @@ export function registerRunCommand(
           process.exit(1);
         }
 
+        // Reached only when scode is genuinely absent: a scode that is
+        // present but fails the trust check throws its own refusal from
+        // isScodeAvailable, which the handler below reports instead of
+        // this "not installed" misdirection (review round 381).
         if (options.sandbox && !isScodeAvailable()) {
           console.error("Error: scode is not installed (required for --sandbox)");
           console.error("Install scode and ensure its executable is on PATH");

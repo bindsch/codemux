@@ -52,3 +52,22 @@ describe("catalog schema validation (round 104)", () => {
     expect(() => assert({ type: "string", enum: [] })).not.toThrow();
   });
 });
+
+describe("boolean schema keywords (round 381)", () => {
+  test("boolean items schemas are valid JSON Schema and compare equal to themselves", () => {
+    // Draft 2020-12 boolean schemas: items:false allows no elements,
+    // items:true allows any. The validator demanded an object for `items`,
+    // so an unchanged schema relayed byte-for-byte failed as a false
+    // InventoryMismatch.
+    expect(() => assert({ type: "array", items: false })).not.toThrow();
+    expect(() => assert({ type: "array", items: true })).not.toThrow();
+  });
+
+  test("a boolean items schema still has to equal the definition's", () => {
+    expect(() => assertCodexToolDefinition(
+      tool({ type: "array", items: false }),
+      "lookup",
+      DEFINITION({ type: "array", items: { type: "string" } })
+    )).toThrow(ExperimentFailure);
+  });
+});

@@ -50,6 +50,23 @@ describe.skipIf(process.platform !== "darwin")("Cursor's sandbox credential stor
     expect(adapter.getRunEnv({ ...request, sandboxed })).toEqual({});
   });
 
+  test.each([
+    ["sandboxed", true, { [STORE_ENV]: "file" }],
+    ["direct", false, {}],
+  ] as const)("the TUI selects the file store like the run path: %s", (_label, sandboxed, expected) => {
+    // Review round 381: the sandboxed TUI built its environment from
+    // getEnv + getTuiEnv and cursor overrode neither, so the sandboxed TUI
+    // failed authentication while the equivalent run succeeded. The TUI
+    // path now carries the same selection (copilot's getTuiEnv pattern).
+    const { adapter } = setup(true, { [STORE_ENV]: "keychain" });
+    expect(adapter.getTuiEnv(undefined, "read-only", undefined, sandboxed, [])).toEqual(expected);
+  });
+
+  test("a passed-through store stays the operator's on the TUI path too", () => {
+    const { adapter } = setup(true, { [STORE_ENV]: "keychain" });
+    expect(adapter.getTuiEnv(undefined, "read-only", undefined, true, [STORE_ENV])).toEqual({});
+  });
+
   test.each([true, false])("preserves an explicit store when auth.json exists: %s", (authFile) => {
     const { adapter, request } = setup(authFile, { [STORE_ENV]: "keychain" });
     request.passthroughEnv = [STORE_ENV];

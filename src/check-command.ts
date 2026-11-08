@@ -2,7 +2,7 @@ import type { Command } from "commander";
 import { existsSync } from "node:fs";
 import { assertAgyProbeMode, runAgyCanaryChecks, runAgyIsolationProbe } from "./agy-isolation-probe.js";
 import { plantKimiCanary } from "./kimi-isolation-probe.js";
-import { assertExperimentMcpUnavailable, experimentCanaryControl, validateExperimentRequest } from "./experiment-mcp.js";
+import { assertExperimentMcpUnavailable, experimentCanaryControl, validateExperimentRequest, assertExperimentLoopbackPolicy } from "./experiment-mcp.js";
 import { getAdapter } from "./adapters/index.js";
 import {
   assertHarnessSupported,
@@ -113,7 +113,12 @@ export function registerCheckCommand(
         const requestedEffort = parseEffortOption(options.effort);
         const passthroughEnv = parsePassthroughEnvOption(options.passEnv);
         const tools = parseToolsOption(options.tools);
-        assertExperimentMcpUnavailable(agentId, options.experimentMcp);
+        // A codex check is refused outright (below, after the sandbox-policy
+        // refusals the run command shares), so the spec-prefix demand is
+        // skipped for it: an operator whose spec also lacks
+        // accept_harness_prefix must not be sent to fix the spec first
+        // (review round 381).
+        if (agentId !== "codex") assertExperimentMcpUnavailable(agentId, options.experimentMcp);
         const hermetic = Boolean(options.hermetic);
         const sandboxPolicyOverrides = parseSandboxPolicyOverrides({
           sandbox: Boolean(options.sandbox),
@@ -138,12 +143,17 @@ export function registerCheckCommand(
         if (options.printSandbox && agentId === "agy" && tools === "none") {
           throw new UsageRefusalError("--print-sandbox cannot be combined with --tools none for agy: canary checks run several probes with no single scode argv");
         }
+        if (options.experimentMcp && agentId === "codex") {
+          // The relay's policy refusals keep their precedence (the run
+          // command's order); then the codex check is refused outright,
+          // before any spec-prefix demand (review round 381).
+          assertExperimentLoopbackPolicy({ agent: agentId,
+            sandboxNoNet: Boolean(options.sandbox && options.sandboxNoNet), sandboxTrust: sandboxPolicyOverrides?.trust });
+          throw new UsageRefusalError("Codex --experiment-mcp supports run only; the paired check requires a non-hermetic control and is supported only by claude, zai, and kimi");
+        }
         validateExperimentRequest({ agent: agentId, prompt: "probe", experimentMcp: options.experimentMcp,
           hermetic, tools, autonomy: requestedAutonomy, sandboxed: Boolean(options.sandbox),
           sandboxNoNet: Boolean(options.sandbox && options.sandboxNoNet), sandboxTrust: sandboxPolicyOverrides?.trust });
-        if (options.experimentMcp && agentId === "codex") {
-          throw new UsageRefusalError("Codex --experiment-mcp supports run only; the paired check requires a non-hermetic control and is supported only by claude, zai, and kimi");
-        }
         if (hermetic && options.cwd !== undefined) {
           throw new UsageRefusalError("--hermetic plants its own working directory; drop --cwd");
         }

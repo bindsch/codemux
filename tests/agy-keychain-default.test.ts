@@ -9,7 +9,7 @@ afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
 
 function setup(mode: "private" | "concurrent" | "mirror" | "private-mismatch",
   { initialReadFailures = 0, readBackFailures = 0, unreadableDefault = false,
-    unlockFailures = 0, deleteFailure = false, staleTemplate = false } = {}) {
+    unlockFailures = 0, deleteFailure = false, staleTemplate = false, selectionFailure = false } = {}) {
   const scratch = join(import.meta.dir, "../scratch");
   mkdirSync(scratch, { recursive: true });
   const home = mkdtempSync(join(scratch, "agy-default-"));
@@ -31,6 +31,11 @@ function setup(mode: "private" | "concurrent" | "mirror" | "private-mismatch",
   let realDefault: string | undefined = unreadableDefault ? undefined : original;
   let privateDefault: string | undefined;
   let selectedExistingMirror = false;
+  // The selection-failure scenario: the private `set` fails AND every
+  // later real-home read fails, so the finally's verification cannot
+  // succeed either — the shape whose throw used to mask the selection's
+  // own error (review round 381).
+  let selectionFailed = false;
   let failedInitialReads = 0;
   let failedReads = 0;
   let failedUnlocks = 0;
@@ -65,6 +70,10 @@ function setup(mode: "private" | "concurrent" | "mirror" | "private-mismatch",
     if (args[0] !== "default-keychain") return result();
     if (args.includes("-s")) {
       if (callerHome !== home) {
+        if (selectionFailure) {
+          selectionFailed = true;
+          return result("synthetic secret detail", 1);
+        }
         selectedExistingMirror = existsSync(args.at(-1)!);
         privateDefault = mode === "private-mismatch" ? original : args.at(-1)!;
         if (mode === "concurrent") realDefault = concurrent;
@@ -83,6 +92,7 @@ function setup(mode: "private" | "concurrent" | "mirror" | "private-mismatch",
       return result("", 1);
     }
     if (callerHome === home && realDefault === undefined) return result("", 1);
+    if (callerHome === home && selectionFailed) return result("", 1);
     return result(`"${callerHome === home ? realDefault : privateDefault}"\n`);
   }) as unknown as typeof Bun.spawnSync);
   cleanup.push(() => spawn.mockRestore());
@@ -222,6 +232,25 @@ test("private mirror selection refuses a mismatched private default", () => {
     .toThrow("agy keychain mirror is not the private HOME's default keychain");
   expect(state.current()).toBe(state.original);
   expect(state.calls.filter((call) => call.home === state.home && call.args[0] === "default-keychain" && call.args.includes("-s"))).toEqual([]);
+});
+
+test("a failed private selection is never masked by the verification read-back (review round 381)", () => {
+  // The finding: the finally's verification throw replaced the selection's
+  // own error, so the operator read "could not be verified" for a failure
+  // that was really "cannot set". The selection failure owns the report,
+  // the unreadable default rides along in the same message, and the real
+  // default was never touched — the finally still verified it, twice.
+  const state = setup("private", { selectionFailure: true });
+  expect(() => prepareAgyPrivateKeychain(state.privateHome, state.environment))
+    .toThrow("cannot set agy keychain mirror as the private HOME's default keychain; " +
+      "the real default keychain could not be verified afterwards");
+  expect(state.current()).toBe(state.original);
+  expect(state.calls.filter((call) => call.args[0] === "default-keychain")).toEqual([
+    { home: state.home, args: ["default-keychain", "-d", "user"] },
+    { home: state.privateHome, args: ["default-keychain", "-d", "user", "-s", state.mirror] },
+    { home: state.home, args: ["default-keychain", "-d", "user"] },
+    { home: state.home, args: ["default-keychain", "-d", "user"] },
+  ]);
 });
 
 test("a failed initial real-default read retries before private mirror selection", () => {

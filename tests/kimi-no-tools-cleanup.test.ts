@@ -1,18 +1,21 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { writeKimiNoToolsFile } from "../src/kimi-no-tools.js";
+import * as processTable from "../src/process-table.js";
 
 // Review round 104, findings 1 and 4: the kimi no-tools finalizer removed
 // its file with a bare rm after an lstat-only parent check, and it marked
@@ -123,6 +126,74 @@ describe("kimi no-tools cleanup (round 104)", () => {
       } catch {
         // The parent may never have been made, or is already gone.
       }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a parent swapped for a symlink mid-sweep never receives the sweep's removal (review round 381)", () => {
+    // The sweep ran BEFORE any trusted-parent record existed and removed
+    // with a bare rm, so a kimi child with write access to the brand home
+    // could replace `.codemux` with a symlink between the enumeration and
+    // the removal, and the rm deleted the same-named file wherever the
+    // replacement pointed. The parent is now recorded before the sweep,
+    // every removal revalidates the record, and the write refuses to
+    // continue through the replacement. The pid probe is the seam for the
+    // race: the swap lands after the enumeration, right before the stale
+    // entry's removal.
+    const root = freshRoot();
+    try {
+      const brand = join(root, ".kimi-code");
+      mkdirSync(brand);
+      const parent = join(brand, ".codemux");
+      mkdirSync(parent);
+      const entryName = "no-tools-999999999-swapped.md";
+      writeFileSync(join(parent, entryName), "stale");
+      const threeDaysAgo = new Date(Date.now() - 3 * 86_400_000);
+      utimesSync(join(parent, entryName), threeDaysAgo, threeDaysAgo);
+      // The victim file a naive rm would delete: same name, in a directory
+      // outside the parent, old so the age walk does not spare it.
+      const victim = join(root, "victim");
+      mkdirSync(victim);
+      const victimFile = join(victim, entryName);
+      writeFileSync(victimFile, "kept");
+      utimesSync(victimFile, threeDaysAgo, threeDaysAgo);
+      const moved = join(root, "parent-moved");
+      let swapped = false;
+      const realProbe = processTable.pidProbeAlive;
+      const probe = spyOn(processTable, "pidProbeAlive").mockImplementation((pid: number) => {
+        if (!swapped) {
+          swapped = true;
+          renameSync(parent, moved);
+          symlinkSync(victim, parent);
+        }
+        return realProbe(pid);
+      });
+      const errors: string[] = [];
+      const realError = console.error;
+      console.error = ((message: string) => errors.push(String(message))) as typeof console.error;
+      let file: ReturnType<typeof writeKimiNoToolsFile> | undefined;
+      try {
+        expect(() => {
+          file = writeKimiNoToolsFile(brand);
+        }).toThrow("was replaced after it was recorded; refusing to use it");
+      } finally {
+        console.error = realError;
+        probe.mockRestore();
+        // The refusal above fired before the write registered its exit
+        // hook; a successful write's file is finalized for good measure,
+        // and the real parent is restored either way.
+        if (file !== undefined) {
+          rmSync(parent);
+          renameSync(moved, parent);
+          file.finalize();
+        }
+      }
+      expect(readFileSync(victimFile, "utf8")).toBe("kept");
+      expect(errors.join("\n")).toContain("the directory was kept");
+      // The real parent's entry was never removed through the link either;
+      // it survives under the moved name for a later sweep.
+      expect(existsSync(join(moved, entryName))).toBe(true);
+    } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });

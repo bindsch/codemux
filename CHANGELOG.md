@@ -134,6 +134,22 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 381, whole tree (aider reply): the chatter test reads the raw history line, so
+  aider's blank tool-output line (`>  `) is chatter again; after round 372 its rstripped `>`
+  read as the answer and the extraction stopped at the next chatter line, returning `>`.
+- Review round 381, whole tree (adapters and runner): the sandboxed cursor TUI selects the
+  file credential store like its run path; a boolean JSON Schema `items` counts as valid
+  catalog evidence; doctor's week line matches a weekly span like the quota gate; a
+  capture-limit failure on both streams keeps each stream's partial output; a closed-sink
+  stdin write failure names the child's stdin instead of printing `Error: false`; a re-read
+  kimi envelope's parse error says its line numbers count the reconstructed stream;
+  `check --experiment-mcp` on codex refuses before the spec-prefix demand.
+- Review round 381, whole tree (sweeps and trust): the opencode and kimi sweeps revalidate
+  their recorded parent at every removal, the kimi parent is recorded before its sweep runs, a
+  session-home name with no registry id keeps the sweep's spare, a failed agy mirror selection
+  is never masked by the verification read-back, an empty passed-through `CODEX_HOME` is
+  refused like Kimi's, and a scode that fails the trust check reports its refusal instead of
+  `scode is not installed`.
 - Review round 372, whole tree (credential mirror): a sandboxed Z.AI launch guards the
   operator's default Claude credential mirror the way a provider-override claude run does,
   refusing when it holds a refresh token a Keychain entry backs, since the child is the same

@@ -40,7 +40,14 @@ function capturedEvents(stdout: string): ReturnType<typeof parseEvents> {
   try {
     const envelope = JSON.parse(stdout);
     if (envelope?.codemux?.agent === "kimi" && Array.isArray(envelope.events)) {
-      return parseEvents(envelope.events.map((event: unknown) => JSON.stringify(event)).join("\n"));
+      const parsed = parseEvents(envelope.events.map((event: unknown) => JSON.stringify(event)).join("\n"));
+      // The events array carries no original line positions, so a parse
+      // error here counts the reconstructed stream, not the capture; the
+      // diagnostic says so instead of citing a line the capture never had
+      // (round 381).
+      return parsed.error === undefined
+        ? parsed
+        : { ...parsed, error: `${parsed.error} (line numbers count the reconstructed stream, not the original capture)` };
     }
   } catch { /* A native capture contains several JSON lines. */ }
   return parseEvents(stdout);

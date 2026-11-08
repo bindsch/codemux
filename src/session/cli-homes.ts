@@ -97,6 +97,17 @@ export function kimiHarnessHome(passthroughEnv: string[]): string {
  * rule, applied to the session boundary). */
 export function codexHarnessHome(passthroughEnv: string[]): string {
   const configured = process.env.CODEX_HOME;
+  // The adapter's rule (realCodexHome, review round 381): an empty
+  // passed-through value is refused, never read as unset, because the
+  // child still receives the empty value while codemux would fall back
+  // to the default home — two homes for one session.
+  if (passthroughEnv.includes("CODEX_HOME") && configured === "") {
+    usageError(
+      "CODEX_HOME must not be empty when passed through; the child still " +
+        "receives the empty value while codemux falls back to the default " +
+        "home — unset the variable or give it an absolute path"
+    );
+  }
   if (passthroughEnv.includes("CODEX_HOME") && configured !== undefined && configured !== "") {
     if (!isAbsolute(configured)) {
       usageError("CODEX_HOME must be an absolute path");
