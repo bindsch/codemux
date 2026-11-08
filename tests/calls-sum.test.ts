@@ -268,6 +268,27 @@ describe("codemux calls --sum", () => {
     expect(totals).toContain("Totals over 3 record(s)");
   });
 
+  test("the unreported note distinguishes an overflowed sum from unreported records (round 372, item 8)", async () => {
+    // One overflowing field and one record that reported nothing: the
+    // note said "all N unreported" while two records did report, because
+    // a null sum also means the safe-integer rule cut the total.
+    const { stdout } = await callsWith(
+      [
+        record({ ts: iso(3 * MINUTE), agent: "codex", input: Number.MAX_SAFE_INTEGER, output: 1 }),
+        record({ ts: iso(2 * MINUTE), agent: "codex", input: 2, output: 1 }),
+        record({ ts: iso(MINUTE), agent: "codex" }), // a harness that reported nothing
+      ],
+      ["--sum"]
+    );
+    const totals = stdout.split("\n").find((line) => line.startsWith("Totals"))!;
+    expect(totals).toBeDefined();
+    expect(totals).toContain("input=unknown");
+    expect(totals).toContain("input: 1 unreported and the total overflowed the safe-integer range");
+    expect(totals).not.toContain("input: all 3");
+    // A field no record reported keeps the "all" wording.
+    expect(totals).toContain("cached: all 3");
+  });
+
   test("--sum prints unknown for a cost total that leaves the finite range (round 90)", async () => {
     // The reader accepts every finite cost, so two Number.MAX_VALUE
     // figures are valid records; the unchecked addition printed Infinity

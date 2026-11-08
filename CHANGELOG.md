@@ -134,6 +134,30 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 372, whole tree (credential mirror): a sandboxed Z.AI launch guards the
+  operator's default Claude credential mirror the way a provider-override claude run does,
+  refusing when it holds a refresh token a Keychain entry backs, since the child is the same
+  claude binary reading the same default config directory; the guard is one shared method.
+  Every launch must run in the request's working directory: a programmatic caller that named
+  another spawn directory is refused before validation, since the claude family's
+  medium-autonomy Edit grant is minted for the request's directory.
+- Review round 372, whole tree (tools and gates): a finished kimi run no longer re-refuses a
+  passed-through `KIMI_CODE_HOME` that vanished mid-run; the live-gate candidate listing without
+  `experimentPrefix` is refused as an older listing; `calls` unknown-field notes distinguish an
+  overflowed total from unreported records; doctor's scode floor fails closed on an unparseable
+  floor; the aider reply extraction keeps a bare `>` line as assistant text, matching the
+  restore mirror; the opencode account-store query selects carrier rows by shape and fails
+  closed on an unreadable schema; agy search-list recovery refuses an empty restore instead of
+  emptying the account's list; the verify scode preview carries the real launch's `-C <workdir>`
+  pin.
+- Review round 372, whole tree (sessions, runner, launcher): the agy end path's drain cut is
+  gone (a cut turns a clean exit into a signal exit the shared rule calls a harness failure),
+  and its comment says why the bounded wait stays; an interrupt
+  accepted before the harness started is reported dropped, naming its seq, when the session
+  ends first; a launcher stat candidate is judged with its own dialect's flags; unguarded
+  command substitutions under `set -e` refuse with a diagnostic; a stdin write that cannot
+  drain after a clean child exit gives up on a bound, with a note, instead of parking the
+  run at its own timeout.
 - Review round 361, whole tree (CLI, doctor, adapters, credentials): `calls --since` refuses a
   bare number (engine-dependent 2001-era cutoff) and documents a date-only value as UTC
   midnight; doctor reports an installed but unreadable usagemux as `USAGEMUX-UNREADABLE` with a

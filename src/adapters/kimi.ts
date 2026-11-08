@@ -11,7 +11,7 @@ import { assertNoKimiHermeticProjectConfig } from "../kimi-project-safety.js";
 import { kimiPlainResult, kimiResult } from "../result-envelope/kimi.js";
 import { appendDiagnostic } from "../result-envelope.js";
 import { foldOverflowEvidence, foldScanEvidence, KimiPlainFold } from "../plain-unwrap/kimi-fold.js";
-import { kimiEffectiveHome, kimiRealBrandHome } from "./kimi-home.js";
+import { kimiEffectiveHome, kimiRealBrandHome, kimiResultBrandHome } from "./kimi-home.js";
 import { escapeForTerminal } from "../usage-protocol.js";
 import { parseVersionParts } from "../harness-compatibility.js";
 import { readExperimentRunSpec } from "../experiment-mcp.js";
@@ -346,8 +346,8 @@ export class KimiAdapter extends BaseAdapter {
       }
       let model = request.model;
       try { model = this.modelFor(model); } catch (error) { if (!failure) throw error; }
-      const brandHome = context?.kimiHermeticHome?.kimiHome ?? (failure
-        ? join(this.effectiveHome(), ".kimi-code") : this.realBrandHome(request.passthroughEnv));
+      // kimiResultBrandHome never re-refuses what launch time validated (round 372, item 4).
+      const brandHome = kimiResultBrandHome(this.environment, request.passthroughEnv, this.homeDirectory, context?.kimiHermeticHome?.kimiHome, failure !== undefined);
       const normalized = kimiResult(result, { ...request, model }, brandHome, context, failure);
       if (request.experimentMcp && !request.resultJson) {
         try {
@@ -393,7 +393,7 @@ export class KimiAdapter extends BaseAdapter {
     }
     let model = request.model;
     try { model = this.modelFor(model); } catch { /* validateRunRequest already refused it */ }
-    const brandHome = context?.kimiHermeticHome?.kimiHome ?? this.realBrandHome(request.passthroughEnv);
+    const brandHome = kimiResultBrandHome(this.environment, request.passthroughEnv, this.homeDirectory, context?.kimiHermeticHome?.kimiHome, false);
     const majorVersion = context?.harnessVersion
       ? parseVersionParts(context.harnessVersion)?.[0]
       : undefined;

@@ -157,6 +157,17 @@ export async function launchRunRequest(
       );
     }
     if (options.sandbox) assertSandboxedLaunchAgreement(request, options);
+    // Every adapter validates and mints its grants from the REQUEST's
+    // working directory (the claude family's medium-autonomy Edit grant
+    // names it), while the spawn runs in the OPTIONS' directory: the two
+    // must agree on every launch. The sandboxed agreement above already
+    // refuses the split with its own message; this covers the direct
+    // launch, which only the experiment, agy and project-settings rules
+    // used to check (review round 372, item 11). The CLI always passes
+    // one value; this refuses a programmatic caller's split.
+    if (effectiveWorkingDirectory(options.cwd) !== effectiveWorkingDirectory(request.cwd)) {
+      throw new UsageRefusalError("the launch must run in the request's working directory");
+    }
     if (!options.sandbox) {
       // A direct launch has no sandbox it could attest, so a request that
       // claims one is refused: the sandboxed branch below is the only launch

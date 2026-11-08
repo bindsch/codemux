@@ -93,7 +93,15 @@ export function candidateFacts(
       throw new Error(`${where}: capabilities.servedModelEvidence is absent; the listing is from an older build`);
     }
     const experimentPrefixField = (caps as Record<string, unknown>).experimentPrefix;
-    if (experimentPrefixField !== undefined && experimentPrefixField !== null && typeof experimentPrefixField !== "string") {
+    // Required like its siblings above: an absent field is an older
+    // listing, and the cast below would read undefined as a prefix —
+    // the probe spec would then carry [undefined] and the candidate
+    // would refuse it as a malformed spec, a message about the spec when
+    // the defect is the listing (round 372, item 7).
+    if (experimentPrefixField === undefined) {
+      throw new Error(`${where}: capabilities.experimentPrefix is absent; the listing is from an older build`);
+    }
+    if (experimentPrefixField !== null && typeof experimentPrefixField !== "string") {
       throw new Error(`${where}: capabilities.experimentPrefix must be a string or null`);
     }
     // The -m and --effort facts (probe I, audit D7) follow the same rule:

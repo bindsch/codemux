@@ -227,6 +227,13 @@ function recoverSearchList(invoke: NonNullable<ReturnType<typeof client>>, roots
   const template = canonicalPath(join(agyKeychainStateDir(), AGY_TEMPLATE_NAME));
   const current = searchList(invoke);
   const restored = current.filter((path) => !isPrivateKeychain(path, roots, template));
+  // An empty filtered list — only mirror entries remained, the
+  // interrupted-cleanup state — never reaches `list-keychains -s`, which
+  // would fail or empty the account's search list and pass the
+  // after-restore check: it is refused by name (round 372, item 14).
+  if (restored.length === 0 && current.length > 0) {
+    throw new Error("refusing to set an empty user Keychain search list; every entry was a codemux mirror — re-add the login keychain with 'security list-keychains -d user -s <path>'");
+  }
   if (restored.length !== current.length) restoreSearchList(invoke, restored);
   if (restored.some((path) => basename(path) === AGY_TEMPLATE_NAME || path.includes("/.codemux-isolation-probes/"))) {
     console.error("codemux: left an unrelated keychain with a codemux-like path in the user search list");

@@ -25,17 +25,16 @@ import { buildInterruptRequest } from "./claude-session.js";
 import {
   awaitFinalFlush,
   buildSessionEnded,
-  crashSynthesisReason,
   drainFailureMessage,
   harnessFailed,
   shutdownRequested,
   type SessionChildOutcome,
   type SessionProcess,
 } from "./process.js";
-import { buildEvent } from "./protocol.js";
 import { discardUnconfirmedRecord, releaseSessionRecord } from "./registry.js";
 import type { SessionEndReason } from "./driver-io.js";
 import { ClaudeDriverInput } from "./driver-input.js";
+import { synthesizedTurnCompletion } from "./driver-synth.js";
 
 export type { SessionDriverOptions, SessionEndReason } from "./driver-io.js";
 
@@ -213,7 +212,6 @@ export class ClaudeSessionDriver extends ClaudeDriverInput {
     }
     this.finished = true;
     this.endExitCode = exitCode;
-    this.interruptBeforeInit = false;
     // A `user` line accepted before the init frame was acked, echoed, and
     // already forwarded, so an end path cannot drop it — the harness may
     // still run it inside the grace window (review live16; the live10
@@ -231,6 +229,23 @@ export class ClaudeSessionDriver extends ClaudeDriverInput {
       );
       this.forwardedAtEnd = true;
       this.openerPending = false;
+    }
+    // An interrupt parked on that pre-init line can no longer ride the
+    // init frame's turn either: the end path owns the child and its stdin
+    // from here, no turn opens during the drain, and an init frame that
+    // arrives now no longer opens one (driver-events guards the delivery
+    // on !finished). The ack stands, so the caller gets the same
+    // non-fatal notice the sibling drop paths emit, naming the seq
+    // (review round 372, item 3: this clear used to be silent — the one
+    // acked line whose fate the caller never heard).
+    if (this.interruptBeforeInit) {
+      this.interruptBeforeInit = false;
+      this.emitError(
+        false,
+        "codemux",
+        `the interrupt accepted before the session started (input_seq ${this.interruptBeforeInitSeq}) was dropped: ` +
+          `the session ended (${reason}) before the harness started`
+      );
     }
     // Read before the end-interrupt runs: whether a turn was open when
     // the end began decides whether an unanswered turn is synthesized
@@ -354,38 +369,25 @@ export class ClaudeSessionDriver extends ClaudeDriverInput {
         this.endExitCode = Math.max(this.endExitCode, 1);
         this.emitError(true, "codemux", error.message);
       } else {
-        const synthFinish =
-          reason === "crash" || drainFailureCode !== null || this.firstFatal !== null
-            ? "failed"
-            : "interrupted";
-        this.emit(
-          buildEvent(++this.seq, this.options.sessionId, "turn_completed", null, {
-            turn_id: turnId,
-            finish: synthFinish,
-            reason:
-              reason === "crash"
-                ? crashSynthesisReason(this.firstFatal)
-                : drainFailureCode !== null
-                  ? drainFailureMessage(this.options.agent, childOutcome!, true)
-                  : this.firstFatal !== null
-                    // A fatal raised during an orderly end's drain (an
-                    // overlong line, an unknown response id) is a failure too
-                    // (review live22).
-                    ? crashSynthesisReason(this.firstFatal)
-                    : `the session ended (${reason}) before the turn completed`,
-            usage: emptyUsage(),
-          }),
-          { terminal: "fatal" }
+        const synth = synthesizedTurnCompletion(
+          ++this.seq,
+          this.options.sessionId,
+          turnId,
+          reason,
+          drainFailureCode,
+          this.firstFatal,
+          this.options.agent,
+          childOutcome!
         );
+        this.emit(synth.event, { terminal: "fatal" });
         // The synthesized completion is a turn the caller saw complete, so
-        // it gets its ledger line like any other (all-null usage: nothing
-        // reported a turn the harness never answered).
+        // it gets its ledger line like any other.
         appendSessionTurnCallRecord(
           this.callLedger,
           this.options.sessionId,
           turnId ?? "none",
           this.turnStartedAt.get(turnId ?? "") ?? Date.now(),
-          synthFinish,
+          synth.finish,
           emptyUsage()
         );
         this.turnStartedAt.delete(turnId ?? "");

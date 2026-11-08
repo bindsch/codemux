@@ -42,7 +42,7 @@ function setup(includeMirror = true) {
   }) as unknown as typeof Bun.spawnSync);
   cleanup.push(() => spawn.mockRestore());
   return { home, original, mirror, calls, environment: { HOME: home, PATH: "/usr/bin:/bin" },
-    currentList: () => list };
+    currentList: () => list, mirrorOnly: () => { list = [mirror]; } };
 }
 
 test("mirror search-list recovery only reads and restores the search list", () => {
@@ -50,6 +50,19 @@ test("mirror search-list recovery only reads and restores the search list", () =
   expect(() => recoverAgyKeychainSearchList(state.environment)).not.toThrow();
   expect(state.currentList()).toEqual([state.original]);
   expect(state.calls.every((args) => args[0] === "list-keychains")).toBe(true);
+});
+
+test("a search list holding only mirrors refuses an empty restore instead of setting one (round 372, item 14)", () => {
+  // The interrupted-cleanup shape: every entry is a mirror, so the
+  // filtered restore list is empty. `list-keychains -s` with no names
+  // either aborts recovery with the generic "was not restored" refusal
+  // or leaves the account with an empty search list, which the
+  // after-restore verification would then accept as correct. The empty
+  // restore is refused by name before the command runs.
+  const state = setup();
+  state.mirrorOnly();
+  expect(() => recoverAgyKeychainSearchList(state.environment)).toThrow("refusing to set an empty");
+  expect(state.calls.filter((args) => args.includes("-s"))).toHaveLength(0);
 });
 
 test("mirror cleanup verification only reads the search list", () => {

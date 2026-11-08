@@ -175,6 +175,15 @@ describe("the scode environment row", () => {
     expect(minimumRc.state).toBe("SANDBOX-TOO-OLD");
   });
 
+  test("an unparseable floor constant fails closed, like the unreadable facts (round 372, item 9)", () => {
+    // A maintainer writing "v0.6.0" into SCODE_FLOORS or the global
+    // minimum made the numeric arm answer "not below floor" — the
+    // doctor's row went healthy while the launch gate still refused
+    // every launch. Both arms now say below.
+    expect(scodeBelowFloor(facts({ version: [0, 6, 0], label: "0.6.0" }), "v0.6.0")).toBe(true);
+    expect(scodeBelowFloor(facts({ version: [0, 6, 0], label: "0.6.0", semver: "0.6.0" }), "v0.6.0")).toBe(true);
+  });
+
   test("the namespace probe's three outcomes shape the row", async () => {
     fakeBin({ scode: "exit 0" });
     const pass = await scodeEnvironmentRow(facts({}));

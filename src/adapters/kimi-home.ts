@@ -85,3 +85,31 @@ export function kimiRealBrandHome(
   }
   return configured;
 }
+
+/**
+ * The brand home a finished run's result processing reads: the hermetic
+ * home when one was prepared, else the launch-time rule above — except
+ * that a failed experiment run, or a passed-through directory that no
+ * longer exists between spawn and result, answers the default home
+ * under the effective home instead. Result time never re-refuses what
+ * launch time validated (review round 372, item 4): a run that already
+ * executed and spent quota keeps its result rather than reading as a
+ * launch failure, the same fallback the experiment path's failure arm
+ * used.
+ */
+export function kimiResultBrandHome(
+  environment: NodeJS.ProcessEnv,
+  passthroughEnv: readonly string[] | undefined,
+  homeDirectory: string | undefined,
+  hermeticHome: string | undefined,
+  failure: boolean
+): string {
+  if (hermeticHome !== undefined) return hermeticHome;
+  const effectiveHome = kimiEffectiveHome(environment, homeDirectory);
+  if (failure) return join(effectiveHome, ".kimi-code");
+  try {
+    return kimiRealBrandHome(environment, passthroughEnv, effectiveHome);
+  } catch {
+    return join(effectiveHome, ".kimi-code");
+  }
+}

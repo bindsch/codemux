@@ -331,7 +331,24 @@ export async function runCapturedCommand(
     // Every write issued before the exit is in stdin's chain by now, so
     // the wait starts only here: started with the captures it could drain
     // an empty chain before a protocol sink's first write (round 68).
-    await Promise.race([stdin.settled(), exitGiveUp]);
+    // Bounded like the pipe reads (PIPE_GIVE_UP_MS): with the exit
+    // settled, a chain that never settles means a descendant holds the
+    // read end open and never reads, and nothing else can fire exitGiveUp
+    // — without this bound the run parks until its own timeout and
+    // reports 124 "agent timed out" for a child that exited cleanly
+    // (review round 372, item 10).
+    let stdinOrphan = false;
+    let giveUpStdin: () => void = () => {};
+    const stdinGiveUp = new Promise<void>((resolve) => { giveUpStdin = resolve; });
+    const stdinGiveUpTimer = setTimeout(() => {
+      stdinOrphan = true;
+      giveUpStdin();
+    }, PIPE_GIVE_UP_MS);
+    try {
+      await Promise.race([stdin.settled(), exitGiveUp, stdinGiveUp]);
+    } finally {
+      clearTimeout(stdinGiveUpTimer);
+    }
 
     // A stdin failure that came first is the diagnosis.
     if (stdin.failed()) throw new CapturedRunFailure(stdin.error());
@@ -365,6 +382,12 @@ export async function runCapturedCommand(
       ? "Note: a process out of the runner's reach kept the output open after " +
         "the timeout; it may still be running\n"
       : "";
+    // The input twin of that note: the child is done, a write of its input
+    // never settled, and the give-up above returned the run anyway.
+    const stdinOrphanNote = stdinOrphan
+      ? "Note: a process out of the runner's reach kept the input open after " +
+        "the child exited; it may still be running\n"
+      : "";
     // The diagnostic starts its own line: a child whose last stderr line
     // had no newline would otherwise share it (review round 265).
     const captured = stderrResult.value ?? "";
@@ -372,10 +395,12 @@ export async function runCapturedCommand(
     const result = {
       stdout: stdoutResult.value ?? "",
       stderr: timedOut
-        ? `${separated}Error: agent timed out after ${timeoutMs}ms\n${abandonedNote}`
+        ? `${separated}Error: agent timed out after ${timeoutMs}ms\n${abandonedNote}${stdinOrphanNote}`
         : signaled
           ? `${separated}Error: agent interrupted by a signal\n`
-          : captured,
+          : stdinOrphan
+            ? `${separated}${stdinOrphanNote}`
+            : captured,
       exitCode: timedOut ? TIMEOUT_EXIT_CODE : signaled ? SIGNAL_EXIT_CODE : exitCode,
       success: !timedOut && !signaled && exitCode === 0,
       ...(timedOut ? { timedOut: true as const } : {}),

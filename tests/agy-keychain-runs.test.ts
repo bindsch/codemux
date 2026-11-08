@@ -251,12 +251,22 @@ test.each(["restore-list", "restore-noop"])("restoration failure %s refuses laun
   expect(readdirSync(join(home, ".gemini/.codemux-isolation-probes"))).toEqual([]);
 });
 
-test("synchronous exit cleanup restores the search list and removes the home", () => {
-  const { adapter, request, calls } = setup();
+test("synchronous exit cleanup refuses an empty search-list restore and still removes the home (round 372, item 14)", () => {
+  const { adapter, request, calls, records } = setup();
   const context = adapter.prepareRun(request);
-  writeFileSync(`${calls}.list`, JSON.stringify([join(context.agyProbe!.home!, AGY_MIRROR_PATH)]));
-  adapter.cleanupRunSync(context);
-  expect(JSON.parse(readFileSync(`${calls}.list`, "utf8"))).toEqual([]);
+  const mirrorOnly = [join(context.agyProbe!.home!, AGY_MIRROR_PATH)];
+  writeFileSync(`${calls}.list`, JSON.stringify(mirrorOnly));
+  let error: unknown;
+  try { adapter.cleanupRunSync(context); } catch (caught) { error = caught; }
+  // A list holding only the mirror is the interrupted-cleanup state:
+  // filtering it yields nothing, and the old cleanup set that empty list
+  // and accepted it as restored — leaving the account with no search
+  // list. The empty restore is refused by name, `list-keychains -s`
+  // never runs, and the home is still removed so the token copy inside
+  // it cannot survive the refusal.
+  expect(String(error)).toContain("refusing to set an empty user Keychain search list");
+  expect(records().filter((r) => r.args[0] === "list-keychains" && r.args.includes("-s"))).toHaveLength(1);
+  expect(JSON.parse(readFileSync(`${calls}.list`, "utf8"))).toEqual(mirrorOnly);
   expect(existsSync(context.agyProbe!.home!)).toBe(false);
 });
 

@@ -41,6 +41,13 @@ Input is limited to 16 KiB, trimmed, and must contain one credential line
 without NUL. Codemux removes the source ZAI_API_KEY after translating it into
 the child gateway token.
 
+A sandboxed Z.AI launch guards the operator's default Claude credential mirror
+the way a provider-override claude run does: nothing is synced from the
+Keychain, but the child is the same claude binary reading the same default
+config directory, so a mirror that holds a refresh token backed by a Keychain
+entry refuses the launch (one plain sandboxed claude run scrubs it); a file-only
+login, an access-only mirror, and an untrusted sandbox launch as before.
+
 To save a key without putting its value in shell history:
 
 ```sh
@@ -147,7 +154,7 @@ Plain runs share existing state entries individually from `.gemini` and its `ant
 
 Every launch validates **both** the OS login home and supplied HOME before recovery. Each must resolve to an absolute user-owned directory. Their canonical `.gemini/.codemux-isolation-probes` roots must be user-owned and free of a linked probe-root path.
 
-Search-list recovery removes only the fixed template or recognized private-mirror paths beneath those validated roots. Unrelated lookalikes remain in their original order and are reported. Template creation snapshots and restores the real user search list. Restoration runs under the real login HOME and verifies the list afterward. Per-run copies do not need to join that list. When codemux can read the real default, mirror creation snapshots it, sets the private default, and reads both defaults back. If the real default names this run's mirror, codemux restores the snapshot and refuses the run. A failed real-default read-back retries once; if the retry fails, codemux refuses the run without changing the real default. Other real-default changes are left alone. A mismatched private default refuses the run. Search-list recovery and cleanup do not read or restore default keychains.
+Search-list recovery removes only the fixed template or recognized private-mirror paths beneath those validated roots. Unrelated lookalikes remain in their original order and are reported. A recovery whose filtered list would be empty, because every entry was a codemux mirror, refuses to set it and names the repair (re-add the login keychain with `security list-keychains -d user -s <path>`). Template creation snapshots and restores the real user search list. Restoration runs under the real login HOME and verifies the list afterward. Per-run copies do not need to join that list. When codemux can read the real default, mirror creation snapshots it, sets the private default, and reads both defaults back. If the real default names this run's mirror, codemux restores the snapshot and refuses the run. A failed real-default read-back retries once; if the retry fails, codemux refuses the run without changing the real default. Other real-default changes are left alone. A mismatched private default refuses the run. Search-list recovery and cleanup do not read or restore default keychains.
 
 Stale-home recovery removes only user-owned `run-*` directories with valid ownership markers and a PID whose process no longer exists. Live owners, permission errors, unmarked homes, and linked homes are retained. Cleanup keeps directory descriptors, verifies identities, and can locate a renamed home by inode. Failures report the remaining token/mirror path without replacing a completed child's result.
 

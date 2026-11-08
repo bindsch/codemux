@@ -222,6 +222,63 @@ describe("captured process execution", () => {
     }
   }, 12_000);
 
+  test("returns the child's exit code, with a note, when an unreachable orphan holds the input open", async () => {
+    // Review round 372, item 10: after the captures and the exit settled,
+    // the stdin wait had no give-up of its own — exitGiveUp is armed only
+    // by a timeout, a signal, or a capture failure. A one-shot write past
+    // the pipe buffer stayed pending forever when a descendant held the
+    // stdin read end open after a clean exit, so the run parked until its
+    // own timeout and reported 124 "agent timed out" with no note. The
+    // wait is now bounded the way the pipe reads are, the run returns the
+    // child's real exit code, and the note the output side prints names
+    // the input orphan. The park is staged at the subprocess seam, the
+    // same one the output-orphan test above uses: a real exited child
+    // (its pid, kill, and empty output streams are real) whose stdin
+    // write never settles — on this host Bun closes its stdin sink at
+    // child exit (a pending write rejects EPIPE), so a live fixture
+    // cannot hold the write open past the exit.
+    if (process.platform === "win32") return;
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-stdin-orphan-"));
+    const real = Bun.spawn(["/bin/sh", "-c", "exit 0"], {
+      cwd, env: {}, stdin: "pipe", stdout: "pipe", stderr: "pipe", detached: true,
+    });
+    expect(await real.exited).toBe(0);
+    const parked = new Promise<number>(() => {});
+    const staged = {
+      exited: real.exited,
+      pid: real.pid,
+      kill: (signal?: NodeJS.Signals) => real.kill(signal),
+      stdin: { write: () => parked, end: () => parked },
+      stdout: real.stdout,
+      stderr: real.stderr,
+    } as unknown as Bun.Subprocess<"pipe", "pipe", "pipe">;
+    const command = ["/bin/sh", "-c", "exit 0"];
+    const spawn = spyOn(Bun, "spawn").mockReturnValueOnce(staged);
+    let pending: ReturnType<typeof runCapturedCommand>;
+    try {
+      pending = runCapturedCommand(command, {
+        cwd,
+        env: {},
+        // Past the pipe buffer, the shape a real orphan parks: a write
+        // that can never drain while nothing reads.
+        stdinInput: "x".repeat(1024 * 1024),
+        // Far past the bounded give-up the fix arms, and short of the
+        // pre-fix parking: without the fix this run returns only once the
+        // timeout (4 s) plus the kill grace (3 s) have run out, reporting
+        // 124 with no input note.
+        timeoutMs: 4_000,
+      });
+    } finally {
+      spawn.mockRestore();
+    }
+    const started = performance.now();
+    const result = await pending;
+    expect(result.exitCode).toBe(0);
+    expect(result.success).toBe(true);
+    expect(result.stderr).toContain("kept the input open");
+    expect(performance.now() - started).toBeLessThan(3_500);
+  }, 12_000);
+
   test("rejects invalid reusable timeout values before spawning", async () => {
     for (const timeoutMs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
       await expect(runCapturedCommand([bun, "-e", "process.exit(0)"], {

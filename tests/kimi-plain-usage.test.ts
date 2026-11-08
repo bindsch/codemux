@@ -55,6 +55,34 @@ describe("Kimi plain runs use the structured wire", () => {
     } finally { f.cleanup(); }
   });
 
+  test("a passed-through KIMI_CODE_HOME gone by result time never re-refuses the finished run (round 372, item 4)", () => {
+    // Launch time validated the passed-through directory
+    // (validateRunRequest); result time stat'ed it again and threw the
+    // same usage refusal, so a run that had already executed and spent
+    // quota was discarded and reported as a launch failure with a "fix
+    // your typo" message. Result time falls back to the default home
+    // instead, the way the experiment path's failure arm does: this
+    // fixture writes the wire log there, so the reply is unwrapped and
+    // the usage recorded from the run's own stream.
+    const f = fixture();
+    try {
+      const passed = join(f.home, "passed-brand");
+      mkdirSync(passed);
+      const adapter = new KimiAdapter({ HOME: f.home, KIMI_CODE_HOME: passed }, f.home);
+      const request: RunRequest = { ...f.request, passthroughEnv: ["KIMI_CODE_HOME"] };
+      f.writeWire(records);
+      adapter.validateRunRequest(request);
+      rmSync(passed, { recursive: true, force: true });
+      const result = adapter.processRunResult(
+        { ...success, stdout: stream(events) }, request, { harnessVersion: "2.3.2" }
+      );
+      expect(result.success).toBe(true);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("Working\n\nA\nB\n");
+      expect(result.usage!.total_tokens).toBe(36);
+    } finally { f.cleanup(); }
+  });
+
   test("stdout that never used the wire passes through verbatim with no usage", () => {
     const f = fixture();
     try {

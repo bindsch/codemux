@@ -398,11 +398,15 @@ export function buildEffectiveScodeCommands(
         cwd: verificationCwd(),
       };
       const runCmd = captureWarnings(() => adapter.buildRunCommand(runRequest)).value;
+      // Both previews carry the same `-C <workdir>` pin the real spawns
+      // in cli-runtime.ts give buildScodeCommand: without it the listed
+      // argv omits the pin scode's cwd-dependent project detection reads,
+      // a shape no launch runs (round 372, item 15).
       rows.push({
         agentId,
         autonomy,
         mode: "run",
-        command: buildScodeCommand(runCmd, undefined, autonomy, sandboxOptions),
+        command: buildScodeCommand(runCmd, verificationCwd(), autonomy, sandboxOptions),
       });
 
       const tuiCmd = captureWarnings(() =>
@@ -412,7 +416,7 @@ export function buildEffectiveScodeCommands(
         agentId,
         autonomy,
         mode: "tui",
-        command: buildScodeCommand(tuiCmd, undefined, autonomy, sandboxOptions),
+        command: buildScodeCommand(tuiCmd, verificationCwd(), autonomy, sandboxOptions),
       });
     }
   }

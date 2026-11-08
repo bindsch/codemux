@@ -184,13 +184,19 @@ export abstract class AgyFinalize extends AgyDriverIo {
     if (proc !== null) {
       // agy has no interrupt; the stdin close is its only end carrier.
       // The input loop finishes the line it is running and exits, so the
-      // wait is for the exit itself (or a failure raising the code),
-      // bounded by the grace, before any signal (review live17 — SIGTERM
-      // used to go out at once and the harness never saw EOF, so an open
-      // turn was always the synthesized `interrupted` with null usage).
+      // wait is for the exit itself, bounded by the grace, before any
+      // signal (review live17 — SIGTERM used to go out at once and the
+      // harness never saw EOF, so an open turn was always the synthesized
+      // `interrupted` with null usage). No failure cuts the wait: the
+      // old `endExitCode > startCode` cut fired only on a failure that
+      // raised the code after the end began, never after an end that
+      // started at 1 or 143 (review round 372, item 2), and any cut that
+      // stops the child early turns its clean exit into a signal exit,
+      // which the shared classification (process.ts, buildSessionEnded)
+      // reports as a harness failure instead of the fatal that ended the
+      // session. The grace bounds the cost; the verdict stays honest.
       proc.endInput();
-      const startCode = this.endExitCode;
-      await proc.awaitEndAnswer(() => this.endExitCode > startCode);
+      await proc.awaitEndAnswer(() => false);
       // An escalated child is already tree-SIGKILLed; requestStop would
       // only arm timers against the dying group (stop-escalation.ts).
       if (!this.stopEscalation.escalateIfRequested(proc)) proc.requestStop();

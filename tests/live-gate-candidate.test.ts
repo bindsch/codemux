@@ -148,6 +148,21 @@ describe("candidate listing parsing", () => {
     )).toThrow("experimentPrefix must be a string or null");
   });
 
+  test("a listing without experimentPrefix is refused by name, like its siblings (round 372, item 7)", () => {
+    // The field was only type-checked when present, and the cast to
+    // string | null read undefined as a prefix: facts.ts built
+    // experimentPrefixes [undefined], the probe spec's
+    // accept_harness_prefix JSON-rendered as [null], and the candidate
+    // refused it as a malformed spec — a message about the spec when the
+    // defect was the older listing.
+    const { experimentPrefix, ...older } = LISTING.agents[0]!.capabilities;
+    expect(experimentPrefix).toBe(null);
+    expect(() => candidateFacts(
+      { schema: "codemux-list-1", agents: [{ id: "claude", available: true, binary: "claude", capabilities: older }] },
+      "src"
+    )).toThrow("experimentPrefix is absent; the listing is from an older build");
+  });
+
   test("a listing without budgetLimit reads false instead of refusing", () => {
     // No probe keys on the spend-limit fact, so a candidate listing from
     // a build without the field is carried with the false default, the

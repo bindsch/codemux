@@ -19,8 +19,8 @@ codemux_pinned_bun=
 tool_dirs='/usr/bin /bin /run/current-system/sw/bin /usr/local/bin /opt/homebrew/bin'
 
 # stat_uid_mode <path>: prints "<uid> <mode string>" for the path's TARGET
-# when it is a symlink. The dialect is decided ONCE per stat binary,
-# before any path is checked: the two variants share no flags. On GNU
+# when it is a symlink. The dialect is decided per stat binary, before
+# that binary checks any path: the two variants share no flags. On GNU
 # coreutils stat, -f means --file-system and the BSD format string is read
 # as a file operand, so running the BSD form there prints a filesystem
 # block and fails on the fake operand — output a fallback's clean line
@@ -74,7 +74,10 @@ id_probe=$(first_existing_tool id) || {
 }
 stat_tool=$stat_probe
 define_stat_uid_mode
-owner_uid=$("$id_probe" -u)
+owner_uid=$("$id_probe" -u) || {
+  echo "codemux: $id_probe -u failed; cannot verify the runtime" >&2
+  exit 1
+}
 
 # trusted_tool <name>: prints the first candidate from the fixed list that
 # is a regular file owned by this user or root and carries no group or
@@ -87,6 +90,18 @@ trusted_tool() {
   for trusted_dir in $tool_dirs; do
     trusted_path=$trusted_dir/$trusted_name
     [ -f "$trusted_path" ] || continue
+    # A stat candidate is judged with its OWN dialect's flags, never the
+    # probe's: the probe bound stat_uid_mode above is only a judge of last
+    # resort, and a probe that cannot run (or answers nothing) must not
+    # disqualify a valid stat of the other dialect — the cross-dialect
+    # selection the redecision below exists for (review round 372, item
+    # 5). The candidate judges its own directory with its own form too,
+    # and the output-shape rule still refuses a stat that answers neither
+    # form readably.
+    if [ "$trusted_name" = stat ]; then
+      stat_tool=$trusted_path
+      define_stat_uid_mode
+    fi
     if ! trusted_stat=$(stat_uid_mode "$trusted_path"); then
       continue
     fi
@@ -169,7 +184,10 @@ while [ -L "$script_path" ]; do
   script_dir=${script_path%/*}
   [ "$script_dir" = "$script_path" ] && script_dir=.
   script_dir=$(CDPATH='' cd -P -- "$script_dir" && pwd)
-  link_target=$("$readlink_tool" "$script_path")
+  link_target=$("$readlink_tool" "$script_path") || {
+    echo "codemux: refusing to resolve the launcher: readlink failed on $script_path" >&2
+    exit 1
+  }
   case "$link_target" in
     /*) script_path=$link_target ;;
     *) script_path=$script_dir/$link_target ;;
@@ -249,7 +267,10 @@ while [ -L "$bun_path" ]; do
   bun_dir=${bun_path%/*}
   [ "$bun_dir" = "$bun_path" ] && bun_dir=.
   bun_dir=$(CDPATH='' cd -P -- "$bun_dir" && pwd)
-  link_target=$("$readlink_tool" "$bun_path")
+  link_target=$("$readlink_tool" "$bun_path") || {
+    echo "codemux: refusing to run bun from $bun_found_in: readlink failed on $bun_path" >&2
+    exit 1
+  }
   case "$link_target" in
     /*) bun_path=$link_target ;;
     *) bun_path=$bun_dir/$link_target ;;

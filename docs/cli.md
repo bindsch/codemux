@@ -325,8 +325,9 @@ protocol compatibility, and unavailable results.
 | `verify` | `-a, --agent <agent>`, `--show-scode`, `--sandbox-trust <level>`, `--sandbox-no-net`, `--sandbox-scrub-env` |
 
 `verify` checks wiring without model requests. Sandbox policy flags are parsed
-even without `--show-scode`; they affect previews when requested. These
-commands may inspect local binaries or execute version/help paths.
+even without `--show-scode`; they affect previews when requested. A previewed
+scode argv carries the same `-C <workdir>` pin a real launch's argv carries.
+These commands may inspect local binaries or execute version/help paths.
 
 ## Exit codes
 

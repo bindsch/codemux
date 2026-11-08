@@ -2,7 +2,8 @@ import { PROJECT_SETTING_SOURCES, validateProjectSettingsRunRequest } from "../c
 import { createProjectSettingsConfigDir, projectSettingsRunEnv } from "../claude-project-config.js";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { BaseAdapter, type RunContext } from "./base.js";
+import { type RunContext, type SandboxPreparation } from "./base.js";
+import { ClaudeCredentialAdapter } from "./claude-credentials.js";
 import { ExperimentBridge } from "../experiment-bridge.js";
 import { readExperimentRunSpec } from "../experiment-mcp.js";
 import { buildPlaywrightSandboxMcp } from "../mcp.js";
@@ -45,9 +46,17 @@ const MAX_API_TIMEOUT_MS = 86_400_000;
 // nothing.
 export const ZAI_DEFAULT_MODEL = "opus";
 
-export class ZaiAdapter extends BaseAdapter {
+export class ZaiAdapter extends ClaudeCredentialAdapter {
   readonly id: AgentId = "zai";
   readonly binaryName = "claude";
+
+  /** Same claude binary, same default config directory: the operator's
+   * mirror is guarded as on a provider-override claude run (round 372). */
+  override prepareSandbox(context: SandboxPreparation = {}): void {
+    if (context.sandboxTrust === "untrusted") return;
+    this.reportProfileRedirects("zai", context.passthroughEnv ?? []);
+    this.guardMirrorForForeignCredential("zai", "A Z.AI run", this.credentialTarget());
+  }
 
   constructor(
     environment: NodeJS.ProcessEnv = process.env,

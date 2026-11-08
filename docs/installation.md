@@ -68,7 +68,10 @@ regular file owned by root or this user with no group or world write bit —
 the same rule the Bun binary is held to — so distributions whose coreutils
 are not under `/usr/bin` (NixOS) work, and a planted PATH entry cannot
 substitute them. A system with no acceptable candidate in that list refuses
-to start.
+to start. A `stat` candidate is always judged with its own dialect's flags
+(the GNU/BusyBox/Toybox `-c` form or the BSD `-f` form), so a `stat` earlier
+in the list that cannot run or answers nothing cannot disqualify a valid
+`stat` of the other dialect behind it.
 
 ## Upgrade and verify
 

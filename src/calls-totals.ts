@@ -291,10 +291,18 @@ class GroupTotals {
         ? `${label}=$${sum.toFixed(4)}`
         : `${label}=${sum.toLocaleString("en-US")}`;
     });
-    const unknownNotes = USAGE_FIELDS.filter(({ field }) => unknowns[field] > 0).map(
-      ({ label, field }) =>
-        sums[field] === null ? `${label}: all ${unknowns[field]}` : `${label}: ${unknowns[field]}`
-    );
+    const unknownNotes = USAGE_FIELDS.filter(({ field }) => unknowns[field] > 0).map(({ label, field }) => {
+      if (sums[field] !== null) return `${label}: ${unknowns[field]}`;
+      // A null sum means every record left the field unreported only when
+      // the pass did not overflow it: addCount and the cost buckets null
+      // an overflowed sum too, and "all N" would be false while records
+      // did report (round 372, item 8). The overflowed field says both
+      // facts instead.
+      const overflowedSum = field === "cost_usd" ? costOverflowed : overflowed.has(field as TokenField);
+      return overflowedSum
+        ? `${label}: ${unknowns[field]} unreported and the total overflowed the ${field === "cost_usd" ? "finite" : "safe-integer"} range`
+        : `${label}: all ${unknowns[field]}`;
+    });
     const notes: string[] = [];
     if (foldedSummaries > 0) {
       notes.push(

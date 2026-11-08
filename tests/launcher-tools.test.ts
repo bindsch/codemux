@@ -51,11 +51,13 @@ describe("bin/codemux tool resolution", () => {
    * binaries — and the answer is produced by delegating to the host stat,
    * so every ownership judgment stays real. A path containing BADSHAPE
    * gets a three-token line instead (the shape-refusal probe). `id`
-   * answers `uid` for `-u`. */
+   * answers `uid` for `-u`. `brokenStat` makes the stat claim its dialect
+   * but fail every ownership query: a probe that cannot judge anyone. */
   function fakeToolDir(options: {
     dialect?: "gnu" | "busybox" | "toybox" | "other";
     uid?: string;
     statMode?: number;
+    brokenStat?: boolean;
   } = {}): string {
     const dir = tempDir("codemux-launcher-tools-");
     const dialect = options.dialect ?? "gnu";
@@ -78,6 +80,7 @@ describe("bin/codemux tool resolution", () => {
         `  --version) printf '${versionText}'; exit ${dialect === "gnu" ? 0 : 1} ;;`,
         `  --help) printf '${helpText}'; exit 0 ;;`,
         "esac",
+        ...(options.brokenStat === true ? ["exit 1"] : []),
         // The launcher calls: stat -L <form-flag> <format> <path>. A stat
         // of the other dialect rejects the flags, exactly as the real one
         // does, so a wrong dialect decision is observable.
@@ -195,6 +198,94 @@ describe("bin/codemux tool resolution", () => {
     const alone = runLauncher(launcherWithToolDirs(planted), bin);
     expect(alone.exitCode).toBe(1);
     expect(alone.stderr.toString()).toContain("codemux: no trusted stat found in");
+  });
+
+  test("a stat candidate is judged with its own dialect's flags, not the probe's (review round 372)", () => {
+    // Item 5: the probe stat identifies as GNU but fails every ownership
+    // query, so it cannot judge anyone, and the only passing stat speaks
+    // the BSD form alone. Judging every candidate through the probe's
+    // dialect skipped that stat too and the launcher refused to start
+    // ("no trusted stat found") even though a valid trusted stat existed
+    // — the dialect redecision below the scan exists for exactly this
+    // cross-dialect selection and could never reach it while the probe
+    // was the only judge.
+    const probe = fakeToolDir({ dialect: "gnu", brokenStat: true });
+    const bsd = fakeToolDir({ dialect: "other" });
+    const bin = fakeBunDirectory();
+    const result = runLauncher(launcherWithToolDirs(`${probe} ${bsd}`), bin);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toContain("FAKE-BUN-RAN --no-env-file");
+  });
+
+  test("an id probe whose -u call fails refuses with a diagnostic, not a silent exit (review round 372)", () => {
+    // Item 6: `owner_uid=$("$id_probe" -u)` had no `|| refusal`, so a
+    // failing probe id exited the launcher with the tool's own status and
+    // no diagnostic under `set -e`.
+    const probe = fakeToolDir();
+    writeFileSync(join(probe, "id"), "#!/bin/sh\nexit 3\n", { mode: 0o755 });
+    chmodSync(join(probe, "id"), 0o755);
+    const bin = fakeBunDirectory();
+    const result = runLauncher(launcherWithToolDirs(probe), bin);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain(
+      `codemux: ${join(probe, "id")} -u failed; cannot verify the runtime`
+    );
+    expect(result.stdout.toString()).not.toContain("FAKE-BUN-RAN");
+  });
+
+  /** A readlink that fails for any path containing FAILLINK: the
+   * swap-between-check-and-use race the ancestor walk treats as
+   * in-model, made deterministic. */
+  function failLinkReadlinkDir(): string {
+    const dir = fakeToolDir();
+    writeFileSync(
+      join(dir, "readlink"),
+      ['#!/bin/sh', 'case "$*" in *FAILLINK*) exit 1 ;; esac', 'exec /usr/bin/readlink "$@"', ""].join("\n"),
+      { mode: 0o755 }
+    );
+    chmodSync(join(dir, "readlink"), 0o755);
+    return dir;
+  }
+
+  test("a readlink failure in the launcher's own symlink walk refuses with a diagnostic (review round 372)", () => {
+    // Item 6: `link_target=$("$readlink_tool" "$script_path")` had no
+    // `|| refusal`, so a readlink that failed on a link the walk had just
+    // seen exited silently with the tool's status.
+    const tools = failLinkReadlinkDir();
+    const root = tempDir("codemux-launcher-linkfail-");
+    const copy = join(root, "codemux");
+    const text = readFileSync(LAUNCHER, "utf8");
+    expect(text).toContain(TOOL_DIRS_LINE);
+    writeFileSync(copy, text.replace(TOOL_DIRS_LINE, `tool_dirs='${tools}'`), { mode: 0o755 });
+    chmodSync(copy, 0o755);
+    // The launcher is reached THROUGH the link, so its $0 is a symlink
+    // the walk must resolve.
+    const link = join(root, "FAILLINK-codemux");
+    symlinkSync(copy, link);
+    const bin = fakeBunDirectory();
+    const result = runLauncher(link, bin);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain(
+      `codemux: refusing to resolve the launcher: readlink failed on ${link}`
+    );
+    expect(result.stdout.toString()).not.toContain("FAKE-BUN-RAN");
+  });
+
+  test("a readlink failure in the bun symlink walk refuses with a diagnostic (review round 372)", () => {
+    // Item 6: the bun-side `link_target=$("$readlink_tool" "$bun_path")`
+    // had no `|| refusal` either.
+    const tools = failLinkReadlinkDir();
+    const root = tempDir("codemux-launcher-bunlinkfail-");
+    const entry = join(root, "FAILLINK-bin");
+    mkdirSync(entry, { mode: 0o755 });
+    const real = fakeBunDirectory();
+    symlinkSync(join(real, "bun"), join(entry, "bun"));
+    const result = runLauncher(launcherWithToolDirs(tools), entry);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain(
+      `codemux: refusing to run bun from ${entry}: readlink failed on ${entry}/bun`
+    );
+    expect(result.stdout.toString()).not.toContain("FAKE-BUN-RAN");
   });
 
   test("a world-writable stat file is skipped and, with no other candidate, refused", () => {

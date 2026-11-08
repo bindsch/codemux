@@ -80,13 +80,16 @@ test("symlinked Gemini configuration supports absent and existing probe roots in
   for (const home of [state.home, supplied]) {
     expect(fs.existsSync(join(home, "dotfiles-gemini/.codemux-isolation-probes"))).toBe(false);
   }
+  // The operator's own login keychain stays on the list: a recovery that
+  // would leave the list empty refuses instead (review round 372, item 14).
+  const login = "/Library/Keychains/System.keychain";
   for (const hermetic of [false, true]) {
     const context = adapter.prepareRun({ ...request, sandboxed: true, hermetic });
     const home = context.agyProbe!.home!;
     expect(home.startsWith(join(supplied, "dotfiles-gemini/.codemux-isolation-probes/run-"))).toBe(true);
-    state.setList([join(supplied, ".gemini/.codemux-isolation-probes", home.split("/").at(-1)!, AGY_MIRROR_PATH)]);
+    state.setList([join(supplied, ".gemini/.codemux-isolation-probes", home.split("/").at(-1)!, AGY_MIRROR_PATH), login]);
     adapter.cleanupRunSync(context);
-    expect(state.list()).toEqual([]);
+    expect(state.list()).toEqual([login]);
     expect(fs.existsSync(home)).toBe(false);
   }
   for (const home of [state.home, supplied]) {
@@ -97,7 +100,7 @@ test("symlinked Gemini configuration supports absent and existing probe roots in
     state.setList([...state.list(), join(home, ".gemini/.codemux-isolation-probes/run-dead", AGY_MIRROR_PATH)]);
   }
   expect(adapter.prepareRun(request)).toEqual({});
-  expect(state.list()).toEqual([]);
+  expect(state.list()).toEqual([login]);
   for (const home of [state.home, supplied]) {
     expect(fs.readdirSync(join(home, "dotfiles-gemini/.codemux-isolation-probes"))).toEqual([]);
   }

@@ -186,6 +186,35 @@ describe("sandboxed launch agreement (review round 100)", () => {
     }
   });
 
+  test("a launch whose options name another working directory than the request is refused before validation (round 372)", async () => {
+    // The adapters mint the medium-autonomy Edit grant for request.cwd
+    // while the child runs in options.cwd; the launcher used to check the
+    // pair only on the experiment, agy and project-settings paths.
+    const requested = mkdtempSync(join(tmpdir(), "codemux-agree-req-"));
+    const spawnIn = mkdtempSync(join(tmpdir(), "codemux-agree-opt-"));
+    for (const sandbox of [false, true]) {
+      const launch = harness(
+        { agent: "claude", prompt: "t", cwd: requested, autonomy: "medium", sandboxed: sandbox },
+        { sandbox, requestedAutonomy: "medium", cwd: spawnIn }
+      );
+      try {
+        const refusal = await launch.run().then(() => null, (error: unknown) => error);
+        expect(refusal).toBeInstanceOf(UsageRefusalError);
+        // The sandboxed agreement names the split first (review round 64);
+        // the direct launch has its own refusal now.
+        expect((refusal as Error).message).toContain(
+          sandbox ? "validated working directory" : "must run in the request's working directory"
+        );
+        expect(launch.validated()).toBe(0);
+        expect(launch.spawned()).toBe(0);
+      } finally {
+        launch.restore();
+      }
+    }
+    rmSync(requested, { recursive: true, force: true });
+    rmSync(spawnIn, { recursive: true, force: true });
+  });
+
   test("a direct launch refuses a request claiming --sandbox-no-net before validation (round 341)", async () => {
     // The pre-fix direct branch ignored the claim and ran unrestricted
     // while the request said restricted.

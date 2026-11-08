@@ -178,6 +178,21 @@ describe("Verifier", () => {
     expect(rows.every((row) => row.command[0] === "scode")).toBe(true);
   });
 
+  test("every previewed scode argv pins the verification workdir like a real launch (round 372, item 15)", () => {
+    // The real spawns (cli-runtime.ts) pass the run's workdir, which emits
+    // `-C <cwd>` — the pin that makes scode's cwd-dependent project
+    // detection see the same tree the run sees. The preview passed
+    // undefined, so the listed argv carried no pin while the launched one
+    // did: the preview showed a command shape the launch never runs.
+    const rows = buildEffectiveScodeCommands(["codex"]);
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      const pin = row.command.indexOf("-C");
+      expect(pin).toBeGreaterThan(-1);
+      expect(row.command[pin + 1]).toBe(verificationCwd());
+    }
+  });
+
   test("buildEffectiveScodeCommands applies override options", () => {
     const rows = buildEffectiveScodeCommands(["codex"], {
       trust: "trusted",

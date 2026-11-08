@@ -213,7 +213,8 @@ describe("CLI - Verify", () => {
     expect(stdout).toContain("Effective scode command preview");
     expect(stdout).toContain("| Agent | Autonomy | Mode | Command |");
     expect(stdout).toContain("| codex | read-only | run |");
-    expect(stdout).toContain("`scode --trust");
+    // Every preview carries the launch's -C pin first (review round 372, item 15).
+    expect(stdout).toMatch(/`scode -C \S+ --trust/);
   });
 
   test("verify --show-scode applies sandbox policy overrides", async () => {
@@ -228,19 +229,19 @@ describe("CLI - Verify", () => {
       "--sandbox-scrub-env",
     ]);
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("scode --trust trusted --ro --no-net --scrub-env --");
+    expect(stdout).toMatch(/scode -C \S+ --trust trusted --ro --no-net --scrub-env --/);
   });
 
   test("verify --show-scode keeps hosted agents network-capable", async () => {
     const { stdout, exitCode } = await runCli(["verify", "-a", "codex", "--show-scode"]);
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("| codex | low | run | `scode --trust standard --rw --");
+    expect(stdout).toMatch(/\| codex \| low \| run \| `scode -C \S+ --trust standard --rw --/);
   });
 
   test("verify --show-scode uses explicit standard trust for coarse harnesses", async () => {
     const { stdout, exitCode } = await runCli(["verify", "-a", "opencode", "--show-scode"]);
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("| opencode | medium | run | `scode --trust standard --rw --");
+    expect(stdout).toMatch(/\| opencode \| medium \| run \| `scode -C \S+ --trust standard --rw --/);
   });
 
   test("verify sandbox preview flags without --show-scode warns", async () => {

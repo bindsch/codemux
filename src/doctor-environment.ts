@@ -40,7 +40,11 @@ export function scodeBelowFloor(facts: ScodeFacts, floor: string): boolean {
   }
   if (facts.version === null) return true;
   const minimum = parseVersion(floor);
-  return minimum !== null && !isVersionAtLeast(facts.version, minimum);
+  // An unparseable floor fails closed, like the unreadable facts above
+  // and the semver arm's uncomparable token: the launch gate refuses it,
+  // and the row says too old (round 372, item 9).
+  if (minimum === null) return true;
+  return !isVersionAtLeast(facts.version, minimum);
 }
 
 export interface ScodeFacts {

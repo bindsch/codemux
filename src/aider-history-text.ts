@@ -67,11 +67,12 @@ export function aiderReplyAfterHeader(text: string): string {
   let started = false;
   for (const raw of text.split("\n")) {
     const line = raw.replace(/\s+$/, "");
-    // Aider's own mark is `> ` (a bare `>` is the same line rstripped):
-    // a `>`-without-space line is text the model wrote and stays in the
-    // answer, so discarding it cannot rescue an exact-answer check
-    // (review round 331).
-    if (line.startsWith("> ") || line === ">") {
+    // Aider's own mark is `> `-with-space, the only shape its restore
+    // parser reads as tool output (aiderRestoresAssistantText mirrors
+    // it): a bare `>` and a `>`-without-space line are text the model
+    // wrote, so they stay in the answer and extraction agrees with the
+    // resumability verdict (review round 331; round 372, item 12).
+    if (line.startsWith("> ")) {
       // Blockquoted tool chatter: skip before the answer, end at it after.
       if (started) break;
       pendingBlank = [];

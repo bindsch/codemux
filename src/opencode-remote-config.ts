@@ -137,11 +137,17 @@ function activeOrgAccount(realDataDir: string): string | null {
   try {
     const db = new Database(dbPath, { readonly: true });
     try {
+      // The carrier rows are selected by shape — any state row whose
+      // account exists and whose organization is set — never by the
+      // singleton id 1.18.18 happens to write (`state.id = 1` made a
+      // schema that keyed the rows differently silently answer "no
+      // carrier"). A schema this query cannot read throws into the
+      // fail-closed refusal below (round 372, item 13).
       const row = db
         .query(
           "SELECT account.url AS url FROM account_state AS state \
 JOIN account AS account ON account.id = state.active_account_id \
-WHERE state.id = 1 AND state.active_org_id IS NOT NULL LIMIT 1"
+WHERE state.active_org_id IS NOT NULL LIMIT 1"
         )
         .get() as { url?: string } | undefined;
       url = row?.url;

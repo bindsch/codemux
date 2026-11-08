@@ -358,6 +358,8 @@ describe("CodexAdapter", () => {
         launchRunRequest(adapter, request, {
           sandbox: false,
           requestedAutonomy: "high",
+          // The launch runs in the request's directory (review round 372).
+          cwd: home,
         })
       ).rejects.toThrow(/was not found/);
       expect(adapter.lastMessageFile).not.toBeNull();
