@@ -29,6 +29,7 @@ export {
   type SessionRecord,
 } from "./registry/format.js";
 export {
+  busyRecordExhaustedNotice,
   discardUnconfirmedRecord,
   PENDING_RECORD_FATAL,
   probeRegistryForStart,

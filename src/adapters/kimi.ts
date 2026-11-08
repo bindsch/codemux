@@ -337,7 +337,9 @@ export class KimiAdapter extends BaseAdapter {
 
   override processRunResult(result: RunResult, request: RunRequest, context?: RunContext, failure?: ExperimentFailure): RunResult {
     // The leak scan covers the whole printed output, shed tool payloads included (round 17, contracts-2 1).
-    result = { ...result, scanSurface: result.stdout + result.stderr + foldScanEvidence(context?.stdoutSink) };
+    // The channels join with a newline (aider's rule): unseparated concatenation can fuse bytes at a
+    // channel boundary into the canary marker though it exists in no single channel (round 361, item 4).
+    result = { ...result, scanSurface: `${result.stdout}\n${result.stderr}\n${foldScanEvidence(context?.stdoutSink)}` };
     if (request.resultJson || request.experimentMcp) {
       if (request.hermetic && !context?.kimiHermeticHome && !failure) {
         throw new Error("kimi hermetic home was not prepared before reading results");

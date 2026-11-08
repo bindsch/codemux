@@ -148,9 +148,13 @@ const notRunUsage = (reason: string): UsageOutcome => ({
 
 type UsageSnapshotResult = Awaited<ReturnType<typeof fetchUsageSnapshot>>["results"][number];
 
-const windowLine = (result: UsageSnapshotResult): string => {
+/** The usage column's window summary. The weekly window is found with the
+ * quota gate's own word-bounded test (quota-gate.ts isWeekly): "biweekly"
+ * and "weekday" name other cadences and must not render as "week N% used"
+ * (review round 361; the gate's round 20, minor 12). */
+export const windowLine = (result: UsageSnapshotResult): string => {
   const primary = result.windows.find((window) => window.kind === "primary");
-  const weekly = result.windows.find((window) => /week/i.test(window.kind));
+  const weekly = result.windows.find((window) => /\bweek(ly)?\b/i.test(window.kind));
   const parts: string[] = [];
   if (primary !== undefined) {
     const remaining =

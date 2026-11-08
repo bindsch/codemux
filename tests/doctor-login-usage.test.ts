@@ -8,6 +8,7 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
+import { windowLine } from "../src/doctor-harness-row.js";
 import { fakeScodeHelp, fakeUsagemux, fixtureHome, readPathMarker, runDoctor } from "./helpers/doctor.js";
 import { createFakeBinaryEnv } from "./helpers/cli.js";
 
@@ -228,6 +229,24 @@ describe("doctor usage rows over a fake usagemux", () => {
   const claudeGreen = `if [ "$1" = "--version" ]; then printf '2.1.300 (Claude Code)\\n'; exit 0; fi`;
   const claudeHome = (): Record<string, string> => ({
     ".claude/.credentials.json": claudeMirror(Date.now() + 30 * MINUTE),
+  });
+
+  test("the window line finds weekly by word boundary, like the quota gate (review round 361)", () => {
+    // "biweekly" and "weekday" name other cadences: an unanchored /week/i
+    // rendered them as "week N% used" (usagemux emits no such kind today;
+    // the gate's own weekly test has been word-bounded since round 20).
+    const window = (kind: string) => ({
+      kind,
+      usedPercent: 40,
+      remainingPercent: 60,
+      windowMinutes: null,
+      resetsAt: null,
+    });
+    expect(windowLine({ windows: [window("weekly")] } as never)).toContain("week 40% used");
+    expect(windowLine({ windows: [window("primary-week")] } as never)).toContain("week");
+    expect(windowLine({ windows: [window("biweekly")] } as never)).toBe("no window reported");
+    expect(windowLine({ windows: [window("weekday")] } as never)).toBe("no window reported");
+    expect(windowLine({ windows: [] } as never)).toBe("no window reported");
   });
 
   test("a window below the ceiling is QUOTA-LOW and broken, with the gate's verdict", async () => {

@@ -299,8 +299,11 @@ describe("CLI - Doctor", () => {
       // goes through; doctor names the issue instead of a silent pass.
       chmodSync(join(fake.env.PATH!.split(":")[0]!, "usagemux"), 0o775);
       const { stdout } = await runCli(["doctor"], fake.env);
-      expect(stdout).toContain("usagemux: USAGEMUX-MISSING: usagemux binary is not a trusted executable");
+      // Installed but unreadable, not missing (review round 361): the row
+      // keeps the binary present and prescribes a reinstall.
+      expect(stdout).toContain("usagemux: USAGEMUX-UNREADABLE: usagemux binary is not a trusted executable");
       expect(stdout).toContain("group- or world-writable");
+      expect(stdout).toContain("brew reinstall bindsch/tap/usagemux");
     } finally {
       fake.cleanup();
     }

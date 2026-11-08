@@ -285,7 +285,7 @@ export function registerInfoCommands(
     .command("doctor")
     .description("Machine health check: every installed harness, the environment, and the configuration, without model requests")
     .option("--format <format>", "Output format: text (default) or json (schema codemux-doctor-1)")
-    .option("--spend", "Paid stage: one real codemux check request per eligible harness, labeled machine-check=<date>")
+    .option("--spend", "Paid stage: one real codemux check request per eligible harness, labeled machine-check=<stamp> (the JSON spend detail names the stamp)")
     .option("--spend-cap <n>", "At most n spend probes (default: one per eligible harness)")
     .option("--spend-unreadable", "Spend on harnesses whose usage row is unreadable too")
     .option("--only <agents>", "Check only these agents (comma-separated)")

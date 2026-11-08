@@ -95,12 +95,25 @@ describe.skipIf(process.platform !== "darwin")("Cursor's sandbox credential stor
     expect(() => adapter.validateRunRequest(request)).not.toThrow();
   });
 
-  test.each([undefined, ""])("selects the file store when the passed-through store is %s", (value) => {
-    const { adapter, request } = setup(true, { [STORE_ENV]: value });
+  test("selects the file store when the passed-through store is not set at all", () => {
+    const { adapter, request } = setup(true);
     request.passthroughEnv = [STORE_ENV];
     const injected = adapter.getRunEnv(request);
     expect(injected).toEqual({ [STORE_ENV]: "file" });
     expect(adapter.buildExecutionEnv(injected, request.passthroughEnv)[STORE_ENV]).toBe("file");
+    expect(() => adapter.validateRunRequest(request)).not.toThrow();
+  });
+
+  test("preserves an empty passed-through store (review round 361)", () => {
+    // The passthrough is the authorization: a store name passed through
+    // with an empty value is the operator's hand on it, and the file-store
+    // selection must not override it. The child receives the empty string
+    // and cursor falls back to its default store.
+    const { adapter, request } = setup(true, { [STORE_ENV]: "" });
+    request.passthroughEnv = [STORE_ENV];
+    const injected = adapter.getRunEnv(request);
+    expect(injected).toEqual({});
+    expect(adapter.buildExecutionEnv(injected, request.passthroughEnv)[STORE_ENV]).toBe("");
     expect(() => adapter.validateRunRequest(request)).not.toThrow();
   });
 

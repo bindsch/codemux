@@ -207,8 +207,13 @@ export class CursorAdapter extends BaseAdapter {
   override getRunEnv(request: RunRequest, _context?: RunContext): Record<string, string> {
     if (
       !request.sandboxed || process.platform !== "darwin" ||
+      // The passthrough is the authorization (argv the operator typed, the
+      // desktop-entry rule above): a passed-through name set to ANY value,
+      // an empty string included, is the operator's hand on this name and
+      // suppresses the file-store selection (review round 361). A name
+      // passed through but not set carries nothing to preserve.
       (request.passthroughEnv?.includes(CREDENTIAL_STORE_ENV) &&
-        this.environment[CREDENTIAL_STORE_ENV]) ||
+        this.environment[CREDENTIAL_STORE_ENV] !== undefined) ||
       this.credentialFile === null ||
       !existsSync(this.credentialFile)
     ) return {};

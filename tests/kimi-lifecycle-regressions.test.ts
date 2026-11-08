@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { dirname, join, resolve } from "node:path";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { KimiAdapter } from "../src/adapters/kimi.js";
+import { evaluateCanary } from "../src/hermetic-canary.js";
 import { createKimiHermeticHome } from "../src/kimi-hermetic.js";
 import type { RunRequest, RunResult } from "../src/types.js";
 import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
@@ -57,6 +58,28 @@ test.each([false, true])("Kimi result JSON keeps stderr in the marker scan; herm
     expect(result.success).toBe(true);
     expect(result.scanSurface).toContain(raw.stderr);
     expect(result.scanSurface).toContain(stream);
+  } finally { f.adapter.cleanupRunSync(context); f.cleanup(); }
+});
+
+test("a marker split across a channel boundary does not fuse into the scan surface (round 361, item 4)", () => {
+  // Unseparated concatenation let bytes at the stdout/stderr boundary
+  // spell the planted marker though it existed in no single channel —
+  // a false leak verdict on a clean run. The channels join with a
+  // newline, aider's rule.
+  const f = fixture();
+  const context = f.adapter.prepareRun(f.request);
+  try {
+    const marker = "CODEMUX-CANARY-DEADBEEF";
+    const stdout = `• the code word is ${marker.slice(0, 14)}`; // ends "CODEMUX-CANARY", no newline
+    const stderr = `${marker.slice(14)} diagnostic\n`; // starts "-DEADBEEF"
+    const result = f.adapter.processRunResult(
+      { stdout, stderr, exitCode: 0, success: true }, f.request,
+      { ...context, harnessVersion: "2.3.2" });
+    expect(result.scanSurface).toBe(`${stdout}\n${stderr}\n`);
+    expect(result.scanSurface).not.toContain(marker);
+    // With the fused concatenation this verdict was { kind: "leak",
+    // what: "marker" } on a run whose channels each stayed clean.
+    expect(evaluateCanary(result.scanSurface!, marker, "OK\n")).toEqual({ kind: "clean" });
   } finally { f.adapter.cleanupRunSync(context); f.cleanup(); }
 });
 

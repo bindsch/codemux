@@ -286,6 +286,26 @@ test("a processed Codex envelope survives a later experiment cleanup failure", (
     failure_code: "server_error", usage: { input_tokens: 200 } } });
 });
 
+test("the failure result keeps the prefix's deliberate null served model over a stale raw value (round 361, item 15)", () => {
+  // A truncated codex stream whose valid prefix carries no reroute item
+  // is the prefix reducer's considered "no attribution" verdict: null.
+  // The attribution chain used `??`, which read that null as absent and
+  // fell through to an earlier raw value — unreachable with current
+  // callers (a raw result carries no servedModel), a first-vs-last-wins
+  // trap for a caller that passes one. The null must survive: the block
+  // reports the selection as `model` and no served model, and the
+  // returned result does not resurrect the stale value.
+  const request: RunRequest = { agent: "codex", model: "requested-model", prompt: "fixture", resultJson: true };
+  const truncated = CODEX_EVENTS + '{"type":"turn.compl';
+  const raw: RunResult = { stdout: truncated, stderr: "", exitCode: 0, success: true, servedModel: "stale-model" };
+  const result = experimentFailedResult(raw, request, "/synthetic/recording.jsonl",
+    new records.ExperimentFailure(records.ExperimentFailureCode.ServerError, "server exited"));
+  const block = JSON.parse(result.stdout).codemux;
+  expect(block.model).toBe("requested-model");
+  expect(block.served_model).toBeNull();
+  expect(result.servedModel).toBeNull();
+});
+
 test("an oversized non-codex failure envelope is refused at the capture bound; one at the bound still goes out (round 127)", () => {
   // The non-codex arm of experimentFailedResult re-serializes the whole
   // processed envelope with its block rewritten, so a reply that fit before

@@ -92,7 +92,9 @@ config. Unreadable or malformed system config is refused. Windows experiments
 are refused until the system config location can be verified. Administrator
 managed settings remain subject to the limits in [isolation](isolation.md).
 
-Each `/mcp` POST must carry one JSON-RPC object. Arrays fail with HTTP 400; missing
+Each `/mcp` POST must carry one JSON-RPC object. The route matches its path
+without a query string — a client appending `?session_id=…` still reaches
+it, and the recorded `http_request` entry keeps the full URL. Arrays fail with HTTP 400; missing
 or incorrect authorization gets 401; GET and DELETE get 405; a body over
 1 MiB gets 413. Fast `tools/call` replies and successful replies to other JSON-RPC methods use HTTP 200 with `application/json`. A tool call still pending after two seconds starts HTTP 200 with `Content-Type: text/event-stream`, `Cache-Control: no-cache`, and `Connection: keep-alive`. The relay writes `: keepalive` comments every 15 seconds, then one `event: message` whose `data` is the JSON-RPC response, and ends the stream. GET remains 405.
 Valid notifications get HTTP 202 with no body. A `tools/call` notification lacks a required request ID, so it gets HTTP 400 and fails with `protocol` before dispatch. Non-object `arguments`, including explicit null, also get HTTP 400 and `protocol` before dispatch. Omitted arguments become `{}` in both native correlation and the forwarded request. The Claude bridge applies the same argument rules.

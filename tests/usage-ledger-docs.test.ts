@@ -48,7 +48,10 @@ describe("published results and ledger contract", () => {
 
   test("documents completion ordering and mixed JSON/totals output", () => {
     expect(reference).toContain("reverse append order");
-    expect(reference).toContain("JavaScript Date");
+    // --since's accepted shapes since review round 361: a duration with a
+    // unit or an ISO date; a date-only value cuts at UTC midnight.
+    expect(reference).toContain("UTC midnight");
+    expect(reference).toContain("A bare number");
     expect(reference).toContain("`--json --sum`");
     expect(reference).toMatch(/not a pure JSONL stream/);
   });

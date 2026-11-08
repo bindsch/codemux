@@ -70,6 +70,18 @@ describe("DroidAdapter", () => {
     })).toContain("off");
   });
 
+  test("the bare gpt-5.6 id is the none-spelling family too (review round 361)", () => {
+    // A suffixed check alone sent an unsuffixed family id to the generic
+    // `off`, which that family rejects.
+    const cmd = adapter.buildRunCommand({
+      agent: "droid",
+      prompt: "t",
+      model: "gpt-5.6",
+      effort: "none",
+    });
+    expect(cmd).toEqual(["droid", "exec", "-m", "gpt-5.6", "--reasoning-effort", "none"]);
+  });
+
   test("buildRunCommand with all options", () => {
     const request: RunRequest = {
       agent: "droid",

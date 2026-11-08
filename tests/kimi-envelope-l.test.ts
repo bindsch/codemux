@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { KimiAdapter } from "../src/adapters/kimi.js";
 import { ExperimentKimiRun } from "../src/experiment-kimi-run.js";
 import { ExperimentFailure, ExperimentFailureCode as Code } from "../src/experiment-records.js";
+import { kimiResult } from "../src/result-envelope/kimi.js";
 import type { RunContext } from "../src/run-context.js";
 import type { RunRequest, RunResult } from "../src/types.js";
 import { KIMI_STREAM_SESSION, kimiResumeHint } from "./fixtures/kimi-stream.js";
@@ -175,5 +176,29 @@ describe("Kimi failure-envelope recovery", () => {
       expect(JSON.parse(result.stdout).codemux.failure_code).toBe("result_changed");
       expect(result.stderr).toContain("native diagnostic\ncodemux: experiment failure [result_changed]: original mismatch\n");
     } finally { run.closeSync(); f.cleanup(); }
+  });
+
+  test("a marker split across the surface/wire boundary does not fuse into the experiment scan (round 361, item 4)", () => {
+    // The envelope appends the wire log to the scan surface. The wire's
+    // first bytes are JSON (`{"dir":"meta"` on the pinned wire), so the
+    // planted marker's tail IS those bytes and unseparated
+    // concatenation fused the two into a marker that existed in no
+    // single channel. The boundary carries a newline, the adapter's
+    // rule for stdout/stderr/fold evidence.
+    const f = fixture();
+    try {
+      mkdirSync(dirname(f.wire), { recursive: true });
+      const wireHead = `{"dir":"meta","type":"usage.record","usage":${JSON.stringify({
+        inputOther: 3, output: 5, inputCacheRead: 4, inputCacheCreation: 2 })}}`;
+      writeFileSync(f.wire, wireHead + "\n");
+      const marker = `CODEMUX-CANAR${wireHead.slice(0, 12)}`;
+      const context = { experimentKimi: { foldedUsage: () => undefined,
+        relay: { failureError: null, failureCode: null, fail() {} },
+        evidence: { wireLogPath: f.wire } } } as unknown as RunContext;
+      const result = kimiResult({ ...success, scanSurface: "kept output ends with CODEMUX-CANAR" },
+        { ...f.request, experimentMcp: "synthetic.json" }, f.brand, context);
+      expect(result.scanSurface).toBe(`kept output ends with CODEMUX-CANAR\n${wireHead}\n`);
+      expect(result.scanSurface).not.toContain(marker);
+    } finally { f.cleanup(); }
   });
 });

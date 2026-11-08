@@ -1,5 +1,6 @@
 import { describe, test, expect, spyOn } from "bun:test";
-import { AGENT_IDS } from "../src/adapters/index.js";
+import * as adaptersIndex from "../src/adapters/index.js";
+import { AGENT_IDS, getAdapter } from "../src/adapters/index.js";
 import { CURSOR_ENTRY_ENV, CursorAdapter } from "../src/adapters/cursor.js";
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -216,5 +217,34 @@ describe("Verifier", () => {
     expect(opencodeMediumRun).toBeDefined();
     expect(opencodeMediumRun?.command).toContain("--trust");
     expect(opencodeMediumRun?.command).toContain("standard");
+  });
+
+  test("an effort-capable adapter without a low level is previewed with no effort (review round 361)", () => {
+    // The scode listing picked effort "low" gated only on supportsEffort,
+    // without the effortLevels membership guard its sibling applies; the
+    // first effort-capable adapter lacking a low level would have "low"
+    // forced into its TUI command. No real adapter omits low today, so the
+    // registry is pointed at one that does.
+    const efforts: (string | undefined)[] = [];
+    const fake = {
+      capabilities: () => ({
+        supportsEffort: true,
+        effortLevels: ["medium", "high"],
+      }),
+      buildRunCommand: () => ["cursor-agent"],
+      buildTuiCommand: (_model: unknown, _autonomy: unknown, effort?: string) => {
+        efforts.push(effort);
+        return ["cursor-agent"];
+      },
+    } as unknown as ReturnType<typeof getAdapter>;
+    const registry = spyOn(adaptersIndex, "getAdapter").mockReturnValue(fake);
+    try {
+      const rows = buildEffectiveScodeCommands(["cursor"]);
+      expect(rows).toHaveLength(8);
+      expect(efforts).toHaveLength(4);
+      expect(efforts.every((effort) => effort === undefined)).toBe(true);
+    } finally {
+      registry.mockRestore();
+    }
   });
 });

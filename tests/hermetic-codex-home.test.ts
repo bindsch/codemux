@@ -209,6 +209,60 @@ describe("hermetic runs: codex", () => {
     expect(() => statSync(hermetic.home)).toThrow();
   });
 
+  test("a rotated symlink login (unlink plus a new symlink) warns too (review round 361)", () => {
+    // The old check only detected replacement by a non-symlink: a rotation
+    // that unlinks and re-symlinks kept isSymbolicLink() true, the warning
+    // never fired, and a stale token persisted silently. The link must
+    // still name the real login file.
+    const home = fakeHome();
+    const fail = (): never => {
+      throw new Error("no hard links");
+    };
+    const hermetic = createCodexHermeticHome(join(home, ".codex"), false, {
+      hard: fail,
+      symlink: symlinkSync,
+    });
+    const link = join(hermetic.codexHome, "auth.json");
+    rmSync(link);
+    const rotated = join(home, ".codex", "auth.json.rotated");
+    writeFileSync(rotated, '{"tokens":{"access_token":"rotated"}}');
+    symlinkSync(rotated, link);
+    const warnings: string[] = [];
+    const original = console.error;
+    console.error = (message?: unknown) => void warnings.push(String(message));
+    try {
+      hermetic.finalize();
+    } finally {
+      console.error = original;
+    }
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("replaced its login file");
+    expect(() => statSync(hermetic.home)).toThrow();
+  });
+
+  test("an untouched symlink login finalizes with no warning", () => {
+    // The readlink comparison must not misfire on the healthy path: a link
+    // still naming the real login file rotates in place and diverges not.
+    const home = fakeHome();
+    const fail = (): never => {
+      throw new Error("no hard links");
+    };
+    const hermetic = createCodexHermeticHome(join(home, ".codex"), false, {
+      hard: fail,
+      symlink: symlinkSync,
+    });
+    const warnings: string[] = [];
+    const original = console.error;
+    console.error = (message?: unknown) => void warnings.push(String(message));
+    try {
+      hermetic.finalize();
+    } finally {
+      console.error = original;
+    }
+    expect(warnings).toEqual([]);
+    expect(() => statSync(hermetic.home)).toThrow();
+  });
+
   test("finalize reports a login it could not inspect and still removes the home", () => {
     const home = fakeHome();
     const fail = (): never => {

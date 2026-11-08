@@ -18,6 +18,7 @@ import {
 } from "./process.js";
 import { buildEvent } from "./protocol.js";
 import {
+  busyRecordExhaustedNotice,
   PENDING_RECORD_FATAL,
   recordSessionStartOffStream,
   releaseSessionRecord,
@@ -97,9 +98,19 @@ export abstract class AgyFinalize extends AgyDriverIo {
       (outcome) => {
         this.recordPending = false;
         if (!outcome.ok) {
-          // An untracked live session must not run (§4.8): the registry is
-          // what makes resume's guards answerable, so failing to record it
-          // fails the session closed.
+          // A resumed session is tracked by its pre-spawn claim: a busy
+          // budget spent refreshing the record is a notice and the
+          // announcement, not a crash — the claim is the record (round
+          // 361, item 16). A fresh session, and every other failure
+          // class, fail closed (§4.8): the registry is what makes
+          // resume's guards answerable.
+          if (outcome.kind === "busy" && this.resumeClaimed) {
+            console.error(
+              busyRecordExhaustedNotice(this.conversationId ?? "unknown", outcome.error)
+            );
+            onRecorded();
+            return;
+          }
           this.emitError(
             true,
             "codemux",
@@ -115,7 +126,8 @@ export abstract class AgyFinalize extends AgyDriverIo {
         console.error(
           `codemux: the registry lock is busy recording session ${this.conversationId} ` +
             `(${error}); retrying in the background`
-        )
+        ),
+      this.options.registryStartBudget
     );
   }
 

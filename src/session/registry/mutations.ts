@@ -279,9 +279,12 @@ export function recordSessionStartOffStream(
   record: NewSessionRecord,
   settled: () => boolean,
   deliver: (outcome: UpdateOutcome) => void,
-  warn: (error: string) => void
+  warn: (error: string) => void,
+  /** A shorter retry budget than the shipped one, for tests that prove
+   * the exhaustion path without holding a lock for ten seconds. */
+  budget?: { attempts: number; retryMs: number }
 ): void {
-  let attemptsLeft = LOCK_ATTEMPTS;
+  let attemptsLeft = budget?.attempts ?? LOCK_ATTEMPTS;
   let warned = false;
   const attempt = (): void => {
     if (settled()) return;
@@ -299,10 +302,25 @@ export function recordSessionStartOffStream(
       warned = true;
       warn(outcome.error);
     }
-    const timer = setTimeout(attempt, LOCK_RETRY_MS);
+    const timer = setTimeout(attempt, budget?.retryMs ?? LOCK_RETRY_MS);
     timer.unref?.();
   };
   attempt();
+}
+
+/** The notice a resumed session emits when its off-stream start record
+ * exhausts the retry budget behind a busy lock (round 361, item 16): the
+ * CLI's pre-spawn claim already wrote the record, so the exhausted
+ * retries lost a refresh of a record that exists, not a session that ran
+ * untracked — one stderr line, and the session keeps running. The final
+ * form of the retrying warning `recordSessionStartOffStream` prints,
+ * answering it. Contrast `PENDING_RECORD_FATAL`, the crash a session
+ * with no claim owes the same exhaustion. */
+export function busyRecordExhaustedNotice(id: string, error: string): string {
+  return (
+    `codemux: the registry lock stayed busy recording session ${id} (${error}); ` +
+    "the retry budget is spent and the resumed session's claim stays the record"
+  );
 }
 
 /** The pre-spawn check for a fresh agy session, whose id only its first

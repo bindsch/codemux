@@ -30,6 +30,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readlinkSync,
   statSync,
   symlinkSync,
 } from "node:fs";
@@ -131,7 +132,11 @@ export function createCodexHermeticHome(
           ? false
           : linkKind === "hard"
             ? inodeOf(authLink) !== inodeOf(sourceAuth)
-            : !lstatSync(authLink).isSymbolicLink();
+            : // A rotation that unlinks and re-symlinks leaves a symlink in
+              // place, so isSymbolicLink alone sees no divergence; the link
+              // must still name the real login file (review round 361).
+              !lstatSync(authLink).isSymbolicLink() ||
+              readlinkSync(authLink) !== sourceAuth;
       if (diverged) {
         console.error(
           "codex: the hermetic run replaced its login file instead of rewriting " +

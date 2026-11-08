@@ -144,6 +144,8 @@ export function remedyFor(
         : null;
     case "USAGEMUX-MISSING":
       return "brew install bindsch/tap/usagemux";
+    case "USAGEMUX-UNREADABLE":
+      return "brew reinstall bindsch/tap/usagemux; the row's detail names why its --version could not be read";
     case "USAGEMUX-STALE":
       return "brew upgrade bindsch/tap/usagemux";
     case "PROBE-FAILED":

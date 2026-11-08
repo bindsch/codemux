@@ -51,6 +51,10 @@ export interface AgyDriverOptions {
   sessionTimeoutMs: number | null;
   /** Null disables registry writes (unit tests); the CLI always passes one. */
   registryPath: string | null;
+  /** Overrides the off-stream start record's retry budget (attempts and
+   * retry sleep) for tests that prove the busy-exhaustion path without
+   * holding a rival lock for the shipped ~10 s. */
+  registryStartBudget?: { attempts: number; retryMs: number };
   /** The harness state home recorded for this session (§4.8). */
   harnessHome: string;
   /** The provider identity recorded for the resume guard (review D3):

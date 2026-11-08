@@ -157,7 +157,11 @@ export class ExperimentHttpRelay {
         response.end();
         return;
       }
-      const earlyStatus = request.method !== "POST" ? 405 : request.url !== "/mcp" ? 404
+      // The route matches the path alone, the catalog route's rule (a
+      // query string — an MCP client's `?session_id=…` — is client
+      // metadata, not a different route); the full URL, query included,
+      // is what the http_request record keeps (round 361, item 5).
+      const earlyStatus = request.method !== "POST" ? 405 : path !== "/mcp" ? 404
         : Number(request.headers["content-length"]) > MAX_EXPERIMENT_MESSAGE_BYTES ? 413 : undefined;
       if (earlyStatus !== undefined) {
         this.record("http_request", { method: request.method ?? "", path: request.url ?? "",

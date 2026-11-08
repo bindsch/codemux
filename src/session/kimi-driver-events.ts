@@ -170,13 +170,14 @@ export abstract class KimiDriverEvents extends KimiDriverFinalize {
             this.deliver({
               kind: "record_outcome",
               ok: outcome.ok,
-              ...(outcome.ok ? {} : { error: outcome.error }),
+              ...(outcome.ok ? {} : { error: outcome.error, failure: outcome.kind }),
             }),
           (error) =>
             console.error(
               `codemux: the registry lock is busy recording session ${sessionId} ` +
                 `(${error}); retrying in the background`
-            )
+            ),
+          this.options.registryStartBudget
         );
         return;
       }
@@ -193,6 +194,12 @@ export abstract class KimiDriverEvents extends KimiDriverFinalize {
         return;
       case "release_registry":
         this.releaseRegistryRecord();
+        return;
+      case "notice":
+        // A diagnostic line only: no event, no verdict — the resumed
+        // session's busy-exhaustion notice while it keeps running
+        // (round 361, item 16).
+        console.error(effect.message);
         return;
       case "stamp_activity": {
         if (!this.state.registryRecorded || this.options.registryPath === null) return;

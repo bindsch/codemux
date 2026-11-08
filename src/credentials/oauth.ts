@@ -52,12 +52,16 @@ export function readKeychainSecret(service: string): SecretReadResult {
 
 /** `security -w` prints the password as hex (optionally 0x-prefixed) when it
  * contains non-printable or non-ASCII bytes; decode transparently when the
- * result is valid JSON, otherwise keep the raw text. The decode is fatal,
- * never with replacement characters (review round 104): a lossy decode
- * turns an invalid byte inside the JSON into U+FFFD, which can still parse
- * and would classify the entry by a credential it does not hold. Bytes
- * that are not valid UTF-8 keep the raw text, which then fails every
- * credential parse — the unreadable direction. */
+ * result is the credential blob's shape — a JSON object with at least one
+ * key (`claudeAiOauth`, or co-stored MCP OAuth state) — otherwise keep the
+ * raw text. Parseability alone was not enough (review round 361): a
+ * password that is itself printable hex text whose bytes decode to JSON,
+ * the literal `7b7d`, was returned as `{}`. The decode is fatal, never
+ * with replacement characters (review round 104): a lossy decode turns an
+ * invalid byte inside the JSON into U+FFFD, which can still parse and
+ * would classify the entry by a credential it does not hold. Bytes that
+ * are not valid UTF-8 keep the raw text, which then fails every credential
+ * parse — the unreadable direction. */
 export function decodeSecurityOutput(raw: string): string {
   const hex = raw.startsWith("0x") || raw.startsWith("0X") ? raw.slice(2) : raw;
   if (/^(?:[0-9A-Fa-f]{2})+$/.test(hex)) {
@@ -65,8 +69,13 @@ export function decodeSecurityOutput(raw: string): string {
       const decoded = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
         Buffer.from(hex, "hex")
       );
-      JSON.parse(decoded);
-      return decoded;
+      const parsed: unknown = JSON.parse(decoded);
+      if (
+        typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) &&
+        Object.keys(parsed).length > 0
+      ) {
+        return decoded;
+      }
     } catch {
       // Not hex-encoded JSON (or not valid UTF-8) after all; keep the raw text.
     }

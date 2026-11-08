@@ -148,6 +148,27 @@ test("unparseable native arguments on a call Kimi ran are still a protocol misma
   expect(String((thrown as Error).message)).toContain("does not match tool.call evidence");
 });
 
+test("an assistant message without meta.usage is the step mismatch, not an invalid-usage failure (round 361, item 3)", () => {
+  // The old `messageUsage ?? normalizedUsage(meta?.usage)` fallback could
+  // never produce a value: when messageUsage is undefined, meta.usage is
+  // absent, and normalizedUsage throws "Invalid Kimi usage inputOther" —
+  // so a completed step whose agent.message.appended entry lacks
+  // meta.usage reported the misattributed usage diagnostic instead of the
+  // intended comparison verdict.
+  const f = fixture();
+  f.accept(toolCall(), 1000);
+  f.accept({ type: "tool.result", parentUuid: "tool-call-1", toolCallId: "call-1", result: { output: "answer", durationMs: 5 } }, 1050);
+  f.accept(stepEnd(), 1200);
+  f.parser.accept({ type: "agent.message.appended", message: { message: { role: "assistant", content: [],
+    toolCalls: [{ type: "function", id: "call-1", name: QUALIFIED, arguments: JSON.stringify({ query: "call-1" }) }] },
+    meta: { messageId: "provider-1" } } });
+  let thrown: unknown;
+  try { f.parser.finish(); } catch (error) { thrown = error; }
+  expect((thrown as { code?: string }).code).toBe(Code.Protocol);
+  expect(String((thrown as Error).message)).toContain("does not match its loop step content, usage, or calls");
+  expect(String((thrown as Error).message)).not.toContain("Invalid Kimi usage");
+});
+
 test("Kimi Code 2.5.0's usage without a cache-read count is a zero, and other gaps still fail", () => {
   // Live gate, 2026-11-06: the 2.5.0 wire carried
   // {"inputOther":2027,"output":114,"inputCacheCreation":0} and the

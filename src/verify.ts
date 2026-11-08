@@ -381,7 +381,13 @@ export function buildEffectiveScodeCommands(
     const caps = adapter.capabilities();
 
     for (const autonomy of AUTONOMY_LEVELS) {
-      const effort = caps.supportsEffort ? "low" : undefined;
+      // The membership guard its sibling applies (verifyTuiBuilds): an
+      // effort-capable adapter whose levels omit `low` would otherwise
+      // receive an effort it refuses and fail the whole listing (review
+      // round 361). Latent today — every adapter carries `low`.
+      const effort = caps.supportsEffort && caps.effortLevels.includes("low")
+        ? "low"
+        : undefined;
       const sandboxOptions = resolveSandboxOptionsForAgent(agentId, autonomy, overrides);
 
       const runRequest: RunRequest = {

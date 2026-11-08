@@ -2,10 +2,13 @@ import { join } from "node:path";
 /**
  * Stage 4 of the machine check, the only paid stage: at most one real
  * `codemux check` request per eligible harness, labeled
- * `machine-check=<date>` so `codemux calls --label machine-check=<date>
- * --sum` reports exactly what the check cost. It never runs unless the
- * caller passed --spend, and it skips every harness the free stages
- * already refused.
+ * `machine-check=<stamp>` (one stamp per run; see machineCheckLabelValue).
+ * The stamp is not predictable, so the ok detail names the label the probes
+ * carried and `codemux calls --label machine-check=<that stamp> --sum`
+ * reports exactly what the check cost (review round 361: the documented
+ * `=<date>` recipe matched nothing). It never runs unless the caller
+ * passed --spend, and it skips every harness the free stages already
+ * refused.
  */
 
 import { runCapturedCommand } from "./process-runner.js";
@@ -16,8 +19,9 @@ import type { AgentId } from "./types.js";
 export const MACHINE_CHECK_LABEL_KEY = "machine-check";
 
 /** The argv of one spend probe: one real request, read-only, sandboxed,
- * labeled so `codemux calls --label machine-check=<date> --sum` reports
- * what the check cost. */
+ * labeled `machine-check=<stamp>`; the JSON spend detail names the stamp so
+ * `codemux calls --label machine-check=<stamp> --sum` reports what the
+ * check cost. */
 export const spendProbeArgv = (agent: AgentId, isoDate: string): string[] => [
   "check",
   "-a",
@@ -62,7 +66,11 @@ export const runSpendProbe = async (agent: AgentId, isoDate: string): Promise<Sp
       env: process.env as unknown as Record<string, string>,
       timeoutMs: 150_000,
     });
-    if (result.success) return { ok: true, detail: "answered OK" };
+    // The stamp in the ok detail is the query recipe: the label value is
+    // not predictable from the clock alone (pid and serial ride it), so
+    // the row names what `codemux calls --label machine-check=<stamp> --sum`
+    // needs (review round 361).
+    if (result.success) return { ok: true, detail: `answered OK (label machine-check=${isoDate})` };
     const first = `${result.stderr}\n${result.stdout}`.trim().split("\n")[0] ?? "";
     return { ok: false, detail: first === "" ? `codemux check exited ${result.exitCode}` : first };
   } catch (error) {

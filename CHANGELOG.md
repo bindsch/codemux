@@ -134,6 +134,26 @@ implementation narrative behind it is preserved in the
 
 ### Fixed
 
+- Review round 361, whole tree (CLI, doctor, adapters, credentials): `calls --since` refuses a
+  bare number (engine-dependent 2001-era cutoff) and documents a date-only value as UTC
+  midnight; doctor reports an installed but unreadable usagemux as `USAGEMUX-UNREADABLE` with a
+  reinstall remedy instead of "not installed"; the doctor Usage column matches weekly windows
+  with the quota gate's word-bounded test; droid's bare `gpt-5.6` id gets the family's
+  `--reasoning-effort none`; the Keychain hex decode requires the credential blob's object
+  shape; `verify --show-scode` guards its preview effort with the adapter's effort levels; a
+  hermetic symlink login rotated through unlink plus a new symlink now warns; `doctor --spend`
+  names the label stamp its probes carried (the old `=<date>` recipe matched nothing); an
+  empty passed-through cursor or copilot store or cache variable is preserved, not overridden.
+- Review round 361, whole tree (experiment and sessions): a kimi assistant message without
+  usage reports the loop-step mismatch instead of an invalid-usage failure; the kimi scan
+  surface joins stdout, stderr, fold evidence, and the wire log with newlines, so a marker
+  split across a channel boundary cannot fuse into a leak verdict; the relay's `/mcp` route
+  matches its path without the query string and the query stays recorded; the final flush
+  budget counts terminal-lane bytes; an empty codex startup-warning message keeps a literal
+  warning line; a deliberate null served model survives an experiment cleanup failure's
+  attribution chain; a resumed session (kimi, opencode, agy) whose run-start record exhausts
+  the busy-lock budget mid-session emits one stderr notice and keeps running — the claim is
+  the record.
 - Review round 345, changed scope: a fresh session ending with its first turn's registry record
   still pending (the lock stayed busy until the end) now fails closed as a crash with the fatal
   "cannot record the session in the registry" error and a nonzero exit (1, or the signal's 143)

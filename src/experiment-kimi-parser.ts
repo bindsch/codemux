@@ -264,8 +264,17 @@ export class KimiWireParser {
       const entry = this.assistants[index]!, message = entry.message, meta = kimiObject(entry.meta);
       const toolCalls = message.toolCalls;
       const messageUsage = meta?.usage == null ? undefined : normalizedUsage(meta.usage);
+      // Both sides are already the normalized form of the usage each
+      // channel carried, and undefined when that channel had none:
+      // normalizedUsage throws on an absent input, so the old fallback
+      // arms (`messageUsage ?? normalizedUsage(meta?.usage)` and the
+      // step.end twin) could never produce a value — a completed step
+      // whose assistant message lacks meta.usage failed with the
+      // misattributed "Invalid Kimi usage" instead of this mismatch
+      // (review round 361, item 3). An absent usage is itself the
+      // mismatch; the verdict is fail-closed either way.
       const usageMatches = isTimedOutFinal(step) && (!step.usage || !messageUsage) ||
-        isDeepStrictEqual(messageUsage ?? normalizedUsage(meta?.usage), step.usage ?? normalizedUsage(step.end?.usage));
+        isDeepStrictEqual(messageUsage, step.usage);
       if (!Array.isArray(toolCalls) || !Array.isArray(message.content) || !isDeepStrictEqual(message.content, step.parts) ||
           !usageMatches ||
           (step.end?.messageId !== undefined && step.end.messageId !== meta?.messageId) || toolCalls.length !== step.calls.length) {

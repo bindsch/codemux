@@ -103,7 +103,9 @@ export class DroidAdapter extends BaseAdapter {
     level: ReasoningEffort,
     model?: string
   ): string[] {
-    if (level === "none" && model?.startsWith("gpt-5.6-")) {
+    // The bare `gpt-5.6` id is the family too (review round 361): the
+    // suffixed check alone made an unsuffixed id fall to the generic `off`.
+    if (level === "none" && (model === "gpt-5.6" || model?.startsWith("gpt-5.6-"))) {
       return ["--reasoning-effort", "none"];
     }
     return this.mapEffort(level);

@@ -31,6 +31,17 @@ describe("decodeSecurityOutput", () => {
     expect(decodeSecurityOutput(SECRET)).toBe(SECRET);
     expect(decodeSecurityOutput("cafe")).toBe("cafe"); // hex-shaped but not JSON
   });
+
+  test("printable hex text that decodes to a keyless object or a scalar stays raw (review round 361)", () => {
+    // The literal password `7b7d` is printable hex whose bytes are `{}`:
+    // parseable JSON, but not the credential blob's shape (an object with
+    // at least one key). Decoding it read the entry as a JSON blob it does
+    // not hold; the raw text is kept instead. A hex scalar (`37` is "7")
+    // is not the shape either.
+    expect(decodeSecurityOutput("7b7d")).toBe("7b7d");
+    expect(decodeSecurityOutput("0x7b7d")).toBe("0x7b7d");
+    expect(decodeSecurityOutput("37")).toBe("37");
+  });
 });
 
 describe("hasUsableClaudeCredential", () => {

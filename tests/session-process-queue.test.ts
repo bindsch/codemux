@@ -348,6 +348,26 @@ describe("bounded outbound queue", () => {
     expect(finalFlushBudgetMs(huge)).toBe(FINAL_FLUSH_CAP_MS);
   });
 
+  test("the final flush budget counts terminal-lane bytes too (round 361, item 11)", () => {
+    // `pending` used to report `pendingBytes` alone, and a terminal
+    // entry that joined the lane (the ordinary byte bound already full)
+    // contributes nothing to that counter by construction — so a fat
+    // terminal event under-budgeted the give-up and abandoned a live
+    // sink mid-drain. The budget scales with everything queued.
+    const laneFat = new BoundedOutboundQueue(
+      () => new Promise<void>(() => {}),
+      () => {},
+      { bytes: 8 }
+    );
+    expect(laneFat.enqueue(`${"x".repeat(4 * 1024 * 1024)}`, { terminal: true })).toBe(true);
+    expect(laneFat.pending).toEqual({ events: 1, bytes: 4 * 1024 * 1024 + 1 });
+    expect(finalFlushBudgetMs(laneFat)).toBeGreaterThanOrEqual(1_000 + 4 * 256);
+    // The lane bytes never count against the ordinary byte bound: a
+    // second lane entry still queues behind the first.
+    expect(laneFat.enqueue("session_ended line", { terminal: true })).toBe(true);
+    expect(laneFat.pending.events).toBe(2);
+  });
+
   test("a slow-but-live sink with a real backlog is not abandoned at the old fixed second (round 341)", async () => {
     // 120 queued lines on a sink that answers in 10 ms each: about 1.2 s
     // of honest draining — past the old fixed 1 s give-up, which

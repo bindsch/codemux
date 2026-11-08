@@ -13,7 +13,7 @@ import {
   crashSynthesisReason,
   SESSION_SIGNAL_EXIT_CODE,
 } from "../process.js";
-import { PENDING_RECORD_FATAL } from "../registry.js";
+import { busyRecordExhaustedNotice, PENDING_RECORD_FATAL } from "../registry.js";
 import {
   CAPABILITIES,
   type KimiEffect,
@@ -271,8 +271,18 @@ export function step(
       );
     case "record_outcome": {
       state.recordPending = false;
-      if (event.ok) {
-        state.registryRecorded = true;
+      // A resumed session whose run-start record exhausted the busy
+      // budget is tracked already — the CLI's claim wrote the record
+      // before anything spawned — so the exhaustion is a lost refresh of
+      // a record that exists, not an untracked session: announce (the
+      // announce was waiting on the record verdict), say so on stderr,
+      // and keep running (round 361, item 16; the summary-time half of
+      // this exemption is round 356's, in children_settled). A fresh
+      // session owes the same exhaustion a crash, and every other
+      // failure class fails closed for either kind of session.
+      const claimedBusy = !event.ok && event.failure === "busy" && state.resumeClaimed;
+      if (event.ok || claimedBusy) {
+        state.registryRecorded = event.ok;
         if (!state.announced) {
           state.announced = true;
           const hint = state.pendingHint;
@@ -280,9 +290,27 @@ export function step(
           return [
             { kind: "announce" },
             ...(hint === null ? [] : [{ kind: "emit", event: "unknown_event", raw: hint } as KimiEffect]),
+            ...(claimedBusy
+              ? [{
+                  kind: "notice",
+                  message: busyRecordExhaustedNotice(
+                    state.sessionId ?? "unknown",
+                    event.error ?? "unknown error"
+                  ),
+                } as KimiEffect]
+              : []),
           ];
         }
-        return [];
+        state.pendingHint = null;
+        return claimedBusy
+          ? [{
+              kind: "notice",
+              message: busyRecordExhaustedNotice(
+                state.sessionId ?? "unknown",
+                event.error ?? "unknown error"
+              ),
+            }]
+          : [];
       }
       state.pendingHint = null;
       // An untracked live session must not run.

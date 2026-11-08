@@ -90,7 +90,16 @@ export function experimentFailedResult(
     }
     const envelope = envelopeObject(normalized.stdout);
     usage = normalized.usage ?? usage;
-    servedModel = partial?.servedModel ?? normalized.servedModel ?? servedModel;
+    // A deliberate null must survive this chain: the captured prefix's
+    // no-attribution verdict and claude's multipleModels null are answers,
+    // not absences, but `??` read them as absent and let an earlier raw
+    // value resurface (round 361, item 15). Only an undefined — this arm
+    // made no attribution at all — falls through.
+    servedModel = partial !== undefined
+      ? partial.servedModel
+      : normalized.servedModel !== undefined
+        ? normalized.servedModel
+        : servedModel;
     const existing = normalized.usage !== undefined ? envelope?.codemux : undefined;
     const block: CodemuxResultBlock = existing && typeof existing === "object" && !Array.isArray(existing)
       ? { ...existing as CodemuxResultBlock, recording, failure_code: failure.code }

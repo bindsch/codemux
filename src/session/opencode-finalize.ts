@@ -36,7 +36,6 @@ import { awaitSpawnWithGrace, holdAbandonedSpawn } from "./spawn-wait.js";
 import { buildEvent } from "./protocol.js";
 import {
   PENDING_RECORD_FATAL,
-  recordSessionStartOffStream,
   releaseSessionRecord,
 } from "./registry.js";
 import { addUsage } from "./usage.js";
@@ -424,63 +423,8 @@ export abstract class OpenCodeDriverCore {
   }
 
   // --- helpers ---------------------------------------------------------------
-  /** The start record, one lock attempt at a time: a busy lock retries on
-   * a timer off the turn's output stream (review round 341), never the
-   * synchronous full-budget wait; `onRecorded` runs once the verdict is
-   * in. A null registryPath records nothing and reports success at once;
-   * a null session id reports nothing (the old guard's exact behavior).
-   * A record still pending at the end fails the session closed
-   * (`finish`, review round 345). */
-  protected recordStart(onRecorded: () => void): void {
-    if (this.options.registryPath === null) {
-      onRecorded();
-      return;
-    }
-    if (this.sessionId === null) return;
-    this.recordPending = true;
-    recordSessionStartOffStream(
-      this.options.registryPath,
-      {
-        id: this.sessionId,
-        agent: "opencode",
-        cwd: this.options.cwd,
-        hermetic: this.options.hermetic,
-        harness_home: this.options.harnessHome,
-        model: this.options.model ?? null,
-        autonomy: this.options.autonomy,
-        sandboxed: this.options.sandboxed,
-        sandbox_trust: this.options.sandboxTrust,
-        sandbox_no_net: this.options.sandboxNoNet,
-        sandbox_scrub_env: this.options.sandboxScrubEnv,
-        sandbox_block: [...(this.options.sandboxBlock ?? [])],
-        pass_env: [...this.options.passEnv],
-        playwright_mcp: false,
-        provider_base_url: this.options.providerBaseUrl,
-        project_settings: false,
-      },
-      () => this.settled,
-      (outcome) => {
-        this.recordPending = false;
-        if (!outcome.ok) {
-          // An untracked live session must not run (§4.8).
-          this.emitError(
-            true,
-            "codemux",
-            `cannot record the session in the registry: ${outcome.error}`
-          );
-          void this.finish("crash", 1);
-          return;
-        }
-        this.registryRecorded = true;
-        onRecorded();
-      },
-      (error) =>
-        console.error(
-          `codemux: the registry lock is busy recording session ${this.sessionId} ` +
-            `(${error}); retrying in the background`
-        )
-    );
-  }
+  // recordStart (review round 341) lives beside its only caller,
+  // opencode-turns.ts's announceSessionStarted.
 
   // stampActivity (review live13) moved beside its only caller,
   // opencode-driver.ts's completeTurn.

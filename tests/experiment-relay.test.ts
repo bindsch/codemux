@@ -284,6 +284,20 @@ test("HTTP rejects authorization, methods, paths, malformed JSON, and batches be
   expect(records(relay).some((record) => record.kind === "server_stdin")).toBe(false);
 });
 
+test("the /mcp route matches its path without the query string, and the query is recorded (round 361, item 5)", async () => {
+  // The catalog route already tolerates query strings; the /mcp route
+  // matched the raw URL, so an MCP client appending `?session_id=…`
+  // drew a 404 on every request and the harness timed out instead of
+  // failing with a recorded protocol error.
+  const relay = await setup();
+  expect((await http(relay, rpc(1, "ping"), { path: "/mcp?session_id=synthetic-client-1" })).status).toBe(200);
+  expect((await http(relay, rpc(1, "ping"), { path: "/other?session_id=1" })).status).toBe(404);
+  const request = records(relay).filter((record) => record.kind === "http_request").at(-1);
+  expect(request).toMatchObject({ method: "POST", path: "/other?session_id=1", token_matched: true });
+  const forwarded = records(relay).filter((record) => record.kind === "http_request").at(-2);
+  expect(forwarded).toMatchObject({ method: "POST", path: "/mcp?session_id=synthetic-client-1", token_matched: true });
+});
+
 test("an oversized body receives 413 and never reaches the stdio server", async () => {
   const relay = await setup();
   expect((await http(relay, "x".repeat(MAX_EXPERIMENT_MESSAGE_BYTES + 1))).status).toBe(413);

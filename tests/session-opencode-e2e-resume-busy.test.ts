@@ -59,3 +59,48 @@ test("a resumed opencode session whose run-start record stays behind a busy lock
     rmSync(registryDir, { recursive: true, force: true });
   }
 }, 20_000);
+
+test("a resumed opencode session whose record budget exhausts mid-session emits the notice and keeps running (round 361, item 16)", async () => {
+  // The rival's live lock never releases and the retry budget is cut to
+  // two attempts of 20 ms, so the run-start record's exhaustion lands
+  // while the session is live — the test above never reaches that path:
+  // its retries stop at the summary. A resumed session is tracked by its
+  // claim, so the exhaustion is one stderr notice plus the deferred
+  // announcement, and the session runs its turn and ends cleanly
+  // instead of crashing mid-run.
+  const registryDir = mkdtempSync(join(tmpdir(), "codemux-resume-busy-"));
+  const registryPath = join(registryDir, "live-sessions.json");
+  const identity = currentProcessIdentity();
+  const rival = join(
+    registryDir,
+    `.${basename(`${registryPath}.lock`)}.${identity.pid}.${randomBytes(8).toString("hex")}.held`
+  );
+  writeFileSync(rival, `${identity.pid}\n${identity.start ?? ""}\n`, { mode: 0o600 });
+  const notices: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    notices.push(args.map(String).join(" "));
+  };
+  try {
+    const session = await startSession({
+      resumeSessionId: "ses_resume00001",
+      registryPath,
+      registryStartBudget: { attempts: 2, retryMs: 20 },
+    });
+    session.driver.adoptResumeClaim();
+    send(session.driver, { type: "user", text: "scenario:basic one" });
+    await waitFor(session.events, of("turn_completed"), "turn_completed", 3_000);
+    send(session.driver, { type: "shutdown" });
+    const ended = await waitFor(session.events, of("session_ended"), "session_ended");
+    expect(await session.code).toBe(0);
+    expect(ended.reason).not.toBe("crash");
+    expect(session.events.find((event) => event.type === "error" && event.fatal === true)).toBeUndefined();
+    expect(session.events.find((event) => event.type === "session_started")).toBeDefined();
+    expect(notices.filter((line) => line.includes("the retry budget is spent"))).toHaveLength(1);
+    expect(notices.some((line) => line.includes("ses_resume00001") && line.includes("claim stays the record"))).toBe(true);
+  } finally {
+    console.error = originalError;
+    rmSync(rival, { force: true });
+    rmSync(registryDir, { recursive: true, force: true });
+  }
+}, 20_000);

@@ -37,10 +37,12 @@ describe("Kimi headless reply output", () => {
       exitCode: 0,
       success: true,
     };
+    // The scan surface joins the channels with newlines (review round 361,
+    // item 4): stdout, stderr, then the fold evidence, empty here.
     expect(adapter.processRunResult(result, request, { harnessVersion: "2.3.2" })).toEqual({
       ...result,
       stdout: expected,
-      scanSurface: result.stdout + result.stderr,
+      scanSurface: `${result.stdout}\n${result.stderr}\n`,
     });
   });
 
@@ -64,7 +66,7 @@ describe("Kimi headless reply output", () => {
     expect(adapter.processRunResult(result, request, { harnessVersion: "2.3.2" })).toEqual({
       ...result,
       stdout: "partial reply\n",
-      scanSurface: result.stdout + result.stderr,
+      scanSurface: `${result.stdout}\n${result.stderr}\n`,
     });
   });
 
@@ -75,7 +77,7 @@ describe("Kimi headless reply output", () => {
         stdout: "• A\n  B\n\n", stderr: "", exitCode: 0, success: true,
       };
       expect(adapter.processRunResult(result, request, { harnessVersion })).toEqual({
-        ...result, scanSurface: result.stdout + result.stderr,
+        ...result, scanSurface: `${result.stdout}\n${result.stderr}\n`,
       });
     }
   );
@@ -85,7 +87,7 @@ describe("Kimi headless reply output", () => {
       stdout: "• OK\n\n", stderr: "", exitCode: 0, success: true,
     };
     expect(adapter.processRunResult(result, request)).toEqual({
-      ...result, scanSurface: result.stdout + result.stderr,
+      ...result, scanSurface: `${result.stdout}\n${result.stderr}\n`,
     });
   });
 

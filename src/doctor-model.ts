@@ -30,6 +30,7 @@ export type MachineCheckState =
   | "OVERRIDE-INVALID"
   | "USAGEMUX-STALE"
   | "USAGEMUX-MISSING"
+  | "USAGEMUX-UNREADABLE"
   | "PROBE-FAILED";
 
 export type RowSeverity = "ok" | "info" | "warn" | "broken";

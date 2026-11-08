@@ -25,7 +25,7 @@ export function recordCompletedLaunch(
   appendCallRecord({
     ts: new Date(startedAt).toISOString(),
     kind: options.kind ?? "run",
-    labels: request.labels ?? null, // a check keeps its labels too (doctor --spend selects by machine-check=<date>; round 51)
+    labels: request.labels ?? null, // a check keeps its labels too (doctor --spend selects by machine-check=<stamp>; round 51)
     agent: request.agent,
     model: request.model ?? null,
     model_effective: result.servedModel ?? null,
@@ -64,7 +64,7 @@ export function appendInterruptedLaunchReceipt(
     appendCallRecord({
       ts: new Date(startedAt).toISOString(),
       kind: options.kind ?? "run",
-      labels: request.labels ?? null, // a check keeps its labels too (doctor --spend selects by machine-check=<date>; round 51)
+      labels: request.labels ?? null, // a check keeps its labels too (doctor --spend selects by machine-check=<stamp>; round 51)
       agent: request.agent,
       model: request.model ?? null,
       model_effective: null,
@@ -117,7 +117,7 @@ export function appendFailedLaunchReceipt(
     appendCallRecord({
       ts: new Date(startedAt).toISOString(),
       kind: options.kind ?? "run",
-      labels: request.labels ?? null, // a check keeps its labels too (doctor --spend selects by machine-check=<date>; round 51)
+      labels: request.labels ?? null, // a check keeps its labels too (doctor --spend selects by machine-check=<stamp>; round 51)
       agent: request.agent,
       model: request.model ?? null,
       model_effective: processed?.servedModel ?? null,

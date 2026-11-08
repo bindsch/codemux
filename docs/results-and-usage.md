@@ -78,7 +78,9 @@ result-JSON envelope at all; OpenCode's run wire carries no model field;
 Kimi's stream JSON and wire log carry none).
 Kimi's selected model includes `CODEMUX_KIMI_PROVIDER_MODEL` when `--model`
 is omitted. A later experiment cleanup failure preserves an already
-normalized model, including Z.AI's default `opus` selection. Codex normalizes its captured reply and reads `--output-last-message` before rollout verification, so a verification failure preserves that reply before private-home cleanup. Experiment failure diagnostics appear once on stderr.
+normalized model, including Z.AI's default `opus` selection, and a
+deliberate null (several models served) survives it too rather than
+resurfacing an earlier value. Codex normalizes its captured reply and reads `--output-last-message` before rollout verification, so a verification failure preserves that reply before private-home cleanup. Experiment failure diagnostics appear once on stderr.
 Codex reroute events can identify the served model and produce a stderr note.
 `codemux.labels` contains the run's labels, or null when none are supplied.
 See [label syntax and environment defaults](cli.md#labels).
@@ -361,9 +363,10 @@ test preload's explicit redirect; NODE_ENV does not redirect operator records.
 
 `calls` filters before limiting and displays reverse append order. Because
 `ts` is the start time, overlapping calls can appear out of timestamp order.
-`--since` accepts integer durations (s/m/h/d/w) or anything JavaScript Date
-can parse. Prefer an ISO timestamp with timezone. Invalid dates or cutoffs
-outside the representable date range fail with exit 64.
+`--since` accepts an integer duration with a unit (s/m/h/d/w), relative to
+the local now, or an ISO date; a date-only value cuts at UTC midnight. Prefer
+an ISO timestamp with timezone. A bare number, an invalid date, or a cutoff
+outside the representable date range fails with exit 64.
 
 Repeat `--label KEY=VALUE` to require every supplied pair. For example,
 `codemux calls --label wf=review --label step=scan` selects only records with

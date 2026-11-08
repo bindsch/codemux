@@ -236,7 +236,11 @@ export class CodexEventReducer {
             this.drift = "an item event outside a turn: before the first turn.started or after the last turn.completed with no turn reopened";
             return;
           }
-          this.takeWarning(message);
+          // An empty message is the warning's shape but carries nothing
+          // to retain: every other empty error text in this reducer is
+          // replaced by a literal (turn.failed, the top-level error), and
+          // an empty one here printed an empty warning line (round 361).
+          this.takeWarning(message !== "" ? message : "codex reported a startup warning");
           break;
         }
         if (

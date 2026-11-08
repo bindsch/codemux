@@ -336,6 +336,39 @@ describe("parseCodexEventStream grammar and model attribution", () => {
     ]))).toBeNull();
   });
 
+  test("an empty startup-warning message retains a literal warning, not an empty line (round 361, item 14)", () => {
+    // An empty `message` is a string, so the al35 carve-out keeps the item
+    // — but there is nothing to print: the plain-run fold rendered the
+    // retained warning as `codemux: codex warning: ` with nothing after
+    // the prefix. Every other empty error text in this reducer is
+    // replaced by a literal ("turn failed", "codex reported an error");
+    // the startup-warning arm does the same now. The stream itself stays
+    // a success with the warning retained.
+    const stream = parseCodexEventStream(codexStream([
+      { type: "thread.started", thread_id: "t" },
+      { type: "item.completed", item: { id: "item_0", type: "error", message: "" } },
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "item_1", type: "agent_message", text: "the reply" } },
+      { type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 5 } },
+    ]))!;
+    expect(stream).not.toBeNull();
+    expect(stream.finalMessage).toBe("the reply");
+    const reducer = new CodexEventReducer();
+    for (const event of [
+      { type: "thread.started", thread_id: "t" },
+      { type: "item.completed", item: { id: "item_0", type: "error", message: "" } },
+      { type: "turn.started" },
+      { type: "item.completed", item: { id: "item_1", type: "agent_message", text: "the reply" } },
+      { type: "turn.completed", usage: { input_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 5 } },
+    ]) {
+      reducer.takeEvent(event as never);
+    }
+    expect(reducer.drift).toBeNull();
+    // Not [""]: the warning names what happened even when codex's message
+    // did not.
+    expect(reducer.warnings).toEqual(["codex reported a startup warning"]);
+  });
+
   test("a reroute item names the model that served the run, the last one winning", () => {
     // Codex 0.159.3 reports a rerouted model as a completed `error` item
     // (ModelRerouted in exec_events.rs), message formatted `model rerouted:

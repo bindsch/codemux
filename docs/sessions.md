@@ -351,7 +351,11 @@ registry lock mid-turn. A session that ends with that record still unwritten
 nonzero (1, or the signal's 143 when a signal ended it), the registry holds
 no entry, and the session is not resumable. A resumed session is tracked by
 the record the CLI claimed before the spawn, so the verdict applies to fresh
-sessions only.
+sessions only. The same holds when the lock stays busy past the whole retry
+budget while a resumed session is live: the exhausted record is a lost
+refresh of a record that exists, so the session prints one stderr line
+naming the spent budget and the claim that stays the record, announces
+`session_started`, and keeps running.
 
 Child failures can preserve another nonzero code. Any observed nonzero child
 exit or signal changes the final reason to `harness_failed`, including after

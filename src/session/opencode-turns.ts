@@ -16,6 +16,10 @@ import {
 import { buildEvent, buildUnknownEvent } from "./protocol.js";
 import { accumulateUsage } from "./usage.js";
 import { lateChildRuns } from "./spawn-wait.js";
+import {
+  busyRecordExhaustedNotice,
+  recordSessionStartOffStream,
+} from "./registry.js";
 import { OpenCodeDriverCore } from "./opencode-finalize.js";
 
 export abstract class OpenCodeTurns extends OpenCodeDriverCore {
@@ -247,6 +251,79 @@ export abstract class OpenCodeTurns extends OpenCodeDriverCore {
         })
       );
     });
+  }
+
+  /** The start record, one lock attempt at a time: a busy lock retries on
+   * a timer off the turn's output stream (review round 341), never the
+   * synchronous full-budget wait; `onRecorded` runs once the verdict is
+   * in. A null registryPath records nothing and reports success at once;
+   * a null session id reports nothing (the old guard's exact behavior).
+   * A record still pending at the end fails a fresh session closed
+   * (`finish`, review round 345); a resumed session that exhausts the
+   * busy budget is tracked already — the CLI's claim wrote its record
+   * before anything spawned — so the exhaustion is a notice and the
+   * announcement, not a crash: the claim is the record (round 361,
+   * item 16). */
+  private recordStart(onRecorded: () => void): void {
+    if (this.options.registryPath === null) {
+      onRecorded();
+      return;
+    }
+    if (this.sessionId === null) return;
+    this.recordPending = true;
+    recordSessionStartOffStream(
+      this.options.registryPath,
+      {
+        id: this.sessionId,
+        agent: "opencode",
+        cwd: this.options.cwd,
+        hermetic: this.options.hermetic,
+        harness_home: this.options.harnessHome,
+        model: this.options.model ?? null,
+        autonomy: this.options.autonomy,
+        sandboxed: this.options.sandboxed,
+        sandbox_trust: this.options.sandboxTrust,
+        sandbox_no_net: this.options.sandboxNoNet,
+        sandbox_scrub_env: this.options.sandboxScrubEnv,
+        sandbox_block: [...(this.options.sandboxBlock ?? [])],
+        pass_env: [...(this.options.passEnv)],
+        playwright_mcp: false,
+        provider_base_url: this.options.providerBaseUrl,
+        project_settings: false,
+      },
+      () => this.settled,
+      (outcome) => {
+        this.recordPending = false;
+        if (!outcome.ok) {
+          // A resumed session is tracked by its pre-spawn claim: the
+          // spent budget lost a refresh of a record that exists, and the
+          // session keeps running (round 361, item 16). A fresh session,
+          // and every other failure class, fail closed (§4.8).
+          if (outcome.kind === "busy" && this.resumeClaimed) {
+            console.error(
+              busyRecordExhaustedNotice(this.sessionId ?? "unknown", outcome.error)
+            );
+            onRecorded();
+            return;
+          }
+          this.emitError(
+            true,
+            "codemux",
+            `cannot record the session in the registry: ${outcome.error}`
+          );
+          void this.finish("crash", 1);
+          return;
+        }
+        this.registryRecorded = true;
+        onRecorded();
+      },
+      (error) =>
+        console.error(
+          `codemux: the registry lock is busy recording session ${this.sessionId} ` +
+            `(${error}); retrying in the background`
+        ),
+      this.options.registryStartBudget
+    );
   }
 
   /** Assign the next codemux turn id, open it in the FSM, and reset the

@@ -41,13 +41,8 @@ describe.each(["headless", "TUI"] as const)("%s cache environment", (mode) => {
       expect(adapter.buildExecutionEnv(injected, request.passthroughEnv)[name]).toBe(operatorCache);
     });
 
-    test.each([
-      [PKG_CACHE_ENV, undefined],
-      [PKG_CACHE_ENV, ""],
-      [CACHE_ENV, undefined],
-      [CACHE_ENV, ""],
-    ] as const)("redirects when passed-through %s has value %j", (name, value) => {
-      const adapter = new CopilotAdapter({ HOME: ADAPTER_HOME, [name]: value });
+    test.each([PKG_CACHE_ENV, CACHE_ENV])("redirects when passed-through %s is not set at all", (name) => {
+      const adapter = new CopilotAdapter({ HOME: ADAPTER_HOME });
       const request = { ...REQUEST, passthroughEnv: [name] };
       const injected = getEnv(adapter, request);
       expect(injected).toEqual({ [PKG_CACHE_ENV]: CACHE_HOME });
@@ -55,12 +50,24 @@ describe.each(["headless", "TUI"] as const)("%s cache environment", (mode) => {
         .toBe(CACHE_HOME);
     });
 
+    test.each([PKG_CACHE_ENV, CACHE_ENV])("preserves an empty passed-through %s (review round 361)", (name) => {
+      // The passthrough is the authorization: a name the operator passed
+      // through with an empty value is their hand on it, and the redirect
+      // must not override it. The child receives the empty string and
+      // copilot falls back to its own default cache.
+      const adapter = new CopilotAdapter({ HOME: ADAPTER_HOME, [name]: "" });
+      const request = { ...REQUEST, passthroughEnv: [name] };
+      const injected = getEnv(adapter, request);
+      expect(injected).toEqual({});
+      expect(adapter.buildExecutionEnv(injected, request.passthroughEnv)[name]).toBe("");
+    });
+
     test.each([
       [undefined, undefined],
       [undefined, ""],
       ["", undefined],
       ["", ""],
-    ] as const)("redirects when both passed-through caches are empty: %j, %j", (pkgCache, cache) => {
+    ] as const)("only a passed-through pair with no set value redirects: %j, %j", (pkgCache, cache) => {
       const adapter = new CopilotAdapter({
         HOME: ADAPTER_HOME,
         [PKG_CACHE_ENV]: pkgCache,
@@ -68,9 +75,18 @@ describe.each(["headless", "TUI"] as const)("%s cache environment", (mode) => {
       });
       const request = { ...REQUEST, passthroughEnv: [PKG_CACHE_ENV, CACHE_ENV] };
       const injected = getEnv(adapter, request);
-      expect(injected).toEqual({ [PKG_CACHE_ENV]: CACHE_HOME });
-      expect(adapter.buildExecutionEnv(injected, request.passthroughEnv)[PKG_CACHE_ENV])
-        .toBe(CACHE_HOME);
+      if (pkgCache === undefined && cache === undefined) {
+        expect(injected).toEqual({ [PKG_CACHE_ENV]: CACHE_HOME });
+        expect(adapter.buildExecutionEnv(injected, request.passthroughEnv)[PKG_CACHE_ENV])
+          .toBe(CACHE_HOME);
+      } else {
+        // Any set value among the authorized names — even empty —
+        // suppresses the redirect.
+        expect(injected).toEqual({});
+        const env = adapter.buildExecutionEnv(injected, request.passthroughEnv);
+        expect(env[PKG_CACHE_ENV]).not.toBe(CACHE_HOME);
+        expect(env[CACHE_ENV]).not.toBe(CACHE_HOME);
+      }
     });
 
     test.each([

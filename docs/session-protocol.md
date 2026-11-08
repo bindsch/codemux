@@ -243,7 +243,11 @@ A driver that defers `session_started` also defers the session's registry
 record beside the stream. A session that ends with that record still
 unwritten — the registry lock stayed busy until the end — ends as a crash: a
 fatal `cannot record the session in the registry` error, `reason: "crash"`,
-a nonzero summary exit, and `resumable: false`.
+a nonzero summary exit, and `resumable: false`. A resumed session is the
+exception: the resume claim wrote its record before the spawn, so a lock
+that stays busy past the whole retry budget mid-session costs one stderr
+notice, not the crash, and the session keeps running; a resumed session
+whose record is still pending at the end ends cleanly and silently.
 
 A successful derived Claude/ZAI file change follows its matching successful
 tool result. Its raw line is the earlier tool-call line. A candidate whose
@@ -313,7 +317,7 @@ approval offering no refusal choice also interrupts its turn.
 | Unread harness stdin backlog | 64 MiB; refusal is fatal |
 | Each Codex pre-handshake / user / steer hold | 256 lines or 32 MiB; queued user/steer overflow is `busy`; handshake overflow is fatal |
 | Reserved terminal queue | 8 extra slots; at most 7 fatals, reserving one for the final event |
-| Final stdout flush | 1 s floor plus 5 ms per queued event and 256 ms per queued MiB, capped at 15 s, before abandoning delivery and exiting nonzero |
+| Final stdout flush | 1 s floor plus 5 ms per queued event and 256 ms per queued MiB (terminal-lane bytes included), capped at 15 s, before abandoning delivery and exiting nonzero |
 
 Accepted events are not silently truncated to fit. Terminal capacity does
 not guarantee delivery to a broken or stalled reader. Keep draining stdout

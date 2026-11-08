@@ -85,21 +85,25 @@ For sandboxed runs, both headless and TUI, codemux sets `COPILOT_PKG_CACHE_HOME`
 `pkg/darwin-arm64` when extracting its bundled package. Scode permits this
 cache directory; the default `~/Library/Caches/copilot` is blocked.
 
-Passing through a non-empty `COPILOT_PKG_CACHE_HOME` or `COPILOT_CACHE_HOME` with
-`--pass-env` preserves the operator's choice and suppresses this default.
+Passing through a `COPILOT_PKG_CACHE_HOME` or `COPILOT_CACHE_HOME` that is set
+with `--pass-env` preserves the operator's value and suppresses this default —
+an empty-string value included: the passthrough is the operator's authorization
+for that name, and copilot then falls back to its own default cache.
 Copilot gives `COPILOT_PKG_CACHE_HOME` precedence over `COPILOT_CACHE_HOME`.
-Unsandboxed runs, other platforms, adapters without HOME, and non-empty
-passed-through cache settings receive no cache override. The extracted
+Unsandboxed runs, other platforms, adapters without HOME, and passed-through
+cache settings that are set receive no cache override. The extracted
 package cache persists between runs.
 
 ## Cursor on macOS
 
 Cursor's default login lives in the macOS Keychain, which scode blocks.
 For sandboxed headless runs, codemux sets `AGENT_CLI_CREDENTIAL_STORE=file`
-when `~/.cursor/auth.json` exists under the adapter's HOME, unless a non-empty
-`AGENT_CLI_CREDENTIAL_STORE` setting is passed through with
-`--pass-env AGENT_CLI_CREDENTIAL_STORE`. The file-store selection also applies
-when an API key or auth token is set.
+when `~/.cursor/auth.json` exists under the adapter's HOME, unless
+`AGENT_CLI_CREDENTIAL_STORE` is passed through with
+`--pass-env AGENT_CLI_CREDENTIAL_STORE` while set — an empty-string value
+included: the passthrough is the operator's authorization for that name, and
+cursor then falls back to its default store. The file-store selection also
+applies when an API key or auth token is set.
 
 Log in once outside the sandbox:
 

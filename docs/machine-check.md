@@ -24,7 +24,7 @@ Environment rows, then one row per installed harness.
 | config | Whether the configuration loads; the effective quota policy (ceiling, weekly warn, timeout) or the parser's message. |
 | aliases | The model aliases: tiers that map no harness, or an alias whose tier names an unknown harness. |
 | scode | Version, the global minimum, `--keep-env` support, and one sandboxed probe command — the same probe CI's scode contract runs, because only a sandboxed probe detects a scode that answers `--version` but cannot sandbox. |
-| usagemux | Absent (optional), unreadable, below the protocol minimum, or the installed version. |
+| usagemux | `USAGEMUX-MISSING` (absent; optional), `USAGEMUX-UNREADABLE` (installed but its `--version` failed, printed no version, timed out, or failed the trust check; the detail names why), `USAGEMUX-STALE` (below the protocol minimum), or the installed version. An unreadable usagemux still counts as present: the usage rows query it and report their own unreadable verdict instead of "not installed". |
 | keychain | macOS only: whether the credential Keychain item is readable. Informational elsewhere or when disabled. |
 | codexbar | Whether a retired usage tool is still on PATH and should be removed in favor of usagemux. |
 
@@ -106,9 +106,12 @@ re-deriving the rule.
 harnesses whose free row is clean enough to try. Each request carries the
 label `machine-check=<stamp>` (the run's start as `YYYY-MM-DDTHHMMSS.sssZ`, then
 the process id and a per-process counter, so two checks that start in the
-same millisecond still get their own values; one value per run), so `codemux calls --sum` reports exactly what
-the stage spent; `--spend-cap <n>` bounds the number of probes and
-`--spend-unreadable` extends the stage to harnesses whose usage row is
-unreadable. `make machine-check` never passes `--spend`: the target stays
-free. Run the paid stage deliberately, when a free row passes but the
-harness still refuses real work.
+same millisecond still get their own values; one value per run). The stamp
+is not predictable, so each row's JSON `spend` detail names the label its
+probe carried, and `codemux calls --label machine-check=<that stamp> --sum`
+reports exactly what the stage spent (a bare `machine-check=<date>` matches
+nothing: the label value is the whole stamp); `--spend-cap <n>` bounds the
+number of probes and `--spend-unreadable` extends the stage to harnesses
+whose usage row is unreadable. `make machine-check` never passes `--spend`:
+the target stays free. Run the paid stage deliberately, when a free row
+passes but the harness still refuses real work.

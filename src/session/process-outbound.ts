@@ -108,8 +108,8 @@ export const TERMINAL_LANE_CAPACITY = 8;
  * is one lane, not one slot; their bytes are not counted against the
  * ordinary byte bound; see the constant's note). Ordering is preserved: a
  * terminal entry sits in the same list as the rest and the flush loop
- * hands them to the sink in arrival order; only the bound checks and the
- * `pending` accounting pass them by.
+ * hands them to the sink in arrival order; only the bound checks pass
+ * their bytes by — `pending` counts them like every other queued entry.
  */
 export class BoundedOutboundQueue {
   private readonly sink: (line: string) => Promise<void> | void;
@@ -123,6 +123,13 @@ export class BoundedOutboundQueue {
   private queuedTerminal = 0;
   private queuedFatal = 0;
   private pendingBytes = 0;
+  /** The lane entries' own bytes: kept apart from `pendingBytes` (the
+   * ordinary byte bound they must never count against) yet still bytes
+   * the sink must receive, so `pending` reports them — the final
+   * flush's budget scales with everything queued, a lane entry
+   * included (round 361, item 11: a fat terminal event once
+   * under-budgeted the give-up and abandoned a live sink). */
+  private laneBytes = 0;
   private flushing = false;
   private sinkError: unknown = NO_SINK_ERROR;
   private overflowed = false;
@@ -209,6 +216,7 @@ export class BoundedOutboundQueue {
     if (viaLane) {
       this.queuedTerminal++;
       if (laneClass === "fatal") this.queuedFatal++;
+      this.laneBytes += bytes;
     } else {
       this.pendingBytes += bytes;
     }
@@ -240,10 +248,15 @@ export class BoundedOutboundQueue {
     this.queuedTerminal = 0;
     this.queuedFatal = 0;
     this.pendingBytes = 0;
+    this.laneBytes = 0;
   }
 
+  /** What is still queued, lane entries included: the events count
+   * always counted them, and their bytes belong to the same delivery,
+   * so the final flush's budget sees them (round 361, item 11). The
+   * ordinary bound checks alone pass lane bytes by — see `laneBytes`. */
   get pending(): OutboundOverflow {
-    return { events: this.entries.length, bytes: this.pendingBytes };
+    return { events: this.entries.length, bytes: this.pendingBytes + this.laneBytes };
   }
 
   /** Latch the sink failure and report it exactly once: delivery is dead,
@@ -255,6 +268,7 @@ export class BoundedOutboundQueue {
     this.queuedTerminal = 0;
     this.queuedFatal = 0;
     this.pendingBytes = 0;
+    this.laneBytes = 0;
     this.onFailure({ kind: "sink", error });
   }
 
@@ -270,8 +284,9 @@ export class BoundedOutboundQueue {
         // An entry stays counted until the sink completes its write: a
         // stopped reader is exactly a sink that never resolves, so pending
         // grows until a bound trips. Only then is it dropped. Lane
-        // entries never count against the byte bound, so they subtract
-        // nothing here — only the lane's own tallies, which their shift
+        // entries never count against the ordinary byte bound, so they
+        // subtract nothing from `pendingBytes` here — their own byte
+        // tally (`laneBytes`) and the lane counts, which their shift
         // returns (both the shared lane count and the fatal share).
         // A sink that settles after abandon() answers a delivery the caller
         // already gave up on: the accounting was cleared, so neither the
@@ -289,6 +304,7 @@ export class BoundedOutboundQueue {
         } else {
           this.queuedTerminal--;
           if (entry.lane === "fatal") this.queuedFatal--;
+          this.laneBytes -= entry.bytes;
         }
       }
     } finally {

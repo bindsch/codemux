@@ -63,12 +63,19 @@ function parseLimitOption(value: string): number | null {
  * range, whose cutoff is an invalid Date. Returning that unchecked made
  * every window comparison against it false and the command answered a
  * silent empty table (review ul7); it is refused like any other value the
- * window cannot use. */
+ * window cannot use. A digit-only value is refused outright (review round
+ * 361): the duration branch requires a unit letter, so "7" fell through to
+ * `new Date`, which JSC reads as July 2001 while V8 rejects it — an
+ * engine-dependent cutoff 25 years in the past, silently. A bare number is
+ * neither a duration nor a date. A date-only ISO value ("2026-11-08") cuts
+ * at UTC midnight, the ECMAScript reading of a date-only string; durations
+ * are relative to the local now. */
 export function parseSinceOption(
   value: string,
   now: Date = new Date()
 ): Date | null {
-  const duration = /^(\d+)\s*(s|m|h|d|w)$/.exec(value.trim());
+  const trimmed = value.trim();
+  const duration = /^(\d+)\s*(s|m|h|d|w)$/.exec(trimmed);
   if (duration !== null) {
     const count = Number(duration[1]);
     const unitMs: Record<string, number> = {
@@ -81,7 +88,8 @@ export function parseSinceOption(
     const cutoff = new Date(now.getTime() - count * unitMs[duration[2]!]!);
     return Number.isNaN(cutoff.getTime()) ? null : cutoff;
   }
-  const parsed = new Date(value);
+  if (/^\d+$/.test(trimmed)) return null;
+  const parsed = new Date(trimmed);
   if (Number.isNaN(parsed.getTime())) return null;
   return parsed;
 }
@@ -271,7 +279,7 @@ export function registerCallsCommand(
     .option("-n, --limit <count>", "Records to list, newest ledger append first; bounds the listing only", String(DEFAULT_LIMIT))
     .option("-a, --agent <id>", "Show only one agent's calls")
     .option("--label <KEY=VALUE>", "Filter by a label; repeat for AND matching", collectLabel, [])
-    .option("--since <when>", "Cutoff as a duration (90m, 24h, 7d) or date accepted by JavaScript Date")
+    .option("--since <when>", "Cutoff as a duration with a unit (90m, 24h, 7d) or an ISO date (a date-only value cuts at UTC midnight); a bare number is refused")
     .option("--json", "Print stored JSONL with controls escaped; --sum appends human-readable totals")
     .option("--sum", "Append totals over every matching record in the whole ledger, not only the listed ones")
     .option("--by <key>", "Group --sum totals by this label; records without it form a separate group")
@@ -322,8 +330,8 @@ export function registerCallsCommand(
         since = parseSinceOption(options.since);
         if (since === null) {
           return usageFail(
-            "--since must be a duration (90m, 24h, 7d) or a date accepted by JavaScript Date, " +
-              "and the cutoff it names must land inside the date range"
+            "--since must be a duration with a unit (90m, 24h, 7d) or an ISO date " +
+              "(a bare number is neither), and the cutoff it names must land inside the date range"
           );
         }
       }

@@ -299,8 +299,20 @@ describe("config, alias, and usagemux rows", () => {
   });
 
   test("the usagemux row: missing, unreadable, stale, and current", () => {
-    expect(usagemuxRowFrom({ version: null, issue: "usagemux is not installed", belowMinimum: false } as never).detail).toContain("optional");
-    expect(usagemuxRowFrom({ version: null, issue: "usagemux --version failed", belowMinimum: false } as never).detail).toBe("usagemux --version failed");
+    const missing = usagemuxRowFrom({ version: null, issue: "usagemux is not installed", belowMinimum: false } as never);
+    expect(missing.state).toBe("USAGEMUX-MISSING");
+    expect(missing.detail).toContain("optional");
+    expect(missing.remedy).toContain("brew install bindsch/tap/usagemux");
+    // An installed usagemux whose version cannot be read is its own state
+    // (review round 361): MISSING keeps meaning "not on PATH", and the
+    // remedy says reinstall, not install — the binary exists.
+    const unreadable = usagemuxRowFrom({ version: null, issue: "usagemux --version exited 3", belowMinimum: false } as never);
+    expect(unreadable.state).toBe("USAGEMUX-UNREADABLE");
+    expect(unreadable.severity).toBe("warn");
+    expect(unreadable.detail).toBe("usagemux --version exited 3");
+    expect(unreadable.remedy).toContain("brew reinstall bindsch/tap/usagemux");
+    expect(usagemuxRowFrom({ version: null, issue: "usagemux --version printed no version", belowMinimum: false } as never).state).toBe("USAGEMUX-UNREADABLE");
+    expect(usagemuxRowFrom({ version: null, issue: "spawn timed out", belowMinimum: false } as never).state).toBe("USAGEMUX-UNREADABLE");
     const stale = usagemuxRowFrom({ version: "0.2.1", issue: null, belowMinimum: true } as never);
     expect(stale.state).toBe("USAGEMUX-STALE");
     expect(stale.detail).toContain(USAGEMUX_MINIMUM_VERSION);

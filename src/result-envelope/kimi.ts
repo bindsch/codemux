@@ -154,7 +154,10 @@ export function kimiResult(result: RunResult, request: RunRequest, brandHome: st
   const diagnostic = failure ? `experiment failure [${failure.code}]: ${outputFailure ?? failure.message}` : outputFailure;
   const envelope: Record<string, unknown> = { [KIMI_ANSWER_FIELD]: text, events, session_id: sessionId, codemux: block };
   const experimentFields = request.experimentMcp
-    ? { reply: text, scanSurface: (result.scanSurface ?? result.stdout + result.stderr) + wireSurface }
+    // Every channel boundary carries a newline (the adapter's rule for
+    // stdout/stderr/fold evidence; round 361): bytes at a boundary must
+    // not fuse into the canary marker, on the wire surface too.
+    ? { reply: text, scanSurface: `${result.scanSurface ?? `${result.stdout}\n${result.stderr}`}\n${wireSurface}` }
     : {};
   const failureFields: { success: false; exitCode: number; stderr?: string } | {} = failure || outputFailure
     ? { success: false as const, exitCode: result.exitCode || 1,

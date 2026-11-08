@@ -144,7 +144,7 @@ export type KimiEvent =
   | { kind: "session_timeout" }
   | { kind: "fatal"; source: "codemux" | "harness"; message: string }
   | { kind: "registry_error"; message: string }
-  | { kind: "record_outcome"; ok: boolean; error?: string }
+  | { kind: "record_outcome"; ok: boolean; error?: string; failure?: "busy" | "untrusted" | "unavailable" }
   /** Internal: the executor delivers this once every child of the end
    * path has settled — the one transition into `ended`. */
   | { kind: "children_settled" };
@@ -208,6 +208,10 @@ export type KimiEffect =
    * the hold owns it then). */
   | { kind: "release_registry" }
   | { kind: "stamp_activity" }
+  /** One diagnostic line on the session's own stderr, carrying no event
+   * and no verdict: the busy-exhaustion notice a resumed session emits
+   * while it keeps running (round 361, item 16). */
+  | { kind: "notice"; message: string }
   | { kind: "ledger_turn"; turnId: string; startedAt: number; finish: "end" | "failed" | "interrupted" }
   | { kind: "ledger_session"; reason: SessionEndReason; exitCode: number | null; usage: ResultUsageBlock }
   | { kind: "resolve_done"; code: number };

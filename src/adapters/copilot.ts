@@ -148,8 +148,12 @@ export class CopilotAdapter extends BaseAdapter {
     if (
       !sandboxed || process.platform !== "darwin" ||
       this.environment.HOME === undefined ||
-      (passthroughEnv?.includes(PKG_CACHE_ENV) && this.environment[PKG_CACHE_ENV]) ||
-      (passthroughEnv?.includes(CACHE_ENV) && this.environment[CACHE_ENV])
+      // The passthrough is the authorization: either cache name passed
+      // through and set — an empty string included — is the operator's
+      // value and suppresses the cache redirect (review round 361; a name
+      // passed through but never set carries nothing to preserve).
+      (passthroughEnv?.includes(PKG_CACHE_ENV) && this.environment[PKG_CACHE_ENV] !== undefined) ||
+      (passthroughEnv?.includes(CACHE_ENV) && this.environment[CACHE_ENV] !== undefined)
     ) return {};
     // Copilot appends pkg/<platform> to this root. Scode permits this cache,
     // while macOS's default ~/Library/Caches/copilot is blocked.

@@ -32,4 +32,24 @@ describe("parseSinceOption", () => {
       new Date(Date.parse("2026-10-08T12:00:00.000Z") - 100000 * 604_800_000).toISOString()
     );
   });
+
+  test("a digit-only value is refused, never an engine-dependent date (review round 361)", () => {
+    // On Bun's JSC `new Date("7")` is July 2001 and `new Date("31")` is
+    // invalid; V8 rejects both. The first spelling accepted a typo for "7d"
+    // with a cutoff 25 years in the past and the whole ledger inside the
+    // window at exit 0, while the second was refused — acceptance by
+    // engine accident. A bare number is neither a duration nor a date.
+    expect(parseSinceOption("7")).toBeNull();
+    expect(parseSinceOption("2000")).toBeNull();
+    expect(parseSinceOption("31")).toBeNull();
+    expect(parseSinceOption(" 7 ")).toBeNull();
+  });
+
+  test("a date-only value cuts at UTC midnight, whatever the local zone", () => {
+    // The ECMAScript reading of a date-only ISO string: UTC midnight, so
+    // the window's clock base is stated rather than mixed silently with
+    // the local-now base durations use.
+    const cutoff = parseSinceOption("2026-11-08", new Date("2026-11-08T22:30:00.000Z"))!;
+    expect(cutoff.toISOString()).toBe("2026-11-08T00:00:00.000Z");
+  });
 });

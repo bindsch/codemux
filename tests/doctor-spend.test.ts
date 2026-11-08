@@ -91,6 +91,37 @@ describe("the spend stage", () => {
     }
   });
 
+  test("the JSON spend detail names the label the probe carried (review round 361)", async () => {
+    // The label value is a stamp (date-time, pid, serial), not a date, so
+    // the documented `calls --label machine-check=<date>` recipe matched
+    // nothing. The ok detail names the exact value; the probe's recorded
+    // argv proves it is the one the request carried.
+    const fake = createFakeBinaryEnv({
+      scode: fakeScodeHelp(),
+      usagemux: fakeUsagemux(),
+      claude: claudeGreen,
+      codemux: fakeCodemux(),
+    });
+    try {
+      probeThrough(fake.env);
+      const result = await runDoctor(["--only", "claude", "--spend", "--format", "json"], {
+        path: fake.env.PATH!,
+        home: fixtureHome(claudeHome, homes),
+      });
+      expect(result.exitCode).toBe(0);
+      const document = JSON.parse(result.output) as {
+        harnesses: Array<{ id: string; spend: { ok: boolean; detail: string } | null }>;
+      };
+      const spend = document.harnesses.find((entry) => entry.id === "claude")!.spend!;
+      expect(spend.ok).toBe(true);
+      const stamp = /^answered OK \(label machine-check=(.+)\)$/.exec(spend.detail)?.[1];
+      expect(stamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{6}\.\d{3}Z-\d+-\d+$/);
+      expect(readPathMarker(fake.env, "codemux-calls.log")).toContain(`--label machine-check=${stamp}`);
+    } finally {
+      fake.cleanup();
+    }
+  });
+
   test("two checks inside one millisecond get different machine-check labels (rounds 307, 310)", () => {
     // Two `doctor --spend` runs beginning in the same second used to mint
     // one shared second-resolution label, so the documented

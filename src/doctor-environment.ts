@@ -328,11 +328,20 @@ export const usagemuxRowFrom = (
         remedy: remedyFor("claude", "USAGEMUX-MISSING"),
       };
     }
+    // Installed but unreadable (review round 361): a --version that exits
+    // nonzero, prints no version, or times out, or a binary the trust
+    // check refuses. Collapsing these onto MISSING printed "not installed"
+    // for an installed binary and prescribed installing it — the wrong
+    // remedy for the command whose job is to diagnose a broken install.
+    // The separate state also keeps the binary present: the machine check
+    // reads `usagemuxPresent` as "not MISSING", so the usage rows still
+    // query it and report their own unreadable verdict, never "usagemux is
+    // not installed".
     return {
-      state: "USAGEMUX-MISSING",
+      state: "USAGEMUX-UNREADABLE",
       severity: "warn",
       detail: status.issue ?? "unreadable",
-      remedy: remedyFor("claude", "USAGEMUX-MISSING"),
+      remedy: remedyFor("claude", "USAGEMUX-UNREADABLE"),
     };
   }
   if (status.belowMinimum) {
