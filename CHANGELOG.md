@@ -48,6 +48,10 @@ implementation narrative behind it is preserved in the
 - The redirect stubs `docs/HARNESS-COMPATIBILITY.md` and `docs/HERMETIC.md`
   are gone (refusals now name docs/harnesses.md and docs/isolation.md), and
   dated reports moved under `docs/archive/`; update any links to them.
+- Source installs need Bun 1.4.4 or newer (was 1.3.14), the Bun CI now
+  provisions and Homebrew installs. Bun 1.3 rejects TOML datetime values in
+  Kimi configurations and answers the experiment MCP relay's chunked and
+  reset connections differently.
 
 ### Added
 
@@ -250,6 +254,7 @@ implementation narrative behind it is preserved in the
 ### Fixed
 
 - Empty or whitespace-only answers fail on every agent: zero-exit runs become exit 1, report `Error: <agent> exited 0 with an empty answer`, mark JSON envelopes with `codemux.empty_answer: true` and `codemux.finish: "empty-answer"`, and record `finish: "empty-answer"` in the call ledger. Successful session turns without assistant text complete as `failed` with reason `empty answer`. There is no opt-out.
+- The launcher starts on Ubuntu 26.04, whose `/usr/bin/stat` is uutils coreutils: its `--version` names "uutils coreutils", which the dialect check read as BSD, so every `stat` candidate was refused with `no trusted stat found`.
 
 Earlier 2.0.0 fixes are preserved in [part 1](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-2.0.0-fixes-1.md), [part 2](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-2.0.0-fixes-2.md), [part 3](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-2.0.0-fixes-3.md).
 

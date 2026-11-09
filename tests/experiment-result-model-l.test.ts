@@ -12,7 +12,10 @@ test.each([
   { agent: "claude", model: undefined, expected: "provider-model" },
   { agent: "claude", model: "selected-model", expected: "selected-model" },
 ] as const)("early $agent capture failure reports effective model $expected", async ({ agent, model, expected }) => {
-  const adapter = agent === "zai" ? new ZaiAdapter({}) : new ClaudeAdapter({
+  // A synthetic Z.AI key: beforeLaunch reads the credential, and without
+  // one the zai rows passed only on a host whose real ~/.zai exists (they
+  // failed on every CI runner, run 42681779732).
+  const adapter = agent === "zai" ? new ZaiAdapter({ ZAI_API_KEY: "synthetic" }) : new ClaudeAdapter({
     CODEMUX_CLAUDE_PROVIDER_BASE_URL: "https://example.invalid/v1",
     CODEMUX_CLAUDE_PROVIDER_API_KEY: "synthetic", CODEMUX_CLAUDE_PROVIDER_MODEL: "provider-model",
   });

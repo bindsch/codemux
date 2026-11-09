@@ -48,7 +48,7 @@ bun install --frozen-lockfile
 bun link
 ```
 
-Source installs require Bun 1.3.14 or newer and
+Source installs require Bun 1.4.4 or newer and
 [scode](https://github.com/bindsch/scode). See the
 [installation guide](https://github.com/bindsch/codemux/blob/main/docs/installation.md)
 for platform requirements and upgrades.

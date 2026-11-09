@@ -14,6 +14,7 @@ import { CANARY_MARKER_PATTERN } from "../src/hermetic-canary.js";
 import { getDefaultConfig } from "../src/config.js";
 import type { RunRequest } from "../src/types.js";
 import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
+import { spyOnInherited } from "./helpers/spy-inherited.js";
 
 test("Kimi experiment check marks its planted control without changing the spec or tools", async () => {
   const scratch = join(import.meta.dir, "../scratch");
@@ -28,7 +29,7 @@ test("Kimi experiment check marks its planted control without changing the spec 
   const mocks = [
     spyOn(cliRuntime, "isScodeAvailable").mockReturnValue(true),
     spyOn(cliRuntime, "assertHarnessSupported").mockResolvedValue("2.3.2"),
-    spyOn(KimiAdapter.prototype, "isAvailable").mockReturnValue(true),
+    spyOnInherited(KimiAdapter.prototype, "isAvailable").mockReturnValue(true),
     spyOn(KimiAdapter.prototype, "validateRunRequest").mockImplementation(() => {}),
     spyOn(launcher, "launchRunRequest").mockImplementation(async (_adapter, request) => {
       requests.push(request);

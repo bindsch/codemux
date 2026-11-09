@@ -10,6 +10,7 @@ import { getDefaultConfig } from "../src/config.js";
 import * as kimiCanary from "../src/kimi-isolation-probe.js";
 import * as launcher from "../src/launch.js";
 import type { RunRequest } from "../src/types.js";
+import { spyOnInherited } from "./helpers/spy-inherited.js";
 
 async function checkWithPassedNames(names: string[], syntheticValidation = false, retainHome = false, launchError?: Error) {
   const scratch = join(import.meta.dir, "../scratch");
@@ -30,7 +31,7 @@ async function checkWithPassedNames(names: string[], syntheticValidation = false
     spyOn(cliRuntime, "isScodeAvailable").mockReturnValue(true),
     spyOn(cliRuntime, "assertHarnessSupported").mockResolvedValue("2.3.2"),
     spyOn(cliRuntime, "handleUnexpectedError").mockImplementation((error) => { throw error; }),
-    spyOn(KimiAdapter.prototype, "isAvailable").mockReturnValue(true),
+    spyOnInherited(KimiAdapter.prototype, "isAvailable").mockReturnValue(true),
     spyOn(kimiCanary, "plantKimiCanary").mockReturnValue({ cwd, marker, adapter,
       operatorHome: home, brandHome, cleanup: () => {
         cleaned = true;

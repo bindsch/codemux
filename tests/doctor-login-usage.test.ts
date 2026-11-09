@@ -389,7 +389,13 @@ describe("doctor usage rows over a fake usagemux", () => {
         path: fake.env.PATH!,
         home: fixtureHome(claudeHome(), homes),
       });
-      expect(result.output).toContain("keychain: skipped: keychain read disabled for this run");
+      // The seam applies only where a Keychain exists: off macOS the row
+      // reports the platform before the seam is consulted
+      // (src/doctor-environment.ts readKeychainStatus), so Linux asserts
+      // that row instead (CI run 42681779732, ubuntu-latest).
+      expect(result.output).toContain(process.platform === "darwin"
+        ? "keychain: skipped: keychain read disabled for this run"
+        : "keychain: not-macos: the Keychain check is macOS-only");
     } finally {
       fake.cleanup();
     }

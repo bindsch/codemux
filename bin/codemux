@@ -31,7 +31,11 @@ tool_dirs='/usr/bin /bin /run/current-system/sw/bin /usr/local/bin /opt/homebrew
 # 1: it was read as BSD and every stat candidate was refused). A BSD stat
 # rejects both flags with a usage line naming neither. Toybox stat
 # (Android, Termux) names itself the same way and takes the GNU form too
-# (round 28, contracts 3). An unrecognized
+# (round 28, contracts 3). The uutils coreutils rewrite in Rust (Ubuntu
+# 26.04's default /usr/bin/stat, a link into /usr/lib/cargo/bin/coreutils)
+# answers --version with "stat (uutils coreutils) 0.10.0" and takes the
+# GNU form; read as BSD, every candidate was refused and the launcher
+# could not start on ubuntu-latest (CI run 42681779732). An unrecognized
 # stat falls to the BSD form and is then refused by the output-shape
 # validation below, never guessed at. Both variants need -L: a PATH entry
 # that is a link to a directory must be judged by the target's owner and
@@ -39,7 +43,7 @@ tool_dirs='/usr/bin /bin /run/current-system/sw/bin /usr/local/bin /opt/homebrew
 # world-writable).
 define_stat_uid_mode() {
   case $("$stat_tool" --version 2>/dev/null || "$stat_tool" --help 2>&1 || true) in
-    *"GNU coreutils"*|*BusyBox*|*oybox*)
+    *"GNU coreutils"*|*"uutils coreutils"*|*BusyBox*|*oybox*)
       stat_uid_mode() {
         "$stat_tool" -L -c '%u %A' "$1" 2>/dev/null
       }

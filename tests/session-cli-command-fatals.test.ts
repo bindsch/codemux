@@ -36,7 +36,10 @@ describe("the session command driven in process", () => {
         ["-a", "claude", "--no-sandbox", "--auto", "high", "--cwd", workdir, "--shutdown-grace", "1"],
         // One undecodable line on stdout: the process layer's fatal
         // channel, which reaches the driver through its onFatal arrow.
-        { claude: `if [ "$1" = "--version" ]; then printf '2.1.280\\n'; exit 0; fi\nprintf '\\xff\\xfe\\n'\nsleep 5` },
+        // Octal escapes, the POSIX printf form: dash (Ubuntu's /bin/sh)
+        // prints \\xff literally, an 8-byte ASCII line that is valid
+        // UTF-8 (CI run 42681779732, ubuntu-latest).
+        { claude: `if [ "$1" = "--version" ]; then printf '2.1.280\\n'; exit 0; fi\nprintf '\\377\\376\\n'\nsleep 5` },
         { registryFile: registry, stdin }
       );
       expect(outcome.exitCode).not.toBe(0);

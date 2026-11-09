@@ -3,10 +3,14 @@ read_when: "Installing, upgrading, or checking platform support."
 ---
 # Installation
 
-Codemux supports source execution on macOS and Linux with Bun 1.3.14 or newer.
+Codemux supports source execution on macOS and Linux with Bun 1.4.4 or newer.
+Bun 1.3 is not supported: its TOML parser rejects datetime values that Kimi
+configurations may hold, and its `node:http` server answers the
+experiment MCP relay's chunked and reset connections differently
+(CI run 42681779732 on Bun 1.3.14 failed those suites on both platforms).
 The launcher's ownership and mode checks run the stat dialect each platform
-ships (BSD `stat` on macOS, GNU coreutils or BusyBox `stat` on Linux, both
-taking the GNU format); the GNU path is
+ships (BSD `stat` on macOS; GNU coreutils, uutils coreutils (the Ubuntu
+26.04 default), or BusyBox `stat` on Linux, all taking the GNU format); the GNU path is
 exercised by CI's `make release-gate` on the ubuntu runner, whose smoke and
 installed-layout steps execute the launcher itself.
 The package version and CLI version come from `package.json`.
@@ -69,7 +73,7 @@ the same rule the Bun binary is held to — so distributions whose coreutils
 are not under `/usr/bin` (NixOS) work, and a planted PATH entry cannot
 substitute them. A system with no acceptable candidate in that list refuses
 to start. A `stat` candidate is always judged with its own dialect's flags
-(the GNU/BusyBox/Toybox `-c` form or the BSD `-f` form), so a `stat` earlier
+(the GNU/uutils/BusyBox/Toybox `-c` form or the BSD `-f` form), so a `stat` earlier
 in the list that cannot run or answers nothing cannot disqualify a valid
 `stat` of the other dialect behind it.
 

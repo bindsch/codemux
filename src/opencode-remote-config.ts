@@ -48,9 +48,9 @@
 import { lstatSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import { readUtf8FileBounded } from "./file-io.js";
-// bun:sqlite, not node:sqlite: the pinned runtime floor (Bun 1.3.14) has
+// bun:sqlite, not node:sqlite: Bun 1.3.14 (an earlier runtime floor) had
 // no node:sqlite, and this module loads with the adapter registry, so a
-// node:sqlite import breaks every CLI command on the floor.
+// node:sqlite import broke every CLI command there.
 import { Database } from "bun:sqlite";
 
 /** The remote-config carriers in the real login state, or null when none. */

@@ -8,7 +8,7 @@
  * records). An exported `CODEMUX_TEST_LEDGER` (CI pinning one path for a
  * whole run) keeps its word.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import "./fixtures/agy-host.js";
@@ -16,6 +16,11 @@ import { agyKeychainHost } from "../src/agy-keychain.js";
 import { sweepLeakedFixtures, type TrackedFixture } from "./helpers/fixture-leak.js";
 
 const dir = mkdtempSync(join(tmpdir(), "codemux-test-ledger-"));
+// Test files create their fixtures with mkdtemp under the ignored
+// scratch/fix directory, which a fresh checkout does not have: a file that
+// ran before any other had created it failed with ENOENT (a fresh CI
+// checkout, run 42681779732's environment). The preload creates it once.
+mkdirSync(join(import.meta.dir, "../scratch/fix"), { recursive: true });
 // No in-process test may read file-fallback credentials from the real home.
 agyKeychainHost.home = () => dir;
 process.env.CODEMUX_TEST_LEDGER ??= join(dir, "calls.jsonl");

@@ -19,6 +19,7 @@ import * as hermeticCanary from "../src/hermetic-canary.js";
 import * as launcher from "../src/launch.js";
 import type { RunRequest } from "../src/types.js";
 import { resolve } from "node:path";
+import { spyOnInherited } from "./helpers/spy-inherited.js";
 
 async function checkExperiment(controlClean = false) {
   const scratch = join(resolve("scratch/session-14c66a93/exp"), "codex-check-preflight");
@@ -51,7 +52,7 @@ async function checkExperiment(controlClean = false) {
     spyOn(cliRuntime, "isScodeAvailable").mockReturnValue(true),
     spyOn(cliRuntime, "assertHarnessSupported").mockResolvedValue("0.166.0"),
     spyOn(cliRuntime, "handleUnexpectedError").mockImplementation((error) => { throw error; }),
-    spyOn(CodexAdapter.prototype, "isAvailable").mockReturnValue(true),
+    spyOnInherited(CodexAdapter.prototype, "isAvailable").mockReturnValue(true),
     spyOn(hermeticCanary, "plantCanary").mockImplementation(() => ({
       cwd, marker, cleanup: () => { cleaned = true; },
     })),

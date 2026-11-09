@@ -7,7 +7,7 @@ state, and explicit capability refusals. Add regression coverage for bugs.
 
 ## Setup and verification
 
-Use Bun 1.3.14 or newer and the repository's existing lockfile:
+Use Bun 1.4.4 or newer and the repository's existing lockfile:
 
 ```sh
 bun install --frozen-lockfile

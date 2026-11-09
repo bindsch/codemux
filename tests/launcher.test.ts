@@ -244,8 +244,9 @@ describe("bin/codemux bun resolution", () => {
     // acceptable test seam, so the variant structure is pinned statically.
     const text = readFileSync(LAUNCHER, "utf8");
     expect(text.match(/"\$stat_tool" --version 2>\/dev\/null \|\| "\$stat_tool" --help 2>&1 \|\| true/g)).toHaveLength(1);
-    // BusyBox stat takes the GNU format (review round 25, edges 1).
-    expect(text).toContain('*"GNU coreutils"*|*BusyBox*|*oybox*)');
+    // BusyBox stat takes the GNU format (review round 25, edges 1), and so
+    // does uutils, Ubuntu 26.04's /usr/bin/stat (CI run 42681779732).
+    expect(text).toContain('*"GNU coreutils"*|*"uutils coreutils"*|*BusyBox*|*oybox*)');
     expect(text.match(/"\$stat_tool" -L -f '%u %Sp' "\$1" 2>\/dev\/null/g)).toHaveLength(1);
     expect(text.match(/"\$stat_tool" -L -c '%u %A' "\$1" 2>\/dev\/null/g)).toHaveLength(1);
     expect(text).not.toContain("&& return 0");

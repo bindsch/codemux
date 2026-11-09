@@ -101,7 +101,10 @@ test.each(["claude", "zai"] as const)("plain %s capture-limit failure extracts t
 });
 
 test.each(["claude", "zai"] as const)("plain %s launch preserves the captured reply on exit 125", async (agent) => {
-  const adapter = agent === "claude" ? new ClaudeAdapter({}) : new ZaiAdapter({});
+  // A synthetic key: the launch reads the Z.AI credential, and without one
+  // the test passed only on a host whose real ~/.zai exists (it failed on
+  // every CI runner, run 42681779732).
+  const adapter = agent === "claude" ? new ClaudeAdapter({}) : new ZaiAdapter({ ZAI_API_KEY: "synthetic" });
   const request: RunRequest = { agent, prompt: "fixture", experimentMcp: "synthetic.json",
     hermetic: true, sandboxed: true, tools: "none" };
   const spies = [

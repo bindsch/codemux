@@ -6,6 +6,7 @@
  */
 
 import { expect, spyOn, test } from "bun:test";
+import { realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { resolveTrustedCommand } from "../src/executable-security.js";
 
@@ -18,7 +19,9 @@ test("a relative PATH answer for the env prefix is made absolute before the chil
     const resolved = resolveTrustedCommand(["env", "HOME=/tmp/x", "true"], "test");
     expect(resolved[0]).toBe(resolve(relativeEnv));
     expect(isAbsolute(resolved[0]!)).toBe(true);
-    expect(resolved[2]).toBe("/usr/bin/true");
+    // The trusted spelling is the link's target: /usr/bin/true is itself
+    // on macOS but a link to gnutrue on Ubuntu 26.04 (CI run 42681779732).
+    expect(resolved[2]).toBe(realpathSync("/usr/bin/true"));
   } finally {
     which.mockRestore();
   }

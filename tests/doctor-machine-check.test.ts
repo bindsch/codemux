@@ -276,7 +276,9 @@ describe("doctor harness rows", () => {
     const fake = createFakeBinaryEnv({
       scode: fakeScodeHelp(),
       usagemux: fakeUsagemux(),
-      claude: `if [ "$1" = "--version" ]; then printf '\\xff\\xfe not utf-8\\n'; exit 0; fi`,
+      // Octal escapes: dash (Ubuntu's /bin/sh) prints \\xff literally,
+      // which is valid UTF-8 and would test a different premise there.
+      claude: `if [ "$1" = "--version" ]; then printf '\\377\\376 not utf-8\\n'; exit 0; fi`,
       opencode: `if [ "$1" = "--version" ]; then printf '1.18.18\\n'; exit 0; fi`,
     });
     try {
@@ -445,11 +447,17 @@ describe("doctorTimeoutMs (round 104)", () => {
   );
 
   test("the whole milliseconds reach the version probe", async () => {
-    // A fake claude that answers instantly stays green under 1.5 and 60
+    // A fake claude that answers after 0.2 s stays green under 1.5 and 60
     // seconds; under 0.001 (1 ms) the same binary cannot answer in budget
     // and the row reports the timeout — the fractional flag reached the
     // probe as the exact millisecond count, not as a refusal or a default.
-    const fake = createFakeBinaryEnv(greenBinaries("2.1.300 (Claude Code)"));
+    // The delay is what makes 1 ms too short: a fake that answered at once
+    // could exit before a 1 ms timer fired on a fast Linux runner, which
+    // read back green (CI run 42681779732, ubuntu-latest).
+    const fake = createFakeBinaryEnv({
+      ...greenBinaries("2.1.300 (Claude Code)"),
+      claude: `if [ "$1" = "--version" ]; then sleep 0.2; printf '2.1.300 (Claude Code)\\n'; exit 0; fi`,
+    });
     try {
       const green = async (timeout: string): Promise<void> => {
         const result = await runDoctor(["--only", "claude", "--timeout", timeout], {

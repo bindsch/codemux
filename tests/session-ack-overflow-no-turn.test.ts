@@ -20,6 +20,7 @@ import { CodexSessionDriver } from "../src/session/codex-driver.js";
 import { AgySessionDriver } from "../src/session/agy-driver.js";
 import { OpenCodeSessionDriver } from "../src/session/opencode-driver.js";
 import { AiderSessionDriver } from "../src/session/aider-driver.js";
+import { aiderSessionHistoryPath } from "../src/session/aider-session.js";
 import { BoundedOutboundQueue, MAX_PENDING_EVENTS } from "../src/session/process.js";
 import type { SessionProcess } from "../src/session/process.js";
 import type { SessionFsm } from "../src/session/fsm.js";
@@ -59,7 +60,11 @@ for (const agent of ["claude", "codex", "agy", "opencode", "aider"] as const) {
       spawnGraceMs: 200,
       registryPath: null,
       harnessHome: process.cwd(),
-      historyPath: join(dir, "history.md"),
+      // At its real depth under a private harness home: the driver
+      // asserts the three directories above the file, and a file directly
+      // under mkdtemp(tmpdir()) put "/" in that chain on Linux
+      // (CI run 42681779732).
+      historyPath: aiderSessionHistoryPath(dir, "round155-session"),
       providerBaseUrl: null,
       spawnTurn: (): Promise<SessionProcess> => {
         spawnCalls += 1;

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CopilotAdapter } from "../src/adapters/copilot.js";
@@ -170,7 +170,9 @@ describe("copilot prompt and tool carriers", () => {
     });
     expect(built.args[0]).toBe("--additional-mcp-config");
     expect(JSON.parse(built.args[1]!)).toEqual({ mcpServers: { playwright: {
-      type: "stdio", command: "/usr/bin/true", args: [], tools: ["*"],
+      // The trusted spelling is the link's target: /usr/bin/true links to
+      // gnutrue on Ubuntu 26.04 (CI run 42681779732).
+      type: "stdio", command: realpathSync("/usr/bin/true"), args: [], tools: ["*"],
     } } });
     expect(built.check).not.toBeNull();
     expect(buildCopilotPlaywrightMcp(false, { enabled: true, pathEnv: "" }).args).toEqual([]);

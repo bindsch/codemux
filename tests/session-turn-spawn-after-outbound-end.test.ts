@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AiderSessionDriver } from "../src/session/aider-driver.js";
+import { aiderSessionHistoryPath } from "../src/session/aider-session.js";
 import { OpenCodeSessionDriver } from "../src/session/opencode-driver.js";
 import { BoundedOutboundQueue, MAX_PENDING_EVENTS } from "../src/session/process.js";
 import type { SessionProcess } from "../src/session/process.js";
@@ -58,10 +59,15 @@ const baseOptions = (
 });
 
 const scratch: string[] = [];
-const historyDir = (): string => {
+// The history file sits at its real depth under a private harness home:
+// the driver asserts the three directories above the file are owned by
+// this user, and a file directly under mkdtemp(tmpdir()) put "/" in that
+// chain on Linux, where tmpdir() is /tmp (CI run 42681779732). macOS's
+// deeper per-user tmpdir hid it.
+const historyFile = (): string => {
   const dir = mkdtempSync(join(tmpdir(), "codemux-r153-"));
   scratch.push(dir);
-  return dir;
+  return aiderSessionHistoryPath(dir, "round153-session");
 };
 process.on("exit", () => {
   for (const dir of scratch) rmSync(dir, { recursive: true, force: true });
@@ -79,7 +85,7 @@ for (const agent of ["aider", "opencode"] as const) {
           spawnCalls += 1;
           return new Promise<SessionProcess>(() => {});
         },
-        join(historyDir(), "history.md")
+        historyFile()
       );
       const driver =
         agent === "aider"
@@ -121,7 +127,7 @@ for (const agent of ["aider", "opencode"] as const) {
         spawnCalls += 1;
         return new Promise<SessionProcess>(() => {});
       },
-      join(historyDir(), "history.md")
+      historyFile()
     );
     const driver =
       agent === "aider"

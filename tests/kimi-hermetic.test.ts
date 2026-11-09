@@ -351,7 +351,13 @@ describe("Kimi hermetic adapter", () => {
       const child = join(f.cwd, "nested"); mkdirSync(child);
       writeFileSync(join(child, "AGENTS.md"), "child");
       writeFileSync(join(f.cwd, "agents.md"), "root");
-      expect(() => f.adapter.validateRunRequest({ ...f.request, cwd: child })).toThrow(join(f.cwd, "AGENTS.md"));
+      // The refusal names the Git root's file in the spelling the file
+      // system reports: AGENTS.md on case-insensitive APFS, agents.md on
+      // case-sensitive ext4 (CI run 42681779732, ubuntu-latest), so the
+      // path is compared case-insensitively, as the test above does.
+      expect(() => f.adapter.validateRunRequest({ ...f.request, cwd: child })).toThrow(UsageRefusalError);
+      try { f.adapter.validateRunRequest({ ...f.request, cwd: child }); }
+      catch (error) { expect((error as Error).message.toLowerCase()).toContain(join(f.cwd, "agents.md").toLowerCase()); }
     } finally { rmSync(outside, { recursive: true, force: true }); f.cleanup(); }
   });
 

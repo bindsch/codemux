@@ -45,7 +45,7 @@ describe("bin/codemux tool resolution", () => {
   const HOST_STAT_FORM = process.platform === "darwin" ? "-f '%u %Sp'" : "-c '%u %A'";
 
   /** A fake tool directory. `stat` identifies as `dialect` ("gnu",
-   * "busybox", "toybox", or "other" — anything the launcher does not
+   * "uutils", "busybox", "toybox", or "other" — anything the launcher does not
    * recognize, which falls to the BSD form). It answers ONLY the form its
    * dialect implies — the other form's flags fail, as they do on the real
    * binaries — and the answer is produced by delegating to the host stat,
@@ -54,7 +54,7 @@ describe("bin/codemux tool resolution", () => {
    * answers `uid` for `-u`. `brokenStat` makes the stat claim its dialect
    * but fail every ownership query: a probe that cannot judge anyone. */
   function fakeToolDir(options: {
-    dialect?: "gnu" | "busybox" | "toybox" | "other";
+    dialect?: "gnu" | "uutils" | "busybox" | "toybox" | "other";
     uid?: string;
     statMode?: number;
     brokenStat?: boolean;
@@ -69,15 +69,18 @@ describe("bin/codemux tool resolution", () => {
           : dialect === "other"
             ? "some other stat 1.0\\nusage: stat FILE\\n"
             : "";
-    const versionText = dialect === "gnu" ? "stat (GNU coreutils) 9.4\\n" : "";
-    // GNU, BusyBox, and Toybox take -c; an unrecognized stat falls to -f.
+    const versionText =
+      dialect === "gnu" ? "stat (GNU coreutils) 9.4\\n"
+        : dialect === "uutils" ? "stat (uutils coreutils) 0.10.0\\n" : "";
+    const versionExit = dialect === "gnu" || dialect === "uutils" ? 0 : 1;
+    // GNU, uutils, BusyBox, and Toybox take -c; an unrecognized stat falls to -f.
     const answerForm = dialect === "other" ? "-f" : "-c";
     writeFileSync(
       join(dir, "stat"),
       [
         "#!/bin/sh",
         'case "$1" in',
-        `  --version) printf '${versionText}'; exit ${dialect === "gnu" ? 0 : 1} ;;`,
+        `  --version) printf '${versionText}'; exit ${versionExit} ;;`,
         `  --help) printf '${helpText}'; exit 0 ;;`,
         "esac",
         ...(options.brokenStat === true ? ["exit 1"] : []),
@@ -124,6 +127,19 @@ describe("bin/codemux tool resolution", () => {
     const tools = fakeToolDir({ dialect: "gnu" });
     const bin = fakeBunDirectory();
     const result = runLauncher(launcherWithToolDirs(tools), bin);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toContain("FAKE-BUN-RAN --no-env-file");
+  });
+
+  test("a uutils stat (Ubuntu 26.04's /usr/bin/stat) selects the GNU form and runs a trusted bun", () => {
+    // ubuntu-latest moved to uutils coreutils; its --version names
+    // "uutils coreutils", not "GNU coreutils", and the BSD -f form means
+    // --file-system there. Before the match, every stat candidate was
+    // refused and no launcher test could start (CI run 42681779732).
+    const tools = fakeToolDir({ dialect: "uutils" });
+    const bin = fakeBunDirectory();
+    const result = runLauncher(launcherWithToolDirs(tools), bin);
+    expect(result.stderr.toString()).not.toContain("no trusted stat");
     expect(result.exitCode).toBe(0);
     expect(result.stdout.toString()).toContain("FAKE-BUN-RAN --no-env-file");
   });

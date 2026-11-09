@@ -12,6 +12,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -275,7 +276,11 @@ describe("openSessionPrivateHome - removal", () => {
     });
     // Swap the recorded parent for a different directory: the removal
     // must refuse through it rather than delete the replacement's tree.
-    rmSync(parent, { recursive: true, force: true });
+    // The original is moved aside, not deleted: a deleted directory's
+    // inode can be handed straight to the replacement (ext4 on the
+    // ubuntu runner did, CI run 42681779732), and the same device and
+    // inode is, by the identity rule, the same directory.
+    renameSync(parent, `${parent}-swapped-out`);
     mkdirSync(parent, { recursive: true });
     expect(() => home.remove()).toThrow();
   });
