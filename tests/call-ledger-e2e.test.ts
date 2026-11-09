@@ -20,9 +20,17 @@ import { ENVELOPE, RUN_ARGS, ledgerFile } from "./helpers/call-ledger.js";
  * CLI has no lever.
  */
 
+// Every fake reads its prompt the way a real harness does. codemux feeds
+// the prompt on stdin, and a write the child never took fails the run by
+// design (src/process-stdin.ts: the input never arrived). A fake that
+// exited without reading raced that write: under load the child was gone
+// first, the write hit EPIPE, and the run exited 1 (CI run 42706848920,
+// ubuntu-latest). The version probe is left alone.
+const READS_PROMPT = 'if [ "$1" != "--version" ]; then cat >/dev/null; fi\n';
+
 describe("the launched call ledger", () => {
   test("a plain run records its receipt while stdout stays the reply alone", async () => {
-    const fake = createFakeBinaryEnv({ claude: `printf '%s\\n' '${ENVELOPE}'` });
+    const fake = createFakeBinaryEnv({ claude: READS_PROMPT + `printf '%s\\n' '${ENVELOPE}'` });
     const ledger = ledgerFile();
     try {
       const { stdout, stderr, exitCode } = await runCli(RUN_ARGS, {
@@ -100,7 +108,7 @@ describe("the launched call ledger", () => {
   });
 
   test("a run against a provider override records the endpoint's host, never its key", async () => {
-    const fake = createFakeBinaryEnv({ claude: `printf '%s\\n' '${ENVELOPE}'` });
+    const fake = createFakeBinaryEnv({ claude: READS_PROMPT + `printf '%s\\n' '${ENVELOPE}'` });
     const ledger = ledgerFile();
     try {
       const { exitCode, stdout } = await runCli(RUN_ARGS, {
@@ -127,7 +135,7 @@ describe("the launched call ledger", () => {
     // ledger line carries the typed value as model_alias. A raw id (no
     // config entry) records a null alias — the same rule the session
     // protocol reports.
-    const fake = createFakeBinaryEnv({ claude: `printf '%s\\n' '${ENVELOPE}'` });
+    const fake = createFakeBinaryEnv({ claude: READS_PROMPT + `printf '%s\\n' '${ENVELOPE}'` });
     const ledger = ledgerFile();
     const configDir = mkdtempSync(join(tmpdir(), "codemux-ledger-config-"));
     mkdirSync(join(configDir, "codemux"), { recursive: true });
@@ -158,7 +166,7 @@ describe("the launched call ledger", () => {
   test("a harness that answers plain text still runs and records null usage", async () => {
     // The escape hatch, honestly ledged: an unparseable stdout records
     // nothing rather than guessing, and the run succeeds as before.
-    const fake = createFakeBinaryEnv({ claude: "printf 'OK\\n'" });
+    const fake = createFakeBinaryEnv({ claude: READS_PROMPT + "printf 'OK\\n'" });
     const ledger = ledgerFile();
     try {
       const { stdout, exitCode } = await runCli(RUN_ARGS, {
@@ -184,7 +192,7 @@ describe("the launched call ledger", () => {
   });
 
   test("a failed run is receipted too, with its exit code", async () => {
-    const fake = createFakeBinaryEnv({ claude: `printf '%s\\n' '${ENVELOPE}'; exit 3` });
+    const fake = createFakeBinaryEnv({ claude: READS_PROMPT + `printf '%s\\n' '${ENVELOPE}'; exit 3` });
     const ledger = ledgerFile();
     try {
       const { exitCode, stdout } = await runCli(RUN_ARGS, {
@@ -213,7 +221,7 @@ describe("the launched call ledger", () => {
       total_cost_usd: 0.004,
       modelUsage: { "claude-opus-5": {} },
     });
-    const fake = createFakeBinaryEnv({ claude: `printf '%s\\n' '${errorEnvelope}'` });
+    const fake = createFakeBinaryEnv({ claude: READS_PROMPT + `printf '%s\\n' '${errorEnvelope}'` });
     const ledger = ledgerFile();
     try {
       const { stdout, exitCode } = await runCli(RUN_ARGS, {
@@ -241,7 +249,7 @@ describe("the launched call ledger", () => {
     // wire on stdout. JSON on a launch that asked for JSON is a broken
     // structured stream: diagnostic on stderr, nothing on stdout, null
     // usage in the ledger.
-    const fake = createFakeBinaryEnv({ claude: `printf '%s\\n' '[{"items":[]}]'` });
+    const fake = createFakeBinaryEnv({ claude: READS_PROMPT + `printf '%s\\n' '[{"items":[]}]'` });
     const ledger = ledgerFile();
     try {
       const { stdout, stderr, exitCode } = await runCli(RUN_ARGS, {
@@ -353,7 +361,7 @@ describe("the launched call ledger", () => {
   });
 
   test("check records its probe under the check kind", async () => {
-    const fake = createFakeBinaryEnv({ claude: `printf '%s\\n' '${ENVELOPE}'` });
+    const fake = createFakeBinaryEnv({ claude: READS_PROMPT + `printf '%s\\n' '${ENVELOPE}'` });
     const ledger = ledgerFile();
     try {
       const { exitCode } = await runCli(
@@ -386,7 +394,7 @@ describe("the launched call ledger", () => {
       total_cost_usd: 0.001,
       modelUsage: { "claude-\u001b[31mopus": {} },
     });
-    const fake = createFakeBinaryEnv({ claude: `printf '%s\\n' '${poisoned}'` });
+    const fake = createFakeBinaryEnv({ claude: READS_PROMPT + `printf '%s\\n' '${poisoned}'` });
     const ledger = ledgerFile();
     try {
       const { exitCode, stdout } = await runCli(RUN_ARGS, {
@@ -406,7 +414,7 @@ describe("the launched call ledger", () => {
   });
 
   test("off disables the ledger and the run is unaffected", async () => {
-    const fake = createFakeBinaryEnv({ claude: `printf '%s\\n' '${ENVELOPE}'` });
+    const fake = createFakeBinaryEnv({ claude: READS_PROMPT + `printf '%s\\n' '${ENVELOPE}'` });
     const home = mkdtempSync(join(tmpdir(), "codemux-ledger-off-"));
     try {
       const { stdout, exitCode } = await runCli(RUN_ARGS, {

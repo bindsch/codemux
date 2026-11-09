@@ -136,7 +136,19 @@ export async function driveSession(
     stdout: "pipe",
     stderr: "pipe",
     stdin: "pipe",
-    env: { ...process.env, CODEMUX_NO_KEYCHAIN_SYNC: "1", ...env } as Record<string, string>,
+    env: {
+      ...process.env,
+      CODEMUX_NO_KEYCHAIN_SYNC: "1",
+      // A test that points HOME at a fixture means its config too, as
+      // runCli does: an inherited XDG_CONFIG_HOME wins over HOME/.config
+      // (src/config.ts), and GitHub's Ubuntu runners export one, so a
+      // fixture's ~/.config/codemux/config.yaml was never read there
+      // (CI run 42706848920: the kimi -m alias test saw "judge" unresolved).
+      ...(env.HOME !== undefined && env.XDG_CONFIG_HOME === undefined
+        ? { XDG_CONFIG_HOME: join(env.HOME, ".config") }
+        : {}),
+      ...env,
+    } as Record<string, string>,
   });
   const events: Record<string, any>[] = [];
   const stdoutDone = (async () => {
