@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { PARITY } from "./parity/index.js";
 import { getAllAdapters } from "./adapters/index.js";
 import { AUTONOMY_EQUIVALENCE } from "./autonomy.js";
 import { parseSandboxPolicyOverrides } from "./cli-runtime.js";
@@ -24,7 +25,7 @@ function toolsLabel(caps: AdapterCapabilities): string {
   return "tools";
 }
 import { EXPERIMENT_MCP_HARNESSES } from "./experiment-mcp.js";
-import { SERVED_MODEL_EVIDENCE_HARNESSES } from "./result-envelope/index.js";
+import { SERVED_MODEL_EVIDENCE_HARNESSES, SESSION_SERVED_MODEL } from "./result-envelope/index.js";
 import { UsageRefusalError, USAGE_REFUSAL_EXIT_CODE, requireNonEmptyOption } from "./validation.js";
 
 function shellQuote(value: string): string {
@@ -113,6 +114,27 @@ export function registerInfoCommands(
         const mapping = AUTONOMY_EQUIVALENCE[agentId];
         console.log(
           `| ${agentId} | ${mapping.byLevel["read-only"]} | ${mapping.byLevel.low} | ${mapping.byLevel.medium} | ${mapping.byLevel.high} | ${mapping.notes ?? ""} |`
+        );
+      }
+      // The carrier classes (design P4): the same matrix read as "what
+      // carries the level", plus the session mapping note, so a caller
+      // sees the declared limitations (scode-only cells) and the
+      // claude-family session difference without opening the source.
+      console.log(
+        "\nCarrier classes — what carries the level on a headless launch: " +
+          "native = a harness flag; default = the harness's own default state; " +
+          "stdin = a fed stdin answer; env = an environment variable; " +
+          "scode = the sandbox boundary alone (no native headless carrier)\n"
+      );
+      console.log("| Agent | read-only | low | medium | high | Sessions |");
+      console.log("|-------|-----------|-----|--------|------|----------|");
+      for (const agentId of AGENT_IDS) {
+        const mapping = AUTONOMY_EQUIVALENCE[agentId];
+        const sessions = SESSION_AGENTS[agentId] !== undefined
+          ? mapping.sessions ?? "same flags as run"
+          : "no sessions";
+        console.log(
+          `| ${agentId} | ${mapping.carrier["read-only"]} | ${mapping.carrier.low} | ${mapping.carrier.medium} | ${mapping.carrier.high} | ${sessions} |`
         );
       }
     });
@@ -242,11 +264,25 @@ export function registerInfoCommands(
               effortLevels: caps.supportsEffort === true ? [...caps.effortLevels] : null,
               providerOverride: caps.supportsProviderOverride === true,
               // The -m and --effort declarations feed the release gate's
-              // alias+effort probe (scripts/live-gate/run.ts, probe I), so
-              // a candidate build's I probe set describes the candidate.
+              // alias and effort probes (scripts/live-gate/run.ts, probes
+              // I and I2), so a candidate build's I and I2 probe sets
+              // describe the candidate.
               model: caps.supportsModel === true,
               effort: caps.supportsEffort === true,
+              // The plain `--tools none` capability feeds probe E the same
+              // way (a candidate's E set is its own), and the tui block
+              // mirrors the human labels' (run) qualifiers: whether the
+              // interactive form carries -m and --effort at all.
+              toolsNone: caps.supportsToolSelection === true,
+              tui: { model: adapter.supportsTuiModel(), effort: adapter.supportsTuiEffort() },
               sessions: SESSION_AGENTS[adapter.id] !== undefined,
+              sessionPermissions: SESSION_AGENTS[adapter.id]?.approvals === "ask",
+              sessionPermissionsNote: SESSION_AGENTS[adapter.id]?.approvalsNote ?? null,
+              sessionHermetic: SESSION_AGENTS[adapter.id]?.hermetic === true,
+              checkHermetic: PARITY[adapter.id]["check.hermetic"].state === "supported",
+              limitations: Object.fromEntries(Object.entries(PARITY[adapter.id]).flatMap(([feature, state]) =>
+                state.state === "harness-limitation"
+                  ? [[feature, { reason: state.reason, evidence: state.evidence }]] : [])),
               // The experiment-MCP mechanism and the served-model evidence
               // come from the src tables that own them (review round 20,
               // edges finding 2): a candidate build declares its own facts
@@ -255,6 +291,13 @@ export function registerInfoCommands(
               experimentMcp: EXPERIMENT_MCP_HARNESSES[adapter.id] !== undefined,
               experimentPrefix: EXPERIMENT_MCP_HARNESSES[adapter.id]?.[0] ?? null,
               servedModelEvidence: SERVED_MODEL_EVIDENCE_HARNESSES.has(adapter.id),
+              // The session wire's served-model sources (design P5):
+              // empty means the agent's session driver reports none yet.
+              sessionServedModel: SESSION_SERVED_MODEL[adapter.id] ?? [],
+              // The carrier class per level (design P4): the declared
+              // limitation cells (scode) and the default-state cells read
+              // the same here as in `codemux autonomy`.
+              autonomyCarrier: { ...AUTONOMY_EQUIVALENCE[adapter.id].carrier },
             },
           };
         });
@@ -266,16 +309,24 @@ export function registerInfoCommands(
         const status = adapter.isAvailable() ? "✅" : "❌";
         const caps = adapter.capabilities();
         const features: string[] = [];
-        if (caps.supportsModel) features.push("model");
+        // A capability the TUI form of the flag cannot carry carries its
+        // condition the same way the isolation labels do (parity pass,
+        // 2.0.0): droid accepts neither -m nor --effort interactively, and
+        // opencode no --effort, so their labels say (run) and a workflow
+        // reading `list` does not send the TUI a flag it refuses.
+        if (caps.supportsModel) features.push(adapter.supportsTuiModel() ? "model" : "model(run)");
         if (caps.supportsAutonomy) features.push("autonomy");
-        if (caps.supportsEffort) features.push("effort");
+        if (caps.supportsEffort) features.push(adapter.supportsTuiEffort() ? "effort" : "effort(run)");
         // A label carries its condition, so a workflow reading `list`
         // does not send a combination the launch refuses (audit A9).
         if (caps.supportsHermetic) features.push(caps.isolationRequiresReadOnly ? "hermetic(read-only)" : "hermetic");
         if (caps.supportsToolSelection) features.push(toolsLabel(caps));
         if (caps.supportsProviderOverride) features.push("provider");
         if (caps.supportsResultJson) features.push("result-json");
-        if (SESSION_AGENTS[adapter.id] !== undefined) features.push("sessions");
+        if (caps.budgetLimit) features.push("budget");
+        if (SESSION_AGENTS[adapter.id] !== undefined) features.push(
+          SESSION_AGENTS[adapter.id]?.approvals === "ask" ? "sessions(permissions)" : "sessions(no-permissions)"
+        );
         const featureText = features.length > 0 ? ` [${features.join(", ")}]` : "";
         console.log(`  ${status} ${adapter.id}${featureText}`);
       }

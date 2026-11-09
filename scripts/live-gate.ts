@@ -11,12 +11,15 @@ import { CommanderError } from "commander";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getAvailableAdapters } from "../src/adapters/index.js";
+import { loadConfig } from "../src/config.js";
+import { gateQuotaDecisions } from "./live-gate/quota.js";
 import { contractsAfterPool, runContractColumn, runUsageCheck, stampCodemuxVersion, type ContractRow, type UsageCheck } from "./live-gate/contracts.js";
 import { formatReport, gateFailed, type ReportInput } from "./live-gate/report.js";
 import { ProbeRunner, isDefaultCodemux } from "./live-gate/runner.js";
 import { parseOptions } from "./live-gate/options.js";
 import { discoverCandidate } from "./live-gate/candidate.js";
-import { createReportDirectory, runProbes, sessionHarnessFacts } from "./live-gate/run.js";
+import { createReportDirectory, runProbes } from "./live-gate/run.js";
+import { sessionHarnessFacts } from "./live-gate/aliases.js";
 
 export { escapeControls, isDefaultCodemux, runPool, ProbeRunner } from "./live-gate/runner.js";
 export { parseOptions, providerOverridePreflight } from "./live-gate/options.js";
@@ -51,16 +54,20 @@ export {
 export type { FakeProvider, LoopbackServer, NoNetProbe, OverrideRequestRecord } from "./live-gate/loopback.js";
 export { contractsAfterPool, runContractColumn, runUsageCheck, stampCodemuxVersion } from "./live-gate/contracts.js";
 export { candidateFacts, discoverCandidate, assertCandidateVersion } from "./live-gate/candidate.js";
+export { gateQuotaDecisions, quotaRefusalIn } from "./live-gate/quota.js";
+export type { GateQuotaDecision } from "./live-gate/quota.js";
 export { formatReport, gateFailed } from "./live-gate/report.js";
 export {
-  createReportDirectory,
   liveSessionLeak,
-  LOOPBACK_TIMEOUT_SECONDS,
   modelAliasFor,
   modelNamesTarget,
-  runProbes,
   sessionHarnessFacts,
   verifyAliasEnvelope,
+} from "./live-gate/aliases.js";
+export {
+  createReportDirectory,
+  LOOPBACK_TIMEOUT_SECONDS,
+  runProbes,
 } from "./live-gate/run.js";
 import { keychainBaselineRefusal, keychainDrift, keychainSnapshot } from "./live-gate/keychain.js";
 export type { CapturedOutput, ProbeResult, StdinScript, Verifier } from "./live-gate/runner.js";
@@ -140,6 +147,17 @@ export async function main(): Promise<void> {
     // wait on more spawns.
     const contractsBefore: ContractRow[] = await runContractColumn(contractHarnesses);
     const usage: UsageCheck = await runUsageCheck(options.codemux);
+    // One snapshot per gate, decided once (parity pass, 2.0.0): the probe
+    // pool used to re-query usagemux inside every probe process, so
+    // concurrent probes read different snapshots of the same account. The
+    // usage column's own reading (validated above) decides; a harness the
+    // launch-path rule refuses gets SKIP cells before anything spawns
+    // (runProbes carries the decisions). `quota: false` in the config runs
+    // the gate off entirely, so no decisions are made.
+    const quotaPolicy = loadConfig().quota;
+    const quota = usage.status === "PASS" && usage.snapshot !== undefined && quotaPolicy !== false
+      ? gateQuotaDecisions(usage.snapshot, quotaPolicy, facts.map((fact) => fact.id))
+      : undefined;
     probing = true;
     // Keychain hygiene around the whole pool (review round 52): concurrent
     // probes would otherwise snapshot each other's transient state. On a
@@ -155,7 +173,7 @@ export async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    const rows = await runProbes(facts, options, runner, directory);
+    const rows = await runProbes(facts, options, runner, directory, process.env, undefined, quota);
     const keychainDriftText = keychainDrift(keychainBefore, await keychainSnapshot());
     const first: ReportInput = {
       rows, contracts: contractsBefore, usage, version,

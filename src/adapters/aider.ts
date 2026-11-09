@@ -1,4 +1,4 @@
-import { BaseAdapter, type RunContext } from "./base.js";
+import { BaseAdapter } from "./base.js";
 import { existsSync } from "node:fs";
 import { devNull, homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -9,7 +9,10 @@ import {
   createAiderHistoryFile,
   readAiderHistory,
 } from "../aider-history.js";
+import { createAiderRunFiles, type AiderRunContext } from "../aider-run-files.js";
+import { parseAiderAnalytics } from "../result-envelope/aider.js";
 import { extractAiderReply } from "../aider-history-text.js";
+import { assertCleanInstructionFiles } from "../clean-cwd.js";
 import {
   assertProviderCap,
   readProviderOverride,
@@ -44,6 +47,14 @@ export const AIDER_MODEL_METADATA_PATH = fileURLToPath(
  * the acceptance this exists to prevent (review round 153). Exported for
  * the session driver's per-turn spawns. */
 export const HEADLESS_NEGATIVE_RESPONSES = "n\n".repeat(64);
+
+/** AskCoder has no functions or edits. Without Git, get_all_relative_files
+ * returns in-chat files only, so subtracting those leaves no addable files.
+ * URL detection, the repo map, and automatic lint/test paths are disabled. */
+export const AIDER_NO_TOOLS_FLAGS = [
+  "--chat-mode", "ask", "--no-git", "--map-tokens", "0",
+  "--no-detect-urls", "--no-auto-lint", "--no-auto-test",
+] as const;
 
 /** The fixed headless flags every aider spawn shares — run, TUI, and the
  * session driver's per-turn processes — with the chat history target as
@@ -113,29 +124,44 @@ export class AiderAdapter extends BaseAdapter {
     return home && isAbsolute(home) ? home : homedir();
   }
 
-  private baseCommand(context?: RunContext): string[] {
+  private baseCommand(context?: AiderRunContext): string[] {
     // A per-run file when prepareRun created one (hermetic runs only,
     // removed in cleanupRun, and the hermetic check's answer source),
     // /dev/null otherwise: plain runs, TUI sessions and static previews
     // keep writing nowhere.
-    return ["aider", ...aiderBaseFlags(context?.aiderHistoryFile?.path ?? devNull)];
+    const cmd = ["aider", ...aiderBaseFlags(context?.aiderHistoryFile?.path ?? devNull)];
+    if (context?.aiderRunFiles?.modelSettingsPath) {
+      cmd[cmd.indexOf("--model-settings-file") + 1] = context.aiderRunFiles.modelSettingsPath;
+    }
+    return cmd;
   }
 
-  override prepareRun(request: RunRequest): RunContext {
-    // A history file only where its reader is: the hermetic check's answer
-    // extraction (processRunResult below, through `reply` and
-    // `scanSurface`). Plain runs keep /dev/null — nothing reads their
-    // history, and writing it would persist the whole conversation on disk
-    // for nothing (h6 review; the file used to ride every run). The check
-    // is refused today, so no reachable run writes one; the machinery
-    // stays for the day aider grows a switch, and nothing is recorded on
-    // the adapter — the launcher owns the context.
-    if (!request.hermetic) return {};
-    return { aiderHistoryFile: createAiderHistoryFile(this.effectiveHome()) };
+  override prepareRun(request: RunRequest): AiderRunContext {
+    const files = createAiderRunFiles(this.realAiderDir(), request.prompt,
+      this.modelFor(request.model), this.validatedProvider()?.maxOutputTokens);
+    try {
+      return {
+        aiderRunFiles: files,
+        ...(request.hermetic ? {
+          aiderHistoryFile: createAiderHistoryFile(this.effectiveHome()),
+          aiderHermeticHome: files,
+        } : {}),
+      };
+    } catch (error) {
+      files.finalize();
+      throw error;
+    }
   }
 
-  override cleanupRunSync(context?: RunContext): void {
+  override cleanupRunSync(context?: AiderRunContext): void {
     context?.aiderHistoryFile?.finalize();
+    context?.aiderHermeticHome?.finalize();
+    context?.aiderRunFiles?.finalize();
+  }
+
+  /** The real ~/.aider directory both per-run scratch parents live under. */
+  private realAiderDir(): string {
+    return join(this.effectiveHome(), ".aider");
   }
 
   /**
@@ -153,8 +179,14 @@ export class AiderAdapter extends BaseAdapter {
   override processRunResult(
     result: RunResult,
     _request: RunRequest,
-    context?: RunContext
+    context?: AiderRunContext
   ): RunResult {
+    if (context?.aiderRunFiles) {
+      const analytics = readAiderHistory(context.aiderRunFiles.analyticsPath);
+      if (analytics !== null && analytics.trim()) {
+        result = { ...result, ...parseAiderAnalytics(analytics) };
+      }
+    }
     const history = context?.aiderHistoryFile;
     if (history === undefined) return result;
     // The read itself trusts nothing about the file (readAiderHistory:
@@ -178,18 +210,15 @@ export class AiderAdapter extends BaseAdapter {
    * through litellm's `openai/` model prefix with `OPENAI_API_BASE` and
    * `OPENAI_API_KEY` ("export OPENAI_API_BASE=<endpoint>", "Prefix the model
    * name with openai/", aider.chat/docs/llms/openai-compat.html), so the
-   * override needs all three settings. Both token caps are refused: the
-   * channel carries no token-budget knob at all.
+   * override needs all three settings. A model settings file carries
+   * max_tokens; max_input_tokens only triggers an overridable question.
    */
   private validatedProvider(): (ProviderOverride & { baseUrl: string; apiKey: string }) | null {
     const override = readProviderOverride("aider", this.environment);
     if (override === null) return null;
-    const noCapSurface =
-      "aider 0.86.2 has no max-tokens flag (--max-chat-history-tokens, " +
-      "--thinking-tokens and --map-tokens cap other budgets) and codemux writes " +
-      "no aider config, so no output or context cap can ride the override";
-    assertProviderCap("aider", override, "maxOutputTokens", noCapSurface);
-    assertProviderCap("aider", override, "maxContextTokens", noCapSurface);
+    assertProviderCap("aider", override, "maxContextTokens",
+      "aider 0.86.2 max_input_tokens is advisory: check_tokens asks 'Try to proceed anyway?' " +
+      "and --yes-always bypasses it; no hard context-token cap exists");
     return requireProviderOverride("aider", override, [
       "baseUrl",
       "apiKey",
@@ -228,22 +257,34 @@ export class AiderAdapter extends BaseAdapter {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-      // --hermetic is refused (2026-10-04 review): the pinned flags close
-      // only the channels codemux hands aider. Aider itself still reads
-      // .aider.conf.yml from the home, git root and working directory
-      // alongside --config (default_config_files, main.py at 0.86.2), the
-      // same search loads .env and .aider.model.settings.yml beside the
-      // pinned files (generate_search_path_list), and all of it loads
-      // inside the aider process, where the sanitizer's AIDER_* block
-      // cannot see it. The check's canary never rode those channels, which
-      // is why the live pass certified what the flags do not close; see
-      // docs/isolation.md.
-      supportsHermetic: false,
+      // Hermetic (the 2026-10-04 refusal, closed): the pinned flags left
+      // open every config layer aider searches itself — .aider.conf.yml,
+      // .env, .aider.model.settings.yml and .aider.model.metadata.json
+      // from the home, the git root and the working directory, plus
+      // ~/.aider/oauth-keys.env (main.py at 0.86.2: default_config_files,
+      // load_dotenv_files, generate_search_path_list; read 2026-11-09) —
+      // and no flag closes them (the 2026-09-17 evidence stands). A private
+      // HOME (src/aider-hermetic.ts) empties the home entries at once, and
+      // the clean-working-directory rule refuses those four names from the
+      // working directory up to the project root, the same range aider
+      // searches. --result-json stays refused: aider 0.86.2 has no JSON
+      // output mode (its argparse surface and --help list none), so there
+      // is no machine-readable stream to fold.
+      supportsHermetic: true,
       supportsProviderOverride: true,
+      supportsToolSelection: true,
     };
   }
 
   override mapAutonomy(level: AutonomyLevel): string[] {
+    // Low's carrier is not argv but the stdin stream getStdinInput feeds
+    // (HEADLESS_NEGATIVE_RESPONSES): aider 0.86.2's confirm_ask answers
+    // from a yes/no flag when one is set and otherwise prompts, and EOF
+    // accepts the default — which is yes for yes-default prompts — so the
+    // repeating `n` lines ARE the low carrier (io.py confirm_ask, read
+    // 2026-11-08). --yes-always exists as the auto-confirm flag (args.py,
+    // store_true, default None, no negative spelling) and carries
+    // medium/high natively.
     switch (level) {
       case "read-only":
         return ["--dry-run"];
@@ -259,19 +300,34 @@ export class AiderAdapter extends BaseAdapter {
     return ["--reasoning-effort", level];
   }
 
-  buildRunCommand(request: RunRequest, context?: RunContext): string[] {
-    const cmd = this.baseCommand(context);
+  buildRunCommand(request: RunRequest, context?: AiderRunContext): string[] {
+    const cmd: string[] = [];
     if (request.hermetic) {
-      // Unreachable from the CLI (supportsHermetic is false; the request
-      // refuses before a command is built), kept for the day aider grows a
-      // switch for its own config layers: every codemux run already pins
-      // the config, env file, model metadata and history files to packaged
-      // or null paths, and a zero repo-map budget keeps working-directory
-      // file contents out of the prompt (--map-tokens "Suggested number of
-      // tokens to use for repo map, use 0 to disable", aider 0.86.2 --help)
-      // -- but the .aider.conf.yml/.env/.aider.model.settings.yml searches
-      // from the home, git root and working directory have no flag at all
-      // (docs/isolation.md).
+      // HOME is assigned inside the sandbox command, never the run
+      // environment: scode derives its policy and credential access from
+      // the real home (the kimi rule, src/aider-hermetic.ts). Python's
+      // Path.home() follows it, so aider's own home, git-root and cwd
+      // config searches see the empty private home. A static preview
+      // (verify) passes no context and gets a placeholder path naming no
+      // real directory.
+      const home = context?.aiderHermeticHome?.home ??
+        join(this.realAiderDir(), ".codemux-hermetic", "unprepared");
+      cmd.push("env", `HOME=${home}`);
+    }
+    cmd.push(...this.baseCommand(context));
+    const files = context?.aiderRunFiles;
+    const previewRoot = join(this.realAiderDir(), ".codemux-hermetic", "unprepared");
+    cmd.push("--no-stream", "--analytics-log", files?.analyticsPath ?? join(previewRoot, "analytics.jsonl"));
+    if (request.tools === "none") cmd.push(...AIDER_NO_TOOLS_FLAGS);
+    if (request.web === false) cmd.push("--no-detect-urls");
+    if (this.validatedProvider()?.maxOutputTokens !== undefined && !files) {
+      cmd[cmd.indexOf("--model-settings-file") + 1] = join(previewRoot, "model-settings.yml");
+    }
+    if (request.hermetic) {
+      // A zero repo-map budget keeps working-directory file contents out
+      // of the prompt (--map-tokens "Suggested number of tokens to use for
+      // repo map, use 0 to disable", aider 0.86.2 --help): hermetic is a
+      // hermetic run of the model, not of the repo map.
       cmd.push("--map-tokens", "0");
     } else if (request.instructionDirs) {
       // Aider discovers no instruction files of its own, so an instruction
@@ -300,7 +356,7 @@ export class AiderAdapter extends BaseAdapter {
     if (request.effort) {
       cmd.push(...this.mapEffort(request.effort));
     }
-    cmd.push(`--message=${request.prompt}`);
+    cmd.push("--message-file", files?.promptPath ?? join(previewRoot, "prompt.txt"));
     return cmd;
   }
 
@@ -316,6 +372,7 @@ export class AiderAdapter extends BaseAdapter {
   override getTuiEnv(): Record<string, string> {
     const override = this.validatedProvider();
     if (override === null) return {};
+    assertProviderCap("aider", override, "maxOutputTokens", "aider output caps require a prepared headless run");
     return {
       OPENAI_API_KEY: override.apiKey,
       OPENAI_API_BASE: override.baseUrl,
@@ -329,10 +386,9 @@ export class AiderAdapter extends BaseAdapter {
   }
 
   override promptInArgv(_request: RunRequest): boolean {
-    // The stdin above carries the declines, not the prompt: the prompt
-    // rides `--message=` argv, so the shared validator's argv rules (the
-    // NUL refusal and the byte bound) apply (review round 153).
-    return true;
+    // --message-file keeps prompt bytes out of argv. Stdin remains the
+    // repeating negative answers; reading /dev/stdin would consume those.
+    return false;
   }
 
   override stdinRepeats(_request: RunRequest): boolean {
@@ -360,14 +416,25 @@ export class AiderAdapter extends BaseAdapter {
           "dispatched"
       );
     }
-    // The argv byte bound and the NUL refusal are the shared validator's,
-    // keyed on promptInArgv above — the same wording, one rule (review
-    // round 153; the local copy this replaced first appeared in review
-    // round 11, contracts-2 2).
     // Fail before launch on a half-configured override, and surface the
     // model requirement early: the harness's own default model would hit the
     // custom endpoint and fail opaquely.
     this.modelFor(request.model);
+    if (request.hermetic) {
+      if (request.cwd === undefined) {
+        throw new UsageRefusalError("aider --hermetic requires an explicit --cwd owned by this run");
+      }
+      // The channels the private HOME cannot close: aider searches the same
+      // four names from the working directory up to the project root (the
+      // same range this walk covers). A dangling symlink counts (lstat):
+      // aider resolves it.
+      assertCleanInstructionFiles("aider", validateWorkingDirectory(request.cwd)!, [
+        ".aider.conf.yml",
+        ".aider.model.settings.yml",
+        ".aider.model.metadata.json",
+        ".env",
+      ]);
+    }
   }
 
   override validateTuiRequest(
@@ -389,6 +456,8 @@ export class AiderAdapter extends BaseAdapter {
     assertNoAiderProjectExecutionConfig(
       validateWorkingDirectory(cwd) ?? process.cwd()
     );
+    const override = this.validatedProvider();
+    if (override) assertProviderCap("aider", override, "maxOutputTokens", "aider output caps require a prepared headless run");
   }
 
   buildTuiCommand(
@@ -397,6 +466,8 @@ export class AiderAdapter extends BaseAdapter {
     effort?: ReasoningEffort,
     _sandboxed?: boolean
   ): string[] {
+    const override = this.validatedProvider();
+    if (override) assertProviderCap("aider", override, "maxOutputTokens", "aider output caps require a prepared headless run");
     const cmd = this.baseCommand();
     const resolved = this.modelFor(model);
     if (resolved) {

@@ -2,23 +2,32 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { BaseAdapter, type RunContext } from "./base.js";
 import { assertNoDroidProjectExecutionConfig } from "../project-safety.js";
+import { assertCleanInstructionFiles } from "../clean-cwd.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import {
   writeDroidProviderSettings,
+  writeDroidTuiSettings,
   droidProviderModelId,
   DROID_PROVIDER_KEY_ENV,
 } from "../droid-provider.js";
+import {
+  createDroidHermeticHome,
+  DROID_HERMETIC_ENV_ASSIGNMENTS,
+  DROID_HERMETIC_ENV_OMISSIONS,
+} from "../droid-hermetic.js";
 import {
   assertProviderCap,
   readProviderOverride,
   requireProviderOverride,
   type ProviderOverride,
 } from "../provider-override.js";
+import { droidResult } from "../result-envelope/droid.js";
 import type {
   AgentId,
   AutonomyLevel,
   ReasoningEffort,
   RunRequest,
+  RunResult,
   AdapterCapabilities,
 } from "../types.js";
 import { envKeyLoginState, type LoginState } from "../harness-health.js";
@@ -70,16 +79,32 @@ export class DroidAdapter extends BaseAdapter {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+      // Every root droid reads — settings.json, skills, hooks, the login
+      // file, and the guideline directories .factory, .factory-dev,
+      // .agents, .agent and .claude — resolves from one root:
+      // FACTORY_HOME_OVERRIDE ?? HOME ?? USERPROFILE ?? cwd (droid 0.221.0
+      // binary string, read 2026-11-09). A private HOME with the override
+      // unset therefore removes them all at once (src/droid-hermetic.ts).
+      supportsHermetic: true,
       // Verified live on 2026-09-17 through a provider override (GLM-5.3
       // via Z.AI): under --tools none neither the read nor the shell probe
       // could produce its secret, while a plain run produced both
       // (docs/isolation.md).
       supportsToolSelection: true,
       supportsProviderOverride: true,
+      // `exec -o json` prints exactly one result object on stdout
+      // (src/result-envelope/droid.ts).
+      supportsResultJson: true,
     };
   }
 
   override mapAutonomy(level: AutonomyLevel): string[] {
+    // Read-only builds no flag because the default state IS read-only:
+    // "DEFAULT (no flags)  Read-only mode - The safest mode for reviewing
+    // planned changes without execution" and "By default, it runs in
+    // read-only mode, requiring explicit flags to enable modifications"
+    // (droid 0.221.0 binary strings, read 2026-11-08). --auto
+    // low/medium/high carry the other levels natively.
     switch (level) {
       case "read-only":
         return [];
@@ -148,10 +173,12 @@ export class DroidAdapter extends BaseAdapter {
 
   /**
    * The brand home whose `.codemux/` holds the per-run settings file: the
-   * one a plain run reads settings.json, skills and hooks from. Droid has
-   * no relocation variable for it (only FACTORY_API_KEY and
-   * FACTORY_DROID_AUTO_UPDATE_ENABLED exist), so it is always under the
-   * effective home.
+   * one a plain run reads settings.json, skills and hooks from. Droid
+   * resolves that root from FACTORY_HOME_OVERRIDE, else HOME, else
+   * USERPROFILE, else the cwd (0.221.0, the hermetic evidence), so this is
+   * the REAL home's root: a hermetic run redirects the child's HOME on the
+   * command line instead, and its `--settings` path stays absolute under
+   * this root so an override composes with hermetic.
    */
   private realBrandHome(): string {
     if (this.homeDirectory !== undefined && !isAbsolute(this.homeDirectory)) {
@@ -162,24 +189,32 @@ export class DroidAdapter extends BaseAdapter {
   }
 
   override prepareRun(request: RunRequest): RunContext {
+    // The hermetic home first, so a settings-file failure after it leaves
+    // nothing private behind (cleanupRun finalizes what this returned).
+    const context: RunContext = {};
+    if (request.hermetic) {
+      context.droidHermeticHome = createDroidHermeticHome(this.realBrandHome());
+    }
     // One settings file per run with an override, never shared and never
     // recorded on the adapter: the launcher owns the returned context and
     // finalizes the file in cleanupRun when this launch ends.
     const override = this.validatedProvider();
-    if (override === null) return {};
-    const model = this.modelFor(request.model);
-    if (model === undefined) return {};
-    return {
-      droidProviderSettings: writeDroidProviderSettings(
-        this.realBrandHome(),
-        override,
-        model
-      ),
-    };
+    if (override !== null) {
+      const model = this.modelFor(request.model);
+      if (model !== undefined) {
+        context.droidProviderSettings = writeDroidProviderSettings(
+          this.realBrandHome(),
+          override,
+          model
+        );
+      }
+    }
+    return context;
   }
 
   override cleanupRunSync(context?: RunContext): void {
     context?.droidProviderSettings?.finalize();
+    context?.droidHermeticHome?.finalize();
   }
 
   override getRunEnv(
@@ -197,7 +232,25 @@ export class DroidAdapter extends BaseAdapter {
   }
 
   buildRunCommand(request: RunRequest, context?: RunContext): string[] {
-    const cmd: string[] = ["droid"];
+    // A hermetic run redirects the child's home resolution on the command
+    // line: FACTORY_HOME_OVERRIDE unset (an exported value would outrank
+    // HOME), HOME pointed at the private home, self-update off. Scode must
+    // keep the real HOME for policy and credential access, so only the
+    // child is redirected (the kimi rule). A static preview (`verify`) has
+    // no prepared home; the placeholder does not exist, and the child
+    // fails its own login check there, so a command built without
+    // prepareRun fails closed.
+    const privateHome = context?.droidHermeticHome;
+    const unpreparedHome = join(this.realBrandHome(), ".codemux-hermetic", "unprepared");
+    const cmd: string[] = request.hermetic
+      ? [
+        "env",
+        ...DROID_HERMETIC_ENV_OMISSIONS.flatMap((name) => ["-u", name]),
+        ...DROID_HERMETIC_ENV_ASSIGNMENTS,
+        `HOME=${privateHome?.home ?? unpreparedHome}`,
+        "droid",
+      ]
+      : ["droid"];
 
     // With an override the per-run settings file supplies the BYOK entry
     // and the session's default model. `--settings` is a root-level flag,
@@ -218,6 +271,13 @@ export class DroidAdapter extends BaseAdapter {
       }
     }
 
+    // A --result-json run switches to the json wire: one result object on
+    // stdout (src/result-envelope/droid.ts). A plain run keeps droid's
+    // default text output.
+    if (request.resultJson) {
+      cmd.push("--output-format", "json");
+    }
+
     if (request.autonomy) {
       cmd.push(...this.mapAutonomy(request.autonomy));
     }
@@ -235,7 +295,24 @@ export class DroidAdapter extends BaseAdapter {
       cmd.push("--only-tools", DROID_NO_TOOLS_ONLY_TOOL);
     }
 
+    if (request.web === false) {
+      // The web tools are first-class tool IDs — `WebSearch` ("Web
+      // Search") and `FetchUrl` ("Web Fetch") — and `--remove-tools`
+      // takes "a comma or space separated list" validated against the
+      // ID table ("Unknown tool identifier(s)" aborts before any run;
+      // droid 0.221.0 binary strings, read 2026-11-09), so `--no-web`
+      // removes exactly the two and a renamed ID fails closed.
+      cmd.push("--remove-tools", "WebSearch,FetchUrl");
+    }
+
     return cmd;
+  }
+
+  override processRunResult(result: RunResult, request: RunRequest, _context?: RunContext): RunResult {
+    if (!request.resultJson) return result;
+    // The run launched with --output-format json, so stdout is the result
+    // object; droidResult re-emits it with the codemux block.
+    return droidResult(result, request);
   }
 
   override getStdinInput(request: RunRequest): string | null {
@@ -247,6 +324,30 @@ export class DroidAdapter extends BaseAdapter {
     assertNoDroidProjectExecutionConfig(
       validateWorkingDirectory(request.cwd) ?? process.cwd()
     );
+    if (request.hermetic && request.passthroughEnv?.includes("FACTORY_HOME_OVERRIDE")) {
+      // The child's argv unsets FACTORY_HOME_OVERRIDE (it outranks the
+      // private HOME), so an operator pass-through would silently fight
+      // the containment the run promised.
+      throw new UsageRefusalError(
+        "droid --hermetic redirects the home itself; remove --pass-env FACTORY_HOME_OVERRIDE"
+      );
+    }
+    if (request.hermetic) {
+      // The private HOME closes every personal channel, but droid still
+      // loads project guidelines from the working directory and its
+      // ancestors: the file names `["CLAUDE.md","Claude.md","AGENTS.md",
+      // "Agents.md","agents.md"]` and the directories `[".factory",
+      // ".factory-dev",".agents",".agent"]` (droid 0.221.0 bundle, read
+      // 2026-11-09), with no flag that skips them. So a hermetic run needs
+      // a clean directory owned by this run, as gemini and goose do.
+      if (request.cwd === undefined) {
+        throw new UsageRefusalError("droid --hermetic requires an explicit --cwd owned by this run");
+      }
+      assertCleanInstructionFiles("droid", validateWorkingDirectory(request.cwd)!, [
+        "CLAUDE.md", "Claude.md", "AGENTS.md", "Agents.md", "agents.md",
+        ".factory", ".factory-dev", ".agents", ".agent",
+      ]);
+    }
     // Fail before launch on a half-configured override, surface the model
     // requirement early (the operator's own login and default model would
     // otherwise silently answer), and refuse a model the settings file
@@ -270,35 +371,70 @@ export class DroidAdapter extends BaseAdapter {
     assertNoDroidProjectExecutionConfig(
       validateWorkingDirectory(cwd) ?? process.cwd()
     );
-    // The per-run settings file's lifecycle rides prepareRun, which only
-    // the headless launch path calls; an interactive session has no hook to
-    // write and remove the file.
-    if (this.validatedProvider() !== null) {
-      throw new UsageRefusalError(
-        "the droid provider override supports headless runs only; unset CODEMUX_DROID_PROVIDER_* for an interactive session"
-      );
+    // An override, a model, or an effort all ride the same settings file
+    // buildTuiCommand writes (the run path's root `--settings` carrier),
+    // so a half-configured override and a brace-carrying model surface
+    // here, before any file is written.
+    const override = this.validatedProvider();
+    const resolved = this.modelFor(model);
+    if (resolved !== undefined && override !== null) {
+      droidProviderModelId(resolved);
     }
   }
 
   buildTuiCommand(
-    _model?: string,
+    model?: string,
     autonomy?: AutonomyLevel,
-    _effort?: ReasoningEffort,
+    effort?: ReasoningEffort,
     _sandboxed?: boolean
   ): string[] {
-    const cmd = ["droid"];
+    // The TUI selects model and effort through the settings schema's
+    // sessionDefaultSettings (src/droid-provider.ts), so an interactive
+    // session that asked for either — or runs under an override, whose
+    // BYOK entry must ride the file too — gets one per-launch settings
+    // file named by the root-level `--settings` flag. The write happens
+    // here, not in prepareTuiEnvironment, because the plain interactive
+    // path builds its argv before it prepares the environment
+    // (src/adapters/interactive.ts); the file's exit hook removes it.
+    const override = this.validatedProvider();
+    const resolved = this.modelFor(model);
+    const cmd: string[] = ["droid"];
+    if (override !== null || resolved !== undefined || effort !== undefined) {
+      const settings = writeDroidTuiSettings(this.realBrandHome(), {
+        model: override !== null ? resolved : undefined,
+        defaultModel:
+          override !== null && resolved !== undefined
+            ? droidProviderModelId(resolved)
+            : resolved,
+        effort,
+        override,
+      });
+      cmd.push("--settings", settings.path);
+    }
     if (autonomy) {
       cmd.push(...this.mapAutonomy(autonomy));
     }
     return cmd;
   }
 
+  override getTuiEnv(
+    _model?: string,
+    _autonomy?: AutonomyLevel,
+    _effort?: ReasoningEffort
+  ): Record<string, string> {
+    // The settings file's ${CODEMUX_DROID_PROVIDER_API_KEY} reference
+    // expands from the child environment, exactly as on the run path.
+    const override = this.validatedProvider();
+    if (override === null) return {};
+    return { [DROID_PROVIDER_KEY_ENV]: override.apiKey };
+  }
+
   override supportsTuiModel(): boolean {
-    return false;
+    return true;
   }
 
   override supportsTuiEffort(): boolean {
-    return false;
+    return true;
   }
 
   /** The droid login read: a credential variable in the environment. */

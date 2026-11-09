@@ -86,6 +86,8 @@ describe("experiment failure API", () => {
       InventoryMismatch: "inventory_mismatch", HarnessLogMissing: "harness_log_missing",
       MessageIdMissing: "message_id_missing", ServerError: "server_error",
       UnsupportedResult: "unsupported_result", Protocol: "protocol",
+      // F48 m1: an exit-0 run with an empty answer (docs/experiment-mcp.md).
+      EmptyAnswer: "empty_answer",
     });
   });
 

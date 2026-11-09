@@ -12,7 +12,7 @@
  * ordinary covered code.
  */
 
-import { hasActiveCapturedCommand } from "./process-runner.js";
+import { hasActiveSignalOwner } from "./process-runner.js";
 
 // Private directories not yet finalized. One set of signal handlers exists
 // while this is non-empty: between creating a directory and spawning the
@@ -25,7 +25,7 @@ const SIGNALS = [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const;
 const signalHandlers = new Map<NodeJS.Signals, () => void>();
 
 function onSignal(code: number): void {
-  if (hasActiveCapturedCommand()) return;
+  if (hasActiveSignalOwner()) return;
   for (const finalize of [...liveHomes]) finalize();
   process.exit(code);
 }

@@ -46,7 +46,6 @@ describe("AgyAdapter", () => {
       supportsResultJson: true,
       supportsHermetic: true,
       supportsToolSelection: true,
-      isolationRequiresReadOnly: true,
     });
     // VERIFIED by Round 11 live checks: private HOME and a login mirror isolate
     // configuration; deny settings and native attempt checks enforce tools-none.
@@ -54,11 +53,12 @@ describe("AgyAdapter", () => {
     expect(adapter.capabilities().supportsToolSelection).toBe(true);
   });
 
-  test("builds a headless command with the value flags in = form and the prompt last", () => {
+  test("builds a headless stream-json command with the value flags in = form", () => {
     // 1.2.14 rejects the space form of its pre-parsed value flags outright
     // (--effort, --mode), and --model's space form was never exercised
     // against the pinned release, so every value flag rides as a single
-    // argument.
+    // argument. The prompt rides stdin as one stream-json user frame
+    // (tests/agy-stdin-prompt.test.ts), never argv.
     expect(adapter.buildRunCommand({
       agent: "agy",
       prompt: "fix the tests",
@@ -71,16 +71,20 @@ describe("AgyAdapter", () => {
       "--model=gemini-3-pro",
       "--effort=high",
       "--mode=accept-edits",
-      "--output-format=json",
-      "--print=fix the tests",
+      "--output-format=stream-json",
+      "--input-format=stream-json",
     ]);
   });
 
-  test("keeps leading-dash prompts inside the print option", () => {
-    expect(adapter.buildRunCommand({
+  test("a leading-dash prompt never reaches argv", () => {
+    const cmd = adapter.buildRunCommand({
       agent: "agy",
       prompt: "--dangerous-looking-prompt",
-    })).toContain("--print=--dangerous-looking-prompt");
+    });
+    expect(cmd.some((arg) => arg.includes("--dangerous-looking-prompt"))).toBe(false);
+    // The frame keeps it intact on stdin.
+    expect(adapter.getStdinInput({ agent: "agy", prompt: "--dangerous-looking-prompt" }))
+      .toContain("--dangerous-looking-prompt");
   });
 
   test("maps autonomy levels onto agy's mode flags", () => {
@@ -98,18 +102,13 @@ describe("AgyAdapter", () => {
     })).toThrow("does not support reasoning effort 'ultra'");
   });
 
-  test("--result-json asks for the JSON envelope", () => {
-    const cmd = adapter.buildRunCommand({ agent: "agy", prompt: "t", resultJson: true });
-    expect(cmd).toContain("--output-format=json");
-    expect(adapter.getStdinInput({ agent: "agy", prompt: "t" })).toBeNull();
-  });
-
-  test("the envelope is always on, so --result-json adds no flag", () => {
-    // Plain runs ask for the envelope too (it is what the plain-run
-    // unwrap consumes for the ledger's usage); --result-json only stops
-    // the unwrap.
+  test("--result-json changes no flag: the stream envelope is always on", () => {
+    // Plain runs carry the same stream-json envelope (the terminal
+    // result event is what the plain-run unwrap consumes for the
+    // ledger's usage); --result-json only stops the unwrap.
     const plain = adapter.buildRunCommand({ agent: "agy", prompt: "t" });
-    expect(plain).toContain("--output-format=json");
+    expect(plain).toContain("--output-format=stream-json");
+    expect(adapter.getStdinInput({ agent: "agy", prompt: "t" })).not.toBeNull();
     expect(adapter.buildRunCommand({ agent: "agy", prompt: "t", resultJson: true }))
       .toEqual(plain);
   });

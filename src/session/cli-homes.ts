@@ -6,6 +6,8 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { opencodeRealDataDir } from "../adapters/opencode.js";
 import { usageError } from "./cli-usage.js";
+import { turnAgentStateRoot } from "./turn-driver-homes.js";
+import type { TurnAgentId } from "./turn-driver-core.js";
 
 /** The harness state home this session runs against (§4.5): the
  * pass-through redirect when one is active, else the default home.
@@ -123,4 +125,22 @@ export function codexHarnessHome(passthroughEnv: string[]): string {
     return configured;
   }
   return join(homedir(), ".codex");
+}
+
+/** The harness home for the seven second-wave session agents (§4.5,
+ * turn-driver-homes.ts turnAgentStateRoot): the brand state root the
+ * agent's own store lives under — the plain session's recorded home
+ * and every resume guard's comparison. A HERMETIC session records its
+ * settled private home instead (the driver's settle), and the resume
+ * path computes the session-keyed spelling from this root
+ * (cli-resume.ts, the codex/kimi rule). PI_CODING_AGENT_DIR is
+ * honored exactly when it is being passed through (the adapter's own
+ * resolution rule); GEMINI_CLI_HOME and COPILOT_HOME never route a
+ * session — their adapters refuse the pass-through outright, so there
+ * is no redirect to honor. */
+export function turnAgentHarnessHome(
+  agent: TurnAgentId,
+  passthroughEnv: string[]
+): string {
+  return turnAgentStateRoot(agent, passthroughEnv);
 }

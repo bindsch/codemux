@@ -7,7 +7,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AiderAdapter } from "../src/adapters/aider.js";
 import { OpencodeAdapter } from "../src/adapters/opencode.js";
+import { PLAYWRIGHT_MCP_AGENT_LIST } from "../src/mcp.js";
 import { PiAdapter } from "../src/adapters/pi.js";
 import { QwenAdapter } from "../src/adapters/qwen.js";
 import type { RunRequest } from "../src/types.js";
@@ -25,14 +27,16 @@ describe("OpencodeAdapter", () => {
     // attach the Playwright MCP server. An adapter outside that list refuses
     // the option instead of accepting a launch the server never rides; the
     // sandbox refusal fires first, exactly as for a supporting agent.
-    expect(() => adapter.validateRunRequest({
-      agent: "opencode", prompt: "t", enablePlaywrightMcp: true,
+    // OpenCode joined the list; aider has no MCP client, so it stands in.
+    const aider = new AiderAdapter();
+    expect(() => aider.validateRunRequest({
+      agent: "aider", prompt: "t", enablePlaywrightMcp: true,
     })).toThrow("--enable-playwright-mcp requires --sandbox");
-    expect(() => adapter.validateRunRequest({
-      agent: "opencode", prompt: "t", sandboxed: true, enablePlaywrightMcp: true,
-    })).toThrow("--enable-playwright-mcp is supported only by claude and zai");
-    expect(() => adapter.validateTuiRequest(undefined, undefined, undefined, undefined, [], true))
-      .toThrow("--enable-playwright-mcp is supported only by claude and zai");
+    expect(() => aider.validateRunRequest({
+      agent: "aider", prompt: "t", sandboxed: true, enablePlaywrightMcp: true,
+    })).toThrow(`--enable-playwright-mcp is supported only by ${PLAYWRIGHT_MCP_AGENT_LIST}`);
+    expect(() => aider.validateTuiRequest(undefined, undefined, undefined, undefined, [], true))
+      .toThrow(`--enable-playwright-mcp is supported only by ${PLAYWRIGHT_MCP_AGENT_LIST}`);
   });
 
   test("capabilities are correct", () => {
@@ -43,8 +47,8 @@ describe("OpencodeAdapter", () => {
     expect(caps.supportsAutonomy).toBe(true);
     expect(caps.autonomyLevels).toEqual(["read-only", "low", "medium", "high"]);
     expect(caps.supportsEffort).toBe(true);
-    expect(caps.effortLevels).toEqual(["low", "medium", "high"]);
-    expect(adapter.supportsTuiEffort()).toBe(false);
+    expect(caps.effortLevels).toEqual(["none", "low", "medium", "high"]);
+    expect(adapter.supportsTuiEffort()).toBe(true);
   });
 
   test("buildRunCommand reads only from stdin", () => {
@@ -209,21 +213,21 @@ describe("PiAdapter", () => {
   });
 
   test("buildTuiCommand basic", () => {
-    // No autonomy named: pi's native approvals stay on (--no-approve is
-    // the medium/high TUI flag, not a default).
-    expect(adapter.buildTuiCommand()).toEqual(["pi"]);
+    // --no-approve is project trust, not an autonomy grant, so it rides
+    // every TUI launch (0.85.1 help: "Ignore project-local files for this
+    // run").
+    expect(adapter.buildTuiCommand()).toEqual(["pi", "--no-approve"]);
   });
 
   test("buildTuiCommand with model", () => {
-    expect(adapter.buildTuiCommand("pi-pro")).toEqual(["pi", "--model", "pi-pro"]);
+    expect(adapter.buildTuiCommand("pi-pro")).toEqual(["pi", "--no-approve", "--model", "pi-pro"]);
   });
 
   test("buildTuiCommand with autonomy", () => {
-    // read-only and low keep pi's native approvals in the TUI; medium and
-    // high pass --no-approve (tools, not approvals, carry the lower
-    // levels' restrictions).
-    expect(adapter.buildTuiCommand(undefined, "read-only")).toEqual(["pi", "--no-extensions", "--tools", "read,grep,find,ls"]);
-    expect(adapter.buildTuiCommand(undefined, "low")).toEqual(["pi", "--no-extensions", "--tools", "read,grep,find,ls,edit,write"]);
+    // The level's tool restrictions ride along; --no-approve stays at
+    // every level because it gates project-local files, not approvals.
+    expect(adapter.buildTuiCommand(undefined, "read-only")).toEqual(["pi", "--no-approve", "--no-extensions", "--tools", "read,grep,find,ls"]);
+    expect(adapter.buildTuiCommand(undefined, "low")).toEqual(["pi", "--no-approve", "--no-extensions", "--tools", "read,grep,find,ls,edit,write"]);
     expect(adapter.buildTuiCommand(undefined, "medium")).toEqual(["pi", "--no-approve"]);
     expect(adapter.buildTuiCommand("pi-pro", "high")).toEqual(["pi", "--no-approve", "--model", "pi-pro"]);
   });
@@ -257,8 +261,14 @@ describe("QwenAdapter", () => {
     expect(caps.supportsModel).toBe(true);
     expect(caps.supportsAutonomy).toBe(true);
     expect(caps.autonomyLevels).toEqual(["read-only", "low", "medium", "high"]);
-    expect(caps.supportsEffort).toBe(false);
-    expect(caps.effortLevels).toEqual([]);
+    // The tier rides a per-run system settings file (src/qwen-effort.ts);
+    // minimal and ultra stay outside the list qwen's settings accept.
+    expect(caps.supportsEffort).toBe(true);
+    expect(caps.effortLevels).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
+    expect(caps.supportsHermetic).toBe(true);
+    expect(caps.supportsResultJson).toBe(true);
+    expect(caps.supportsProviderOverride).toBe(true);
+    expect(caps.supportsToolSelection).toBe(true);
   });
 
   test("buildRunCommand with prompt", () => {

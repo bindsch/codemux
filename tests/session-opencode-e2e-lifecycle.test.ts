@@ -45,12 +45,18 @@ describe("opencode session e2e - lifecycle", () => {
     expect(started.agent).toBe("opencode");
     expect(started.session_id).toBe("ses_fake1234567890");
     expect(started.autonomy).toBe("high");
+    // opencode 1.19.5's run-json wire names no model on any line, so no
+    // served model is reported — a declared null (design P5).
+    expect(started.model_served).toBeNull();
+    expect(started.model_served_source).toBeNull();
+    expect(started.model_alias).toBeNull();
     expect(started.protocol).toBe("codemux-live-session/1");
     expect(started.capabilities).toEqual({
       live_input: true,
       user_during_turn: false,
       steer: false,
-      interrupt: false,
+      // Interrupt is declared in SESSION_AGENTS (cli-agents.ts) and carried natively.
+      interrupt: true,
       permissions: false,
       deltas: false,
       file_changes: false,
@@ -66,6 +72,9 @@ describe("opencode session e2e - lifecycle", () => {
     // no standalone usage event may appear.
     expect(of("usage")(session.events)).toBeUndefined();
     expect(completed.finish).toBe("end");
+    expect(completed.model_served).toBeNull();
+    expect(completed.model_served_source).toBeNull();
+    expect(completed.model_alias).toBeNull();
     expect(completed.turn_id).toBe("t1");
     expect(completed.usage).toEqual({
       input_tokens: 100,

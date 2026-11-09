@@ -29,13 +29,35 @@ export const CODEX_HERMETIC_FLAGS = [
   // adds an under-development warning.
 ] as const;
 
+// The project-settings hermetic run keeps every account-surface disable
+// but drops the three repository suppressions: the AGENTS.md pair (the
+// repository's instructions load), the hooks disable (a hermetic run's
+// only possible hooks are the project's own config.toml entries, which
+// this mode loads on purpose — the claude family's project settings run
+// hooks too), and nothing else. skills, plugins, memories, and the shell
+// snapshot stay disabled: none of them is a repository input the mode
+// exists to expose (skill roots under .agents/ and .codex/ ride the trust
+// entry, not a flag).
+export const CODEX_PROJECT_SETTINGS_HERMETIC_FLAGS = [
+  "-c", 'cli_auth_credentials_store="file"',
+  "-c", "include_apps_instructions=false",
+  "--disable", "apps",
+  "--disable", "plugins",
+  "--disable", "remote_plugin",
+  "--disable", "recommended_plugins",
+  "--disable", "memories",
+  "--disable", "goals",
+  "--disable", "skill_mcp_dependency_install",
+  "--disable", "shell_snapshot",
+] as const;
+
 // `--tools none`: every tool Codex 0.154 registers that reaches the machine,
 // the network, or another agent, except `apply_patch`, which Codex ties to
 // the model rather than to a feature (tools/spec_plan.rs). The adapter
-// therefore accepts `--tools none` only at read-only autonomy, where the
-// sandbox denies writes to the working directory (locations scode keeps
-// writable, such as harness state and temp, remain reachable). The plan
-// tool remains; it has no effect outside the conversation.
+// pairs these flags with a sanitized model_catalog_json at writable
+// autonomy. At read-only autonomy the sandbox denies project writes.
+// The plan tool remains on that read-only path; it has no effect outside
+// the conversation.
 export const CODEX_NO_TOOLS_FLAGS = [
   "--disable", "shell_tool",
   "--disable", "unified_exec",

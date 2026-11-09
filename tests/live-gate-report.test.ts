@@ -206,3 +206,33 @@ test("a Keychain drift fails the gate and prints as its own line; none passes (r
   expect(gateFailed(drifted)).toBe(true);
   expect(formatReport(drifted)).toContain("Keychain hygiene: FAIL");
 });
+
+test("the report prints one summary line per harness and calls out a base-only row (parity pass)", () => {
+  // The headline totals hid a harness whose every capability cell was
+  // UNSUPPORTED or SKIP: one line per harness names how many of its cells
+  // were judged, and a row judged only on the base pair (A, B) says so,
+  // because no capability probe ran for it.
+  const rows: GateRow[] = [
+    passRow("claude", ["A", "B", "C"]),
+    {
+      agent: "qwen",
+      results: {
+        A: { status: "PASS", seconds: 1, stderr: "" },
+        B: { status: "FAIL", seconds: 1, stderr: "boom" },
+        C: { status: "UNSUPPORTED", seconds: 0, stderr: "", note: "no capability" },
+        D: { status: "SKIP", seconds: 0, stderr: "", note: "no credentials detected: a store" },
+      },
+    },
+  ];
+  const report = formatReport(reportInput({ rows, probes: ["A", "B", "C", "D"] }));
+  expect(report).toContain("Harness claude: 3 of 3 cells probed (3 pass, 0 fail, 0 skip, 0 unsupported)");
+  expect(report).toContain(
+    "Harness qwen: 2 of 4 cells probed (1 pass, 1 fail, 1 skip, 1 unsupported); only the base probes (A, B) were judged"
+  );
+  // A harness with a judged capability cell carries no base-only callout.
+  expect(report).not.toContain("(3 pass, 0 fail, 0 skip, 0 unsupported); only the base probes");
+  // The lines sit after the probe table, before the contract table.
+  const lines = report.split("\n");
+  expect(lines.findIndex((line) => line.startsWith("Harness claude:")))
+    .toBeGreaterThan(lines.findIndex((line) => line.startsWith("| Agent | Probe |")));
+});

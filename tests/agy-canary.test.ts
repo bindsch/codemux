@@ -66,7 +66,7 @@ test("the hermetic probe and control ledger preserve their actual isolation mode
   const { home } = setup();
   const ledger = join(home, "calls.jsonl");
   const response = await runCli(["check", "-a", "agy", "--hermetic"], { ...fake(), CODEMUX_CALL_LOG: ledger });
-  expect(response.exitCode).toBe(0);
+  expect(response.exitCode, response.stderr).toBe(0);
   const records = readFileSync(ledger, "utf8").trim().split("\n").map((line) => JSON.parse(line));
   expect(records.map((record) => [record.kind, record.hermetic, record.exit_code])).toEqual([
     ["check", true, 0], ["check", false, 0],
@@ -257,7 +257,7 @@ test("tools probe accepts only one denied command attempt and rejects execution 
 test.each([{ flags: ["--hermetic"] }, { flags: ["--tools", "none"] }, { flags: ["--hermetic", "--tools", "none"] }])(
   "public agy check runs paired candidate canaries: %j", async ({ flags }: { flags: readonly string[] }) => {
     const response = await runCli(["check", "-a", "agy", ...flags], fake());
-    expect(response.exitCode).toBe(0);
+    expect(response.exitCode, response.stderr).toBe(0);
     if (flags.includes("--hermetic")) expect(response.stdout).toContain("HERMETIC agy: OK");
     if (flags.includes("--tools")) expect(response.stdout).toContain("TOOLS agy: OK");
   });
@@ -279,19 +279,27 @@ test.each(["API key", "file token", "Keychain"])("sandboxed agy with %s refuses 
   expect(authentication).toMatch(/Every sandboxed Antigravity headless run.*requires scode 0\.6\.0 or newer/);
 });
 
-test("agy isolation cannot attest a different cwd or writable sandbox", async () => {
+test("agy isolation cannot attest a different cwd, a mismatched autonomy, or no sandbox", async () => {
   const { adapter, request, cwd } = setup();
   request.hermetic = true;
-  for (const options of [{ cwd, requestedAutonomy: "high" as const },
-    { cwd: tmpdir(), requestedAutonomy: "read-only" as const }]) {
-    await expect(launchRunRequest(adapter, request, { sandbox: true, ...options })).rejects.toThrow("run's own working directory");
-  }
+  // The spawn must run the validated autonomy — the shared sandboxed
+  // agreement; read-only is no longer agy isolation's own requirement.
+  await expect(launchRunRequest(adapter, request, { sandbox: true, cwd, requestedAutonomy: "high" }))
+    .rejects.toThrow("sandboxed launch options must match the request");
+  // The spawn must run in the request's own working directory.
+  await expect(launchRunRequest(adapter, request, { sandbox: true, cwd: tmpdir(), requestedAutonomy: "read-only" }))
+    .rejects.toThrow("run's own working directory");
+  // Without scode there is no isolation boundary at all, at any autonomy.
+  await expect(launchRunRequest(adapter, request, { sandbox: false, cwd, requestedAutonomy: "read-only" }))
+    .rejects.toThrow("agy isolation launch requires scode");
 });
 
 test("Antigravity documentation separates supported policy from dated live evidence", () => {
   const doc = readFileSync(join(import.meta.dir, "../docs/isolation.md"), "utf8");
   expect(doc).toContain("| Antigravity |");
-  expect(doc).toContain("read-only scode");
+  // Isolation needs scode at every autonomy: the block over the real
+  // ~/.gemini plus the private-home allow is the boundary.
+  expect(doc).toContain("blocks the operator's real `~/.gemini`");
   expect(doc).toContain("Tool schemas can remain visible");
   const report = readFileSync(join(import.meta.dir, "../docs/archive/experiment-mcp-report.md"), "utf8");
   const outcome = report.split("## Outcome")[1]!.split("\n## ")[0]!;
@@ -348,7 +356,7 @@ test("agy's scode version probe carries the parent HOME", async () => {
     '#!/bin/sh\nif [ -z "$HOME" ]; then echo "unsafe HOME" >&2; exit 1; fi\n');
   writeFileSync(scode, body);
   const response = await runCli(["check", "-a", "agy", "--hermetic"], env);
-  expect(response.exitCode).toBe(0);
+  expect(response.exitCode, response.stderr).toBe(0);
   expect(response.stdout).toContain("HERMETIC agy: OK");
 });
 

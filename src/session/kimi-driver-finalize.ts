@@ -69,6 +69,7 @@ export abstract class KimiDriverFinalize extends KimiDriverIo {
     // No child ran or the last one just settled: settle the private home
     // before children_settled releases the record, so a resume never
     // meets a free record whose keyed home is missing.
+    if (!this.state.spawnAbandoned) this.cleanupNoToolsProfile();
     this.settlePrivateHome();
     this.deliver({ kind: "children_settled" });
   }
@@ -116,6 +117,7 @@ export abstract class KimiDriverFinalize extends KimiDriverIo {
    * down (they stayed installed through the hold — round al30, edges
    * major 3). */
   protected completeHold(): void {
+    this.cleanupNoToolsProfile();
     this.holdDone = true;
     this.resolveHold?.();
   }

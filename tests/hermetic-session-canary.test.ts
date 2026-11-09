@@ -1,5 +1,5 @@
 /**
- * The hermetic session canary's own tests (lane H4). The three-session
+ * The hermetic session canary's own tests (lane H4). The session
  * flow drives the fake codemux session CLI (the fixture below) through
  * the canary's command seam — one scenario per failure the canary must
  * catch, plus the request guards and the per-agent planting shapes. No
@@ -25,6 +25,7 @@ const FAKE = fileURLToPath(new URL("./fixtures/live/fake-codemux-session.ts", im
 interface FakeSpawn {
   argv: string[];
   hermetic: boolean;
+  harnessHome?: string;
   resume: string | null;
   final: boolean;
   sessionId: string;
@@ -113,13 +114,13 @@ test("the canary's default command is this checkout's own CLI", () => {
   expect(command.at(-1)!.endsWith(join("src", "index.ts"))).toBe(true);
 });
 
-test("a clean harness passes the hermetic session, the control, and the resume", async () => {
+test("a clean harness passes hermetic and caller-home sessions across resume", async () => {
   const run = await runCanary("clean");
   try {
     expect(run.code).toBe(0);
     expect(run.out).toContain("HERMETIC SESSION claude: OK");
     const runs = spawns(run.stateFile);
-    expect(runs).toHaveLength(3);
+    expect(runs).toHaveLength(5);
     expect(runs[0]!.argv.slice(0, 3)).toEqual(["session", "-a", "claude"]);
     expect(runs[0]!.hermetic).toBe(true);
     expect(runs[0]!.resume).toBeNull();
@@ -132,6 +133,14 @@ test("a clean harness passes the hermetic session, the control, and the resume",
     expect(runs[2]!.hermetic).toBe(true);
     expect(runs[2]!.resume).toBe("fake-session-1");
     expect(runs[2]!.final).toBe(true);
+    expect(runs[3]!.hermetic).toBe(false);
+    expect(runs[3]!.harnessHome).toBeDefined();
+    expect(runs[3]!.final).toBe(false);
+    expect(runs[4]!.hermetic).toBe(false);
+    expect(runs[4]!.harnessHome).toBe(runs[3]!.harnessHome);
+    expect(runs[4]!.resume).toBe(runs[3]!.sessionId);
+    expect(runs[4]!.final).toBe(true);
+    expect(existsSync(runs[3]!.harnessHome!)).toBe(false);
     // The planted cwd is scratch: gone after the check, and the private
     // home the resumed session's --final was to remove is gone too.
     expect(existsSync(runs[0]!.argv[runs[0]!.argv.indexOf("--cwd") + 1]!)).toBe(false);
@@ -140,6 +149,33 @@ test("a clean harness passes the hermetic session, the control, and the resume",
     rmSync(run.homeRoot, { recursive: true, force: true });
   }
 });
+
+test("a resumed hermetic session cannot change its private home", async () => {
+  const run = await runCanary("resume-home-swap");
+  try {
+    expect(run.code).toBe(1);
+    expect(run.errors).toContain("changed its private home or session id");
+    expect(spawns(run.stateFile)).toHaveLength(3);
+  } finally {
+    rmSync(run.homeRoot, { recursive: true, force: true });
+  }
+});
+
+for (const [scenario, sessions] of [["caller-first-leak", 4], ["caller-final-removes-home", 5]] as const) {
+  test(`the complete canary fails and cleans up when its caller-home arm reports ${scenario}`, async () => {
+    const run = await runCanary(scenario);
+    try {
+      expect(run.code).toBe(1);
+      expect(run.out).not.toContain("HERMETIC SESSION claude: OK");
+      const runs = spawns(run.stateFile);
+      expect(runs).toHaveLength(sessions);
+      expect(existsSync(runs[3]!.harnessHome!)).toBe(false);
+      expect(readdirSync(run.homeRoot)).toEqual(["state.jsonl"]);
+    } finally {
+      rmSync(run.homeRoot, { recursive: true, force: true });
+    }
+  });
+}
 
 test("a first-session leak fails, names the leak, and cleans up its scratch", async () => {
   const run = await runCanary("leak");
@@ -311,7 +347,8 @@ test("assertSessionCanaryRequest passes a valid session check request", () => {
 test("assertSessionCanaryRequest refuses every shape the session canary cannot carry", () => {
   const refusals: [Partial<SessionCanaryGuards>, RegExp][] = [
     [{ hermetic: false }, /--session requires --hermetic/],
-    [{ agent: "qwen" }, /qwen has no session driver:.*docs\/sessions\.md/],
+    // Every shipped agent may gain a driver; an unregistered id keeps this refusal pinned.
+    [{ agent: "no-driver" as SessionCanaryGuards["agent"] }, /no-driver has no session driver:.*docs\/sessions\.md/],
     [{ agent: "aider", supportsHermetic: false }, /aider has no verified hermetic mode;.*docs\/isolation\.md/],
     [{ tools: "none" }, /--session cannot carry --tools/],
     [{ experimentMcp: true }, /--session cannot carry --experiment-mcp/],

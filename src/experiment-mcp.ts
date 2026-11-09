@@ -4,6 +4,8 @@ import { readUtf8FileBounded } from "./file-io.js";
 import { UsageRefusalError } from "./validation.js";
 import { MAX_EXPERIMENT_MESSAGE_BYTES } from "./experiment-server.js";
 import type { AgentId, RunRequest } from "./types.js";
+import { refuseAgyExperiment } from "./agy-experiment-run.js";
+import { refuseOpenhandsExperiment } from "./openhands-experiment-run.js";
 
 /** Measure the serialized user frame, including its envelope and newline.
  * Prompt preflight and the bridge's frames share one byte bound, so the
@@ -26,11 +28,31 @@ export const EXPERIMENT_MCP_HARNESSES: Readonly<Partial<Record<AgentId, readonly
   zai: [],
   codex: ["codex-wall-time"],
   kimi: ["kimi-wall-time"],
+  gemini: ["gemini-untrusted-context"],
+  opencode: [],
+  copilot: [],
+  pi: [],
+  goose: [],
+  qwen: [],
+  cline: [],
+};
+
+/** The tool-schema changes a harness makes that an experiment spec must
+ * accept explicitly (accept_harness_schema). The validator and the release
+ * gate's probe G spec read this one table, so the gate cannot build a spec
+ * the validator refuses. */
+export const EXPERIMENT_MCP_HARNESS_SCHEMAS: Readonly<Partial<Record<AgentId, readonly string[]>>> = {
+  gemini: ["gemini-wait-for-previous"],
+};
+
+const HARNESS_SCHEMA_CHANGES: Readonly<Record<string, string>> = {
+  "gemini-wait-for-previous": "Gemini adds the optional boolean wait_for_previous scheduling property to object tool schemas",
 };
 
 /** The header each harness prefix stands for, in the refusal's own words:
  * the operator who forgot the opt-in sees exactly what is prepended. */
 const HARNESS_PREFIX_HEADERS: Readonly<Record<string, string>> = {
+  "gemini-untrusted-context": 'Gemini wraps each text block in "<untrusted_context>\\n" and "\\n</untrusted_context>" and joins blocks with newlines',
   "codex-wall-time": 'Codex prepends "Wall time: {secs:.4} seconds\\nOutput:" to model-bound MCP results',
   "kimi-wall-time": 'Kimi prepends "Wall time: {secs:.3} seconds\\n" to model-bound MCP results',
 };
@@ -45,8 +67,15 @@ export function assertExperimentMcpUnavailable(agent: AgentId, spec: unknown): v
     throw new UsageRefusalError("--experiment-mcp requires a nonempty specification path without NUL bytes");
   }
   const prefixes = EXPERIMENT_MCP_HARNESSES[agent];
+  if (agent === "agy") refuseAgyExperiment();
+  if (agent === "openhands") refuseOpenhandsExperiment();
   if (prefixes === undefined) {
     throw new UsageRefusalError(`--experiment-mcp is unavailable: ${agent} has no verified experiment MCP mechanism. See docs/archive/experiment-mcp-report.md`);
+  }
+  for (const schema of EXPERIMENT_MCP_HARNESS_SCHEMAS[agent] ?? []) {
+    if (!readExperimentSpec(spec).accept_harness_schema?.includes(schema)) {
+      throw new UsageRefusalError(`--experiment-mcp on ${agent} requires accept_harness_schema: [${JSON.stringify(schema)}]; ${HARNESS_SCHEMA_CHANGES[schema]}`);
+    }
   }
   for (const prefix of prefixes) {
     if (!readExperimentSpec(spec).accept_harness_prefix?.includes(prefix)) {
@@ -65,6 +94,8 @@ export interface ExperimentSpec {
   recording?: string;
   /** Accepted harness additions to the model-bound server result. */
   accept_harness_prefix?: string[];
+  /** Explicit acceptance of a documented native tool-schema addition. */
+  accept_harness_schema?: string[];
   /** Harness MCP tool deadline; the transport itself has no call deadline. */
   tool_timeout_seconds?: number;
   /** Internal paired-check designation, never accepted from a spec file. */
@@ -117,19 +148,25 @@ export function readExperimentSpec(path: string): ExperimentSpec {
   }
   if (value !== null && typeof value === "object" && !Array.isArray(value) && value.accept_harness_prefix !== undefined &&
       (!Array.isArray(value.accept_harness_prefix) ||
-       value.accept_harness_prefix.some((prefix: unknown) => prefix !== "codex-wall-time" && prefix !== "kimi-wall-time") ||
+       value.accept_harness_prefix.some((prefix: unknown) => prefix !== "codex-wall-time" && prefix !== "kimi-wall-time" && prefix !== "gemini-untrusted-context") ||
        new Set(value.accept_harness_prefix).size !== value.accept_harness_prefix.length)) {
-    throw new UsageRefusalError("experiment MCP spec accept_harness_prefix must be an array of unique supported prefixes: codex-wall-time, kimi-wall-time");
+    throw new UsageRefusalError("experiment MCP spec accept_harness_prefix must be an array of unique supported prefixes: codex-wall-time, kimi-wall-time, gemini-untrusted-context");
+  }
+  if (value !== null && typeof value === "object" && !Array.isArray(value) && value.accept_harness_schema !== undefined &&
+      (!Array.isArray(value.accept_harness_schema) ||
+       value.accept_harness_schema.some((schema: unknown) => schema !== "gemini-wait-for-previous") ||
+       new Set(value.accept_harness_schema).size !== value.accept_harness_schema.length)) {
+    throw new UsageRefusalError("experiment MCP spec accept_harness_schema must be an array of unique supported schemas: gemini-wait-for-previous");
   }
   if (!value || typeof value !== "object" || Array.isArray(value) ||
-      Object.keys(value).some((key) => !["name", "command", "args", "env", "recording", "accept_harness_prefix", "tool_timeout_seconds"].includes(key)) ||
+      Object.keys(value).some((key) => !["name", "command", "args", "env", "recording", "accept_harness_prefix", "accept_harness_schema", "tool_timeout_seconds"].includes(key)) ||
       typeof value.name !== "string" || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(value.name) ||
       typeof value.command !== "string" || !isAbsolute(value.command) || value.command.includes("\0") ||
       !Array.isArray(value.args) || value.args.some((arg: unknown) => typeof arg !== "string" || arg.includes("\0")) ||
       !Array.isArray(value.env) || value.env.some((name: unknown) => typeof name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) ||
       new Set(value.env).size !== value.env.length ||
       (value.recording !== undefined && (typeof value.recording !== "string" || value.recording.length === 0 || value.recording.includes("\0")))) {
-    throw new UsageRefusalError("experiment MCP spec requires name, absolute command, string args, unique env variable names, and optional recording, accept_harness_prefix, and tool_timeout_seconds fields only");
+    throw new UsageRefusalError("experiment MCP spec requires name, absolute command, string args, unique env variable names, and optional recording, accept_harness_prefix, accept_harness_schema, and tool_timeout_seconds fields only");
   }
   // The shape check above has passed, so the record carries the spec's
   // fields; the recording path resolves against the spec file's directory:
@@ -145,17 +182,21 @@ export function readExperimentSpec(path: string): ExperimentSpec {
   return spec;
 }
 
-/** The relay-bound harnesses (codex, kimi) need loopback: the sandbox
- * policy flags that would cut it are refused. Shared with the check
+/** Every experiment harness except the stdio-bridged claude family is
+ * relay-bound and needs loopback: the sandbox policy flags that would cut
+ * it are refused (review m2: derived from the table, so a new entry
+ * cannot skip the refusals). Shared with the check
  * command, which runs this before its own codex refusal so the policy
  * refusals keep their precedence there (review round 381). */
 export function assertExperimentLoopbackPolicy(
   request: Pick<RunRequest, "agent" | "sandboxNoNet" | "sandboxTrust">
 ): void {
-  if ((request.agent === "codex" || request.agent === "kimi") && request.sandboxNoNet) {
+  const needsLoopback = request.agent in EXPERIMENT_MCP_HARNESSES &&
+    request.agent !== "claude" && request.agent !== "zai";
+  if (needsLoopback && request.sandboxNoNet) {
     throw new UsageRefusalError(`--experiment-mcp on ${request.agent} uses a loopback HTTP relay and refuses --sandbox-no-net`);
   }
-  if ((request.agent === "codex" || request.agent === "kimi") && request.sandboxTrust === "untrusted") {
+  if (needsLoopback && request.sandboxTrust === "untrusted") {
     throw new UsageRefusalError(`--experiment-mcp on ${request.agent} uses a loopback HTTP relay and refuses --sandbox-trust untrusted`);
   }
 }

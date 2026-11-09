@@ -185,34 +185,34 @@ describe("provider override: unsupported harnesses", () => {
     }
   };
 
-  const zaiOverride: Record<string, string> = {
-    CODEMUX_ZAI_PROVIDER_BASE_URL: "http://localhost:8011",
-    CODEMUX_ZAI_PROVIDER_API_KEY: "k",
-    CODEMUX_ZAI_PROVIDER_MODEL: "m",
+  const agyOverride: Record<string, string> = {
+    CODEMUX_AGY_PROVIDER_BASE_URL: "http://localhost:8011",
+    CODEMUX_AGY_PROVIDER_API_KEY: "k",
+    CODEMUX_AGY_PROVIDER_MODEL: "m",
   };
 
   test("an override set for a harness without support fails the run loudly", () => {
-    withEnv(zaiOverride, () => {
+    withEnv(agyOverride, () => {
       expect(() =>
-        getAdapter("zai").validateRunRequest({ agent: "zai", prompt: "p" } as RunRequest)
-      ).toThrow("zai does not support a provider override");
-      expect(() => getAdapter("zai").validateTuiRequest(undefined, undefined))
-        .toThrow("zai does not support a provider override");
+        getAdapter("agy").validateRunRequest({ agent: "agy", prompt: "p" } as RunRequest)
+      ).toThrow("agy does not support a provider override");
+      expect(() => getAdapter("agy").validateTuiRequest(undefined, undefined))
+        .toThrow("agy does not support a provider override");
     });
   });
 
   test("an explicit environment view hides the refusal (verify's contract)", () => {
     // Round-5 regression: the base check read process.env directly, so the
-    // exported trio made `codemux verify` FAIL zai ("run command generation
-    // failed: zai does not support a provider override") although verify
+    // exported trio made `codemux verify` FAIL agy ("run command generation
+    // failed: agy does not support a provider override") although verify
     // builds its adapters against an explicitly empty view. The refusal
     // must read the adapter's own view: the empty view hides the override,
     // the launch view above still refuses it.
-    withEnv(zaiOverride, () => {
+    withEnv(agyOverride, () => {
       expect(() =>
-        getAdapter("zai", {}).validateRunRequest({ agent: "zai", prompt: "p" } as RunRequest)
+        getAdapter("agy", {}).validateRunRequest({ agent: "agy", prompt: "p" } as RunRequest)
       ).not.toThrow();
-      expect(() => getAdapter("zai", {}).validateTuiRequest(undefined, undefined))
+      expect(() => getAdapter("agy", {}).validateTuiRequest(undefined, undefined))
         .not.toThrow();
     });
   });

@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getAdapter } from "../src/adapters/index.js";
 import type { AgentId } from "../src/types.js";
+import { PARITY } from "../src/parity/index.js";
 import { OpencodeAdapter } from "../src/adapters/opencode.js";
 import { getDefaultConfig } from "../src/config.js";
 import { checkHarness } from "../src/doctor-harness-row.js";
@@ -31,7 +32,10 @@ afterEach(() => {
 });
 
 const scode: ScodeFacts = { present: true, path: null, version: [0, 6, 0], label: "0.6.0", issue: null };
-const opencodeGreen = `if [ "$1" = "--version" ]; then printf '1.18.18\\n'; exit 0; fi; exit 0`;
+// Fixture versions sit at the feature floors (src/harness-contracts.ts
+// FEATURE_FLOORS): a version below any floor is a FEATURE-FLOOR row, which
+// would mask the state each test asserts.
+const opencodeGreen = `if [ "$1" = "--version" ]; then printf '1.19.5\\n'; exit 0; fi; exit 0`;
 
 /** Runs one harness row with the fake PATH as the process environment, the
  * way the doctor does for its whole table. */
@@ -87,7 +91,7 @@ describe("a complete provider override replaces the native login", () => {
       CODEMUX_CODEX_PROVIDER_API_KEY: "test-key-do-not-print",
       CODEMUX_CODEX_PROVIDER_MODEL: "m",
     };
-    const codexGreen = `if [ "$1" = "--version" ]; then printf 'codex-cli 0.165.0\\n'; exit 0; fi; exit 0`;
+    const codexGreen = `if [ "$1" = "--version" ]; then printf 'codex-cli 0.166.0\\n'; exit 0; fi; exit 0`;
     const { row } = await rowFor("codex", { codex: codexGreen }, home, override, getDefaultConfig().quota);
     expect(row.state).toBe("OK");
     expect(row.detail.join("\n")).toContain("provider override set; the native login and the native usage window are not used");
@@ -97,20 +101,26 @@ describe("a complete provider override replaces the native login", () => {
   });
 
   test("a complete override on a harness without the capability is OVERRIDE-INVALID, not a login (review round 43)", async () => {
+    // agy is the one run.provider-override limitation left (copilot and
+    // gemini gained their overrides in the parity passes): no carrier
+    // routes a run to another endpoint, so a complete trio still cannot
+    // authenticate anything.
+    expect(PARITY.agy["run.provider-override"].state).toBe("harness-limitation");
     const home = fixtureHome({}, homes);
     const { row } = await rowFor(
-      "gemini",
-      { gemini: `if [ "$1" = "--version" ]; then printf '0.9.0\\n'; exit 0; fi; exit 0` },
+      "agy",
+      { agy: `if [ "$1" = "--version" ]; then printf '1.4.12\\n'; exit 0; fi; exit 0` },
       home,
       {
-        CODEMUX_GEMINI_PROVIDER_BASE_URL: "https://provider.example/v1",
-        CODEMUX_GEMINI_PROVIDER_API_KEY: "test-key-do-not-print",
-        CODEMUX_GEMINI_PROVIDER_MODEL: "x",
+        CODEMUX_AGY_PROVIDER_BASE_URL: "https://provider.example/v1",
+        CODEMUX_AGY_PROVIDER_API_KEY: "test-key-do-not-print",
+        CODEMUX_AGY_PROVIDER_MODEL: "x",
       },
       getDefaultConfig().quota
     );
-    expect(row.state).toBe("OVERRIDE-INVALID");
-    expect(row.detail.join("\n")).toContain("gemini does not support a provider override");
+    expect(row.state, JSON.stringify(row)).toBe("OVERRIDE-INVALID");
+    expect(row.detail.join("\n")).toContain("agy does not support a provider override");
+    expect(row.detail.join("\n")).not.toContain("test-key-do-not-print");
   });
 
   test("an active override silences the native usage verdict (the launch skips the native gate)", async () => {
@@ -191,7 +201,7 @@ describe("the usage verdict follows the gate's configured budget (review round 4
     // usagemux that answers "0% left" two seconds late under a 1 s budget.
     const home = fixtureHome({ ".codex/auth.json": '{"auth_mode":"chatgpt","tokens":{"refresh_token":"present"}}' }, homes);
     const slow = `sleep 7\n${fakeUsagemux({ remainingPercent: 0, usedPercent: 100 })}`; // past the 1 s policy plus the 5 s grace
-    const codexGreen = `if [ "$1" = "--version" ]; then printf 'codex-cli 0.165.0\\n'; exit 0; fi; exit 0`;
+    const codexGreen = `if [ "$1" = "--version" ]; then printf 'codex-cli 0.166.0\\n'; exit 0; fi; exit 0`;
     const fake = createFakeBinaryEnv({ scode: fakeScodeHelp(), usagemux: slow, codex: codexGreen });
     try {
       for (const key of Object.keys(process.env)) delete process.env[key];
@@ -214,7 +224,7 @@ describe("the override column asks the adapter (review round 45)", () => {
     const home = fixtureHome({}, homes);
     const { row } = await rowFor(
       "droid",
-      { droid: `if [ "$1" = "--version" ]; then printf '0.186.0\\n'; exit 0; fi; exit 0` },
+      { droid: `if [ "$1" = "--version" ]; then printf '0.221.0\\n'; exit 0; fi; exit 0` },
       home,
       {
         CODEMUX_DROID_PROVIDER_BASE_URL: "https://provider.example/v1",
@@ -224,7 +234,10 @@ describe("the override column asks the adapter (review round 45)", () => {
       },
       getDefaultConfig().quota
     );
-    expect(row.state).toBe("OVERRIDE-INVALID");
+    // The expect message carries the whole row: a wrong state here has
+    // been a load-order ghost (a state this arm's inputs cannot produce
+    // in isolation), and the row's own columns are the evidence.
+    expect(row.state, JSON.stringify(row)).toBe("OVERRIDE-INVALID");
     expect(row.detail.join("\n")).toContain("context cap cannot ride the override");
     expect(row.detail.join("\n")).not.toContain("test-key-do-not-print");
   });
@@ -234,7 +247,7 @@ describe("the gate budget is the launching agent's entry (review round 45)", () 
   test("spendsFrom maps the client, the timeout stays the agent's", async () => {
     const home = fixtureHome({ ".codex/auth.json": '{"auth_mode":"chatgpt","tokens":{"refresh_token":"present"}}' }, homes);
     const slow = `sleep 7\n${fakeUsagemux({ remainingPercent: 0, usedPercent: 100 })}`; // past the 1 s policy plus the 5 s grace
-    const codexGreen = `if [ "$1" = "--version" ]; then printf 'codex-cli 0.165.0\\n'; exit 0; fi; exit 0`;
+    const codexGreen = `if [ "$1" = "--version" ]; then printf 'codex-cli 0.166.0\\n'; exit 0; fi; exit 0`;
     const fake = createFakeBinaryEnv({ scode: fakeScodeHelp(), usagemux: slow, codex: codexGreen });
     try {
       for (const key of Object.keys(process.env)) delete process.env[key];
@@ -258,7 +271,7 @@ describe("the gate budget is the launching agent's entry (review round 45)", () 
 describe("snapshot freshness follows the launch gate (review round 54)", () => {
   test("a stale snapshot is QUOTA-UNREADABLE, never QUOTA-LOW", async () => {
     const home = fixtureHome({ ".codex/auth.json": '{"auth_mode":"chatgpt","tokens":{"refresh_token":"present"}}' }, homes);
-    const codexGreen = `if [ "$1" = "--version" ]; then printf 'codex-cli 0.165.0\\n'; exit 0; fi; exit 0`;
+    const codexGreen = `if [ "$1" = "--version" ]; then printf 'codex-cli 0.166.0\\n'; exit 0; fi; exit 0`;
     const fake = createFakeBinaryEnv({ scode: fakeScodeHelp(), usagemux: fakeUsagemux({ remainingPercent: 0, usedPercent: 100, generatedAt: "2026-01-01T00:00:00.000Z" }), codex: codexGreen });
     try {
       for (const key of Object.keys(process.env)) delete process.env[key];

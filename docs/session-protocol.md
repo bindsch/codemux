@@ -42,7 +42,11 @@ operation can return `unsupported` before its fields are inspected.
 | `steer` | `text: string` | `author: string` | Adjust an active turn; supported only by Codex |
 | `interrupt` | none | `reason: string` | Interrupt the active turn; supported idle interrupt is an acknowledged no-op |
 | `permission_decision` | `request_id: string`, `decision: "allow" \| "deny"` | `updated_input: object`, `message: string` (deny only) | Resolve one pending request within the launch ceiling |
+| `permission_response` | Same as `permission_decision` | Same as `permission_decision` | Alias with the same validation and autonomy ceiling |
 | `shutdown` | none | none | End the session with the configured grace period |
+
+The parser normalizes `permission_response` to `permission_decision` before
+driver dispatch. Both spellings resolve the same pending request.
 
 `text` may be empty, cannot contain NUL, and is at most 16 MiB of UTF-8.
 The whole input line is at most 17 MiB, measured on the delivered payload:
@@ -130,7 +134,7 @@ no extra length guarantee beyond the framing and queue bounds below.
 
 | `type` | Fields |
 |---|---|
-| `session_started` | `agent: string`; `model: string \| null`; `autonomy: "read-only" \| "low" \| "medium" \| "high"`; `cwd: string`; `sandboxed: boolean`; `sandbox_trust: "trusted" \| "standard" \| "untrusted"`; `capabilities: object` below; `protocol: "codemux-live-session/1"`; `private_home: string \| null` — always present, never omitted: the hermetic session's private home directory named by its settled session-keyed path (the spelling a `--resume` reopens), which for an agent that mints its session id later is not yet the live run-shaped directory the child writes while the session runs; null for a plain session or an agent whose hermetic mode keeps no session-keyed home (opencode) |
+| `session_started` | `agent: string`; `model: string \| null`; `model_served: string \| null`; `model_served_source: "provider" \| "harness" \| null`; `model_alias: string \| null`; `autonomy: "read-only" \| "low" \| "medium" \| "high"`; `cwd: string`; `sandboxed: boolean`; `sandbox_trust: "trusted" \| "standard" \| "untrusted"`; `capabilities: object` below; `protocol: "codemux-live-session/1"`; `private_home: string \| null` — always present, never omitted: the hermetic session's private home directory named by its settled session-keyed path (the spelling a `--resume` reopens), which for an agent that mints its session id later is not yet the live run-shaped directory the child writes while the session runs; null for a plain session or an agent whose hermetic mode keeps no session-keyed home (opencode) |
 | `input_accepted` | `input_seq: positive integer` |
 | `input_rejected` | `input_seq: positive integer`; `reason: string` from the rejection table; optional `message: string` — the denial text sent to the harness, present on `autonomy_escalation` |
 | `user_message` | `input_seq: positive integer`; `text: string`; optional `author: string`; optional `turn_id: string` |
@@ -143,8 +147,8 @@ no extra length guarantee beyond the framing and queue bounds below.
 | `usage` | `turn_id: string \| null`; `usage: Usage` below |
 | `permission_request` | `request_id: string`; `tool: string`; `input: object`; `options: ["allow", "deny"] \| ["deny"]` |
 | `permission_resolved` | `request_id: string`; `resolution: "allow" \| "deny" \| "timeout" \| "superseded"`; optional `message: string` — the denial text sent to the harness, omitted when none was (an allow, or a Codex decline, whose wire answer carries no text) |
-| `permission_denied` | `request_id: string`; `tool: string`; `message: string` — the `--permission-policy deny` record of a request codemux answered the moment it arrived, with the denial text it sent; such a request never joins the pending set, so a caller decision for it receives `unknown_request` and no `permission_resolved` follows |
-| `turn_completed` | `turn_id: string \| null`; `finish: "end" \| "interrupted" \| "failed"`; optional `reason: string`; `usage: Usage` |
+| `permission_denied` | `request_id: string`; `tool: string`; optional `message: string` — the denial text sent by Claude/ZAI, omitted on a Codex decline; the `--permission-policy deny` record of a request answered immediately; it never joins the pending set, so a caller decision receives `unknown_request` and no `permission_resolved` follows |
+| `turn_completed` | `turn_id: string \| null`; `finish: "end" \| "interrupted" \| "failed"`; optional `reason: string`; `usage: Usage`; `model_served: string \| null`; `model_served_source: "provider" \| "harness" \| null`; `model_alias: string \| null` |
 | `unknown` | No additional fields; `raw` carries the unmapped line |
 | `error` | `fatal: boolean`; `source: "codemux" \| "harness"`; `message: string` |
 | `session_ended` | `reason: "shutdown" \| "stdin-close" \| "signal" \| "timeout" \| "crash" \| "harness_failed"`; `exit_code: integer`; `harness_exit: {code: integer \| null, signal: string \| null} \| null`; `shutdown_requested: boolean`; `usage: Usage`; `resumable: boolean` |
@@ -173,7 +177,18 @@ with the control protocol's error response instead of joining the pending
 set.
 
 `model` is the requested/resolved selection, or null when none was selected;
-it is not a guarantee of the model actually served. Session CLI launches
+it is not a guarantee of the model actually served. `model_served` on
+`session_started` and `turn_completed` is that guarantee when the wire
+names one: `model_served_source` says which side named it — `"provider"`
+when the model's own wire named what served the turn (Claude and ZAI's
+per-message model and usage keys, Codex's reroute notice), `"harness"`
+when the harness named what it configured (Claude's init frame, Codex's
+thread response) — and null with the model when no machine-readable
+naming exists on the recorded wire (kimi's print wire, opencode's run
+wire, agy's and aider's transcripts name none). A turn that ended without
+a single model naming it reports null too. `model_alias` is the `-m`
+value as typed when it resolved through `config.models`, else null; it
+rides the same events and every call-ledger line. Session CLI launches
 currently refuse sandboxed untrusted trust. The envelope retains the wider
 trust enum used by the registry and drivers.
 
@@ -238,6 +253,13 @@ some harnesses only reveal their identity after the first accepted prompt.
 Clients must be able to send that prompt before seeing `session_started`.
 `input_accepted` and `user_message` may therefore precede it. A queued Codex
 message is echoed on acceptance, potentially without a turn ID.
+
+A successful turn must emit non-whitespace assistant text. If an otherwise
+successful turn has no such `assistant_delta` or `assistant_message`,
+codemux emits `turn_completed` with `finish: "failed"` and
+`reason: "empty answer"`. Tool events alone do not count as an answer.
+The shared rule applies to every session agent and has no opt-out;
+interrupted and already failed turns keep their original completion.
 
 A driver that defers `session_started` also defers the session's registry
 record beside the stream. A session that ends with that record still

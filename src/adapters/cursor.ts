@@ -3,6 +3,13 @@ import { join } from "node:path";
 import { BaseAdapter, type RunContext } from "./base.js";
 import { assertNoCursorProjectExecutionConfig } from "../project-safety.js";
 import { appendDiagnostic } from "../result-envelope.js";
+import {
+  readProviderOverride,
+  requireProviderOverride,
+  type ProviderOverride,
+} from "../provider-override.js";
+import { assertProviderCap } from "../provider-override.js";
+import { cursorResult, parseCursorResultEnvelope } from "../result-envelope/cursor.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import type {
   AdapterCapabilities,
@@ -132,12 +139,70 @@ export class CursorAdapter extends BaseAdapter {
       supportsModel: true,
       supportsAutonomy: true,
       autonomyLevels: ["read-only", "low", "medium", "high"],
+      // No effort carrier: the model string's bracket overrides
+      // ('claude-opus-4-8[context=1m,effort=high,fast=false]', --model
+      // help) are syntax, not a flag; their parameter ids are server-side
+      // per model, and an invalid combination is silently dropped
+      // ("Invalid parameter combination for ${model}; falling back to
+      // default variant", sanitizeParametersForModelChange, 483.index.js;
+      // cursor 2026.11.05, read 2026-11-09) — not fail-closed, so the
+      // tier cannot ride it.
       supportsEffort: false,
       effortLevels: [],
+      // No hermetic carrier: rules also load server-side from the
+      // account (user_rules, cloud_instructions), which no flag or
+      // private home removes (docs/isolation.md, cursor row).
+      supportsResultJson: true,
+      // `--allowed-tools <tool>` is an allowlist validated against the
+      // proto's tool names: an unknown or renamed name aborts with exit 1
+      // before any run, so `reflect_tool_call` (a no-op answer tool in
+      // the 2026.11.05 descriptor, "|32 reflect_tool_call #25 tool") is a
+      // fail-closed `--tools none` carrier.
+      supportsToolSelection: true,
+      // CURSOR_API_ENDPOINT and CURSOR_API_KEY ride the environment: the
+      // agent command registers `-e, --endpoint <url>` with
+      // `.env("CURSOR_API_ENDPOINT")` and `--api-key <key>` with
+      // CURSOR_API_KEY (index.js option factories, 2026.11.05).
+      supportsProviderOverride: true,
     };
   }
 
+  /**
+   * The provider override, validated: cursor's agent command needs a
+   * base URL and a key (the model may come from `--model` instead of the
+   * variable). Both token caps are refused: the model string's bracket
+   * overrides carry `context`, `effort` and `fast` only — no output or
+   * context cap key — and their values are server-defined per model with
+   * a silent fallback on invalid combinations (the effort evidence
+   * above), so no cap can ride the override verifiably.
+   */
+  private validatedProvider(): (ProviderOverride & { baseUrl: string; apiKey: string }) | null {
+    const override = readProviderOverride("cursor", this.environment);
+    if (override === null) return null;
+    const noCapSurface =
+      "cursor 2026.11.05 carries no token-budget surface: the model string's bracket " +
+      "overrides accept context, effort and fast only, and an invalid combination is " +
+      "silently dropped server-side, so no cap can ride the override";
+    assertProviderCap("cursor", override, "maxOutputTokens", noCapSurface);
+    assertProviderCap("cursor", override, "maxContextTokens", noCapSurface);
+    return requireProviderOverride("cursor", override, [
+      "baseUrl",
+      "apiKey",
+    ]) as ProviderOverride & { baseUrl: string; apiKey: string };
+  }
+
+  /** The model id the run requests: the request's, else the override's. */
+  private modelFor(model: string | undefined): string | undefined {
+    return model ?? this.validatedProvider()?.model;
+  }
+
   override mapAutonomy(level: AutonomyLevel): string[] {
+    // Low builds no flag because the default state IS low: in --print with
+    // neither --force ("Force allow commands unless explicitly denied")
+    // nor --auto-review, a command that needs approval is rejected
+    // ("User Rejected"; headless asks are skipped — "Questions skipped in
+    // headless mode" — and "Switch mode requires approval",
+    // cursor-agent 2026.11.05 index.js/1706.index.js, read 2026-11-08).
     switch (level) {
       case "read-only":
         return ["--mode", "plan"];
@@ -185,14 +250,48 @@ export class CursorAdapter extends BaseAdapter {
       ...this.entry().prefix,
       "--print",
       "--output-format",
-      "text",
+      // Every run launches on the stream-json wire, plain runs included:
+      // the text format prints only the buffer after the last tool call
+      // (`de`, 1706.index.js result writer), so a tool-using run exited 0
+      // with stdout "\n" while its reply rode the result line's `result`
+      // (K, the full accumulated text) on the stream and json wires —
+      // the usage events the ledger sums ride stream-json only
+      // (src/result-envelope/cursor.ts, cursor 2026.11.05, read
+      // 2026-11-09).
+      "stream-json",
       "--trust",
     ];
     if (request.sandboxed) {
       cmd.push("--sandbox", "disabled");
     }
-    if (request.model) {
-      cmd.push("--model", request.model);
+    const model = this.modelFor(request.model);
+    if (model) {
+      cmd.push("--model", model);
+    }
+    if (request.web === false) {
+      // --exclude-tools parses a comma-separated list validated against
+      // the proto ToolCall oneof field names, aborting with exit 1 on any
+      // unknown value ("Invalid --exclude-tools value(s): ${s}. Expected
+      // one of: ${r.join(", ")}", 1706.index.js option module) — fail
+      // closed. web_search_tool_call and web_fetch_tool_call are the live
+      // web tools (proto descriptor, index.js class lo at offset 5173140;
+      // the renderer pairs them with "Searched web" and "Fetched";
+      // fetch_tool_call is a legacy entry no renderer prints), so `--no-web`
+      // removes exactly the two.
+      cmd.push(
+        "--exclude-tools",
+        "web_search_tool_call,web_fetch_tool_call"
+      );
+    }
+    if (request.tools === "none") {
+      // "Allow only proto ToolCall oneof tool(s) for this session"
+      // (--allowed-tools help): an allowlist, so a tool a later build
+      // adds stays excluded, and reflect_tool_call is the one no-op entry
+      // — the model may call it and it answers nothing. Values are
+      // validated against the proto names with exit 1 on any unknown
+      // name (1706.index.js), so a renamed tool fails the run instead of
+      // quietly restoring the tool set.
+      cmd.push("--allowed-tools", "reflect_tool_call");
     }
     if (request.autonomy) {
       cmd.push(...this.mapAutonomy(request.autonomy));
@@ -205,6 +304,17 @@ export class CursorAdapter extends BaseAdapter {
   }
 
   override getRunEnv(request: RunRequest, _context?: RunContext): Record<string, string> {
+    const override = this.validatedProvider();
+    // The override names outrank the passthrough: the operator asked
+    // codemux to route this run, so the child receives the override's
+    // endpoint and key whatever the environment carried.
+    if (override !== null) {
+      return {
+        ...this.credentialStoreEnv(request.sandboxed, request.passthroughEnv),
+        CURSOR_API_ENDPOINT: override.baseUrl,
+        CURSOR_API_KEY: override.apiKey,
+      };
+    }
     return this.credentialStoreEnv(request.sandboxed, request.passthroughEnv);
   }
 
@@ -218,8 +328,19 @@ export class CursorAdapter extends BaseAdapter {
     // The sandboxed TUI needs the same file-store selection as the run
     // path: the sandbox blocks cursor's Keychain login either way (review
     // round 381 — the TUI built its environment from getEnv + getTuiEnv
-    // alone and failed authentication inside the sandbox).
-    return this.credentialStoreEnv(sandboxed, passthroughEnv);
+    // alone and failed authentication inside the sandbox). The provider
+    // override rides the same environment variables the run path sets —
+    // CURSOR_API_ENDPOINT and CURSOR_API_KEY reach an interactive child
+    // unchanged (the option factories read them from process.env), so an
+    // interactive session under an override routes like a run does.
+    const override = this.validatedProvider();
+    const store = this.credentialStoreEnv(sandboxed, passthroughEnv);
+    if (override === null) return store;
+    return {
+      ...store,
+      CURSOR_API_ENDPOINT: override.baseUrl,
+      CURSOR_API_KEY: override.apiKey,
+    };
   }
 
   private credentialStoreEnv(
@@ -247,14 +368,48 @@ export class CursorAdapter extends BaseAdapter {
       validateWorkingDirectory(request.cwd) ?? process.cwd()
     );
     this.assertDesktopEntryAuthorized(request.passthroughEnv);
+    // Surface a half-configured override before launch, the droid/pi rule:
+    // the caps refuse here and a missing baseUrl or apiKey names the fix.
+    this.validatedProvider();
   }
 
   override processRunResult(result: RunResult, request: RunRequest, _context?: RunContext): RunResult {
+    if (request.resultJson) {
+      // Every run launches with --output-format stream-json, so stdout
+      // ends in the result object; cursorResult re-emits it with the
+      // codemux block. The authentication hint rides the same failure
+      // diagnostics.
+      const envelope = cursorResult(result, request);
+      if (
+        !request.sandboxed || process.platform !== "darwin" ||
+        result.exitCode === 0 || !result.stderr.includes("Authentication required")
+      ) return envelope;
+      return {
+        ...envelope,
+        stderr: appendDiagnostic(envelope.stderr, AUTHENTICATION_HINT),
+      };
+    }
+    // A plain run launched on the same stream-json wire, so its stdout
+    // also ends in the result line: rewrite it to the reply text the line
+    // carries — the whole reply, the segments before tool calls included,
+    // where the text format printed only the trailing buffer — and
+    // record the usage so the ledger is never empty. No new failure rule
+    // rides here: a run whose stdout carried no result line keeps its
+    // stdout and its exit status as the run path judges them.
+    const parsed = parseCursorResultEnvelope(result.stdout);
+    const rewritten: RunResult = parsed === null
+      ? result
+      : {
+        ...result,
+        stdout: `${parsed.answer ?? ""}\n`,
+        usage: parsed.usage,
+        servedModel: null,
+      };
     if (
       !request.sandboxed || process.platform !== "darwin" ||
       result.exitCode === 0 || !result.stderr.includes("Authentication required")
-    ) return result;
-    return { ...result, stderr: appendDiagnostic(result.stderr, AUTHENTICATION_HINT) };
+    ) return rewritten;
+    return { ...rewritten, stderr: appendDiagnostic(rewritten.stderr, AUTHENTICATION_HINT) };
   }
 
   override validateTuiRequest(
@@ -277,6 +432,12 @@ export class CursorAdapter extends BaseAdapter {
       validateWorkingDirectory(cwd) ?? process.cwd()
     );
     this.assertDesktopEntryAuthorized(passthroughEnv);
+    // The override rides environment variables an interactive child reads
+    // too (getTuiEnv sets the same CURSOR_API_ENDPOINT/CURSOR_API_KEY
+    // pair the run path does), so a session under an override routes like
+    // a run does — validatedProvider here surfaces a half-configured
+    // override before the launch.
+    this.validatedProvider();
   }
 
   buildTuiCommand(

@@ -6,7 +6,7 @@
 // calls this phase first.
 import { AGENT_IDS, getAdapter } from "../adapters/index.js";
 import { assertAbsoluteClaudeConfigDir } from "../claude-family.js";
-import { validateProjectSettingsRequest } from "../claude-project-settings.js";
+import { PROJECT_SETTINGS_AGENTS, validateProjectSettingsRequest } from "../claude-project-settings.js";
 import {
   isScodeAvailable,
   parseAutonomyOption,
@@ -18,13 +18,16 @@ import {
   resolveEffortForAdapter,
 } from "../cli-runtime.js";
 import { resolveModel } from "../config.js";
-import { supportsPlaywrightMcpAgent } from "../mcp.js";
+import { PLAYWRIGHT_MCP_AGENT_LIST, supportsPlaywrightMcpAgent } from "../mcp.js";
+import { agentsSupporting } from "../parity/index.js";
 import { resolveSandboxOptionsForAgent } from "../sandbox-policy.js";
 import type { AgentId, CodemuxConfig, RunRequest } from "../types.js";
 import { validateWorkingDirectory } from "../validation.js";
 import { canonicalSandboxBlockPaths } from "./registry/format.js";
 import { parseQuotaCeilingOption } from "../quota-gate.js";
 import { SESSION_AGENTS } from "./cli-agents.js";
+import { validateHarnessHome } from "./harness-home.js";
+import { harnessHomeBlockedPaths } from "../launch/harness-home-sandbox.js";
 import { asUsage, assertResumeIdShape, parseOptionalTimeout, usageError } from "./cli-usage.js";
 
 /** The commander options `codemux session` delivers to its action. */
@@ -32,6 +35,7 @@ export interface SessionCommandOptions {
   agent?: string;
   model?: string;
   resume?: string;
+  harnessHome?: string;
   auto?: string;
   effort?: string;
   cwd?: string;
@@ -92,7 +96,7 @@ export function resolveSessionRequest(
   const requestedAutonomy = parseAutonomyOption(options.auto) ?? "read-only";
   const requestedEffort = parseEffortOption(options.effort);
   const tools = parseToolsOption(options.tools);
-  if (tools === "none") {
+  if (tools === "none" && !sessionSupport.tools) {
     usageError(
       "--tools none is refused for sessions: no verified carrier " +
         "restores the tools for a resumed session on any harness " +
@@ -104,15 +108,19 @@ export function resolveSessionRequest(
       `--tools is not implemented for '${agentId}' sessions in this release`
     );
   }
-  // Run's validation verbatim (§4.5 flag matching): the carrier is
-  // the sandbox-scoped --mcp-config, and only the claude family
-  // has a verified one. --tools none is already refused above.
+  // Run and session share the supported MCP carriers and sandbox gate.
   const enablePlaywrightMcp = Boolean(options.enablePlaywrightMcp);
   if (enablePlaywrightMcp && !options.sandbox) {
     usageError("--enable-playwright-mcp requires --sandbox");
   }
   if (enablePlaywrightMcp && !supportsPlaywrightMcpAgent(agentId)) {
-    usageError("--enable-playwright-mcp is supported only by claude and zai");
+    usageError(`--enable-playwright-mcp is supported only by ${PLAYWRIGHT_MCP_AGENT_LIST}`);
+  }
+  // The session cell decides, not the run-path list (review M2): an agent
+  // whose run carries the server but whose session does not is refused
+  // instead of starting a session the server never rides.
+  if (enablePlaywrightMcp && !agentsSupporting("session.playwright-mcp").includes(agentId)) {
+    usageError(`--enable-playwright-mcp is not implemented for '${agentId}' sessions in this release`);
   }
   const passthroughEnv = asUsage(() => parsePassthroughEnvOption(options.passEnv));
   // CLAUDE_CONFIG_DIR reaches only a claude-family session's child
@@ -136,29 +144,48 @@ export function resolveSessionRequest(
   // verified mode for, with the run path's reason verbatim, so the two
   // paths cannot drift.
   const hermetic = Boolean(options.hermetic);
-  const experimentProjectSettings = Boolean(options.experimentProjectSettings);
-  if (experimentProjectSettings && agentId !== "claude" && agentId !== "zai" && agentId !== "opencode") {
+  if (options.harnessHome !== undefined && hermetic) {
+    usageError("--harness-home cannot be combined with --hermetic; choose one isolation mode");
+  }
+  if (options.harnessHome !== undefined && !agentsSupporting("session.harness-home").includes(agentId)) {
+    usageError(`--harness-home is not implemented for '${agentId}' sessions in this release`);
+  }
+  // Session isolation also requires a session-lifetime state carrier.
+  // Refuse unsupported modes before availability checks so a missing
+  // binary cannot replace the capability refusal with exit 1.
+  if (hermetic && !sessionSupport.hermetic) {
     usageError(
-      "--experiment-project-settings applies to the claude, zai, and opencode agents only in this release"
+      `${agentId} has no verified hermetic mode for sessions: the session keeps its ` +
+        `state under the operator's real home with no session-lifetime private home ` +
+        `(see docs/sessions.md)`
     );
+  }
+  const experimentProjectSettings = Boolean(options.experimentProjectSettings);
+  if (experimentProjectSettings && !PROJECT_SETTINGS_AGENTS.some((agent) => agent === agentId)) {
+    usageError(
+      `--experiment-project-settings applies to the ${PROJECT_SETTINGS_AGENTS.join(", ")} agents only in this release`
+    );
+  }
+  // The same rule for project settings (review M3): codex's run path
+  // carries the mode, its session routing does not yet, so a session
+  // refuses instead of running plain hermetic under the flag.
+  if (experimentProjectSettings && !agentsSupporting("session.experiment-project-settings").includes(agentId)) {
+    usageError(`--experiment-project-settings is not implemented for '${agentId}' sessions in this release`);
   }
   // Run refuses playwright under --hermetic; a hermetic session is no
   // exception (review round 14, edges 6).
-  if (enablePlaywrightMcp && (hermetic || experimentProjectSettings)) {
+  if (enablePlaywrightMcp && (hermetic || experimentProjectSettings) && agentId !== "cline") {
     usageError(
       "--enable-playwright-mcp cannot be combined with --hermetic --experiment-project-settings"
     );
   }
-  if (options.final !== undefined && !hermetic) {
+  if (options.final !== undefined && !hermetic && options.harnessHome === undefined) {
     usageError(
       "--final requires --hermetic: it removes the private home a hermetic session's " +
         "harness state lives in"
     );
   }
-  // The deny policy rides the claude-family permission channel alone;
-  // every other agent's driver has no such channel to answer on.
-  // 'default' names the unchanged behavior for scripts that spell
-  // the whole policy out.
+  // A deny uses the ask channel, or native rules in an isolated config.
   if (
     options.permissionPolicy !== undefined &&
     options.permissionPolicy !== "deny" &&
@@ -168,11 +195,22 @@ export function resolveSessionRequest(
       `--permission-policy accepts 'default' or 'deny' in this release; '${options.permissionPolicy}' is not supported`
     );
   }
-  // Only deny rides the claude-family channel; 'default' changes nothing
-  // for any agent, so it is accepted everywhere (review round 5, edges
-  // finding 2).
-  if (options.permissionPolicy === "deny" && agentId !== "claude" && agentId !== "zai") {
-    usageError("--permission-policy deny is supported only by claude and zai sessions");
+  if (options.permissionPolicy === "deny" && sessionSupport.approvals === "none" &&
+      agentId !== "aider") {
+    if (sessionSupport.denyRules !== "native" && (sessionSupport.denyRules !== "hermetic" || !hermetic)) {
+      const requirement = sessionSupport.denyRules === "hermetic"
+        ? "requires --hermetic for native deny rules"
+        : "is unavailable";
+      usageError(`--permission-policy deny ${requirement} for '${agentId}': ${sessionSupport.approvalsNote}`);
+    }
+    if (agentId === "opencode" && experimentProjectSettings) {
+      usageError("--permission-policy deny refuses --experiment-project-settings for opencode: " +
+        "project agent permissions can override the global deny; " + sessionSupport.approvalsNote);
+    }
+    if (agentId === "openhands" && experimentProjectSettings) {
+      usageError("--permission-policy deny refuses --experiment-project-settings for openhands: " +
+        "HookConfig.load reads the working directory's .openhands/hooks.json first and then never reads the home's deny rule");
+    }
   }
   const sandboxPolicyOverrides = asUsage(() =>
     parseSandboxPolicyOverrides({
@@ -210,16 +248,16 @@ export function resolveSessionRequest(
   // after the launch phase exits through usageError's process exit
   // and strands a fresh codex override home's run-<pid>-* directory.
   // The spawn-prep phase repeats both checks on the built argv as a
-  // second line. The turn-per-process agents are exactly the ones
-  // with no session-long child, so this is the same condition.
+  // second line. The parity declaration admits long-lived children
+  // and agents with an integrated representative per-turn preview.
   if (options.printSandbox) {
     if (!options.sandbox) {
       usageError(
         "--print-sandbox requires --sandbox: it prints the scode argv of a sandboxed session child"
       );
     }
-    if (agentId === "opencode" || agentId === "aider" || agentId === "kimi") {
-      usageError(
+    if (!agentsSupporting("session.print-sandbox").includes(agentId)) {
+      if (options.harnessHome === undefined) usageError(
         "--print-sandbox is not available for this agent: its session children spawn per turn, so there is no one scode argv to print"
       );
     }
@@ -247,12 +285,22 @@ export function resolveSessionRequest(
   if (model !== undefined && !caps.supportsModel) {
     usageError(`${agentId} does not support model selection`);
   }
+  // The alias is the `-m` value as typed, carried only when it resolved
+  // through config.models (design P5) — the run path's own rule
+  // (run-command.ts). An override-selected model resolves no alias.
+  const modelAlias =
+    options.model !== undefined && config.models[options.model] !== undefined
+      ? options.model
+      : null;
   const autonomy = asUsage(() => resolveAutonomyForAdapter(agentId, caps, requestedAutonomy));
   // The ceiling grants no MCP tool at medium or high, and read-only
   // allows no tool use, so every Playwright call would be denied
   // `autonomy_escalation` at those levels; only low, where the caller
   // answers each request, can use the server (review live25).
-  if (enablePlaywrightMcp && autonomy !== "low") {
+  if (enablePlaywrightMcp && (agentId === "copilot" || agentId === "cline") && autonomy !== "medium" && autonomy !== "high") {
+    usageError(`--enable-playwright-mcp for ${agentId} sessions requires --auto medium or high; low has no caller approval bridge`);
+  }
+  if (enablePlaywrightMcp && agentId !== "opencode" && agentId !== "copilot" && agentId !== "cline" && autonomy !== "low") {
     usageError(
       "--enable-playwright-mcp requires --auto low for sessions: the session " +
         "ceiling grants no MCP tool at medium or high, and read-only allows no tool use"
@@ -269,6 +317,11 @@ export function resolveSessionRequest(
   const effort = asUsage(() => resolveEffortForAdapter(agentId, caps, requestedEffort));
 
   const workdir = asUsage(() => validateWorkingDirectory(options.cwd)) ?? process.cwd();
+  if (options.harnessHome !== undefined) {
+    options.harnessHome = asUsage(() => validateHarnessHome(
+      options.harnessHome!, workdir, harnessHomeBlockedPaths(process.env),
+    ));
+  }
   // The run path's own request validator, in its session spelling:
   // the same refusals (scode required, no --pass-env
   // CLAUDE_CONFIG_DIR/CLAUDE_CODE_PROJECT_DIR_NAME, the ancestor
@@ -288,6 +341,7 @@ export function resolveSessionRequest(
         cwd: workdir,
         passthroughEnv,
         session: true,
+        tools,
       })
     );
   }
@@ -316,6 +370,11 @@ export function resolveSessionRequest(
   // so it runs before the environment probes below.
   const runLike: RunRequest = {
     agent: agentId,
+    ...(agentId === "claude" || agentId === "zai" || agentId === "opencode" || agentId === "aider" || agentId === "copilot" ||
+      agentId === "gemini" || agentId === "pi" || agentId === "cursor" ||
+      agentId === "droid" || agentId === "goose" || agentId === "codex" || agentId === "cline" || agentId === "kimi" ? { tools } : {}),
+    ...(agentId === "opencode" || agentId === "copilot" || agentId === "gemini" ||
+      agentId === "pi" || agentId === "goose" || agentId === "qwen" || agentId === "codex" || agentId === "cline" || agentId === "kimi" ? { enablePlaywrightMcp } : {}),
     prompt: "codemux session",
     model,
     autonomy,
@@ -371,6 +430,7 @@ export function resolveSessionRequest(
     permissionTimeoutMs,
     shutdownGraceMs,
     model,
+    modelAlias,
     autonomy,
     effort,
     workdir,

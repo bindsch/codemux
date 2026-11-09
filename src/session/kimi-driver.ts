@@ -35,9 +35,9 @@
  * run path's 32 KiB argv bound is the per-turn cap, checked before the
  * ack, and a turn process is spawned with its whole input already in
  * hand: nothing is ever written to the child's stdin — a piped stdin
- * kimi never reads, closed by endInput() once the spawn lands. No
- * usage appears on the wire: every turn reports all-null usage, the
- * honest null rather than a guessed zero, and the ledger mirrors it.
+ * kimi never reads, closed by endInput() once the spawn lands. Usage
+ * comes from per-turn deltas of the native wire log; unavailable counts
+ * remain null in both events and the ledger.
  */
 
 import { codemuxFatalMessage, type SessionFatal } from "./process.js";
@@ -112,5 +112,6 @@ export class KimiSessionDriver extends KimiDriverEvents {
     // disposes them once the hold has settled.
     if (!this.state.spawnAbandoned || this.holdDone) this.disposeSignals();
     this.clearSessionTimer();
+    this.clearTurnTimer();
   }
 }

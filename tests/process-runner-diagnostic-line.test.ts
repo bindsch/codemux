@@ -10,21 +10,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCapturedCommand } from "../src/process-runner.js";
 
+// Three seconds, not a few hundred milliseconds: the child must start and
+// write before the timeout fires, and a bun child under a loaded full gate
+// has missed a 300 ms window (gate 418, 2026-11-09). The child itself sleeps
+// ten seconds, so the timeout still decides the outcome.
 test("a timeout diagnostic never shares the child's unterminated stderr line", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "codemux-diag-line-"));
   try {
     const result = await runCapturedCommand(
       [process.execPath, "-e", "process.stderr.write('boom'); setTimeout(() => {}, 10000);"],
-      { cwd, env: { PATH: process.env.PATH ?? "" }, timeoutMs: 300 }
+      { cwd, env: { PATH: process.env.PATH ?? "" }, timeoutMs: 3000 }
     );
     expect(result.exitCode).toBe(124);
-    expect(result.stderr.startsWith("boom\nError: agent timed out after 300ms\n")).toBe(true);
+    expect(result.stderr.startsWith("boom\nError: agent timed out after 3000ms\n")).toBe(true);
     // A terminated last line gains no blank line.
     const terminated = await runCapturedCommand(
       [process.execPath, "-e", "process.stderr.write('boom\\n'); setTimeout(() => {}, 10000);"],
-      { cwd, env: { PATH: process.env.PATH ?? "" }, timeoutMs: 300 }
+      { cwd, env: { PATH: process.env.PATH ?? "" }, timeoutMs: 3000 }
     );
-    expect(terminated.stderr.startsWith("boom\nError: agent timed out after 300ms\n")).toBe(true);
+    expect(terminated.stderr.startsWith("boom\nError: agent timed out after 3000ms\n")).toBe(true);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

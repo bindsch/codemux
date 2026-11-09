@@ -175,6 +175,7 @@ describe("claudeFamilyResult", () => {
       // protocol exchange to a per-run JSONL file.
       recording: null,
       served_model: "claude-opus-5",
+      model_alias: null,
       failure_code: null,
       labels: null,
     });

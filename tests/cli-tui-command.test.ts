@@ -144,25 +144,25 @@ exit 5`,
   });
 
   test("an effort a harness cannot take in TUI mode refuses with exit 64", async () => {
-    // Droid accepts effort on run but has no TUI carrier; the request used
-    // to warn and launch anyway, silently ignoring the caller's value.
+    // Gemini 0.60.0 has no effort carrier at all (W4 moved droid's TUI
+    // effort onto its settings file), so the refusal names the agent and
+    // the value, never a silently dropped flag. Sandboxed launch: gemini
+    // enforces no autonomy level on its own.
     const outcome = await runTuiCommand(
-      ["tui", "--no-sandbox", "--auto", "high", "-a", "droid", "--effort", "low"],
-      { droid: FAKE_DROID }
+      ["tui", "-a", "gemini", "--effort", "low"],
+      { gemini: "exit 0", scode: "exit 0" }
     );
     expect(outcome.exitCode).toBe(64);
-    expect(outcome.stderr).toContain(
-      "droid does not carry --effort in TUI mode; omit it or use run"
-    );
+    expect(outcome.stderr).toContain("gemini does not support reasoning effort 'low'");
   });
 
   test("an effort value outside the harness set refuses in TUI mode exactly as on run", async () => {
     const outcome = await runTuiCommand(
-      ["tui", "--no-sandbox", "--auto", "high", "-a", "kimi", "--effort", "high"],
+      ["tui", "--no-sandbox", "--auto", "high", "-a", "kimi", "--effort", "xhigh"],
       { kimi: FAKE_KIMI }
     );
     expect(outcome.exitCode).toBe(64);
-    expect(outcome.stderr).toContain("kimi does not support reasoning effort 'high'");
+    expect(outcome.stderr).toContain("kimi does not support reasoning effort 'xhigh'");
   });
 
   test("--effort none stays the no-flag spelling in TUI mode", async () => {
@@ -174,12 +174,33 @@ exit 5`,
     expect(outcome.warnings.join("\n")).not.toContain("--effort");
   });
 
+  test("droid carries TUI model and effort through its settings file", async () => {
+    // W4: the TUI selects model and effort via sessionDefaultSettings, so
+    // -m and --effort launch instead of refusing. The settings file must
+    // land in a scratch home, never the operator's real one.
+    const home = mkdtempSync(join(tmpdir(), "codemux-tui-droid-"));
+    const originalHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const outcome = await runTuiCommand(
+        ["tui", "--no-sandbox", "--auto", "high", "-a", "droid", "-m", "any-model", "--effort", "low"],
+        { droid: FAKE_DROID }
+      );
+      expect(outcome.exitCode).toBe(0);
+      expect(outcome.stderr).not.toContain("TUI mode");
+      expect(outcome.warnings.join("\n")).not.toContain("--effort");
+    } finally {
+      process.env.HOME = originalHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test("a model a harness cannot take in TUI mode is a usage refusal", async () => {
     const outcome = await runTuiCommand(
-      ["tui", "--no-sandbox", "--auto", "high", "-a", "droid", "-m", "any-model"],
-      { droid: FAKE_DROID }
+      ["tui", "--no-sandbox", "-a", "qwen", "-m", "any-model"],
+      { "qwen-coder": "exit 0" }
     );
     expect(outcome.exitCode).toBe(64);
-    expect(outcome.stderr).toContain("droid does not support model selection in TUI mode");
+    expect(outcome.stderr).toContain("qwen does not support model selection in TUI mode");
   });
 });

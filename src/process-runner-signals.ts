@@ -12,6 +12,22 @@ export function hasActiveCapturedCommand(): boolean {
   return activeCapturedCommands > 0;
 }
 
+// Interactive waits in flight (guardedWait). Each owns SIGINT, SIGTERM and
+// SIGHUP while its child runs: it swallows a terminal Ctrl-C and forwards
+// a termination signal to the child. The private-directory handlers must
+// defer to it as they do to a captured command, or a single Ctrl-C in a
+// TUI with a private directory exits codemux under the running child.
+let activeGuardedWaits = 0;
+
+export function beginGuardedWait(): void { activeGuardedWaits++; }
+export function endGuardedWait(): void { activeGuardedWaits--; }
+
+/** True while a captured command or an interactive wait owns the signals;
+ * exit-time cleanup handlers then leave the signal to that owner. */
+export function hasActiveSignalOwner(): boolean {
+  return activeCapturedCommands > 0 || activeGuardedWaits > 0;
+}
+
 // The signal handler of every captured command in flight. A signal's
 // dispatch runs the listeners that were registered when it began, so a
 // command started by an earlier listener of the same dispatch has its

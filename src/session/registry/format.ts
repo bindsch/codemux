@@ -21,7 +21,14 @@ export interface SessionRecord {
   cwd: string;
   hermetic: boolean;
   harness_home: string;
+  /** Caller-owned mode is pinned independently from the directory spelling. */
+  caller_owned_home?: boolean;
   model: string | null;
+  /** The `-m` value as typed when it resolved through `config.models`
+   * (design P5), else null — `model` stays the resolved id. Absent on
+   * records codemux before 2.0.0 wrote: no alias resolution existed
+   * there, so an absent field reads as a raw-id session exactly. */
+  model_alias: string | null;
   autonomy: AutonomyLevel;
   sandboxed: boolean;
   sandbox_trust: SandboxTrust;
@@ -148,10 +155,10 @@ function validRecord(value: unknown): value is SessionRecord {
   const keys = Object.keys(record);
   const expected = [
     "id", "agent", "created_at", "last_activity", "cwd", "hermetic",
-    "harness_home", "model", "autonomy", "sandboxed", "sandbox_trust",
-    "sandbox_no_net", "sandbox_scrub_env", "sandbox_block", "pass_env",
-    "playwright_mcp", "provider_base_url", "project_settings", "final",
-    "owner_pid", "owner_start", "ended",
+    "harness_home", "caller_owned_home", "model", "model_alias", "autonomy", "sandboxed",
+    "sandbox_trust", "sandbox_no_net", "sandbox_scrub_env", "sandbox_block",
+    "pass_env", "playwright_mcp", "provider_base_url", "project_settings",
+    "final", "owner_pid", "owner_start", "ended",
   ];
   if (keys.some((key) => !expected.includes(key))) return false;
   // `provider_base_url`, `project_settings`, `sandbox_block`, and `final`
@@ -171,7 +178,7 @@ function validRecord(value: unknown): value is SessionRecord {
   // is documented in the release notes (CHANGELOG) as the
   // downgrade/co-install cost; widening this validator cannot fix
   // the old binary.
-  const LEGACY_OPTIONAL_KEYS = new Set(["provider_base_url", "project_settings", "sandbox_block", "final"]);
+  const LEGACY_OPTIONAL_KEYS = new Set(["provider_base_url", "project_settings", "sandbox_block", "final", "model_alias", "caller_owned_home"]);
   const missing = expected.filter((key) => !keys.includes(key) && !LEGACY_OPTIONAL_KEYS.has(key));
   if (missing.length > 0) {
     return false;
@@ -185,7 +192,11 @@ function validRecord(value: unknown): value is SessionRecord {
   if (typeof record["cwd"] !== "string" || record["cwd"].length === 0) return false;
   if (typeof record["hermetic"] !== "boolean") return false;
   if (typeof record["harness_home"] !== "string" || record["harness_home"].length === 0) return false;
+  if (record["caller_owned_home"] !== undefined && typeof record["caller_owned_home"] !== "boolean") return false;
   if (record["model"] !== null && typeof record["model"] !== "string") return false;
+  if (record["model_alias"] !== undefined && record["model_alias"] !== null && typeof record["model_alias"] !== "string") {
+    return false;
+  }
   // Object.hasOwn, never `in`: `"constructor" in AUTONOMY_REACH` is true
   // through the prototype chain, and a tampered record carrying such a key
   // would pass validation with a rank that is not a rank (review live11).
@@ -281,10 +292,11 @@ export function validRegistryFile(value: unknown): RegistryFile | null {
   // `provider_base_url` (valid above) reads as operator login, a
   // pre-2.0.0 record that predates `project_settings` reads as a plain
   // session, a pre-2.0.0 record that predates `sandbox_block` reads
-  // as an empty block list, and a pre-2.0.0 record that predates `final`
-  // reads as an ordinary resumable session, so no use site can ever see
-  // an `undefined` the type does not promise. The next write persists
-  // the explicit values.
+  // as an empty block list, a pre-2.0.0 record that predates `final`
+  // reads as an ordinary resumable session, and a pre-2.0.0 record
+  // that predates `model_alias` reads as a raw-id session, so no use
+  // site can ever see an `undefined` the type does not promise. The
+  // next write persists the explicit values.
   return {
     version: 1,
     sessions: file["sessions"].map((entry) => ({
@@ -293,6 +305,7 @@ export function validRegistryFile(value: unknown): RegistryFile | null {
       project_settings: entry["project_settings"] ?? false,
       sandbox_block: entry["sandbox_block"] ?? [],
       final: entry["final"] ?? false,
+      model_alias: entry["model_alias"] ?? null,
     })),
   };
 }

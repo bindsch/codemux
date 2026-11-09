@@ -14,6 +14,8 @@ import {
   type KimiEvent,
   type TurnChild,
 } from "../src/session/kimi-machine.js";
+import { emptyUsage } from "../src/result-envelope.js";
+import type { ResultUsageBlock } from "../src/types.js";
 import {
   assistantCall,
   assistantText,
@@ -31,8 +33,9 @@ describe("kimi machine - the turn's reply rule (al34)", () => {
    * carries. Pure state-machine probes were how the review found the
    * two false-success shapes, so they are how the fix is pinned. */
   const runTurn = (
-    lines: string[]
-  ): { finish: "end" | "failed" | "interrupted"; reason?: string } => {
+    lines: string[],
+    usage: ResultUsageBlock = emptyUsage()
+  ): { finish: "end" | "failed" | "interrupted"; reason?: string; usage: ResultUsageBlock } => {
     const state = initialKimiState(null);
     step(state, { kind: "run_started" }, config);
     step(
@@ -45,7 +48,7 @@ describe("kimi machine - the turn's reply rule (al34)", () => {
     for (const line of lines) step(state, { kind: "child_line", line }, config);
     const effects = step(
       state,
-      { kind: "child_exit", child, outcome: { code: 0, signal: null } },
+      { kind: "child_exit", child, outcome: { code: 0, signal: null }, usage },
       config
     );
     const completed = effects.find(
@@ -57,7 +60,7 @@ describe("kimi machine - the turn's reply rule (al34)", () => {
     if (completed === undefined) {
       throw new Error("the exit carried no turn_completed emit");
     }
-    return { finish: completed.finish, reason: completed.reason };
+    return { finish: completed.finish, reason: completed.reason, usage: completed.usage };
   };
 
   test("a final assistant text after every tool result answers the turn", () => {
@@ -102,6 +105,27 @@ describe("kimi machine - the turn's reply rule (al34)", () => {
       "the kimi process exited 0 with 1 tool call that never received a result " +
         "and no final assistant reply"
     );
+  });
+
+  test("the exit's usage read rides the turn_completed emit and the cumulative fold", () => {
+    // The print wire names no counts, so the executor reads them from
+    // the session's wire log after the child settles (the child_exit
+    // event's usage field, kimi-driver-events.ts); the machine threads
+    // that block onto the caller's turn_completed unchanged and folds
+    // it into the cumulative the session's end carries — a failed
+    // verdict folds it too (the model calls happened whatever the
+    // verdict says).
+    const read: ResultUsageBlock = {
+      input_tokens: 10, output_tokens: 2, cached_input_tokens: 3, total_tokens: 15, cost_usd: null,
+    };
+    const ok = runTurn([assistantText("answer"), hintLine(ID)], read);
+    expect(ok.usage).toEqual(read);
+    const failed = runTurn([assistantText("cut"), assistantCall("call-1"), hintLine(ID)], read);
+    expect(failed.finish).toBe("failed");
+    expect(failed.usage).toEqual(read);
+    // No read (the executor's all-null block when the log could not be
+    // attributed): the event says nulls, never zeros.
+    expect(runTurn([assistantText("answer"), hintLine(ID)]).usage).toEqual(emptyUsage());
   });
 });
 
@@ -269,7 +293,7 @@ describe("kimi machine - ended absorbs and counts", () => {
       { kind: "spawn_settled", child: stray },
       { kind: "spawn_failed", error: new Error("late") },
       { kind: "child_line", line: "not json" },
-      { kind: "child_exit", child: stray, outcome: { code: 0, signal: null } },
+      { kind: "child_exit", child: stray, outcome: { code: 0, signal: null }, usage: emptyUsage() },
       { kind: "stdin_eof" },
       { kind: "signal" },
       { kind: "session_timeout" },

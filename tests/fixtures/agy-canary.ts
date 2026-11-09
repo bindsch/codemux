@@ -10,7 +10,13 @@ const home = process.env.HOME!;
 const settingsPath = join(home, ".gemini/antigravity-cli/settings.json");
 const settings = existsSync(settingsPath) ? JSON.parse(readFileSync(settingsPath, "utf8")) : {};
 emit("init", { tools: ["command"], mcp_servers: Object.keys(settings.mcpServers ?? {}) });
-const prompt = args.find((arg) => arg.startsWith("--print="))!;
+// agy 1.5.3 runs take the prompt as one stream-json user frame on stdin
+// (adapters/agy.ts getStdinInput), never as a --print argument.
+if (args.some((arg) => arg.startsWith("--print"))) throw new Error("prompt must not ride argv");
+if (!args.includes("--input-format=stream-json")) throw new Error("missing stream-json input");
+const frame = readFileSync(0, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as { event?: string; message?: { content?: string } })
+  .find((value) => value.event === "user");
+const prompt = frame?.message?.content ?? "";
 let response = "OK";
 if (prompt.includes("Run this shell command")) {
   if (settings.permissions?.deny.includes("command(*)")) {

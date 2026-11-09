@@ -7,7 +7,7 @@
 import { randomUUID } from "node:crypto";
 import { recordSessionStart } from "./registry.js";
 import { CodexDriverIo } from "./codex-driver-io.js";
-import { settledPrivateHomePath } from "./private-home-key.js";
+import { isCallerHarnessHome, recordedHarnessHome } from "./harness-home.js";
 
 export abstract class CodexDriverLedger extends CodexDriverIo {
   /** Codemux's own id for this session, minted at construction: what the
@@ -44,14 +44,16 @@ export abstract class CodexDriverLedger extends CodexDriverIo {
       agent: "codex",
       cwd: this.options.cwd,
       // The real value: either flag says hermetic (the driver-io rule).
-      hermetic: this.options.hermetic === true || this.options.privateHome != null,
+      hermetic: this.options.hermetic === true || (this.options.privateHome != null && !isCallerHarnessHome(this.options.privateHome)),
+      ...(isCallerHarnessHome(this.options.privateHome) ? { caller_owned_home: true } : {}),
       harness_home:
         this.options.privateHome != null
-          ? settledPrivateHomePath(this.options.privateHome.dir, this.threadId)
+          ? recordedHarnessHome(this.options.privateHome, this.threadId)
           : this.options.harnessHomeFor !== undefined
             ? this.options.harnessHomeFor(this.threadId)
             : this.options.harnessHome,
       model: this.options.model ?? null,
+      model_alias: this.options.modelAlias ?? null,
       autonomy: this.options.autonomy,
       sandboxed: this.options.sandboxed,
       sandbox_trust: this.options.sandboxTrust,
@@ -59,10 +61,9 @@ export abstract class CodexDriverLedger extends CodexDriverIo {
       sandbox_scrub_env: this.options.sandboxScrubEnv,
       sandbox_block: [...(this.options.sandboxBlock ?? [])],
       pass_env: [...this.options.passEnv],
-      // The CLI refuses --enable-playwright-mcp outside the claude family.
-      playwright_mcp: false,
+      playwright_mcp: this.options.playwrightMcp === true,
       provider_base_url: this.options.providerBaseUrl,
-      project_settings: false,
+      project_settings: this.options.projectSettings === true,
     });
     if (!outcome.ok) {
       // An untracked live session must not run (§4.8): the registry is

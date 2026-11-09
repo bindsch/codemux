@@ -1,8 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { guardedWait } from "../src/process-runner.js";
+import { guardedWait, hasActiveSignalOwner } from "../src/process-runner.js";
+import { trackPrivateDir, untrackPrivateDir } from "../src/private-dir-signals.js";
 
 const bun = process.execPath;
 
@@ -55,4 +56,29 @@ describe("guardedWait SIGINT burst window", () => {
       rmSync(cwd, { recursive: true, force: true });
     }
   }, 15_000);
+
+  test("a Ctrl-C during an interactive wait never exits through a private directory's handler (F47)", async () => {
+    // Before the fix the private-directory handler saw no captured command,
+    // finalized the directory and exited 130 under the running child; in
+    // the full suite a leaked directory from an earlier file ended the runner.
+    const finalize = (): void => { finalized++; };
+    let finalized = 0;
+    const exits: unknown[] = [];
+    const exit = spyOn(process, "exit").mockImplementation(((code?: number) => { exits.push(code); }) as typeof process.exit);
+    trackPrivateDir(finalize);
+    const proc = Bun.spawn([bun, "-e", "setTimeout(() => process.exit(0), 300)"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    try {
+      const waiting = guardedWait(() => proc);
+      expect(hasActiveSignalOwner()).toBe(true);
+      process.emit("SIGINT");
+      expect(exits).toEqual([]);
+      expect(finalized).toBe(0);
+      expect(await waiting).toBe(0);
+      expect(hasActiveSignalOwner()).toBe(false);
+    } finally {
+      untrackPrivateDir(finalize);
+      exit.mockRestore();
+      try { process.kill(proc.pid, "SIGKILL"); } catch { /* already ended */ }
+    }
+  }, 10_000);
 });

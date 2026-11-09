@@ -14,7 +14,8 @@ import { unusableFacts } from "../process.js";
 /** What one harness line resolves to. The driver owns the FSM and the
  * pending set; these are the parser's facts. */
 export type ClaudeParse =
-  | { kind: "init"; sessionId: string }
+  | { kind: "init"; sessionId: string; model: string | null }
+  | { kind: "assistant_model"; model: string }
   | { kind: "assistant_delta"; text: string }
   | { kind: "assistant_text"; text: string }
   | { kind: "tool_call"; callId: string; name: string; input: Record<string, unknown> }
@@ -28,7 +29,16 @@ export type ClaudeParse =
       requestId: string | number | null;
       subtype: string;
     }
-  | { kind: "turn_completed"; isError: boolean; reason: string | null; usage: ResultUsageBlock }
+  | {
+      kind: "turn_completed";
+      isError: boolean;
+      reason: string | null;
+      usage: ResultUsageBlock;
+      /** The `modelUsage` keys the result named, empty when the field is
+       * absent or not an object (the round-211 record check) — the
+       * provider's own model report for the turn. */
+      models: string[];
+    }
   /** The harness refused one of codemux's own control requests (an
    * interrupt): the protocol's `subtype: "error"` answer (review live22). */
   | { kind: "control_error"; requestId: string; error: string }
@@ -117,7 +127,19 @@ export class ClaudeStreamParser {
             return [{ kind: "unknown" }];
           }
           this.initSeen = true;
-          return [{ kind: "init", sessionId: sessionId as string }];
+          // The init frame's `model` is the harness naming the model it
+          // configured (claude.exe 2.1.317 writes `model:e.model` on the
+          // init subtype; recorded fixture zai-session-a.ndjson), so it
+          // reports as source `harness`, unlike the provider's own
+          // `message.model`/`modelUsage` reports below.
+          const initModel = event["model"];
+          return [
+            {
+              kind: "init",
+              sessionId: sessionId as string,
+              model: typeof initModel === "string" && initModel.length > 0 ? initModel : null,
+            },
+          ];
         }
         // hook_started/hook_response/status/permission_denied: valid,
         // unmapped — tier-1 passthrough.
@@ -137,6 +159,15 @@ export class ClaudeStreamParser {
         // from assistant frames at all — turn usage comes from the
         // `result` event only — so there is nothing to protect here.
         const parses: ClaudeParse[] = [];
+        // `message.model` is the provider's own naming of the model that
+        // answered (claude.exe 2.1.317 stamps it on every assistant
+        // frame): one fact per frame, ahead of the content-block facts,
+        // so the driver can attribute the turn's served model (design
+        // P5). A frame with no readable model contributes none.
+        const frameModel = record["model"];
+        if (typeof frameModel === "string" && frameModel.length > 0) {
+          parses.push({ kind: "assistant_model", model: frameModel });
+        }
         const content = record["content"];
         if (Array.isArray(content)) {
           for (const block of content) {
@@ -229,6 +260,11 @@ export class ClaudeStreamParser {
             isError,
             reason: typeof event.subtype === "string" ? event.subtype : null,
             usage: normalizeClaudeUsage(event["usage"], event["total_cost_usd"]),
+            // The round-211 record check (result-envelope/claude.ts): an
+            // array is not a `modelUsage` object — its index "0" is a
+            // position, never a model name — so no models are read from
+            // it at all.
+            models: resultModelUsageKeys(event["modelUsage"]),
           },
         ];
       }
@@ -305,6 +341,14 @@ export class ClaudeStreamParser {
 
 function isInputObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The `modelUsage` keys of a result frame, empty when the field is
+ * absent, an array, or not an object (round 211's record check, the one
+ * result-envelope/claude.ts applies to the run envelope). */
+function resultModelUsageKeys(value: unknown): string[] {
+  if (!isInputObject(value)) return [];
+  return Object.keys(value);
 }
 
 /** A numeric request id the control protocol's error answer can echo:

@@ -138,15 +138,17 @@ describe("aider session e2e - unanswered prompts", () => {
     expect(await session.code).toBe(1);
   });
 
-  test("a reply that is only a thinking block is an answered turn (review round 163)", async () => {
+  test("a reply that is only a thinking block fails as an empty answer but keeps the session (review round 163, E1)", async () => {
     // Aider records the reasoning block as the assistant's block and
-    // restores it, so the history does not hold an unanswered prompt.
-    // The caller is owed no text (the block is stripped), the turn ends
-    // normally, and the session takes a further turn and stays resumable.
+    // restores it, so the history does not hold an unanswered prompt and
+    // the session stays usable. The caller gets no text (the block is
+    // stripped), so the shared empty-answer rule (src/session/completion.ts)
+    // fails the turn; the session takes a further turn and stays resumable.
     const session = await startSession();
     send(session.driver, { type: "user", text: "scenario:thinkingonly hidden" });
     const completed = await waitFor(session.events, of("turn_completed"), "turn_completed");
-    expect(completed.finish).toBe("end");
+    expect(completed.finish).toBe("failed");
+    expect(completed.reason).toBe("empty answer");
     expect(session.events.some((event) => event.type === "assistant_message")).toBe(false);
     expect(session.events.some((event) => event.type === "error")).toBe(false);
     send(session.driver, { type: "user", text: "scenario:basic two" });

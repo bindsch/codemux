@@ -7,10 +7,9 @@
 
 import { appendSessionTurnCallRecord } from "../call-log.js";
 import { emptyUsage } from "../result-envelope.js";
-import {
-  buildKimiSessionCommand,
-  kimiSessionCapabilities,
-} from "./kimi-session.js";
+import { findKimiWireLog, kimiWireUsage } from "../kimi-wire-log.js";
+import type { ResultUsageBlock } from "../types.js";
+import { kimiSessionCapabilities } from "./kimi-session.js";
 import {
   type KimiEffect,
   type TurnChild,
@@ -19,15 +18,37 @@ import { buildSessionEnded, shutdownRequested } from "./process.js";
 import {
   buildEvent,
   buildInputAck,
+  buildSessionStarted,
   buildUnknownEvent,
   buildUserMessage,
 } from "./protocol.js";
 import { recordSessionStartOffStream, touchSession } from "./registry.js";
-import { settledPrivateHomePath, currentPrivateHomeDir } from "./private-home-key.js";
-import { kimiPrivateBrandHome, writeKimiSessionHermeticConfig } from "../kimi-hermetic.js";
+import { isCallerHarnessHome, recordedHarnessHome } from "./harness-home.js";
+import { kimiPrivateBrandHome } from "../kimi-hermetic.js";
 import { KimiDriverFinalize } from "./kimi-driver-finalize.js";
+import { identifyKimiInterruptedSession } from "./kimi-session-index.js";
+
+/** A usage block whose every token count is known (kimiWireUsage's
+ * output when the log's records carried complete counts). */
+type CompleteUsage = ResultUsageBlock & {
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
+  total_tokens: number;
+};
 
 export abstract class KimiDriverEvents extends KimiDriverFinalize {
+
+  /** The wire log's token totals as of the previous read (zeros before
+   * the first): one log accumulates every turn of the native session,
+   * so a turn's own counts are the delta against these. */
+  private wireUsageBaseline = { input: 0, output: 0, cached: 0, total: 0 };
+  /** False once totals are unknowable — a resumed session whose prior
+   * log could not be read at construction, or a partial read midway
+   * (the log is append-only, so a record that lacks a count makes every
+   * later read partial too): no later turn can be attributed counts of
+   * its own, so every report is the honest all-null block. */
+  private wireBaselineKnown: boolean = this.seedWireBaseline();
 
   protected override performOne(effect: KimiEffect): void {
     switch (effect.kind) {
@@ -43,6 +64,8 @@ export abstract class KimiDriverEvents extends KimiDriverFinalize {
         );
         return;
       case "emit":
+        if (effect.event === "turn_started") this.armTurnTimer();
+        if (effect.event === "turn_completed" || effect.event === "session_ended") this.clearTurnTimer();
         // Final turn emissions share the fatal reservation, leaving the
         // lane's last slot for session_ended. Live turn events still use
         // ordinary capacity. A refused final emission raises the exit
@@ -66,7 +89,7 @@ export abstract class KimiDriverEvents extends KimiDriverFinalize {
         return;
       case "announce":
         this.emit(
-          buildEvent(++this.seq, this.sessionIdOrEmpty(), "session_started", null, {
+          buildSessionStarted(++this.seq, this.sessionIdOrEmpty(), null, {
             agent: "kimi",
             model: this.options.model ?? null,
             autonomy: this.options.autonomy,
@@ -81,44 +104,22 @@ export abstract class KimiDriverEvents extends KimiDriverFinalize {
             // (the protocol doc promises no omission).
             private_home:
               this.options.privateHome != null
-                ? settledPrivateHomePath(this.options.privateHome.dir, this.state.sessionId ?? "")
+                ? recordedHarnessHome(this.options.privateHome, this.state.sessionId ?? "")
                 : null,
+            // kimi 2.5.2's print wire names no model on any line (the
+            // PromptJsonWriter writes role and meta lines only, design
+            // P5's bundle read), so no served model exists to report —
+            // a declared limitation, not a missing field.
+            model_served: null,
+            model_served_source: null,
+            model_alias: this.options.modelAlias ?? null,
           })
         );
         return;
       case "spawn": {
-        const argv = buildKimiSessionCommand({
-          model: this.options.wireModel,
-          resumeSessionId: this.state.sessionId ?? undefined,
-          prompt: effect.prompt,
-          // The CURRENT directory: `dir` follows the settle rename (the
-          // launcher's contract), so on every respawned turn it already
-          // names the path the home sits on — run-shaped before the
-          // settle, session-keyed after.
-          hermeticHome:
-            this.options.privateHome != null
-              ? currentPrivateHomeDir(this.options.privateHome, this.state.sessionId ?? "")
-              : undefined,
-        });
         let promise: Promise<TurnChild>;
         try {
-          // A hermetic session's private brand home gets its config.toml
-          // here, once, at the first turn of a FRESH home — before the
-          // child it is about to spawn reads it, after the consumer's
-          // pre-write window. A resumed home already carries the config
-          // the earlier process generated; later turns never rewrite it.
-          if (
-            this.options.privateHome != null &&
-            !this.options.privateHome.resumed &&
-            !this.hermeticConfigWritten
-          ) {
-            writeKimiSessionHermeticConfig(
-              kimiPrivateBrandHome(this.options.privateHome.dir),
-              this.options.hermeticSourceHome ?? null
-            );
-            this.hermeticConfigWritten = true;
-          }
-          promise = this.options.spawnTurn(argv);
+          promise = this.options.spawnTurn(this.prepareTurn(effect.prompt), undefined, this.playwrightChecks);
         } catch (error) {
           // A synchronous throw from the spawn closure (the CLI's
           // per-turn validateRunRequest) is the spawn's own failure. No
@@ -149,16 +150,28 @@ export abstract class KimiDriverEvents extends KimiDriverFinalize {
           // drained output the caller is owed arrived first.
           await child.settled;
           if (this.activeChild === child) this.activeChild = null;
+          this.cleanupNoToolsProfile();
+          if (this.options.privateHome != null && this.state.sessionId === null && this.state.turn?.interruption !== undefined) {
+            try {
+              const id = identifyKimiInterruptedSession(this.currentBrandHome(), this.options.cwd, this.sessionIdsBeforeTurn);
+              if (id !== null) this.deliver({ kind: "session_identified", sessionId: id });
+            } catch (error) {
+              this.deliver({ kind: "fatal", source: "codemux", message: String(error) });
+            }
+          }
           // The child is gone, so nothing writes the private home
           // anymore: this is the one settle point between turns.
           this.settlePrivateHome();
-          this.deliver({ kind: "child_exit", child, outcome });
+          this.deliver({ kind: "child_exit", child, outcome, usage: this.readTurnWireUsage() });
         });
         child.endInput();
         return;
       }
       case "stop_child":
         void this.settleChild(effect.child);
+        return;
+      case "stop_turn":
+        this.activeChild?.requestStop();
         return;
       case "arm_session_timer":
         if (this.options.sessionTimeoutMs !== null && this.sessionTimer === null) {
@@ -189,16 +202,18 @@ export abstract class KimiDriverEvents extends KimiDriverFinalize {
             agent: "kimi",
             cwd: this.options.cwd,
             // The real value: either flag says hermetic.
-            hermetic: this.options.hermetic || this.options.privateHome != null,
+            hermetic: this.options.hermetic || (this.options.privateHome != null && !isCallerHarnessHome(this.options.privateHome) && !this.options.preserveCustomization),
             // A hermetic session's home is the private brand home, named
             // as the resume guard finds it: the settled path keyed by
             // this session id (settle lands before the record's release,
             // so a resume never sees the keyed name missing).
             harness_home:
-              this.options.privateHome != null
-                ? kimiPrivateBrandHome(settledPrivateHomePath(this.options.privateHome.dir, sessionId))
+              isCallerHarnessHome(this.options.privateHome) ? this.options.privateHome.dir : this.options.privateHome != null
+                ? kimiPrivateBrandHome(recordedHarnessHome(this.options.privateHome, sessionId))
                 : this.options.harnessHome,
+            ...(isCallerHarnessHome(this.options.privateHome) ? { caller_owned_home: true } : {}),
             model: this.options.model ?? null,
+            model_alias: this.options.modelAlias ?? null,
             autonomy: this.options.autonomy,
             sandboxed: this.options.sandboxed,
             sandbox_trust: this.options.sandboxTrust,
@@ -206,9 +221,9 @@ export abstract class KimiDriverEvents extends KimiDriverFinalize {
             sandbox_scrub_env: this.options.sandboxScrubEnv,
             sandbox_block: [...(this.options.sandboxBlock ?? [])],
             pass_env: [...this.options.passEnv],
-            playwright_mcp: false,
+            playwright_mcp: this.options.playwrightMcp === true,
             provider_base_url: this.options.providerBaseUrl,
-            project_settings: false,
+            project_settings: this.options.experimentProjectSettings === true,
           },
           () => this.state.phase === "ended",
           (outcome) =>
@@ -266,8 +281,10 @@ export abstract class KimiDriverEvents extends KimiDriverFinalize {
           this.ledgerSessionId(),
           effect.turnId,
           effect.startedAt,
-          effect.finish,
-          emptyUsage()
+          this.out.completeTurn(effect.turnId, effect.finish).finish,
+          effect.usage,
+          // The print wire names no model: no served model to record.
+          null
         );
         return;
       case "ledger_session":
@@ -298,7 +315,15 @@ export abstract class KimiDriverEvents extends KimiDriverFinalize {
           turn_id: effect.turnId,
           finish: effect.finish,
           ...(effect.reason !== undefined ? { reason: effect.reason } : {}),
-          usage: emptyUsage(),
+          // The turn's wire-log delta (the child_exit read); all-null
+          // when none could be attributed.
+          usage: effect.usage,
+          // The print wire names no model (see the announce case): no
+          // served model exists to report (design P5's declared
+          // limitation).
+          model_served: null,
+          model_served_source: null,
+          model_alias: this.options.modelAlias ?? null,
         });
       case "assistant_message":
         return buildEvent(++this.seq, sid, "assistant_message", effect.raw, {
@@ -336,5 +361,75 @@ export abstract class KimiDriverEvents extends KimiDriverFinalize {
             (this.options.privateHome == null || this.options.privateHome.settled),
         });
     }
+  }
+
+  /** The brand home the session's wire log lives under: the hermetic
+   * session's settled private brand home (the settle just ran at every
+   * read point, and the naming rule is idempotent on a settled dir),
+   * else the operator brand home the plain session runs on. */
+  private wireBrandHome(sessionId: string): string {
+    return this.options.privateHome != null
+      ? kimiPrivateBrandHome(recordedHarnessHome(this.options.privateHome, sessionId))
+      : this.options.harnessHome;
+  }
+
+  /** Seed the baseline with the prior turns' totals so a resumed
+   * session's first turn reports only its own counts. A fresh session
+   * needs no seed (its log starts empty). Any seed failure — the prior
+   * log missing, unreadable, or partial — leaves the prior totals
+   * unknown, and no later turn can be attributed counts of its own. */
+  private seedWireBaseline(): boolean {
+    const resume = this.options.resumeSessionId;
+    if (resume === null) return true;
+    const totals = this.readWireTotals(resume);
+    if (totals === null) return false;
+    this.absorbWireTotals(totals);
+    return true;
+  }
+
+  /** Read the log's cumulative totals; null when the log cannot be read
+   * or a count is unreportable (kimiWireUsage's partial shape). */
+  private readWireTotals(sessionId: string): CompleteUsage | null {
+    try {
+      const totals = kimiWireUsage(findKimiWireLog(this.wireBrandHome(sessionId), sessionId));
+      return totals.input_tokens === null || totals.output_tokens === null ||
+        totals.cached_input_tokens === null || totals.total_tokens === null
+        ? null
+        : totals as CompleteUsage;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Adopt complete totals as the baseline. */
+  private absorbWireTotals(totals: CompleteUsage): void {
+    this.wireUsageBaseline = {
+      input: totals.input_tokens,
+      output: totals.output_tokens,
+      cached: totals.cached_input_tokens,
+      total: totals.total_tokens,
+    };
+  }
+
+  /** The finished turn's token counts: the wire log's new totals minus
+   * the previous read's (the log carries the whole native session, so
+   * only the delta is this turn's). Any failure reports no counts and
+   * leaves the baseline standing — usage is reporting, never a verdict,
+   * and a later read then attributes everything since the last
+   * successful one, keeping the session's cumulative exact. */
+  private readTurnWireUsage(): ResultUsageBlock {
+    const sessionId = this.state.sessionId;
+    if (sessionId === null || !this.wireBaselineKnown) return emptyUsage();
+    const totals = this.readWireTotals(sessionId);
+    if (totals === null) return emptyUsage();
+    const base = this.wireUsageBaseline;
+    this.absorbWireTotals(totals);
+    return {
+      ...emptyUsage(),
+      input_tokens: totals.input_tokens - base.input,
+      output_tokens: totals.output_tokens - base.output,
+      cached_input_tokens: totals.cached_input_tokens - base.cached,
+      total_tokens: totals.total_tokens - base.total,
+    };
   }
 }

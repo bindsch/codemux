@@ -487,11 +487,14 @@ test.each(["run", "check"])("%s rejects Codex experiment no-net before installat
   expect(result.stderr).not.toContain("not installed");
 });
 
-test("Codex paired experiment check refuses before installation or a paid probe", async () => {
+test("Codex paired experiment check validates the spec and stops at a codex precondition", async () => {
   const { request } = setup();
   const result = await runCli(["check", "-a", "codex", "--hermetic", "--tools", "none",
     "--experiment-mcp", request.experimentMcp!], { PATH: minimalPath() });
-  expect(result.exitCode).not.toBe(0);
-  expect(result.stderr).toContain("supports run only");
+  // The accepted prefix reaches Codex's explicit-model precondition
+  // (ExperimentFailure, exit 1) before any executable check.
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("requires an explicit --model");
+  expect(result.stderr).not.toContain("supports run only");
   expect(result.stderr).not.toContain("not installed");
 });

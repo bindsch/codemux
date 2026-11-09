@@ -6,7 +6,9 @@ import { expect, test } from "bun:test";
 import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { AGENT_IDS, type AgentId } from "../src/types.js";
-import { assertExperimentMcpUnavailable } from "../src/experiment-mcp.js";
+import { assertExperimentMcpUnavailable, EXPERIMENT_MCP_HARNESS_SCHEMAS } from "../src/experiment-mcp.js";
+import { agentsSupporting, PARITY } from "../src/parity/index.js";
+import { PROBE_FEATURE } from "../src/parity/probe-features.js";
 import {
   DEFAULT_PROBES,
   EXPERIMENT_HARNESSES,
@@ -43,7 +45,11 @@ test("live gate selects and excludes probes by letter or name", () => {
   expect(parseOptions(["--probe", "provider-override"], "").probes).toEqual(["H"]);
   expect(parseOptions(["--probe", " a , result-json "], "").probes).toEqual(["A", "C"]);
   expect(parseOptions(["--probe", "loopback-override,alias-effort,sandbox"], "").probes).toEqual(["H2", "I", "J"]);
-  expect(parseOptions(["--skip-probe", "B,D"], "").probes).toEqual(["A", "C", "E", "F", "G", "H2", "I", "J", "K", "P"]);
+  // The split of the old alias+effort probe: I keeps the alias names, I2
+  // answers the effort spellings.
+  expect(parseOptions(["--probe", "model-alias"], "").probes).toEqual(["I"]);
+  expect(parseOptions(["--probe", "effort,effort-low,i2"], "").probes).toEqual(["I2"]);
+  expect(parseOptions(["--skip-probe", "B,D"], "").probes).toEqual(["A", "C", "E", "F", "G", "H2", "I", "I2", "J", "K", "P"]);
   expect(parseOptions(["--probe", "print-sandbox"], "").probes).toEqual(["P"]);
   expect(parseOptions(["--probe", "A,H", "--skip-probe", "h"], "").probes).toEqual(["A"]);
   expect(parseOptions(["--allow-stale-contracts"], "").allowStaleContracts).toBe(true);
@@ -99,17 +105,24 @@ test("the provider-override preflight refuses an opt-in with a missing override 
   expect(providerOverridePreflight([factsFor("claude")], { ...options, skip: new Set<AgentId>(["claude"]) }, {
     LIVE_GATE_PROVIDER_OVERRIDE: "1",
   })).toBeUndefined();
+  // Gemini runs probe H since its served-model evidence landed; codex's
+  // served-model evidence is a declared harness limitation, so it is the
+  // harness H never applies to.
+  expect(PARITY.codex["check.provider-override.served-model"].state).toBe("harness-limitation");
   expect(providerOverridePreflight(
-    [factsFor("claude"), factsFor("gemini")],
-    { ...options, only: new Set<AgentId>(["gemini"]) },
+    [factsFor("claude"), factsFor("codex")],
+    { ...options, only: new Set<AgentId>(["codex"]) },
     { LIVE_GATE_PROVIDER_OVERRIDE: "1" }
   )).toBeUndefined();
   expect(providerOverridePreflight([factsFor("claude")], { ...options, probes: ["A"] as ProbeLetter[] }, {
     LIVE_GATE_PROVIDER_OVERRIDE: "1",
   })).toBeUndefined();
-  expect(providerOverridePreflight([factsFor("gemini")], options, {
+  expect(providerOverridePreflight([factsFor("codex")], options, {
     LIVE_GATE_PROVIDER_OVERRIDE: "1",
   })).toBeUndefined();
+  expect(() => providerOverridePreflight([factsFor("gemini")], options, {
+    LIVE_GATE_PROVIDER_OVERRIDE: "1",
+  })).toThrow("CODEMUX_GEMINI_PROVIDER_BASE_URL is missing or empty");
 });
 
 test("runProbes refuses the opt-in before any probe spawns", async () => {
@@ -153,52 +166,20 @@ test("live gate validates and deduplicates the selected harnesses", () => {
   }
 });
 
-test("the probe matrix matches the adapters' declared capabilities", () => {
-  const expected: Record<ProbeLetter, string[]> = {
-    A: [...AGENT_IDS],
-    B: [...AGENT_IDS],
-    C: ["agy", "claude", "codex", "kimi", "opencode", "zai"],
-    D: ["agy", "claude", "codex", "kimi", "opencode", "zai"],
-    E: ["opencode"],
-    F: ["aider", "agy", "claude", "codex", "kimi", "opencode", "zai"],
-    G: ["claude", "codex", "kimi", "zai"],
-    // The override is asserted on the envelope's provider-reported
-    // served_model, so H needs the override and result-JSON capabilities
-    // and a wire that carries the evidence; opencode's and kimi's wires
-    // expose no served-model field, zai carries no provider override at
-    // all (review round 14, edges 2), and codex names a served model only
-    // in a reroute notice (round 26, edges 2).
-    H: ["claude"],
-    // H2 asserts the same override on the loopback fake's request log, so
-    // every override-capable harness runs it (audit D9).
-    H2: ["aider", "claude", "codex", "droid", "goose", "kimi", "openhands", "opencode", "pi"],
-    // I carries both -m and --effort, so the adapter must declare both
-    // (audit D7): a harness that declares model or effort without an I
-    // cell here is a matrix drift and fails this test.
-    I: ["agy", "aider", "claude", "cline", "codex", "copilot", "droid", "opencode", "pi", "zai"],
-    J: [...AGENT_IDS],
-    // The session-shaped hermetic canary needs both halves: the session
-    // driver (probe F's set, minus aider, which declares no hermetic
-    // capability) and the hermetic capability (probe D's set).
-    K: ["agy", "claude", "codex", "kimi", "opencode", "zai"],
-    // P prints the sandbox argv for every harness and spends nothing.
-    P: [...AGENT_IDS],
-  };
-  for (const letter of PROBE_LETTERS) {
-    expect(AGENT_IDS.filter((id) => probeApplies(letter, factsFor(id))).sort().join(","))
-      .toBe([...expected[letter]].sort().join(","));
-  }
+test.each([...PROBE_LETTERS])("probe %s applicability matches the parity declaration", (letter) => {
+  const feature = PROBE_FEATURE[letter];
+  const expected = feature === null ? [...AGENT_IDS] : agentsSupporting(feature);
+  expect(AGENT_IDS.filter((id) => probeApplies(letter, factsFor(id))).sort()).toEqual(expected.sort());
 });
 
 test("the experiment probe set matches the experiment validator", () => {
+  // Each harness is validated against the spec probe G itself writes, so a
+  // spec the run path would refuse (gemini's schema opt-in was once
+  // missing) fails here, not on the live gate.
   const directory = fixtureDirectory();
-  const spec = join(directory, "spec.json");
-  writeFileSync(spec, JSON.stringify({
-    name: "gateEcho", command: "/bin/echo", args: [], env: [],
-    accept_harness_prefix: ["codex-wall-time", "kimi-wall-time"],
-  }));
   try {
     for (const id of AGENT_IDS) {
+      const spec = prepareExperimentProbe(id, directory, "/fixture/server.ts").path;
       let accepted = true;
       try {
         assertExperimentMcpUnavailable(id, spec);
@@ -223,6 +204,7 @@ test("experiment specs set accept_harness_prefix per harness", () => {
       expect(parsed.name).toBe("gateEcho");
       expect(parsed.recording).toBe(directory);
       expect(parsed.accept_harness_prefix ?? []).toEqual([...(prefixes ?? [])]);
+      expect(parsed.accept_harness_schema ?? []).toEqual([...(EXPERIMENT_MCP_HARNESS_SCHEMAS[agent as AgentId] ?? [])]);
       expect(spec.prompt).toContain("bash tool");
     }
   } finally {
@@ -329,14 +311,13 @@ test("an unreadable or malformed registry fails the leak check instead of readin
   }
 });
 
-test("the hermetic session canary's UNSUPPORTED note names the missing half", () => {
-  // Sessions without the hermetic capability (aider): the run-side
-  // hermetic refusal reason, since no hermetic session exists to canary.
-  expect(unsupportedNote("K", factsFor("aider")))
-    .toBe("adapter declares no hermetic capability, so no hermetic session exists to canary (docs/harnesses.md matrix)");
-  // No session driver at all (gemini): probe F's reason.
-  expect(unsupportedNote("K", factsFor("gemini")))
-    .toBe("no session driver for this harness (src/session/cli.ts SESSION_AGENTS)");
+test("the hermetic session canary's UNSUPPORTED note quotes its declaration", () => {
+  for (const id of AGENT_IDS) {
+    const state = PARITY[id]["session.hermetic"];
+    if (state.state === "harness-limitation") {
+      expect(unsupportedNote("K", factsFor(id)), id).toBe(state.reason);
+    }
+  }
   // Without facts the note stays generic; the run passes the fact.
   expect(unsupportedNote("K")).toContain("session driver and a hermetic capability");
 });

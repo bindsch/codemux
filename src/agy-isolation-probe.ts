@@ -117,6 +117,11 @@ export async function runAgyCanaryChecks(hermetic: boolean, toolsNone: boolean, 
       const passed = await runProbe(probe, timeoutMs, model, canary, harnessVersion);
       const controlPassed = await runProbe(control, timeoutMs, model, canary, harnessVersion);
       if (!passed || !controlPassed) {
+        // The same wording the generic check uses: a probe that answered OK
+        // with a control that revealed nothing certifies nothing.
+        if (passed && !controlPassed) {
+          console.error(`Error: ${label.toLowerCase()} agy probe answered OK, but the check proved nothing: control failed`);
+        }
         console.error(`${label} agy: FAIL (probe ${passed ? "passed" : "failed"}, control ${controlPassed ? "passed" : "failed"})`);
         return 1;
       }
@@ -125,3 +130,4 @@ export async function runAgyCanaryChecks(hermetic: boolean, toolsNone: boolean, 
     return 0;
   } finally { canary.cleanup(); }
 }
+

@@ -153,10 +153,10 @@ describe("doctor login rows over fixture stores", () => {
         agy: { agy: script("1.4.12") },
         claude: { claude: script("2.1.300 (Claude Code)") },
         zai: { claude: script("2.1.300 (Claude Code)") },
-        codex: { codex: script("codex-cli 0.165.0") },
-        kimi: { kimi: script("2.4.0") },
-        cursor: { "cursor-agent": script("2026.10.22-e8db854") },
-        opencode: { opencode: script("1.18.18") },
+        codex: { codex: script("codex-cli 0.166.0") },
+        kimi: { kimi: script("2.5.2") },
+        cursor: { "cursor-agent": script("2026.11.05-86047df") },
+        opencode: { opencode: script("1.19.5") },
         qwen: { qwen: script("0.6.2") },
       };
       const fake = createFakeBinaryEnv({ ...greenBase(), ...binaryByAgent[agent] });
@@ -178,7 +178,7 @@ describe("doctor login rows over fixture stores", () => {
   const kimiDoctor = async (credential: string) => {
     const fake = createFakeBinaryEnv({
       ...greenBase(),
-      kimi: `if [ "$1" = "--version" ]; then printf '2.4.0\\n'; exit 0; fi`,
+      kimi: `if [ "$1" = "--version" ]; then printf '2.5.2\\n'; exit 0; fi`,
     });
     try {
       return await runDoctor(["--only", "kimi"], {
@@ -352,7 +352,7 @@ describe("doctor usage rows over a fake usagemux", () => {
       greenBase({
         claude: claudeGreen,
         agy: `if [ "$1" = "--version" ]; then printf '1.4.12\\n'; exit 0; fi`,
-        codex: `if [ "$1" = "--version" ]; then printf 'codex-cli 0.165.0\\n'; exit 0; fi`,
+        codex: `if [ "$1" = "--version" ]; then printf 'codex-cli 0.166.0\\n'; exit 0; fi`,
       })
     );
     try {

@@ -1,4 +1,5 @@
 import { PROJECT_SETTING_SOURCES, validateProjectSettingsRunRequest } from "../claude-project-settings.js";
+import { claudeEffortFlags, validateClaudeEffort } from "../claude-effort.js";
 import { createProjectSettingsConfigDir, projectSettingsOrHermeticHome } from "../claude-project-config.js";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -24,6 +25,8 @@ import {
   claudeGatewayEnv,
   claudeGatewayOmissions,
   claudeModelArgv,
+  claudeModelNeedsPickerSettings,
+  claudeProviderPickerSettings,
   resolveInstructionDir,
 } from "../claude-family.js";
 import type {
@@ -35,23 +38,20 @@ import type {
   AdapterCapabilities,
 } from "../types.js";
 import { zaiLoginState, loginHome, type LoginState } from "../harness-health.js";
+import { validatedClaudeProvider, claudeProviderModel, claudeProviderEnv } from "../claude-provider.js";
 
 const ZAI_BASE_URL = "https://api.z.ai/api/anthropic";
 const MAX_KEY_FILE_BYTES = 16 * 1024;
 const DEFAULT_API_TIMEOUT_MS = 3_000_000;
 const MAX_API_TIMEOUT_MS = 86_400_000;
-// The model zai runs when the request names none (buildRunCommand and
-// buildTuiCommand both fall back to it); result processing must report the
-// same one, or an envelope without modelUsage would claim codemux selected
-// nothing.
+// Run, TUI, and result fallback use this when neither request nor override names a model.
 export const ZAI_DEFAULT_MODEL = "opus";
 
 export class ZaiAdapter extends ClaudeCredentialAdapter {
   readonly id: AgentId = "zai";
   readonly binaryName = "claude";
 
-  /** Same claude binary, same default config directory: the operator's
-   * mirror is guarded as on a provider-override claude run (round 372). */
+  /** Guard the shared Claude credential mirror on every Z.AI launch. */
   override prepareSandbox(context: SandboxPreparation = {}): void {
     if (context.sandboxTrust === "untrusted") return;
     this.reportProfileRedirects("zai", context.passthroughEnv ?? []);
@@ -72,17 +72,12 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
       supportsModel: true,
       supportsAutonomy: true,
       autonomyLevels: ["read-only", "low", "medium", "high"],
-      // Same binary as claude, so the same --effort flag: the levels the
-      // binary's own help lists, plus `none`, the "no flag" spelling
-      // mapEffort maps to nothing. The live evidence behind the mapping
-      // (2026-10-10, glm-5.3 replying under --effort low) predates the
-      // 2.1.280 client-side model-catalog check: a non-catalog id now
-      // rides the picker settings of claude-family.ts or the run dies
-      // before any request leaves the binary.
+      // Native none needs the same version/model-override checks as Claude.
       supportsEffort: true,
-      effortLevels: ["none", "low", "medium", "high", "xhigh", "max"],
+      effortLevels: ["low", "medium", "high", "xhigh", "max"],
       supportsHermetic: true,
       supportsToolSelection: true,
+      supportsProviderOverride: true,
       // Same binary as claude, so the same --output-format json envelope.
       supportsResultJson: true,
       // Same binary as claude, so the same --max-budget-usd spend cap
@@ -92,12 +87,22 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
   }
 
   override mapEffort(level: ReasoningEffort): string[] {
-    // Claude's mapping verbatim: `none` is the adapter's "no flag", not a
-    // value the binary accepts.
-    return level === "none" ? [] : ["--effort", level];
+    return claudeEffortFlags(level);
   }
 
-  override resultModel(request: RunRequest): string { return request.model || ZAI_DEFAULT_MODEL; }
+  private validateEffort(effort?: ReasoningEffort, model?: string, passthroughEnv?: readonly string[]): void {
+    const resolved = this.modelFor(model);
+    validateClaudeEffort({ agent: "zai", effort, model: resolved, passthroughEnv,
+      providerSettings: claudeModelNeedsPickerSettings(resolved) ? claudeProviderPickerSettings(resolved) : undefined });
+  }
+
+  private validatedProvider() { return validatedClaudeProvider("zai", this.environment); }
+
+  private modelFor(model?: string): string {
+    return claudeProviderModel("zai", model, this.validatedProvider()) || ZAI_DEFAULT_MODEL;
+  }
+
+  override resultModel(request: RunRequest): string { return this.modelFor(request.model); }
 
   /** The user home a run sees: the seam, else $HOME, else the account home. */
   private effectiveHome(): string {
@@ -182,6 +187,8 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
   }
 
   override getEnv(): Record<string, string> {
+    const override = this.validatedProvider();
+    if (override !== null) return { ...claudeProviderEnv(override), API_TIMEOUT_MS: this.getApiTimeout() };
     const apiKey = this.getZaiApiKey();
     return {
       // The shared gateway mechanism (claude-family.ts): the token wins over
@@ -198,15 +205,16 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
   }
 
   override beforeLaunch(): void {
-    this.getZaiApiKey();
+    const override = this.validatedProvider();
+    if (override === null) this.getZaiApiKey();
     if (process.stderr.isTTY) {
-      console.error("Z.AI mode: using api.z.ai/api/anthropic");
+      console.error(override === null ? "Z.AI mode: using api.z.ai/api/anthropic" : "Z.AI mode: using provider override");
     }
   }
 
   override configurationIssues(): string[] {
     try {
-      this.getZaiApiKey();
+      this.getEnv();
       return [];
     } catch (error) {
       return [error instanceof Error ? error.message.split("\n")[0]! : String(error)];
@@ -221,6 +229,8 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
 
   override validateRunRequest(request: RunRequest): void {
     super.validateRunRequest(request);
+    this.modelFor(request.model);
+    this.validateEffort(request.effort, request.model, request.passthroughEnv);
     // The adapter pins no CLAUDE_CONFIG_DIR, so a passed-through one is the
     // only redirect -- and a relative one would resolve against the child's
     // working directory, landing the config store somewhere --cwd decides.
@@ -294,10 +304,13 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
     enablePlaywrightMcp = false
   ): void {
     super.validateTuiRequest(model, cwd, autonomy, _effort, passthroughEnv, enablePlaywrightMcp);
+    this.modelFor(model);
+    this.validateEffort(_effort, model, passthroughEnv);
     assertAbsoluteClaudeConfigDir(passthroughEnv, this.environment);
   }
 
   buildRunCommand(request: RunRequest, context?: RunContext): string[] {
+    this.validateEffort(request.effort, request.model, request.passthroughEnv);
     // The Playwright build is decided first, because the settings branch
     // reads it: the Playwright binary's trust check rides the context
     // (review round 110) — its path is embedded in the --mcp-config JSON
@@ -336,16 +349,9 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
     // that names instruction directories (the hermetic check's control)
     // enables it; under --safe-mode that is exactly the channel being
     // proven closed.
-    // The project source is enabled only when the working directory is one
-    // of the named instruction directories, so a repository's own settings
-    // file can never ride in on an unrelated instruction directory. Both
-    // sides compare in the same canonical form (canonicalInstructionDir,
-    // review round 87): raw strings let equivalent spellings of one
-    // directory silently disable the project source. The
-    // user source resolves under the ordinary Claude Code home the child
-    // already uses (CLAUDE_CONFIG_DIR, default ~/.claude) -- Z.AI runs load
-    // the operator's ~/.claude/settings.json directly, exactly as claude
-    // runs do, because both run the same binary against the same store.
+    // Enable the project source only when the canonical cwd is a named
+    // instruction directory. An unrelated directory must not load it.
+    // The user source uses the same Claude Code store as the Claude adapter.
     const instructionDirs = request.instructionDirs ?? [];
     const base = request.cwd ?? process.cwd();
     const cwd = canonicalInstructionDir(base);
@@ -460,14 +466,8 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
     cwd?: string,
     nestedChecks?: ExecutableCheck[]
   ): string[] {
-    // The TUI's default launch carries --safe-mode, the same every-
-    // customization-off baseline as a hermetic run (claude.ts's
-    // buildRunCommand records why --bare is not used instead); the
-    // Playwright branch needs the user settings source for the MCP client
-    // configuration — and it is selected by what the MCP build attached,
-    // never by the flag alone (review round 147): an unsandboxed launch
-    // attaches nothing, and user settings with no MCP configuration to
-    // load from them is the baseline lost for nothing.
+    this.validateEffort(effort, model);
+    // Playwright needs the user source; other TUI launches use --safe-mode.
     const playwright = buildPlaywrightSandboxMcp(sandboxed, {
       enabled: enablePlaywrightMcp, forbiddenRoot: cwd ?? process.cwd(),
       pathEnv: this.executionPathEnv(),
@@ -480,7 +480,7 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
     // Same rule as the run path: a non-catalog model id rides the picker
     // --settings (claude-family.ts) or the binary rejects it before any
     // request.
-    cmd.push(...claudeModelArgv(model || ZAI_DEFAULT_MODEL));
+    cmd.push(...claudeModelArgv(this.modelFor(model)));
     if (autonomy) {
       // The TUI has a human to approve; write grants ride only on
       // headless runs.
@@ -491,8 +491,6 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
     }
     return cmd;
   }
-
-
   /** The zai login read: the key file's existence and mode, or the env key. */
   override loginState(): LoginState {
     return zaiLoginState(loginHome(this.environment), this.environment);

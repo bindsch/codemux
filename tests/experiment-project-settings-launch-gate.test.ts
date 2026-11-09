@@ -2,10 +2,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AiderAdapter } from "../src/adapters/aider.js";
 import { ClaudeAdapter } from "../src/adapters/claude.js";
 import { CodexAdapter } from "../src/adapters/codex.js";
 import { OpencodeAdapter } from "../src/adapters/opencode.js";
 import { ZaiAdapter } from "../src/adapters/zai.js";
+import { PROJECT_SETTINGS_AGENTS } from "../src/claude-project-settings.js";
 import { launchRunRequest } from "../src/launch.js";
 import { UsageRefusalError } from "../src/validation.js";
 import type { BaseAdapter } from "../src/adapters/base.js";
@@ -34,7 +36,7 @@ describe("--experiment-project-settings on the programmatic launch paths", () =>
     mkdirSync(bin);
     // The fake harness binaries write a marker when they run, so a test
     // asserts the refusal preceded the spawn, not merely failed after it.
-    for (const name of ["claude", "zai", "opencode", "codex"]) {
+    for (const name of ["claude", "zai", "opencode", "codex", "aider"]) {
       writeFileSync(
         join(bin, name),
         `printf ran > "${join(root, "spawned")}"\nexit 7`,
@@ -110,8 +112,14 @@ describe("--experiment-project-settings on the programmatic launch paths", () =>
 
   test("an unmapped agent is refused at validateRunRequest before prepareRun", () =>
     expectRefusal(
+      () => new AiderAdapter(environment()).run(request("aider")),
+      `applies to the ${PROJECT_SETTINGS_AGENTS.join(", ")} agents only`
+    ));
+
+  test("codex adapter.run without the sandbox refuses before the spawn", () =>
+    expectRefusal(
       () => new CodexAdapter(environment()).run(request("codex")),
-      "applies to the claude, zai, and opencode agents only"
+      "requires the scode sandbox"
     ));
 
   const sandboxedLaunch = (adapter: BaseAdapter, run: RunRequest): Promise<unknown> =>

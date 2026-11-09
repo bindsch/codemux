@@ -10,7 +10,6 @@ import { ExperimentFailure, ExperimentFailureCode, experimentFailure, Experiment
 import { ExperimentInventory } from "./experiment-inventory.js";
 import { ClaudeExperimentUsage } from "./experiment-claude-usage.js";
 import { modelResultMatches } from "./experiment-claude-content.js";
-
 export { claudeContentBlocks, modelResultMatches } from "./experiment-claude-content.js";
 
 // SDKMessage discriminants and the SDK control transport envelopes.
@@ -48,6 +47,8 @@ export class ExperimentBridge implements StdoutSink {
   private closeFailureReported = false;
   /** Set once the bounded wait abandoned a never-settling cleanup (below). */
   private closeAbandoned = false;
+  private outcome?: ExperimentFailure; // A launcher verdict for run_end (ExperimentHttpRelay.noteRunOutcome).
+  noteRunOutcome(error: ExperimentFailure): void { if (!this.closed) this.outcome ??= error; }
   private closeGrace?: { expired: Promise<void>; timer: ReturnType<typeof setTimeout> };
   private initialized = false;
   private inventoryValidated = false;
@@ -490,8 +491,8 @@ export class ExperimentBridge implements StdoutSink {
     try {
       this.recording.close({ result_received: Boolean(this.result), tool_calls: this.calls.size,
         calls_delivered: this.callsDelivered,
-        model_results: [...this.calls.values()].filter((call) => call.received).length, error,
-        code: error ? this.failureCode ?? ExperimentFailureCode.Protocol : null });
+        model_results: [...this.calls.values()].filter((call) => call.received).length, error: error ?? this.outcome?.message ?? null,
+        code: error ? this.failureCode ?? ExperimentFailureCode.Protocol : this.outcome?.code ?? null });
     } finally {
       this.closed = true;
     }

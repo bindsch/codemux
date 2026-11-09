@@ -47,6 +47,12 @@ describe("agy session e2e - lifecycle", () => {
     expect(started.agent).toBe("agy");
     expect(started.session_id).toBe("conv-fake-1");
     expect(started.autonomy).toBe("high");
+    // agy's wire carries no recorded init frame naming the model the
+    // harness configured (design P5's declared gap), so no served model
+    // is reported on either event.
+    expect(started.model_served).toBeNull();
+    expect(started.model_served_source).toBeNull();
+    expect(started.model_alias).toBeNull();
     expect(started.protocol).toBe("codemux-live-session/1");
     expect(started.capabilities).toEqual({
       live_input: true,
@@ -70,6 +76,9 @@ describe("agy session e2e - lifecycle", () => {
     // completed, so its absence is settled, not early).
     expect(of("usage")(session.events)).toBeUndefined();
     expect(completed.finish).toBe("end");
+    expect(completed.model_served).toBeNull();
+    expect(completed.model_served_source).toBeNull();
+    expect(completed.model_alias).toBeNull();
     expect(completed.turn_id).toBe("t1");
     expect(completed.usage).toEqual({
       input_tokens: 60,

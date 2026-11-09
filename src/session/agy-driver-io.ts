@@ -12,8 +12,8 @@ import { providerHost, type SessionCallContext } from "../call-log.js";
 import { emptyUsage } from "../result-envelope.js";
 import { agySessionCapabilities } from "./agy-session.js";
 import { SessionFsm } from "./fsm.js";
+import { SessionOutputQueue } from "./completion.js";
 import {
-  BoundedOutboundQueue,
   codemuxFatalMessage,
   SESSION_SIGNAL_EXIT_CODE,
   type SessionFatal,
@@ -29,7 +29,15 @@ export interface AgyDriverOptions {
   /** The conversation id to resume, or null to start fresh. */
   resumeConversationId: string | null;
   autonomy: AutonomyLevel;
+  /** The model reported on session_started and recorded in the registry
+   * (the CLI's resolved model). agy's wire carries no recorded init frame
+   * naming the model the harness configured, so no served model is
+   * reported (design P5's declared gap). */
   model?: string;
+  /** The `-m` value as typed when it resolved through `config.models`,
+   * else null: reported as `model_alias` on the model-bearing events and
+   * recorded with every ledger line (design P5). */
+  modelAlias?: string | null;
   effort?: ReasoningEffort;
   /** The validated working directory — also the registry's cwd record. */
   cwd: string;
@@ -96,7 +104,7 @@ type Timer = ReturnType<typeof setTimeout>;
 export abstract class AgyDriverIo {
   protected readonly fsm = new SessionFsm();
   protected readonly capabilities = agySessionCapabilities();
-  protected readonly out: BoundedOutboundQueue;
+  protected readonly out: SessionOutputQueue;
   protected readonly signals: SessionSignalGate;
   /** The second-signal escalation (src/session/stop-escalation.ts). */
   protected readonly stopEscalation = new SessionStopEscalation();
@@ -179,13 +187,14 @@ export abstract class AgyDriverIo {
     this.callLedger = {
       agent: "agy",
       model: options.model ?? null,
+      modelAlias: options.modelAlias ?? null,
       provider: providerHost(options.providerBaseUrl),
       autonomy: options.autonomy,
       hermetic: options.hermetic === true,
       sandboxed: options.sandboxed,
       cwd: options.cwd,
     };
-    this.out = new BoundedOutboundQueue(
+    this.out = new SessionOutputQueue(
       options.sink ?? defaultEventSink(),
       (failure) => {
         // Both failure classes end the session (§4.2): the caller stopped

@@ -58,9 +58,10 @@ import {
 import {
   assertAiderHistoryForTurn,
   buildAiderSessionCommand,
+  aiderSessionHermeticAssignments,
 } from "./aider-session.js";
+import { SessionOutputQueue } from "./completion.js";
 import {
-  BoundedOutboundQueue,
   codemuxFatalMessage,
   SESSION_SIGNAL_EXIT_CODE,
   type SessionFatal,
@@ -70,11 +71,14 @@ import { lateChildRuns } from "./spawn-wait.js";
 import {
   buildEvent,
   buildInputAck,
+  buildSessionStarted,
   buildUnknownEvent,
   type InputRejectionReason,
 } from "./protocol.js";
 import { AiderCallerInput } from "./aider-input.js";
 import type { AiderDriverOptions } from "./aider-finalize.js";
+import { prepareAiderSessionAnalytics } from "./aider-analytics.js";
+import { prepareAiderSessionModelSettings } from "./aider-model-settings.js";
 
 export type { AiderDriverOptions } from "./aider-finalize.js";
 
@@ -85,6 +89,13 @@ export class AiderSessionDriver extends AiderCallerInput {
 
   constructor(options: AiderDriverOptions) {
     super();
+    // Fail closed: a hermetic session without a private home would run
+    // its turns against the operator's real HOME — the exact state
+    // --hermetic exists to prevent — so the invariant is a constructor
+    // refusal, not a default.
+    if (options.hermetic && options.hermeticHome === undefined) {
+      throw new Error("aider hermetic session requires hermeticHome");
+    }
     this.options = options;
     this.done = new Promise<number>((resolve) => {
       this.resolveDone = resolve;
@@ -92,13 +103,14 @@ export class AiderSessionDriver extends AiderCallerInput {
     this.callLedger = {
       agent: "aider",
       model: options.model ?? null,
+      modelAlias: options.modelAlias ?? null,
       provider: providerHost(options.providerBaseUrl),
       autonomy: options.autonomy,
       hermetic: options.hermetic,
       sandboxed: options.sandboxed,
       cwd: options.cwd,
     };
-    this.out = new BoundedOutboundQueue(
+    this.out = new SessionOutputQueue(
       options.sink ?? defaultEventSink(),
       (failure) => {
         // Both failure classes end the session (§4.2); the diagnostic
@@ -224,8 +236,16 @@ export class AiderSessionDriver extends AiderCallerInput {
     // this turn's own aider process (review D7, security). A trip fails
     // the TURN, not the session: the caller saw why, and may end the
     // session deliberately.
+    let analyticsPath: string;
+    let modelSettingsPath: string | undefined;
     try {
+      this.options.callerHome?.verify();
       assertAiderHistoryForTurn(this.options.historyPath);
+      modelSettingsPath = prepareAiderSessionModelSettings(
+        this.options.historyPath, this.options.maxOutputTokens
+      );
+      analyticsPath = prepareAiderSessionAnalytics(this.options.historyPath);
+      this.turnAnalyticsReady = true;
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       const turnId = this.fsm.activeTurn;
@@ -249,8 +269,20 @@ export class AiderSessionDriver extends AiderCallerInput {
       model: this.options.model,
       weakModel: this.options.weakModel,
       effort: this.options.effort,
+      permissionPolicy: this.options.permissionPolicy,
+      tools: this.options.tools,
+      analyticsPath,
+      modelSettingsPath,
       historyPath: this.options.historyPath,
       prompt: text,
+      callerHome: this.options.callerHome,
+      // A hermetic session wraps every turn in the run path's env(1)
+      // HOME redirect (aider-session.ts); a plain session passes none
+      // and the command runs bare.
+      hermeticEnvAssignments:
+        this.options.hermeticHome !== undefined
+          ? aiderSessionHermeticAssignments(this.options.hermeticHome)
+          : undefined,
     });
     let proc: SessionProcess;
     let spawn: Promise<SessionProcess> | null = null;
@@ -299,6 +331,10 @@ export class AiderSessionDriver extends AiderCallerInput {
     proc.exited.then((outcome) => {
       void this.onTurnExited(proc, outcome);
     });
+    if (this.turnInterrupted) {
+      proc.requestStop();
+      return;
+    }
     // The repeating decline carrier (review round 153): aider reads EOF as
     // acceptance of its yes-default prompts, so while this child is alive
     // every read of its stdin returns a decline, never EOF (one canned
@@ -328,7 +364,7 @@ export class AiderSessionDriver extends AiderCallerInput {
       return;
     }
     this.emit(
-      buildEvent(++this.seq, this.options.sessionId, "session_started", null, {
+      buildSessionStarted(++this.seq, this.options.sessionId, null, {
         agent: "aider",
         model: this.options.model ?? null,
         autonomy: this.options.autonomy,
@@ -337,9 +373,19 @@ export class AiderSessionDriver extends AiderCallerInput {
         sandbox_trust: this.options.sandboxTrust,
         capabilities: this.capabilities,
         protocol: "codemux-live-session/1",
-        // Aider has no hermetic mode, so no private home: the key is
-        // still present, null, as the protocol promises for every agent.
-        private_home: null,
+        // A hermetic session's private home — the session-keyed
+        // directory the launcher opened settled (cli-drivers.ts), the
+        // same spelling a --resume computes. A plain session has none:
+        // the key is still present, null, as the protocol promises for
+        // every agent.
+        private_home: this.options.callerHome?.dir ?? this.options.hermeticHome ?? null,
+        // aider's stdout is a human transcript that names the model in
+        // prose only ("Main model: ...", 0.86.2) — no machine-readable
+        // fact exists, so no served model is reported (design P5's
+        // declared limitation).
+        model_served: null,
+        model_served_source: null,
+        model_alias: this.options.modelAlias ?? null,
       })
     );
   }
@@ -386,6 +432,7 @@ export class AiderSessionDriver extends AiderCallerInput {
   }
 
   protected clearTimers(): void {
+    this.clearTurnTimer();
     if (this.sessionTimer !== null) {
       clearTimeout(this.sessionTimer);
       this.sessionTimer = null;

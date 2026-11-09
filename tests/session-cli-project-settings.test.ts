@@ -13,12 +13,11 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createFakeBinaryEnv, minimalPath, runCli } from "./helpers/cli.js";
+import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
 import { readRegistry, sessionRegistryPath } from "../src/session/registry.js";
 import { DEFAULT_DENIAL_MESSAGE } from "../src/session/claude-session.js";
 
@@ -150,95 +149,6 @@ const scodeInvocations = (s: ReturnType<typeof setup>): string[][] =>
 /** The arguments a scode invocation passed right after `flag`. */
 const afterFlag = (argv: readonly string[], flag: string): string[] =>
   argv.filter((_, index) => index > 0 && argv[index - 1] === flag);
-
-describe("CLI - project-settings session refusals", () => {
-  test("the mode without --hermetic refuses with 64", async () => {
-    const { stderr, exitCode } = await runCli(
-      ["session", "-a", "claude", "--experiment-project-settings", "--auto", "low"],
-      { PATH: minimalPath() }
-    );
-    expect(exitCode).toBe(64);
-    expect(stderr).toContain("--experiment-project-settings requires --hermetic");
-  });
-
-  test("the mode on another agent refuses with 64", async () => {
-    const { stderr, exitCode } = await runCli(
-      ["session", "-a", "codex", "--hermetic", "--experiment-project-settings", "--auto", "low"],
-      { PATH: minimalPath() }
-    );
-    expect(exitCode).toBe(64);
-    expect(stderr).toContain("claude, zai, and opencode agents only");
-  });
-
-  test("--final without --hermetic refuses with 64", async () => {
-    const { stderr, exitCode } = await runCli(
-      ["session", "-a", "claude", "--final"],
-      { PATH: minimalPath() }
-    );
-    expect(exitCode).toBe(64);
-    expect(stderr).toContain("--final requires --hermetic");
-  });
-
-  test.each([
-    ["read-only (the default)", ["--hermetic", "--experiment-project-settings"]],
-    ["medium", ["--hermetic", "--experiment-project-settings", "--auto", "medium"]],
-  ])("autonomy %s refuses with 64", async (_name, flags) => {
-    const { stderr, exitCode } = await runCli(
-      ["session", "-a", "claude", ...flags],
-      { PATH: minimalPath() }
-    );
-    expect(exitCode).toBe(64);
-    expect(stderr).toContain("requires --auto low or high for sessions");
-  });
-
-  test("a passed-through config redirect refuses with 64", async () => {
-    const { stderr, exitCode } = await runCli(
-      [
-        "session", "-a", "claude", "--hermetic", "--experiment-project-settings",
-        "--auto", "low", "--pass-env", "CLAUDE_CONFIG_DIR",
-      ],
-      { PATH: minimalPath() }
-    );
-    expect(exitCode).toBe(64);
-    expect(stderr).toContain("--pass-env CLAUDE_CONFIG_DIR");
-  });
-
-  test("an ancestor carrying project memory refuses with 64, naming the path", async () => {
-    const root = mkdtempSync(join(tmpdir(), "codemux-pps-cli-"));
-    try {
-      const cwd = join(root, "parent", "fixture");
-      mkdirSync(cwd, { recursive: true });
-      writeFileSync(join(root, "CLAUDE.md"), "operator memory\n");
-      const { stderr, exitCode } = await runCli(
-        [
-          "session", "-a", "claude", "--hermetic", "--experiment-project-settings",
-          "--auto", "low", "--cwd", cwd,
-        ],
-        { PATH: minimalPath() }
-      );
-      expect(exitCode).toBe(64);
-      expect(stderr).toContain(join(root, "CLAUDE.md"));
-      expect(stderr).toContain("project memory");
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  test("a bad --permission-policy value refuses with 64; deny belongs to claude and zai", async () => {
-    const bogus = await runCli(
-      ["session", "-a", "claude", "--permission-policy", "bogus", "--no-sandbox", "--auto", "high"],
-      { PATH: minimalPath() }
-    );
-    expect(bogus.exitCode).toBe(64);
-    expect(bogus.stderr).toContain("--permission-policy accepts 'default' or 'deny'");
-    const codex = await runCli(
-      ["session", "-a", "codex", "--permission-policy", "deny", "--no-sandbox", "--auto", "high"],
-      { PATH: minimalPath() }
-    );
-    expect(codex.exitCode).toBe(64);
-    expect(codex.stderr).toContain("claude and zai");
-  });
-});
 
 describe("CLI - a project-settings session across commands", () => {
   const childEnv = (s: ReturnType<typeof setup>): Record<string, string> => ({

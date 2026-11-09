@@ -8,25 +8,16 @@
  * and its exit is the turn's verdict. State carries across turns through
  * the native session id the first turn's output names.
  *
- * There is no long-lived child: the driver owns zero processes while idle
- * and one while a turn runs. That changes the end path's shape, not its
- * contract — an orderly end still gives the open turn's process the grace
- * to finish on its own (its completion and usage are the drained output
- * the caller is owed) before the stop signal, and the tree-scoped kill
- * still leaves nothing behind.
- *
- * Identity model: a fresh session's id is deferred to the first
- * run-output line (every line carries the sessionID), the agy deferred
- * model; a resume (`--session`, registry-vouched) adopts its id at run
- * start. A first turn whose output never names a session id leaves the
- * session untrackable and ends it (§4.8).
+ * Each turn owns one child. Interrupt stops that child and preserves the
+ * native session id for the next turn. A first turn that never reports an
+ * id cannot be resumed and ends the session.
  */
 
 import { appendSessionTurnCallRecord, providerHost } from "../call-log.js";
 import { emptyUsage } from "../result-envelope.js";
 import { parseOpenCodeRunLine } from "./opencode-session.js";
+import { SessionOutputQueue } from "./completion.js";
 import {
-  BoundedOutboundQueue,
   callerStdinFailure,
   codemuxFatalMessage,
   harnessFailed,
@@ -59,6 +50,12 @@ export class OpenCodeSessionDriver extends OpenCodeTurns {
 
   constructor(options: OpenCodeDriverOptions) {
     super();
+    if (options.hermetic && !options.privateHome) {
+      throw new Error("opencode hermetic session requires a session-lifetime private home");
+    }
+    if (options.tools === "none" && (!options.hermetic || options.projectSettings)) {
+      throw new Error("opencode session --tools none requires --hermetic without --experiment-project-settings");
+    }
     this.options = options;
     this.done = new Promise<number>((resolve) => {
       this.resolveDone = resolve;
@@ -67,13 +64,14 @@ export class OpenCodeSessionDriver extends OpenCodeTurns {
     this.callLedger = {
       agent: "opencode",
       model: options.model ?? null,
+      modelAlias: options.modelAlias ?? null,
       provider: providerHost(options.providerBaseUrl),
       autonomy: options.autonomy,
       hermetic: options.hermetic,
       sandboxed: options.sandboxed,
       cwd: options.cwd,
     };
-    this.out = new BoundedOutboundQueue(
+    this.out = new SessionOutputQueue(
       options.sink ?? defaultEventSink(),
       (failure) => {
         // Both failure classes end the session (§4.2); the diagnostic rides
@@ -158,9 +156,7 @@ export class OpenCodeSessionDriver extends OpenCodeTurns {
     void this.finish("crash", 1);
   }
 
-  /** One framed line from the caller's stdin. Never throws. The honest
-   * capability matrix (only live input and resume) has already narrowed
-   * the reachable cases to `user` and `shutdown`. */
+  /** One caller frame: user input, interruption, or shutdown. */
   handleCallerLine(line: string): void {
     if (line.trim() === "") return;
     if (this.finished) {
@@ -260,6 +256,11 @@ export class OpenCodeSessionDriver extends OpenCodeTurns {
         void this.finish("shutdown", 0);
         return;
       }
+      case "interrupt": {
+        this.ack(inputSeq, true);
+        this.interruptTurn();
+        return;
+      }
     }
   }
 
@@ -298,7 +299,10 @@ export class OpenCodeSessionDriver extends OpenCodeTurns {
    * rule). */
   protected completeTurn(outcome: SessionChildOutcome): void {
     this.lastChildOutcome = outcome;
-    this.sawHarnessFailure ||= harnessFailed(outcome);
+    this.lastTurnInterrupted = this.turnInterrupted;
+    this.sawHarnessFailure ||= !this.turnInterrupted && harnessFailed(outcome);
+    if (this.turnTimer !== null) clearTimeout(this.turnTimer);
+    this.turnTimer = null;
     // The synthesis in finish may have answered the turn already (the
     // settled guard above missed nothing; this is the second line of
     // defense for the FSM race).
@@ -329,6 +333,12 @@ export class OpenCodeSessionDriver extends OpenCodeTurns {
             this.turnError ??
             `the opencode process exited with ${exitDetail} and named no session id`,
           usage,
+          // The run-json wire names no model (see announceSessionStarted):
+          // no served model exists to report (design P5's declared
+          // limitation).
+          model_served: null,
+          model_served_source: null,
+          model_alias: this.options.modelAlias ?? null,
         })
       );
       // The turn completed in front of the caller, so it gets its ledger
@@ -339,7 +349,8 @@ export class OpenCodeSessionDriver extends OpenCodeTurns {
         turnId,
         this.turnStartedAt.get(turnId) ?? Date.now(),
         "failed",
-        usage
+        usage,
+        null
       );
       this.turnStartedAt.delete(turnId);
       this.emitError(
@@ -354,7 +365,10 @@ export class OpenCodeSessionDriver extends OpenCodeTurns {
     // A reported error line fails the turn whatever the exit code was
     // (review round 123): the harness itself said the turn failed, so a
     // clean process exit cannot upgrade it to "end".
-    const failed = outcome.code !== 0 || this.turnError !== null;
+    const failed = !this.turnInterrupted && (outcome.code !== 0 || this.turnError !== null);
+    const completion = this.out.completeTurn(turnId,
+      this.turnInterrupted ? "interrupted" : failed ? "failed" : "end",
+      failed ? this.turnError ?? `the opencode process exited with ${exitDetail}` : undefined);
     const error = this.fsm.transition({ kind: "turn_completed", turnId });
     if (error !== null) {
       this.emitError(true, "codemux", error.message);
@@ -370,11 +384,14 @@ export class OpenCodeSessionDriver extends OpenCodeTurns {
     this.emit(
       buildEvent(++this.seq, this.sessionIdOrEmpty(), "turn_completed", null, {
         turn_id: turnId,
-        finish: failed ? "failed" : "end",
-        ...(failed
-          ? { reason: this.turnError ?? `the opencode process exited with ${exitDetail}` }
-          : {}),
+        ...completion,
         usage,
+        // The run-json wire names no model (see announceSessionStarted):
+        // no served model exists to report (design P5's declared
+        // limitation).
+        model_served: null,
+        model_served_source: null,
+        model_alias: this.options.modelAlias ?? null,
       })
     );
     // The ledger's turn record mirrors the event the caller just saw
@@ -384,8 +401,9 @@ export class OpenCodeSessionDriver extends OpenCodeTurns {
       this.ledgerSessionId(),
       turnId,
       this.turnStartedAt.get(turnId) ?? Date.now(),
-      failed ? "failed" : "end",
-      usage
+      completion.finish,
+      usage,
+      null
     );
     this.turnStartedAt.delete(turnId);
     this.stampActivity();
@@ -451,6 +469,8 @@ export class OpenCodeSessionDriver extends OpenCodeTurns {
   }
 
   protected clearTimers(): void {
+    if (this.turnTimer !== null) clearTimeout(this.turnTimer);
+    this.turnTimer = null;
     if (this.sessionTimer !== null) {
       clearTimeout(this.sessionTimer);
       this.sessionTimer = null;

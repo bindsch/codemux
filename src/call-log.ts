@@ -108,6 +108,10 @@ export interface CallRecord {
   model: string | null;
   /** The model the harness says served the call; null when unreported. */
   model_effective: string | null;
+  /** The `-m` value as typed when it resolved through `config.models`
+   * (so `model` is the resolved id), else null (design P5). Absent on
+   * lines older ledgers wrote before the field existed. */
+  model_alias?: string | null;
   /** "default", or the host of a provider override's base URL. */
   provider: string;
   session_id: string | null;
@@ -282,6 +286,7 @@ export function appendCallRecord(
       ...record,
       model: sanitizeReportedString(record.model),
       model_effective: sanitizeReportedString(record.model_effective),
+      model_alias: sanitizeReportedString(record.model_alias ?? null),
       provider: sanitizeReportedString(record.provider) || "default",
       finish: sanitizeReportedString(record.finish),
       labels: record.labels ?? null,
@@ -397,6 +402,10 @@ function warnOnce(message: string): void {
 export interface SessionCallContext {
   agent: AgentId;
   model: string | null;
+  /** The `-m` value as typed when it resolved through `config.models`,
+   * else null (design P5): recorded beside `model` on every session-side
+   * line. */
+  modelAlias: string | null;
   provider: string;
   autonomy: AutonomyLevel | null;
   hermetic: boolean;
@@ -407,7 +416,9 @@ export interface SessionCallContext {
 
 /** One line per completed session turn, emitted where the driver emits its
  * `turn_completed` event so the ledger and the event stream cannot disagree
- * about what completed. */
+ * about what completed. `modelEffective` is the turn's served model — the
+ * one a wire line named (claude `message.model`/`modelUsage`, codex
+ * `model/rerouted`), null when none did. */
 export function appendSessionTurnCallRecord(
   context: SessionCallContext,
   sessionId: string,
@@ -415,6 +426,7 @@ export function appendSessionTurnCallRecord(
   startedAtMs: number,
   finish: string,
   usage: ResultUsageBlock,
+  modelEffective: string | null,
   environment: NodeJS.ProcessEnv = process.env
 ): void {
   appendCallRecord({
@@ -422,7 +434,8 @@ export function appendSessionTurnCallRecord(
     kind: "session_turn",
     agent: context.agent,
     model: context.model,
-    model_effective: null,
+    model_effective: modelEffective,
+    model_alias: context.modelAlias,
     provider: context.provider,
     session_id: sessionId,
     turn_id: turnId,
@@ -454,7 +467,10 @@ export function appendSessionCallRecord(
     kind: "session",
     agent: context.agent,
     model: context.model,
+    // No single model serves a whole session: each turn's line carries
+    // its own model_effective, and this closing line carries none.
     model_effective: null,
+    model_alias: context.modelAlias,
     provider: context.provider,
     session_id: sessionId,
     turn_id: null,

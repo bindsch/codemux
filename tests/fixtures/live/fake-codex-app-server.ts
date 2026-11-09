@@ -14,6 +14,9 @@
  *   basic      — deltas, a final agentMessage, usage, a completed turn
  *   lateusage  — a completed turn whose tokenUsage update arrives AFTER
  *                its turn/completed (review live18)
+ *   reroute    — a model/rerouted notification (toModel) before the
+ *                turn/completed; the completion must attribute it
+ *                (design P5)
  *   laggard    — a completed turn whose last delta and tokenUsage update
  *                arrive only after the NEXT turn's turn/start response
  *                (queued input drained at once, review live20)
@@ -132,7 +135,7 @@
 import * as scenarios from "./fake-codex-app-server-parts/scenarios.js";
 import { THREAD_ID, notify, record, respond, respondError, state, stateDir } from "./fake-codex-app-server-parts/wire.js";
 import { usage } from "./fake-codex-app-server-parts/items.js";
-import { startArm } from "./fake-codex-app-server-parts/start-arms.js";
+import { checkApprovalPolicy, startArm } from "./fake-codex-app-server-parts/start-arms.js";
 import {
   handleDecisionResponse,
   handleInitialize,
@@ -161,6 +164,9 @@ const runScenario = (turnId: string, scenario: string): void => {
       return;
     case "lateusage":
       scenarios.lateusage(turnId);
+      return;
+    case "reroute":
+      scenarios.reroute(turnId);
       return;
     case "laggard":
     case "laggard2":
@@ -350,6 +356,7 @@ const handleLine = (line: string): void => {
     : {}) as Record<string, unknown>;
   if (typeof method === "string") {
     record("requests.jsonl", { id, method, params });
+    if (!checkApprovalPolicy(method, id, params)) return;
     switch (method) {
       case "initialize":
         handleInitialize(id);

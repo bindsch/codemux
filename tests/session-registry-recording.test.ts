@@ -1,5 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -48,14 +48,41 @@ describe("recording sessions", () => {
     expect(entry.created_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
 
     // Same id again: one entry, created_at preserved, mode still 0600.
-    expect(recordSessionStart(path, newRecord({ model: "opus" })).ok).toBe(true);
+    // The -m value as typed rides beside the resolved model (design P5)
+    // and survives the round trip through the file.
+    expect(recordSessionStart(path, newRecord({ model: "opus", model_alias: "judge" })).ok).toBe(true);
     const again = readRegistry(path);
     expect(again.outcome).toBe("ok");
     if (again.outcome !== "ok") return;
     expect(again.file.sessions.length).toBe(1);
     const updated = again.file.sessions[0] as SessionRecord;
     expect(updated.model).toBe("opus");
+    expect(updated.model_alias).toBe("judge");
     expect(updated.created_at).toBe(entry.created_at);
+  });
+
+  test("a record before the model_alias field reads as a raw-id session", () => {
+    // A pre-2.0.0 record predates model_alias (design P5); an absent field
+    // is a raw-id session — the model as typed, no alias — and refusing it
+    // would poison every existing registry as corrupt. The read normalizes
+    // it to null and the next write persists it. (The project_settings
+    // sibling of this normalization lives with the resume guards, in
+    // tests/session-registry-resume.test.ts.)
+    const path = registryIn(makeRoot());
+    const { model_alias: _omit, ...legacy } = craftEntry();
+    seedRegistry(path, [legacy as unknown as SessionRecord]);
+    const read = readRegistry(path);
+    expect(read.outcome).toBe("ok");
+    if (read.outcome === "ok") {
+      expect((read.file.sessions[0] as SessionRecord).model_alias).toBeNull();
+    }
+    // A non-string value is corrupt, like any mistyped field.
+    seedRegistry(path, [craftEntry({ model_alias: 1 as unknown as string | null })]);
+    expect(readRegistry(path).outcome).toBe("corrupt");
+    // The normalization persists at the next write.
+    seedRegistry(path, [legacy as unknown as SessionRecord]);
+    expect(recordSessionStart(path, newRecord({ id: "sess-1" })).ok).toBe(true);
+    expect(JSON.parse(readFileSync(path, "utf8")).sessions[0].model_alias).toBeNull();
   });
 
   test("a start cannot steal a live foreign owner's record (atomic claim)", async () => {

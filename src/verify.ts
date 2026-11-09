@@ -145,9 +145,14 @@ export interface EffectiveScodeCommand {
   command: string[];
 }
 
-// The one legitimate empty argument is the value of `--tools` (an empty
-// list removes Claude's tools); any other empty argument is a wiring bug.
-function commandIsValid(cmd: string[]): boolean {
+// The legitimate empty arguments are the value of `--tools` (an empty
+// list removes Claude's tools) and gemini's `-p ""` (the empty flag selects
+// headless mode while the prompt rides stdin, src/adapters/gemini.ts); any
+// other empty argument is a wiring bug.
+const EMPTY_VALUE_FLAGS: Readonly<Partial<Record<AgentId, readonly string[]>>> = { gemini: ["-p"] };
+
+function commandIsValid(cmd: string[], agentId: AgentId): boolean {
+  const emptyValueFlags = ["--tools", ...(EMPTY_VALUE_FLAGS[agentId] ?? [])];
   return (
     Array.isArray(cmd) &&
     cmd.length > 0 &&
@@ -155,7 +160,7 @@ function commandIsValid(cmd: string[]): boolean {
     cmd[0].length > 0 &&
     cmd.every(
       (part, index) =>
-        typeof part === "string" && (part.length > 0 || cmd[index - 1] === "--tools")
+        typeof part === "string" && (part.length > 0 || emptyValueFlags.includes(cmd[index - 1] ?? ""))
     )
   );
 }
@@ -210,14 +215,14 @@ function verifyRunBuilds(agentId: AgentId, issues: string[]): { ok: boolean; war
         };
         adapter.validateRunRequest(req);
         const normalCmd = adapter.buildRunCommand(req);
-        if (!commandIsValid(normalCmd)) {
+        if (!commandIsValid(normalCmd, agentId)) {
           throw new Error(`invalid run command for autonomy='${autonomy}'`);
         }
 
         const sandboxedRequest = { ...req, sandboxed: true };
         adapter.validateRunRequest(sandboxedRequest);
         const sandboxedCmd = adapter.buildRunCommand(sandboxedRequest);
-        if (!commandIsValid(sandboxedCmd)) {
+        if (!commandIsValid(sandboxedCmd, agentId)) {
           throw new Error(`invalid sandboxed run command for autonomy='${autonomy}'`);
         }
       }
@@ -233,7 +238,7 @@ function verifyRunBuilds(agentId: AgentId, issues: string[]): { ok: boolean; war
         };
         adapter.validateRunRequest(modelRequest);
         const modelCmd = adapter.buildRunCommand(modelRequest);
-        if (!commandIsValid(modelCmd)) {
+        if (!commandIsValid(modelCmd, agentId)) {
           throw new Error("invalid run command with model");
         }
       }
@@ -241,6 +246,23 @@ function verifyRunBuilds(agentId: AgentId, issues: string[]): { ok: boolean; war
       if (caps.supportsHermetic) {
         // Static only: the private home and the live canary belong to
         // `check --hermetic`, so nothing here calls getRunEnv.
+        // A hermetic run whose contract requires the provider override
+        // (goose, openhands — the capability flag) is built against a
+        // SYNTHETIC trio, the same fixture style as "verify-model"
+        // above: staticWiringEnv keeps the operator's exports out, and
+        // without an override the adapter's own fail-closed refusal
+        // would answer here, so the hermetic argv would never be built
+        // statically at all (the wiring gap the 2.0.0 parity merge
+        // surfaced).
+        const hermeticEnv = caps.hermeticRequiresProviderOverride
+          ? {
+              ...staticWiringEnv(),
+              [`CODEMUX_${agentId.toUpperCase()}_PROVIDER_BASE_URL`]: "https://verify.invalid",
+              [`CODEMUX_${agentId.toUpperCase()}_PROVIDER_API_KEY`]: "verify-key",
+              [`CODEMUX_${agentId.toUpperCase()}_PROVIDER_MODEL`]: "verify-model",
+            }
+          : staticWiringEnv();
+        const hermeticAdapter = getAdapter(agentId, hermeticEnv);
         const hermeticRequest: RunRequest = {
           agent: agentId,
           prompt: "verify",
@@ -250,8 +272,8 @@ function verifyRunBuilds(agentId: AgentId, issues: string[]): { ok: boolean; war
           hermetic: true,
           tools: caps.supportsToolSelection ? "none" : "default",
         };
-        adapter.validateRunRequest(hermeticRequest);
-        if (!commandIsValid(adapter.buildRunCommand(hermeticRequest))) {
+        hermeticAdapter.validateRunRequest(hermeticRequest);
+        if (!commandIsValid(hermeticAdapter.buildRunCommand(hermeticRequest), agentId)) {
           throw new Error("invalid hermetic run command");
         }
       }
@@ -268,7 +290,7 @@ function verifyRunBuilds(agentId: AgentId, issues: string[]): { ok: boolean; war
           };
           adapter.validateRunRequest(effortRequest);
           const effortCmd = adapter.buildRunCommand(effortRequest);
-          if (!commandIsValid(effortCmd)) {
+          if (!commandIsValid(effortCmd, agentId)) {
             throw new Error(`invalid run command with effort='${effort}'`);
           }
         }
@@ -282,6 +304,14 @@ function verifyRunBuilds(agentId: AgentId, issues: string[]): { ok: boolean; war
   }
 }
 
+// OpenCode's TUI stores the effort variant per provider/model, so its TUI
+// effort needs an explicit provider/model selector (src/opencode-tui-effort.ts).
+// The model-free TUI builds carry no effort for it; the model build below
+// carries both.
+const TUI_EFFORT_NEEDS_MODEL: ReadonlySet<AgentId> = new Set(["opencode"]);
+// A provider/model selector every adapter's TUI accepts.
+const TUI_MODEL_FIXTURE = "verify-provider/verify-model";
+
 function verifyTuiBuilds(agentId: AgentId, issues: string[]): { ok: boolean; warnings: string[] } {
   const adapter = getAdapter(agentId, staticWiringEnv());
   const caps = adapter.capabilities();
@@ -289,7 +319,8 @@ function verifyTuiBuilds(agentId: AgentId, issues: string[]): { ok: boolean; war
   try {
     const { warnings } = captureWarnings(() => {
       for (const autonomy of AUTONOMY_LEVELS) {
-        const effort = adapter.supportsTuiEffort() && caps.effortLevels.includes("low")
+        const effort = adapter.supportsTuiEffort() && caps.effortLevels.includes("low") &&
+          !TUI_EFFORT_NEEDS_MODEL.has(agentId)
           ? "low"
           : undefined;
         const sandboxed = adapter.requiresSandboxForTuiAutonomy(autonomy);
@@ -302,7 +333,7 @@ function verifyTuiBuilds(agentId: AgentId, issues: string[]): { ok: boolean; war
           false,
           verificationCwd()
         );
-        if (!commandIsValid(normalCmd)) {
+        if (!commandIsValid(normalCmd, agentId)) {
           throw new Error(`invalid tui command for autonomy='${autonomy}'`);
         }
 
@@ -314,7 +345,7 @@ function verifyTuiBuilds(agentId: AgentId, issues: string[]): { ok: boolean; war
           false,
           verificationCwd()
         );
-        if (!commandIsValid(sandboxedCmd)) {
+        if (!commandIsValid(sandboxedCmd, agentId)) {
           throw new Error(`invalid sandboxed tui command for autonomy='${autonomy}'`);
         }
       }
@@ -324,16 +355,16 @@ function verifyTuiBuilds(agentId: AgentId, issues: string[]): { ok: boolean; war
         const effort = adapter.supportsTuiEffort() && caps.effortLevels.includes("low")
           ? "low"
           : undefined;
-        adapter.validateTuiRequest("verify-model", verificationCwd(), "low", effort);
+        adapter.validateTuiRequest(TUI_MODEL_FIXTURE, verificationCwd(), "low", effort);
         const modelCmd = adapter.buildTuiCommand(
-          "verify-model",
+          TUI_MODEL_FIXTURE,
           "low",
           effort,
           adapter.requiresSandboxForTuiAutonomy("low"),
           false,
           verificationCwd()
         );
-        if (!commandIsValid(modelCmd)) {
+        if (!commandIsValid(modelCmd, agentId)) {
           throw new Error("invalid tui command with model");
         }
       }

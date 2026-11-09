@@ -251,13 +251,13 @@ describe("pi provider override", () => {
     expect(() => ambient.validateTuiRequest(undefined, cwdOf())).not.toThrow();
   });
 
-  test("the tui refuses the override; without one it is unchanged", () => {
+  test("the tui selects the override model; without one it is unchanged", () => {
     const plain = adapterOf();
     expect(() => plain.validateTuiRequest(undefined, cwdOf())).not.toThrow();
     expect(plain.buildTuiCommand(undefined, "high")).toEqual(["pi", "--no-approve"]);
     const adapter = adapterOf(ZAI_PI);
-    expect(() => adapter.validateTuiRequest(undefined, cwdOf()))
-      .toThrow("supports headless runs only");
+    expect(() => adapter.validateTuiRequest(undefined, cwdOf())).not.toThrow();
+    expect(adapter.buildTuiCommand(undefined, "high")).toEqual(["pi", "--no-approve", "--model", "codemux/glm-5.3"]);
   });
 
   test("a passed-through PI_CODING_AGENT_DIR relocates the private directory", () => {

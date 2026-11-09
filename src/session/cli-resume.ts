@@ -26,7 +26,9 @@ import {
   codexHarnessHome,
   kimiHarnessHome,
   opencodeHarnessHome,
+  turnAgentHarnessHome,
 } from "./cli-homes.js";
+import { isTurnAgent } from "./turn-driver-launch.js";
 import type { SessionCommandOptions } from "./cli-request.js";
 import { sessionKeyedHomePath } from "./private-home-key.js";
 import { assertResumeIdShape, exitOnResumeRefusal, exitWithCode, usageError } from "./cli-usage.js";
@@ -133,7 +135,7 @@ export function resolveSessionContext({
   const hermeticSessionKey = (parent: string): string =>
     resumeId !== undefined ? sessionKeyedHomePath(parent, resumeId) : parent;
   const harnessHome =
-    agentId === "codex"
+    options.harnessHome !== undefined ? options.harnessHome : agentId === "codex"
       ? hermetic
         ? hermeticSessionKey(join(codexHome(), ".codemux-hermetic"))
         : codexOverride !== null
@@ -152,11 +154,20 @@ export function resolveSessionContext({
             : join(dirname(agyHarnessHome()), ".codemux-isolation-probes")
           : agyHarnessHome()
         : agentId === "opencode"
-          ? opencodeHarnessHome()
+          ? hermetic
+            ? hermeticSessionKey(join(opencodeHarnessHome(), ".codemux-hermetic"))
+            : opencodeHarnessHome()
           : agentId === "aider"
-            ? aiderHarnessHome()
+            ? // A hermetic aider session's recorded home is the
+              // session-keyed directory under
+              // `~/.aider/.codemux-hermetic` (the codex/kimi rule); a
+              // fresh session's cover is the parent every keyed path
+              // sits under.
+              hermetic
+              ? hermeticSessionKey(join(aiderHarnessHome(), ".codemux-hermetic"))
+              : aiderHarnessHome()
             : agentId === "kimi"
-              ? hermetic
+              ? hermetic || enablePlaywrightMcp
                 ? resumeId !== undefined
                   ? kimiPrivateBrandHome(
                       hermeticSessionKey(
@@ -165,6 +176,20 @@ export function resolveSessionContext({
                     )
                   : join(kimiHarnessHome(passthroughEnv), ".codemux-hermetic")
                 : kimiHarnessHome(passthroughEnv)
+              : isTurnAgent(agentId)
+                ? agentId === "qwen" || !hermetic
+                  ? turnAgentHarnessHome(agentId, passthroughEnv)
+                  : resumeId !== undefined
+                    ? hermeticSessionKey(
+                        join(
+                          turnAgentHarnessHome(agentId, passthroughEnv),
+                          ".codemux-hermetic"
+                        )
+                      )
+                    : join(
+                        turnAgentHarnessHome(agentId, passthroughEnv),
+                        ".codemux-hermetic"
+                      )
               : claudeSessionId !== undefined &&
                   (hermetic || experimentProjectSettings)
                 ? projectSettingsSessionDirPath(
@@ -188,6 +213,7 @@ export function resolveSessionContext({
   const resumeProbe: ResumeProbe = {
     agent: agentId,
     harnessHome,
+    callerOwnedHome: options.harnessHome !== undefined,
     autonomy,
     sandboxed: Boolean(options.sandbox),
     sandboxTrust,
@@ -213,19 +239,30 @@ export function resolveSessionContext({
     // codex/kimi/agy settled key), and a home removed by --final or
     // the stale sweep takes the transcript with it. Refused as policy
     // (78) — the entry is trustworthy, the state behind it is gone.
-    // opencode keeps no session-keyed home (its transcript stays in
-    // the real data dir the hermetic prefix keeps), and a plain
-    // session of any agent has nothing to check.
+    // OpenCode keeps its native database in its session-keyed home.
+    // A plain session of any agent has no private home to check.
     const sessionKeyedHome =
-      claudeSessionId !== undefined && (hermetic || experimentProjectSettings) ? harnessHome
+      options.harnessHome !== undefined ? harnessHome
+      : claudeSessionId !== undefined && (hermetic || experimentProjectSettings) ? harnessHome
       : agentId === "codex" && hermetic ? harnessHome
-      : agentId === "kimi" && hermetic ? harnessHome
+      : agentId === "kimi" && (hermetic || enablePlaywrightMcp) ? harnessHome
       : agentId === "agy" && hermetic ? harnessHome
+      // The hermetic aider session's private home carries the history
+      // file (cli-drivers.ts opens it settled): removed by --final or
+      // the stale sweep, the transcript is gone with it.
+      : agentId === "opencode" && hermetic ? harnessHome
+      : agentId === "aider" && hermetic ? harnessHome
+      // The five hermetic-capable second-wave agents with a home
+      // (turn-driver-homes.ts); qwen keeps none
+      // and cursor's --hermetic is refused at the request gate.
+      : isTurnAgent(agentId) && hermetic && agentId !== "qwen" ? harnessHome
       : null;
     if (sessionKeyedHome !== null && !existsSync(sessionKeyedHome)) {
       exitWithCode(
         78,
-        `cannot resume session ${resumeId}: its private config directory (${sessionKeyedHome}) ` +
+        options.harnessHome !== undefined
+          ? `cannot resume session ${resumeId}: its caller-owned --harness-home is missing; restore its transcript before resuming`
+          : `cannot resume session ${resumeId}: its private config directory (${sessionKeyedHome}) ` +
           "is missing -- removed by --final or the stale sweep -- and the session's " +
           "transcript with it"
       );

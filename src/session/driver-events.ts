@@ -13,7 +13,12 @@ import {
   DEFAULT_DENIAL_MESSAGE,
   type ClaudeParse,
 } from "./claude-session.js";
-import { buildEvent, buildPermissionDenied, buildUnknownEvent } from "./protocol.js";
+import {
+  buildEvent,
+  buildPermissionDenied,
+  buildSessionStarted,
+  buildUnknownEvent,
+} from "./protocol.js";
 import { ClaudeDriverTurns } from "./driver-turns.js";
 
 export abstract class ClaudeDriverEvents extends ClaudeDriverTurns {
@@ -80,7 +85,7 @@ export abstract class ClaudeDriverEvents extends ClaudeDriverTurns {
           return;
         }
         this.emit(
-          buildEvent(++this.seq, this.options.sessionId, "session_started", null, {
+          buildSessionStarted(++this.seq, this.options.sessionId, null, {
             agent: this.options.agent,
             model: this.options.model ?? null,
             autonomy: this.options.autonomy,
@@ -90,6 +95,12 @@ export abstract class ClaudeDriverEvents extends ClaudeDriverTurns {
             capabilities: this.capabilities,
             protocol: "codemux-live-session/1",
             private_home: this.options.privateHome?.dir ?? null,
+            // The init frame's `model` is the harness naming what it
+            // configured (source `harness`, design P5); the provider's
+            // own naming lands on each turn's completion.
+            model_served: parse.model,
+            model_served_source: parse.model !== null ? "harness" : null,
+            model_alias: this.options.modelAlias ?? null,
           })
         );
         // Input accepted before the init frame arrived was forwarded but
@@ -113,6 +124,15 @@ export abstract class ClaudeDriverEvents extends ClaudeDriverTurns {
         }
         return;
       }
+      case "assistant_model":
+        // The provider's own naming of the model that answered (design
+        // P5): held per turn, no event of its own — the turn's
+        // completion reports the one distinct id as `model_served`.
+        // A frame outside any turn (a drain, the pre-init window) cannot
+        // attribute a turn, and the set is cleared when the next turn
+        // opens, so it is simply dropped.
+        this.turnModels.add(parse.model);
+        return;
       case "assistant_delta":
         this.emit(
           buildEvent(++this.seq, this.options.sessionId, "assistant_delta", rawLine, {

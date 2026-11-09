@@ -27,16 +27,17 @@ describe("aider session e2e - honest false capabilities", () => {
     const rejections = await waitFor(
       session.events,
       (events) =>
-        events.filter((event) => event.type === "input_rejected").length >= 3
+        events.filter((event) => event.type === "input_rejected").length >= 2
           ? events.filter((event) => event.type === "input_rejected")
           : undefined,
-      "the three rejections"
+      "the two unsupported inputs"
     );
     expect(rejections.map((event) => [event.input_seq, event.reason])).toEqual([
       [2, "unsupported"],
-      [3, "unsupported"],
       [4, "unsupported"],
     ]);
+    expect(session.events.find((event) => event.type === "input_accepted" && event.input_seq === 3))
+      .toBeDefined();
     send(session.driver, { type: "shutdown" });
     expect(await session.code).toBe(0);
   });

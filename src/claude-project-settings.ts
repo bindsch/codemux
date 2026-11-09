@@ -25,9 +25,15 @@
  * normally carries `~/.claude/CLAUDE.md` as such an ancestor file.
  */
 import { lstatSync } from "node:fs";
+import { validateCopilotProjectSettings } from "./copilot-project-settings.js";
 import { dirname, join, parse } from "node:path";
 import { UsageRefusalError, validateWorkingDirectory } from "./validation.js";
 import type { RunRequest } from "./types.js";
+import { validateGeminiProjectSettings } from "./gemini-project-settings.js";
+import { validateCodexProjectSettings } from "./codex-project-settings.js";
+import { validateClineProjectSettings } from "./cline-project-settings.js";
+import { validateKimiProjectSettings } from "./kimi-project-settings.js";
+import { validateOpenhandsProjectSettings } from "./openhands-project-settings.js";
 import {
   OPENCODE_PASSTHROUGH_REFUSALS,
   OPENCODE_RUN_AUTONOMIES,
@@ -67,7 +73,7 @@ export const PROJECT_SETTING_SOURCES = "project,local";
  * (assertProjectSettingsAgent), so an --experiment-project-settings
  * request can never be silently ignored by an agent that loads nothing
  * for it. */
-export const PROJECT_SETTINGS_AGENTS = ["claude", "zai", "opencode"] as const;
+export const PROJECT_SETTINGS_AGENTS = ["claude", "zai", "opencode", "copilot", "gemini", "kimi", "openhands", "codex", "cline"] as const;
 
 /** The unmapped-agent refusal base.ts validateRunRequest runs: a
  * project-settings request names a trade (the repository's rules in
@@ -76,7 +82,7 @@ export const PROJECT_SETTINGS_AGENTS = ["claude", "zai", "opencode"] as const;
 export function assertProjectSettingsAgent(agent: string): void {
   if (!(PROJECT_SETTINGS_AGENTS as readonly string[]).includes(agent)) {
     throw new UsageRefusalError(
-      `--experiment-project-settings applies to the claude, zai, and opencode agents only; ${agent} has no project setting source mapping`
+      `--experiment-project-settings applies to the ${PROJECT_SETTINGS_AGENTS.join(", ")} agents only; ${agent} has no project setting source mapping`
     );
   }
 }
@@ -103,12 +109,36 @@ export function validateProjectSettingsRequest(request: ProjectSettingsRequest):
   const refuse = (reason: string): never => {
     throw new UsageRefusalError(`--experiment-project-settings ${reason}`);
   };
+  if (request.agent === "cline") {
+    validateClineProjectSettings(request);
+    return;
+  }
+  if (request.agent === "copilot") {
+    validateCopilotProjectSettings(request);
+    return;
+  }
+  if (request.agent === "gemini") {
+    validateGeminiProjectSettings(request);
+    return;
+  }
+  if (request.agent === "kimi") {
+    validateKimiProjectSettings(request, refuse);
+    return;
+  }
+  if (request.agent === "codex") {
+    validateCodexProjectSettings(request, refuse);
+    return;
+  }
+  if (request.agent === "openhands") {
+    validateOpenhandsProjectSettings(request);
+    return;
+  }
   if (request.agent === "opencode") {
     validateOpencodeProjectSettingsRequest(request, refuse);
     return;
   }
   if (request.agent !== "claude" && request.agent !== "zai") {
-    refuse(`applies to the claude, zai, and opencode agents only; ${request.agent} has no project setting source mapping`);
+    refuse(`applies to the ${PROJECT_SETTINGS_AGENTS.join(", ")} agents only; ${request.agent} has no project setting source mapping`);
   }
   if (!request.hermetic) refuse("requires --hermetic");
   if (!request.sandbox) refuse("requires the scode sandbox");

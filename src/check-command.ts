@@ -1,8 +1,8 @@
 import type { Command } from "commander";
 import { existsSync } from "node:fs";
 import { assertAgyProbeMode, runAgyCanaryChecks, runAgyIsolationProbe } from "./agy-isolation-probe.js";
-import { plantKimiCanary } from "./kimi-isolation-probe.js";
-import { assertExperimentMcpUnavailable, experimentCanaryControl, validateExperimentRequest, assertExperimentLoopbackPolicy } from "./experiment-mcp.js";
+import { assertExperimentMcpUnavailable, validateExperimentRequest } from "./experiment-mcp.js";
+import { assertHermeticCheckSupported, createHermeticCheckPlan, type HermeticCheckPlan } from "./check-hermetic-plan.js";
 import { getAdapter } from "./adapters/index.js";
 import {
   assertHarnessSupported,
@@ -20,9 +20,7 @@ import {
 import { resolveModel } from "./config.js";
 import { collectLabel, parseLabels } from "./labels.js";
 import {
-  HERMETIC_CANARY_PROMPT,
   evaluateCanary,
-  plantCanary,
 } from "./hermetic-canary.js";
 import {
   assertSessionCanaryRequest,
@@ -32,6 +30,7 @@ import { launchRunRequest, type LaunchOptions } from "./launch.js";
 import { assertQuotaHeadroomForLaunch, resolveQuotaGate } from "./quota-gate.js";
 import { UsageRefusalError } from "./validation.js";
 import { AGENT_IDS, type AgentId, type CodemuxConfig, type RunRequest, type RunResult } from "./types.js";
+import { SESSION_AGENTS } from "./session/cli-agents.js";
 
 export const OK_LINE = /(?:^|\r?\n)\s*OK[.!]?\s*(?:\r?\n|$)/;
 
@@ -44,10 +43,9 @@ function reportFailure(result: RunResult): void {
  * `codemux check`: one live probe. Plain: the model must answer OK. With
  * --hermetic: a hermetic probe in a scratch directory carrying planted
  * instruction files must answer OK without repeating their code word, and a
- * control probe without --hermetic — carrying everything else the hermetic
- * probe carries, the tools selection included — shows whether the planted
- * files or the operator's own context would have reached the model. Two real
- * requests.
+ * control reopens the declared instruction channel while keeping the tools
+ * selection, cwd, and prompt. The control must return the planted marker.
+ * Two real requests.
  */
 export function registerCheckCommand(
   program: Command,
@@ -70,7 +68,7 @@ export function registerCheckCommand(
       "With --hermetic: the session form of the canary — three codemux sessions (hermetic, control, resumed with --final) against planted files"
     )
     .option("--tools <selection>", "Built-in tools for the probe: default, none")
-    .option("--experiment-mcp <spec.json>", "Extend the Claude, Z.AI, or Kimi hermetic canary with an experiment MCP server")
+    .option("--experiment-mcp <spec.json>", "Extend a supported hermetic canary with an experiment MCP server, including Qwen's explicit-file control")
     .option("--agy-isolation-probe <mode>", "Unverified agy diagnostic: login, hermetic, control, tools, tools-control")
     .option("-s, --sandbox", "Run probe in sandbox (default; requires scode)", true)
     .option("--no-sandbox", "Probe without the scode boundary (autonomy below high is unavailable)")
@@ -105,6 +103,7 @@ export function registerCheckCommand(
       []
     )
     .action(async (options) => {
+      let managedPlan: HermeticCheckPlan | undefined;
       try {
         requireValidConfig();
         const agentId = options.agent as AgentId;
@@ -121,12 +120,7 @@ export function registerCheckCommand(
         const requestedEffort = parseEffortOption(options.effort);
         const passthroughEnv = parsePassthroughEnvOption(options.passEnv);
         const tools = parseToolsOption(options.tools);
-        // A codex check is refused outright (below, after the sandbox-policy
-        // refusals the run command shares), so the spec-prefix demand is
-        // skipped for it: an operator whose spec also lacks
-        // accept_harness_prefix must not be sent to fix the spec first
-        // (review round 381).
-        if (agentId !== "codex") assertExperimentMcpUnavailable(agentId, options.experimentMcp);
+        assertExperimentMcpUnavailable(agentId, options.experimentMcp);
         const hermetic = Boolean(options.hermetic);
         const sandboxPolicyOverrides = parseSandboxPolicyOverrides({
           sandbox: Boolean(options.sandbox),
@@ -150,14 +144,6 @@ export function registerCheckCommand(
         }
         if (options.printSandbox && agentId === "agy" && tools === "none") {
           throw new UsageRefusalError("--print-sandbox cannot be combined with --tools none for agy: canary checks run several probes with no single scode argv");
-        }
-        if (options.experimentMcp && agentId === "codex") {
-          // The relay's policy refusals keep their precedence (the run
-          // command's order); then the codex check is refused outright,
-          // before any spec-prefix demand (review round 381).
-          assertExperimentLoopbackPolicy({ agent: agentId,
-            sandboxNoNet: Boolean(options.sandbox && options.sandboxNoNet), sandboxTrust: sandboxPolicyOverrides?.trust });
-          throw new UsageRefusalError("Codex --experiment-mcp supports run only; the paired check requires a non-hermetic control and is supported only by claude, zai, and kimi");
         }
         validateExperimentRequest({ agent: agentId, prompt: "probe", experimentMcp: options.experimentMcp,
           hermetic, tools, autonomy: requestedAutonomy, sandboxed: Boolean(options.sandbox),
@@ -195,6 +181,7 @@ export function registerCheckCommand(
         const adapter = getAdapter(agentId);
 
         const caps = adapter.capabilities();
+        if (hermetic) assertHermeticCheckSupported(agentId, options.experimentMcp !== undefined);
         if (model !== undefined && !caps.supportsModel) {
           throw new UsageRefusalError(`${agentId} does not support model selection`);
         }
@@ -209,7 +196,8 @@ export function registerCheckCommand(
         // Fail before spending a request; the harness's two claims keep
         // their own instruments (check --hermetic without --tools for the
         // isolation, the capability probes for --tools none).
-        if (hermetic && tools === "none" && caps.toolsNoneRequiresHermetic) {
+        // Experiment controls retain their dedicated native tool policy.
+        if (hermetic && tools === "none" && caps.toolsNoneRequiresHermetic && !options.experimentMcp) {
           throw new UsageRefusalError(
             `check --hermetic --tools none cannot run for ${agentId}: the control probe would be a ` +
               `plain --tools none run, which ${agentId} refuses. Run the check without --tools for the ` +
@@ -218,12 +206,13 @@ export function registerCheckCommand(
         }
 
         // The session canary's own request checks, in the same wording
-        // class as the others, before any probe spends quota.
+        // class as the others. The hermetic flag comes from the SESSION
+        // table — aider's sessions refuse what its runs accept.
         assertSessionCanaryRequest({
           wanted: Boolean(options.session),
           agent: agentId,
           hermetic,
-          supportsHermetic: Boolean(caps.supportsHermetic),
+          supportsHermetic: SESSION_AGENTS[agentId]?.hermetic === true,
           sandbox: Boolean(options.sandbox),
           tools,
           experimentMcp: options.experimentMcp !== undefined,
@@ -265,27 +254,19 @@ export function registerCheckCommand(
           // batch cost — the machine check's --spend stage relies on it.
           labels: parseLabels(options.label),
         };
-        // Validation before the quota gate, the order the run path holds:
-        // the plain request below is the control every check launches, and
-        // its hermetic twin is the probe, so a request the adapter refuses
-        // (opencode's plain --tools none among them) must surface as its
-        // own exit-64 refusal, never hide behind a quota refusal (review
-        // round 12, edges 3). Only the plain request is validated here.
-        // The hermetic twin's cwd is the canary's scratch directory,
-        // planted only below; validating it here — against the operator's
-        // cwd, the request's undefined cwd — refused hermetic checks for
-        // kimi, codex, and agy from any repo holding project config
-        // (AGENTS.md and kin) before any probe ran (review round 14,
-        // contracts 1), so the hermetic request is validated where it is
-        // built, on the planted directory (below). The same rule covers
-        // every flow that builds forms of its own: the agy canary and
-        // isolation-probe flows launch requests against a scratch cwd this
-        // command owns — agy's hermetic rule demands one — and an
-        // experiment check's plain control is valid only once registered
-        // (canaryControls), which happens when the canary is planted
-        // below; all of them keep their per-probe validation there.
+        const launch: LaunchOptions = {
+          sandbox: Boolean(options.sandbox), sandboxPolicyOverrides, requestedAutonomy,
+          timeoutMs, cwd: options.cwd, kind: "check", printSandbox: Boolean(options.printSandbox),
+        };
+        // Validate the actual managed cwd before availability or quota.
+        // Neither probe runs in the caller's project directory.
+        if (hermetic && !options.session && agentId !== "agy") {
+          managedPlan = createHermeticCheckPlan(adapter, baseRequest, launch);
+          managedPlan.probe.adapter.validateRunRequest(managedPlan.probe.request);
+          managedPlan.control.adapter.validateRunRequest(managedPlan.control.request);
+        }
         const buildsItsOwnPlainRequest =
-          options.experimentMcp !== undefined ||
+          hermetic || options.experimentMcp !== undefined ||
           (agentId === "agy" && (hermetic || tools === "none" || options.agyIsolationProbe !== undefined));
         if (!buildsItsOwnPlainRequest) {
           adapter.validateRunRequest(baseRequest);
@@ -327,6 +308,11 @@ export function registerCheckCommand(
           adapter.buildExecutionEnv(adapter.getEnv(), passthroughEnv),
           autonomy, Boolean(options.sandbox), passthroughEnv
         );
+        launch.harnessVersion = harnessVersion;
+        if (managedPlan) {
+          managedPlan.probe.launch.harnessVersion = harnessVersion;
+          managedPlan.control.launch.harnessVersion = harnessVersion;
+        }
         // The session canary runs before the run-shaped canaries: it is
         // the --session spelling of --hermetic, and the agy branches
         // below are its run-shaped twins for the same flags.
@@ -350,16 +336,6 @@ export function registerCheckCommand(
           return;
         }
 
-        const launch: LaunchOptions = {
-          sandbox: Boolean(options.sandbox),
-          sandboxPolicyOverrides,
-          requestedAutonomy,
-          timeoutMs,
-          cwd: options.cwd,
-          kind: "check",
-          harnessVersion,
-          printSandbox: Boolean(options.printSandbox),
-        };
         const label = `${agentId}${model ? ` (model: ${model})` : ""}${options.sandbox ? " (sandboxed)" : ""}`;
 
         if (!hermetic) {
@@ -387,33 +363,22 @@ export function registerCheckCommand(
           return;
         }
 
-        const kimiCanary = agentId === "kimi" ? plantKimiCanary() : null;
-        const canary = kimiCanary ?? plantCanary(Boolean(options.experimentMcp));
+        if (!managedPlan) throw new Error("hermetic check plan was not prepared");
+        const plan = managedPlan;
+        const { canary } = plan;
         let probeThrew = false;
         let cleanupWarning = false;
         try {
-          const canaryAdapter = kimiCanary?.adapter ?? adapter;
-          const canaryLaunch = { ...launch, cwd: canary.cwd };
-          const probe: RunRequest = {
-            ...baseRequest,
-            prompt: HERMETIC_CANARY_PROMPT,
-            cwd: canary.cwd,
-            instructionDirs: [canary.cwd],
-          };
-          const plantedControl = agentId === "kimi" && !passthroughEnv.includes("KIMI_CODE_HOME")
-            ? { ...probe, passthroughEnv: [...passthroughEnv, "KIMI_CODE_HOME"] }
-            : probe;
-          const controlProbe = options.experimentMcp ? experimentCanaryControl(plantedControl, kimiCanary?.brandHome) : plantedControl;
           // Fail before spending a request when the adapter cannot claim it;
           // validate both requests against the planted directory before either launch.
-          canaryAdapter.validateRunRequest({ ...probe, hermetic: true });
-          canaryAdapter.validateRunRequest(controlProbe);
+          plan.probe.adapter.validateRunRequest(plan.probe.request);
+          plan.control.adapter.validateRunRequest(plan.control.request);
 
           console.error(`Checking ${label} hermetically (planted code word ${canary.marker})...`);
           const hermeticResult = await launchRunRequest(
-            canaryAdapter,
-            { ...probe, hermetic: true },
-            canaryLaunch
+            plan.probe.adapter,
+            plan.probe.request,
+            plan.probe.launch
           );
           if (hermeticResult.exitCode !== 0) {
             reportFailure(hermeticResult);
@@ -433,14 +398,10 @@ export function registerCheckCommand(
             hermeticResult.reply ?? hermeticResult.stdout
           );
 
-          // The control varies --hermetic alone: it repeats the probe's
-          // tools selection unchanged, so its leak proves the planted files
-          // reached the model through a channel that needed no tools — the
-          // attribution that makes the hermetic probe's clean OK mean
-          // isolation, not tool removal. A harness whose --tools none is
-          // hermetic-only was refused before any probe ran.
-          console.error("Control probe without --hermetic...");
-          const controlResult = await launchRunRequest(canaryAdapter, controlProbe, canaryLaunch);
+          // The plan reopens its declared instruction channel and retains
+          // the probe's tools, cwd, model, and sandbox policy.
+          console.error(plan.controlDescription);
+          const controlResult = await launchRunRequest(plan.control.adapter, plan.control.request, plan.control.launch);
           const control = controlResult.exitCode === 0
             ? evaluateCanary(controlResult.scanSurface ?? controlResult.stdout, canary.marker)
             : null;
@@ -482,7 +443,8 @@ export function registerCheckCommand(
           throw error;
         } finally {
           canary.cleanup();
-          if (kimiCanary && existsSync(kimiCanary.brandHome)) {
+          managedPlan = undefined;
+          if (plan.kimiBrandHome && existsSync(plan.kimiBrandHome)) {
             cleanupWarning = true;
             console.warn("Warning: Kimi planted brand home still exists after cleanup");
             if (!probeThrew) process.exitCode ||= 1;
@@ -492,6 +454,7 @@ export function registerCheckCommand(
         process.stdout.write(`HERMETIC ${agentId}: OK\n`);
         process.exitCode = 0;
       } catch (error) {
+        managedPlan?.canary.cleanup();
         handleUnexpectedError(error);
       }
     });

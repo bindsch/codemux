@@ -28,6 +28,7 @@ const SESSION_STAMPED_TYPES = new Set([
   "stream_event",
   "result",
 ]);
+const fakeModelId = process.env.FAKE_MODEL_ID ?? null;
 export const write = (value: unknown): void => {
   let frame = value as Record<string, unknown>;
   if (
@@ -37,6 +38,24 @@ export const write = (value: unknown): void => {
     frame["session_id"] === undefined
   ) {
     frame = { ...frame, session_id: sessionId };
+  }
+  // FAKE_MODEL_ID: the provider-naming frames the real wire stamps
+  // (claude.exe 2.1.317) — `model` on init and every assistant message,
+  // `modelUsage` keyed by it on the result — so the served-model e2e
+  // (design P5) runs against a wire that names its model. Off by default;
+  // every other scenario keeps the model-less frames the step-0 fixtures
+  // recorded.
+  if (fakeModelId !== null && frame !== null && typeof frame === "object") {
+    if (frame["type"] === "system" && frame["subtype"] === "init" && frame["model"] === undefined) {
+      frame = { ...frame, model: fakeModelId };
+    } else if (frame["type"] === "assistant") {
+      const message = frame["message"];
+      if (typeof message === "object" && message !== null && (message as Record<string, unknown>)["model"] === undefined) {
+        frame = { ...frame, message: { ...(message as Record<string, unknown>), model: fakeModelId } };
+      }
+    } else if (frame["type"] === "result" && frame["modelUsage"] === undefined) {
+      frame = { ...frame, modelUsage: { [fakeModelId]: {} } };
+    }
   }
   process.stdout.write(`${JSON.stringify(frame)}\n`);
 };

@@ -12,6 +12,7 @@ import {
 } from "./codex-session.js";
 import { accumulateUsage, addTurnUsage } from "./usage.js";
 import { buildEvent, buildUnknownEvent } from "./protocol.js";
+import { approvalMethod } from "./codex-driver-approvals.js";
 import { CodexDriverResponses } from "./codex-driver-responses.js";
 
 export abstract class CodexDriverEvents extends CodexDriverResponses {
@@ -196,6 +197,19 @@ export abstract class CodexDriverEvents extends CodexDriverResponses {
         );
         return;
       }
+      case "model_rerouted": {
+        // The provider rerouted the open turn's model (design P5): no
+        // event of its own — the turn's completion reports the model as
+        // `model_served` — but the notification is still mirrored raw,
+        // never silently dropped. No open turn (the notification raced a
+        // completion, or the session is idle) can attribute a turn, so
+        // the model is dropped and the raw mirror stands alone.
+        if (this.fsm.state === "turn_active") {
+          this.turnReroutedModel = parse.model;
+        }
+        this.emit(buildUnknownEvent(++this.seq, this.sessionIdOrEmpty(), rawLine));
+        return;
+      }
       case "turn_completed":
         this.completeTurn(parse, rawLine);
         return;
@@ -236,6 +250,29 @@ export abstract class CodexDriverEvents extends CodexDriverResponses {
           }
           return;
         }
+        const requestPayload = {
+          request_id: parse.requestId,
+          tool: parse.kindOfApproval,
+          input: parse.input,
+          options: this.allowDeliverable(parse.kindOfApproval, parse.input)
+            ? ["allow", "deny"]
+            : ["deny"],
+        };
+        if (this.options.permissionPolicy === "deny") {
+          this.emit(buildEvent(
+            ++this.seq, this.sessionIdOrEmpty(), "permission_request", rawLine, requestPayload
+          ));
+          if (!this.writeToHarness(this.approvalDecline(
+            parse.id, approvalMethod(parse.kindOfApproval), parse.input["availableDecisions"]
+          ))) return;
+          // Codex declines carry no message. Like the Claude deny policy,
+          // this answers before creating pending state or an expiry timer.
+          this.emit(buildEvent(++this.seq, this.sessionIdOrEmpty(), "permission_denied", null, {
+            request_id: parse.requestId,
+            tool: parse.kindOfApproval,
+          }));
+          return;
+        }
         const error = this.fsm.addPending(parse.requestId);
         if (error !== null) {
           this.emitGrammarViolation(rawLine, error.message);
@@ -248,14 +285,7 @@ export abstract class CodexDriverEvents extends CodexDriverResponses {
           input: parse.input,
         });
         this.emit(
-          buildEvent(++this.seq, this.sessionIdOrEmpty(), "permission_request", rawLine, {
-            request_id: parse.requestId,
-            tool: parse.kindOfApproval,
-            input: parse.input,
-            options: this.allowDeliverable(parse.kindOfApproval, parse.input)
-              ? ["allow", "deny"]
-              : ["deny"],
-          })
+          buildEvent(++this.seq, this.sessionIdOrEmpty(), "permission_request", rawLine, requestPayload)
         );
         if (this.finished) {
           // The drain window: caller decisions are already refused and

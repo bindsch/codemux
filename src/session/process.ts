@@ -7,10 +7,11 @@ import {
 import { readProcessTable } from "../process-table.js";
 import { signalProcess } from "../process-runner.js";
 import { assertExecutablesUnchanged } from "../executable-security.js";
-import { buildEvent } from "./protocol.js";
+import type { SessionChildOutcome } from "./process-outcome.js";
 import { SessionWriter, type WriteLineResult } from "./process-outbound.js";
 import { excerptOf, type SessionFatal } from "./process-fatal.js";
 
+export { buildSessionEnded, harnessFailed, shutdownRequested, type SessionChildOutcome } from "./process-outcome.js";
 export {
   FATAL_EXCERPT_BYTES,
   codemuxFatalMessage,
@@ -53,40 +54,15 @@ const DESCENDANT_SAMPLE_AFTER_STOP_MS = 300;
 // any snapshot) may hold it open forever; settled must still resolve.
 const PIPE_GIVE_UP_MS = 1_000;
 
-export interface SessionChildOutcome {
-  code: number | null;
-  signal: string | null;
-}
-
-/** Exit classification never depends on who sent a signal or when. */
-export function harnessFailed(outcome: SessionChildOutcome | null): boolean {
-  return outcome !== null && (outcome.signal !== null || outcome.code !== 0);
-}
-
-export function shutdownRequested(reason: string): boolean {
-  return reason === "stdin-close" || reason === "shutdown" || reason === "signal";
-}
-
-/** The shared closing event preserves the raw child outcome for every harness. */
-export function buildSessionEnded(
-  seq: number,
-  sessionId: string,
-  outcome: SessionChildOutcome | null,
-  fields: Record<string, unknown>
-): string {
-  return buildEvent(seq, sessionId, "session_ended", null, {
-    ...fields,
-    harness_exit: outcome,
-    reason: harnessFailed(outcome) ? "harness_failed" : fields.reason,
-  });
-}
-
 export interface SessionProcessOptions {
   command: string[];
   cwd: string;
   env: Record<string, string>;
   /** Every complete line the harness writes to stdout, newline stripped. */
   onLine: (line: string) => void;
+  /** Framed protocols own byte bounds and UTF-8 decoding before JSON parsing. */
+  onBytes?: (bytes: Uint8Array) => void;
+  onStdoutEnd?: () => void;
   /** Tier-3 framing failure; fired at most once, and no line is delivered
    * after it. The caller ends the session; this layer keeps draining. */
   onFatal: (fatal: SessionFatal) => void;
@@ -133,6 +109,8 @@ export class SessionProcess {
   private readonly writer: SessionWriter;
   private readonly graceMs: number;
   private readonly onLine: (line: string) => void;
+  private readonly onBytes?: (bytes: Uint8Array) => void;
+  private readonly onStdoutEnd?: () => void;
   private readonly onFatal: (fatal: SessionFatal) => void;
   private giveUpReads: () => void = () => {};
 
@@ -165,6 +143,8 @@ export class SessionProcess {
     }
     this.graceMs = options.graceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
     this.onLine = options.onLine;
+    this.onBytes = options.onBytes;
+    this.onStdoutEnd = options.onStdoutEnd;
     this.onFatal = options.onFatal;
     const useProcessGroup = process.platform !== "win32";
     assertExecutablesUnchanged(
@@ -324,6 +304,13 @@ export class SessionProcess {
       while (!abandoned) {
         const { done, value } = await reader.read();
         if (done) break;
+        if (this.onBytes !== undefined) {
+          if (this.fatal === null) {
+            try { this.onBytes(value); }
+            catch (error) { this.reportFatal({ kind: "handler", error, bytes: value.byteLength }); }
+          }
+          continue;
+        }
         if (length + value.byteLength > buffer.byteLength) {
           const grown = new Uint8Array(
             Math.max(buffer.byteLength * 2, length + value.byteLength)
@@ -371,6 +358,10 @@ export class SessionProcess {
           length = 0;
           searchFrom = 0;
         }
+      }
+      if (!abandoned && this.fatal === null && this.onStdoutEnd !== undefined) {
+        try { this.onStdoutEnd(); }
+        catch (error) { this.reportFatal({ kind: "handler", error, bytes: 0 }); }
       }
       if (!resyncing && !abandoned && length > 0) {
         this.deliver(buffer.subarray(0, length));

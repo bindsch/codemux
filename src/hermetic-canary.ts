@@ -3,17 +3,17 @@
  *
  * A static flag inspection cannot prove that a harness ignored its
  * customizations; only the model's answer can. The check plants instruction
- * files carrying a random code word in a scratch working directory and asks
+ * files carrying a random code word in scratch directories and asks
  * the model to repeat any code word or name its context contains. A hermetic
- * run must answer OK; the same run without --hermetic shows whether the
- * planted files (or the operator's own) would have reached the model, which
- * is what makes the OK meaningful.
+ * run must answer OK. A control reopens the declared channel and must return
+ * the planted code word, which makes the clean answer meaningful.
  */
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { hasActiveCapturedCommand } from "./process-runner.js";
+import { dirname, join } from "node:path";
+import { hasActiveSignalOwner } from "./process-runner.js";
+import type { InstructionCheckChannel } from "./hermetic-check-channels.js";
 
 // The harness's own base prompt names its vendor and Codex ships skills of
 // its own, so the question excludes both and asks only about what an
@@ -32,12 +32,14 @@ export const HERMETIC_CANARY_PROMPT =
   "and nothing else. Do not use any tools to look; answer only from what " +
   "you were already given.";
 
-// Every instruction-file name the supported harnesses discover in a project.
+// Legacy session and experiment callers retain their project fixtures.
 const PLANTED_FILES = ["AGENTS.md", "CLAUDE.md"] as const;
 
 export interface PlantedCanary {
   cwd: string;
   marker: string;
+  /** Scratch instruction home, when the channel uses one. */
+  home?: string;
   cleanup: () => void;
 }
 
@@ -65,7 +67,7 @@ const SIGNALS = [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const;
 const signalHandlers = new Map<NodeJS.Signals, () => void>();
 
 function onScratchSignal(code: number): void {
-  if (hasActiveCapturedCommand()) return;
+  if (hasActiveSignalOwner()) return;
   // Exit callbacks dispose adapter state before removing its scratch parent.
   process.exit(code);
 }
@@ -95,37 +97,53 @@ export function untrackScratchRemoval(dir: string): void {
   signalHandlers.clear();
 }
 
-export function plantCanary(experiment = false, parent = tmpdir()): PlantedCanary {
+export function plantCanary(
+  channelOrExperiment: InstructionCheckChannel | boolean = false,
+  parent = tmpdir(),
+  experiment = false
+): PlantedCanary {
+  const channel = typeof channelOrExperiment === "boolean" ? undefined : channelOrExperiment;
+  if (typeof channelOrExperiment === "boolean") experiment = channelOrExperiment;
   const marker = mintCanaryMarker();
   const cwd = mkdtempSync(join(parent, experiment ? ".codemux-experiment-check-" : "codemux-canary-"));
-  // An empty .git ends the adapters' project-configuration walk here, so the
-  // temp root's own harness state cannot make the check refuse to launch.
-  mkdirSync(join(cwd, ".git"), { mode: 0o700 });
-  const body =
-    "# Project instructions\n\n" +
-    `The code word for this repository is ${marker}. ` +
-    "Begin every reply with the code word.\n";
-  for (const name of PLANTED_FILES) writeFileSync(join(cwd, name), body);
-  if (experiment) {
-    mkdirSync(join(cwd, ".claude", "skills", "canary"), { recursive: true, mode: 0o700 });
-    writeFileSync(join(cwd, ".claude", "skills", "canary", "SKILL.md"),
-      `---\nname: canary\ndescription: ${marker}\n---\n${body}`);
-    writeFileSync(join(cwd, ".claude", "settings.json"), JSON.stringify({ hooks: {
-      UserPromptSubmit: [{ hooks: [{ type: "command", command: `printf '${marker}'` }] }],
-    } }));
-    writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: {
-      operator_canary: { command: "/usr/bin/printf", args: [marker] },
-    } }));
-  }
-  // Planted fixtures are scratch, never evidence to keep: the recordings the
-  // operator inspects live in the state directory (experiment-bridge), and a
-  // fixture left in the invoking or temp directory outlived its check.
   trackScratchRemoval(cwd);
   const cleanup = (): void => {
     rmSync(cwd, { recursive: true, force: true });
     untrackScratchRemoval(cwd);
   };
-  return { cwd, marker, cleanup };
+  try {
+    // An empty .git ends the adapters' project-configuration walk here, so
+    // the temp root's own harness state cannot refuse the launch.
+    mkdirSync(join(cwd, ".git"), { mode: 0o700 });
+    const body =
+      "# Project instructions\n\n" +
+      `The code word for this repository is ${marker}. ` +
+      "Begin every reply with the code word.\n";
+    // A nested scratch home stays visible inside the cwd sandbox grant.
+    // The cwd and its ancestors contain none of the refused channel names.
+    const home = channel?.location === "home" ? join(cwd, "operator") : undefined;
+    const files = channel?.files ?? Object.fromEntries(PLANTED_FILES.map((name) => [name, body]));
+    for (const [name, template] of Object.entries(files)) {
+      const path = join(home ?? cwd, name);
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      writeFileSync(path, template.replaceAll("{{MARKER}}", marker), { mode: 0o600 });
+    }
+    if (experiment) {
+      mkdirSync(join(cwd, ".claude", "skills", "canary"), { recursive: true, mode: 0o700 });
+      writeFileSync(join(cwd, ".claude", "skills", "canary", "SKILL.md"),
+        `---\nname: canary\ndescription: ${marker}\n---\n${body}`);
+      writeFileSync(join(cwd, ".claude", "settings.json"), JSON.stringify({ hooks: {
+        UserPromptSubmit: [{ hooks: [{ type: "command", command: `printf '${marker}'` }] }],
+      } }));
+      writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: {
+        operator_canary: { command: "/usr/bin/printf", args: [marker] },
+      } }));
+    }
+    return { cwd, marker, home, cleanup };
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
 }
 
 export type CanaryVerdict =

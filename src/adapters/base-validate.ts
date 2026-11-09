@@ -20,7 +20,7 @@ import {
   validatePrompt,
   validateWorkingDirectory,
 } from "../validation.js";
-import { supportsPlaywrightMcpAgent } from "../mcp.js";
+import { PLAYWRIGHT_MCP_AGENT_LIST, supportsPlaywrightMcpAgent } from "../mcp.js";
 import { TOOL_SELECTIONS, isToolSelection } from "../types.js";
 import type {
   AdapterCapabilities,
@@ -102,14 +102,14 @@ export function validateRunRequestFor(
   if (request.enablePlaywrightMcp === true) {
     // The CLI's rules, in the shared validator where a programmatic
     // request meets them too (review round 147): the server rides the
-    // sandbox-scoped --mcp-config carrier, and only claude and zai have
-    // one. The same wording the CLI prints, so every entry names the same
+    // carrier each adapter builds, and only PLAYWRIGHT_MCP_AGENTS have one.
+    // The same wording the CLI prints, so every entry names the same
     // refusal.
     if (request.sandboxed !== true) {
       throw new UsageRefusalError("--enable-playwright-mcp requires --sandbox");
     }
     if (!supportsPlaywrightMcpAgent(adapter.id)) {
-      throw new UsageRefusalError("--enable-playwright-mcp is supported only by claude and zai");
+      throw new UsageRefusalError(`--enable-playwright-mcp is supported only by ${PLAYWRIGHT_MCP_AGENT_LIST}`);
     }
     // The CLI's third rule, for the same reason: a hermetic run starts
     // the harness with its MCP servers off, and a run with no tools has
@@ -276,6 +276,6 @@ export function validateTuiRequestFor(
     // The sandbox rule cannot live here — a sandboxed TUI validates this
     // same request — so the unsandboxed entry point (runInteractive)
     // refuses the option outright.
-    throw new UsageRefusalError("--enable-playwright-mcp is supported only by claude and zai");
+    throw new UsageRefusalError(`--enable-playwright-mcp is supported only by ${PLAYWRIGHT_MCP_AGENT_LIST}`);
   }
 }

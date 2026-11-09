@@ -32,12 +32,12 @@ describe("aider session - contract", () => {
     expect(AIDER_SESSION_FLOOR).toBe("0.86.2");
   });
 
-  test("the capability matrix is honest: live input and resume, nothing else", () => {
+  test("the capability matrix exposes live input, interrupt, and resume", () => {
     expect(aiderSessionCapabilities()).toEqual({
       live_input: true,
       user_during_turn: false,
       steer: false,
-      interrupt: false,
+      interrupt: true,
       permissions: false,
       deltas: false,
       file_changes: false,

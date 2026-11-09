@@ -104,6 +104,7 @@ export function experimentFailedResult(
     const block: CodemuxResultBlock = existing && typeof existing === "object" && !Array.isArray(existing)
       ? { ...existing as CodemuxResultBlock, recording, failure_code: failure.code }
       : { agent: request.agent, model: servedModel ?? request.model ?? null, served_model: servedModel ?? null,
+          model_alias: request.modelAlias ?? null,
           labels: request.labels ?? null,
           usage, session_id: null, recording, failure_code: failure.code };
     const output = { ...(existing ? envelope : { result: null }),

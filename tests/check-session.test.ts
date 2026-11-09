@@ -3,7 +3,7 @@
  * shapes the session canary cannot carry with the check's exit-64
  * wording, and a well-formed request runs the canary — here pointed at
  * the fake codemux session fixture, so no harness binary and no provider
- * is contacted. The canary's own three-session verdicts are tested in
+ * is contacted. The canary's own session verdicts are tested in
  * tests/hermetic-session-canary.test.ts.
  */
 import { expect, spyOn, test } from "bun:test";
@@ -16,20 +16,29 @@ import * as cliRuntime from "../src/cli-runtime.js";
 import { getDefaultConfig } from "../src/config.js";
 import { registerCheckCommand } from "../src/check-command.js";
 import { sessionCanary } from "../src/hermetic-session-canary.js";
+import { sessionCanaryLaunchCount } from "../src/hermetic-session-canary-home.js";
+import { SESSION_AGENTS } from "../src/session/cli-agents.js";
+import { AGENT_IDS } from "../src/types.js";
 import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
 
 const FAKE = fileURLToPath(new URL("./fixtures/live/fake-codemux-session.ts", import.meta.url));
 
+// Every shipped agent has a session driver, so no CLI argv reaches the
+// "has no session driver" refusal; tests/hermetic-session-canary.test.ts
+// pins it with an unregistered id, and the test below pins why.
+test("every shipped agent has a session driver, so the canary's driver refusal is unreachable from the CLI", () => {
+  expect(AGENT_IDS.filter((agent) => SESSION_AGENTS[agent] === undefined)).toEqual([]);
+});
+
 const refusals: { label: string; argv: string[]; message: string }[] = [
   {
-    label: "no session driver",
-    argv: ["check", "-a", "qwen", "--hermetic", "--session"],
-    message: "qwen has no session driver",
-  },
-  {
+    // cursor's session exists but the harness has no verified hermetic
+    // mode; for the CHECK path the hermetic gate answers first with its
+    // own spelling (the session command's "no verified hermetic mode"
+    // refusal is cli-request.ts's, one layer later).
     label: "sessions without hermetic",
-    argv: ["check", "-a", "aider", "--hermetic", "--session"],
-    message: "aider has no verified hermetic mode",
+    argv: ["check", "-a", "cursor", "--hermetic", "--session"],
+    message: "cursor does not support a hermetic instruction check",
   },
   {
     label: "session without hermetic",
@@ -52,7 +61,7 @@ const refusals: { label: string; argv: string[]; message: string }[] = [
 ];
 
 test.each(refusals)("check --session refuses $label before spending anything", async ({ argv, message }) => {
-  const fake = createFakeBinaryEnv({ claude: "exit 0", aider: "exit 0", scode: "exit 0" });
+  const fake = createFakeBinaryEnv({ claude: "exit 0", scode: "exit 0" });
   try {
     const { stderr, exitCode } = await runCli(argv, fake.env);
     expect(exitCode).toBe(64);
@@ -97,9 +106,12 @@ test("check --hermetic --session runs the canary and prints its OK line", async 
     );
     expect(process.exitCode).toBe(0);
     expect(stdoutChunks.join("")).toContain("HERMETIC SESSION claude: OK");
-    // The request's flags ride every session the canary starts.
+    // The request's flags ride every session the canary starts: the three
+    // hermetic sessions plus, for agents with a caller-home canary, the two
+    // --harness-home sessions (src/hermetic-session-canary-home.ts).
     const runs = readFileSync(stateFile, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { argv: string[] });
-    expect(runs).toHaveLength(3);
+    expect(runs).toHaveLength(sessionCanaryLaunchCount("claude"));
+    expect(sessionCanaryLaunchCount("claude")).toBe(5);
     expect(runs[0]!.argv).toContain("--effort");
     expect(runs[0]!.argv.join(" ")).toContain("--pass-env EXTRA_NAME");
   } finally {

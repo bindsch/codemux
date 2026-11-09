@@ -271,6 +271,56 @@ describe("input parsing", () => {
     ).toEqual({ ok: false, reason: "malformed" });
   });
 
+  test.each([
+    { decision: "allow" },
+    { decision: "deny" },
+    { decision: "allow", updated_input: { file_path: "workspace/file.txt", values: [1, 2] } },
+    { decision: "deny", updated_input: { command: "echo safe" }, message: "Not now.\nTry later." },
+  ])("permission_response normalizes to permission_decision and preserves fields: %j", (fields) => {
+    const ctx = context({ pendingRequestIds: new Set(["req-1"]) });
+    const input = { type: "permission_response", request_id: "req-1", ...fields };
+    expect(parseInputLine(JSON.stringify(input), ctx)).toEqual({
+      ok: true,
+      message: { ...input, type: "permission_decision" },
+    });
+  });
+
+  test.each([
+    ["an unknown field", { extra: true }],
+    ["a missing request ID", { request_id: undefined }],
+    ["an empty request ID", { request_id: "" }],
+    ["a numeric request ID", { request_id: 1 }],
+    ["a NUL in the request ID", { request_id: "req-\0" }],
+    ["an oversized request ID", { request_id: "r".repeat(MAX_REQUEST_ID_CHARS + 1) }],
+    ["a missing decision", { decision: undefined }],
+    ["an unknown decision", { decision: "accept" }],
+    ["a null update", { updated_input: null }],
+    ["an array update", { updated_input: [] }],
+    ["a string update", { updated_input: "file.txt" }],
+    ["a message on allow", { decision: "allow", message: "No." }],
+    ["an empty denial message", { message: "" }],
+    ["a non-string denial message", { message: 1 }],
+    ["a control in the denial message", { message: "Not\tnow." }],
+    ["an oversized denial message", { message: "x".repeat(MAX_DECISION_MESSAGE_UNITS + 1) }],
+  ] as const)("permission_response rejects %s", (_label, fields) => {
+    const ctx = context({ pendingRequestIds: new Set(["req-1"]) });
+    expect(parseInputLine(JSON.stringify({
+      type: "permission_response", request_id: "req-1", decision: "deny", ...fields,
+    }), ctx)).toEqual({ ok: false, reason: "malformed" });
+  });
+
+  test("permission_response retains capability, pending-request, and shutdown checks", () => {
+    const input = JSON.stringify({ type: "permission_response", request_id: "req-1", decision: "allow" });
+    expect(parseInputLine(input, context())).toEqual({ ok: false, reason: "unknown_request" });
+    expect(parseInputLine(input, context({
+      capabilities: { ...ALL_CAPS, permissions: false },
+      pendingRequestIds: new Set(["req-1"]),
+    }))).toEqual({ ok: false, reason: "unsupported" });
+    expect(parseInputLine(input, context({
+      pendingRequestIds: new Set(["req-1"]), shuttingDown: true,
+    }))).toEqual({ ok: false, reason: "shutting_down" });
+  });
+
   test("everything but a second shutdown is rejected once shutting down", () => {
     const ctx = context({ shuttingDown: true });
     expect(parseInputLine('{"type":"user","text":"x"}', ctx)).toEqual({

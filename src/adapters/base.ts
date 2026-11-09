@@ -252,6 +252,12 @@ export abstract class BaseAdapter {
     return {};
   }
 
+  /** Launch-owned interactive environment, finalized on every exit path. */
+  prepareTuiEnvironment(model?: string, autonomy?: AutonomyLevel, effort?: ReasoningEffort,
+    sandboxed?: boolean, passthroughEnv?: readonly string[], _printOnly = false) {
+    return { env: this.getTuiEnv(model, autonomy, effort, sandboxed, passthroughEnv), finalize: () => {} };
+  }
+
   /**
    * Called before launching the agent. Use for banners, validation, etc.
    * Throw to abort launch.

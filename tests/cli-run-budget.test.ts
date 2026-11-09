@@ -62,7 +62,7 @@ exit 7`,
     // The adapter validator refuses the request ahead of the
     // availability gates, so minimalPath reaches it: a dropped limit
     // would run uncapped under a caller who set one.
-    for (const agent of ["codex", "kimi", "opencode", "agy"]) {
+    for (const agent of ["codex", "kimi", "opencode", "agy", "cursor", "droid", "goose"]) {
       const { stderr, exitCode } = await runCli(
         ["run", "-a", agent, "-p", "test", "--max-budget-usd", "5"],
         { PATH: minimalPath() }

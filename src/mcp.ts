@@ -19,7 +19,11 @@ export interface PlaywrightMcpOptions {
  * parser, and the shared validators all read this predicate, so no second
  * list can drift from it. An adapter outside the list refuses the option
  * instead of accepting a launch the server never rides. */
-const PLAYWRIGHT_MCP_AGENTS: readonly AgentId[] = ["claude", "zai"];
+export const PLAYWRIGHT_MCP_AGENTS: readonly AgentId[] = ["claude", "zai", "opencode", "copilot", "gemini", "pi", "qwen", "goose", "codex", "cline", "kimi"];
+
+/** The list as refusals print it, derived from the table so the text
+ * cannot name fewer agents than the table holds (review m3). */
+export const PLAYWRIGHT_MCP_AGENT_LIST = PLAYWRIGHT_MCP_AGENTS.join(", ");
 
 export function supportsPlaywrightMcpAgent(agent: AgentId): boolean {
   return PLAYWRIGHT_MCP_AGENTS.includes(agent);

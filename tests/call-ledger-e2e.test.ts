@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BaseAdapter } from "../src/adapters/base.js";
@@ -43,6 +43,7 @@ describe("the launched call ledger", () => {
       expect(record.kind).toBe("run");
       expect(record.agent).toBe("claude");
       expect(record.model).toBeNull(); // no -m was passed
+      expect(record.model_alias).toBeNull(); // no config alias resolved either
       expect(record.model_effective).toBe("claude-opus-5");
       expect(record.provider).toBe("default");
       expect(record.session_id).toBeNull();
@@ -78,6 +79,7 @@ describe("the launched call ledger", () => {
         "kind",
         "labels",
         "model",
+        "model_alias",
         "model_effective",
         "provider",
         "sandbox_no_net",
@@ -117,6 +119,39 @@ describe("the launched call ledger", () => {
     } finally {
       fake.cleanup();
       ledger.cleanup();
+    }
+  });
+
+  test("a -m config alias records the resolved model and the alias beside it (design P5)", async () => {
+    // The run envelope's `model` is the id the alias resolved to; the
+    // ledger line carries the typed value as model_alias. A raw id (no
+    // config entry) records a null alias — the same rule the session
+    // protocol reports.
+    const fake = createFakeBinaryEnv({ claude: `printf '%s\\n' '${ENVELOPE}'` });
+    const ledger = ledgerFile();
+    const configDir = mkdtempSync(join(tmpdir(), "codemux-ledger-config-"));
+    mkdirSync(join(configDir, "codemux"), { recursive: true });
+    writeFileSync(
+      join(configDir, "codemux", "config.yaml"),
+      "models:\n  judge:\n    claude: claude-opus-5\n"
+    );
+    try {
+      const { exitCode } = await runCli(
+        [...RUN_ARGS, "-m", "judge"],
+        {
+          ...fake.env,
+          [CALL_LOG_ENV]: ledger.path,
+          XDG_CONFIG_HOME: configDir,
+        }
+      );
+      expect(exitCode).toBe(0);
+      const record = readCallLog(ledger.path).entries[0]!.record as CallRecord;
+      expect(record.model).toBe("claude-opus-5");
+      expect(record.model_alias).toBe("judge");
+    } finally {
+      fake.cleanup();
+      ledger.cleanup();
+      rmSync(configDir, { recursive: true, force: true });
     }
   });
 

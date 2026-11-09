@@ -50,35 +50,44 @@ describe("codex session e2e - tools, files, usage", () => {
 });
 
 describe("codex session e2e - approvals", () => {
-  test("an allow decision answers accept and the turn continues", async () => {
+  test.each(["permission_decision", "permission_response"])("%s allow answers accept and the turn continues", async (type) => {
     const session = await startAndWait();
     send(session.driver, { type: "user", text: "scenario:ask dangerous" });
     const request = await waitFor(session.events, of("permission_request"), "permission_request");
     expect(request.tool).toBe("commandExecution");
     expect(request.input.command).toBe("rm -rf /");
     expect(request.options).toEqual(["allow", "deny"]);
-    send(session.driver, { type: "permission_decision", request_id: request.request_id, decision: "allow" });
+    send(session.driver, { type, request_id: request.request_id, decision: "allow" });
+    const accepted = await waitFor(
+      session.events,
+      (events) => events.find((event) => event.type === "input_accepted" && event.input_seq === 2),
+      "the approval input acknowledgment"
+    );
+    expect(accepted.seq).toBeGreaterThan(request.seq);
     const resolved = await waitFor(session.events, of("permission_resolved"), "permission_resolved");
     expect(resolved.resolution).toBe("allow");
+    expect(resolved.request_id).toBe(request.request_id);
+    expect(resolved.seq).toBeGreaterThan(request.seq);
     const result = await waitFor(session.events, of("tool_result"), "tool_result");
     expect(result.is_error).toBe(false);
     expect(result.output).toBe("gone\n");
     const completed = await waitFor(session.events, of("turn_completed"), "turn_completed");
     expect(completed.finish).toBe("end");
     const decisions = await waitForRecord(session, "decisions.jsonl");
+    expect(decisions[0]!.id).toBe("appr-1");
     expect(decisions[0]!.result).toEqual({ decision: "accept" });
     send(session.driver, { type: "shutdown" });
     expect(await session.code).toBe(0);
   });
 
-  test("a deny decision answers decline and the tool reports the refusal", async () => {
+  test.each(["permission_decision", "permission_response"])("%s deny answers decline and the tool reports the refusal", async (type) => {
     const session = await startAndWait();
     send(session.driver, { type: "user", text: "scenario:ask dangerous" });
     const request = await waitFor(session.events, of("permission_request"), "permission_request");
     // A denial message cannot ride the codex wire (the decline carries no
     // text channel): rejected `unsupported`, the request stays pending.
     send(session.driver, {
-      type: "permission_decision",
+      type,
       request_id: request.request_id,
       decision: "deny",
       message: "Not here.",
@@ -89,14 +98,23 @@ describe("codex session e2e - approvals", () => {
       "the message rejection"
     );
     expect(rejected.input_seq).toBe(2);
-    send(session.driver, { type: "permission_decision", request_id: request.request_id, decision: "deny" });
+    send(session.driver, { type, request_id: request.request_id, decision: "deny" });
+    const accepted = await waitFor(
+      session.events,
+      (events) => events.find((event) => event.type === "input_accepted" && event.input_seq === 3),
+      "the approval input acknowledgment"
+    );
+    expect(accepted.seq).toBeGreaterThan(rejected.seq);
     const resolved = await waitFor(session.events, of("permission_resolved"), "permission_resolved");
     expect(resolved.resolution).toBe("deny");
+    expect(resolved.request_id).toBe(request.request_id);
+    expect(resolved.seq).toBeGreaterThan(rejected.seq);
     expect(resolved.message).toBeUndefined();
     const result = await waitFor(session.events, of("tool_result"), "tool_result");
     expect(result.is_error).toBe(true);
     await waitFor(session.events, of("turn_completed"), "turn_completed");
     const decisions = await waitForRecord(session, "decisions.jsonl");
+    expect(decisions[0]!.id).toBe("appr-1");
     expect(decisions[0]!.result).toEqual({ decision: "decline" });
     send(session.driver, { type: "shutdown" });
     expect(await session.code).toBe(0);
@@ -290,6 +308,8 @@ describe("codex session e2e - approvals", () => {
     send(session.driver, { type: "user", text: "scenario:askpatch patch" });
     const request = await waitFor(session.events, of("permission_request"), "permission_request");
     expect(request.tool).toBe("fileChange");
+    expect(request.input.itemId).toBe("fc-ask");
+    expect(JSON.parse(request.raw).params.changes).toBeUndefined();
     send(session.driver, { type: "permission_decision", request_id: request.request_id, decision: "allow" });
     const resolved = await waitFor(session.events, of("permission_resolved"), "permission_resolved");
     expect(resolved.resolution).toBe("allow");

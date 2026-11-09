@@ -8,6 +8,7 @@
 import { emptyUsage } from "../../result-envelope.js";
 import { parseKimiStreamLine } from "../kimi-session.js";
 import { harnessFailed, type SessionChildOutcome } from "../process.js";
+import type { ResultUsageBlock } from "../../types.js";
 import { addUsage } from "../usage.js";
 import { fatalEnd } from "./end-paths.js";
 import type {
@@ -33,7 +34,7 @@ export function childLine(
     state.phase === "idle" ||
     state.phase === "spawning" ||
     (state.phase === "draining" && state.graceOpen);
-  if (!parseOpen || state.fatalClosed) return [];
+  if (!parseOpen || state.fatalClosed || state.turn?.interruption !== undefined) return [];
   const unknown = (raw: string): KimiEffect => ({ kind: "emit", event: "unknown_event", raw });
   // The hint is the turn's closing record — the writer runs the turn
   // body, writes the hint, then exits — so any line after it is drift:
@@ -236,11 +237,12 @@ export function childLine(
 export function childExit(
   state: KimiMachineState,
   child: TurnChild,
-  outcome: SessionChildOutcome
+  outcome: SessionChildOutcome,
+  usage: ResultUsageBlock
 ): KimiEffect[] {
   if (state.child !== child) return []; // superseded — defensive
   state.harnessExit = outcome;
-  state.sawHarnessFailure ||= harnessFailed(outcome);
+  state.sawHarnessFailure ||= state.turn?.interruption === undefined && harnessFailed(outcome);
   if (state.fatalClosed) {
     // A fatal-owned session leaves the turn open
     // for the synthesis at children_settled.
@@ -248,6 +250,22 @@ export function childExit(
   }
   if (state.turn === null) return []; // defensive: nothing to complete
   const endOwns = state.end.cause !== null;
+  if (state.turn.interruption !== undefined && !endOwns) {
+    const turn = state.turn;
+    state.turn = null;
+    state.child = null;
+    state.phase = "idle";
+    state.confirmed = state.sessionId !== null;
+    state.cumulative = addUsage(state.cumulative, usage);
+    const interrupted: KimiEffect[] = [
+      { kind: "emit", event: "turn_completed", turnId: turn.id, finish: "interrupted", reason: turn.interruption, usage },
+      { kind: "ledger_turn", turnId: turn.id, startedAt: turn.startedAt, finish: "interrupted", usage },
+      { kind: "stamp_activity" },
+    ];
+    if (state.sessionId === null) interrupted.push(...fatalEnd(state, "codemux",
+      "the first Kimi turn was interrupted before its session identity was established; the session cannot safely resume", "crash", 1));
+    return interrupted;
+  }
   const exitDetail =
     outcome.code !== null
       ? `code ${outcome.code}`
@@ -274,8 +292,10 @@ export function childExit(
         turnId: turn.id,
         finish: "failed",
         reason: `the kimi process exited with ${exitDetail} and named no session id`,
+        // No named session means no wire log: nothing was attributed.
+        usage: emptyUsage(),
       },
-      { kind: "ledger_turn", turnId: turn.id, startedAt: turn.startedAt, finish: "failed" },
+      { kind: "ledger_turn", turnId: turn.id, startedAt: turn.startedAt, finish: "failed", usage: emptyUsage() },
       ...fatalEnd(
         state,
         "harness",
@@ -311,7 +331,7 @@ export function childExit(
   if (!state.confirmed) {
     state.sawUnconfirmedTurnFailure = true;
   }
-  state.cumulative = addUsage(state.cumulative, emptyUsage());
+  state.cumulative = addUsage(state.cumulative, usage);
   effects.push(
     {
       kind: "emit",
@@ -338,8 +358,11 @@ export function childExit(
                           "closes every completed turn, so the session is unconfirmed",
           }
         : {}),
+      // The failed verdict changes nothing about the counts: the turn's
+      // model calls happened, so its wire-log delta reports either way.
+      usage,
     },
-    { kind: "ledger_turn", turnId: turn.id, startedAt: turn.startedAt, finish: failed ? "failed" : "end" },
+    { kind: "ledger_turn", turnId: turn.id, startedAt: turn.startedAt, finish: failed ? "failed" : "end", usage },
     { kind: "stamp_activity" }
   );
   return effects;

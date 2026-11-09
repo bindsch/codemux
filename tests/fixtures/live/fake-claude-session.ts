@@ -57,7 +57,7 @@
  *   crash   — one assistant message, then exit 1
  *   garbage — a non-JSON line, then nothing (tier-3 fatal)
  *   badinit — a second system/init mid-turn (tier-1 unknown now); the
- *             turn still completes
+ *             turn still answers and completes
  *   wrongsession — an event framed with a foreign session id (tier-2)
  *
  * Costs model the real wire (fixture zai-session-a.ndjson): a result's

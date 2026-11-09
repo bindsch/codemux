@@ -243,7 +243,7 @@ export abstract class CodexDriverApprovals extends CodexDriverLedger {
 
 }
 
-function approvalMethod(kind: CodexApprovalKind): string {
+export function approvalMethod(kind: CodexApprovalKind): string {
   switch (kind) {
     case "commandExecution":
       return "item/commandExecution/requestApproval";

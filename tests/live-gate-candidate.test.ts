@@ -15,7 +15,9 @@ import {
   formatReport,
   gateFailed,
   parseOptions,
+  probeApplies,
   runContractColumn,
+  unsupportedNote,
 } from "../scripts/live-gate.js";
 import { cleanupLoggedInHomes, loggedInEnv, passRow, reportInput } from "./helpers/live-gate.js";
 
@@ -35,10 +37,15 @@ const LISTING = {
       available: true,
       binary: "claude",
       // The experiment and served-model facts deliberately differ from
-      // this checkout's tables (claude here HAS an experiment mechanism,
-      // opencode does not): whatever the listing says is what the gate
+      // this checkout's tables (opencode here has an experiment mechanism,
+      // claude does not): whatever the listing says is what the gate
       // probes with (round 20, edges 2).
-      capabilities: { hermetic: true, resultJson: true, budgetLimit: true, toolsNoneRequiresHermetic: false, providerOverride: true, sessions: true, experimentMcp: false, experimentPrefix: null, servedModelEvidence: true, model: true, effort: true },
+      capabilities: { hermetic: true, checkHermetic: false, sessionHermetic: false, resultJson: true, budgetLimit: true, toolsNoneRequiresHermetic: false, toolsNone: true, providerOverride: true, sessions: true, experimentMcp: false, experimentPrefix: null, servedModelEvidence: true, model: true, effort: true,
+        limitations: {
+          "check.hermetic": { reason: "Synthetic candidate has no instruction control", evidence: "Synthetic fixture 1.0.0" },
+          "session.hermetic": { reason: "Synthetic candidate has no session isolation", evidence: "Synthetic fixture 1.0.0" },
+          "run.experiment-mcp": { reason: "Synthetic candidate has no experiment transport", evidence: "Synthetic fixture 1.0.0" },
+        } },
     },
     {
       id: "opencode",
@@ -46,14 +53,18 @@ const LISTING = {
       // A renamed binary this checkout's adapters never spell: the
       // contract column must still probe the id (round 19, edges 4).
       binary: "opencode-candidate",
-      capabilities: { hermetic: true, resultJson: true, budgetLimit: false, toolsNoneRequiresHermetic: true, providerOverride: false, sessions: true, experimentMcp: true, experimentPrefix: "opencode-wall-time", servedModelEvidence: false, model: true, effort: true },
+      capabilities: { hermetic: true, checkHermetic: true, sessionHermetic: true, resultJson: true, budgetLimit: false, toolsNoneRequiresHermetic: true, toolsNone: true, providerOverride: false, sessions: true, experimentMcp: true, experimentPrefix: "opencode-wall-time", servedModelEvidence: false, model: true, effort: true,
+        limitations: {
+          "run.provider-override": { reason: "Synthetic candidate has no provider routing", evidence: "Synthetic fixture 1.0.0" },
+          "check.provider-override.served-model": { reason: "Synthetic candidate has no provider evidence", evidence: "Synthetic fixture 1.0.0" },
+        } },
     },
     {
       // Installed nowhere on the candidate's machine: listed, not probed.
       id: "aider",
       available: false,
       binary: "aider",
-      capabilities: { hermetic: false, resultJson: false, budgetLimit: false, toolsNoneRequiresHermetic: false, providerOverride: false, sessions: true, experimentMcp: false, experimentPrefix: null, servedModelEvidence: false, model: false, effort: false },
+      capabilities: { hermetic: false, checkHermetic: false, sessionHermetic: false, limitations: {}, resultJson: false, budgetLimit: false, toolsNoneRequiresHermetic: false, toolsNone: false, providerOverride: false, sessions: true, experimentMcp: false, experimentPrefix: null, servedModelEvidence: false, model: false, effort: false },
     },
   ],
 };
@@ -74,6 +85,14 @@ describe("candidate listing parsing", () => {
     // with its own wall-time prefix.
     expect(parsed.facts[0]).toMatchObject({ id: "claude", hermetic: true, resultJson: true, budgetLimit: true, toolsNoneRequiresHermetic: false, sessions: true, providerOverride: true, experiment: false, experimentPrefixes: [], servedModelEvidence: true });
     expect(parsed.facts[1]).toMatchObject({ id: "opencode", budgetLimit: false, toolsNoneRequiresHermetic: true, experiment: true, experimentPrefixes: ["opencode-wall-time"], servedModelEvidence: false });
+    expect(parsed.facts[0]).toMatchObject({ checkHermetic: false, sessionHermetic: false,
+      declarationSource: "candidate", limitations: LISTING.agents[0]!.capabilities.limitations });
+    expect(parsed.facts[1]).toMatchObject({ checkHermetic: true, sessionHermetic: true });
+    for (const letter of ["D", "K"] as const) {
+      expect(probeApplies(letter, parsed.facts[0]!)).toBe(false);
+      expect(probeApplies(letter, parsed.facts[1]!)).toBe(true);
+    }
+    expect(unsupportedNote("K", parsed.facts[0]!)).toBe("Synthetic candidate has no session isolation");
     // The contract column's input covers the same available ids, each
     // with the candidate's own binary name — including one this
     // checkout's adapters never spell.
@@ -114,13 +133,23 @@ describe("candidate listing parsing", () => {
     // a listing from an older build is refused, never patched with this
     // checkout's own capabilities.
     expect(() => candidateFacts(
-      { schema: "codemux-list-1", agents: [{ id: "claude", available: true, capabilities: { hermetic: true, resultJson: true, toolsNoneRequiresHermetic: false, providerOverride: true, sessions: true, experimentMcp: false, experimentPrefix: null, servedModelEvidence: true } }] },
+      { schema: "codemux-list-1", agents: [{ id: "claude", available: true, capabilities: { ...LISTING.agents[0]!.capabilities, model: undefined } }] },
       "src"
     )).toThrow("capabilities.model is absent; the listing is from an older build");
     expect(() => candidateFacts(
       { schema: "codemux-list-1", agents: [{ id: "claude", available: true, capabilities: { ...LISTING.agents[0]!.capabilities, effort: "low" } }] },
       "src"
     )).toThrow("effort must be a boolean");
+    // Probe E keys on the plain tools-none fact, so it is required the same
+    // way (parity pass, 2.0.0): a candidate's E set is its own.
+    expect(() => candidateFacts(
+      { schema: "codemux-list-1", agents: [{ id: "claude", available: true, capabilities: { ...LISTING.agents[0]!.capabilities, toolsNone: undefined } }] },
+      "src"
+    )).toThrow("toolsNone is absent; the listing is from an older build");
+    expect(() => candidateFacts(
+      { schema: "codemux-list-1", agents: [{ id: "claude", available: true, capabilities: { ...LISTING.agents[0]!.capabilities, toolsNone: "yes" } }] },
+      "src"
+    )).toThrow("toolsNone must be a boolean");
     // A binary field that is not a string is refused, never guessed.
     expect(() => candidateFacts(
       { schema: "codemux-list-1", agents: [{ id: "claude", available: true, binary: 3, capabilities: LISTING.agents[0]!.capabilities }] },
@@ -175,6 +204,40 @@ describe("candidate listing parsing", () => {
       "src"
     );
     expect(parsed.facts[0]!.budgetLimit).toBe(false);
+    expect(parsed.facts[0]!.checkHermetic).toBe(false);
+    expect(parsed.facts[0]!.sessionHermetic).toBe(false);
+    expect(parsed.facts[0]!.limitations).toEqual(older.limitations);
+  });
+
+  test.each(["checkHermetic", "sessionHermetic", "limitations"] as const)(
+    "refuses a listing without %s instead of using checkout declarations", (field) => {
+      const capabilities: Record<string, unknown> = { ...LISTING.agents[0]!.capabilities };
+      delete capabilities[field];
+      expect(() => candidateFacts({ schema: LISTING.schema,
+        agents: [{ id: "claude", available: true, capabilities }],
+      }, "synthetic candidate")).toThrow(`capabilities.${field}`);
+    }
+  );
+
+  test.each(["checkHermetic", "sessionHermetic"] as const)(
+    "refuses malformed %s declarations", (field) => {
+      for (const value of [null, "yes", 1, {}]) {
+        expect(() => candidateFacts({ schema: LISTING.schema, agents: [{ id: "claude", available: true,
+          capabilities: { ...LISTING.agents[0]!.capabilities, [field]: value },
+        }] }, "synthetic candidate")).toThrow(`capabilities.${field} must be a boolean`);
+      }
+    }
+  );
+
+  test("refuses malformed limitation declarations and missing evidence", () => {
+    for (const limitations of [null, [], "unsupported", { unknown: {} },
+      { "session.hermetic": null }, { "session.hermetic": { reason: "", evidence: "fixture" } },
+      { "session.hermetic": { reason: "fixture", evidence: " " } },
+      { "session.hermetic": { reason: "fixture" } }]) {
+      expect(() => candidateFacts({ schema: LISTING.schema, agents: [{ id: "claude", available: true,
+        capabilities: { ...LISTING.agents[0]!.capabilities, limitations },
+      }] }, "synthetic candidate")).toThrow();
+    }
   });
 
   test("the gate's static tables are the src tables, so a checkout's facts and its candidate facts cannot drift (round 20, edges 2)", async () => {
@@ -203,7 +266,7 @@ describe("candidate listing parsing", () => {
   });
 });
 
-test("probe G's spec carries the prefixes of the build under test, never the static table's", async () => {
+test.each(["kimi-candidate-wall-time", null])("probe G's spec carries the build under test's prefix: %s", async (candidatePrefix) => {
   // A candidate declaring a DIFFERENT experiment prefix than this
   // checkout's static table used to get a spec built from the static
   // prefix, so the candidate refused its own probe for a reason that was
@@ -220,14 +283,13 @@ test("probe G's spec carries the prefixes of the build under test, never the sta
       return { status: "PASS" as const, seconds: 0, stderr: "" };
     },
   };
-  const candidatePrefix = "kimi-candidate-wall-time";
   expect(EXPERIMENT_MCP_HARNESSES.kimi).not.toContain(candidatePrefix);
   const listing = {
     schema: "codemux-list-1",
     agents: [{ id: "kimi", available: true, capabilities: {
-      hermetic: true, resultJson: false, toolsNoneRequiresHermetic: true, providerOverride: false,
+      hermetic: true, resultJson: false, toolsNoneRequiresHermetic: true, toolsNone: true, providerOverride: false,
       sessions: false, experimentMcp: true, experimentPrefix: candidatePrefix, servedModelEvidence: false,
-      model: true, effort: true,
+      model: true, effort: true, checkHermetic: false, sessionHermetic: false, limitations: {},
     } }],
   };
   const facts = candidateFacts(listing, "candidate list --json").facts;
@@ -236,7 +298,7 @@ test("probe G's spec carries the prefixes of the build under test, never the sta
   try {
     await runProbes(facts, options, runner, report, loggedInEnv().env);
     expect(specs).toHaveLength(1);
-    expect(JSON.parse(specs[0]!).accept_harness_prefix).toEqual([candidatePrefix]);
+    expect(JSON.parse(specs[0]!).accept_harness_prefix ?? []).toEqual(candidatePrefix === null ? [] : [candidatePrefix]);
 
     // Static mode (no candidate) keeps reading this checkout's table.
     specs.length = 0;

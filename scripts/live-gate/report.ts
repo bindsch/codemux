@@ -48,6 +48,35 @@ export function countRows(rows: readonly GateRow[]): ProbeTotals {
   return totals;
 }
 
+/** One summary line per harness (parity pass, 2.0.0): the headline totals
+ * hid a harness whose every capability cell was UNSUPPORTED or SKIP, so
+ * an operator read "0 fail" where nothing beyond the base pair was ever
+ * exercised. Each line names how many of the row's cells were judged
+ * (PASS or FAIL) against the cells it has, and a harness whose judged
+ * cells are only the base pair (A read-only reply, B medium shell) is
+ * called out: no capability probe ran for it. J and P excluded from the
+ * base pair: they start no harness, so they prove nothing beyond A and
+ * B's own run shape. */
+export function harnessSummaryLines(rows: readonly GateRow[], probes: readonly ProbeLetter[]): string[] {
+  return rows.map((row) => {
+    const totals: ProbeTotals = { pass: 0, fail: 0, skip: 0, unsupported: 0 };
+    let cells = 0;
+    const judged: ProbeLetter[] = [];
+    for (const letter of probes) {
+      const result = row.results[letter];
+      if (!result) continue;
+      cells++;
+      if (result.status === "PASS" || result.status === "FAIL") judged.push(letter);
+      totals[result.status === "PASS" ? "pass" : result.status === "FAIL" ? "fail"
+        : result.status === "SKIP" ? "skip" : "unsupported"]++;
+    }
+    const baseOnly = judged.length > 0 && judged.every((letter) => letter === "A" || letter === "B");
+    return `Harness ${row.agent}: ${judged.length} of ${cells} cells probed ` +
+      `(${totals.pass} pass, ${totals.fail} fail, ${totals.skip} skip, ${totals.unsupported} unsupported)` +
+      (baseOnly ? "; only the base probes (A, B) were judged — no capability probe ran for this harness" : "");
+  });
+}
+
 /** A row counts as probed only when an authenticated probe actually ran
  * there; skips and unsupported cells are never passes, and the zero-quota
  * probes that start no harness — print-sandbox (P) and, since it takes no
@@ -154,6 +183,9 @@ export function formatReport(input: ReportInput): string {
       lines.push(`| ${row.agent} | ${letter} ${PROBE_LABELS[letter]} | ${resultCell(result)} | ${result.seconds.toFixed(1)} | ${noteCell(result)} |`);
     }
   }
+  // The per-harness summary (parity pass, 2.0.0): one line per harness so
+  // a base-only or all-skipped row cannot hide inside the headline totals.
+  lines.push("", ...harnessSummaryLines(input.rows, input.probes));
   if (input.contracts.length > 0) {
     lines.push("", "Version contracts (zero quota):", "| Agent | Version | Min | Audited ceiling | Verdict |", "| --- | --- | --- | --- | --- |");
     for (const row of input.contracts) {

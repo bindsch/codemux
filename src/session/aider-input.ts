@@ -45,6 +45,11 @@ export abstract class AiderCallerInput extends AiderTurns {
     }
     const message = parsed.message;
     switch (message.type) {
+      case "interrupt": {
+        this.ack(inputSeq, true);
+        if (!this.finished) this.interruptTurn();
+        return;
+      }
       case "user": {
         const harnessText = applyAuthorPrefix(
           message.text,

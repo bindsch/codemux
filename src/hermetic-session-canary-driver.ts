@@ -7,7 +7,7 @@
  * reason, completion, end reason — and bounds the whole exchange by a
  * wall deadline that kills the child tree. Split from
  * src/hermetic-session-canary.ts at the 500-line cap; the canary's
- * three-session verdicts and cleanup live there.
+ * session verdicts and cleanup live there and in hermetic-session-canary-home.ts.
  */
 
 import { join } from "node:path";
@@ -44,6 +44,25 @@ export interface SessionRun {
   rejection?: string;
   completed: boolean;
   ended?: { reason: unknown; exitCode: unknown };
+}
+
+/** Protocol failures precede any judgment of model context or home state. */
+export function canarySessionProtocolProblem(run: SessionRun, label: string): string | null {
+  const where = `the ${label}`;
+  if (run.failure !== null) {
+    return `${where} failed: ${run.failure}` +
+      (run.rejection === undefined ? "" : ` (input rejected: ${run.rejection})`);
+  }
+  if (run.exitCode !== 0) return `${where} exited ${run.exitCode ?? "without an exit status"}`;
+  if (run.sessionId === undefined) return `${where} printed no session_started event naming its session id`;
+  if (!run.completed) {
+    return `${where} ended without completing the turn` +
+      (run.rejection === undefined ? "" : ` (input rejected: ${run.rejection})`);
+  }
+  if (run.ended === undefined) return `${where} exited without a session_ended event`;
+  if (run.ended.reason !== "shutdown") return `${where} ended with reason '${String(run.ended.reason)}', not 'shutdown'`;
+  if (run.ended.exitCode !== 0) return `${where} ended with exit_code '${String(run.ended.exitCode)}', not 0`;
+  return null;
 }
 
 const SESSION_OUTPUT_LIMIT = 512 * 1024;

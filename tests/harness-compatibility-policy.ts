@@ -55,7 +55,7 @@ describe("current harness documentation and the version gate agree", () => {
 
   test("historical installation never invents a version gate", async () => {
     const rows = await documentedContracts();
-    const ungated = ["cline", "goose", "gemini", "pi", "qwen"];
+    const ungated = ["goose", "gemini", "pi", "qwen"];
     for (const agent of ungated) {
       expect(rows.get(agent)?.[2], agent).toBe("none");
       expect(rows.get(agent)?.[3], agent).toBe("none");

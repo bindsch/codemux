@@ -2,6 +2,7 @@
 // file keeps its size budget (review round 153's lane rule): the one spawn
 // that runs outside any sandbox.
 
+import { collectCodexNativeCost } from "../codex-native-cost.js";
 import type { BaseAdapter, RunContext } from "../adapters/base.js";
 import { runCapturedCommand } from "../process-runner.js";
 import {
@@ -62,7 +63,7 @@ export async function runDirect(
     cwd
   );
   const stdinInput = adapter.getStdinInput(request);
-  return runCapturedCommand(command, {
+  const raw = await runCapturedCommand(command, {
     cwd,
     env,
     stdinInput,
@@ -83,4 +84,10 @@ export async function runDirect(
       ...(redirectCheck === null ? [] : [redirectCheck]),
     ],
   });
+  await collectCodexNativeCost(raw, request, context, {
+    command, checks, env,
+    options: { cwd, sandboxed: false, autonomy: request.autonomy ?? "read-only",
+      envOmissions: adapter.getEnvOmissions() },
+  }, adapter.providerOverrideActive());
+  return raw;
 }

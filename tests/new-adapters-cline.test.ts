@@ -15,9 +15,11 @@ describe("ClineAdapter", () => {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["none", "low", "medium", "high", "xhigh"],
-      // Both refusals verified live at 3.0.62; see docs/isolation.md.
-      supportsHermetic: false,
-      supportsToolSelection: false,
+      supportsHermetic: true,
+      hermeticRequiresProviderOverride: true,
+      supportsToolSelection: true,
+      supportsResultJson: true,
+      supportsProviderOverride: true,
     });
   });
 
@@ -30,6 +32,7 @@ describe("ClineAdapter", () => {
       effort: "high",
     })).toEqual([
       "cline",
+      "--json",
       "--model",
       "claude-sonnet-4",
       "--auto-approve",
@@ -37,7 +40,7 @@ describe("ClineAdapter", () => {
       "--thinking",
       "high",
       "--",
-      "fix the tests",
+      " ",
     ]);
   });
 

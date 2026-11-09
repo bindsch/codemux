@@ -56,17 +56,23 @@ the gate skips it and prints one stderr line instead.
 JSON with an optional correlation token. The file must be absolute. The ID
 requires the file option and matches `[A-Za-z0-9._:-]{1,128}`.
 `--sandbox-block <path>` (repeatable, absolute paths only) is available on
-`run` and `session`; it passes extra scode `--block` paths through to the
-sandbox, an operator-side extra on top of the blocks codemux attaches itself
-under `--experiment-project-settings`. Block paths are canonicalized once
+`run`, `tui`, `check`, and `session`; it passes extra scode `--block` paths
+through to the sandbox, an operator-side extra on top of the blocks codemux
+attaches itself under `--experiment-project-settings`. On `check` it
+applies to the plain probe only. Block paths are canonicalized once
 when the flags are parsed (symlinks dereferenced where they resolve, the
 missing tail kept literal, then deduplicated and sorted), and that
 canonical spelling is what every sandboxed child enforces and what a session
 records, so a symlink retargeted later cannot change which tree a block
 names. `--print-sandbox` is available on
-`run` and `session`: it runs the version preflights (not the quota gate: a
-print spends nothing), then prints the scode argv the launch would exec and
-exits 0 without starting the harness run or recording anything. The version preflight is the harness's
+`run`, `tui`, `check`, and `session`: it runs the version preflights (not
+the quota gate: a print spends nothing), then prints the scode argv the
+launch would exec and
+exits 0 without starting the harness run or recording anything. On `session`,
+`--print-sandbox` prints the long-lived child command or a representative
+per-turn command for Aider, OpenCode, Copilot, Cursor, Droid, Gemini, Goose, Kimi, and Pi. On `check`
+it supports the plain probe only (hermetic, Agy isolation, and tools
+canaries run several probes with no single scode argv); the version preflight is the harness's
 `--version`; for the opted-in Cursor desktop entry (`CODEMUX_CURSOR_ENTRY=cursor`,
 which the operator must pass through on purpose) that probe is `cursor agent
 --version`, which can install or update `cursor-agent`, as its opt-in
@@ -86,7 +92,7 @@ warned about and ignored. See
 [policy details](autonomy-and-sandboxing.md).
 
 `--enable-playwright-mcp` is available on `run`, `tui`, and `session`.
-It requires Claude or Z.AI and sandboxing; sessions also require `--auto low`.
+On `run` it requires Claude, Z.AI, Codex, Copilot, Gemini, Goose, OpenCode, Pi, or Qwen and sandboxing. Sessions support it on Claude, Z.AI, Codex, Copilot, Gemini, Goose, OpenCode, and Pi; every session except Copilot (`--auto medium` or `high`) and OpenCode requires `--auto low`.
 It is incompatible with `--hermetic` and `--tools none`; a session refuses it
 under `--hermetic`, with or without `--experiment-project-settings`, the same
 way. The locally installed
@@ -111,9 +117,9 @@ printf 'Reply with OK.\n' | codemux run -a claude -f -
 | `--timeout <seconds>` | 1800; each of stdin collection and subprocess execution gets a separate budget |
 | `--hermetic` | Off; suppress supported automatic customization loading |
 | `--tools <selection>` | `default`; `none` has harness-specific residual capabilities |
-| `--experiment-project-settings` | Off; run `claude`/`zai` in a private per-run Claude config directory with `--setting-sources project,local`, or `opencode` without `OPENCODE_DISABLE_PROJECT_CONFIG` and `--pure`, so a fixture repository's own permission rules and plugins apply without the operator's user-level customizations. Requires `--hermetic` and scode; `--auto low` on `claude`/`zai`, `--auto low` or `high` on `opencode`. Refused when any ancestor of the working directory carries a project memory file (`claude`/`zai`: `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, `.claude/rules`; `opencode`: `opencode.json`, `opencode.jsonc`, `.opencode`, `AGENTS.md`, `CLAUDE.md`, `CONTEXT.md`) — a home directory normally does. See [isolation](isolation.md) |
-| `--no-web` | Off; deny the Claude-family web tools (`WebSearch`, `WebFetch`) with a deny rule, which holds at `--auto high` and over approvals saved in the operator's settings; headless `claude` and `zai` otherwise grant them at every autonomy level, and other agents refuse the flag |
-| `--experiment-mcp <spec.json>` | Unset; experiment MCP server for `claude`, `zai`, `codex`, or `kimi`; requires hermetic mode, tools none, and read-only scode |
+| `--experiment-project-settings` | Off; run `claude`/`zai` in a private per-run Claude config directory with `--setting-sources project,local`, `opencode` without `OPENCODE_DISABLE_PROJECT_CONFIG` and `--pure`, `copilot` under a private `COPILOT_HOME` that reads only the repository's `.github/copilot` settings, or `gemini` under a private `GEMINI_CLI_HOME` that reads only workspace settings, or `openhands` under a private persistence dir whose run keeps the working directory's own `.openhands` hooks, or `codex` under a private per-run CODEX_HOME whose config.toml marks the project root trusted so the repository's own `.codex` config layers, skills, and `AGENTS.md` load, or `kimi` in a hermetic run that keeps the repository's own `.kimi-code` instructions, skills, agents, and MCP servers, or `cline` in a hermetic run whose private HOME and config leave native project discovery (rules, skills, hooks) on, with `--cwd` at the fixture repository root, so a fixture repository's own permission rules and plugins apply without the operator's user-level customizations. Requires `--hermetic` and scode; `--auto low` on `claude`/`zai`, `--auto low` or `high` on `opencode`, `copilot`, and `gemini`; `--auto low` on `openhands`, `codex`, `kimi`, and `cline`. Refused when any ancestor of the working directory carries a project memory file (`claude`/`zai`: `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, `.claude/rules`; `opencode`: `opencode.json`, `opencode.jsonc`, `.opencode`, `AGENTS.md`, `CLAUDE.md`, `CONTEXT.md`; `copilot`: `.github`, `.claude`, `.mcp.json`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`; `gemini`: `GEMINI.md`, `.gemini`, `.agents/skills`) — a home directory normally does. See [isolation](isolation.md) |
+| `--no-web` | Off; Claude-family runs deny `WebSearch` and `WebFetch` at every autonomy level. Aider disables URL discovery with `--no-detect-urls`; slash-command prompts are refused before launch. OpenCode selects a fresh agent that denies webfetch, websearch, and delegation. Copilot excludes web_fetch/web_search and denies the GitHub MCP web_search tool. Gemini denies google_web_search/web_fetch through a private policy. Pi accepts the flag because its built-in registry has no web tools. Kimi denies WebSearch and FetchURL in a private config while preserving existing restrictions and customization. Other unsupported agents refuse the flag. |
+| `--experiment-mcp <spec.json>` | Unset; experiment MCP server for `claude`, `zai`, `codex`, `kimi`, `opencode`, `copilot`, `gemini`, `goose`, `pi`, `qwen`, or `cline`; requires hermetic mode, tools none, and read-only scode; `codex`, `kimi`, and `gemini` require explicit spec opt-ins for their model-bound result headers and schema additions |
 | `--label <KEY=VALUE>` | Repeatable; metadata stored with the run; otherwise read `CODEMUX_LABELS` |
 | `--result-json` | Off; structured result with harness-specific normalization |
 | `--max-budget-usd <amount>` | Unset; a spend threshold for the run, a positive decimal with at most ten integer digits and two fraction digits (`2.5`, `0.75`), so the amount reaches the harness exactly as written. Claude and Z.AI only: Claude Code's own `--max-budget-usd` flag, which upstream applies to headless runs. The threshold is soft: Claude Code compares its own client-side estimate of the spend against it and stops the run once the estimate passes it, so the final cost can exceed the amount, and the estimate uses Anthropic's prices, which for a Z.AI run or a provider override are not the provider's billing. Every other agent refuses the flag before launch |
@@ -132,6 +138,13 @@ Timeouts must be finite and greater than zero, at most 86400 seconds.
 Fractional seconds are accepted and rounded up to milliseconds. The timeout
 is not an end-to-end wall-clock cap: input collection, execution, setup, and
 shutdown are distinct phases.
+
+Every agent must return a non-whitespace answer. A zero-exit run with an
+empty or whitespace-only normalized answer exits 1 and reports
+`Error: <agent> exited 0 with an empty answer` on stderr. With
+`--result-json`, its envelope records `codemux.empty_answer: true` and
+`codemux.finish: "empty-answer"`. The call ledger records
+`finish: "empty-answer"` too. There is no opt-out.
 
 When a budgeted run passes its spend threshold, Claude Code stops on its
 own error result and the result-envelope path fails the run on it; see
@@ -173,9 +186,10 @@ not retain in a label. See [the ledger fields](results-and-usage.md#call-ledger)
 Prompts must be nonblank, contain no NUL, and have at most 16 MiB of UTF-8.
 File/stdin decoding rejects invalid UTF-8. Harnesses that put prompts in argv
 also impose a 32 KiB limit, including when codemux reads the input from a file
-or stdin. This applies to Agy, Aider, Cline, Copilot, Gemini, Goose,
-Kimi, OpenHands, and the legacy `qwen-coder` fallback. Claude, Z.AI, Codex,
-Cursor, Droid, OpenCode, Pi, and current Qwen use stdin for prompt text.
+or stdin. This applies to Kimi, and the legacy
+`qwen-coder` fallback. Agy, Aider, Claude, Z.AI, Cline, Codex, Copilot, Cursor, Droid,
+Gemini, Goose, OpenCode, OpenHands, Pi, and current Qwen use stdin for prompt text.
+Aider uses a private `--message-file`; its stdin remains a stream of negative confirmation answers.
 An inline `-p` always exposes the prompt in
 codemux's own process arguments.
 
@@ -193,6 +207,8 @@ Its full option set is the shared launch table, accounting options, and
 Playwright option above. It has no prompt/file, timeout, result-JSON, hermetic,
 tool-selection, or experiment-MCP option, and `--max-budget-usd` is refused
 (exit 64): Claude Code applies the spend limit to headless runs only.
+
+OpenCode effort requires an explicit provider/model selector or a provider override model. Its private variant state is removed after the TUI exits; print-only mode creates no state.
 
 Signals end a tui run the way the exit-code table promises. After SIGTERM or
 SIGHUP the exit is 143 whatever the child itself exited with, so a harness
@@ -225,10 +241,10 @@ they do not prove that every possible customization channel is absent.
 | Option | Default and meaning |
 |---|---|
 | `--timeout <seconds>` | 60 per probe; same positive/86400 bound and rounding as run |
-| `--hermetic` | Off; paired checks in a managed directory; incompatible with `--cwd` |
-| `--session` | Off; with `--hermetic`, runs the session form of the canary instead of the run form: three sessions of this build (hermetic, a control without `--hermetic`, and the first resumed with `--resume <id> --final`) against the planted instruction files. The hermetic sessions must answer without the planted code word across the resume, the control must reveal it, and `--final` must remove the private session home. Agents with a session driver and hermetic support only; spends real quota |
+| `--hermetic` | Off; paired checks plant the harness's own instruction channel in managed scratch space and require a positive control, with the same working directory and tool selection. Copilot's control drops only `--no-custom-instructions`; Qwen refuses with exit 64 because its always-on safe mode cannot provide a control. Incompatible with `--cwd`; see [verification](isolation.md#verification) |
+| `--session` | Off; with `--hermetic`, runs the session canary: hermetic start, plain control, and hermetic resume with `--final`. Claude, ZAI, and Codex also run caller-home start and resume with `--harness-home`, for five sessions total. Hermetic turns exclude the operator marker; the control reveals it. Caller-home turns load a planted private skill, exclude operator instructions, retain the same home, and preserve it after `--final`. Agents with a session driver and hermetic support only; spends real quota |
 | `--tools <selection>` | `default` or `none`, subject to harness restrictions |
-| `--experiment-mcp <spec.json>` | Extend the `claude`, `zai`, or `kimi` hermetic canary with an experiment MCP server; `codex` paired checks are unsupported |
+| `--experiment-mcp <spec.json>` | Extend the `claude`, `zai`, `codex`, `kimi`, `opencode`, `copilot`, `gemini`, `goose`, `pi`, `qwen`, or `cline` hermetic canary with an experiment MCP server; Qwen's control explicitly loads the planted instruction file while retaining safe mode; paired checks are unsupported on every other agent |
 | `--agy-isolation-probe <mode>` | Diagnostic mode: `login`, `hermetic`, `control`, `tools`, `tools-control` |
 
 Shared launch options apply, except accounting and Playwright. Paired or
@@ -253,16 +269,20 @@ without the diagnostic-mode option. Model and timeout selection remain available
 `session` shares launch options and the Playwright option, but not accounting.
 Its additional options and resume restrictions are defined once in the
 [session guide](sessions.md#options).
+`--harness-home <dir>` selects a persistent caller-owned config and runtime home for Claude, ZAI, and Codex. It requires an absolute directory outside the working directory and real harness stores, rejects symlinks and `--hermetic`, and preserves caller settings and skills. Reuse the same path on `--resume`. Codemux links the login; callers seed trusted content and own cleanup. `--final` leaves this directory intact. [Layouts and duties](sessions.md#caller-owned-session-homes).
 The [protocol reference](session-protocol.md) defines JSONL input and output.
-It supports Claude, Z.AI, Codex, Agy, OpenCode, Aider, and Kimi.
-Tool selection and `--max-budget-usd` are refused for sessions (Claude Code
-applies the spend limit to headless runs only; use run). `--hermetic` gives
+It supports Claude, Z.AI, Codex, Agy, OpenCode, Aider, Kimi, Cursor,
+Droid, Pi, Qwen, Gemini, Copilot, and Goose.
+Aider and OpenCode accept tool selection across turns and resume; OpenCode
+requires hermetic mode for `none`. `--max-budget-usd` is refused for sessions. `--hermetic` gives
 a session the run path's isolation on claude, zai, codex, kimi, opencode,
-and agy — none of the operator's instructions, skills, hooks, MCP servers,
-or permission rules load. On claude, zai, codex, kimi, and agy the
+agy, aider, droid, pi, gemini, copilot, and goose (cursor has no verified
+hermetic session mode) — none of the operator's instructions, skills,
+hooks, MCP servers, or permission rules load. On claude, zai, codex, kimi,
+agy, aider, opencode, droid, pi, gemini, copilot, and goose the
 harness's state lives in a per-session private home removed by `--final`
-or the stale sweep; opencode keeps no session-keyed home (its sessions
-live in the real data directory). See
+or the stale sweep; opencode keeps native data/state across turns and refreshes executable configuration each turn.
+Qwen keeps no session-keyed home. See
 [isolation](isolation.md) and
 [hermetic sessions](sessions.md#hermetic-sessions).
 `--hermetic --experiment-project-settings` (Claude/Z.AI) additionally runs
@@ -327,7 +347,7 @@ protocol compatibility, and unavailable results.
 
 | Command | Options and behavior |
 |---|---|
-| `list` | `--json` prints the same facts machine-readable (schema `codemux-list-1`: each agent's id, availability, binary name, and the `hermetic`, `resultJson`, `budgetLimit`, `toolsNoneRequiresHermetic`, `toolsNoneRequiresReadOnly`, `isolationRequiresReadOnly`, `providerOverride`, `sessions`, `model`, and `effort` capability booleans, `effortLevels` (the accepted values, or null), plus `experimentMcp`, `experimentPrefix`, and `servedModelEvidence`); without it, available adapters and capability labels (`model`, `autonomy`, `effort`, `hermetic`, `tools`, `provider`, `result-json`, `sessions`). A label carries the condition the adapter enforces: `tools(read-only)` (codex, agy: `--tools none` needs `--auto read-only`), `tools(hermetic)` (OpenCode: `--tools none` on hermetic runs only), `hermetic(read-only)` (agy: read-only scode and a clean `--cwd`) |
+| `list` | `--json` prints the same facts machine-readable (schema `codemux-list-1`: each agent's id, availability, binary name, and the `hermetic`, `resultJson`, `budgetLimit`, `toolsNoneRequiresHermetic`, `toolsNoneRequiresReadOnly`, `isolationRequiresReadOnly`, `providerOverride`, `sessions`, `model`, `effort`, and `toolsNone` capability booleans, `effortLevels` (the accepted values, or null), a `tui` block (`model`, `effort`: whether the interactive form carries each flag), plus `experimentMcp`, `experimentPrefix`, `servedModelEvidence`, `sessionServedModel` (the session wire sources that name the serving model, or an empty array), and `autonomyCarrier` (the carrier class each `--auto` level uses)). JSON also exposes `capabilities.sessionPermissions` and `sessionPermissionsNote` from `SESSION_AGENTS`, plus `sessionHermetic`, `checkHermetic`, and limitation reasons with evidence. Without `--json`, it prints available adapters and capability labels (`model`, `autonomy`, `effort`, `hermetic`, `tools`, `provider`, `result-json`, `budget`, `sessions(permissions)`, `sessions(no-permissions)`). Session labels distinguish an ask channel from native deny rules. A label carries the condition the adapter enforces: `tools(read-only)` (codex: `--tools none` needs `--auto read-only`), `tools(hermetic)` (OpenCode: `--tools none` on hermetic runs only), `model(run)`/`effort(run)` (qwen takes no `--effort` in the TUI), `budget` (`run --max-budget-usd`; claude and zai) |
 | `autonomy` | No command options; per-harness autonomy mappings |
 | `doctor` | `--format <format>` (`text`, the default, or `json`, schema `codemux-doctor-1`), `--only <agents>`/`--skip <agents>` (narrow the harness set, comma-separated), `--timeout <seconds>` (per-probe bound for one version verdict, default 10; a number of seconds from 0.001 to 60 with at most three decimals, whole milliseconds from 1 to 60000), `--strict` (warnings count as broken for the exit code), `--capabilities` (print only the per-harness capabilities block, the pre-2.0 output), and the paid stage `--spend`, `--spend-cap <n>` (at most n spend probes, default one per eligible harness), `--spend-unreadable` (spend on harnesses whose usage row is unreadable too; each spend probe is one real `codemux check` request labeled `machine-check=<stamp>`, and the JSON spend detail names the stamp `codemux calls --label machine-check=<stamp> --sum` needs). Without `--spend` it makes no model requests: installation, configuration, scode, optional usagemux status. Per installed harness it also prints the capability rows and a version-contract verdict: `ok`, `above audited ceiling` (newer than this codemux audited), `below minimum` (older than this codemux enforces), `known break at <levels> autonomy from <version> (sandbox mitigates or no mitigation)` (a recorded contract break names the autonomy levels it affects), `no contract` (no version contract exists for that harness), `untrusted binary (<reason>)` (the probe refused to run a binary that fails the same trust check as a launch: not a regular file owned by the invoking user or by root, group- or world-writable, or inside the working directory), `unreadable` (the version probe returned nothing parseable), or `unreadable (timed out)` (the probe exceeded its 10 s bound), `unreadable (binary not found)`, or `unreadable (<reason>)` (the probe failed before producing output: a spawn error with its cause). Version probes run in parallel |
 | `verify` | `-a, --agent <agent>`, `--show-scode`, `--sandbox-trust <level>`, `--sandbox-no-net`, `--sandbox-scrub-env` |
@@ -342,8 +362,9 @@ These commands may inspect local binaries or execute version/help paths.
 | Code | Meaning |
 |---|---|
 | 0 | Command succeeded; does not imply every optional harness is installed |
-| 1 | Parser errors, configuration/I/O/launch or protocol failures, and runtime errors |
-| 64 | Every pre-launch refusal of a caller mistake, with the same code on run, tui, check, session, calls, usage, and verify: unknown agent (also the unknown `--agent` of calls/usage and `--agent` combined with `--all`); a request the named agent cannot carry (model, effort, autonomy without sandbox, hermetic, tools, result JSON, provider override, --experiment-project-settings); prompt refusals ("No prompt provided. Use -p or -f", an unreadable or empty -f file, a malformed, empty, oversized, or terminal -f - read); sandbox policy option rules ("--sandbox-block requires absolute paths", "--sandbox-account requires an absolute path", "--sandbox-account-id without --sandbox-account"); capability and combination refusals ("--enable-playwright-mcp requires --sandbox", "--no-web applies to the claude and zai agents only"); "--print-sandbox requires --sandbox"; bad option values (--timeout, --pass-env, --auto, --effort, --tools, --sandbox-trust, an invalid `-m/--model` name, an inaccessible `--cwd`, an explicitly empty value given to any option above); project-execution configuration refusals (a forbidden harness execution knob in the project tree) and the codex multi-agent knob's on/off rule; invalid labels, calls cutoff/grouping, quota-gate refusals, and unsupported session agents. Parser errors stay exit 1. |
+| 1 | Parser errors, configuration/I/O/launch or protocol failures (including a zero-exit run with an empty answer), and runtime errors |
+| 2 | doctor only: the configuration is invalid; the check still prints everything it could |
+| 64 | Every pre-launch refusal of a caller mistake, with the same code on run, tui, check, session, calls, usage, and verify: unknown agent (also the unknown `--agent` of calls/usage and `--agent` combined with `--all`); a request the named agent cannot carry (model, effort, autonomy without sandbox, hermetic, tools, result JSON, provider override, --experiment-project-settings); prompt refusals ("No prompt provided. Use -p or -f", an unreadable or empty -f file, a malformed, empty, oversized, or terminal -f - read); sandbox policy option rules ("--sandbox-block requires absolute paths", "--sandbox-account requires an absolute path", "--sandbox-account-id without --sandbox-account"); capability and combination refusals ("--enable-playwright-mcp requires --sandbox", "--no-web applies to the" followed by the agents that declare `run.no-web`); "--print-sandbox requires --sandbox"; bad option values (--timeout, --pass-env, --auto, --effort, --tools, --sandbox-trust, an invalid `-m/--model` name, an inaccessible `--cwd`, an explicitly empty value given to any option above); project-execution configuration refusals (a forbidden harness execution knob in the project tree) and the codex multi-agent knob's on/off rule; invalid labels, calls cutoff/grouping, quota-gate refusals, and unsupported session agents. Parser errors stay exit 1. |
 | 66 | Requested resume identity not found |
 | 69 | Optional usagemux absent or untrusted; a usagemux that exits nonzero is an unreadable query and exits 1 |
 | 78 | Session policy/trust refusal; registry access failure can instead be 1 |

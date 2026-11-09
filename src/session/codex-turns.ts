@@ -65,6 +65,11 @@ export abstract class CodexDriverTurns extends CodexDriverApprovals {
   /** The wall clock each open turn started at, keyed by turn id: the
    * ledger's session_turn records carry each turn's own duration. */
   protected readonly turnStartedAt = new Map<string, number>();
+  /** The model the open turn's `model/rerouted` notification named
+   * (design P5): cleared when a turn opens, read at its completion. The
+   * last reroute wins — a later one supersedes the model an earlier one
+   * named (the run envelope's rule, codex-reducer.ts). */
+  protected turnReroutedModel: string | null = null;
 
   /** Whether the open turn's `--turn-timeout` already fired its
    * interrupt; a second expiry on the same turn ends the session. */
@@ -97,11 +102,10 @@ export abstract class CodexDriverTurns extends CodexDriverApprovals {
     // used to recast it as interrupted and drop the message). The one
     // label the driver adds: a wire "interrupted" that the timeout's own
     // interrupt produced names its cause.
-    const finish = parse.finish;
-    const reason =
-      finish === "interrupted" && this.interruptFromTimeout
+    const { finish, reason } = this.out.completeTurn(turnId, parse.finish,
+      parse.finish === "interrupted" && this.interruptFromTimeout
         ? "turn-timeout"
-        : parse.reason;
+        : parse.reason);
     this.interruptFromTimeout = false;
     this.clearQueuedInterrupt();
     this.interruptCallId = null;
@@ -138,12 +142,20 @@ export abstract class CodexDriverTurns extends CodexDriverApprovals {
     // app-server reports none (cost_usd stays null), so this is the
     // shared rule rather than a codex behavior (usage.ts, review live8).
     this.cumulative = addTurnUsage(this.cumulative, usage);
+    // The turn's served model (design P5): the rerouted-to model its
+    // `model/rerouted` notification named — the provider's own report of
+    // what served the turn — null when none arrived. Same rule as the
+    // run envelope (codex-reducer.ts).
+    const served = this.takeTurnReroutedModel();
     this.emit(
       buildEvent(++this.seq, this.sessionIdOrEmpty(), "turn_completed", rawLine, {
         turn_id: turnId,
         finish,
         ...(reason !== null ? { reason } : {}),
         usage,
+        model_served: served,
+        model_served_source: served !== null ? "provider" : null,
+        model_alias: this.options.modelAlias ?? null,
       })
     );
     // The ledger's turn record mirrors the event the caller just saw
@@ -154,7 +166,8 @@ export abstract class CodexDriverTurns extends CodexDriverApprovals {
       turnId ?? "none",
       this.turnStartedAt.get(turnId ?? "") ?? Date.now(),
       finish,
-      usage
+      usage,
+      served
     );
     this.turnStartedAt.delete(turnId ?? "");
     if (this.registryRecorded && this.options.registryPath !== null) {
@@ -218,12 +231,18 @@ export abstract class CodexDriverTurns extends CodexDriverApprovals {
     // reported per notification; it folds into the session total as
     // completeTurn's does (review live22).
     this.cumulative = addTurnUsage(this.cumulative, usage);
+    // A reroute may have named the model before the start refusal ended
+    // the turn; it is still the turn's one provider report (design P5).
+    const served = this.takeTurnReroutedModel();
     this.emit(
       buildEvent(++this.seq, this.sessionIdOrEmpty(), "turn_completed", null, {
         turn_id: turnId,
         finish: "failed",
         reason,
         usage,
+        model_served: served,
+        model_served_source: served !== null ? "provider" : null,
+        model_alias: this.options.modelAlias ?? null,
       })
     );
     appendSessionTurnCallRecord(
@@ -232,7 +251,8 @@ export abstract class CodexDriverTurns extends CodexDriverApprovals {
       turnId ?? "none",
       this.turnStartedAt.get(turnId ?? "") ?? Date.now(),
       "failed",
-      usage
+      usage,
+      served
     );
     this.turnStartedAt.delete(turnId ?? "");
     this.drainTurnQueue();
@@ -314,6 +334,7 @@ export abstract class CodexDriverTurns extends CodexDriverApprovals {
       })
     );
     this.turnStartedAt.set(turnId, Date.now());
+    this.turnReroutedModel = null;
     this.turnTimeoutFired = false;
     this.armTurnTimer();
     return turnId;
@@ -410,6 +431,14 @@ export abstract class CodexDriverTurns extends CodexDriverApprovals {
   }
 
   // --- helpers -----------------------------------------------------------
+
+  /** Read and clear the open turn's rerouted model (design P5): the one
+   * value a completion reports, whatever completion path runs. */
+  protected takeTurnReroutedModel(): string | null {
+    const model = this.turnReroutedModel;
+    this.turnReroutedModel = null;
+    return model;
+  }
 
   /** Forget the open harness turn, remembering its id as closed. */
   private closeHarnessTurn(): void {

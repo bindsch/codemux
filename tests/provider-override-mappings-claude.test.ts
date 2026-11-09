@@ -170,20 +170,26 @@ describe("claude provider override", () => {
       .toThrow("claude needs a model for the provider override");
   });
 
-  test("the output cap rides CLAUDE_CODE_MAX_OUTPUT_TOKENS; the context cap is refused", () => {
+  test("the output and context caps ride their CLAUDE_CODE env carriers", () => {
     const adapter = adapterOf({
       ...VLLM_CLAUDE,
       CODEMUX_CLAUDE_PROVIDER_MAX_OUTPUT_TOKENS: "4096",
     });
     expect(adapter.getEnv().CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe("4096");
+    // Claude Code 2.1.317's window resolver (nA, bundle byte ~256459969)
+    // returns CLAUDE_CODE_MAX_CONTEXT_TOKENS for a model its catalog does
+    // not name — the override's case — and the unrecognized-model notice
+    // tells the operator to set it, so the cap rides the same env view.
     const capped = adapterOf({
       ...VLLM_CLAUDE,
       CODEMUX_CLAUDE_PROVIDER_MAX_CONTEXT_TOKENS: "32768",
     });
+    expect(capped.getEnv().CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBe("32768");
     expect(() => capped.validateRunRequest({ agent: "claude", prompt: "p" } as RunRequest))
-      .toThrow("CODEMUX_CLAUDE_PROVIDER_MAX_CONTEXT_TOKENS cannot be honored");
-    // And without the cap the env carries only the gateway.
+      .not.toThrow();
+    // And without the caps the env carries only the gateway.
     expect(adapterOf(VLLM_CLAUDE).getEnv()).not.toHaveProperty("CLAUDE_CODE_MAX_OUTPUT_TOKENS");
+    expect(adapterOf(VLLM_CLAUDE).getEnv()).not.toHaveProperty("CLAUDE_CODE_MAX_CONTEXT_TOKENS");
   });
 
   test("the tui carries the override's model fallback, same as a run", () => {

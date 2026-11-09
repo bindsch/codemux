@@ -21,6 +21,8 @@ export enum ExperimentFailureCode {
   ServerError = "server_error",
   UnsupportedResult = "unsupported_result",
   Protocol = "protocol",
+  /** The harness exited 0 without an answer (result-empty.ts). */
+  EmptyAnswer = "empty_answer",
 }
 
 export class ExperimentFailure extends Error {

@@ -66,6 +66,15 @@ const parenCwd = (() => {
 })();
 process.on("exit", () => rmSync(parenCwd, { recursive: true, force: true }));
 
+// A working tree with a planted gemini context file: the hermetic
+// clean-directory walk refuses it before any spawn.
+const geminiMdTree = (() => {
+  const directory = mkdtempSync(join(resolve("scratch"), "exit64-gemini-md-"));
+  writeFileSync(join(directory, "GEMINI.md"), "operator text");
+  return directory;
+})();
+process.on("exit", () => rmSync(geminiMdTree, { recursive: true, force: true }));
+
 describe("CLI - run pre-launch usage refusals exit 64", () => {
   // One exit code (64) for every pre-launch refusal of a caller mistake,
   // so a script can tell a request only the caller can fix from a run
@@ -91,29 +100,41 @@ describe("CLI - run pre-launch usage refusals exit 64", () => {
       message: "opencode cannot enforce 'read-only' autonomy without --sandbox",
     },
     {
+      // cursor keeps the declared run.hermetic limitation.
       label: "unsupported hermetic request",
-      binaries: { droid: "exit 0" },
-      argv: ["run", "-a", "droid", "--no-sandbox", "--auto", "high", "--hermetic", "-p", "test"],
-      message: "droid has no verified hermetic mode",
+      binaries: { "cursor-agent": "exit 0" },
+      argv: ["run", "-a", "cursor", "--no-sandbox", "--auto", "high", "--hermetic", "-p", "test"],
+      message: "cursor has no verified hermetic mode",
     },
     {
+      // openhands keeps the declared run.tools-none limitation.
       label: "unsupported tools none request",
-      binaries: { cline: "exit 0" },
-      argv: ["run", "-a", "cline", "--no-sandbox", "--auto", "high", "--tools", "none", "-p", "test"],
-      message: "cline cannot remove its built-in tools",
+      binaries: { openhands: "exit 0" },
+      argv: ["run", "-a", "openhands", "--no-sandbox", "--auto", "high", "--tools", "none", "-p", "test"],
+      message: "openhands cannot remove its built-in tools",
     },
     {
       label: "unsupported result-json request",
-      binaries: { droid: "exit 0" },
-      argv: ["run", "-a", "droid", "--no-sandbox", "--auto", "high", "--result-json", "-p", "test"],
-      message: "droid cannot return a structured result envelope",
+      binaries: { aider: "exit 0" },
+      argv: ["run", "-a", "aider", "--no-sandbox", "--auto", "high", "--result-json", "-p", "test"],
+      message: "aider cannot return a structured result envelope",
+    },
+    {
+      // cursor's kept refusal: the model string's bracket overrides are
+      // syntax, not a flag, and an invalid combination is dropped
+      // server-side (src/adapters/cursor.ts capabilities evidence).
+      label: "unsupported effort level on an agent with no effort carrier",
+      binaries: { cursor: "exit 0" },
+      argv: ["run", "-a", "cursor", "--no-sandbox", "--auto", "high", "--effort", "high", "-p", "test"],
+      message: "cursor does not support reasoning effort 'high'",
     },
     {
       label: "provider override on an agent that cannot carry one",
-      binaries: { gemini: "exit 0" },
-      argv: ["run", "-a", "gemini", "--no-sandbox", "--auto", "high", "-p", "test"],
-      env: { CODEMUX_GEMINI_PROVIDER_MODEL: "glm" },
-      message: "gemini does not support a provider override",
+      // agy keeps the declared run.provider-override limitation.
+      binaries: { agy: "exit 0" },
+      argv: ["run", "-a", "agy", "--no-sandbox", "--auto", "high", "-p", "test"],
+      env: { CODEMUX_AGY_PROVIDER_MODEL: "glm" },
+      message: "agy does not support a provider override",
     },
     {
       label: "relative CODEX_HOME passed through",
@@ -161,9 +182,9 @@ describe("CLI - run pre-launch usage refusals exit 64", () => {
     },
     {
       label: "playwright MCP on an agent that cannot carry it",
-      binaries: { codex: "exit 0" },
-      argv: ["run", "-a", "codex", "-p", "test", "--enable-playwright-mcp"],
-      message: "--enable-playwright-mcp is supported only by claude and zai",
+      binaries: { aider: "exit 0" },
+      argv: ["run", "-a", "aider", "-p", "test", "--enable-playwright-mcp"],
+      message: "--enable-playwright-mcp is supported only by claude, zai, opencode",
     },
     {
       label: "playwright MCP with --tools none",
@@ -282,11 +303,12 @@ describe("CLI - run pre-launch usage refusals exit 64", () => {
     },
     {
       // Review round 5, contracts-2 finding 2 sweep: agy's isolation
-      // combination refusals.
-      label: "agy isolation without read-only scode",
+      // combination refusals. The scode requirement holds at every
+      // autonomy (the read-only clause is gone); high names it plainly.
+      label: "agy isolation without scode",
       binaries: { agy: "exit 0" },
       argv: ["run", "-a", "agy", "--no-sandbox", "--auto", "high", "--tools", "none", "-p", "test"],
-      message: "agy isolation requires read-only scode (--auto read-only)",
+      message: "agy isolation requires scode (--sandbox) at every autonomy",
     },
     {
       // Review round 3, contracts-2 finding 6: every refusal of the
@@ -367,6 +389,80 @@ describe("CLI - run pre-launch usage refusals exit 64", () => {
       binaries: { claude: "exit 0", scode: "exit 0" },
       argv: ["run", "-a", "claude", "-p", "test", "--auto", "low", "--cwd", scodePolicyTree],
       message: "can alter scode policy",
+    },
+    {
+      // Gemini now carries plain-run tools none (tests/gemini-policy.test.ts);
+      // opencode keeps the declared run.tools-none.plain limitation.
+      label: "opencode plain-run tools none",
+      binaries: { opencode: "exit 0" },
+      argv: ["run", "-a", "opencode", "--no-sandbox", "--auto", "high", "--tools", "none", "-p", "test"],
+      message: "opencode --tools none requires --hermetic",
+    },
+    {
+      // Run-parity round: no reasoning-effort control exists at gemini
+      // 0.60.0 (adapter evidence), so the level is refused, not dropped.
+      label: "effort on gemini (no carrier at 0.60.0)",
+      binaries: { gemini: "exit 0" },
+      argv: ["run", "-a", "gemini", "--no-sandbox", "--auto", "high", "--effort", "high", "-p", "test"],
+      message: "gemini does not support reasoning effort 'high'",
+    },
+    {
+      // Run-parity round: no effort key exists on openhands' env-override
+      // trio (LLM_API_KEY, LLM_BASE_URL, LLM_MODEL at 1.16.0).
+      label: "effort on openhands (no carrier at 1.16.0)",
+      binaries: { openhands: "exit 0" },
+      argv: ["run", "-a", "openhands", "--no-sandbox", "--auto", "high", "--effort", "high", "-p", "test"],
+      message: "openhands does not support reasoning effort 'high'",
+    },
+    {
+      // Run-parity round: goose's hermetic home carries nothing from its
+      // config file, so a hermetic run needs the provider override.
+      label: "goose hermetic without the provider override",
+      binaries: { goose: "exit 0" },
+      argv: ["run", "-a", "goose", "--no-sandbox", "--auto", "high", "--hermetic", "-p", "test"],
+      message: "goose --hermetic requires the provider override",
+    },
+    {
+      // Run-parity round: openhands' headless gate starts only with LLM
+      // env overrides, so a private home without settings cannot run.
+      label: "openhands hermetic without the provider override",
+      binaries: { openhands: "exit 0" },
+      argv: ["run", "-a", "openhands", "--no-sandbox", "--auto", "high", "--hermetic", "-p", "test"],
+      message: "openhands --hermetic requires the provider override",
+    },
+    {
+      // Run-parity round: the clean-working-directory walk needs a start
+      // the caller names, not the launcher's own directory.
+      label: "aider hermetic without --cwd",
+      binaries: { aider: "exit 0" },
+      argv: ["run", "-a", "aider", "--no-sandbox", "--auto", "high", "--hermetic", "-p", "test"],
+      message: "aider --hermetic requires an explicit --cwd owned by this run",
+    },
+    {
+      label: "gemini isolation without --cwd",
+      binaries: { gemini: "exit 0" },
+      argv: ["run", "-a", "gemini", "--no-sandbox", "--auto", "high", "--hermetic", "-p", "test"],
+      message: "gemini isolation requires an explicit --cwd owned by this run",
+    },
+    {
+      label: "goose hermetic without --cwd",
+      binaries: { goose: "exit 0" },
+      argv: ["run", "-a", "goose", "--no-sandbox", "--auto", "high", "--hermetic", "-p", "test"],
+      env: {
+        CODEMUX_GOOSE_PROVIDER_BASE_URL: "https://provider.test/v1",
+        CODEMUX_GOOSE_PROVIDER_API_KEY: "sk-test",
+        CODEMUX_GOOSE_PROVIDER_MODEL: "glm-5.3",
+      },
+      message: "goose --hermetic requires an explicit --cwd owned by this run",
+    },
+    {
+      // Run-parity round: the context file the private home cannot close.
+      // GEMINI.md planted in the named --cwd makes the walk refuse.
+      label: "gemini hermetic over a planted GEMINI.md",
+      binaries: { gemini: "exit 0" },
+      argv: ["run", "-a", "gemini", "--no-sandbox", "--auto", "high", "--hermetic",
+        "-p", "test", "--cwd", geminiMdTree],
+      message: "requires a clean working directory",
     },
   ];
   test.each(refusalCases)("$label", async ({ binaries, argv, env, message }) => {

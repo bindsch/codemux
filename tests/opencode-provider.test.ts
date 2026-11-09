@@ -248,10 +248,16 @@ describe("opencode provider override", () => {
       .toThrow("opencode provider config was not prepared before launch");
   });
 
-  test("the tui refuses an active override", () => {
+  test("the tui carries an active override without a temporary config file", () => {
     const adapter = adapterOf(ZAI);
     expect(() => adapter.validateTuiRequest(undefined, cwdOf()))
-      .toThrow("supports headless runs only");
+      .not.toThrow();
+    const env = adapter.getTuiEnv();
+    const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT!);
+    expect(config.model).toBe("codemux/glm-5.3");
+    expect(config.provider.codemux.options.apiKey).toBe(`{env:${OPENCODE_PROVIDER_KEY_ENV}}`);
+    expect(env[OPENCODE_PROVIDER_KEY_ENV]).toBe(ZAI.CODEMUX_OPENCODE_PROVIDER_API_KEY);
+    expect(modelArg(adapter.buildTuiCommand())).toBe("codemux/glm-5.3");
     expect(() => adapterOf().validateTuiRequest(undefined, cwdOf())).not.toThrow();
   });
 

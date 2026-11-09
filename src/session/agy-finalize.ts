@@ -1,8 +1,8 @@
 /**
  * The agy session driver's session records and end path: the registry
  * start record, the deferred session_started announcement, and the
- * `finish` funnel every end path drains through. src/session/agy-driver.ts
- * owns the lifecycle.
+ * `finish` funnel every end path drains through (agy-driver.ts owns
+ * the lifecycle).
  */
 
 import { appendSessionCallRecord, appendSessionTurnCallRecord } from "../call-log.js";
@@ -16,7 +16,7 @@ import {
   shutdownRequested,
   type SessionChildOutcome,
 } from "./process.js";
-import { buildEvent } from "./protocol.js";
+import { buildEvent, buildSessionStarted } from "./protocol.js";
 import {
   busyRecordExhaustedNotice,
   PENDING_RECORD_FATAL,
@@ -25,7 +25,7 @@ import {
 } from "./registry.js";
 import { AgyDriverIo, type SessionEndReason } from "./agy-driver-io.js";
 import { settledAgyHarnessHome } from "./agy-private-home.js";
-import { settledPrivateHomePath } from "./private-home-key.js";
+import { isCallerHarnessHome, recordedHarnessHome } from "./harness-home.js";
 import type { SessionPrivateHome } from "./private-home-types.js";
 
 /** The pause between the two --final removal attempts: long enough for
@@ -44,10 +44,9 @@ export abstract class AgyFinalize extends AgyDriverIo {
    * shape, driver.ts): one attempt, a short pause on failure, one
    * retry. A removal that throws is reported on stderr instead — the
    * end path still owes the caller its record release and
-   * session_ended. By the time it answers, the home is gone (either
-   * attempt) or both attempts failed. A session with no private home
-   * leaves nothing private behind, so it answers true without touching
-   * the disk. */
+   * session_ended. By the time it answers, the home is gone or both
+   * attempts failed. A session with no private home leaves nothing
+   * private behind, so it answers true without touching the disk. */
   private async removeFinalHomeSettled(): Promise<boolean> {
     this.finalRemovalRan = true;
     const home = this.options.privateHome;
@@ -81,6 +80,7 @@ export abstract class AgyFinalize extends AgyDriverIo {
     resumable: boolean,
     allowRemove: boolean
   ): boolean {
+    if (isCallerHarnessHome(home)) return true;
     try {
       if (home.resumed) {
         if (!home.settled && this.conversationId !== null) home.settle(this.conversationId);
@@ -114,12 +114,11 @@ export abstract class AgyFinalize extends AgyDriverIo {
     // announces. The record itself runs off the turn's output stream
     // (review round 341): one lock attempt here, a busy lock retried on
     // a timer, never the synchronous full-budget wait that froze the
-    // event loop mid-turn — the announcement lands when the verdict
-    // does.
+    // event loop mid-turn.
     this.recordStart(() => {
       if (this.settled) return;
       this.emit(
-        buildEvent(++this.seq, this.sessionIdOrEmpty(), "session_started", null, {
+        buildSessionStarted(++this.seq, this.sessionIdOrEmpty(), null, {
           agent: "agy",
           model: this.options.model ?? null,
           autonomy: this.options.autonomy,
@@ -127,21 +126,18 @@ export abstract class AgyFinalize extends AgyDriverIo {
           sandboxed: this.options.sandboxed,
           sandbox_trust: this.options.sandboxTrust,
           hermetic: this.options.hermetic === true,
-          // The SETTLED spelling, the codex and kimi drivers' rule: the
-          // path a --resume computes and the one the home sits on after
-          // this driver's end path settles it. While the session runs,
-          // the live directory — the child's HOME — is still the
-          // run-shaped one (the settle waits for the end, when nothing
-          // writes the home anymore); a resumed home's `dir` is the
-          // settled path already, and the computation is idempotent on
-          // it. The canary and probe K require exactly this: the
-          // reported path must still exist once the session ended.
+          // Caller-owned homes retain their path; disposable homes settle by id.
           private_home:
             this.options.privateHome != null
-              ? settledPrivateHomePath(this.options.privateHome.dir, this.sessionIdOrEmpty())
+              ? recordedHarnessHome(this.options.privateHome, this.sessionIdOrEmpty())
               : null,
           capabilities: this.capabilities,
           protocol: "codemux-live-session/1",
+          // agy's wire carries no recorded init frame naming the model
+          // the harness configured (design P5's declared gap).
+          model_served: null,
+          model_served_source: null,
+          model_alias: this.options.modelAlias ?? null,
         })
       );
     });
@@ -170,13 +166,14 @@ export abstract class AgyFinalize extends AgyDriverIo {
         // on the stable session-keyed spelling (settledAgyHarnessHome):
         // the live directory is still run-shaped when this record is
         // written, and a resume guard comparing paths must meet the one
-        // spelling a resume can compute. Everything else records the
-        // harness home the CLI resolved.
+        // spelling a resume can compute.
         harness_home:
-          this.options.privateHome !== undefined && this.options.privateHome !== null
+          isCallerHarnessHome(this.options.privateHome) ? this.options.privateHome.dir : this.options.privateHome != null
             ? settledAgyHarnessHome(this.options.privateHome.dir, this.conversationId)
             : this.options.harnessHome,
+        ...(isCallerHarnessHome(this.options.privateHome) ? { caller_owned_home: true } : {}),
         model: this.options.model ?? null,
+        model_alias: this.options.modelAlias ?? null,
         autonomy: this.options.autonomy,
         sandboxed: this.options.sandboxed,
         sandbox_trust: this.options.sandboxTrust,
@@ -196,9 +193,8 @@ export abstract class AgyFinalize extends AgyDriverIo {
           // A resumed session is tracked by its pre-spawn claim: a busy
           // budget spent refreshing the record is a notice and the
           // announcement, not a crash — the claim is the record (round
-          // 361, item 16). A fresh session, and every other failure
-          // class, fail closed (§4.8): the registry is what makes
-          // resume's guards answerable.
+          // 361, item 16). Every other failure class fails closed
+          // (§4.8): the registry is what makes resume's guards answerable.
           if (outcome.kind === "busy" && this.resumeClaimed) {
             console.error(
               busyRecordExhaustedNotice(this.conversationId ?? "unknown", outcome.error)
@@ -237,10 +233,7 @@ export abstract class AgyFinalize extends AgyDriverIo {
    * event on the stream. */
   private shutdownWasRequested = false;
 
-  protected override async finish(
-    reason: SessionEndReason,
-    exitCode: number
-  ): Promise<void> {
+  protected override async finish(reason: SessionEndReason, exitCode: number): Promise<void> {
     this.shutdownWasRequested ||= shutdownRequested(reason);
     if (this.finished) {
       // Idempotent cleanup, honest verdict: a failure calling in during
@@ -278,18 +271,18 @@ export abstract class AgyFinalize extends AgyDriverIo {
     let childOutcome: SessionChildOutcome | null = null;
     if (proc !== null) {
       // agy has no interrupt; the stdin close is its only end carrier.
-      // The input loop finishes the line it is running and exits, so the
-      // wait is for the exit itself, bounded by the grace, before any
-      // signal (review live17 — SIGTERM used to go out at once and the
-      // harness never saw EOF, so an open turn was always the synthesized
-      // `interrupted` with null usage). No failure cuts the wait: the
-      // old `endExitCode > startCode` cut fired only on a failure that
+      // The input loop finishes the line it runs and exits, so the wait
+      // is for the exit itself, bounded by the grace, before any signal
+      // (review live17 — SIGTERM at once meant the harness never saw
+      // EOF, and an open turn was always the synthesized `interrupted`
+      // with null usage). No failure cuts the wait: the old
+      // `endExitCode > startCode` cut fired only on a failure that
       // raised the code after the end began, never after an end that
-      // started at 1 or 143 (review round 372, item 2), and any cut that
-      // stops the child early turns its clean exit into a signal exit,
-      // which the shared classification (process.ts, buildSessionEnded)
-      // reports as a harness failure instead of the fatal that ended the
-      // session. The grace bounds the cost; the verdict stays honest.
+      // started at 1 or 143 (review round 372, item 2), and any cut
+      // that stops the child early turns its clean exit into a signal
+      // exit, which the shared classification (process.ts) reports as a
+      // harness failure instead of the fatal that ended the session.
+      // The grace bounds the cost; the verdict stays honest.
       proc.endInput();
       await proc.awaitEndAnswer(() => false);
       // An escalated child is already tree-SIGKILLed; requestStop would
@@ -328,22 +321,19 @@ export abstract class AgyFinalize extends AgyDriverIo {
       this.emitError(true, "codemux", PENDING_RECORD_FATAL);
     }
     if (turnOpenAtFinish && this.fsm.state === "turn_active") {
-      // Review live10: agy has no interrupt carrier, so an end path with a
-      // turn open leaves that turn's `turn_started` unanswered — every
-      // other driver closes the pairing (claude and codex through the
-      // end-interrupt's drained result). Synthesize the completion the
-      // harness cannot: codemux-originated (raw null), the usage it
-      // never reported all-null. Interrupted when the child exited zero;
-      // failed on a crash end, whose fatal already reported the exit —
-      // the crash used to skip the synthesis entirely, leaving the
-      // `turn_started` unpaired (review live11) — and on a drain-failure
-      // exit, whose verdict above just reported it the same way: the
-      // two blocks used to be mutually exclusive, so the one exit class
-      // the verdict reported was the one class the synthesis refused to
-      // answer (review live12). The FSM is still `turn_active` here by
-      // construction (a drained completion would have left it), so the
-      // transition is legal; its failure is a codemux defect and costs
-      // success.
+      // Review live10: agy has no interrupt carrier, so an end path with
+      // a turn open leaves its `turn_started` unanswered — every other
+      // driver closes the pairing. Synthesize the completion the harness
+      // cannot: codemux-originated (raw null), the usage it never
+      // reported all-null. Interrupted when the child exited zero; failed
+      // on a crash end, whose fatal already reported the exit (the crash
+      // used to skip the synthesis, leaving the `turn_started` unpaired,
+      // review live11), and on a drain-failure exit, whose verdict above
+      // just reported it — the blocks used to be mutually exclusive, so
+      // the one exit class the verdict reported was the one the
+      // synthesis refused to answer (review live12). The FSM is still
+      // `turn_active` here by construction, so the transition is legal;
+      // its failure is a codemux defect and costs success.
       const turnId = this.fsm.activeTurn;
       const error = this.fsm.transition({
         kind: "turn_completed",
@@ -373,6 +363,11 @@ export abstract class AgyFinalize extends AgyDriverIo {
                     ? crashSynthesisReason(this.firstFatal)
                     : `the session ended (${reason}) before the turn completed`,
             usage: emptyUsage(),
+            // The wire names no model (see announceSessionStarted): no
+            // served model exists to report (design P5's declared gap).
+            model_served: null,
+            model_served_source: null,
+            model_alias: this.options.modelAlias ?? null,
           }),
           { terminal: "fatal" }
         );
@@ -385,7 +380,10 @@ export abstract class AgyFinalize extends AgyDriverIo {
           turnId ?? "none",
           this.turnStartedAt.get(turnId ?? "") ?? Date.now(),
           synthFinish,
-          emptyUsage()
+          emptyUsage(),
+          // The wire names no model (see announceSessionStarted): none to
+          // record.
+          null
         );
         this.turnStartedAt.delete(turnId ?? "");
       }
@@ -403,13 +401,13 @@ export abstract class AgyFinalize extends AgyDriverIo {
     // recorded or claimed session agy never confirmed, that the end did
     // not fail (exit 0): a resume agy refused dies on the crash path or
     // fails the drain, and reporting it resumable would send a retrying
-    // caller into the same failure (review live21). The record alone is no proof
-    // here — a resumed session records at spawn. A resume that ended
-    // cleanly before its first turn keeps the record the claim judged
-    // (review live20). Either way the registry must hold the record:
-    // a confirmed session whose start could not be recorded is one
-    // `--resume` cannot find (exit 66), so it is not resumable — the
-    // claude driver's rule (review live22).
+    // caller into the same failure (review live21). The record alone is
+    // no proof — a resumed session records at spawn. A resume that
+    // ended cleanly before its first turn keeps the record the claim
+    // judged (review live20). Either way the registry must hold it: a
+    // confirmed session whose start could not be recorded is one
+    // `--resume` cannot find (exit 66) — the claude driver's rule
+    // (review live22).
     const resumable =
       this.capabilities.resume &&
       ownsRecord &&
@@ -427,11 +425,10 @@ export abstract class AgyFinalize extends AgyDriverIo {
     // non-final, so the resumable verdict's promise must be real: the
     // kept home settles onto `session-<id>` here (round 413, item 2),
     // and the failure costs the exit code. A session whose spawn never
-    // attached a child removes nothing here (a resume keeps its
-    // transcript; a fresh home is the CLI tail's to remove).
+    // attached a child removes nothing (a resume keeps its transcript).
     let finalRemoved = false;
     const home = this.options.privateHome;
-    if (this.options.final === true && childOutcome !== null) {
+    if (this.options.final === true && childOutcome !== null && !isCallerHarnessHome(home)) {
       finalRemoved = await this.removeFinalHomeSettled();
       if (!finalRemoved) {
         this.endExitCode = Math.max(this.endExitCode, 1);
@@ -471,21 +468,19 @@ export abstract class AgyFinalize extends AgyDriverIo {
         exit_code: reported,
         usage: this.cumulative,
         // `--final` that removed the home leaves nothing to resume; a
-        // --final removal that failed both attempts kept the home and
-        // the record non-final, so the base verdict's promise is real
-        // (the claude driver's rule, driver.ts review round 14).
+        // removal that failed both attempts kept the home and the record
+        // non-final, so the base verdict's promise is real (round 14).
         resumable: resumable && settledHome && !(this.options.final === true && finalRemoved),
       }),
       { terminal: true }
     );
     // Exit-code honesty: `session_ended` is the one event the caller
     // cannot afford to lose, so a delivery that failed — the sink
-    // rejected or stalled on the flush, or the queue refused the entry —
-    // cannot report success. `finish` is already past its re-entry
-    // guard, so the failure callback's own end attempt only raises
-    // `endExitCode`; the code carries the truth. The give-up also
-    // abandons the queue, so a stalled sink cannot hold the process
-    // open past the report.
+    // rejected or stalled, or the queue refused the entry — cannot
+    // report success. `finish` is past its re-entry guard, so the
+    // failure callback's own end attempt only raises `endExitCode`; the
+    // code carries the truth. The give-up also abandons the queue, so a
+    // stalled sink cannot hold the process open past the report.
     const delivered = sent ? await awaitFinalFlush(this.out) : false;
     const finalCode = delivered ? reported : Math.max(reported, 1);
     // The closing ledger line carries the process exit code: the reported

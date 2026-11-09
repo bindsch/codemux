@@ -53,8 +53,10 @@ export async function runInteractive(
     enablePlaywrightMcp,
     workdir
   ), workdir);
+  const prepared = this.prepareTuiEnvironment(model, effectiveAutonomy, effort, false, passthroughEnv);
+  try {
   const env = this.buildExecutionEnv(
-    this.getTuiEnv(model, effectiveAutonomy, effort, false, passthroughEnv),
+    prepared.env,
     passthroughEnv
   );
 
@@ -78,4 +80,5 @@ export async function runInteractive(
     stdin: "inherit",
     env,
   }));
+  } finally { prepared.finalize(); }
 }

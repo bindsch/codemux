@@ -44,8 +44,9 @@ describe("CLI - opencode sessions", () => {
         );
         expect(started.agent).toBe("opencode");
         expect(started.session_id).toBe("ses_fake1234567890");
-        // The override's wire model is what the spawn carries.
-        expect(started.model).toBe("codemux/clawvm-qwen32b-coder");
+        // session_started names the requested model as the caller spelled
+        // it (the droid rule); the spawn carries the wire id, checked below.
+        expect(started.model).toBe("clawvm-qwen32b-coder");
         const completed = await session.waitFor(
           "turn_completed",
           (event) => event.type === "turn_completed"

@@ -5,16 +5,19 @@ import type { AgentId } from "../../src/types.js";
 import { RESULT_ANSWER_FIELD } from "../../src/result-envelope/index.js";
 import type { StdinScript } from "./runner.js";
 import { EXPERIMENT_HARNESSES, type HarnessFacts } from "./facts.js";
+import { PARITY } from "../../src/parity/index.js";
+import { PROBE_FEATURE } from "../../src/parity/probe-features.js";
+import { EXPERIMENT_MCP_HARNESS_SCHEMAS } from "../../src/experiment-mcp.js";
 
 // The probe set the audit's release checklist names (scratch/audit/release.md
 // gap 3). Letters match docs/RELEASE-GATE.md's probe table. Probe 0 (the
 // version-contract column) is separate: it costs no quota and always runs.
-export const PROBE_LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H", "H2", "I", "J", "K", "P"] as const;
+export const PROBE_LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H", "H2", "I", "I2", "J", "K", "P"] as const;
 export type ProbeLetter = (typeof PROBE_LETTERS)[number];
 // Every probe but H runs by default: H forwards real provider credentials
 // into the sandbox (opt-in), while H2 — its loopback twin — synthesizes its
 // own and spends no provider quota (audit D9).
-export const DEFAULT_PROBES: readonly ProbeLetter[] = ["A", "B", "C", "D", "E", "F", "G", "H2", "I", "J", "K", "P"];
+export const DEFAULT_PROBES: readonly ProbeLetter[] = ["A", "B", "C", "D", "E", "F", "G", "H2", "I", "I2", "J", "K", "P"];
 
 // Probe H forwards provider credentials into the sandbox; it runs only when
 // the operator exports this variable set to exactly "1".
@@ -25,12 +28,13 @@ export const PROBE_LABELS: Record<ProbeLetter, string> = {
   B: "medium shell",
   C: "result JSON",
   D: "hermetic check",
-  E: "tools none hermetic",
+  E: "tools none",
   F: "session turn",
   G: "experiment MCP",
   H: "provider override",
   H2: "loopback override",
-  I: "alias + effort",
+  I: "model alias",
+  I2: "effort low",
   J: "sandbox policy",
   K: "hermetic session",
   P: "print-sandbox",
@@ -46,7 +50,8 @@ const PROBE_NAMES: Readonly<Record<string, ProbeLetter>> = {
   g: "G", "experiment-mcp": "G",
   h: "H", "provider-override": "H",
   h2: "H2", loopback: "H2", "loopback-override": "H2",
-  i: "I", "alias-effort": "I",
+  i: "I", alias: "I", "model-alias": "I", "alias-effort": "I",
+  i2: "I2", effort: "I2", "effort-low": "I2",
   j: "J", sandbox: "J", "no-net": "J",
   k: "K", "hermetic-session": "K",
   p: "P", "print-sandbox": "P",
@@ -88,15 +93,22 @@ export function probeApplies(letter: ProbeLetter, facts: HarnessFacts): boolean 
     case "C":
       return facts.resultJson;
     case "D":
-      return facts.hermetic;
+      if (facts.checkHermetic === undefined) {
+        throw new Error("probe D requires the candidate's checkHermetic declaration; older listings cannot establish the control channel");
+      }
+      return facts.checkHermetic;
     case "E":
-      return facts.toolsNoneRequiresHermetic;
+      // The plain `--tools none` probe runs wherever the adapter declares
+      // the capability; the hermetic form (toolsNoneRequiresHermetic,
+      // opencode) is chosen inside the probe body (run.ts).
+      return facts.toolsNone;
     case "F":
       return facts.sessions;
     case "K":
-      // The session-shaped hermetic canary needs both halves: a session
-      // driver (probe F's set) and the hermetic capability (probe D's).
-      return facts.sessions && facts.hermetic;
+      if (facts.sessionHermetic === undefined) {
+        throw new Error("probe K requires the candidate's sessionHermetic declaration; a run capability does not establish session isolation");
+      }
+      return facts.sessionHermetic;
     case "G":
       return facts.experiment;
     case "H":
@@ -111,9 +123,13 @@ export function probeApplies(letter: ProbeLetter, facts: HarnessFacts): boolean 
       // can run it — opencode and kimi included.
       return facts.providerOverride;
     case "I":
-      // The probe carries both -m and --effort, so the adapter must
-      // declare both (audit D7).
-      return facts.model && facts.effort;
+      // The alias probe carries -m alone (audit D7, split in the 2.0.0
+      // parity pass): the adapter must declare model selection.
+      return facts.model;
+    case "I2":
+      // The effort twin: --effort low on its own, so the adapter must
+      // declare the effort flag.
+      return facts.effort;
     case "J":
       // The sandbox policy flags apply to every harness codemux runs.
       return true;
@@ -121,27 +137,31 @@ export function probeApplies(letter: ProbeLetter, facts: HarnessFacts): boolean 
 }
 
 export function unsupportedNote(letter: ProbeLetter, facts?: HarnessFacts): string {
-  // Probe K's reason is the missing half, so the UNSUPPORTED cell names
-  // it: no session driver at all (probe F's note), or sessions without
-  // the hermetic capability (probe D's note — the run-side hermetic
-  // refusal reason, which leaves no hermetic session to canary). Without
-  // facts the map's generic K note below answers.
-  if (letter === "K" && facts !== undefined) {
-    return facts.sessions
-      ? "adapter declares no hermetic capability, so no hermetic session exists to canary (docs/harnesses.md matrix)"
-      : "no session driver for this harness (src/session/cli.ts SESSION_AGENTS)";
+  const feature = PROBE_FEATURE[letter];
+  if (facts !== undefined && feature !== null) {
+    if (facts.declarationSource === "candidate") {
+      const limitation = facts.limitations?.[feature];
+      if (!limitation?.reason.trim() || !limitation.evidence.trim()) {
+        throw new Error(`candidate ${facts.id} must declare the reason and evidence for ${feature}`);
+      }
+      return limitation.reason;
+    }
+    const state = PARITY[facts.id][feature];
+    return state.state === "harness-limitation" ? state.reason
+      : `${facts.id} supports ${feature}; a differing candidate needs its own limitation declaration`;
   }
   const notes: Record<ProbeLetter, string> = {
     A: "adapter supports headless runs",
     B: "adapter supports medium autonomy",
     C: "adapter declares no result-JSON capability (docs/harnesses.md matrix)",
     D: "adapter declares no hermetic capability (docs/harnesses.md matrix)",
-    E: "adapter's --tools none needs no dedicated hermetic probe (its plain control is not refused)",
-    F: "no session driver for this harness (src/session/cli.ts SESSION_AGENTS)",
+    E: "adapter declares no --tools none capability (docs/harnesses.md matrix)",
+    F: "no session driver for this harness (src/session/cli-agents.ts SESSION_AGENTS)",
     G: "no verified experiment MCP mechanism (src/experiment-mcp.ts)",
     H: "adapter declares no provider-override, result-JSON, and served-model-evidence triple (docs/harnesses.md matrix, docs/RELEASE-GATE.md row H); the override is asserted on the envelope's provider-reported served_model",
     H2: "adapter declares no provider-override capability (docs/harnesses.md matrix); the loopback probe verifies the override through the request the harness itself sends",
-    I: "adapter declares no model+effort pair (docs/harnesses.md matrix); probe I carries both -m and --effort",
+    I: "adapter declares no model selection (docs/harnesses.md matrix); probe I carries -m",
+    I2: "adapter declares no effort flag (docs/harnesses.md matrix); probe I2 carries --effort",
     J: "the sandbox policy flags apply to every harness",
     K: "the hermetic session canary needs a session driver and a hermetic capability",
     P: "--print-sandbox applies to every harness",
@@ -189,7 +209,11 @@ export function prepareExperimentProbe(
   agent: AgentId,
   directory: string,
   fixtureServer: string,
-  prefixes: readonly string[] = EXPERIMENT_HARNESSES[agent] ?? []
+  prefixes: readonly string[] = EXPERIMENT_HARNESSES[agent] ?? [],
+  // The schema opt-ins come from the validator's own table: without them
+  // the run refuses probe G's spec before launch (gemini's
+  // wait_for_previous property).
+  schemas: readonly string[] = EXPERIMENT_MCP_HARNESS_SCHEMAS[agent] ?? []
 ): ExperimentProbeSpec {
   const path = join(directory, "experiment-spec.json");
   writeFileSync(path, `${JSON.stringify({
@@ -199,6 +223,7 @@ export function prepareExperimentProbe(
     env: [],
     recording: directory,
     ...(prefixes.length === 0 ? {} : { accept_harness_prefix: [...prefixes] }),
+    ...(schemas.length === 0 ? {} : { accept_harness_schema: [...schemas] }),
   }, null, 2)}\n`);
   return {
     path,

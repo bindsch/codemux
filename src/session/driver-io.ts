@@ -10,8 +10,8 @@ import { providerHost, type SessionCallContext } from "../call-log.js";
 import { emptyUsage } from "../result-envelope.js";
 import { claudeSessionCapabilities, ClaudeStreamParser } from "./claude-session.js";
 import { SessionFsm } from "./fsm.js";
+import { SessionOutputQueue } from "./completion.js";
 import {
-  BoundedOutboundQueue,
   codemuxFatalMessage,
   SESSION_SIGNAL_EXIT_CODE,
   type SessionFatal,
@@ -33,6 +33,10 @@ export interface SessionDriverOptions {
   sessionId: string;
   autonomy: AutonomyLevel;
   model?: string;
+  /** The `-m` value as typed when it resolved through `config.models`,
+   * else null: reported as `model_alias` on the model-bearing events and
+   * recorded with the start record (design P5). */
+  modelAlias?: string | null;
   /** The validated working directory — also the ceiling's launch scope. */
   cwd: string;
   sandboxed: boolean;
@@ -124,7 +128,7 @@ export abstract class ClaudeDriverIo {
   protected readonly fsm = new SessionFsm();
   protected readonly parser = new ClaudeStreamParser();
   protected readonly capabilities = claudeSessionCapabilities();
-  protected readonly out: BoundedOutboundQueue;
+  protected readonly out: SessionOutputQueue;
   protected readonly pendingTimers = new Map<string, Timer>();
 
   protected proc: SessionProcess | null = null;
@@ -182,13 +186,14 @@ export abstract class ClaudeDriverIo {
     this.callLedger = {
       agent: options.agent,
       model: options.model ?? null,
+      modelAlias: options.modelAlias ?? null,
       provider: providerHost(options.providerBaseUrl),
       autonomy: options.autonomy,
       hermetic: options.hermetic ?? false,
       sandboxed: options.sandboxed,
       cwd: options.cwd,
     };
-    this.out = new BoundedOutboundQueue(
+    this.out = new SessionOutputQueue(
       options.sink ?? defaultEventSink(),
       (failure) => {
         // Both failure classes end the session (§4.2): the caller stopped

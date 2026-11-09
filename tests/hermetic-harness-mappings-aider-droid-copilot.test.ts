@@ -6,12 +6,11 @@ import { getAdapter } from "../src/adapters/index.js";
 
 // The per-harness --hermetic / --tools none mappings. OpenCode claims both;
 // droid, kimi, pi and goose claim --tools none (all verified live through
-// provider overrides). Aider refuses both — its --tools none has nothing to
-// map onto, and its --hermetic refusal (2026-10-04 review) rides aider's
-// own .aider.conf.yml/.env/.aider.model.settings.yml searches having no
-// switch. Copilot refuses both on live evidence; the mechanisms the branch
-// had implemented behind its refusals are removed as dead surface in 0.7.0
-// (docs/isolation.md).
+// provider overrides). Since the parity round aider and copilot claim
+// --hermetic too: aider through a private HOME plus the clean-working-
+// directory rule (its --tools none still has nothing to map onto), copilot
+// through a private COPILOT_HOME plus the --available-tools sentinel
+// allowlist (docs/isolation.md).
 
 describe("hermetic runs: aider", () => {
   const adapter = () => getAdapter("aider");
@@ -19,7 +18,11 @@ describe("hermetic runs: aider", () => {
   test("--hermetic disables the repository map; everything else is pinned in every run", () => {
     const plain = adapter().buildRunCommand({ agent: "aider", prompt: "p" });
     const hermetic = adapter().buildRunCommand({ agent: "aider", prompt: "p", hermetic: true });
-    expect(hermetic).toEqual([...plain.slice(0, -1), "--map-tokens", "0", plain.at(-1)!]);
+    // The hermetic command is the plain one inside `env HOME=<private>`,
+    // with the repo-map budget zeroed ahead of the prompt.
+    expect(hermetic[0]).toBe("env");
+    expect(hermetic[1]).toMatch(/^HOME=/);
+    expect(hermetic.slice(2)).toEqual([...plain.slice(0, -2), "--map-tokens", "0", ...plain.slice(-2)]);
     expect(hermetic).toContain("--map-tokens");
     expect(hermetic.indexOf("0")).toBe(hermetic.indexOf("--map-tokens") + 1);
   });
@@ -81,23 +84,21 @@ describe("hermetic runs: aider", () => {
     }
   });
 
-  test("aider refuses --hermetic on its config layers and --tools none on its empty tool set", () => {
+  test("aider supports --hermetic and removes tools through ask mode without Git", () => {
     const cwd = mkdtempSync(join(tmpdir(), "codemux-aider-claim-"));
     try {
       mkdirSync(join(cwd, ".git"));
-      // --hermetic is refused (2026-10-04 review): the pinned flags close
-      // only what codemux hands aider, while aider itself loads
-      // .aider.conf.yml, .env and .aider.model.settings.yml from the home,
-      // git root and working directory with no switch to stop it — the
-      // check's canary never rode those channels, so the 2026-09-17 pass
-      // certified what the flags do not close (docs/isolation.md). The
-      // --map-tokens mapping above stays for the day that changes.
-      expect(adapter().capabilities().supportsHermetic ?? false).toBe(false);
+      // The 2026-10-04 refusal is closed: the private HOME empties aider's
+      // home config layers at once and the clean-working-directory rule
+      // refuses the four names from the working directory up to the project
+      // root, the same range aider searches (main.py at 0.86.2; read
+      // 2026-11-09). Ask mode without Git removes model-driven tools.
+      expect(adapter().capabilities().supportsHermetic ?? false).toBe(true);
       expect(() => adapter().validateRunRequest({ agent: "aider", prompt: "p", cwd, hermetic: true }))
-        .toThrow("no verified hermetic mode");
-      expect(adapter().capabilities().supportsToolSelection ?? false).toBe(false);
+        .not.toThrow();
+      expect(adapter().capabilities().supportsToolSelection ?? false).toBe(true);
       expect(() => adapter().validateRunRequest({ agent: "aider", prompt: "p", cwd, tools: "none" }))
-        .toThrow("cannot remove its built-in tools");
+        .not.toThrow();
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -114,24 +115,27 @@ describe("hermetic runs: droid", () => {
       .toEqual(["droid", "exec"]);
   });
 
-  test("droid claims --tools none (verified live); --hermetic stays refused", () => {
+  test("droid claims --tools none (verified live) and --hermetic (home redirect)", () => {
     const adapter = getAdapter("droid");
     const cwd = mkdtempSync(join(tmpdir(), "codemux-droid-claim-"));
     try {
       mkdirSync(join(cwd, ".git"));
-      // The capability probes ran live on 2026-09-17 through a provider
-      // override (GLM-5.3 via Z.AI riding a per-run BYOK settings file, so
-      // no Factory login was needed): under --tools none neither the read
-      // probe nor the shell probe could produce its secret, while a plain
-      // run produced both. Hermetic stays refused — instruction files load
-      // from the working directory up to the git root with no switch, and
-      // skills load from both ~/.factory and ~/.agents (docs/isolation.md).
+      // The --tools none capability probe ran live on 2026-09-17 through a
+      // provider override (GLM-5.3 via Z.AI riding a per-run BYOK settings
+      // file, so no Factory login was needed): under --tools none neither
+      // the read probe nor the shell probe could produce its secret, while
+      // a plain run produced both. --hermetic is claimed through the home
+      // redirect: every root droid reads (settings.json, skills, hooks,
+      // login, the guideline directories) resolves from
+      // FACTORY_HOME_OVERRIDE ?? HOME ?? USERPROFILE ?? cwd, so a private
+      // HOME with the override unset removes them all at once
+      // (src/droid-hermetic.ts, docs/isolation.md).
       expect(adapter.capabilities().supportsToolSelection ?? false).toBe(true);
       expect(() => adapter.validateRunRequest({ agent: "droid", prompt: "p", cwd, tools: "none" }))
         .not.toThrow();
-      expect(adapter.capabilities().supportsHermetic ?? false).toBe(false);
+      expect(adapter.capabilities().supportsHermetic ?? false).toBe(true);
       expect(() => adapter.validateRunRequest({ agent: "droid", prompt: "p", cwd, hermetic: true }))
-        .toThrow("no verified hermetic mode");
+        .not.toThrow();
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
@@ -139,25 +143,25 @@ describe("hermetic runs: droid", () => {
 });
 
 describe("hermetic runs: copilot", () => {
-  test("copilot refuses --hermetic and --tools none on live evidence at the installed 1.0.85", () => {
+  test("copilot claims --hermetic and --tools none at the installed 1.0.85", () => {
     const adapter = getAdapter("copilot");
-    const cwd = mkdtempSync(join(tmpdir(), "codemux-copilot-refuse-"));
+    const cwd = mkdtempSync(join(tmpdir(), "codemux-copilot-claim-"));
     try {
       mkdirSync(join(cwd, ".git"));
-      // Both capabilities are refused on the 2026-09-17 live pass: no argv
-      // spelling of an empty --available-tools allowlist disarms the
-      // tools, and the check's control probe cannot leak the planted code
-      // word because --no-custom-instructions rides every run
-      // (docs/isolation.md). The mechanisms the branch had implemented
-      // behind the refusals (the private COPILOT_HOME, the BYOK provider
-      // override) are removed as dead surface in 0.7.0; the refusals and
-      // their evidence stay.
-      expect(adapter.capabilities().supportsHermetic ?? false).toBe(false);
-      expect(adapter.capabilities().supportsToolSelection ?? false).toBe(false);
+      // The 2026-09-17 refusals are closed. --hermetic rides a private
+      // COPILOT_HOME with the login hard-linked in (config, custom
+      // instructions, plugins, and session state all resolve under it);
+      // --tools none rides a NON-empty --available-tools value that is no
+      // tool's name — the CLI's own normalizer collapses every empty
+      // spelling to "no filter", which is why the live probes left the
+      // tools armed, and a sentinel name empties the registry through the
+      // filter (docs/isolation.md).
+      expect(adapter.capabilities().supportsHermetic ?? false).toBe(true);
+      expect(adapter.capabilities().supportsToolSelection ?? false).toBe(true);
       expect(() => adapter.validateRunRequest({ agent: "copilot", prompt: "p", cwd, hermetic: true }))
-        .toThrow("no verified hermetic mode");
+        .not.toThrow();
       expect(() => adapter.validateRunRequest({ agent: "copilot", prompt: "p", cwd, tools: "none" }))
-        .toThrow("cannot remove its built-in tools");
+        .not.toThrow();
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

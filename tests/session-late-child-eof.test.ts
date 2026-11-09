@@ -22,7 +22,7 @@ afterAll(cleanupSessions);
 const record = (registryPath: string, dir: string, agent: "codex" | "agy", id: string) =>
   recordSessionStart(registryPath, {
     id, agent, cwd: dir, hermetic: false, project_settings: false, harness_home: join(dir, "home"),
-    provider_base_url: null, model: null, autonomy: "high", sandboxed: true, sandbox_trust: "standard",
+    provider_base_url: null, model: null, model_alias: null, autonomy: "high", sandboxed: true, sandbox_trust: "standard",
     sandbox_no_net: false, sandbox_scrub_env: false, sandbox_block: [], pass_env: [], playwright_mcp: false,
   }).ok;
 

@@ -168,7 +168,9 @@ describe("the spend stage", () => {
       scode: fakeScodeHelp(),
       usagemux: fakeUsagemux(),
       claude: claudeGreen,
-      codex: `if [ "$1" = "--version" ]; then printf 'codex-cli 0.165.0\\n'; exit 0; fi`,
+      // At the codex feature floors (0.166.0, FEATURE_FLOORS); a lower
+      // version is a broken FEATURE-FLOOR row and exit 1.
+      codex: `if [ "$1" = "--version" ]; then printf 'codex-cli 0.166.0\\n'; exit 0; fi`,
     };
     const capped = createFakeBinaryEnv({ ...base, codemux: fakeCodemux() });
     const zero = createFakeBinaryEnv({ ...base, codemux: fakeCodemux() });

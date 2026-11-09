@@ -158,6 +158,7 @@ export function agyResult(result: RunResult, request: RunRequest): RunResult {
   const block = (): CodemuxResultBlock => ({
     agent,
     labels: request.labels ?? null,
+    model_alias: request.modelAlias ?? null,
     model: request.model ?? null,
     // agy's envelope carries no served-model report, so `model` above is
     // codemux's own selection.

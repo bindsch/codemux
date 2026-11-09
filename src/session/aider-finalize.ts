@@ -22,12 +22,12 @@ import {
 } from "./aider-session.js";
 import type { AiderDriverOptions } from "./aider-options.js";
 import { SessionFsm } from "./fsm.js";
+import { SessionOutputQueue } from "./completion.js";
 import {
   awaitFinalFlush,
   buildSessionEnded,
   harnessFailed,
   shutdownRequested,
-  BoundedOutboundQueue,
   crashSynthesisReason,
   drainFailureMessage,
   DEFAULT_SHUTDOWN_GRACE_MS,
@@ -53,9 +53,11 @@ export abstract class AiderDriverCore {
   protected options!: AiderDriverOptions;
   protected readonly fsm = new SessionFsm();
   protected readonly capabilities = aiderSessionCapabilities();
-  protected out!: BoundedOutboundQueue;
+  protected out!: SessionOutputQueue;
   protected signals!: SessionSignalGate;
   protected turnProc: SessionProcess | null = null;
+  protected turnInterrupted = false;
+  protected lastChildInterrupted = false;
   /** The in-flight turn spawn: set synchronously before spawnTurn is
    * called, cleared once it lands. The end path awaits it (see finish)
    * so a child that lands after the session ended is stopped and its
@@ -137,15 +139,14 @@ export abstract class AiderDriverCore {
   recordBeforeSpawn(): string | null {
     if (!this.options.resume) {
       try {
-        // The sweep's liveness skip is registry-backed: a session another
-        // codemux process holds open is never aged out, however old its
-        // directory mtime sits (review D2, security 2).
+        // Caller-owned state is outside the disposable history sweep.
         const registryPath = this.options.registryPath;
         createAiderSessionHistory(
           this.options.historyPath,
           registryPath === null
             ? undefined
-            : (id) => sessionHoldState(registryPath, id)
+            : (id) => sessionHoldState(registryPath, id),
+          this.options.callerHome === undefined
         );
       } catch (error) {
         return `cannot create the session history file: ${
@@ -164,7 +165,7 @@ export abstract class AiderDriverCore {
    * the registry failure the caller already holds is the one to report,
    * so a removal failure only warns on stderr. */
   removeFreshHistory(): void {
-    if (this.options.resume) return;
+    if (this.options.resume || this.options.callerHome) return;
     try {
       removeAiderSessionHistory(this.options.historyPath);
     } catch (error) {
@@ -287,7 +288,9 @@ export abstract class AiderDriverCore {
           // child gets its declines fed for its whole lifetime too — one
           // canned block plus the half-close let a yes-default prompt read
           // the EOF as acceptance once the block ran out.
-          const written = child.repeatRawUntilExit(HEADLESS_NEGATIVE_RESPONSES);
+          if (this.turnInterrupted) child.requestStop();
+          const written = this.turnInterrupted ? { ok: true }
+            : child.repeatRawUntilExit(HEADLESS_NEGATIVE_RESPONSES);
           if (written.ok) {
             drain = child;
           } else {
@@ -332,8 +335,8 @@ export abstract class AiderDriverCore {
       this.endExitCode = Math.max(this.endExitCode, 1);
       reason = "harness_failed";
     }
-    // Every nonzero code and signal exit fails, including during shutdown.
-    const drainFailureCode = harnessFailed(drainOutcome)
+    // A caller-requested turn stop is expected; preserve its raw outcome.
+    const drainFailureCode = !this.turnInterrupted && harnessFailed(drainOutcome)
       ? drainOutcome!.code ?? 1
       : null;
     if (drainFailureCode !== null) {
@@ -380,6 +383,11 @@ export abstract class AiderDriverCore {
                     ? crashSynthesisReason(this.firstFatal)
                     : `the session ended (${reason}) before the turn completed`,
             usage: emptyUsage(),
+            // The transcript names the model in prose only: no served
+            // model exists to report (design P5's declared limitation).
+            model_served: null,
+            model_served_source: null,
+            model_alias: this.options.modelAlias ?? null,
           }),
           { terminal: "fatal" }
         );
@@ -392,7 +400,10 @@ export abstract class AiderDriverCore {
           turnId ?? "none",
           this.turnStartedAt.get(turnId ?? "") ?? Date.now(),
           synthFinish,
-          emptyUsage()
+          emptyUsage(),
+          // The transcript names no model machine-readably (see the event
+          // above): none to record.
+          null
         );
         this.turnStartedAt.delete(turnId ?? "");
       }
@@ -421,23 +432,22 @@ export abstract class AiderDriverCore {
       ownsRecord &&
       this.endExitCode === 0 &&
       !this.unansweredPromptRecorded &&
-      !openTurnInterrupted && !harnessFailed(drainOutcome);
-    // The exit code the report carries, read once here: a signal or a
-    // failure landing during the final flush (through `finish`'s re-entry
-    // arm) no longer changes the process exit code — the session had
-    // already ended and told the caller its verdict. That holds for a
-    // termination signal too: it exits 143 only when it stopped the
-    // session, which the event then says (kimi's machine has the same
-    // rule; docs/sessions.md states it under the exit table).
+      !openTurnInterrupted && (this.turnInterrupted || !harnessFailed(drainOutcome));
+    // A later final-flush failure cannot change the already emitted code.
     const reported = this.endExitCode;
-    const sent = this.out.enqueue(
-      buildSessionEnded(++this.seq, this.options.sessionId, this.lastChildOutcome, {
+    const endFields = {
         reason,
         shutdown_requested: this.shutdownWasRequested,
         exit_code: reported,
         usage: this.cumulative,
         resumable,
-      }),
+        harness_exit: this.lastChildOutcome,
+      };
+    const ended = this.lastChildInterrupted
+      ? buildEvent(++this.seq, this.options.sessionId, "session_ended", null, endFields)
+      : buildSessionEnded(++this.seq, this.options.sessionId, this.lastChildOutcome, endFields);
+    const sent = this.out.enqueue(
+      ended,
       { terminal: true }
     );
     const delivered = sent ? await awaitFinalFlush(this.out) : false;
@@ -446,10 +456,7 @@ export abstract class AiderDriverCore {
     // one, or nonzero when the report was not delivered (round 171).
     appendSessionCallRecord(this.callLedger, this.options.sessionId, this.sessionStartedAt, reason, finalCode, this.cumulative);
     this.resolveDone(finalCode);
-    // The handlers stay installed past done while the abandoned spawn's
-    // hold still waits (kimi's rule, round al30): a second signal there
-    // escalates the late child instead of being absorbed. dispose is
-    // process-off under the hood, so the CLI's later dispose() is safe.
+    // Keep the signal handlers until any abandoned child settles.
     if (this.turnSpawnAbandoned) await this.abandonedSpawnHold;
     this.signals.dispose();
   }
@@ -461,8 +468,7 @@ export abstract class AiderDriverCore {
     return this.abandonedSpawnHold ?? Promise.resolve();
   }
 
-  /** The start record (§4.8): the claude-family writeStartRecord shape.
-   * Returns the failure message, or null once recorded (or when registry
+  /** Returns the failure message, or null once recorded (or when registry
    * writes are disabled). */
   private writeStartRecord(): string | null {
     if (this.options.registryPath === null) return null;
@@ -471,8 +477,10 @@ export abstract class AiderDriverCore {
       agent: "aider",
       cwd: this.options.cwd,
       hermetic: this.options.hermetic,
-      harness_home: this.options.harnessHome,
+      harness_home: this.options.callerHome?.dir ?? this.options.harnessHome,
+      ...(this.options.callerHome ? { caller_owned_home: true } : {}),
       model: this.options.model ?? null,
+      model_alias: this.options.modelAlias ?? null,
       autonomy: this.options.autonomy,
       sandboxed: this.options.sandboxed,
       sandbox_trust: this.options.sandboxTrust,

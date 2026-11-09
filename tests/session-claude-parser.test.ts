@@ -107,7 +107,7 @@ describe("ClaudeStreamParser", () => {
   test("system/init parses once; later ones pass through unknown (per-turn init)", () => {
     const parser = new ClaudeStreamParser();
     expect(feedOne(parser, { type: "system", subtype: "init", session_id: FLOOR_ID })).toEqual([
-      { kind: "init", sessionId: FLOOR_ID },
+      { kind: "init", sessionId: FLOOR_ID, model: null },
     ]);
     // The real wire emits one init per turn with the same session id (the
     // zai-session-a fixture): the second and later ones are tier-1

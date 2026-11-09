@@ -92,7 +92,8 @@ class RecordingAdapter extends DefaultHookAdapter {
 
   override buildRunCommand(request: RunRequest): string[] {
     this.seenAutonomy = request.autonomy;
-    return [bun, "-e", "process.exit(0)"];
+    // A nonempty answer: an exit-0 run with empty stdout fails (src/result-empty.ts).
+    return [bun, "-e", "console.log('OK')"];
   }
 
   override beforeLaunch(): void {

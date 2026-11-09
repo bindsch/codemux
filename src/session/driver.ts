@@ -1,10 +1,9 @@
 /**
  * The claude-family session driver (design §4.2, §4.6): the launcher-owned
  * context that turns one SessionProcess plus the caller's stdin into the
- * event stream. All per-run state lives here — the FSM, the parser, the
- * pending-permission timers, the output queue, the registry writes — never
- * on a singleton adapter. The driver never throws across the stream: every
- * failure is an event, an end path, or both.
+ * event stream. All per-run state lives here — never on a singleton
+ * adapter — and the driver never throws across the stream: every failure
+ * is an event, an end path, or both.
  *
  * Turn model: claude print mode has no turn-started event of its own, so
  * codemux owns the boundary — a turn starts when an accepted input is
@@ -377,18 +376,20 @@ export class ClaudeSessionDriver extends ClaudeDriverInput {
           drainFailureCode,
           this.firstFatal,
           this.options.agent,
-          childOutcome!
+          childOutcome!,
+          this.options.modelAlias ?? null
         );
         this.emit(synth.event, { terminal: "fatal" });
-        // The synthesized completion is a turn the caller saw complete, so
-        // it gets its ledger line like any other.
+        // The synthesized completion still gets its ledger line; no served
+        // model — the harness never answered the turn (driver-synth.ts).
         appendSessionTurnCallRecord(
           this.callLedger,
           this.options.sessionId,
           turnId ?? "none",
           this.turnStartedAt.get(turnId ?? "") ?? Date.now(),
           synth.finish,
-          emptyUsage()
+          emptyUsage(),
+          null
         );
         this.turnStartedAt.delete(turnId ?? "");
       }

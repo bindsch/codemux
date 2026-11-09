@@ -21,6 +21,7 @@ import {
   kimiPrivateSkillsDir,
   KIMI_HERMETIC_ENV_ASSIGNMENTS,
   KIMI_HERMETIC_ENV_OMISSIONS,
+  KIMI_SESSION_DENY_RULE,
   populateKimiHermeticSessionHome,
 } from "../src/kimi-hermetic.js";
 import { fakePrivateHome, fakeResumedPrivateHome, settledPath } from "./helpers/fake-private-home.js";
@@ -69,6 +70,101 @@ const registryEntry = (session: { options: { registryPath: string | null } }) =>
 };
 
 describe("kimi session e2e - hermetic", () => {
+  test.each([false, true])("deny reaches native config before fresh/resumed turn (resumed=%s)", async (resumed) => {
+    const home = resumed ? fakeResumedPrivateHome(ID) : fakePrivateHome();
+    const { brandHome } = populateKimiHermeticSessionHome(home.dir, null);
+    const initial = '[permission]\nrules = [{ decision = "allow", pattern = "*", reason = "consumer" }]\n';
+    writeFileSync(join(brandHome, "config.toml"), initial);
+    const session = await startSession({
+      privateHome: home, permissionPolicy: "deny", resumeSessionId: resumed ? ID : null,
+    });
+    // Creating the driver does not mutate consumer policy before a user turn.
+    expect(readFileSync(join(brandHome, "config.toml"), "utf8")).toBe(initial);
+    send(session.driver, { type: "user", text: "scenario:permission-tools" });
+    await waitFor(session.events, of("turn_completed"), "turn_completed");
+    const configPath = join(kimiPrivateBrandHome(home.dir), "config.toml");
+    const first = readFileSync(configPath, "utf8");
+    const parsed = Bun.TOML.parse(first) as Record<string, any>;
+    expect(parsed.permission.rules).toEqual([
+      { decision: "allow", pattern: "*", reason: "consumer" }, KIMI_SESSION_DENY_RULE,
+    ]);
+    for (const tool of ["bash", "write", "edit", "mcp__fixture__write"]) {
+      expect(existsSync(join(session.workDir, `permission-${tool}.txt`))).toBe(false);
+    }
+    const denied = session.events.filter((event) => event.type === "tool_result");
+    expect(denied).toHaveLength(5);
+    for (const result of denied) expect(result.output).toContain('was denied by permission rule.');
+    expect(session.events.some((event) => event.type.startsWith("permission_"))).toBe(false);
+    expect((of("session_started")(session.events) as Event).capabilities.permissions).toBe(false);
+
+    // Consumer edits between turns survive, but removing the deny cannot
+    // weaken the requested policy on the next turn.
+    writeFileSync(configPath, initial + 'dangerous_command_guard = false\n');
+    send(session.driver, { type: "user", text: "scenario:permission-tools" });
+    await waitFor(session.events, (events) => events.filter((event) => event.type === "turn_completed")[1], "second turn");
+    const second = Bun.TOML.parse(readFileSync(configPath, "utf8")) as Record<string, any>;
+    expect(second.permission.rules).toEqual(parsed.permission.rules);
+    expect(second.permission.dangerous_command_guard).toBe(false);
+    send(session.driver, { type: "shutdown" });
+    expect(await session.code).toBe(0);
+    home.remove();
+  });
+
+  test("default policy permits the fixture shell and file writes", async () => {
+    const home = fakePrivateHome();
+    populateKimiHermeticSessionHome(home.dir, null);
+    const session = await startSession({ privateHome: home, permissionPolicy: "default" });
+    send(session.driver, { type: "user", text: "scenario:permission-tools" });
+    await waitFor(session.events, of("turn_completed"), "turn_completed");
+    for (const tool of ["bash", "write", "edit", "mcp__fixture__write"]) {
+      expect(readFileSync(join(session.workDir, `permission-${tool}.txt`), "utf8")).toBe("allowed");
+    }
+    send(session.driver, { type: "shutdown" });
+    expect(await session.code).toBe(0);
+    home.remove();
+  });
+
+  test("default resume keeps generated native denies without rewriting", async () => {
+    const home = fakeResumedPrivateHome(ID);
+    const { brandHome } = populateKimiHermeticSessionHome(home.dir, null);
+    const contents = '# keep consumer formatting\n[[permission.rules]]\ndecision = "deny"\nscope = "user"\npattern = "*"\nreason = "codemux --permission-policy deny"\n';
+    const path = join(brandHome, "config.toml");
+    writeFileSync(path, contents);
+    const session = await startSession({ privateHome: home, permissionPolicy: "default", resumeSessionId: ID });
+    send(session.driver, { type: "user", text: "scenario:permission-tools" });
+    await waitFor(session.events, of("turn_completed"), "turn_completed");
+    expect(readFileSync(path, "utf8")).toBe(contents);
+    expect(existsSync(join(session.workDir, "permission-bash.txt"))).toBe(false);
+    send(session.driver, { type: "shutdown" });
+    expect(await session.code).toBe(0);
+    home.remove();
+  });
+
+  test("deny without a private home fails before spawning", async () => {
+    const session = await startSession({ permissionPolicy: "deny" });
+    send(session.driver, { type: "user", text: "scenario:basic" });
+    expect(await session.code).toBe(1);
+    expect(session.argvs).toHaveLength(0);
+    expect(JSON.stringify(session.events)).toContain("requires a hermetic private home");
+  });
+
+  test("malformed resumed policy fails before spawning and remains intact", async () => {
+    const home = fakeResumedPrivateHome(ID);
+    const { brandHome } = populateKimiHermeticSessionHome(home.dir, null);
+    const path = join(brandHome, "config.toml");
+    const contents = '[permission]\nrules = ["invalid"]\n';
+    writeFileSync(path, contents);
+    const session = await startSession({ privateHome: home, permissionPolicy: "deny", resumeSessionId: ID });
+    send(session.driver, { type: "user", text: "scenario:basic" });
+    await waitFor(session.events, of("turn_completed"), "failed turn");
+    expect(session.argvs).toHaveLength(0);
+    expect(readFileSync(path, "utf8")).toBe(contents);
+    expect(JSON.stringify(session.events)).toContain("requires permission.rules to contain rule tables");
+    send(session.driver, { type: "shutdown" });
+    expect(await session.code).toBe(1);
+    home.remove();
+  });
+
   test("every turn carries the env(1) prefix over the private home, and settle lands before the second turn", async () => {
     const home = fakePrivateHome();
     const operator = operatorHome();

@@ -84,48 +84,49 @@ describe("codex session - spawn and capabilities", () => {
 });
 
 describe("codex session - policy pair", () => {
-  test("a sandboxed session passes the bypass pair at every level", () => {
-    for (const level of ["read-only", "low", "medium", "high"] as const) {
-      expect(codexSessionPolicy(level, true, CWD)).toEqual({
-        sandbox: "danger-full-access",
-        approvalPolicy: "never",
-        sandboxPolicy: { type: "dangerFullAccess" },
-      });
-    }
-  });
-
-  test("an unsandboxed session mirrors the adapter's mapAutonomy mapping", () => {
+  test("read-only retains its existing pair with approvals disabled", () => {
+    expect(codexSessionPolicy("read-only", true, CWD)).toEqual({
+      sandbox: "danger-full-access",
+      approvalPolicy: "never",
+      sandboxPolicy: { type: "dangerFullAccess" },
+    });
     expect(codexSessionPolicy("read-only", false, CWD)).toEqual({
       sandbox: "read-only",
       approvalPolicy: "never",
       sandboxPolicy: { type: "readOnly", networkAccess: false },
     });
-    expect(codexSessionPolicy("low", false, CWD)).toEqual({
-      sandbox: "workspace-write",
-      approvalPolicy: "untrusted",
-      sandboxPolicy: {
-        type: "workspaceWrite",
-        writableRoots: [CWD],
-        networkAccess: false,
-        excludeTmpdirEnvVar: false,
-        excludeSlashTmp: false,
-      },
-    });
-    const medium = codexSessionPolicy("medium", false, CWD);
-    expect(medium.sandbox).toBe("workspace-write");
-    expect(medium.approvalPolicy).toBe("never");
-    expect(medium.sandboxPolicy).toEqual({
-      type: "workspaceWrite",
-      writableRoots: [CWD],
-      networkAccess: false,
-      excludeTmpdirEnvVar: false,
-      excludeSlashTmp: false,
-    });
-    expect(codexSessionPolicy("high", false, CWD)).toEqual({
-      sandbox: "danger-full-access",
-      approvalPolicy: "never",
-      sandboxPolicy: { type: "dangerFullAccess" },
-    });
+  });
+
+  test("low and medium ask for native write access with or without an outer sandbox", () => {
+    for (const sandboxed of [true, false]) {
+      for (const level of ["low", "medium"] as const) {
+        expect(codexSessionPolicy(level, sandboxed, CWD)).toEqual({
+          sandbox: "read-only",
+          approvalPolicy: "on-request",
+          sandboxPolicy: { type: "readOnly", networkAccess: false },
+        });
+      }
+      expect(codexSessionPolicy("high", sandboxed, CWD)).toEqual({
+        sandbox: "danger-full-access",
+        approvalPolicy: "on-request",
+        sandboxPolicy: { type: "dangerFullAccess" },
+      });
+    }
+  });
+
+  test("start, resume and every turn carry asking policy above read-only", () => {
+    for (const sandboxed of [true, false]) {
+      for (const level of ["low", "medium", "high"] as const) {
+        const policy = codexSessionPolicy(level, sandboxed, CWD);
+        const requests = [
+          buildThreadStartRequest(1, policy, CWD),
+          buildThreadResumeRequest(2, "0123456789abcdef", policy, CWD),
+          buildTurnStartRequest(3, "0123456789abcdef", "one", policy),
+          buildTurnStartRequest(4, "0123456789abcdef", "two", policy),
+        ];
+        for (const request of requests) expect(parseJson(request).params.approvalPolicy).toBe("on-request");
+      }
+    }
   });
 });
 
@@ -195,8 +196,8 @@ describe("codex session - method allowlist and builders", () => {
     const frame = parseJson(buildThreadStartRequest(2, policy, CWD, "gpt-5"));
     expect(frame.params).toEqual({
       cwd: CWD,
-      sandbox: "workspace-write",
-      approvalPolicy: "untrusted",
+      sandbox: "read-only",
+      approvalPolicy: "on-request",
       model: "gpt-5",
     });
   });
@@ -213,8 +214,8 @@ describe("codex session - method allowlist and builders", () => {
     const frame = parseJson(buildThreadStartRequest(2, policy, CWD, "gpt-5", true));
     expect(frame.params).toEqual({
       cwd: CWD,
-      sandbox: "workspace-write",
-      approvalPolicy: "untrusted",
+      sandbox: "read-only",
+      approvalPolicy: "on-request",
       config: { project_doc_max_bytes: 0, project_doc_fallback_filenames: [] },
       model: "gpt-5",
     });
@@ -235,8 +236,8 @@ describe("codex session - method allowlist and builders", () => {
     expect(withModel.params).toEqual({
       threadId: "0123456789abcdef",
       cwd: CWD,
-      sandbox: "workspace-write",
-      approvalPolicy: "untrusted",
+      sandbox: "read-only",
+      approvalPolicy: "on-request",
       config: { project_doc_max_bytes: 0, project_doc_fallback_filenames: [] },
       model: "gpt-5",
     });
@@ -251,22 +252,18 @@ describe("codex session - method allowlist and builders", () => {
     expect(frame.params).toEqual({
       threadId: "0123456789abcdef",
       input: [{ type: "text", text: "Reply with exactly: one" }],
-      approvalPolicy: "never",
-      sandboxPolicy: {
-        type: "workspaceWrite",
-        writableRoots: [CWD],
-        networkAccess: false,
-        excludeTmpdirEnvVar: false,
-        excludeSlashTmp: false,
-      },
+      approvalPolicy: "on-request",
+      sandboxPolicy: { type: "readOnly", networkAccess: false },
       effort: "high",
     });
   });
 
-  test("effort none is dropped, not sent", () => {
+  test("effort none uses the native enum; omitted effort stays omitted", () => {
     const policy = codexSessionPolicy("high", false, CWD);
     const frame = parseJson(buildTurnStartRequest(5, "0123456789abcdef", "hi", policy, "none"));
-    expect("effort" in frame.params).toBe(false);
+    expect(frame.params.effort).toBe("none");
+    const omitted = parseJson(buildTurnStartRequest(6, "0123456789abcdef", "hi", policy));
+    expect("effort" in omitted.params).toBe(false);
   });
 
   test("steer batches texts and carries text_elements the way openclaw's client does", () => {

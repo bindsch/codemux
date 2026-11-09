@@ -1,17 +1,16 @@
 // Per-agent session driver construction: the wire models, the
-// turn-per-process spawn closure, and the codex/agy/opencode/kimi/
-// aider/claude driver arms. src/session/cli.ts owns the command, the
-// record claims, and the spawn.
+// turn-per-process spawn closure (turn-driver-spawn.ts), and the
+// codex/agy/opencode/kimi/aider/claude/second-wave driver arms — the
+// seven turn-per-process agents through turn-driver-launch.ts.
+// src/session/cli.ts owns the command, the record claims, and the
+// spawn.
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { AiderAdapter } from "../adapters/aider.js";
-import type { BaseAdapter, RunContext } from "../adapters/base.js";
-import { OpencodeAdapter, opencodeRealDataParent } from "../adapters/opencode.js";
+import type { BaseAdapter } from "../adapters/base.js";
+import { OpencodeAdapter } from "../adapters/opencode.js";
 import type { ProviderOverride } from "../provider-override.js";
-import {
-  withKeepEnvExemption,
-  type SandboxOptions,
-  type ScodeTrustLevel,
-} from "../sandbox.js";
+import type { SandboxOptions, ScodeTrustLevel } from "../sandbox.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -20,23 +19,29 @@ import type {
 } from "../types.js";
 import { AiderSessionDriver } from "./aider-driver.js";
 import { AgySessionDriver } from "./agy-driver.js";
-import { aiderSessionHistoryPath } from "./aider-session.js";
+import {
+  AIDER_SESSION_ID_PATTERN,
+  aiderSessionHistoryPath,
+} from "./aider-session.js";
+import { aiderHarnessHome } from "./cli-homes.js";
+import { openSessionPrivateHome } from "./private-home.js";
+import { settledPrivateHomePath } from "./private-home-key.js";
 import { CodexSessionDriver } from "./codex-driver.js";
+import type { CodexSessionCatalog } from "./codex-catalog.js";
 import { codexSessionProviderHomePath } from "../codex-provider.js";
 import type { CodexSessionProviderHome } from "../codex-provider.js";
 import { KimiSessionDriver } from "./kimi-driver.js";
-import { kimiHermeticTurnContext } from "./kimi-turn-context.js";
 import { OpenCodeSessionDriver } from "./opencode-driver.js";
-import { openCodeHermeticTurnPrefix } from "./opencode-session.js";
 import { ClaudeSessionDriver } from "./driver.js";
-import type { SessionProcess } from "./process.js";
-import { spawnSessionChild } from "./spawn.js";
+import { buildSessionTurnSpawn } from "./turn-driver-spawn.js";
+import { createTurnAgentDriver, isTurnAgent } from "./turn-driver-launch.js";
 import type { SessionEnvironmentBuilder } from "./cli-launch.js";
 import type { SessionCommandOptions } from "./cli-request.js";
 import type { ClaudeSessionBuilt } from "./claude-session/builders.js";
 import type { SessionPrivateHome } from "./private-home-types.js";
 import type { ProjectSettingsSessionDir } from "../claude-project-config.js";
 import type { SessionDriver } from "./stdin-frame.js";
+import { isCallerHarnessHome } from "./harness-home.js";
 
 export function createSessionDriver({
   options,
@@ -46,10 +51,12 @@ export function createSessionDriver({
   codexHome,
   codexOverride,
   codexSessionHome,
+  codexSessionCatalog = null,
   resumeId,
   claudeFamilyAgent,
   claudeBuilt,
   model,
+  modelAlias,
   autonomy,
   effort,
   workdir,
@@ -84,10 +91,15 @@ export function createSessionDriver({
   codexHome: () => string;
   codexOverride: (ProviderOverride & { baseUrl: string; apiKey: string }) | null;
   codexSessionHome: CodexSessionProviderHome | null;
+  codexSessionCatalog?: CodexSessionCatalog | null;
   resumeId: string | undefined;
   claudeFamilyAgent: "claude" | "zai";
   claudeBuilt: ClaudeSessionBuilt | null;
   model: string | undefined;
+  /** The `-m` value as typed when it resolved through config.models, else
+   * null (design P5): reported as `model_alias` by every driver and
+   * recorded with every ledger line and registry record. */
+  modelAlias: string | null;
   autonomy: AutonomyLevel;
   effort: ReasoningEffort | undefined;
   workdir: string;
@@ -152,135 +164,83 @@ export function createSessionDriver({
   let agyDriver: AgySessionDriver | null = null;
   let aiderDriver: AiderSessionDriver | null = null;
   let aiderSessionId: string | null = null;
-  // Holder (not a bare let): the assignment happens inside the
-  // spawnTurn closure, which TypeScript's flow analysis cannot see
-  // at the cleanup site below.
-  const turnState: {
-    launch: {
-      env: Record<string, string>;
-      context: RunContext | undefined;
-      /** The turn spawn's sandbox options: the session's resolved
-       * options plus the keep-env exemption for THIS turn's injected
-       * names (the long-lived child computes its own once, above). */
-      sandboxOptions: SandboxOptions | undefined;
-    } | null;
-  } = { launch: null };
-  /** The env(1) prefix a hermetic/project-settings opencode turn's argv
-   * carries; null leaves the argv as built. */
-  let turnArgvPrefix: string[] | null = null;
-  /** The keep-env exemption for one turn's spawn — the run path's
-   * rule through the same helper (withKeepEnvExemption): the names
-   * that turn's env assembly injected, required under an override.
-   * Computed per turn because the env is per turn (opencode's
-   * provider config directory is minted fresh each turn). */
-  const turnSandboxOptions = (
-    runEnv: Record<string, string>
-  ): SandboxOptions | undefined =>
-    sandboxOptions === undefined
-      ? undefined
-      : withKeepEnvExemption(
-          sandboxOptions,
-          { ...adapter.getEnv(), ...runEnv },
-          override !== null
-        );
-  // The kimi hermetic turn context (kimi-turn-context.ts): the adapter's
-  // getRunEnv refuses a hermetic launch whose context carries no home.
-  const kimiHermeticContext: RunContext | undefined =
-    agentId === "kimi" && sessionPrivateHome !== null
-      ? kimiHermeticTurnContext(sessionPrivateHome)
-      : undefined;
-  const spawnTurn = (turnArgv: string[], abandoned?: () => boolean): Promise<SessionProcess> => {
-    // Re-run the adapter's validation gate before EVERY turn
-    // (review D2, security 1): the turn-per-process agents (opencode,
-    // aider, kimi) reload project config in each fresh process, and turn N
-    // may have written `opencode.json` or `.aider.model.settings.yml`
-    // granting reach the recorded autonomy does not. `run` checks the
-    // tree right before the only process it launches; this is that
-    // same moment per turn. Pure validation, so the throw reaches the
-    // drivers' existing spawn-failure path: a fatal codemux error
-    // carrying the guard's message, and the session ends rather than
-    // spawn a process the tree would have refused.
-    adapter.validateRunRequest(runLike);
-    if (agentId === "opencode") {
-      // A FRESH provider config before every turn (review D3,
-      // security 2): the config file lives in the opencode data
-      // directory, which the sandboxed child can write, and each
-      // turn is a new process that reloads it through
-      // OPENCODE_CONFIG — a config cached at the first turn let
-      // turn N's child rewrite what turn N+1 ran with (permissions,
-      // MCP servers). The run path never shares the file across
-      // processes, and neither does a session now: one file per
-      // turn process, each in its own fresh unguessable directory.
-      // Turns serialize (a second input is refused while one runs),
-      // so the previous turn's process has exited by the time a
-      // next turn spawns: its context is finalized right here,
-      // which also keeps exactly one exit listener registered; the
-      // live one dies with the session below. If prepareRun throws,
-      // the finally below cleans the previous context again —
-      // cleanupRun is idempotent — and nothing leaks.
-      const previous = turnState.launch?.context;
-      if (previous !== undefined) adapter.cleanupRun(previous);
-      const context = adapter.prepareRun(runLike);
-      const { runEnv, env } = buildSessionEnvironment(context);
-      turnState.launch = {
-        env,
-        sandboxOptions: turnSandboxOptions(runEnv),
-        context,
-      };
-      // The run path's env prefix (adapters/opencode.ts), rebuilt per
-      // turn from THAT turn's fresh home: env(1) assignments riding
-      // argv, never an environment handed to scode. Project settings
-      // rides it minus the project-config disable.
-      turnArgvPrefix = openCodeHermeticTurnPrefix({
-        hermetic,
-        projectSettings: experimentProjectSettings,
-        home: context.opencodeHermeticHome?.home,
-        providerConfigPath: context.opencodeProviderConfig?.path ?? null,
-        realDataParent: opencodeRealDataParent(process.env),
-      });
-    } else if (turnState.launch === null) {
-      // Run's launch order in miniature (launch.ts): prepareRun,
-      // then getRunEnv, then the built environment. Aider's and
-      // kimi's overrides ride environment variables alone
-      // (OPENAI_API_BASE / OPENAI_API_KEY; KIMI_MODEL_*) — nothing
-      // on disk to refresh — so the env is built once and cached,
-      // keep-env exemption included. A hermetic kimi session's env
-      // assembly needs the context above (getRunEnv's fail-closed
-      // gate); every other agent here has none.
-      const { runEnv, env } = buildSessionEnvironment(
-        agentId === "kimi" ? kimiHermeticContext : undefined
-      );
-      turnState.launch = {
-        env,
-        sandboxOptions: turnSandboxOptions(runEnv),
-        context: undefined,
-      };
-    }
-    return spawnSessionChild(
-      turnArgvPrefix === null ? turnArgv : [...turnArgvPrefix, ...turnArgv],
-      turnState.launch.env,
-      {
-      cwd: workdir,
-      sandboxed: Boolean(options.sandbox),
-      autonomy: requestedAutonomy,
-      sandboxOptions: turnState.launch.sandboxOptions,
-      graceMs: shutdownGraceMs,
-      envOmissions: adapter.getEnvOmissions(),
-      abandoned,
-    }, {
-      onLine: (line) => driver.handleHarnessLine(line),
-      onFatal: (fatal) => driver.handleFatal(fatal),
-    });
-  };
-  if (agentId === "codex") {
+  // The hermetic aider session's private home (the arm below opens it),
+  // returned so cli.ts can bind it into the catch and finally that own
+  // its removal — the codex/kimi sessionPrivateHome family.
+  let aiderPrivateHome: SessionPrivateHome | null = null;
+  // The shared per-turn spawn closure (turn-driver-spawn.ts) and the
+  // turn state the CLI's end path finalizes; the seven second-wave
+  // agents reuse the state and the keep-env helper through their own
+  // builder-shaped closure (turn-driver-launch.ts).
+  let turnAgentDriver: ReturnType<typeof createTurnAgentDriver>["driver"] | null = null;
+  // A FRESH second-wave private home (turn-driver-launch.ts opens it),
+  // returned so cli.ts removes it when the session aborts before its
+  // spawn began (review m5). A resumed home is never abandoned, and
+  // every later exit, --final included, is the driver's own end path,
+  // so this never joins cli.ts's sessionPrivateHome.
+  let turnAgentFreshHome: SessionPrivateHome | null = null;
+  const { spawnTurn, turnState, turnSandboxOptions } = buildSessionTurnSpawn({
+    agentId,
+    adapter,
+    options,
+    runLike,
+    override,
+    hermetic,
+    experimentProjectSettings,
+    buildSessionEnvironment,
+    sandboxOptions,
+    callerBlockPaths: agentId === "opencode" ? sandboxBlock : undefined,
+    workdir,
+    requestedAutonomy,
+    shutdownGraceMs,
+    sessionPrivateHome,
+    callerHome: isCallerHarnessHome(sessionPrivateHome) ? sessionPrivateHome : null,
+    driverRef: () => driver,
+  });
+  if (isTurnAgent(agentId)) {
+    let privateHome: SessionPrivateHome | null;
+    ({ driver: turnAgentDriver, privateHome } = createTurnAgentDriver({
+      agent: agentId,
+      adapter,
+      options,
+      runLike,
+      resumeId,
+      model,
+      modelAlias,
+      autonomy,
+      effort,
+      workdir,
+      passthroughEnv,
+      sandboxTrust,
+      sandboxNoNet,
+      sandboxScrubEnv,
+      sandboxBlock,
+      requestedAutonomy,
+      sessionTimeoutMs,
+      turnTimeoutMs,
+      shutdownGraceMs,
+      registryPath,
+      harnessHome,
+      providerBaseUrl,
+      hermetic,
+      callerHome: isCallerHarnessHome(sessionPrivateHome) ? sessionPrivateHome : null,
+      buildSessionEnvironment,
+      turnState,
+      turnSandboxOptions,
+    }));
+    turnAgentFreshHome = resumeId === undefined ? privateHome : null;
+    driver = turnAgentDriver;
+  } else if (agentId === "codex") {
     driver = new CodexSessionDriver({
+      tools: runLike.tools, noToolsCatalog: codexSessionCatalog, projectSettings: experimentProjectSettings,
+      // Record the MCP flag used by the argv and resume guard.
+      playwrightMcp: enablePlaywrightMcp,
+      permissionPolicy: options.permissionPolicy as "default" | "deny" | undefined,
       resumeThreadId: resumeId ?? null,
       autonomy,
       model,
-      // Under an override the session home's config.toml owns model
-      // selection (the run path's never-`-m` rule), so thread/start
-      // and thread/resume carry none; `model` stays the reported
-      // one.
+      modelAlias,
+      // Provider config selects the wire model; the reported model stays explicit.
       wireModel: codexOverride !== null ? null : undefined,
       effort,
       cwd: workdir,
@@ -320,6 +280,7 @@ export function createSessionDriver({
       resumeConversationId: resumeId ?? null,
       autonomy,
       model,
+      modelAlias,
       cwd: workdir,
       hermetic,
       privateHome: sessionPrivateHome,
@@ -338,9 +299,16 @@ export function createSessionDriver({
     });
   } else if (agentId === "opencode") {
     driver = new OpenCodeSessionDriver({
+      permissionPolicy: options.permissionPolicy as "default" | "deny" | undefined,
       resumeSessionId: resumeId ?? null,
       autonomy,
-      model: opencodeWireModel,
+      // The resolved id, reported on session_started and recorded like
+      // every other agent (design §2.3's normalization); the wire id —
+      // provider-prefixed under an override — rides the per-turn argv
+      // through `wireModel` alone.
+      model,
+      wireModel: opencodeWireModel,
+      modelAlias,
       effort,
       cwd: workdir,
       // Plain --hermetic (the mode always pairs with it, the gate in
@@ -356,6 +324,12 @@ export function createSessionDriver({
       passEnv: passthroughEnv,
       authorPrefix: Boolean(options.authorPrefix),
       sessionTimeoutMs,
+      turnTimeoutMs,
+      privateHome: sessionPrivateHome,
+      final: Boolean(options.final) && hermetic,
+      tools: runLike.tools,
+      playwrightMcp: enablePlaywrightMcp,
+      pathEnv: adapter.executionPathEnv(),
       registryPath,
       harnessHome,
       providerBaseUrl,
@@ -366,22 +340,25 @@ export function createSessionDriver({
     });
   } else if (agentId === "kimi") {
     driver = new KimiSessionDriver({
+      tools: options.tools as "none" | "default" | undefined,
+      turnTimeoutMs,
+      playwrightMcp: enablePlaywrightMcp,
+      playwrightPathEnv: adapter.executionPathEnv(),
+      preserveCustomization: !hermetic && sessionPrivateHome !== null,
+      permissionPolicy: options.permissionPolicy as "default" | "deny" | undefined,
       resumeSessionId: resumeId ?? null,
       autonomy,
       model,
-      // Under an override the KIMI_MODEL_* synthesis owns model
-      // selection (the run path's never-`-m` rule), so the
-      // per-turn commands carry none; `model` stays the reported
-      // one.
+      modelAlias,
+      // Provider overrides select the wire model through environment.
       wireModel: kimiWireModel,
       cwd: workdir,
-      // The hermetic home and its source brand home come from the
-      // launcher; the driver carries the env redirect on its own
-      // per-turn argv and settles the home at the first resume hint's
-      // child exit (kimi-driver-io.ts).
       hermetic,
       hermeticSourceHome: kimiSourceBrandHome,
       privateHome: sessionPrivateHome,
+      // The project-settings mode's one per-turn argv difference and its
+      // `project_settings` record (kimi-driver-io.ts).
+      experimentProjectSettings,
       sandboxed: Boolean(options.sandbox),
       sandboxTrust,
       sandboxNoNet,
@@ -400,19 +377,45 @@ export function createSessionDriver({
     // so one is minted here and the per-session history directory is
     // keyed by it (aider-session.ts).
     aiderSessionId = resumeId ?? randomUUID();
+    // Hermetic history lives in a managed session directory. Caller-owned
+    // history stays under the supplied root and never joins cleanup.
+    aiderPrivateHome = hermetic
+      ? openSessionPrivateHome({
+          parent: join(aiderHarnessHome(), ".codemux-hermetic"),
+          sessionId: aiderSessionId,
+          resume: resumeId !== undefined,
+          idPattern: AIDER_SESSION_ID_PATTERN,
+          // Nothing outside the home needs blocking: the home IS the
+          // redirect (HOME rides each turn's argv), and aider reads no
+          // other state outside it.
+          blockedPaths: [],
+        })
+      : null;
     driver = aiderDriver = new AiderSessionDriver({
       sessionId: aiderSessionId,
       resume: resumeId !== undefined,
       autonomy,
       model: aiderWireModel,
+      modelAlias,
       // Under an override the weak model rides the same endpoint
       // (aider's ChatSummary runs through it); without one aider
       // picks its own default, exactly as the run path leaves it.
       weakModel: override !== null ? aiderWireModel : undefined,
+      maxOutputTokens: override?.maxOutputTokens,
       effort,
-      historyPath: aiderSessionHistoryPath(harnessHome, aiderSessionId),
+      permissionPolicy: options.permissionPolicy as "default" | "deny" | undefined,
+      turnTimeoutMs,
+      tools: options.tools as "none" | "default" | undefined,
+      historyPath:
+        isCallerHarnessHome(sessionPrivateHome)
+          ? aiderSessionHistoryPath(join(sessionPrivateHome.dir, ".aider"), aiderSessionId)
+          : aiderPrivateHome !== null
+          ? join(aiderPrivateHome.dir, "history.md")
+          : aiderSessionHistoryPath(harnessHome, aiderSessionId),
       cwd: workdir,
-      hermetic: false,
+      hermetic,
+      hermeticHome: aiderPrivateHome?.dir,
+      callerHome: isCallerHarnessHome(sessionPrivateHome) ? sessionPrivateHome : undefined,
       sandboxed: Boolean(options.sandbox),
       sandboxTrust,
       sandboxNoNet,
@@ -422,7 +425,13 @@ export function createSessionDriver({
       authorPrefix: Boolean(options.authorPrefix),
       sessionTimeoutMs,
       registryPath,
-      harnessHome,
+      // Hermetic records the settled keyed spelling (the home is opened
+      // settled, so it is the directory itself); plain records the brand
+      // home the resume probe compares.
+      harnessHome:
+        aiderPrivateHome !== null
+          ? settledPrivateHomePath(aiderPrivateHome.dir, aiderSessionId)
+          : harnessHome,
       providerBaseUrl,
       spawnTurn,
       // The end path's bound on an in-flight turn spawn (review round
@@ -435,6 +444,7 @@ export function createSessionDriver({
       sessionId: resumeId ?? claudeBuilt.sessionId,
       autonomy,
       model,
+      modelAlias,
       cwd: workdir,
       sandboxed: Boolean(options.sandbox),
       sandboxTrust,
@@ -471,5 +481,15 @@ export function createSessionDriver({
     // command above or matched a branch already.
     throw new Error(`no session driver for '${agentId}'`);
   }
-  return { driver, claudeDriver, agyDriver, aiderDriver, aiderSessionId, turnState };
+  return {
+    driver,
+    claudeDriver,
+    agyDriver,
+    aiderDriver,
+    aiderSessionId,
+    aiderPrivateHome,
+    turnState,
+    turnAgentDriver,
+    turnAgentFreshHome,
+  };
 }

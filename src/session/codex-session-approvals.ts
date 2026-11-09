@@ -28,10 +28,8 @@ export const CODEX_APPROVAL_METHODS: Readonly<Record<string, CodexApprovalKind>>
 
 /**
  * Judge one codex approval request against the session's start-time
- * autonomy (§4.1). No launchable codex session surfaces a request — the
- * default sandboxed shape passes the bypass pair at every level and the
- * unsandboxed shape is high-only, both `never` — so this is dormant
- * defense against harness or config drift. Read-only denies all three
+ * autonomy (§4.1). Sessions above read-only use an asking approval
+ * policy, including those contained by scode. Read-only denies all three
  * kinds; low is caller approval, so everything is allow-able; medium
  * allows workspace patches and denies commands; high's mapping is full
  * access, and requests within it are allow-able. Turn-scoped permission

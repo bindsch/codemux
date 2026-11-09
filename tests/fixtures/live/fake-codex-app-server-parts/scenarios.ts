@@ -34,6 +34,17 @@ export const lateusage = (turnId: string): void => {
   });
 };
 
+export const reroute = (turnId: string): void => {
+  // A mid-turn model/rerouted notification (design P5): the provider
+  // rerouted the turn's model, camelCase toModel — one of the two field
+  // spellings codex 0.166.0's serde definitions carry. The turn then
+  // completes normally; the completion must attribute the rerouted-to
+  // model.
+  agentMessageCompleted(turnId, "msg-reroute", "Rerouted.");
+  notify("model/rerouted", { threadId: THREAD_ID, turnId, toModel: "gpt-5.3-codex" });
+  completeTurn(turnId, "completed");
+};
+
 export const laggard = (turnId: string, scenario: string): void => {
   agentMessageCompleted(turnId, "msg-laggard", "Laggard.");
   completeTurn(turnId, "completed");
@@ -120,12 +131,20 @@ export const askmixed = (turnId: string): void => {
 
 export const askpatch = (turnId: string): void => {
   state.pendingApproval = { id: "appr-2", kind: "patch", callId: "fc-ask", command: "", turnId };
+  // Native 0.166.0 separates the proposed changes from the approval:
+  // item/started carries the patch, requestApproval refers to itemId.
+  notify("item/started", itemParams(turnId, {
+    startedAtMs: Date.now(),
+    item: { type: "fileChange", id: "fc-ask", status: "inProgress",
+      changes: [{ diff: "-a\n+b\n", kind: { type: "update" }, path: join(FAKE_CWD, "file.txt") }] },
+  }));
   serverRequest("item/fileChange/requestApproval", "appr-2", {
     threadId: THREAD_ID,
     turnId,
-    callId: "fc-ask",
-    changes: [{ diff: "-a\n+b\n", kind: { type: "update" }, path: join(FAKE_CWD, "file.txt") }],
-    cwd: FAKE_CWD,
+    itemId: "fc-ask",
+    startedAtMs: Date.now(),
+    reason: "write approval required",
+    grantRoot: null,
   });
 };
 

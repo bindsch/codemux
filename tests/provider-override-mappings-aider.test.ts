@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AiderAdapter } from "../src/adapters/aider.js";
@@ -98,17 +98,31 @@ describe("aider provider override", () => {
     });
   });
 
-  test("both token caps are refused: no channel carries one", () => {
-    // Regression: aider 0.86.2 has no max-tokens flag and codemux writes no
-    // aider config, so a set cap must fail the run rather than ride along
-    // silently uncapped.
+  test("output caps ride private model settings and context caps are refused", () => {
     const request: RunRequest = { agent: "aider", prompt: "p", cwd: cwdOf() } as RunRequest;
     const outputCap = new AiderAdapter({
       ...ZAI,
+      HOME: cwdOf(),
       CODEMUX_AIDER_PROVIDER_MAX_OUTPUT_TOKENS: "4096",
     });
-    expect(() => outputCap.validateRunRequest(request))
-      .toThrow("CODEMUX_AIDER_PROVIDER_MAX_OUTPUT_TOKENS cannot be honored");
+    expect(() => outputCap.validateRunRequest(request)).not.toThrow();
+    const context = outputCap.prepareRun(request);
+    try {
+      const command = outputCap.buildRunCommand(request, context);
+      const path = command[command.indexOf("--model-settings-file") + 1]!;
+      expect(JSON.parse(readFileSync(path, "utf8"))).toEqual([{
+        name: "aider/extra_params", extra_params: { max_tokens: 4096 },
+      }]);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(command.join(" ")).not.toContain(ZAI.CODEMUX_AIDER_PROVIDER_API_KEY);
+      expect(outputCap.getRunEnv(request).OPENAI_API_KEY).toBe(ZAI.CODEMUX_AIDER_PROVIDER_API_KEY);
+    } finally { outputCap.cleanupRunSync(context); }
+    expect(existsSync(context.aiderRunFiles!.home)).toBe(false);
+    for (const operation of [
+      () => outputCap.getTuiEnv(),
+      () => outputCap.validateTuiRequest(undefined, request.cwd),
+      () => outputCap.buildTuiCommand(),
+    ]) expect(operation).toThrow("output caps require a prepared headless run");
     const contextCap = new AiderAdapter({
       ...ZAI,
       CODEMUX_AIDER_PROVIDER_MAX_CONTEXT_TOKENS: "32768",

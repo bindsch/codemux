@@ -78,6 +78,10 @@ export class ExperimentHttpRelay {
   get runId(): string { return this.recording.runId; }
   get failureError(): ExperimentFailure | null { return this.failure ?? null; }
   get failureCode(): ExperimentFailureCode | null { return this.failure?.code ?? null; }
+  /** A verified run the launcher still fails (an empty answer): run_end
+   * carries it without turning it into a relay failure. */
+  private outcome?: ExperimentFailure;
+  noteRunOutcome(error: ExperimentFailure): void { if (!this.closed) this.outcome ??= error; }
   get recordingPath(): string { return this.recording.recordingPath; }
   get catalogUrl(): string | undefined {
     return this.catalog && this.endpoint ? new URL(`/catalog/${this.catalog.nonce}`, this.endpoint).href : undefined;
@@ -468,8 +472,9 @@ export class ExperimentHttpRelay {
 
   private closeRecording(error: string | null): void {
     if (this.closed) return;
+    const outcome = error === null ? this.outcome : undefined;
     try { this.recording.close({ tool_calls: this.calls.length, model_tool_errors: this.modelToolErrors, calls_delivered: this.callsDelivered,
-      error, code: error ? this.failureCode ?? ExperimentFailureCode.Protocol : null }); }
+      error: error ?? outcome?.message ?? null, code: error ? this.failureCode ?? ExperimentFailureCode.Protocol : outcome?.code ?? null }); }
     finally { this.closed = true; this.dispatches.clear(); }
   }
 }

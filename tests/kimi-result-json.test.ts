@@ -157,7 +157,7 @@ describe("Kimi result-json", () => {
       expect(result.success).toBe(true);
       const envelope = JSON.parse(result.stdout);
       expect(envelope).toEqual({ reply: "Working\n\nA\nB\n", events, session_id: KIMI_STREAM_SESSION, codemux: {
-        agent: "kimi", model: "test-model", served_model: null, labels: { wf: "synthetic" }, session_id: null, recording: null, failure_code: null,
+        agent: "kimi", model: "test-model", served_model: null, model_alias: null, labels: { wf: "synthetic" }, session_id: null, recording: null, failure_code: null,
         usage: { input_tokens: 13, cached_input_tokens: 28, output_tokens: 10, total_tokens: 51, cost_usd: null },
       } });
       expect(f.context.kimiWireLogPath).toBe(f.path);

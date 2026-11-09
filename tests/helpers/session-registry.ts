@@ -27,6 +27,7 @@ export function craftEntry(overrides: Partial<SessionRecord> = {}): SessionRecor
     project_settings: false,
     harness_home: "/definitely/not/the/registry/.claude",
     model: null,
+    model_alias: null,
     autonomy: "low",
     sandboxed: false,
     sandbox_trust: "standard",

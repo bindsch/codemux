@@ -55,6 +55,20 @@ describe("claudeSessionAutonomyFlags", () => {
 });
 
 describe("buildClaudeSessionCommand", () => {
+  for (const agent of ["claude", "zai"] as const) {
+    for (const tools of ["none", "default"] as const) {
+      test(`${agent} reapplies ${tools} tools to fresh and resumed commands`, () => {
+        for (const resumeId of [undefined, FLOOR_ID]) {
+          const { argv } = buildClaudeSessionCommand({
+            agent, tools, resumeId, pathEnv: "", autonomy: "high", cwd: "/tmp/launch",
+          });
+          expect(argv[argv.indexOf("--tools") + 1]).toBe(tools === "none" ? "" : "default");
+          if (resumeId !== undefined) expect(argv.indexOf("--tools")).toBeGreaterThan(argv.indexOf("--resume"));
+        }
+      });
+    }
+  }
+
   test("fresh spawn carries the carrier, verbose, replay, and the codemux session id", () => {
     const { argv, sessionId } = buildClaudeSessionCommand({
       agent: "claude",

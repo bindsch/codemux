@@ -16,6 +16,9 @@ import {
 } from "../scripts/live-gate.js";
 import { ROOT, cleanupLoggedInHomes, factsFor, fixtureDirectory, loggedInEnv, reportInput } from "./helpers/live-gate.js";
 import { MARKER } from "./fixtures/experiment-mcp.js";
+import { PARITY } from "../src/parity/index.js";
+import { PROBE_FEATURE } from "../src/parity/probe-features.js";
+import { sessionCanaryLaunchCount } from "../src/hermetic-session-canary-home.js";
 
 // Every runProbes call below passes loggedInEnv(): the gate reads the login
 // state before the matrix (audit D8), and the operator's own stores would
@@ -52,8 +55,7 @@ test("live gate builds the documented command for every probe letter", async () 
   const fixture = loggedInEnv({
     LIVE_GATE_PROVIDER_OVERRIDE: "1",
     // The preflight requires every harness that runs H to carry its full
-    // override environment (claude and opencode here; cursor has no
-    // provider-override capability).
+    // override environment. Claude is the only selected H harness.
     CODEMUX_CLAUDE_PROVIDER_BASE_URL: "http://127.0.0.1:8011/v1",
     CODEMUX_CLAUDE_PROVIDER_API_KEY: "sk-test",
     CODEMUX_CLAUDE_PROVIDER_MODEL: "glm-5.3",
@@ -65,7 +67,7 @@ test("live gate builds the documented command for every probe letter", async () 
   const experimentSpecs = new Map<string, object>();
   let experimentVerify: ((captured: { exit: number | null; stdout: string }) => string | null) | undefined;
   let experimentResults: { bare: string | null; header: string | null } | undefined;
-  const letters: ProbeLetter[] = ["A", "B", "C", "D", "E", "F", "G", "H", "K"];
+  const letters: ProbeLetter[] = ["A", "B", "C", "D", "E", "F", "G", "H", "I2", "K"];
   try {
     const rows = await runProbes(
       [factsFor("claude"), factsFor("opencode"), factsFor("cursor")],
@@ -100,10 +102,22 @@ test("live gate builds the documented command for every probe letter", async () 
       fixture.env,
     );
     const claudeCommands = calls.filter((call) => call.agent === "claude").map((call) => call.command.join(" "));
-    expect(claudeCommands.length).toBe(8);
     // Probes C and H both run with --result-json (H asserts the override on
     // the envelope's model).
     expect(claudeCommands.filter((command) => command.includes("--result-json")).length).toBe(2);
+    // Probe E's plain form: --tools none at read-only, no --hermetic —
+    // claude's tools control does not need a hermetic run (parity pass).
+    // Probe G also carries --tools none, so E is the call without the
+    // experiment flag.
+    const claudeTools = calls.find(
+      (call) => call.agent === "claude" && call.command.includes("--tools") && !call.command.includes("--experiment-mcp")
+    )!;
+    expect(claudeTools.command.join(" ")).toContain("--tools none");
+    expect(claudeTools.command).not.toContain("--hermetic");
+    // Probe I2: --effort low on a plain read-only run.
+    const claudeEffort = calls.find((call) => call.agent === "claude" && call.command.includes("--effort"))!;
+    expect(claudeEffort.command[claudeEffort.command.indexOf("--effort") + 1]).toBe("low");
+    expect(claudeEffort.command).not.toContain("-m");
     const check = calls.find((call) => call.agent === "claude" && call.command[1] === "check" && !call.command.includes("--session"))!;
     expect(check.command).toContain("--hermetic");
     expect(check.command).toContain("--pass-env");
@@ -143,17 +157,28 @@ test("live gate builds the documented command for every probe letter", async () 
     const override = calls.find((call) => call.agent === "claude" && /\bCODEMUX_CLAUDE_PROVIDER_BASE_URL/.test(call.command.join(" ")))!;
     expect(override.command.join(" ")).toContain("EXTRA_NAME");
     const opencode = calls.filter((call) => call.agent === "opencode");
-    // OpenCode runs every letter except H: its wire carries no served-model
-    // evidence, so probe H reports UNSUPPORTED (review round 14, edges 2).
-    expect(opencode.length).toBe(7);
-    expect(opencode.some((call) => call.command.includes("--tools") && call.command.includes("none"))).toBe(true);
-    const cursor = calls.filter((call) => call.agent === "cursor");
-    expect(cursor.length).toBe(2);
+    // OpenCode's --tools none works only inside a hermetic run, so its E
+    // cell is the one probe that keeps the --hermetic spelling.
+    const opencodeTools = opencode.find((call) => call.command.includes("--tools"))!;
+    expect(opencodeTools.command.join(" ")).toContain("--hermetic --tools none");
     expect(rows.map((row) => row.agent)).toEqual(["claude", "opencode", "cursor"]);
-    for (const letter of ["C", "D", "E", "F", "G", "H", "K"] as const) {
-      expect(rows[2]!.results[letter]).toMatchObject({ status: "UNSUPPORTED" });
+    const declared = rows.map((row) => ({ agent: row.agent,
+      supported: letters.filter((letter) => {
+        const feature = PROBE_FEATURE[letter];
+        return feature === null || PARITY[row.agent][feature].state === "supported";
+      }),
+    }));
+    expect(rows.map(({ agent }) => [agent, calls.filter((call) => call.agent === agent).length]))
+      .toEqual(declared.map(({ agent, supported }) => [agent, supported.length]));
+    for (const row of rows) {
+      for (const letter of letters) {
+        expect(row.results[letter]?.status, `${row.agent} ${letter}`)
+          .toBe(declared.find(({ agent }) => agent === row.agent)!.supported.includes(letter) ? "PASS" : "UNSUPPORTED");
+      }
     }
     expect(rows[2]!.results.A!.status).toBe("PASS");
+    expect(rows[2]!.results.C!.status).toBe("PASS");
+    expect(rows[2]!.results.E!.status).toBe("PASS");
   } finally {
     rmSync(reportDirectory, { recursive: true, force: true });
   }
@@ -420,7 +445,8 @@ test("the hermetic check's outer deadline covers both of its launches (round 18,
   // control — each with the full --timeout (src/check-command.ts), so D
   // needs 2 * timeout + 30 while every single-launch probe keeps
   // timeout + 30. The session form (K) is three sequential session
-  // launches — hermetic, control, resumed — so it needs 3 * timeout + 30.
+  // launches — hermetic, control, resumed — so it needs 3 * timeout + 30,
+  // and 5 * timeout + 30 where the caller-owned home canary also runs.
   const reportDirectory = fixtureDirectory();
   const allowances: { letter: string; timeout: number }[] = [];
   const runner = {
@@ -439,7 +465,8 @@ test("the hermetic check's outer deadline covers both of its launches (round 18,
     expect(allowances).toEqual([
       { letter: "A", timeout: 42 },
       { letter: "D", timeout: 54 },
-      { letter: "K", timeout: 66 },
+      // agy also starts and resumes a caller-owned home: five launches.
+      { letter: "K", timeout: sessionCanaryLaunchCount("agy") * 12 + 30 },
     ]);
     expect(rows[0]!.results.A!.status).toBe("PASS");
     expect(rows[0]!.results.D!.status).toBe("PASS");

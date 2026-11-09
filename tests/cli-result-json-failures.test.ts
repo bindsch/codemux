@@ -134,10 +134,12 @@ describe("CLI - result envelope failures", () => {
   });
 
   test("a harness that cannot report usage still refuses the flag", async () => {
-    const fake = createFakeBinaryEnv({ droid: "exit 0" });
+    // aider has no result envelope (droid gained one in the 2.0.0
+    // parity pass).
+    const fake = createFakeBinaryEnv({ aider: "exit 0" });
     try {
       const { stderr, exitCode } = await runCli(
-        ["run", "-a", "droid", "--no-sandbox", "--auto", "high", "--result-json", "-p", "test"],
+        ["run", "-a", "aider", "--no-sandbox", "--auto", "high", "--result-json", "-p", "test"],
         fake.env
       );
       expect(exitCode).not.toBe(0);
@@ -193,9 +195,10 @@ describe("CLI - result envelope failures", () => {
       expect(exitCode).toBe(1);
       const envelope = JSON.parse(stdout);
       // The partial message never poses as the result, and no session is
-      // promised (the run launched with --ephemeral).
-      expect(envelope.result).toBeNull();
-      expect(envelope.codemux.session_id).toBeNull();
+      // promised (the run launched with --ephemeral). An exit-0 process
+      // with no answer also carries the empty-answer marks (src/result-empty.ts).
+      expect(envelope.result).toBe("");
+      expect(envelope.codemux).toMatchObject({ session_id: null, empty_answer: true, finish: "empty-answer" });
       expect(stderr).toContain("Usage limit reached");
     } finally {
       fake.cleanup();
@@ -217,7 +220,8 @@ describe("CLI - result envelope failures", () => {
         fake.env
       );
       expect(exitCode).toBe(1);
-      expect(stdout).toBe("{}\n");
+      // The failure envelope names the empty answer; it is never a success.
+      expect(JSON.parse(stdout)).toMatchObject({ result: "", codemux: { empty_answer: true, finish: "empty-answer" } });
       expect(stderr).toContain("printed no result envelope");
     } finally {
       fake.cleanup();
@@ -275,18 +279,19 @@ describe("CLI - result envelope failures", () => {
       );
       expect(exitCode).toBe(1);
       const envelope = JSON.parse(stdout);
-      expect(envelope.result).toBeNull();
-      expect(envelope.codemux.session_id).toBeNull();
+      expect(envelope.result).toBe("");
+      expect(envelope.codemux).toMatchObject({ session_id: null, empty_answer: true });
       expect(stderr).toContain("turn.completed");
     } finally {
       fake.cleanup();
     }
   });
 
-  test("an empty codex stream with exit 0 is a parse failure, not a null envelope", async () => {
+  test("an empty codex stream with exit 0 is a parse failure and an empty-answer failure", async () => {
     // No events at all is not the event stream the launch asked for; the
-    // strict grammar opens every stream with thread.started. No envelope is
-    // emitted, so automation cannot read a null-everything success.
+    // strict grammar opens every stream with thread.started. The only
+    // envelope is the empty-answer failure (src/result-empty.ts), so
+    // automation cannot read a null-everything success.
     const fake = createFakeBinaryEnv({
       codex: `${codexVersionPreamble}cat >/dev/null; exit 0`,
     });
@@ -299,7 +304,7 @@ describe("CLI - result envelope failures", () => {
         fake.env
       );
       expect(exitCode).toBe(1);
-      expect(stdout).toBe("");
+      expect(JSON.parse(stdout).codemux).toMatchObject({ empty_answer: true, finish: "empty-answer" });
       expect(stderr).toContain("cannot parse");
     } finally {
       fake.cleanup();

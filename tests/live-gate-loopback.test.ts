@@ -29,12 +29,16 @@ import { cleanupLoggedInHomes, factsFor, fixtureDirectory, loggedInEnv } from ".
 
 afterAll(cleanupLoggedInHomes);
 
-/** A minimal valid claude result envelope with the model under test. */
-const aliasEnvelope = (model: string | null): string =>
+/** A minimal valid result envelope for one harness, with the model under
+ * test. Every capture's verifier checks the envelope's codemux.agent
+ * against the probed harness, so the fake provider's answer must name
+ * the harness the probe ran (droid reports result JSON since the 2.0.0
+ * parity pass). */
+const aliasEnvelope = (agent: string, model: string | null): string =>
   `${JSON.stringify({
     result: "OK\n",
     codemux: {
-      agent: "claude", model, served_model: null, labels: null,
+      agent, model, served_model: null, labels: null,
       usage: { input_tokens: null, output_tokens: null, cached_input_tokens: null, total_tokens: null, cost_usd: null },
       session_id: null, recording: null, failure_code: null,
     },
@@ -55,15 +59,19 @@ test("modelAliasFor prefers worker, falls back to the first mapped alias, and re
   expect(modelAliasFor("claude", configWith({ worker: { zai: "zai-worker" } }))).toBeNull();
 });
 
-test("probe I carries -m and --effort, and verifies the alias target where the harness reports result JSON (audit D7)", async () => {
+test("probe I carries -m alone, I2 carries --effort alone, and I verifies the alias target where the harness reports result JSON (audit D7)", async () => {
   const fixture = loggedInEnv();
   const reportDirectory = fixtureDirectory();
   const commands: { agent: string; command: string[] }[] = [];
-  let claudeVerifier: ((captured: { exit: number | null; stdout: string }) => string | null) | undefined;
+  // One verifier per harness: every result-JSON harness (claude and
+  // droid) now goes through capture, and the last one in would win a
+  // single variable — the claude check would then judge droid's
+  // envelope and fault the agent field (the alias would go unproven).
+  const verifiers = new Map<string, (captured: { exit: number | null; stdout: string }) => string | null>();
   try {
     const rows = await runProbes(
       [factsFor("claude"), factsFor("droid"), factsFor("agy")],
-      parseOptions(["--probe", "I", "--timeout", "10"], ""),
+      parseOptions(["--probe", "I,I2", "--timeout", "10"], ""),
       {
         async run(command) {
           commands.push({ agent: command[3]!, command });
@@ -71,29 +79,45 @@ test("probe I carries -m and --effort, and verifies the alias target where the h
         },
         async capture(command, verify) {
           commands.push({ agent: command[3]!, command });
-          claudeVerifier = verify;
+          verifiers.set(command[3]!, verify);
           return { status: "PASS", seconds: 0, stderr: "" };
         },
       },
       reportDirectory, fixture.env,
       configWith({ worker: { claude: "claude-worker", droid: "droid-worker" } }));
-    // claude reports result JSON: the envelope must name the alias target.
-    const claude = commands.find((call) => call.agent === "claude")!.command;
-    expect(claude).toContain("--result-json");
-    expect(claude[claude.indexOf("-m") + 1]).toBe("worker");
-    expect(claude[claude.indexOf("--effort") + 1]).toBe("low");
-    expect(claudeVerifier!({ exit: 0, stdout: aliasEnvelope("claude-worker") })).toBeNull();
-    expect(claudeVerifier!({ exit: 0, stdout: aliasEnvelope("some-other-model") }))
+    // claude and droid both report result JSON now (droid gained its
+    // envelope in the 2.0.0 parity pass): each envelope must name its
+    // own harness and the alias target.
+    const claudeI = commands.find((call) => call.agent === "claude" && call.command.includes("-m"))!.command;
+    expect(claudeI).toContain("--result-json");
+    expect(claudeI[claudeI.indexOf("-m") + 1]).toBe("worker");
+    expect(claudeI).not.toContain("--effort");
+    expect(verifiers.get("claude")!({ exit: 0, stdout: aliasEnvelope("claude", "claude-worker") })).toBeNull();
+    expect(verifiers.get("claude")!({ exit: 0, stdout: aliasEnvelope("claude", "some-other-model") }))
       .toContain('codemux.model is "some-other-model", not the alias\'s target "claude-worker"');
-    // droid declares model and effort but no result JSON: exact output, no
-    // --result-json flag.
-    const droid = commands.find((call) => call.agent === "droid")!.command;
-    expect(droid).not.toContain("--result-json");
-    expect(droid[droid.indexOf("-m") + 1]).toBe("worker");
-    expect(droid[droid.indexOf("--effort") + 1]).toBe("low");
-    // agy declares the pair but no alias maps it: SKIP, nothing spawned.
-    expect(commands.some((call) => call.agent === "agy")).toBe(false);
+    // The envelope's agent field is judged too: a droid envelope handed
+    // to claude's verifier is refused, so the alias proof cannot be
+    // satisfied by the wrong harness's fixture.
+    expect(verifiers.get("claude")!({ exit: 0, stdout: aliasEnvelope("droid", "claude-worker") }))
+      .toContain('codemux.agent is "droid", not the probed claude');
+    const droidI = commands.find((call) => call.agent === "droid" && call.command.includes("-m"))!.command;
+    expect(droidI).toContain("--result-json");
+    expect(droidI[droidI.indexOf("-m") + 1]).toBe("worker");
+    expect(droidI).not.toContain("--effort");
+    expect(verifiers.get("droid")!({ exit: 0, stdout: aliasEnvelope("droid", "droid-worker") })).toBeNull();
+    // I2 carries --effort low alone, on the effort-declaring harnesses;
+    // agy declares effort, so its I2 runs even though no alias maps it.
+    for (const agent of ["claude", "droid", "agy"]) {
+      const effort = commands.find((call) => call.agent === agent && call.command.includes("--effort"))!.command;
+      expect(effort[effort.indexOf("--effort") + 1]).toBe("low");
+      expect(effort).not.toContain("-m");
+      expect(effort).not.toContain("--result-json");
+    }
+    // agy declares the model pair but no alias maps it: I SKIPs, nothing
+    // spawned with -m; I2 still ran above.
+    expect(commands.some((call) => call.agent === "agy" && call.command.includes("-m"))).toBe(false);
     expect(rows[2]!.results.I).toMatchObject({ status: "SKIP", note: "no model alias is configured for agy" });
+    expect(rows[2]!.results.I2).toMatchObject({ status: "PASS" });
   } finally {
     rmSync(reportDirectory, { recursive: true, force: true });
   }
@@ -128,16 +152,16 @@ test("an alias target that is the harness's own short name is named by the full 
   expect(modelNamesTarget("sonnet", "sonnet")).toBe(true);
   expect(modelNamesTarget("claude-3-5-sonnet-20241022", "sonnet")).toBe(true);
   expect(modelNamesTarget("claude-fable-5-1", "fable")).toBe(true);
-  expect(verifyAliasEnvelope(aliasEnvelope("claude-sonnet-5-5"), "claude", "sonnet")).toBeNull();
-  expect(verifyAliasEnvelope(aliasEnvelope("claude-opus-5-5"), "claude", "sonnet"))
+  expect(verifyAliasEnvelope(aliasEnvelope("claude", "claude-sonnet-5-5"), "claude", "sonnet")).toBeNull();
+  expect(verifyAliasEnvelope(aliasEnvelope("claude", "claude-opus-5-5"), "claude", "sonnet"))
     .toContain('codemux.model is "claude-opus-5-5", not the alias\'s target "sonnet"');
 });
 
 test("verifyAliasEnvelope keeps probe C's checks and adds the model assertion", () => {
-  expect(verifyAliasEnvelope(aliasEnvelope("claude-worker"), "claude", "claude-worker")).toBeNull();
+  expect(verifyAliasEnvelope(aliasEnvelope("claude", "claude-worker"), "claude", "claude-worker")).toBeNull();
   // A non-JSON stdout fails probe C's checks before the model is read.
   expect(verifyAliasEnvelope("OK\n", "claude", "claude-worker")).toContain("does not parse");
-  expect(verifyAliasEnvelope(aliasEnvelope(null), "claude", "claude-worker"))
+  expect(verifyAliasEnvelope(aliasEnvelope("claude", null), "claude", "claude-worker"))
     .toContain('codemux.model is null, not the alias\'s target "claude-worker"');
 });
 

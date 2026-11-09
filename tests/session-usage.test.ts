@@ -314,6 +314,7 @@ describe("usage arithmetic", () => {
         {
           agent: "codex",
           model: null,
+          modelAlias: null,
           provider: "default",
           autonomy: "low",
           hermetic: false,

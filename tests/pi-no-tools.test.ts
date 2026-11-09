@@ -7,20 +7,22 @@ import { PiAdapter } from "../src/adapters/pi.js";
 // Pi's `--tools none` mapping is claimed: verified live at 0.85.1 on
 // 2026-09-17 through the provider override (GLM-5.3 via Z.AI) — under
 // `--no-tools` neither capability probe could produce its secret while
-// plain runs produced both, and the non-hermetic control probe leaked the
-// planted code word, which grounds the hermetic refusal (the global
-// `~/.pi/SYSTEM.md` system-prompt channel has no switch; docs/isolation.md).
+// plain runs produced both. The same probe showed the non-hermetic
+// control run leaking the planted code word through the global
+// `~/.pi/SYSTEM.md` system-prompt channel; --hermetic closes it by
+// relocating the agent directory (a private one holds no SYSTEM.md),
+// so the mapping is claimed alongside --tools none.
 
 describe("tools none: pi", () => {
   const adapter = new PiAdapter();
   const noTools = { agent: "pi" as const, prompt: "p", tools: "none" as const };
   const head = ["pi", "--print", "--no-session", "--no-approve"];
 
-  test("pi refuses --hermetic; --tools none is claimed (verified live)", () => {
+  test("--hermetic is claimed; --tools none is claimed (verified live)", () => {
     const cwd = mkdtempSync(join(tmpdir(), "codemux-pi-refuse-"));
     try {
       mkdirSync(join(cwd, ".git"));
-      expect(adapter.capabilities().supportsHermetic ?? false).toBe(false);
+      expect(adapter.capabilities().supportsHermetic ?? false).toBe(true);
       expect(adapter.capabilities().supportsToolSelection ?? false).toBe(true);
       expect(() => adapter.validateRunRequest({ ...noTools, cwd }))
         .not.toThrow();
@@ -29,7 +31,7 @@ describe("tools none: pi", () => {
         prompt: "p",
         cwd,
         hermetic: true,
-      })).toThrow("no verified hermetic mode");
+      })).not.toThrow();
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { devNull, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -25,11 +25,12 @@ describe("AiderAdapter", () => {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
       effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-      // Refused: the 2026-09-17 check passed, but no flag closes aider's
-      // own config layers, and a live 2026-10-04 probe leaked through
-      // `.aider.conf.yml` (docs/isolation.md names the channels).
-      supportsHermetic: false,
+      // Hermetic since the parity round: a private HOME plus the
+      // clean-working-directory rule close the config layers the pinned
+      // flags never could (docs/isolation.md names the channels).
+      supportsHermetic: true,
       supportsProviderOverride: true,
+      supportsToolSelection: true,
     });
   });
 
@@ -80,13 +81,14 @@ describe("AiderAdapter", () => {
   });
 
   test("builds run commands without confusing model and message flags", () => {
-    expect(adapter.buildRunCommand({
+    const command = adapter.buildRunCommand({
       agent: "aider",
       prompt: "fix the tests",
       model: "openai/gpt-5.4",
       autonomy: "read-only",
       effort: "high",
-    })).toEqual([
+    });
+    expect(command).toEqual([
       "aider",
       "--config",
       AIDER_EMPTY_CONFIG_PATH,
@@ -109,12 +111,16 @@ describe("AiderAdapter", () => {
       "--no-show-release-notes",
       "--no-show-model-warnings",
       "--disable-playwright",
+      "--no-stream",
+      "--analytics-log",
+      command[command.indexOf("--analytics-log") + 1]!,
       "--model",
       "openai/gpt-5.4",
       "--dry-run",
       "--reasoning-effort",
       "high",
-      "--message=fix the tests",
+      "--message-file",
+      command[command.indexOf("--message-file") + 1]!,
     ]);
   });
 
@@ -157,32 +163,83 @@ describe("AiderAdapter", () => {
       ]);
   });
 
-  test("keeps leading-dash prompts inside the message option", () => {
-    expect(adapter.buildRunCommand({
+  test("keeps leading-dash prompts out of argv", () => {
+    const command = adapter.buildRunCommand({
       agent: "aider",
       prompt: "--dangerous-looking-prompt",
-    })).toContain("--message=--dangerous-looking-prompt");
+    });
+    expect(command).toContain("--message-file");
+    expect(command.join(" ")).not.toContain("dangerous-looking-prompt");
   });
 
-  test("declines headless prompts and retains the argv size guard", () => {
+  test("declines headless confirmations while prompt bytes use a private file", () => {
     expect(adapter.getStdinInput({ agent: "aider", prompt: "test" }))
       .toStartWith("n\nn\n");
-    // Round 153: the shared validator owns the argv rules through
-    // promptInArgv — aider's stdin carries the canned declines while the
-    // prompt itself rides `--message=` argv — so a NUL in the prompt is a
-    // usage refusal (the marker the CLI maps to exit 64), not the
-    // spawn-time "invalid command" it used to become.
-    let refusal: unknown;
-    try {
-      adapter.validateRunRequest({ agent: "aider", prompt: "x\0y" });
-    } catch (error) {
-      refusal = error;
-    }
-    expect(refusal).toBeInstanceOf(UsageRefusalError);
-    expect((refusal as Error).message).toContain("NUL");
+    expect(adapter.promptInArgv({ agent: "aider", prompt: "x\0y" })).toBe(false);
+    expect(() => adapter.validateRunRequest({ agent: "aider", prompt: "x\0y" })).toThrow("NUL");
     expect(() => adapter.validateRunRequest({
       agent: "aider",
       prompt: "x".repeat(40_000),
-    })).toThrow("passes prompts in argv");
+    })).not.toThrow();
+  });
+});
+
+describe("AiderAdapter run parity", () => {
+  test("a hermetic run routes aider through a private HOME with the map disabled", () => {
+    const home = mkdtempSync(join(tmpdir(), "aider-parity-"));
+    try {
+      const adapter = new AiderAdapter({ HOME: home });
+      const context = adapter.prepareRun({ agent: "aider", prompt: "p", hermetic: true, cwd: home });
+      const cmd = adapter.buildRunCommand({ agent: "aider", prompt: "p", hermetic: true, cwd: home }, context);
+      expect(cmd[0]).toBe("env");
+      expect(cmd[1]!.startsWith(`HOME=${join(home, ".aider", ".codemux-hermetic", "run-")}`)).toBe(true);
+      expect(cmd[2]).toBe("aider");
+      expect(cmd).toContain("--map-tokens");
+      expect(cmd[cmd.indexOf("--map-tokens") + 1]).toBe("0");
+      // The per-run chat history file, not /dev/null: hermetic is where the
+      // answer extraction reads it back.
+      expect(cmd).toContain(context.aiderHistoryFile!.path);
+      adapter.cleanupRunSync(context);
+      expect(existsSync(context.aiderHistoryFile!.path)).toBe(false);
+      expect(existsSync(context.aiderHermeticHome!.home)).toBe(false);
+      // The static preview names no real directory.
+      const preview = adapter.buildRunCommand({ agent: "aider", prompt: "p", hermetic: true, cwd: home });
+      expect(preview[1]).toBe(`HOME=${join(home, ".aider", ".codemux-hermetic", "unprepared")}`);
+      expect(preview).toContain(devNull);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a hermetic run requires an explicit clean --cwd across aider's four config names", () => {
+    const home = mkdtempSync(join(tmpdir(), "aider-parity-"));
+    const work = mkdtempSync(join(tmpdir(), "aider-work-"));
+    const adapter = new AiderAdapter({ HOME: home });
+    try {
+      expect(() =>
+        adapter.validateRunRequest({ agent: "aider", prompt: "p", hermetic: true })
+      ).toThrow(/requires an explicit --cwd/);
+      for (const name of [".aider.conf.yml", ".aider.model.settings.yml", ".aider.model.metadata.json", ".env"]) {
+        writeFileSync(join(work, name), "x");
+        // Every name is refused before launch. .aider.model.settings.yml is
+        // double-guarded: the repository executable-configuration check
+        // fires first, the clean-cwd walk covers it on hermetic runs that
+        // pass that gate (the adapter-level names are the walk's input).
+        expect(() =>
+          adapter.validateRunRequest({ agent: "aider", prompt: "p", hermetic: true, cwd: work })
+        ).toThrow(/refuses repository executable configuration|clean working directory/);
+        rmSync(join(work, name));
+      }
+      expect(() =>
+        adapter.validateRunRequest({ agent: "aider", prompt: "p", hermetic: true, cwd: work })
+      ).not.toThrow();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  test("--result-json stays refused: aider 0.86.2 has no JSON output mode", () => {
+    expect(new AiderAdapter().capabilities().supportsResultJson ?? false).toBe(false);
   });
 });

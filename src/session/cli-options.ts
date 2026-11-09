@@ -3,38 +3,46 @@
  * them. The action stays behind in cli.ts; only the registration moved. */
 
 import type { Command } from "commander";
+import { agentsSupporting } from "../parity/index.js";
+import type { SessionFeature } from "../parity/features.js";
+import { SESSION_AGENTS } from "./cli-agents.js";
+import { AGENT_IDS } from "../types.js";
+
+/** Help lists come from the declarations, so the text cannot drift from them. */
+const agents = (feature: SessionFeature): string => agentsSupporting(feature).join(", ");
 
 export function registerSessionOptions(command: Command, defaultAgent: string): void {
   command
-    .option("-a, --agent <agent>", "Session agent: claude, zai, codex, agy, opencode, aider, kimi", defaultAgent)
+    .option("-a, --agent <agent>", `Session agent: ${AGENT_IDS.filter((id) => SESSION_AGENTS[id] !== undefined).join(", ")}`, defaultAgent)
     .option("-m, --model <model>", "Model to use (supports aliases)")
     .option("--resume <id>", "Resume a recorded session id")
+    .option("--harness-home <dir>", "Persistent caller-owned private harness home; absolute path, incompatible with --hermetic")
     .option("--auto <level>", "Autonomy level: read-only, low, medium, high", "read-only")
     .option("--effort <level>", "Reasoning effort: none, minimal, low, medium, high, xhigh, max, ultra")
     .option("--cwd <path>", "Working directory")
     .option("--timeout <seconds>", "Whole-session cap: >0 to 86400 seconds; fractions rounded up to milliseconds (default: none)")
-    .option("--turn-timeout <seconds>", "Per-turn cap (claude/zai/codex); first expiry interrupts, second expiry on the same turn ends the session (default: none)")
+    .option("--turn-timeout <seconds>", "Per-turn cap for agents with interruption support; interrupts the current turn (default: none)")
     .option("--permission-timeout <seconds>", "How long a permission request waits before codemux answers deny", "300")
     .option("--shutdown-grace <seconds>", "How long the harness gets to answer the end before SIGTERM, and again to exit before the kill", "10")
     .option("--no-author-prefix", "Do not prefix harness-bound text with [author]")
-    .option("--tools <selection>", "Tool selection (refused for sessions in this release)")
-    .option("--enable-playwright-mcp", "Enable the local Playwright MCP (claude/zai; requires --sandbox and --auto low)")
+    .option("--tools <selection>", `Tool selection: default or none (${agents("session.tools")}; opencode none requires --hermetic)`)
+    .option("--enable-playwright-mcp", `Enable the local Playwright MCP (${agents("session.playwright-mcp")}; requires --sandbox; autonomy rules: docs/sessions.md)`)
     .option("--pass-env <names>", "Pass comma-separated sensitive environment names")
     .option(
       "--hermetic",
-      "Hermetic session: no operator instructions, skills, hooks, or MCP servers load, and the harness keeps its state in a per-session private home (claude, zai, codex, kimi, opencode, agy)"
+      `Hermetic session: no operator instructions, skills, hooks, or MCP servers load, and the harness keeps its state in a per-session private home (${agents("session.hermetic")})`
     )
     .option(
       "--experiment-project-settings",
-      "Run the session under the repository's own settings in a private per-session config directory (claude/zai; opencode keeps the project's config; requires --hermetic and scode)"
+      `Run the session under the repository's own settings in a private per-session config directory (${agents("session.experiment-project-settings")}; requires --hermetic and scode)`
     )
     .option(
       "--final",
-      "With --hermetic: remove the session's private home — its transcript with it — when this command ends"
+      "With --hermetic: remove the session's private home when this command ends; caller-owned --harness-home directories stay"
     )
     .option(
       "--permission-policy <policy>",
-      "Permission policy: 'deny' answers every permission request with an immediate deny; 'default' (the default) leaves requests to the caller (claude/zai)"
+      "Permission policy: 'deny' denies approval requests or uses native deny rules (hermetic for Kimi/OpenCode/agy); 'default' uses the agent's ordinary policy"
     )
     .option("-s, --sandbox", "Run in sandbox (default; requires scode)", true)
     .option("--no-sandbox", "Run without the scode boundary (autonomy below high is unavailable)")
@@ -49,7 +57,7 @@ export function registerSessionOptions(command: Command, defaultAgent: string): 
     )
     .option(
       "--print-sandbox",
-      "Print the scode argv the session's long-lived child would exec, one argument per line (controls escaped, a newline prints as \\n), and exit 0 without starting a session; requires --sandbox"
+      "Print scode argv for the session child, or a representative per-turn command for Aider/OpenCode, one argument per line (controls escaped, a newline prints as \\n), and exit 0 without starting a session; requires --sandbox"
     )
     .option(
       "--sandbox-account <file>",

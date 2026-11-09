@@ -11,8 +11,8 @@ import {
   buildThreadStartRequest,
   CODEX_THREAD_ID_PATTERN,
 } from "./codex-session.js";
-import { buildEvent, buildUnknownEvent } from "./protocol.js";
-import { settledPrivateHomePath } from "./private-home-key.js";
+import { buildSessionStarted, buildUnknownEvent } from "./protocol.js";
+import { isCallerHarnessHome, recordedHarnessHome } from "./harness-home.js";
 import { CodexDriverSteer } from "./codex-steer.js";
 import { inputSeqList } from "./codex-turns.js";
 import type { PendingCall } from "./codex-driver-io.js";
@@ -43,7 +43,7 @@ export abstract class CodexDriverResponses extends CodexDriverSteer {
       return;
     }
     this.emit(
-      buildEvent(++this.seq, this.sessionIdOrEmpty(), "session_started", rawLine, {
+      buildSessionStarted(++this.seq, this.sessionIdOrEmpty(), rawLine, {
         agent: "codex",
         model: this.options.model ?? null,
         autonomy: this.options.autonomy,
@@ -58,8 +58,14 @@ export abstract class CodexDriverResponses extends CodexDriverSteer {
         // doc promises no omission).
         private_home:
           this.options.privateHome != null
-            ? settledPrivateHomePath(this.options.privateHome.dir, this.sessionIdOrEmpty())
+            ? recordedHarnessHome(this.options.privateHome, this.sessionIdOrEmpty())
             : null,
+        // The thread response's model is the harness naming what it
+        // configured (source `harness`, design P5); the provider's own
+        // reroute naming lands on each turn's completion.
+        model_served: this.harnessModel,
+        model_served_source: this.harnessModel !== null ? "harness" : null,
+        model_alias: this.options.modelAlias ?? null,
       })
     );
     while (this.preSessionLines.length > 0 && !this.finished) {
@@ -84,7 +90,8 @@ export abstract class CodexDriverResponses extends CodexDriverSteer {
    * discovery, and a plain session loads project documents exactly as a
    * plain codex run does. */
   private threadHermetic(): boolean {
-    return this.options.hermetic === true || this.options.privateHome != null;
+    return this.options.projectSettings !== true &&
+      (this.options.hermetic === true || (this.options.privateHome != null && !isCallerHarnessHome(this.options.privateHome)));
   }
 
   protected applyResponse(id: number | string, result: unknown, rawLine: string): void {
@@ -135,7 +142,9 @@ export abstract class CodexDriverResponses extends CodexDriverSteer {
                 this.policy,
                 this.options.cwd,
                 this.threadWireModel(),
-                this.threadHermetic()
+                this.threadHermetic(),
+                this.options.tools,
+                this.options.noToolsCatalog
               )
             : buildThreadResumeRequest(
                 nextId,
@@ -143,7 +152,9 @@ export abstract class CodexDriverResponses extends CodexDriverSteer {
                 this.policy,
                 this.options.cwd,
                 this.threadWireModel(),
-                this.threadHermetic()
+                this.threadHermetic(),
+                this.options.tools,
+                this.options.noToolsCatalog
               )
       );
       return;
@@ -151,6 +162,14 @@ export abstract class CodexDriverResponses extends CodexDriverSteer {
     if (pending === "thread_start" || pending === "thread_resume") {
       const thread = (result as { thread?: unknown } | null)?.thread;
       const threadId = (thread as { id?: unknown } | null)?.id;
+      // The harness's own model naming (design P5), read before any
+      // announce this branch can trigger: the fresh path announces at the
+      // thread/started notification (which the recorded wire sends after
+      // the response), the resume path right here.
+      const responseModel = (result as { model?: unknown } | null)?.model;
+      if (typeof responseModel === "string" && responseModel.length > 0) {
+        this.harnessModel = responseModel;
+      }
       if (typeof threadId !== "string" || threadId.length === 0) {
         this.emitGrammarViolation(rawLine, "the thread response carries no thread id");
         void this.finish("crash", 1);

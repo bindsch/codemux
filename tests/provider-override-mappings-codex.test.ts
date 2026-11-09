@@ -365,9 +365,9 @@ describe("codex provider override", () => {
     expect(adapterOf().getEnvOmissions()).toEqual([]);
   });
 
-  test("the tui refuses the override; without one it is unchanged", () => {
+  test("the tui accepts a complete override and preserves the plain path", () => {
     expect(() => adapterOf().validateTuiRequest(undefined, cwdOf())).not.toThrow();
     expect(() => adapterOf(VLLM_CODEX).validateTuiRequest(undefined, cwdOf()))
-      .toThrow("supports headless runs only");
+      .not.toThrow();
   });
 });

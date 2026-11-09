@@ -23,6 +23,7 @@ describe("codexResult", () => {
     expect(envelope.codemux).toEqual({
       agent: "codex",
       model: null,
+      model_alias: null,
       usage: {
         input_tokens: 200,
         output_tokens: 50,

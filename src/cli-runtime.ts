@@ -342,7 +342,9 @@ export async function runSandboxedWithStdin(
    * review round 331, item 5): pinned beside the command's own positions
    * so a replacement between the version probe and the spawn fails the
    * pre-spawn re-stat. Null when no redirect is active. */
-  redirectCheck?: ExecutableCheck | null
+  redirectCheck?: ExecutableCheck | null,
+  /** Carries this run's exact resolved command/pins to a read-only metadata follow-up. */
+  onResolvedCommand?: (command: string[], checks: readonly ExecutableCheck[], options: SandboxOptions | undefined) => void
 ): Promise<RunResult> {
   const workdir = validateWorkingDirectory(cwd) ?? process.cwd();
   assertNoProjectScodePolicy(workdir);
@@ -392,6 +394,9 @@ export async function runSandboxedWithStdin(
     process.stdout.write(`${scodeCmd.map(escapeArgvForPrint).join("\n")}\n`);
     return { stdout: "", stderr: "", exitCode: 0, success: true };
   }
+  onResolvedCommand?.(resolvedCommand,
+    [...trustCheckedCommandChecks(resolvedCommand), ...(carriedScodeCheck === null ? [] : [carriedScodeCheck])],
+    effectiveSandboxOptions);
   // The resolved command's own trust-checked positions are required, so
   // a recording gap refuses the spawn instead of skipping the re-check
   // (edges 2: the env prefix's returned path once had no identity), and

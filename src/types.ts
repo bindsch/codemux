@@ -68,6 +68,10 @@ export interface RunRequest {
   // Operator metadata stored in the ledger and result envelope.
   labels?: Record<string, string> | null;
   model?: string;
+  // The `-m` value as typed when it resolved through `config.models`
+  // (design P5), else undefined: the alias carried into the driver
+  // options, the ledger, and the result envelope's `model_alias`.
+  modelAlias?: string;
   autonomy?: AutonomyLevel;
   effort?: ReasoningEffort;
   cwd?: string;
@@ -198,6 +202,10 @@ export interface CodemuxResultBlock {
    * selection, served when reported) and this field together distinguish
    * an honored override from an ignored one where the wire is evidence. */
   served_model: string | null;
+  /** The `-m` value as typed when it resolved through `config.models`
+   * (design P5), else null — `model` above stays the resolved id. The
+   * run-envelope spelling of the session protocol's `model_alias`. */
+  model_alias: string | null;
   labels: Record<string, string> | null;
   usage: ResultUsageBlock;
   session_id: string | null;
@@ -216,6 +224,14 @@ export interface AdapterCapabilities {
   // A verified mechanism loads no operator customization (docs/isolation.md).
   // Absent means unsupported: `--hermetic` is refused for the harness.
   supportsHermetic?: boolean;
+  // A verified hermetic run needs the provider override beside the flag:
+  // the private home carries no settings, so the override is the only
+  // credential and endpoint the isolated child can run on (goose, whose
+  // config file carries the operator's system prompt; openhands, whose
+  // headless mode starts only with LLM env overrides). The adapters
+  // refuse `--hermetic` without one (validateRunRequest); `verify` reads
+  // this to build its hermetic leg against a synthetic override.
+  hermeticRequiresProviderOverride?: boolean;
   // The harness can remove its built-in tools on request (`--tools none`).
   supportsToolSelection?: boolean;
   // `--tools none` is offered on hermetic runs only; a plain run cannot
@@ -227,8 +243,10 @@ export interface AdapterCapabilities {
   // `--tools none` is accepted at read-only autonomy only (codex: its
   // apply_patch tool cannot be removed, so a run that may write keeps it).
   toolsNoneRequiresReadOnly?: boolean;
-  // `--hermetic` and `--tools none` need read-only scode and a working
-  // directory this run owns (agy). `list` prints the condition in its labels.
+  // `--hermetic` and `--tools none` are accepted at read-only autonomy only.
+  // No adapter declares it today: agy's isolation runs at every autonomy
+  // behind scode's block of the operator's real state (launch/agy-isolation-
+  // sandbox.ts). `list` prints the condition in its labels when declared.
   isolationRequiresReadOnly?: boolean;
   // The harness can return a structured result envelope carrying token usage
   // (`--result-json`). Absent means unsupported and the flag is refused.

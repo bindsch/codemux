@@ -171,7 +171,7 @@ describe("the session command driven in process", () => {
           "-a", "kimi", "--no-sandbox", "--auto", "high",
           "--cwd", workdir, "--shutdown-grace", "2", "--pass-env", "FAKE_STATE_DIR",
         ],
-        { kimi: withVersion(fakeHarness(FAKE_KIMI), "0.31.1") },
+        { kimi: withVersion(fakeHarness(FAKE_KIMI), "2.5.2") },
         {
           registryFile: registry,
           stdin,
@@ -437,7 +437,7 @@ describe("the session command driven in process", () => {
     try {
       const outcome = await runSessionCommand(
         ["-a", "kimi", "--auto", "high", "--cwd", workdir, "--shutdown-grace", "1", "--timeout", "2"],
-        { kimi: withVersion("exit 7", "0.31.1"), scode: SCODE_DIES },
+        { kimi: withVersion("exit 7", "2.5.2"), scode: SCODE_DIES },
         {
           registryFile: registry,
           stdin,

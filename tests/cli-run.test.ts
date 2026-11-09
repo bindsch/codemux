@@ -255,10 +255,13 @@ describe("CLI - Run validation", () => {
 
 describe("CLI - Run warnings (no actual execution)", () => {
   test("effort flag on unsupported agent fails explicitly", async () => {
-    const fake = createFakeBinaryEnv({ goose: "exit 0" });
+    // cursor is the effort limitation (goose gained effort in the 2.0.0
+    // parity pass): bracket-style effort overrides are silently dropped
+    // server-side, so no tier can be verified delivered.
+    const fake = createFakeBinaryEnv({ cursor: "exit 0" });
     try {
       const { stderr, exitCode } = await runCli(
-        ["run", "--no-sandbox", "--auto", "high", "-a", "goose", "--effort", "high", "-p", "test"],
+        ["run", "--no-sandbox", "--auto", "high", "-a", "cursor", "--effort", "high", "-p", "test"],
         fake.env
       );
       expect(exitCode).not.toBe(0);

@@ -12,9 +12,10 @@ import type { AutonomyLevel, ReasoningEffort, ResultUsageBlock } from "../types.
 import { reportedTokenCount, safeTokenSum } from "../result-envelope/common.js";
 import { isRecord } from "./codex-parse-facts.js";
 import { MAX_ID_CHARS } from "./protocol.js";
+import { codexSessionToolConfig, type CodexSessionSettings } from "./codex-config.js";
 
 export type CodexSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
-export type CodexApprovalPolicy = "untrusted" | "never";
+export type CodexApprovalPolicy = "on-request" | "never";
 
 export interface CodexSessionPolicy {
   /** The thread/start carrier (§4.7). */
@@ -26,29 +27,31 @@ export interface CodexSessionPolicy {
 
 /**
  * The sandbox/approval pair every thread start, thread/resume included,
- * and every turn start carries (§4.7). A scode-wrapped session passes the
- * bypass pair at every level — scode is the boundary and the approval
- * mapping is not even consulted — mirroring `run`'s
- * `--dangerously-bypass-approvals-and-sandbox`. The unsandboxed shape is
- * high-only (the CLI refuses below high without a sandbox); its pair is
- * the adapter's mapAutonomy mapping (src/adapters/codex.ts) translated
- * to the JSON-RPC carriers, so app-server's config.toml fallback is
- * never the source of sandbox or approval behavior.
+ * and every turn start carries (§4.7). Above read-only, approvals remain
+ * enabled even inside scode. Low and medium use native read-only access
+ * so patches and escalated shell writes can ask before changing files.
+ * The outer sandbox still contains approved operations.
+ *
+ * Evidence: Caskroom/codex/0.166.0/bin/codex contains `on-request` and
+ * `approval_policy = "untrusted" is no longer supported; remove this setting`.
+ * Upstream rust-v0.166.0 core/src/safety.rs:71-114
+ * asks for patches outside writable paths under OnRequest; exec_policy.rs:
+ * 760-803 asks for dangerous/escalated commands, not every safe command.
  */
 export function codexSessionPolicy(
   level: AutonomyLevel,
   sandboxed: boolean,
-  cwd: string
+  _cwd: string
 ): CodexSessionPolicy {
-  if (sandboxed) {
-    return {
-      sandbox: "danger-full-access",
-      approvalPolicy: "never",
-      sandboxPolicy: { type: "dangerFullAccess" },
-    };
-  }
   switch (level) {
     case "read-only":
+      if (sandboxed) {
+        return {
+          sandbox: "danger-full-access",
+          approvalPolicy: "never",
+          sandboxPolicy: { type: "dangerFullAccess" },
+        };
+      }
       return {
         sandbox: "read-only",
         approvalPolicy: "never",
@@ -57,20 +60,14 @@ export function codexSessionPolicy(
     case "low":
     case "medium":
       return {
-        sandbox: "workspace-write",
-        approvalPolicy: level === "low" ? "untrusted" : "never",
-        sandboxPolicy: {
-          type: "workspaceWrite",
-          writableRoots: [cwd],
-          networkAccess: false,
-          excludeTmpdirEnvVar: false,
-          excludeSlashTmp: false,
-        },
+        sandbox: "read-only",
+        approvalPolicy: "on-request",
+        sandboxPolicy: { type: "readOnly", networkAccess: false },
       };
     case "high":
       return {
         sandbox: "danger-full-access",
-        approvalPolicy: "never",
+        approvalPolicy: "on-request",
         sandboxPolicy: { type: "dangerFullAccess" },
       };
   }
@@ -183,13 +180,16 @@ function threadParams(
   policy: CodexSessionPolicy,
   cwd: string,
   model: string | undefined,
-  hermetic: boolean
+  hermetic: boolean,
+  tools?: CodexSessionSettings["tools"],
+  catalog?: CodexSessionSettings["noToolsCatalog"]
 ): Record<string, unknown> {
+  const config = { ...(hermetic ? HERMETIC_PROJECT_DOC_CONFIG : {}), ...codexSessionToolConfig(tools, catalog) };
   return {
     cwd,
     sandbox: policy.sandbox,
     approvalPolicy: policy.approvalPolicy,
-    ...(hermetic ? { config: HERMETIC_PROJECT_DOC_CONFIG } : {}),
+    ...(Object.keys(config).length > 0 ? { config } : {}),
     ...(model !== undefined ? { model } : {}),
   };
 }
@@ -199,9 +199,11 @@ export function buildThreadStartRequest(
   policy: CodexSessionPolicy,
   cwd: string,
   model?: string,
-  hermetic?: boolean
+  hermetic?: boolean,
+  tools?: CodexSessionSettings["tools"],
+  catalog?: CodexSessionSettings["noToolsCatalog"]
 ): string {
-  return request(id, "thread/start", threadParams(policy, cwd, model, hermetic === true));
+  return request(id, "thread/start", threadParams(policy, cwd, model, hermetic === true, tools, catalog));
 }
 
 export function buildThreadResumeRequest(
@@ -210,12 +212,14 @@ export function buildThreadResumeRequest(
   policy: CodexSessionPolicy,
   cwd: string,
   model?: string,
-  hermetic?: boolean
+  hermetic?: boolean,
+  tools?: CodexSessionSettings["tools"],
+  catalog?: CodexSessionSettings["noToolsCatalog"]
 ): string {
   return request(
     id,
     "thread/resume",
-    { threadId, ...threadParams(policy, cwd, model, hermetic === true) }
+    { threadId, ...threadParams(policy, cwd, model, hermetic === true, tools, catalog) }
   );
 }
 
@@ -234,7 +238,7 @@ export function buildTurnStartRequest(
     input: [{ type: "text", text }],
     approvalPolicy: policy.approvalPolicy,
     sandboxPolicy: policy.sandboxPolicy,
-    ...(effort !== undefined && effort !== "none" ? { effort } : {}),
+    ...(effort !== undefined ? { effort } : {}),
   });
 }
 

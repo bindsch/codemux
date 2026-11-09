@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { getDefaultConfig } from "../src/config.js";
 import { registerRunCommand } from "../src/run-command.js";
+import { agentsSupporting } from "../src/parity/index.js";
 import { createFakeBinaryEnv } from "./helpers/cli.js";
 import { ENVELOPE } from "./helpers/call-ledger.js";
 
@@ -340,21 +341,20 @@ exit 0`;
   test("--print-sandbox prints a multi-line prompt argument as one line", async () => {
     // Review round 6, edges finding 5: the arguments used to be joined
     // raw, so a newline inside one argument (a normal multi-line -p
-    // prompt; aider carries it as --message=…) printed as several
-    // arguments. Each argument is now one line with its control
-    // characters escaped.
+    // prompt; kimi carries it as --prompt, its only print-mode carrier)
+    // printed as several arguments. Each argument is now one line with
+    // its control characters escaped.
     const outcome = await runCommand(
-      ["run", "-a", "aider", "--print-sandbox", "-p", "line one\nline two"],
+      ["run", "-a", "kimi", "--print-sandbox", "-p", "line one\nline two"],
       {
-        aider: `if [ "$1" = "--version" ]; then printf 'aider 0.86.2\\n'; exit 0; fi`,
+        kimi: `if [ "$1" = "--version" ]; then printf '2.5.2\\n'; exit 0; fi`,
         scode: "exit 9",
       }
     );
-    expect(outcome.exitCode).toBe(0);
-    expect(outcome.stdout).toContain("--message=line one\\nline two");
+    expect(outcome.exitCode, outcome.stderr).toBe(0);
     // The escaped prompt is exactly one line of the output: no raw
     // newline ever splits it into two apparent arguments.
-    expect(outcome.stdout.trimEnd().split("\n")).toContain("--message=line one\\nline two");
+    expect(outcome.stdout.trimEnd().split("\n")).toContain("line one\\nline two");
   });
 
   test("--print-sandbox with --experiment-mcp is refused with exit 64", async () => {
@@ -388,10 +388,11 @@ exit 0`;
   });
 
   test("--no-web on a harness that keeps its own web tools is refused", async () => {
-    const outcome = await runCommand(["run", "-a", "codex", "--no-web", "-p", "test"]);
+    // agy keeps its web tools (a declared limitation); the list is the table's.
+    const outcome = await runCommand(["run", "-a", "agy", "--no-web", "-p", "test"]);
     expect(outcome.exitCode).toBe(64);
     expect(outcome.stderr).toContain(
-      "--no-web applies to the claude and zai agents only; codex keeps its own web tools"
+      `--no-web applies to the ${agentsSupporting("run.no-web").join(", ")} agents only; agy keeps its own web tools`
     );
   });
 });

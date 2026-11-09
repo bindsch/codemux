@@ -100,8 +100,10 @@ describe("CLI runtime option parsing", () => {
       const cmd = getAdapter(id).buildRunCommand({ agent: id, prompt: "x" });
       expect(cmd.includes("--effort")).toBe(false);
     }
-    // Codex's config-override carrier cannot ride an undefined effort.
-    expect(getAdapter("codex").capabilities().effortLevels.includes("none")).toBe(false);
+    // Codex carries none natively (rust-v0.166.0 ReasoningEffort::None),
+    // through its config override, so the resolved value survives.
+    expect(getAdapter("codex").capabilities().effortLevels.includes("none")).toBe(true);
+    expect(getAdapter("codex").mapEffort("none")).toEqual(["-c", 'model_reasoning_effort="none"']);
   });
 
   test("parses sandbox policy and reports flags without sandbox", () => {

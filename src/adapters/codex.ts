@@ -7,9 +7,12 @@ import {
   CODEX_EXPERIMENT_FLAGS,
   CODEX_HERMETIC_FLAGS,
   CODEX_NO_TOOLS_FLAGS,
+  CODEX_PROJECT_SETTINGS_HERMETIC_FLAGS,
   LAST_MESSAGE_BASENAME,
   SCRATCH_PARENT_DIR_NAME,
 } from "./codex-flags.js";
+import { writeCodexProjectSettingsConfig } from "../codex-project-settings.js";
+import { validateProjectSettingsRunRequest } from "../claude-project-settings.js";
 import { processCodexRunResult } from "./codex-result.js";
 import {
   createCodexHermeticHome,
@@ -22,9 +25,12 @@ import {
   writeCodexProviderConfigInto,
 } from "../codex-provider.js";
 import { readExperimentRunSpec } from "../experiment-mcp.js";
+import { codexPlaywrightMcpOverrides } from "../codex-playwright-mcp.js";
+import { codexNoToolsCatalogArgs, codexNoToolsCatalogBody, needsCodexNoToolsCatalog, prepareCodexNoToolsCatalog } from "../codex-no-tools.js";
+import type { ExecutableCheck } from "../executable-security.js";
 import { UsageRefusalError } from "../validation.js";
 import { ExperimentCodexRun } from "../experiment-codex-run.js";
-import { CodexPlainFold } from "../plain-unwrap.js";
+import { CodexCostFold, withCodexNativeCost } from "../codex-native-cost.js";
 import type { SandboxOptions, ScodeTrustLevel } from "../sandbox.js";
 import type { AutonomyLevel, ReasoningEffort, RunRequest, RunResult , LaunchIntent } from "../types.js";
 import { codexLoginState, loginHome, type LoginState } from "../harness-health.js";
@@ -35,40 +41,60 @@ export class CodexAdapter extends CodexPolicy {
     const override = this.validatedProvider();
 
     if (request.hermetic) {
-      // The private HOME reaches Codex through env(1), not through the
-      // environment codemux hands to scode: scode derives its deny rules
-      // for user files from HOME, so moving HOME for the whole
-      // launch would move the sandbox's protected paths off the real home.
-      // A static preview (`verify`) has no prepared home; the placeholder
-      // path does not exist, and Codex refuses a missing CODEX_HOME, so a
-      // command built without prepareRun fails closed.
+      // The private HOME rides env(1), not the environment codemux hands to
+      // scode: scode derives its user-file deny rules from HOME, so moving
+      // HOME for the whole launch would move the sandbox's protected paths
+      // off the real home. A static preview's placeholder home does not
+      // exist and Codex refuses a missing CODEX_HOME: fail closed.
       const unprepared = join(this.realCodexHome(request), ".codemux-hermetic", "unprepared");
       const home = context?.hermeticHome ?? {
         home: unprepared,
         codexHome: join(unprepared, ".codex"),
       };
       cmd.push("env", `HOME=${home.home}`, `CODEX_HOME=${home.codexHome}`);
-    } else if (override !== null) {
-      // A non-hermetic override run also gets a private CODEX_HOME — the
-      // per-run directory holding this run's config.toml (codex-provider.ts)
-      // — delivered the same way, so the operator's config.toml and
-      // auth.json are not read by construction. Same fail-closed placeholder
-      // rule as the hermetic home: without prepareRun the home does not
-      // exist and Codex refuses a missing CODEX_HOME.
+    } else if (override !== null || request.experimentMcp) {
+      // An override run gets a private CODEX_HOME holding only this run's
+      // config.toml (codex-provider.ts), so the operator's config.toml and
+      // auth.json are not read by construction. The experiment check's
+      // control rides the same slot with its own private home (prepareRun).
+      // Same fail-closed placeholder rule as the hermetic home.
       const unprepared = join(this.realCodexHome(request), ".codemux-provider", "unprepared");
-      cmd.push("env", `CODEX_HOME=${context?.codexProviderHome?.codexHome ?? unprepared}`);
+      cmd.push("env", `CODEX_HOME=${context?.hermeticHome?.codexHome ?? context?.codexProviderHome?.codexHome ?? unprepared}`);
     }
     cmd.push("codex");
 
     if (request.hermetic) {
-      cmd.push(...CODEX_HERMETIC_FLAGS);
+      // The project-settings mode keeps every account-surface disable but
+      // drops the AGENTS.md suppression: the repository's instructions are
+      // part of what the mode exists to load (the kimi arm's rule).
+      cmd.push(...(request.experimentProjectSettings
+        ? CODEX_PROJECT_SETTINGS_HERMETIC_FLAGS
+        : CODEX_HERMETIC_FLAGS));
     }
     if (request.tools === "none") {
       cmd.push(...CODEX_NO_TOOLS_FLAGS);
+      cmd.push(...codexNoToolsCatalogArgs(request, context, this.realCodexHome(request)));
     }
     if (request.experimentMcp) {
       cmd.push(...CODEX_EXPERIMENT_FLAGS);
+      if (!request.hermetic) {
+        // The check's control runs from its own private CODEX_HOME
+        // (prepareRun), and the Keychain entry is keyed to the real
+        // CODEX_HOME path (the hermetic flags' rule), so it reads the
+        // linked auth.json through the file store like the probe does.
+        cmd.push("-c", 'cli_auth_credentials_store="file"');
+      }
     }
+    // The Playwright server rides the -c config-override channel, the one
+    // MCP carrier codex has (codex-playwright-mcp.ts); the shared build
+    // attaches nothing unless the request is sandboxed and enabled.
+    const playwright = codexPlaywrightMcpOverrides(request.sandboxed, {
+      enabled: request.enablePlaywrightMcp,
+      forbiddenRoot: request.cwd ?? process.cwd(),
+      pathEnv: this.executionPathEnv(),
+    });
+    cmd.push(...playwright.overrides);
+    if (context !== undefined) context.playwrightMcpCheck = playwright.check;
 
     const model = request.experimentMcp
       ? context?.experimentCodex?.model ?? this.experimentModel(request).model : request.model;
@@ -80,7 +106,13 @@ export class CodexAdapter extends CodexPolicy {
     }
 
     if (request.sandboxed) {
-      // codemux is already enforcing scode sandbox boundaries.
+      // codemux is already enforcing scode sandbox boundaries. A native
+      // carrier exists for every level (`-s read-only` through `-s
+      // danger-full-access`; codex 0.166.0 binary strings, read 2026-11-08)
+      // and is deliberately not passed: codex's own seatbelt sandbox inside
+      // scode's is nested sandboxing, blocked on macOS (the droid shell
+      // probe, docs/harnesses.md), so the bypass flag leaves the level to
+      // scode alone.
       cmd.push("--dangerously-bypass-approvals-and-sandbox");
     } else if (request.autonomy) {
       cmd.push(...this.mapAutonomy(request.autonomy));
@@ -89,50 +121,27 @@ export class CodexAdapter extends CodexPolicy {
     if (request.effort) {
       cmd.push(...this.mapEffort(request.effort));
     }
+    if (request.web === false) {
+      // rust-v0.166.0 config.schema.json: web_search is WebSearchMode;
+      // tools.web_search is an object for domains/location, not a mode.
+      cmd.push("-c", 'web_search="disabled"');
+    }
 
     cmd.push("exec", "--skip-git-repo-check");
     // Experiments need a rollout in the private home until verification.
     if (!request.experimentMcp) cmd.push("--ephemeral");
     cmd.push("--ignore-rules");
-    // Events as JSONL on stdout (one per line; codex-rs exec lib.rs), on
-    // every run: the ledger's usage and the reply both come from the
-    // stream. A plain run never captures it whole -- an agentic stream is
-    // tens of MiB and fills the 16 MiB capture bound (the ul3 finding) --
-    // so prepareRun hangs a streaming fold on the context and the launcher
-    // feeds the stream through it, keeping the reply text, the usage
-    // snapshot, and the served model while the tool output is dropped as
-    // it arrives (plain-unwrap.ts). The fold reproduces human mode's
-    // stdout exactly on every shape whose bytes the wire can carry: the
-    // final assistant message of a completed turn (kept even when codex
-    // then exits nonzero), nothing for a turn that never completed, and —
-    // the one shape whose bytes it cannot — a completed turn with no
-    // message anywhere succeeding with empty stdout, human mode's own
-    // exit-0 verdict for it (round al10). --result-json additionally
-    // reduces the same stream to the promised envelope.
+    // Events as JSONL on stdout (codex-rs exec lib.rs), on every run: the
+    // ledger's usage and the reply both come from the stream. A plain run
+    // never captures it whole (the ul3 capture-bound finding), so prepareRun
+    // hangs a streaming fold on the context (plain-unwrap.ts) that keeps
+    // reply text, usage, and served model while dropping tool output.
     cmd.push("--json");
-    // Round al29: every run names a --output-last-message file — a
-    // Plan-only turn's recorded final message is the reply's only
-    // carrier, the one item the JSONL wire does not carry (see
-    // CODEX_FINAL_MESSAGE_FALLBACK_NOTE), and the plain verdict needs it
-    // for exactly that turn. The two paths consult it under two rules
-    // that cannot let it contradict the stream: the envelope path applies
-    // it to a messageless stream as before, and the plain verdict reads
-    // it only in the ONE bounded arm — a turn that completed with no
-    // agent_message and nothing else failed (plain-unwrap.ts,
-    // CodexPlanFallbackRead) — so a stream that carried the reply, or
-    // failed, answers from the stream alone. Round al28's rule (the file
-    // deleted from plain runs entirely) lost the Plan-only turn's reply
-    // on the one path operators run by hand. prepareRun puts the file in
-    // a per-run directory under `.codemux-scratch/` in the real
-    // CODEX_HOME -- harness state, which every scode platform keeps
-    // writable and none shadows -- or inside the private home on a
-    // hermetic run. An untrusted sandbox denies harness state, so that
-    // launch prepares no file and the stream is the result's only source
-    // (a Plan-only turn there succeeds empty on a plain run, the al10
-    // rule, and reports a null result on --result-json, README's
-    // documented cost). A static preview (`verify`) has no prepared
-    // context, so it names a placeholder under a directory that cannot
-    // exist, failing closed the way the hermetic home's preview does.
+    // Round al29: every run names a --output-last-message file — a Plan-only
+    // turn's recorded final message is the reply's only carrier (the JSONL
+    // wire does not carry it; plain-unwrap.ts reads it in one bounded arm).
+    // prepareRun places it; the untrusted-sandbox and static-preview rules
+    // are documented there.
     {
       const fallbackPath = context?.lastMessagePath;
       if (fallbackPath !== undefined) {
@@ -149,12 +158,11 @@ export class CodexAdapter extends CodexPolicy {
       // A prepared context with no lastMessagePath is the untrusted
       // launch: there is no file to name, by design.
     }
-    if (request.hermetic && override === null && !request.experimentMcp) {
-      // Belt and braces: the private CODEX_HOME holds no config.toml anyway.
-      // An override run is the exception that proves the rule's wording —
-      // `--ignore-user-config` skips "$CODEX_HOME/config.toml" itself, which
-      // is exactly where the override lives (verified in the 0.160 binary's
-      // own help text), so it is never passed on one.
+    if (request.hermetic && override === null && !request.experimentMcp && !request.experimentProjectSettings) {
+      // Belt and braces: the private CODEX_HOME holds no config.toml
+      // anyway. Override and project-settings runs are the exceptions —
+      // `--ignore-user-config` skips "$CODEX_HOME/config.toml" itself
+      // (0.160 help), where each mode's carrier lives — so neither passes it.
       cmd.push("--ignore-user-config");
     }
     cmd.push("-");
@@ -165,34 +173,35 @@ export class CodexAdapter extends CodexPolicy {
   /**
    * Whether the run authenticates with an API key. Only the variable Codex
    * itself reads counts (CODEX_API_KEY at 0.154): a hermetic run must use
-   * the same credential a plain run would, never switch an operator with a
-   * stray OPENAI_API_KEY from the account login to API billing.
+   * the same credential a plain run would, never a stray OPENAI_API_KEY.
    */
   private apiKeyAuth(): boolean {
     return Boolean(this.environment.CODEX_API_KEY?.trim());
   }
 
-  /**
-   * Builds this run's context: the `--output-last-message` file a `--json`
-   * launch will name, and the private hermetic home a hermetic run needs.
-   * Nothing is recorded on the adapter; the launcher owns the returned
-   * context, so two launches through this singleton -- even two through
-   * the same request object -- each carry their own.
-   */
+  /** Builds this run's context: the last-message file a `--json` launch
+   * names, the private hermetic home a hermetic run needs, and the
+   * experiment bridge. Nothing is recorded on the adapter; the launcher
+   * owns the returned context. */
   override prepareRun(request: RunRequest, sandboxTrust?: ScodeTrustLevel, _sandboxOptions?: SandboxOptions, launch: LaunchIntent = {}): RunContext {
     const context: RunContext = {};
     const override = this.validatedProvider();
     const experimentModel = request.experimentMcp ? this.experimentModel(request) : undefined;
+    const toolCatalog = needsCodexNoToolsCatalog(request)
+      ? codexNoToolsCatalogBody(this.modelFor(request.model), this.realCodexHome(request)) : undefined;
     if (request.hermetic) {
+      // The project-settings mode's gates run before any home is created:
+      // a refused request must not leave a private home behind (the kimi
+      // arm's rule).
+      if (request.experimentProjectSettings) {
+        validateProjectSettingsRunRequest(request);
+      }
       // One home per run, never shared: a previous run's files or refreshed
       // login state must not reach the next one. hermetic-home.ts tracks
-      // live homes itself (signal handling, the exit sweep), so the context
-      // holds the home as plain data and the adapter holds nothing. An
-      // override run never links the operator's auth.json either — the
-      // provider key is the credential — so the home starts empty and holds
-      // only the override's config.toml, written below.
-      // A print-only launch needs the home path for its argv and no login:
-      // the home starts empty, like an API-key run's (review round 55).
+      // live homes itself, so the context holds the home as plain data. An
+      // override run never links the operator's auth.json (the provider key
+      // is the credential) and a print-only launch needs no login either
+      // (round 55): both homes start empty.
       context.hermeticHome = createCodexHermeticHome(
         this.realCodexHome(request),
         this.apiKeyAuth() || override !== null || launch.printOnly === true
@@ -205,11 +214,13 @@ export class CodexAdapter extends CodexPolicy {
           readCodexMultiAgent(this.environment)
         );
       }
+      if (request.experimentProjectSettings) {
+        writeCodexProjectSettingsConfig(context.hermeticHome.codexHome, request.cwd ?? process.cwd(), override !== null);
+      }
     } else if (override !== null) {
       // The plain-run variant of the same rule: one private CODEX_HOME per
-      // launch, owned by the run and finalized in cleanupRun (and swept, by
-      // the age-gated rule the hermetic homes use, only once it is stale and
-      // its owning process is gone — codex-provider.ts).
+      // launch, owned by the run, finalized in cleanupRun, and swept by the
+      // age-gated rule the hermetic homes use (codex-provider.ts).
       context.codexProviderHome = writeCodexProviderConfig(
         this.realCodexHome(request),
         override,
@@ -219,54 +230,26 @@ export class CodexAdapter extends CodexPolicy {
     }
     // The plain run's streaming fold (review ul4's rule, the opencode
     // shape): the launcher feeds the `--json` event stream through it
-    // instead of capturing it whole, so an agentic run's tool output
-    // cannot fill the capture bound, and processRunResult reads the folded
-    // reply and usage back off the same object. A --result-json run
-    // captures the stream whole and reduces it to the envelope, as before.
+    // instead of capturing it whole, so tool output cannot fill the capture
+    // bound, and processRunResult reads the folded reply and usage back off
+    // the same object. A --result-json run captures the stream whole.
     if (!request.resultJson) {
-      context.stdoutSink = new CodexPlainFold();
+      context.stdoutSink = new CodexCostFold();
     }
-    // The --output-last-message file of THIS run, on every launch that can
-    // have one (round al29 restores the plain run's file, scoped by the
-    // verdict to the Plan-only turn alone — plain-unwrap.ts's
-    // CodexPlanFallbackRead — where the recorded message is the reply's
-    // only carrier), placed where the child can write it and the
-    // parent can read it back: scode keeps harness state writable on
-    // every platform and never shadows it, unlike the OS temp root, which
-    // its Linux sandbox replaces with a fresh /tmp the parent never sees.
-    // Under hermetic the file lives inside the private home (itself under
-    // the real CODEX_HOME), and finalize removes it with the home;
-    // otherwise it gets a per-run directory under `.codemux-scratch/` in
-    // the real CODEX_HOME, so two runs never see each other's message, and
-    // prepareRunDirParent sweeps directories a dead codemux left behind.
-    // An untrusted sandbox denies harness state -- no location is both
-    // writable by the child and readable by the parent -- so that run
-    // passes no file at all and the event stream is the result's only
-    // source; a Plan-only turn then reports a null result on
-    // `--result-json` and succeeds empty on a plain run, the documented
-    // costs (README).
-    // Hermetic runs keep their file whatever the
-    // trust: an untrusted sandbox denies the private home itself, so the
-    // fallback is not what decides that run.
-    // processRunResult removes the file once read; cleanupRun removes the
-    // directory.
-    // prepareRun creates the home above whenever request.hermetic is set,
-    // so a home here is the hermetic case; a hermetic run that somehow has
-    // none fails closed at getRunEnv before anything launches.
+    // The reply file and optional model catalog share launch-owned state.
+    // scode preserves harness state on every platform; its temporary root
+    // is private to the child. Untrusted mode denies harness state, so it
+    // carries neither file. The existing finalizers remove both files.
     {
       const home = context.hermeticHome;
       if (home !== undefined) {
         context.lastMessagePath = join(home.home, LAST_MESSAGE_BASENAME);
       } else if (sandboxTrust !== "untrusted") {
         try {
-          const scratchParent = prepareRunDirParent(
-            this.realCodexHome(request),
-            SCRATCH_PARENT_DIR_NAME
-          );
+          const scratchParent = prepareRunDirParent(this.realCodexHome(request), SCRATCH_PARENT_DIR_NAME);
           // Recorded at creation for the cleanup's revalidation
-          // (src/safe-remove.ts, review round 104): the lstat check the
-          // cleanup used caught a swapped symlink but not another directory
-          // put at the same path, and a codex child can write CODEX_HOME.
+          // (src/safe-remove.ts, round 104): a codex child can write
+          // CODEX_HOME, so the parent could be swapped after creation.
           context.lastMessageParentRecord = recordTrustedParent(scratchParent);
           context.lastMessageDir = mkdtempSync(
             join(scratchParent, `run-${process.pid}-`)
@@ -276,33 +259,35 @@ export class CodexAdapter extends CodexPolicy {
             LAST_MESSAGE_BASENAME
           );
         } catch (error) {
-          // Round al24 (edges minor): a scratch step that throws must not
-          // orphan what the context already holds. The provider-override
-          // home (or a hermetic home) was created above, and this throw
-          // means the caller never receives the context — cleanupRun
-          // cannot run — so the home and its process-exit listener would
-          // sit until termination, one per failed launch. Finalize what
-          // the context holds here, then let the failure through. The
-          // finalizers now throw on a kept home (review round 307); that
-          // failure rides the original error's message instead of
-          // replacing it (the agy prepare catch's rule).
-          try {
-            this.cleanupRunSync(context);
-          } catch (cleanupError) {
-            if (error instanceof Error) {
-              error.message += `; cleanup failed: ${
-                cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-              }`;
-            }
-          }
+          // Round al24: a scratch step that throws must not orphan what the
+          // context holds — the caller never receives the context, so
+          // cleanupRun cannot run. Finalize here, then let the failure
+          // through.
+          this.cleanupOnPrepareFailure(context, error);
           throw error;
         }
       }
     }
+    if (toolCatalog !== undefined) {
+      try { prepareCodexNoToolsCatalog(context, toolCatalog, sandboxTrust); }
+      catch (error) { this.cleanupOnPrepareFailure(context, error); throw error; }
+    }
     if (request.experimentMcp) {
       try {
-        if (!context.hermeticHome) throw new UsageRefusalError("Codex experiment requires a private hermetic home");
-        const experiment = new ExperimentCodexRun(readExperimentRunSpec(request),
+        const spec = readExperimentRunSpec(request);
+        if (context.hermeticHome === undefined) {
+          // Only the check's paired control reaches here: a deliberate
+          // non-hermetic launch (spec.control, experiment-mcp.ts). The
+          // relay's config.toml still gets a private per-launch CODEX_HOME —
+          // never a merge into the operator's config — linked to the login
+          // a plain run uses: opening every channel is the control's job.
+          if (!spec.control) throw new UsageRefusalError("Codex experiment requires a private hermetic home");
+          context.hermeticHome = createCodexHermeticHome(
+            this.realCodexHome(request),
+            this.apiKeyAuth()
+          );
+        }
+        const experiment = new ExperimentCodexRun(spec,
           request.cwd ?? process.cwd(), context.hermeticHome.codexHome,
           Boolean(request.resultJson), this.environment, request.prompt, experimentModel,
           (path) => { context.experimentRecording = path; });
@@ -310,22 +295,29 @@ export class CodexAdapter extends CodexPolicy {
         context.experimentRecording = experiment.startedRecordingPath;
         context.stdoutSink = experiment;
       } catch (error) {
-        // The same rule as the hermetic home above (review round 313): a
-        // cleanup that fails rides the setup error's message, never
-        // replaces the actionable cause.
-        try {
-          this.cleanupRunSync(context);
-        } catch (cleanupError) {
-          if (error instanceof Error) {
-            error.message += `; cleanup failed: ${
-              cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
-            }`;
-          }
-        }
+        // The same rule as the scratch catch above (review round 313): a
+        // cleanup failure rides the setup error's message.
+        this.cleanupOnPrepareFailure(context, error);
         throw error;
       }
     }
     return context;
+  }
+
+  /** A prepare step that throws after the context holds state: finalize
+   * what it holds (the caller never received it, so cleanupRun cannot
+   * run), letting the original failure through; a finalizer failure rides
+   * its message instead of replacing it (rounds al24, 307, 313). */
+  private cleanupOnPrepareFailure(context: RunContext, error: unknown): void {
+    try {
+      this.cleanupRunSync(context);
+    } catch (cleanupError) {
+      if (error instanceof Error) {
+        error.message += `; cleanup failed: ${
+          cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+        }`;
+      }
+    }
   }
 
   override cleanupRun(context?: RunContext): void | Promise<void> {
@@ -343,15 +335,12 @@ export class CodexAdapter extends CodexPolicy {
       finally { context.experimentCodex.closeSync(); }
       return;
     }
-    // A launch that rejects (a captured stdout that is not UTF-8, say) can
-    // reject after codex already wrote its --output-last-message file, and
-    // processRunResult's read-and-remove never runs: without this path the
-    // model output in that file would outlive the run, so the per-run
-    // directory under the real CODEX_HOME's `.codemux-scratch/` goes with
-    // it. A hermetic run needs no separate removal -- the file lives inside
-    // the private home, which dies with the run below (it holds a link to
-    // the real login, and a run that never launched needs none of it). An
-    // untrusted run carries neither piece of state and returns above.
+    // A launch that rejects can reject after codex already wrote its
+    // --output-last-message file, and processRunResult's read-and-remove
+    // never runs: without this path the model output would outlive the
+    // run. A hermetic run needs no separate removal — the file lives
+    // inside the private home, which dies with the run below. An untrusted
+    // run carries neither piece of state and returns above.
     if (
       context?.lastMessageDir === undefined &&
       context?.hermeticHome === undefined &&
@@ -360,24 +349,19 @@ export class CodexAdapter extends CodexPolicy {
       return;
     }
     if (context.lastMessageDir !== undefined) {
-      // The same revalidation the result reader applies
-      // (readFinalMessageFallback), by the identity recorded when the
-      // directory was made (src/safe-remove.ts, review round 104): a run
-      // with write access to Codex state could have replaced
+      // The same revalidation the result reader applies, by the identity
+      // recorded when the directory was made (src/safe-remove.ts, round
+      // 104): a run with write access to Codex state could have replaced
       // `.codemux-scratch` with a symlink — or another directory — after
-      // prepareRun made it, and the recursive removal resolves that
-      // intermediate component like any path operation would -- following
-      // the link into a directory codemux never chose, outside the sandbox.
-      // rm does not follow a symlink at the run directory's own name (it
-      // removes the link), so the parent is the one component to check. A
-      // parent that fails keeps its directory: the refusal says so, the
-      // reader's wording, and the launch's own rejection stays the failure
-      // the caller needs.
+      // prepareRun made it, and the recursive removal would follow the link
+      // outside the sandbox. rm does not follow a symlink at the run
+      // directory's own name, so the parent is the component to check. A
+      // parent that fails keeps its directory.
       const record = context.lastMessageParentRecord;
       if (record === undefined) {
-        // Cannot happen: both fields are set together in prepareRun. Kept as
-        // a refusal anyway, because an unchecked removal is the one outcome
-        // worse than a kept directory.
+        // Cannot happen: both fields are set together in prepareRun. Kept
+        // as a refusal anyway: an unchecked removal is worse than a kept
+        // directory.
         console.error(
           "codemux: refusing to remove codex's --output-last-message directory: " +
             "no trusted parent was recorded at creation"
@@ -391,13 +375,10 @@ export class CodexAdapter extends CodexPolicy {
       }
     }
     // Both homes finalize even when one fails, and a failure reaches the
-    // caller (base.ts's contract): the launcher appends it to the run's
-    // result, so per-run state — model output, copied credentials,
-    // provider configuration — cannot outlive the run unnoticed (review
-    // round 307; the catches here used to print and swallow it, and the
-    // launcher reported success with the home still on disk). The exit
-    // backstop and the homes' own exit hooks catch what this throws and
-    // keep the retry they already own.
+    // caller (base.ts's contract): per-run state — model output, copied
+    // credentials, provider configuration — cannot outlive the run
+    // unnoticed (round 307; the catches used to print and swallow it). The
+    // exit backstop and the homes' own exit hooks keep the retry they own.
     const failures: unknown[] = [];
     try {
       context.hermeticHome?.finalize();
@@ -407,7 +388,8 @@ export class CodexAdapter extends CodexPolicy {
     try {
       // A hermetic override run has no codexProviderHome — its config rides
       // the hermetic home above — so this finalizes exactly the plain-run
-      // home this launch created.
+      // home this launch created (the experiment control home rides the
+      // hermeticHome slot the same way).
       context.codexProviderHome?.finalize();
     } catch (error) {
       failures.push(error);
@@ -426,11 +408,11 @@ export class CodexAdapter extends CodexPolicy {
   private cleanupExperimentHome(context: RunContext): void {
     const experiment = context.experimentCodex!;
     experiment.interruptBeforeEvidence();
-    // The hermetic home holds copied credentials and configuration, so it
+    // The private home holds copied credentials and configuration, so it
     // is finalized even when evidence preservation fails: a full or
     // unwritable recording destination must not leave per-run state
-    // behind (review round 64). One failure rethrows as itself, several
-    // as one AggregateError naming each.
+    // behind (round 64). One failure rethrows as itself, several as one
+    // combined failure naming each.
     const failures: unknown[] = [];
     try {
       experiment.preserveHarnessLog();
@@ -460,21 +442,25 @@ export class CodexAdapter extends CodexPolicy {
     request: RunRequest,
     context?: RunContext
   ): RunResult {
-    return processCodexRunResult(result, request, context, () =>
+    return withCodexNativeCost(processCodexRunResult(result, request, context, () =>
       this.validatedProvider() === null
         ? request
         : { ...request, model: this.modelFor(request.model) }
-    );
+    ), request, context);
   }
 
   buildTuiCommand(
     model?: string,
     autonomy?: AutonomyLevel,
     effort?: ReasoningEffort,
-    sandboxed = false
+    sandboxed = false,
+    enablePlaywrightMcp = false,
+    cwd?: string,
+    nestedChecks?: ExecutableCheck[]
   ): string[] {
     const cmd = ["codex"];
-    if (model) {
+    // On an override launch the model rides the config.toml, never -m (the run path's rule).
+    if (model && this.validatedProvider() === null) {
       cmd.push("-m", model);
     }
     if (sandboxed) {
@@ -486,6 +472,17 @@ export class CodexAdapter extends CodexPolicy {
     if (effort) {
       cmd.push(...this.mapEffort(effort));
     }
+    // The Playwright server rides the same -c override the run path
+    // passes (codex-playwright-mcp.ts): interactive codex reads the same
+    // mcp_servers config. The check rides nestedChecks for the spawn's
+    // re-stat (the claude TUI's rule).
+    const playwright = codexPlaywrightMcpOverrides(sandboxed, {
+      enabled: enablePlaywrightMcp,
+      forbiddenRoot: cwd ?? process.cwd(),
+      pathEnv: this.executionPathEnv(),
+    });
+    cmd.push(...playwright.overrides);
+    if (playwright.check !== null) nestedChecks?.push(playwright.check);
     return cmd;
   }
 

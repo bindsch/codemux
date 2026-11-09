@@ -56,7 +56,7 @@ describe("kimi session e2e - lifecycle", () => {
       live_input: true,
       user_during_turn: false,
       steer: false,
-      interrupt: false,
+      interrupt: true,
       permissions: false,
       deltas: false,
       file_changes: false,

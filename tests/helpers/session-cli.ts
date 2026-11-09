@@ -115,7 +115,7 @@ export function fakeAiderEnv(extra: { version?: string; env?: Record<string, str
 }
 
 export function fakeKimiEnv(extra: { version?: string; env?: Record<string, string> } = {}) {
-  return fakeHarnessEnv("kimi", FAKE_KIMI, { version: "0.31.1", ...extra });
+  return fakeHarnessEnv("kimi", FAKE_KIMI, { version: "2.5.2", ...extra });
 }
 
 /** One `codemux session` child driven over stdio, with the parsed event

@@ -6,14 +6,13 @@
  */
 
 import {
-  buildOpenCodeSessionCommand,
   type OpenCodeParse,
 } from "./opencode-session.js";
 import {
   type SessionChildOutcome,
   type SessionProcess,
 } from "./process.js";
-import { buildEvent, buildUnknownEvent } from "./protocol.js";
+import { buildEvent, buildSessionStarted, buildUnknownEvent } from "./protocol.js";
 import { accumulateUsage } from "./usage.js";
 import { lateChildRuns } from "./spawn-wait.js";
 import {
@@ -21,6 +20,9 @@ import {
   recordSessionStartOffStream,
 } from "./registry.js";
 import { OpenCodeDriverCore } from "./opencode-finalize.js";
+import { settleOpenCodeSessionHome } from "./opencode-home.js";
+import { buildOpenCodeTurnCommand } from "./opencode-command.js";
+import { isCallerHarnessHome, recordedHarnessHome } from "./harness-home.js";
 
 export abstract class OpenCodeTurns extends OpenCodeDriverCore {
   private turnCounter = 0;
@@ -38,17 +40,26 @@ export abstract class OpenCodeTurns extends OpenCodeDriverCore {
   protected async startTurn(text: string): Promise<void> {
     if (this.finished) return;
     this.turnPrompt = text;
-    const argv = buildOpenCodeSessionCommand({
-      autonomy: this.options.autonomy,
-      model: this.options.model,
-      effort: this.options.effort,
-      resumeSessionId: this.sessionId ?? undefined,
-      projectSettings: this.options.projectSettings === true,
-    });
     let proc: SessionProcess;
     let spawn: Promise<SessionProcess> | null = null;
     try {
-      spawn = this.options.spawnTurn(argv, () => this.turnSpawnAbandoned);
+      const executableChecks: import("../executable-security.js").ExecutableCheck[] = [];
+      const argv = buildOpenCodeTurnCommand({
+        autonomy: this.options.autonomy,
+        model: this.options.wireModel ?? this.options.model,
+        effort: this.options.effort,
+        permissionPolicy: this.options.permissionPolicy,
+        resumeSessionId: this.sessionId ?? undefined,
+        projectSettings: this.options.projectSettings === true,
+        privateHome: this.options.privateHome,
+        tools: this.options.tools,
+        playwrightMcp: this.options.playwrightMcp,
+        sandboxed: this.options.sandboxed,
+        pathEnv: this.options.pathEnv,
+        cwd: this.options.cwd,
+        executableChecks,
+      });
+      spawn = this.options.spawnTurn(argv, () => this.turnSpawnAbandoned, executableChecks);
       this.turnSpawn = spawn;
       proc = await spawn;
     } catch (error) {
@@ -93,6 +104,10 @@ export abstract class OpenCodeTurns extends OpenCodeDriverCore {
     proc.exited.then((outcome) => {
       void this.onTurnExited(proc, outcome);
     });
+    if (this.turnInterrupted) {
+      proc.requestStop();
+      return;
+    }
     // The prompt is raw text (writeRaw — multi-line text stays one
     // message), and the EOF after it is what makes `run` treat the whole
     // stdin as the message.
@@ -122,6 +137,12 @@ export abstract class OpenCodeTurns extends OpenCodeDriverCore {
     await proc.settled;
     if (this.settled) return;
     if (this.turnProc !== proc) return; // superseded — defensive
+    if (this.options.privateHome && this.sessionId !== null &&
+        !settleOpenCodeSessionHome(this.options.privateHome, this.sessionId)) {
+      this.emitError(true, "codemux", "opencode session home could not be settled");
+      void this.finish("crash", 1);
+      return;
+    }
     this.completeTurn(outcome);
   }
 
@@ -240,7 +261,7 @@ export abstract class OpenCodeTurns extends OpenCodeDriverCore {
     this.recordStart(() => {
       if (this.settled) return;
       this.emit(
-        buildEvent(++this.seq, this.sessionIdOrEmpty(), "session_started", null, {
+        buildSessionStarted(++this.seq, this.sessionIdOrEmpty(), null, {
           agent: "opencode",
           model: this.options.model ?? null,
           autonomy: this.options.autonomy,
@@ -249,11 +270,15 @@ export abstract class OpenCodeTurns extends OpenCodeDriverCore {
           sandbox_trust: this.options.sandboxTrust,
           capabilities: this.capabilities,
           protocol: "codemux-live-session/1",
-          // An opencode session keeps no session-keyed private home: the
-          // native session (and the login) live in the real data
-          // directory the hermetic prefix deliberately keeps, so there
-          // is no directory to report.
-          private_home: null,
+          // Caller-owned homes retain the same path across turns and resumes.
+          private_home: this.options.privateHome
+            ? recordedHarnessHome(this.options.privateHome, this.sessionId ?? "") : null,
+          // opencode 1.19.5's run-json wire names no model on any line
+          // (design P5's §2.2 bundle read), so no served model exists
+          // to report — a declared limitation, not a missing field.
+          model_served: null,
+          model_served_source: null,
+          model_alias: this.options.modelAlias ?? null,
         })
       );
     });
@@ -284,8 +309,11 @@ export abstract class OpenCodeTurns extends OpenCodeDriverCore {
         agent: "opencode",
         cwd: this.options.cwd,
         hermetic: this.options.hermetic,
-        harness_home: this.options.harnessHome,
+        harness_home: this.options.privateHome
+          ? recordedHarnessHome(this.options.privateHome, this.sessionId) : this.options.harnessHome,
+        ...(isCallerHarnessHome(this.options.privateHome) ? { caller_owned_home: true } : {}),
         model: this.options.model ?? null,
+        model_alias: this.options.modelAlias ?? null,
         autonomy: this.options.autonomy,
         sandboxed: this.options.sandboxed,
         sandbox_trust: this.options.sandboxTrust,
@@ -293,7 +321,7 @@ export abstract class OpenCodeTurns extends OpenCodeDriverCore {
         sandbox_scrub_env: this.options.sandboxScrubEnv,
         sandbox_block: [...(this.options.sandboxBlock ?? [])],
         pass_env: [...(this.options.passEnv)],
-        playwright_mcp: false,
+        playwright_mcp: this.options.playwrightMcp === true,
         provider_base_url: this.options.providerBaseUrl,
         project_settings: this.options.projectSettings === true,
       },
@@ -346,6 +374,11 @@ export abstract class OpenCodeTurns extends OpenCodeDriverCore {
     this.turnUsage = null;
     this.turnError = null;
     this.turnPrompt = null;
+    this.turnInterrupted = false;
+    if (this.options.turnTimeoutMs != null) {
+      this.turnTimer = setTimeout(() => this.interruptTurn(), this.options.turnTimeoutMs);
+      this.turnTimer.unref?.();
+    }
     this.emit(
       buildEvent(++this.seq, this.sessionIdOrEmpty(), "turn_started", null, {
         turn_id: turnId,

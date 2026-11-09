@@ -1,18 +1,22 @@
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { getAdapter, getAvailableAdapters } from "../../src/adapters/index.js";
+import { getAdapter } from "../../src/adapters/index.js";
 import { loadConfig } from "../../src/config.js";
-import { SESSION_AGENTS } from "../../src/session/cli.js";
 import { sessionRegistryPath } from "../../src/session/registry.js";
+import { sessionCanaryLaunchCount } from "../../src/hermetic-session-canary-home.js";
 import type { AgentId, CodemuxConfig } from "../../src/types.js";
 import { MARKER as EXPERIMENT_MARKER } from "../../tests/fixtures/experiment-mcp.js";
 import { isDefaultCodemux, runPool, type ProbeResult, type ProbeRunner } from "./runner.js";
 import { providerOverridePreflight, type GateOptions } from "./options.js";
 import {
+  liveSessionLeak,
+  modelAliasFor,
+  verifyAliasEnvelope,
+} from "./aliases.js";
+import {
   PROVIDER_OVERRIDE_OPT_IN,
-  harnessFacts,
   prepareExperimentProbe,
   prepareMediumProbe,
   prepareSessionProbe,
@@ -36,6 +40,7 @@ import {
   verifyProviderOverrideEnvelope,
   type LoopbackServer,
 } from "./loopback.js";
+import { quotaRefusalIn, type GateQuotaDecision } from "./quota.js";
 import type { GateRow } from "./report.js";
 
 const OUTER_TIMEOUT_GRACE_SECONDS = 30;
@@ -47,110 +52,6 @@ export const LOOPBACK_TIMEOUT_SECONDS = 120;
 const ROOT = resolve(import.meta.dir, "../..");
 const FIXTURE_SERVER = join(ROOT, "tests/fixtures/experiment-mcp.ts");
 
-export function sessionHarnessFacts(): HarnessFacts[] {
-  return getAvailableAdapters().map((adapter) =>
-    harnessFacts(adapter.id, adapter.capabilities(), SESSION_AGENTS[adapter.id] !== undefined));
-}
-
-/** A live session entry left behind after the probe session exited means the
- * registry leaked a live record; the probe's shutdown did not complete.
- * The probe's own record is identified by its session id (parsed from the
- * capture's `session_started` line) or its working directory — the probe's
- * own fresh directory, so a live entry there is its leak whatever id it
- * carries. With both known, either one names a leak: a candidate that
- * printed a wrong session id must not hide a live entry in the probe's
- * directory (review round 199). With only one of them, that one's rule
- * applies; without either it falls back to the old rule — any live entry
- * of the same agent since the probe started — which fails the probe on an
- * operator's parallel session of the same agent (review round 10,
- * contracts 8). */
-export function liveSessionLeak(
-  agent: AgentId,
-  sinceMs: number,
-  registryPath = sessionRegistryPath(),
-  sessionId?: string,
-  cwd?: string
-): string | null {
-  try {
-    const file = JSON.parse(readFileSync(registryPath, "utf8")) as {
-      sessions?: { id?: string; agent?: string; cwd?: string; ended?: string | null; created_at?: string }[];
-    };
-    const leaked = (file.sessions ?? []).filter((entry) => {
-      if (entry.ended != null) return false;
-      if (sessionId !== undefined && cwd !== undefined) {
-        return entry.id === sessionId || entry.cwd === cwd;
-      }
-      if (sessionId !== undefined) return entry.id === sessionId;
-      if (cwd !== undefined) return entry.cwd === cwd;
-      return entry.agent === agent && Date.parse(entry.created_at ?? "") >= sinceMs;
-    });
-    return leaked.length > 0 ? `${leaked.length} live registry entr${leaked.length === 1 ? "y" : "ies"} left for ${agent}` : null;
-  } catch (error) {
-    // Only an absent registry file is nothing to check: this machine ran
-    // the probe's session against no registry codemux can see. A registry
-    // that exists but cannot be read or parsed fails the probe — reading
-    // it as "no leak" would certify the end state the RELEASE-GATE
-    // contract names (probe F: the entry must be removed or marked ended)
-    // without ever looking at it (review round 16, contracts-2 1).
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    const reason = error instanceof Error ? error.message : String(error);
-    return `could not read the live-session registry at ${registryPath}: ${reason}`;
-  }
-}
-
-/** The alias probe I carries (audit D7): `worker` when the effective
- * config maps it for this harness, else the first alias that does. The
- * launched run resolves the alias through that same config, so the target
- * here is the target there. Null when no alias maps the harness — the cell
- * skips rather than run `-m` on a name nobody resolves. */
-export function modelAliasFor(agent: AgentId, config: CodemuxConfig): { alias: string; model: string } | null {
-  for (const alias of ["worker", "clerk", "judge"]) {
-    const model = config.models[alias]?.[agent];
-    if (model !== undefined) return { alias, model };
-  }
-  for (const [alias, mapping] of Object.entries(config.models)) {
-    const model = mapping[agent];
-    if (model !== undefined) return { alias, model };
-  }
-  return null;
-}
-
-/** Whether a reported model id names the alias's target. The envelope's
- * `codemux.model` is the served model when the provider names one, so
- * three shapes name the target: the same string; the target followed by
- * an eight-digit release date (`claude-sonnet-5-5-20261001`); and, for a
- * target that is one word of letters — a harness's own family name — an
- * id made of a vendor word, that family word, and numbers only (`sonnet`
- * is served as `claude-sonnet-5-5`; live gate, 2026-11-06). Nothing
- * looser: a target with a version in it must match exactly, so
- * `claude-sonnet-5` does not accept `claude-sonnet-5-high`;
- * `claude-opus-5-5` does not name `sonnet`; and a word that is not the
- * id's family, such as `high` in `claude-sonnet-5-high`, names nothing
- * (review rounds 180 and 184). */
-export function modelNamesTarget(model: string, target: string): boolean {
-  if (model === target) return true;
-  if (target === "") return false;
-  if (model.startsWith(`${target}-`) && /^\d{8}$/.test(model.slice(target.length + 1))) return true;
-  if (!/^[A-Za-z]+$/.test(target)) return false;
-  const [vendor, ...rest] = model.split("-");
-  return /^[A-Za-z]+$/.test(vendor ?? "") && rest.includes(target) &&
-    rest.every((word) => word === target || /^\d+$/.test(word));
-}
-
-/** Probe I's verification where the harness reports result JSON (audit
- * D7): probe C's envelope checks, plus `codemux.model` naming the alias's
- * target — an alias that quietly selects another model fails here. */
-export function verifyAliasEnvelope(stdout: string, agent: AgentId, expectedModel: string): string | null {
-  const base = verifyResultEnvelope(stdout, agent);
-  if (base !== null) return base;
-  const envelope = JSON.parse(stdout) as { codemux?: { model?: unknown } };
-  const model = envelope.codemux?.model;
-  if (typeof model !== "string" || !modelNamesTarget(model, expectedModel)) {
-    return `result JSON's codemux.model is ${JSON.stringify(model) ?? "absent"}, not the alias's target ${JSON.stringify(expectedModel)}`;
-  }
-  return null;
-}
-
 export async function runProbes(
   facts: readonly HarnessFacts[],
   options: GateOptions,
@@ -160,6 +61,12 @@ export async function runProbes(
   // Undefined means "the effective config, read when probe I first needs
   // it": a run without I (and every test) never touches the config file.
   config?: CodemuxConfig,
+  // Per-harness quota refusals decided from the gate's ONE usage snapshot
+  // before any probe spawns (parity pass, 2.0.0): a harness the launch
+  // path would refuse gets SKIP cells naming the refusal instead of
+  // burning a spawn that cannot succeed. Undefined runs without the
+  // decisions (every test that does not build them).
+  quota?: ReadonlyMap<AgentId, GateQuotaDecision>,
 ): Promise<GateRow[]> {
   const rows: GateRow[] = [];
   const tasks: (() => Promise<void>)[] = [];
@@ -170,6 +77,16 @@ export async function runProbes(
   // provably-reachable loopback port (audit D7).
   const listener: LoopbackServer | null = options.probes.includes("J") ? await startReachableListener() : null;
   const skip = (note: string): ProbeResult => ({ status: "SKIP", seconds: 0, stderr: "", note });
+  // An UNSUPPORTED cell is the documented-harness-limitation verdict; a
+  // cell with no reason documents nothing, and a missing reason on a
+  // capability the adapter declares is codemux's gap, not the harness's.
+  // It fails closed rather than pass as structural (parity pass, 2.0.0).
+  const unsupported = (letter: ProbeLetter, fact: HarnessFacts): ProbeResult => {
+    const note = unsupportedNote(letter, fact);
+    return note === ""
+      ? { status: "FAIL", seconds: 0, stderr: `probe ${letter} reported UNSUPPORTED with no documented reason` }
+      : { status: "UNSUPPORTED", seconds: 0, stderr: "", note };
+  };
   // Everything from here runs under one finally that closes the listener:
   // a throwing adapter constructor or loginState() in the pre-check loop
   // used to leave the socket open and the process alive (review round 45).
@@ -192,7 +109,7 @@ export async function runProbes(
     const noCredential = login?.state === "no-credential" && !options.probeAnyway.has(fact.id);
     for (const letter of options.probes) {
       if (!probeApplies(letter, fact)) {
-        row.results[letter] = { status: "UNSUPPORTED", seconds: 0, stderr: "", note: unsupportedNote(letter, fact) };
+        row.results[letter] = unsupported(letter, fact);
         continue;
       }
       if (options.skip.has(fact.id)) {
@@ -205,6 +122,17 @@ export async function runProbes(
       }
       if (noCredential && letter !== "H2" && letter !== "J" && letter !== "P") {
         row.results[letter] = skip(`no credentials detected: ${login?.store ?? "no credential store"}`);
+        continue;
+      }
+      // The quota decisions name the native account. H spends nothing from
+      // it (its credentials are the provider override) and H2, J, and P
+      // start no native run at all, so none of the four is blocked by a
+      // native-account refusal; every other letter on a refused harness
+      // skips naming the refusal the launch path would print.
+      const quotaRefused = quota?.get(fact.id)?.refused === true
+        && letter !== "H" && letter !== "H2" && letter !== "J" && letter !== "P";
+      if (quotaRefused) {
+        row.results[letter] = skip(`quota gate refused this harness before the probes: ${quota!.get(fact.id)!.reason}`);
         continue;
       }
       tasks.push(async () => {
@@ -225,11 +153,9 @@ export async function runProbes(
           // plus one grace (round 18, edges 3). The single-launch probes
           // keep the one-timeout allowance.
           const checkOuter = 2 * options.timeout + OUTER_TIMEOUT_GRACE_SECONDS;
-          // The hermetic session canary is three sequential session
-          // launches — hermetic, control, resumed with --final — each with
-          // the full --timeout (src/hermetic-session-canary.ts), so its
-          // outer allowance covers all three plus one grace (lane H4).
-          const sessionOuter = 3 * options.timeout + OUTER_TIMEOUT_GRACE_SECONDS;
+          // The hermetic canary uses three sessions; supported harnesses
+          // also start and resume a caller-owned home. Each has --timeout.
+          const sessionOuter = sessionCanaryLaunchCount(fact.id) * options.timeout + OUTER_TIMEOUT_GRACE_SECONDS;
           if (letter === "A") {
             row.results.A = await runner.run(base("read-only", "Reply with exactly: OK"), "OK", outer, prefix);
           } else if (letter === "B") {
@@ -245,7 +171,15 @@ export async function runProbes(
               "--hermetic", "--timeout", String(options.timeout),
             ], () => null, checkOuter, prefix);
           } else if (letter === "E") {
-            row.results.E = await runner.run(base("read-only", "Reply with exactly: OK", ["--hermetic", "--tools", "none"]), "OK", outer, prefix);
+            // The plain `--tools none` control at read-only (parity pass,
+            // 2.0.0): every adapter that declares the capability runs it,
+            // and exactly the ones whose `--tools none` works only inside a
+            // hermetic run (opencode, toolsNoneRequiresHermetic) carry
+            // --hermetic. The old form ran the hermetic spelling alone and
+            // left every other tools-capable harness UNSUPPORTED.
+            row.results.E = await runner.run(base("read-only", "Reply with exactly: OK",
+              fact.toolsNoneRequiresHermetic ? ["--hermetic", "--tools", "none"] : ["--tools", "none"]),
+              "OK", outer, prefix);
           } else if (letter === "F") {
             const startedMs = Date.now();
             const session = prepareSessionProbe();
@@ -270,9 +204,9 @@ export async function runProbes(
               outer, prefix, session.exchange);
           } else if (letter === "K") {
             // Lane H4: the session-shaped hermetic canary. `check
-            // --hermetic --session` drives three codemux session launches
-            // of the build under test (hermetic, control, resumed with
-            // --final), so the outer allowance above covers all three.
+            // --hermetic --session` drives hermetic and caller-home
+            // sessions of the build under test; the outer allowance
+            // covers every supported arm, including both resumes.
             // The verdict is the check's own OK line: the canary already
             // refuses, leaks, and cleans up inside itself.
             row.results.K = await runner.capture([
@@ -345,23 +279,34 @@ export async function runProbes(
               await provider.close();
             }
           } else if (letter === "I") {
-            // Audit D7: the alias + effort wiring. The alias resolves from
-            // the same effective config the launched run reads, so the
-            // target verified here is the target the run selected. Where
-            // the harness reports result JSON (probe C's set), the
-            // envelope's codemux.model must name that target.
+            // Audit D7, split in the 2.0.0 parity pass: the model-alias
+            // wiring alone. The alias resolves from the same effective
+            // config the launched run reads, so the target verified here is
+            // the target the run selected. Where the harness reports result
+            // JSON (probe C's set), the envelope's codemux.model must name
+            // that target. (--effort moved to I2, so a harness that
+            // declares model without effort gets its alias probed too.)
             const alias = modelAliasFor(fact.id, config ?? loadConfig());
             if (alias === null) {
               row.results.I = skip(`no model alias is configured for ${fact.id}`);
             } else if (fact.resultJson) {
               row.results.I = await runner.capture(
-                base("read-only", "Reply with exactly: OK", ["-m", alias.alias, "--effort", "low", "--result-json"]),
+                base("read-only", "Reply with exactly: OK", ["-m", alias.alias, "--result-json"]),
                 (captured) => verifyAliasEnvelope(captured.stdout, fact.id, alias.model), outer, prefix);
             } else {
               row.results.I = await runner.run(
-                base("read-only", "Reply with exactly: OK", ["-m", alias.alias, "--effort", "low"]),
+                base("read-only", "Reply with exactly: OK", ["-m", alias.alias]),
                 "OK", outer, prefix);
             }
+          } else if (letter === "I2") {
+            // The effort half of the old alias+effort probe: `--effort low`
+            // on a plain read-only run. Every adapter that declares effort
+            // accepts "low" (its effortLevels list carries it), and the
+            // level is not observable in the reply or the envelope, so the
+            // exact OK output is the verdict, like probe A with the flag.
+            row.results.I2 = await runner.run(
+              base("read-only", "Reply with exactly: OK", ["--effort", "low"]),
+              "OK", outer, prefix);
           } else if (letter === "J") {
             // Audit D7: the sandbox policy flags as the release contract
             // runs them — together. Two steps, no model turn: the launch
@@ -425,6 +370,20 @@ export async function runProbes(
               (captured) => verifyProviderOverrideEnvelope(captured.stdout, overrideModel, fact.id), outer, prefix);
           } else {
             row.results[letter as ProbeLetter] = { status: "FAIL", seconds: 0, stderr: `unknown probe ${letter}` };
+          }
+          // A FAIL whose stderr is a quota refusal is an account state, not
+          // a behavior failure (parity pass, 2.0.0): the live gate of
+          // 2026-11-08 printed codex, agy, and kimi rows as FAILs that
+          // were exhausted quotas. The row becomes a SKIP naming the
+          // refusal, the same verdict the pre-spawn decisions above hand
+          // out; reclassifying here (not in the runner) keeps the runner's
+          // FAIL contract — probe semantics, not output forensics.
+          const probed = row.results[letter];
+          if (probed?.status === "FAIL") {
+            const refusal = quotaRefusalIn(probed);
+            if (refusal !== null) {
+              row.results[letter] = { status: "SKIP", seconds: probed.seconds, stderr: "", note: `${refusal} (${probed.stderr})` };
+            }
           }
         } catch {
           row.results[letter] = { status: "FAIL", seconds: 0, stderr: "could not prepare or run probe" };

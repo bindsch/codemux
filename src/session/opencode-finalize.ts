@@ -17,12 +17,12 @@ import {
 import { emptyUsage } from "../result-envelope.js";
 import { opencodeSessionCapabilities } from "./opencode-session.js";
 import { SessionFsm } from "./fsm.js";
+import { SessionOutputQueue } from "./completion.js";
 import {
   awaitFinalFlush,
   buildSessionEnded,
   harnessFailed,
   shutdownRequested,
-  BoundedOutboundQueue,
   crashSynthesisReason,
   drainFailureMessage,
   DEFAULT_SHUTDOWN_GRACE_MS,
@@ -33,6 +33,7 @@ import {
 import type { OpenCodeDriverOptions } from "./opencode-options.js";
 import { SessionStopEscalation } from "./stop-escalation.js";
 import { awaitSpawnWithGrace, holdAbandonedSpawn } from "./spawn-wait.js";
+import { isCallerHarnessHome } from "./harness-home.js";
 import { buildEvent } from "./protocol.js";
 import {
   PENDING_RECORD_FATAL,
@@ -40,6 +41,7 @@ import {
 } from "./registry.js";
 import { addUsage } from "./usage.js";
 import type { SessionEndReason } from "./agy-driver.js";
+import { finishOpenCodeSessionHome } from "./opencode-home.js";
 
 export type { OpenCodeDriverOptions } from "./opencode-options.js";
 
@@ -49,7 +51,7 @@ export abstract class OpenCodeDriverCore {
   protected options!: OpenCodeDriverOptions;
   protected readonly fsm = new SessionFsm();
   protected readonly capabilities = opencodeSessionCapabilities();
-  protected out!: BoundedOutboundQueue;
+  protected out!: SessionOutputQueue;
   protected signals!: SessionSignalGate;
   protected turnProc: SessionProcess | null = null;
   /** The in-flight turn spawn: set synchronously before spawnTurn is
@@ -114,6 +116,15 @@ export abstract class OpenCodeDriverCore {
   /** The second-signal escalation (src/session/stop-escalation.ts). */
   protected readonly stopEscalation = new SessionStopEscalation();
   protected sawHarnessFailure = false;
+  protected turnInterrupted = false;
+  protected lastTurnInterrupted = false;
+  protected turnTimer: ReturnType<typeof setTimeout> | null = null;
+
+  protected interruptTurn(): void {
+    if (this.fsm.state !== "turn_active" || this.finished) return;
+    this.turnInterrupted = true;
+    this.turnProc?.requestStop();
+  }
   /** True only once the end path has settled every child: run-output
    * lines keep being parsed and emitted through the whole shutdown drain
    * (review live5). */
@@ -240,6 +251,7 @@ export abstract class OpenCodeDriverCore {
         const escalated = this.stopEscalation.escalateIfRequested(late);
         if (
           !escalated &&
+          !this.turnInterrupted &&
           (reason === "stdin-close" || reason === "shutdown") &&
           this.fsm.state === "turn_active"
         ) {
@@ -273,6 +285,7 @@ export abstract class OpenCodeDriverCore {
           await late.settled;
           this.lastChildOutcome = await late.exited;
           drainOutcome = this.lastChildOutcome;
+          if (this.turnInterrupted) this.completeTurn(this.lastChildOutcome);
         }
       }
     }
@@ -295,7 +308,7 @@ export abstract class OpenCodeDriverCore {
       reason = "harness_failed";
     }
     // Every nonzero code and signal exit fails, including during shutdown.
-    const drainFailureCode = harnessFailed(drainOutcome)
+    const drainFailureCode = !this.lastTurnInterrupted && harnessFailed(drainOutcome)
       ? drainOutcome!.code ?? 1
       : null;
     if (drainFailureCode !== null) {
@@ -355,6 +368,12 @@ export abstract class OpenCodeDriverCore {
                       ? crashSynthesisReason(this.firstFatal)
                       : `the session ended (${reason}) before the turn completed`,
             usage,
+            // The run-json wire names no model (see announceSessionStarted
+            // in opencode-turns.ts): no served model exists to report
+            // (design P5's declared limitation).
+            model_served: null,
+            model_served_source: null,
+            model_alias: this.options.modelAlias ?? null,
           }),
           { terminal: "fatal" }
         );
@@ -366,7 +385,8 @@ export abstract class OpenCodeDriverCore {
           turnId ?? "none",
           this.turnStartedAt.get(turnId ?? "") ?? Date.now(),
           synthFinish,
-          usage
+          usage,
+          null
         );
         this.turnStartedAt.delete(turnId ?? "");
       }
@@ -375,12 +395,21 @@ export abstract class OpenCodeDriverCore {
     this.fsm.transition({ kind: "shutdown_started" });
     this.fsm.transition({ kind: "ended" });
     const ownsRecord = this.registryRecorded || this.resumeClaimed;
+    if (this.options.privateHome && this.turnSpawnAbandoned) await this.abandonedSpawnHold;
+    const privateHome = await finishOpenCodeSessionHome(this.options.privateHome, {
+      final: this.options.final === true,
+      resumable: ownsRecord && (this.harnessConfirmed || this.endExitCode === 0),
+      sessionId: this.sessionId,
+    });
+    if (this.options.final && this.options.privateHome && !isCallerHarnessHome(this.options.privateHome) && !privateHome.removed) {
+      this.endExitCode = Math.max(this.endExitCode, 1);
+    }
     if (
       ownsRecord &&
       this.options.registryPath !== null &&
       this.sessionId !== null
     ) {
-      releaseSessionRecord(this.options.registryPath, this.sessionId);
+      releaseSessionRecord(this.options.registryPath, this.sessionId, privateHome.removed);
     }
     // Resumable means a run-output line named this session, or, for a
     // recorded or claimed session opencode never confirmed, that the end
@@ -388,6 +417,7 @@ export abstract class OpenCodeDriverCore {
     // must hold the record a `--resume` can find.
     const resumable =
       this.capabilities.resume &&
+      privateHome.usable && !privateHome.removed &&
       ownsRecord &&
       (this.harnessConfirmed || this.endExitCode === 0);
     // The exit code the report carries, read once here: a signal or a
@@ -399,7 +429,10 @@ export abstract class OpenCodeDriverCore {
     // rule; docs/sessions.md states it under the exit table).
     const reported = this.endExitCode;
     const sent = this.out.enqueue(
-      buildSessionEnded(++this.seq, this.sessionIdOrEmpty(), this.lastChildOutcome, {
+      (this.lastTurnInterrupted
+        ? (seq: number, id: string, outcome: SessionChildOutcome | null, fields: Record<string, unknown>) =>
+          buildEvent(seq, id, "session_ended", null, { ...fields, harness_exit: outcome })
+        : buildSessionEnded)(++this.seq, this.sessionIdOrEmpty(), this.lastChildOutcome, {
         reason,
         shutdown_requested: this.shutdownWasRequested,
         exit_code: reported,

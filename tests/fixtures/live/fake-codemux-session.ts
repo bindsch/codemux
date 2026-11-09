@@ -39,6 +39,8 @@
 
 import { appendFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { harnessHomeCanarySkillPath } from "../../../src/hermetic-session-canary-home.js";
+import type { AgentId } from "../../../src/types.js";
 
 const argv = process.argv.slice(2);
 const value = (name: string): string | undefined => {
@@ -51,11 +53,13 @@ const scenario = process.env.FAKE_CODEMUX_SCENARIO ?? "clean";
 const cwd = value("--cwd") ?? process.cwd();
 const resume = value("--resume");
 const hermetic = has("--hermetic");
+const harnessHome = value("--harness-home");
 const final = has("--final");
-const sessionId = resume ?? "fake-session-1";
+const sessionId = harnessHome !== undefined && resume !== undefined && scenario === "caller-resume-different-id"
+  ? "fake-session-changed" : resume ?? (harnessHome === undefined ? "fake-session-1" : "fake-caller-session");
 const homeRoot = process.env.FAKE_CODEMUX_HOME_ROOT ?? "";
 const stateFile = process.env.FAKE_CODEMUX_STATE;
-const privateHome = homeRoot === "" ? "" : join(homeRoot, sessionId);
+const privateHome = harnessHome ?? (homeRoot === "" ? "" : join(homeRoot, sessionId));
 
 let marker = "NO-MARKER";
 const plantedPaths = [
@@ -63,6 +67,8 @@ const plantedPaths = [
   join(cwd, "CLAUDE.md"),
   join(process.env.KIMI_CODE_HOME ?? "", "AGENTS.md"),
   join(process.env.HOME ?? "", ".gemini", "GEMINI.md"),
+  join(process.env.HOME ?? "", ".claude", "CLAUDE.md"),
+  join(process.env.HOME ?? "", ".codex", "AGENTS.md"),
 ];
 for (const path of plantedPaths) {
   try {
@@ -76,10 +82,17 @@ for (const path of plantedPaths) {
   }
 }
 
+let skillMarker = "NO-SKILL";
+if (harnessHome !== undefined) {
+  const skill = harnessHomeCanarySkillPath(value("-a") as Exclude<AgentId, "cline">, harnessHome);
+  skillMarker = /CODEMUX-CANARY-[0-9A-F]{8}/.exec(readFileSync(skill, "utf8"))?.[0] ?? "NO-SKILL";
+}
+
 if (stateFile !== undefined) {
   appendFileSync(
     stateFile,
-    `${JSON.stringify({ argv, hermetic, resume: resume ?? null, final, sessionId, marker })}\n`
+    `${JSON.stringify({ argv, hermetic, harnessHome, operatorHome: process.env.HOME,
+      resume: resume ?? null, final, sessionId, marker, skillMarker })}\n`
   );
 }
 
@@ -149,8 +162,12 @@ const emit = (fields: Record<string, unknown>): void => {
 };
 
 emit(
-  hermetic && privateHome !== ""
-    ? { type: "session_started", private_home: privateHome }
+  (hermetic || harnessHome !== undefined) && privateHome !== ""
+    ? { type: "session_started", private_home:
+      (scenario === "caller-first-wrong-home" && harnessHome !== undefined) ||
+      (scenario === "caller-resume-different-home" && harnessHome !== undefined && resume !== undefined) ||
+      (scenario === "resume-home-swap" && hermetic && resume !== undefined)
+        ? `${privateHome}-other` : privateHome }
     : { type: "session_started" }
 );
 
@@ -158,7 +175,9 @@ let ended = false;
 const endSession = (): void => {
   if (ended) return;
   ended = true;
-  const removeHome = !persistAfterSession || (final && finalRemovesHome);
+  const removeHome = harnessHome === undefined
+    ? !persistAfterSession || (final && finalRemovesHome)
+    : final && scenario === "caller-final-removes-home";
   if (removeHome && privateHome !== "") {
     rmSync(privateHome, { recursive: true, force: true });
   }
@@ -194,7 +213,19 @@ process.stdin.on("data", (chunk: string) => {
       process.stderr.write("Error: the harness child died mid-turn\n");
       process.exit(1);
     }
-    const wanted = hermetic ? (resume === undefined ? firstHermeticAnswer : resumedAnswer) : controlAnswer;
+    if (harnessHome !== undefined && scenario === "caller-crash") {
+      process.stderr.write("synthetic caller child failed\n");
+      process.exit(1);
+    }
+    let wanted = hermetic ? (resume === undefined ? firstHermeticAnswer : resumedAnswer) : controlAnswer;
+    if (harnessHome !== undefined) {
+      wanted = scenario === "caller-missing-skill" ? "NONE" : skillMarker;
+      if (scenario === "caller-first-leak" || (scenario === "caller-resume-leak" && resume !== undefined)) wanted = "marker";
+      if (scenario === "caller-skill-banner-only") {
+        emit({ type: "diagnostic", text: skillMarker });
+        wanted = "NONE";
+      }
+    }
     emit({ type: "assistant_message", text: wanted === "marker" ? marker : wanted });
     emit({ type: "turn_completed", finish: "end" });
   }

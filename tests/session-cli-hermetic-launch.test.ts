@@ -130,6 +130,18 @@ describe("hermetic sessions through the launcher", () => {
         .split("BEGIN\n").filter(Boolean).map((block) => block.trim().split("\n"));
       expect(sandboxes).toHaveLength(3);
       for (const argv of sandboxes) expect(argv).toContain("--ro");
+      if (agent === "agy") {
+        // Every spawn blocked the operator's real ~/.gemini and allowed
+        // only the session's private home: the fresh first spawn under its
+        // run-shaped name, the resume and final under the settled one.
+        for (const [index, argv] of sandboxes.entries()) {
+          const values = (flag: string) => argv.filter((_, i) => argv[i - 1] === flag);
+          expect(values("--block")).toEqual([join(s.home, ".gemini")]);
+          const allowed = values("--allow");
+          expect(allowed).toEqual([index === 0 ? initial.home : expected]);
+          expect(argv.indexOf("--block")).toBeLessThan(argv.indexOf("--allow"));
+        }
+      }
     } finally { s.cleanup(); }
   }, 30_000);
 
@@ -181,6 +193,50 @@ describe("hermetic sessions through the launcher", () => {
       expect(argv.indexOf("--block")).toBeLessThan(argv.indexOf("--allow"));
       expect(existsSync(allowed[0]!)).toBe(false);
       expect(existsSync(s.registryFile)).toBe(false);
+    } finally { s.cleanup(); }
+  });
+
+  test("agy: the launcher blocks operator state and permits only the private session home", async () => {
+    const s = hermeticFixture("agy");
+    try {
+      // Medium, not read-only: isolation no longer pins the autonomy, so
+      // the printed policy is the writable one and the block, not --ro,
+      // carries the operator-state boundary.
+      const outcome = await runSessionCommand([
+        "-a", "agy", "-s", "--hermetic", "--auto", "medium", "--cwd", s.workdir,
+        "--print-sandbox",
+      ], { agy: "if [ \"$1\" = \"--version\" ]; then printf '1.3.3\\n'; exit 0; fi\nexit 0", scode: "exit 99" }, {
+        registryFile: s.registryFile, env: s.env, setup: s.setup,
+      });
+      expect(outcome.exitCode, outcome.stderr).toBe(0);
+      const argv = outcome.stdout.trim().split("\n");
+      const values = (flag: string) => argv.filter((_, index) => argv[index - 1] === flag);
+      expect(values("--block")).toEqual([join(s.home, ".gemini")]);
+      const allowed = values("--allow");
+      expect(allowed).toHaveLength(1);
+      expect(dirname(allowed[0]!)).toBe(s.parent);
+      expect(basename(allowed[0]!)).toMatch(/^run-/);
+      expect(argv.indexOf("--block")).toBeLessThan(argv.indexOf("--allow"));
+      expect(argv).toContain("--rw");
+      expect(existsSync(allowed[0]!)).toBe(false);
+      expect(existsSync(s.registryFile)).toBe(false);
+    } finally { s.cleanup(); }
+  });
+
+  test("agy: a caller block over the state tree refuses with 64 and leaves no home", async () => {
+    const s = hermeticFixture("agy");
+    try {
+      const outcome = await runSessionCommand([
+        "-a", "agy", "-s", "--hermetic", "--auto", "low", "--cwd", s.workdir,
+        "--timeout", "5", "--sandbox-block", join(s.home, ".gemini"),
+      ], s.binaries, { registryFile: s.registryFile, env: s.env, setup: s.setup });
+      expect(outcome.exitCode).toBe(64);
+      // The later --allow would re-open the caller's block, so the launch
+      // refuses naming both paths; the fresh home was removed on the way
+      // out and nothing ever spawned.
+      expect(outcome.stderr).toContain("covers the launch's own harness state directory");
+      expect(existsSync(s.parent) ? readdirSync(s.parent) : []).toEqual([]);
+      expect(existsSync(join(s.state, "homes.jsonl"))).toBe(false);
     } finally { s.cleanup(); }
   });
 });

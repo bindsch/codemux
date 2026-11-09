@@ -25,6 +25,10 @@ export const TYPE_ONLY_FILES = new Set([
   // The SessionPrivateHome contract (hermetic sessions): an interface
   // alone, so the launcher and the drivers compile independently.
   "src/session/private-home-types.ts",
+  // The turn engine's shapes (turn-driver-*.ts): interfaces and type
+  // unions alone, split out so the engine modules stay under the
+  // 500-line ceiling; every behavior lives in the loaded modules.
+  "src/session/turn-driver-types.ts",
 ]);
 // Child-only entry surfaces: exercised by spawned `bin/codemux` tests whose
 // coverage Bun does not merge (docs/TESTING.md). They still count as fully

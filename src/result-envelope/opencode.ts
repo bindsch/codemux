@@ -38,7 +38,9 @@ export function opencodeResult(
   /** The model the adapter selected for this run: the request's, else the
    * override's. Falls back to the request's model when no context carried
    * the selection. */
-  selectedModel: string | null = request.model ?? null
+  selectedModel: string | null = request.model ?? null,
+  recording: string | null = null,
+  servedModel: string | null = null
 ): RunResult {
   if (!data.sawWire) {
     return {
@@ -54,23 +56,18 @@ export function opencodeResult(
   }
   const verdict = opencodeVerdict(result, data);
   const usage = verdict.usage ?? emptyUsage();
-  // The wire events the fold keeps carry no model field, so the block
-  // reports the model codemux selected — the request's, else the
-  // override's CODEMUX_OPENCODE_PROVIDER_MODEL (the adapter's selection,
-  // review round 3, contracts-2 finding 5) — else null: the harness
-  // default, which nothing reported. `served_model` stays null for the
-  // same reason: the pinned 1.18.18 run wire (captured against the
-  // override gateway, plain-unwrap-opencode's live fixture) carries no
-  // provider or model field on any event, so no provider-reported
-  // evidence exists to record.
+  // Native stdout has no response model. Only the experiment observer's
+  // verified final provider responses can supply servedModel; ordinary
+  // runs retain unknown identity and report their selected model separately.
   const block: CodemuxResultBlock = {
     agent: "opencode",
     labels: request.labels ?? null,
-    model: selectedModel,
-    served_model: null,
+    model_alias: request.modelAlias ?? null,
+    model: servedModel ?? selectedModel,
+    served_model: servedModel,
     usage,
     session_id: null,
-    recording: null,
+    recording,
     failure_code: null,
   };
   const envelope = `${JSON.stringify({ [OPENCODE_ANSWER_FIELD]: verdict.stdout, usage, codemux: block })}\n`;
@@ -82,8 +79,8 @@ export function opencodeResult(
   // wording and exit code are the ones the helper spells.
   return boundResultEnvelope(
     "opencode",
-    { ...verdict, usage, servedModel: null, stdout: envelope },
+    { ...verdict, usage, servedModel, stdout: envelope },
     usage,
-    null
+    servedModel
   );
 }

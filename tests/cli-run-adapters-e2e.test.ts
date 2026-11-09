@@ -131,14 +131,14 @@ async function runFakeHarness(
 // the caller receives exactly what the fake printed, ending on its last
 // marker.
 function expectUnmangledOutput(run: FakeRun): void {
-  expect(run.exitCode).toBe(0);
+  expect(run.exitCode, run.stderr).toBe(0);
   expect(run.stdout.endsWith("STDIN-END\n")).toBe(true);
 }
 
 describe("run e2e - gemini", () => {
   const PROMPT = "e2e gemini run path prompt";
 
-  test("high autonomy: argv prompt, -m model, yolo approval mode, settings env", async () => {
+  test("high autonomy: stdin prompt, -m model, yolo approval mode, settings env", async () => {
     const run = await runFakeHarness(
       { gemini: fakeHarnessBody({ env: ["GEMINI_CLI_SYSTEM_SETTINGS_PATH"] }) },
       "gemini",
@@ -154,10 +154,10 @@ describe("run e2e - gemini", () => {
       "--approval-mode",
       "yolo",
       "-p",
-      PROMPT,
+      "",
     ]);
-    // The prompt rides argv; nothing is delivered over stdin.
-    expect(run.stdin).toBe("");
+    // The prompt rides stdin; -p "" only selects headless mode.
+    expect(run.stdin).toBe(PROMPT);
     // The settings variable is named only where the Gemini CLI would load
     // the file, which needs a root-owned chain; a checkout is user-owned,
     // so the run carries no variable instead of one the CLI would skip
@@ -186,30 +186,38 @@ describe("run e2e - gemini", () => {
       "--approval-mode",
       "plan",
       "-p",
-      PROMPT,
+      "",
     ]);
+    expect(run.stdin).toBe(PROMPT);
   });
 });
 
 describe("run e2e - cline", () => {
-  test("high autonomy: prompt after --, --model, auto-approve true", async () => {
+  test("high autonomy: --json wire, --model, auto-approve true, stdin prompt", async () => {
     const PROMPT = "e2e cline run path prompt";
-    const run = await runFakeHarness(
-      { cline: fakeHarnessBody() },
-      "cline",
-      ["-m", "claude-sonnet-4-6", "-p", PROMPT]
-    );
-    expectUnmangledOutput(run);
+    // Every cline run is a --json run whose answer is the run_result text
+    // (src/result-envelope/cline.ts), so this fake reports its argv and
+    // stdin inside that text and the plain run unwraps it.
+    const reporter = "const a=process.argv.slice(1);const i=require('fs').readFileSync(0,'utf8');" +
+      "const t=a.map((x)=>'ARG:'+x).join('\\n')+'\\nSTDIN-START\\n'+i+'STDIN-END';" +
+      "console.log(JSON.stringify({type:'run_start',sessionId:'e2e'}));" +
+      "console.log(JSON.stringify({type:'run_result',finishReason:'completed',text:t}));";
+    const body = `if [ "$1" = "--version" ]; then printf '3.0.74\\n'; exit 0; fi\nexec ${JSON.stringify(process.execPath)} -e "${reporter}" -- "$@"`;
+    const run = await runFakeHarness({ cline: body }, "cline", ["-m", "claude-sonnet-4-6", "-p", PROMPT]);
+    // The plain run prints the unwrapped run_result text.
+    expect(run.exitCode, run.stderr).toBe(0);
+    expect(run.stdout.trimEnd().endsWith("STDIN-END")).toBe(true);
     expect(run.argv).toEqual([
+      "--json",
       "--model",
       "claude-sonnet-4-6",
       "--auto-approve",
       "true",
       "--",
-      PROMPT,
+      " ",
     ]);
-    // cline takes the prompt as a positional argument after --.
-    expect(run.stdin).toBe("");
+    // The prompt rides stdin; the positional argument is a placeholder.
+    expect(run.stdin).toBe(PROMPT);
   });
 });
 
@@ -261,7 +269,7 @@ describe("run e2e - qwen", () => {
 });
 
 describe("run e2e - aider", () => {
-  test("high autonomy: --message prompt, pinned config files, canned stdin declines", async () => {
+  test("high autonomy: --message-file prompt, pinned config files, canned stdin declines", async () => {
     const PROMPT = "summarize the changes under tests";
     const run = await runFakeHarness(
       { aider: fakeHarnessBody({ version: "aider 0.86.2", stdinBytes: 128 }) },
@@ -291,12 +299,16 @@ describe("run e2e - aider", () => {
       "--no-show-release-notes",
       "--no-show-model-warnings",
       "--disable-playwright",
+      "--no-stream",
+      "--analytics-log",
+      expect.stringMatching(/[/]\.aider[/]\.codemux-hermetic[/]run-[^/]+[/]analytics\.jsonl$/),
       "--model",
       "gpt-5.2",
       "--yes-always",
-      `--message=${PROMPT}`,
+      "--message-file",
+      expect.stringMatching(/[/]\.aider[/]\.codemux-hermetic[/]run-[^/]+[/]prompt\.txt$/),
     ]);
-    // The prompt rides argv. Stdin carries the fixed headless declines
+    // The prompt rides a private message file, never argv. Stdin carries the fixed headless declines
     // (aider treats EOF as acceptance for its yes-default prompts), never
     // the prompt. The carrier repeats for the child's whole lifetime
     // (review round 153); the fake models an aider that consumed one
@@ -328,7 +340,7 @@ describe("run e2e - droid", () => {
 });
 
 describe("run e2e - copilot", () => {
-  test("high autonomy: --prompt= argv, hardening flags, --allow-all, no stdin", async () => {
+  test("high autonomy: stdin prompt, hardening flags, --allow-all", async () => {
     const PROMPT = "e2e copilot run path prompt";
     const run = await runFakeHarness(
       {
@@ -352,13 +364,13 @@ describe("run e2e - copilot", () => {
       "--model",
       "gpt-5.2",
       "--allow-all",
-      `--prompt=${PROMPT}`,
       "--silent",
     ]);
     // --disable-builtin-mcps rides every level below high; at high it is
     // absent.
     expect(run.argv).not.toContain("--disable-builtin-mcps");
-    expect(run.stdin).toBe("");
+    // A piped prompt selects prompt mode (copilot 1.0.103 cli-main.js).
+    expect(run.stdin).toBe(PROMPT);
   });
 });
 
@@ -377,7 +389,7 @@ describe("run e2e - cursor", () => {
     expect(run.argv).toEqual([
       "--print",
       "--output-format",
-      "text",
+      "stream-json",
       "--trust",
       "--model",
       "composer-6",

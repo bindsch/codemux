@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getAdapter } from "../src/adapters/index.js";
 import { AGENT_IDS } from "../src/types.js";
-import { assertExperimentMcpUnavailable, readExperimentSpec, validateExperimentRequest } from "../src/experiment-mcp.js";
+import { assertExperimentMcpUnavailable, EXPERIMENT_MCP_HARNESSES, readExperimentSpec, validateExperimentRequest } from "../src/experiment-mcp.js";
 import { runCli, minimalPath } from "./helpers/cli.js";
 import { MARKER, respond } from "./fixtures/experiment-mcp.js";
 
@@ -34,13 +34,23 @@ describe("experiment MCP validates its harness result contract", () => {
     }
   });
 
-  for (const agent of AGENT_IDS.filter((agent) => !["claude", "zai", "codex", "kimi"].includes(agent))) {
+  // The member set is the table itself, so a new member cannot leave a
+  // stale refusal assertion behind.
+  const members = Object.keys(EXPERIMENT_MCP_HARNESSES);
+  for (const agent of AGENT_IDS.filter((agent) => !members.includes(agent))) {
     test(`${agent} refuses before preparing or spawning a harness`, () => {
       const request = { agent, prompt: "probe", hermetic: true, tools: "none" as const,
         autonomy: "read-only" as const, sandboxed: true, experimentMcp: "/does/not/exist.json" };
-      expect(() => getAdapter(agent).validateRunRequest(request)).toThrow("no verified");
+      const reason = agent === "agy" ? "native tool inventory" : agent === "openhands" ? "native MCP input schemas" : "no verified";
+      expect(() => getAdapter(agent).validateRunRequest(request)).toThrow(reason);
     });
   }
+
+  test("OpenCode admits the experiment contract without a harness result prefix", () => {
+    const { path } = specification();
+    expect(() => validateExperimentRequest({ agent: "opencode", prompt: "probe", hermetic: true,
+      tools: "none", autonomy: "read-only", sandboxed: true, experimentMcp: path })).not.toThrow();
+  });
 
   test("Codex reads the spec and requires its exact header opt-in", () => {
     for (const extra of [{}, { accept_harness_prefix: [] }]) {
@@ -115,10 +125,11 @@ describe("experiment MCP validates its harness result contract", () => {
         "--experiment-mcp", path, ...(command === "run" ? ["-f", "-"] : [])],
       { PATH: minimalPath() }, { stdin: "", holdStdin: true });
       expect(result.exitCode).not.toBe(0);
-      // run demands the spec prefix (its header names the wall-time
-      // wrapper); a codex check is refused outright before that demand
-      // (review round 381), so the operator is not sent to fix the spec.
-      expect(result.stderr).toContain(command === "run" ? "Wall time:" : "Codex --experiment-mcp supports run only");
+      // Both run and the paired check validate the spec before anything
+      // installs or spends: a spec without the harness's explicit
+      // accept_harness_prefix opt-in is refused with the header it must
+      // opt into (round 381 restored the demand on check).
+      expect(result.stderr).toContain("Wall time:");
       expect(result.stderr).not.toContain("not installed");
       expect(result.stderr).not.toContain("unknown option");
       expect(result.stdout).toBe("");

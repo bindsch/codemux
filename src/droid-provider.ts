@@ -40,6 +40,7 @@ import { join } from "node:path";
 import { pidProbeAlive } from "./process-table.js";
 import { recordTrustedParent, removeUnderTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
 import type { ProviderOverride } from "./provider-override.js";
+import type { ReasoningEffort } from "./types.js";
 import { UsageRefusalError } from "./validation.js";
 
 export interface DroidProviderSettings {
@@ -51,6 +52,7 @@ export interface DroidProviderSettings {
 
 const PARENT_DIR_NAME = ".codemux";
 const DIR_PREFIX = "provider-";
+const TUI_DIR_PREFIX = "tui-";
 
 /**
  * The environment name the file's `${VAR_NAME}` apiKey references. The
@@ -95,7 +97,7 @@ function sweepStaleDirectories(parent: string): void {
     return;
   }
   for (const entry of entries) {
-    const match = /^provider-(\d+)-/.exec(entry);
+    const match = /^(?:provider|tui)-(\d+)-/.exec(entry);
     if (!match) continue;
     const pid = Number(match[1]);
     if (pid === process.pid || pidProbeAlive(pid)) continue;
@@ -132,6 +134,113 @@ export function writeDroidProviderSettings(
   // Refused before anything is created: an unusable model leaves no
   // directory behind for the sweep to find.
   const entryId = droidProviderModelId(model);
+  return writeDroidSettingsFile(brandHome, DIR_PREFIX, "provider", () => ({
+    // The session's default model, so subagents and any path that ignores
+    // `-m` still land on the override rather than a Factory catalog id.
+    model: entryId,
+    customModels: [
+      {
+        model,
+        id: entryId,
+        index: 0,
+        displayName: "codemux provider override",
+        baseUrl: override.baseUrl,
+        apiKey: `\${${DROID_PROVIDER_KEY_ENV}}`,
+        // The documented provider for OpenAI Chat Completions-compatible
+        // endpoints other than OpenAI's own API.
+        provider: "generic-chat-completion-api",
+        noImageSupport: true,
+        // The reply budget droid's model selection honors (docs.factory.ai
+        // model-independence/byok lists maxOutputTokens among the BYOK
+        // fields); the conditional spread keeps an uncapped override's file
+        // byte-identical to the pre-caps shape. There is no context-window
+        // BYOK field — the adapter refuses that cap instead of dropping it.
+        ...(override.maxOutputTokens !== undefined
+          ? { maxOutputTokens: override.maxOutputTokens }
+          : {}),
+      },
+    ],
+  }));
+}
+
+/** The reasoning-effort value the settings file carries: the ThinkingEffort
+ * enum's own spelling, with codemux's `none` on droid's `off` (the exec
+ * flag's mapping, src/adapters/droid.ts). */
+export function droidSettingsEffort(level: ReasoningEffort): string {
+  return level === "none" ? "off" : level;
+}
+
+/** What an interactive session's settings file carries: the TUI selects
+ * its model and reasoning effort through the settings schema's
+ * sessionDefaultSettings object — `this.updateSettings({sessionDefault
+ * Settings:{model:r}})` for a model change and the schema defaults
+ * `ta={sessionDefaultSettings:{reasoningEffort:"high",autonomyMode:
+ * "normal"}}` (droid 0.221.0 binary strings, read 2026-11-09); the
+ * sessionDefaultSettings key sits at the FILE's root, not under a
+ * "general" section (the binary's own settings-help correction). An
+ * override session also carries the BYOK entry, so one file selects the
+ * model, the effort, and the route. */
+export interface DroidTuiSettingsSpec {
+  /** The model id the session defaults to — the caller picks the
+   * spelling: the BYOK entry's id under an override, the raw id
+   * otherwise (a catalog model). */
+  defaultModel?: string;
+  /** The raw model id the BYOK entry routes; named only when an
+   * override is in force. */
+  model?: string;
+  effort?: ReasoningEffort;
+  override?: (ProviderOverride & { baseUrl: string; apiKey: string }) | null;
+}
+
+/**
+ * Writes an interactive session's settings file — the TUI model, effort,
+ * and (when an override is in force) the BYOK entry ride the same
+ * root-level `--settings <path>` carrier the run path uses. The caller
+ * validates the model first (droidProviderModelId refuses braces).
+ */
+export function writeDroidTuiSettings(
+  brandHome: string,
+  spec: DroidTuiSettingsSpec
+): DroidProviderSettings {
+  const entryId = spec.model !== undefined ? droidProviderModelId(spec.model) : undefined;
+  return writeDroidSettingsFile(brandHome, TUI_DIR_PREFIX, "tui", () => ({
+    sessionDefaultSettings: {
+      ...(spec.defaultModel !== undefined ? { model: spec.defaultModel } : {}),
+      ...(spec.effort !== undefined
+        ? { reasoningEffort: droidSettingsEffort(spec.effort) }
+        : {}),
+    },
+    ...(spec.override !== null && spec.override !== undefined && spec.model !== undefined
+      ? {
+        customModels: [
+          {
+            model: spec.model,
+            id: entryId,
+            index: 0,
+            displayName: "codemux provider override",
+            baseUrl: spec.override.baseUrl,
+            apiKey: `\${${DROID_PROVIDER_KEY_ENV}}`,
+            provider: "generic-chat-completion-api",
+            noImageSupport: true,
+            ...(spec.override.maxOutputTokens !== undefined
+              ? { maxOutputTokens: spec.override.maxOutputTokens }
+              : {}),
+          },
+        ],
+      }
+      : {}),
+  }));
+}
+
+/** The shared lifecycle under both writers: the trusted parent, the stale
+ * sweep, the guarded write, the retryable finalizer, and the exit hook
+ * (the writeDroidProviderSettings rules, reviews 97/123/124). */
+function writeDroidSettingsFile(
+  brandHome: string,
+  prefix: string,
+  label: string,
+  build: () => Record<string, unknown>
+): DroidProviderSettings {
   const parent = join(brandHome, PARENT_DIR_NAME);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   // A run with write access to the brand home could have replaced the parent
@@ -139,7 +248,7 @@ export function writeDroidProviderSettings(
   // the finalizer revalidate the parent (src/safe-remove.ts).
   const parentRecord = recordTrustedParent(parent);
   sweepStaleDirectories(parent);
-  const dir = join(parent, `${DIR_PREFIX}${process.pid}-${randomBytes(6).toString("hex")}`);
+  const dir = join(parent, `${prefix}${process.pid}-${randomBytes(6).toString("hex")}`);
   // Guarded from the directory's creation to its finalizer's registration
   // (review round 123): a write that fails here removes the just-made
   // directory through the same revalidated removal the finalizer uses, and
@@ -150,36 +259,9 @@ export function writeDroidProviderSettings(
   // already sits at the name is not this run's to remove (review round 124).
   mkdirSync(dir, { mode: 0o700 });
   try {
-    const settings = {
-      // The session's default model, so subagents and any path that ignores
-      // `-m` still land on the override rather than a Factory catalog id.
-      model: entryId,
-      customModels: [
-        {
-          model,
-          id: entryId,
-          index: 0,
-          displayName: "codemux provider override",
-          baseUrl: override.baseUrl,
-          apiKey: `\${${DROID_PROVIDER_KEY_ENV}}`,
-          // The documented provider for OpenAI Chat Completions-compatible
-          // endpoints other than OpenAI's own API.
-          provider: "generic-chat-completion-api",
-          noImageSupport: true,
-          // The reply budget droid's model selection honors (docs.factory.ai
-          // model-independence/byok lists maxOutputTokens among the BYOK
-          // fields); the conditional spread keeps an uncapped override's file
-          // byte-identical to the pre-caps shape. There is no context-window
-          // BYOK field — the adapter refuses that cap instead of dropping it.
-          ...(override.maxOutputTokens !== undefined
-            ? { maxOutputTokens: override.maxOutputTokens }
-            : {}),
-        },
-      ],
-    };
-    writeFileSync(path, JSON.stringify(settings, null, 2) + "\n", { mode: 0o600 });
+    writeFileSync(path, JSON.stringify(build(), null, 2) + "\n", { mode: 0o600 });
   } catch (error) {
-    removeUnderTrustedParent(dir, parentRecord, `the droid provider settings directory ${dir}`);
+    removeUnderTrustedParent(dir, parentRecord, `the droid ${label} settings directory ${dir}`);
     throw error;
   }
 
@@ -189,7 +271,7 @@ export function writeDroidProviderSettings(
     // Thrown when refused or failed, so the run's cleanup reports the kept
     // directory; it stays retryable, and the exit hook retries and reports
     // (review round 97).
-    removeUnderTrustedParentOrThrow(dir, parentRecord, `the droid provider settings directory ${dir}`);
+    removeUnderTrustedParentOrThrow(dir, parentRecord, `the droid ${label} settings directory ${dir}`);
     finalized = true;
     process.off("exit", atExit);
   };

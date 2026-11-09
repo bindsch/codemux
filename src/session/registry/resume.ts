@@ -10,6 +10,7 @@ import { updateRegistry } from "./mutations.js";
 export interface ResumeProbe {
   agent: string;
   harnessHome: string;
+  callerOwnedHome?: boolean;
   /** The resume's validated (canonical) working directory: it must be
    * the recorded one — a resumed transcript gets no other tree. */
   cwd: string;
@@ -213,6 +214,9 @@ function judgeResumeEntry(
       outcome: "refused",
       reason: `session ${id} was created against harness home ${entry.harness_home}, not ${probe.harnessHome}`,
     };
+  }
+  if ((entry.caller_owned_home === true) !== (probe.callerOwnedHome === true)) {
+    return { outcome: "refused", reason: `session ${id} cannot gain or lose --harness-home on resume` };
   }
   // The provider identity (review D3, security): the harness state
   // directory does not move with the endpoint for claude, opencode, or

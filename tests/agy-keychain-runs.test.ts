@@ -85,8 +85,10 @@ test.each([false, true])("parent builds one private mirror; hermetic=%s", (herme
   else expect(realpathSync(join(state, "GEMINI.md"))).toBe(realpathSync(join(home, ".gemini/GEMINI.md")));
   expect(adapter.buildRunCommand(run, context)).toContain(`HOME=${privateHome}`);
   if (!hermetic) {
-    expect(adapter.buildRunCommand(run, context)).toContain("--output-format=json");
-    expect(adapter.processRunResult({ stdout: '{"status":"SUCCESS","response":"OK"}', stderr: "", success: true, exitCode: 0 }, run, context).stdout).toBe("OK\n");
+    // Every agy run is a stream run (adapters/agy.ts: the stdin prompt carrier requires it).
+    expect(adapter.buildRunCommand(run, context)).toContain("--output-format=stream-json");
+    const stream = '{"event":"init","init":{}}\n{"event":"result","result":{"status":"SUCCESS","response":"OK"}}\n';
+    expect(adapter.processRunResult({ stdout: stream, stderr: "", success: true, exitCode: 0 }, run, context).stdout).toBe("OK\n");
   }
   const beforeCleanup = records().length;
   adapter.cleanupRun(context);

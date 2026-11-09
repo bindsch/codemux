@@ -187,21 +187,38 @@ export const resetQuotaGateState = (): void => {
   warnedIntegrationAbsent = false;
 };
 
-/** Decides one usagemux result per the table above. Exported for tests. */
-export const gateOnResult = (
+/** What one usagemux result decides: the refusal message when a bounding
+ * window is below the ceiling (null otherwise), and the warning lines in
+ * the order the gate prints them — the notes that preceded the refusal
+ * print before it throws. Pure: nothing prints and nothing throws here, so
+ * a caller that decides without printing (the live gate's per-harness
+ * pre-spawn decisions, scripts/live-gate/quota.ts) applies the exact rule
+ * a launch applies. The message strings are the gate's stderr contract
+ * (pinned by tests/quota-gate-usagemux.test.ts). */
+export interface QuotaGateOutcome {
+  refusal: string | null;
+  notes: readonly string[];
+}
+
+/** The pure decision behind gateOnResult. Exported for the live gate and
+ * tests. */
+export const gateOutcomeOnResult = (
   agent: AgentId,
   result: UsageSnapshot["results"][number],
   policy: QuotaPolicy
-): void => {
+): QuotaGateOutcome => {
+  const notes: string[] = [];
   if (result.status === "not-applicable") {
     // Silent here meant "the gate is off for this harness," which is not
     // what not-applicable says: usagemux has no client for the account the
     // run spends from, so the launch proceeds unmeasured. One line, once
     // per launch, names that (audit round 2, B4).
-    console.error(
-      `quota gate: ${agent}: usage not measured; spends from its configured provider`
-    );
-    return;
+    return {
+      refusal: null,
+      notes: [
+        `quota gate: ${agent}: usage not measured; spends from its configured provider`,
+      ],
+    };
   }
   if (result.status === "error" || result.status === "unavailable") {
     // An unreadable provider is not an exhausted one: the gate refuses on
@@ -210,10 +227,12 @@ export const gateOnResult = (
     // 30 s to answer for claude, and an opencode whose usage needs browser
     // cookies the machine does not have, blocked every launch of both
     // harnesses. The provider's own remedy text is still printed.
-    console.error(
-      `Warning: quota gate: ${agent}: usage unreadable (${escapeForTerminal(result.message ?? result.status)}); proceeding`
-    );
-    return;
+    return {
+      refusal: null,
+      notes: [
+        `Warning: quota gate: ${agent}: usage unreadable (${escapeForTerminal(result.message ?? result.status)}); proceeding`,
+      ],
+    };
   }
   const binding = result.windows.filter(
     (window) =>
@@ -228,17 +247,19 @@ export const gateOnResult = (
   // return below once skipped this loop — a weekly window reporting only
   // usedPercent gets this warning before the no-binding note (round 23,
   // edges 8).
-  const warnWeeklyOverUse = (): void => {
+  const weeklyOverUseNotes = (): string[] => {
+    const warnings: string[] = [];
     for (const window of result.windows) {
       if (NON_BINDING_WINDOW_KIND.test(window.kind)) continue;
       if (!isWeekly(window) || typeof window.usedPercent !== "number") continue;
       if (window.usedPercent > policy.weeklyWarnUsedPercent) {
-        console.error(
+        warnings.push(
           `Warning: quota gate: ${agent} ${escapeForTerminal(window.kind)} window is ${formatUsagePercent(window.usedPercent)}% used ` +
             `(above ${formatUsagePercent(policy.weeklyWarnUsedPercent)}%); proceeding`
         );
       }
     }
+    return warnings;
   };
   // Credits are a prepaid meter the windows do not carry (codex reports
   // them beside its weekly window): zero means every API-key call fails,
@@ -247,7 +268,7 @@ export const gateOnResult = (
   // 11): the parser accepts any finite number, and an overdrawn account
   // answers -2.5, not a hardcoded 0.
   if (result.credits !== null && result.credits.remaining <= 0) {
-    console.error(
+    notes.push(
       `Warning: quota gate: ${agent}: credits exhausted (${escapeForTerminal(String(result.credits.remaining))} ${escapeForTerminal(result.credits.unit)} left); proceeding`
     );
   }
@@ -255,11 +276,11 @@ export const gateOnResult = (
     // The same rule: a snapshot with no bounding window reports nothing
     // about spend, so it cannot justify a refusal. What it did report —
     // the weekly used percent — still warns.
-    warnWeeklyOverUse();
-    console.error(
+    notes.push(...weeklyOverUseNotes());
+    notes.push(
       `Warning: quota gate: ${agent}: no window that bounds model calls reports a remaining percent; proceeding`
     );
-    return;
+    return { refusal: null, notes };
   }
   for (const window of binding) {
     if (window.remainingPercent! >= policy.minRemainingPercent) continue;
@@ -277,7 +298,7 @@ export const gateOnResult = (
     const bindingTier =
       window.kind === "secondary" || window.kind === "tertiary";
     if (window.kind === "primary" || (bindingTier && weeklyBySpan(window))) {
-      throw new UsageRefusalError(`quota gate: ${agent}: ${shortfall}`);
+      return { refusal: `quota gate: ${agent}: ${shortfall}`, notes };
     }
     // A pool that is neither the provider's primary window nor a weekly
     // tier does not bound every call: usagemux's third window for cursor
@@ -285,9 +306,21 @@ export const gateOnResult = (
     // and a launch that never touches that pool is not blocked by its
     // exhaustion (live gate of 2026-11-02: cursor refused on an empty
     // third-party pool while its plan had 42% left). It warns instead.
-    console.error(`Warning: quota gate: ${agent}: ${shortfall}; proceeding (not the primary window)`);
+    notes.push(`Warning: quota gate: ${agent}: ${shortfall}; proceeding (not the primary window)`);
   }
-  warnWeeklyOverUse();
+  notes.push(...weeklyOverUseNotes());
+  return { refusal: null, notes };
+};
+
+/** Decides one usagemux result per the table above. Exported for tests. */
+export const gateOnResult = (
+  agent: AgentId,
+  result: UsageSnapshot["results"][number],
+  policy: QuotaPolicy
+): void => {
+  const { refusal, notes } = gateOutcomeOnResult(agent, result, policy);
+  for (const note of notes) console.error(note);
+  if (refusal !== null) throw new UsageRefusalError(refusal);
 };
 
 /** The gate every launch command calls. Never rejects with anything but a

@@ -19,10 +19,13 @@ describe("CLI - tui pre-launch usage refusals exit 64", () => {
       message: "Unknown agent 'nope'",
     },
     {
+      // Droid's TUI now carries -m through its settings file (W4), so the
+      // generic gate exercises through legacy qwen-coder, the one binary
+      // with no model selection at all.
       label: "model selection the TUI cannot carry",
-      binaries: { droid: "exit 0" },
-      argv: ["tui", "-a", "droid", "-m", "gpt5", "--no-sandbox", "--auto", "high"],
-      message: "droid does not support model selection in TUI mode",
+      binaries: { "qwen-coder": "exit 0" },
+      argv: ["tui", "-a", "qwen", "-m", "any-model", "--no-sandbox"],
+      message: "qwen does not support model selection in TUI mode",
     },
     {
       // Review round 4, contracts-2 finding 1: the model-name validator
@@ -61,23 +64,22 @@ describe("CLI - tui pre-launch usage refusals exit 64", () => {
     },
     {
       label: "playwright MCP on an agent that cannot carry it",
-      binaries: { codex: "exit 0" },
-      argv: ["tui", "-a", "codex", "--enable-playwright-mcp"],
-      message: "--enable-playwright-mcp is supported only by claude and zai",
+      binaries: { aider: "exit 0" },
+      argv: ["tui", "-a", "aider", "--enable-playwright-mcp"],
+      message: "--enable-playwright-mcp is supported only by claude, zai, opencode",
     },
     {
-      // Review round 5, contracts-2 finding 2 sweep: the provider override
-      // supports headless runs only, and the TUI refusal of it is a usage
-      // refusal (exit 64), not a plain failure.
-      label: "a droid provider override in TUI mode",
-      binaries: { droid: "exit 0" },
-      argv: ["tui", "-a", "droid", "--no-sandbox", "--auto", "high"],
+      // The TUI override carries the run path's model requirement: a
+      // model-less override is a caller mistake and exits 64 before any
+      // launch-owned directory exists (claude's TUI rule).
+      label: "a codex provider override without a model in TUI mode",
+      binaries: { codex: "exit 0" },
+      argv: ["tui", "-a", "codex", "--no-sandbox", "--auto", "high"],
       env: {
-        CODEMUX_DROID_PROVIDER_BASE_URL: "https://provider.test/v1",
-        CODEMUX_DROID_PROVIDER_API_KEY: "sk-test",
-        CODEMUX_DROID_PROVIDER_MODEL: "glm-5.3",
+        CODEMUX_CODEX_PROVIDER_BASE_URL: "https://provider.test/v1",
+        CODEMUX_CODEX_PROVIDER_API_KEY: "sk-test",
       },
-      message: "the droid provider override supports headless runs only",
+      message: "codex needs a model for the provider override",
     },
     {
       // Review round 8, contracts-2 finding 1: a model-less claude

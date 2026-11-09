@@ -20,23 +20,24 @@ binary; it does not promise every optional capability or a working login.
 | `zai` | 2.1.280 | rejected | no | yes | yes | yes | derived | no |
 | `codex` | 0.159.3 | queued | yes | yes | yes | yes | native | yes |
 | `agy` | 1.2.14 | rejected | no | no | no | no | no | no |
-| `opencode` | 1.18.18 | rejected | no | no | no | no | no | no |
-| `aider` | 0.86.2 | rejected | no | no | no | no | no | no |
-| `kimi` | 0.31.1 | rejected | no | no | no | no | no | no |
+| `opencode` | 1.18.18 | rejected | no | yes | no | no | no | no |
+| `aider` | 0.86.2 | rejected | no | yes | no | no | no | no |
+| `kimi` | 2.5.2 | rejected | no | yes | no | no | no | no |
+| `cursor` | 2026.11.05 | rejected | no | no | no | no | no | no |
+| `droid` | 0.221.0 | rejected | no | no | no | no | no | no |
+| `pi` | 0.85.1 | rejected | no | yes | no | no | no | no |
+| `qwen` | 0.24.0 | rejected | no | no | no | no | no | no |
+| `gemini` | 0.60.0 | rejected | no | yes | no | yes | no | no |
+| `copilot` | 1.0.85 | rejected | no | yes | no | no | no | no |
+| `goose` | 1.50.1 | rejected | no | no | no | no | no | no |
+| `cline` | 3.0.74 | rejected | no | yes | no | yes | no | no |
+| `openhands` | 1.16.0 | rejected | no | no | no | no | no | no |
 
-All seven report `live_input: true` and `resume: true`. Read the capabilities
-on `session_started`; unsupported operations receive `input_rejected`.
-ZAI uses the Claude binary. The other installed agents have no session driver:
+All sixteen report `live_input: true` and `resume: true`. Read the capabilities on `session_started`; unsupported operations receive `input_rejected`. A first interrupted Kimi turn can continue only after its id is known or recovered from its private session index.
+ZAI uses the Claude binary. Cline opens one ACP connection (cli-v3.0.74 `cline --acp`) per caller input and reloads the native session with `session/load` between turns. Its per-turn usage is the change in the cumulative usage that `cline history --json` reports.
 
-- `cline`: the CLI wraps a VS Code extension; it prints one-shot output and has no bidirectional control wire upstream.
-- `copilot`: one-shot CLI; no bidirectional control wire upstream.
-- `cursor`: the standalone `cursor-agent` entry is one-shot, and the desktop agent has no external control wire; not built.
-- `droid`: one-shot headless entry plus a human TUI; no bidirectional control wire upstream.
-- `gemini`: one-shot `-p` entry plus a human TUI; no bidirectional control wire upstream.
-- `goose`: upstream keeps a session ledger a driver could resume, but the run path exposes no bidirectional control wire; not built.
-- `openhands`: the local service owns the event loop and the adapter drives only `--headless` one-shot runs; not built.
-- `pi`: one-shot headless entry plus a human REPL; no bidirectional control wire upstream.
-- `qwen`: one-shot headless entry plus a human TUI (a gemini-cli fork); no bidirectional control wire upstream.
+Cursor, Droid, Pi, Qwen, Gemini, Copilot, Goose, and OpenHands run one process per caller input, as Aider, OpenCode, and Kimi do. The harness's own store or a codemux-owned history file carries state between turns. OpenHands supports caller-owned homes and hermetic sessions.
+Of those eight agents, Droid, Pi, Qwen, Gemini, Copilot, Goose, and OpenHands accept `--hermetic`; Cursor refuses it. The [hermetic section](#hermetic-sessions) describes private-home behavior.
 
 See [harness compatibility](harnesses.md) for harness-specific limits.
 
@@ -149,17 +150,18 @@ are warned about and ignored.
 | Flag | Default | Behavior |
 |---|---|---|
 | `--resume <id>` | fresh session | Resume a registry-backed harness session |
+| `--harness-home <dir>` | Off | Persistent caller-owned config and runtime home; every session agent (Cline, Copilot, Goose, and OpenHands require a provider override); absolute canonical path, no symlinks, incompatible with `--hermetic` |
 | `--timeout <seconds>` | none | Whole-session deadline; expiry ends with a nonzero exit |
-| `--turn-timeout <seconds>` | none | Claude/ZAI/Codex only; first expiry interrupts, second expiry on that same turn ends the session |
+| `--turn-timeout <seconds>` | none | Claude/ZAI/Codex/Aider/OpenCode/Copilot/Gemini/Pi/Cline; first expiry interrupts, second expiry on that same turn ends the session. Kimi stops its turn child through the shutdown grace |
 | `--permission-timeout <seconds>` | 300 | Deny an unanswered permission request |
 | `--shutdown-grace <seconds>` | 10 | Grace before SIGTERM, then another grace before SIGKILL |
 | `--no-author-prefix` | prefix enabled | Preserve attribution events without prepending `[author] ` to harness text |
-| `--permission-policy <policy>` | `default` | `deny` answers every permission request with an immediate deny (Claude/ZAI); see [permissions](#permissions-and-attribution). Per invocation: the registry record does not carry it, so a `--resume` that wants the deny policy passes the flag again |
-| `--hermetic` | Off | Hermetic session: none of the operator's instructions, skills, hooks, MCP servers, or permission rules load, and the harness keeps its state in a per-session private home that survives `--resume` (claude, zai, codex, kimi, agy; opencode keeps no session-keyed home — its sessions live in the real data directory and `private_home` reports null); see [below](#hermetic-sessions) |
-| `--experiment-project-settings` | Off; requires `--hermetic` | Hermetic plus the repository's own settings in place of the operator's (claude/zai; opencode keeps the project's config); see [below](#hermetic-project-settings-sessions) |
-| `--final` | Off; requires `--hermetic` | Remove the session's private home — its transcript with it — when this session ends |
+| `--permission-policy <policy>` | `default` | `deny` immediately denies Claude/ZAI/Codex requests; Kimi/OpenCode/agy use native rules with `--hermetic`; OpenHands plants a PreToolUse hook that blocks every tool but `finish` and `think` in its hermetic home (refused with `--experiment-project-settings`). Aider sends negative stdin confirmations and suppresses yes-always grants. See [permissions](#permissions-and-attribution). Pass the flag again on resume; the registry does not store it |
+| `--hermetic` | Off | Accepted by Claude, ZAI, Codex, Agy, OpenCode, Aider, Kimi, Droid, Pi, Qwen, Gemini, Copilot, Goose, Cline, and OpenHands. Cline and OpenHands require a provider override. Cursor refuses it. Private-home behavior and isolation conditions are described [below](#hermetic-sessions) |
+| `--experiment-project-settings` | Off; requires `--hermetic` | Hermetic plus the repository's own settings in place of the operator's (claude/zai; opencode keeps the project's config; openhands loads the working directory's `.openhands`); see [below](#hermetic-project-settings-sessions) |
+| `--final` | Off; requires an isolation mode | Remove a hermetic session's private home and transcript. A caller-owned `--harness-home` is always preserved |
 | `--sandbox-block <path>` | none | Repeatable; pass an extra scode `--block` for this session's children (absolute paths only), an operator-side extra on top of the project-settings blocks. Canonicalized once at flag parse (symlinks dereferenced, then deduplicated and sorted), and that same spelling is recorded and enforced by every child; a resume must carry every recorded block path and may add more |
-| `--print-sandbox` | Off; requires `--sandbox` | Print the scode argv the long-lived child would exec, one argument per line with control characters escaped (a newline inside an argument prints as `\n`), and exit 0 without starting a session (refused for the turn-per-process agents); the credential sandbox preparation is skipped and the credential copy deferred — the command is print only; a fresh session's private directory is removed on the way out |
+| `--print-sandbox` | Off; requires `--sandbox` | Available for Agy, Aider, Claude, Cline, Codex, Copilot, Cursor, Droid, Goose, Gemini, Kimi, OpenCode, OpenHands, Pi, and ZAI. Print scode argv, one argument per line with control characters escaped (a newline prints as `\n`), and exit 0 without starting a session. Aider, Kimi, and OpenCode show a representative per-turn command with a prompt placeholder; Cline, Copilot, Cursor, Droid, Gemini, Goose, OpenHands, and Pi print the representative first turn's command, since their session children spawn per turn; OpenHands names a representative task-file path and writes none. Resumed previews preserve state. Credential copying is deferred and temporary preview directories are removed |
 | `--quota-ceiling <percent>` | config `quota.minRemainingPercent`, initially 10 | Refuse the session when a bounding usage window is below this percent remaining; overrides the config ceiling for this one session |
 | `--no-quota-gate` | gate on | Skip the pre-launch usagemux quota check for this session |
 
@@ -176,86 +178,81 @@ records nothing; a refused resume has already written its ownership claim to
 the registry (the claim precedes the gate), and the refusal releases it, so
 the record stays resumable for the next attempt.
 
-Every `--tools` value and `--max-budget-usd` (the spend limit applies to
-headless runs; use run) are refused for sessions. `--hermetic` is accepted
-by every agent whose `run --hermetic` is verified — claude, zai, codex,
-kimi, opencode, and agy — and refused with the run path's own reason
-elsewhere (aider, exit 64). `--effort none` sends no effort field on every
+Aider and OpenCode accept `--tools default` and `--tools none` on every turn and resume. OpenCode requires hermetic mode without project settings for `none`. Copilot names an unavailable-tool sentinel that empties the registry, Gemini writes empty core tools into its per-turn settings, and Pi passes `--no-tools`; each is reapplied on every resumed turn and `default` restores discovery. Kimi binds an empty native allowlist on the first tools-none turn; resume restores it and refuses a different tool selection. Other session tool selections remain agent-specific. `--max-budget-usd` is refused for sessions; the spend limit applies to headless runs.
+`--hermetic` is accepted by Claude, ZAI, Codex, Agy, OpenCode, Aider, Kimi, Droid, Pi, Qwen, Gemini, Copilot, Goose, Cline, and OpenHands. Cursor refuses it with exit 64 because its state cannot be relocated to a session-lifetime private home.
+`--effort none` sends no effort field on every
 session harness, codex included. `--enable-playwright-mcp` is supported
-only for Claude/ZAI, never combined with either isolation flag, and
-requires `--sandbox` and `--auto low`.
+for Claude/ZAI/Codex/Kimi/OpenCode/Copilot/Gemini/Goose/Pi/Qwen, never combined with either
+isolation flag, and requires `--sandbox`; Claude, ZAI, Codex, Gemini, Goose, Pi, and Qwen
+require `--auto low`, and Copilot requires `--auto medium` or `high`
+(low has no caller approval bridge).
 
+## Caller-owned session homes
+`--harness-home <dir>` selects one persistent directory across turns and session restarts. Pass the same path with `--resume <id>`; a changed path or missing transcript directory refuses resume. Codemux creates absent directories with mode 0700 and requires ownership by the invoking user. The directory must be separate from the working directory and all real harness stores. It must also neither contain nor lie inside one of scode's default-blocked paths, such as `~/Library`, `~/.ssh`, or `~/.config/gh`: a sandbox grant beneath one would reopen it. Symlinks and symlink ancestors are refused. Neither `--final` nor failed-launch cleanup removes it; the caller owns retention and cleanup.
+
+Codemux seeds only dedicated logins and checks them before every child launch, after sandbox preflight. A login a harness rewrites in place is hard-linked; use a directory on the login's filesystem. A replaced or missing real login refuses stale private credentials; remove the private login entry after restoring the real login, then retry. Claude and Qwen replace their login files by rename, so the caller home never holds their refresh tokens: codemux rewrites an access-token-only copy from the real login on every launch and resume. A Claude mirror that still carries a refresh token refuses the launch, and a sandboxed Claude session runs the same Keychain sync and mirror guard as any sandboxed run. A Qwen access token at or near expiry refuses the launch; run Qwen once outside codemux to refresh it. Kimi also renames token files, so `.kimi-code/credentials` is a symlink to the real credential directory, the hermetic home's mechanism, and the sandbox grants that one directory. API-key authentication needs no login. Codemux does not export a Keychain login or copy operator settings.
+
+All paths below are relative to `<dir>`. HOME, USERPROFILE, and XDG roots move inside it. Place trusted settings and skills at the listed paths; caller content remains enabled. Copilot and OpenHands require a configured `CODEMUX_<AGENT>_PROVIDER_*` override because their native login files mix settings with credentials. Goose requires one as its hermetic runs do: the installed binary does not establish that `secrets.yaml` is rewritten in place. Agy requires `GEMINI_API_KEY` because the audited binary exposes no portable file-login path.
+
+| Agent | Native root and caller content | Login files or condition |
+| --- | --- | --- |
+| Claude / ZAI | `CLAUDE_CONFIG_DIR=.`; `settings.json`, `skills/` | Access-token-only `.credentials.json`, rewritten per launch; ZAI uses its gateway token |
+| Codex | `CODEX_HOME=.codex`; `config.toml`, `skills/` inside it | `.codex/auth.json` |
+| Agy | HOME; `.gemini/antigravity-cli/settings.json`, `.gemini/skills/` | Explicit API key; no Keychain access |
+| Aider | HOME; `.aider.conf.yml`; use its `read` setting for instruction files | `.aider/oauth-keys.env` |
+| Copilot | `COPILOT_HOME=.copilot`; `settings.json`, `skills/` inside it | Provider override; never links `config.json` |
+| Cursor | `CURSOR_CONFIG_DIR=.cursor`; `cli-config.json`, `rules/`, `skills/` inside it | `.cursor/auth.json` on macOS; `.config/cursor/auth.json` on Linux |
+| Droid | `FACTORY_HOME_OVERRIDE=.`; `.factory/settings.json`, `.factory/skills/` | `.factory/auth.json` |
+| Gemini | `GEMINI_CLI_HOME=.`; `.gemini/settings.json`, `.gemini/skills/` | `.gemini/oauth_creds.json`, optional `google_accounts.json` |
+| Goose | `GOOSE_PATH_ROOT=.`; `config/config.yaml`, `.agents/skills/` | Provider override; never links `secrets.yaml`; file storage enabled |
+| Kimi | `KIMI_CODE_HOME=.kimi-code`; `config.toml`, `skills/` inside it | `.kimi-code/credentials` symlink to the real nonempty credential directory |
+| OpenCode | XDG roots and `OPENCODE_CONFIG_DIR=.config/opencode`; `opencode.json`, `skills/` inside it | `.local/share/opencode/auth.json` |
+| OpenHands | `OPENHANDS_PERSISTENCE_DIR=.openhands`; `agent_settings.json`, `microagents/` inside it | Provider override; never links `agent_settings.json` |
+| Pi | `PI_CODING_AGENT_DIR=.pi/agent`; `settings.json`, `skills/` inside it | `.pi/agent/auth.json` |
+| Qwen | `QWEN_HOME=.qwen`; `settings.json`, `skills/` inside it; runtime stays in the root | Access-token-only `.qwen/oauth_creds.json`, rewritten per launch |
+
+With scode, real harness stores are blocked and only the caller directory receives writable state access. `--print-sandbox`, where supported, shows the same policy without creating the home. See [isolation](isolation.md#caller-owned-session-homes). Cline remains with the separate ACP integration.
 ## Hermetic sessions
 
-`--hermetic` on a session means what it means on `run` (see
-[isolation](isolation.md)), plus session lifetime: none of the operator's
-instructions, skills, hooks, MCP servers, or permission rules load, the
-harness's own state lives in a per-session private home, and that home is
-reported on `session_started.private_home` and removed by `--final` or the
-two-day stale sweep. Five agents keep such a home (claude, zai, codex,
-kimi, agy); opencode keeps none — its sessions live in the real data
-directory, and it reports `private_home: null`. A session cannot gain or
-lose the mode on resume; a
-missing home on resume is refused as policy (exit 78), never silently
-remade — the transcript the home exists to carry would be gone.
+`--hermetic` applies the harness's run isolation to session turns; see [isolation](isolation.md) for each harness's conditions and unresolved limits. Flag acceptance alone does not promise a session-lifetime private home.
+Thirteen agents keep a session-lifetime private home: Claude, ZAI, Codex, Kimi, Agy, Aider, OpenCode, Droid, Pi, Gemini, Copilot, Goose, and OpenHands. The home is reported on `session_started.private_home` and removed by `--final` or the two-day stale sweep. Qwen keeps none: its sessions live in the real data directory, and it reports `private_home: null`.
+A session cannot gain or lose hermetic mode on resume. A missing home on resume is refused as policy (exit 78), never silently remade, because its transcript would be gone.
 
 Per agent:
 
-- **claude/zai** run the `run` path's own hermetic argv (`--safe-mode`,
-  `--setting-sources user`, `--strict-mcp-config`) inside a private
-  `CLAUDE_CONFIG_DIR` under `~/.claude/.codemux-hermetic/session-<id>/`
-  (a redirected config root is honored the same way), carrying the same
-  credential copy a project-settings session carries. The operator's real
-  config root is blocked for the session's children and only the private
-  directory re-allowed.
-- **codex** runs with `HOME` and `CODEX_HOME` pointed into the private
-  home under `~/.codex/.codemux-hermetic/` (`CODEX_HOME` redirects are
-  honored), holding the login link (or the override's provider config
-  under `CODEMUX_CODEX_PROVIDER_*`, whose key is the credential). The
-  home is keyed by the thread id once the harness mints it. A hermetic
-  session's threads skip AGENTS.md discovery (a thread config carries
-  `project_doc_max_bytes: 0` and an empty fallback list, start and
-  resume alike); a plain session sends no thread config, so project
-  documents load exactly as a plain codex run's do.
-- **kimi** runs each turn with `HOME` and `KIMI_CODE_HOME` pointed into
-  the private home under `~/.kimi-code/.codemux-hermetic/`, sharing the
-  credential directory and a filtered `config.toml` with the operator's
-  brand home and carrying copies of its `region` and `device_id`; the
-  session store lives inside the home.
-- **agy** runs with `HOME` and the XDG variables pointed into the private
-  home under `~/.gemini/.codemux-isolation-probes/`, carrying its own
-  private Keychain login (an API key or file token is used when the
-  sandbox policy keeps one). A fresh agy session emits `session_started`,
-  and with it `private_home`, only after its first turn's first result
-  names the conversation. The reported path is the settled one the home
-  will sit on — `session-<id>`, the spelling a `--resume` computes (the
-  codex and kimi rule); until the session ends, the live directory (the
-  child's `HOME`) is still the run-shaped one, and the rename onto the
-  settled name happens in the end path. A caller can therefore plant
-  `<private home>/.gemini/antigravity-cli/settings.json` before the first
-  turn only on a resume; a fresh session's reported path exists only
-  once the session has ended.
-- **opencode** keeps no session-keyed home: its login and native sessions
-  live in the real data directory, which the per-turn environment prefix
-  deliberately keeps, and `session_started.private_home` reports null.
-  An opencode session with `--experiment-project-settings` adds the
-  project's own config to that prefix and drops `--pure`.
+- **claude/zai** run the `run` path's own hermetic argv (`--safe-mode`, `--setting-sources user`, `--strict-mcp-config`) inside a private `CLAUDE_CONFIG_DIR` under `~/.claude/.codemux-hermetic/session-<id>/` (a redirected config root is honored the same way), carrying the same credential copy a project-settings session carries. The operator's real config root is blocked for the session's children and only the private directory re-allowed.
+- **codex** runs with `HOME` and `CODEX_HOME` pointed into the private home under `~/.codex/.codemux-hermetic/` (`CODEX_HOME` redirects are honored), holding the login link (or the override's provider config under `CODEMUX_CODEX_PROVIDER_*`, whose key is the credential). The home is keyed by the thread id once the harness mints it. A hermetic session's threads skip AGENTS.md discovery (a thread config carries `project_doc_max_bytes: 0` and an empty fallback list, start and resume alike); a plain session sends no thread config, so project documents load exactly as a plain codex run's do.
+- **kimi** runs each turn with `HOME` and `KIMI_CODE_HOME` pointed into its managed private home, sharing the credential directory and a filtered `config.toml` with the operator's brand home and carrying copies of `region` and `device_id`; the session store lives inside the home.
+- **agy** runs with HOME and XDG variables pointed into its managed private home, carrying a private Keychain login or the permitted API-key/file token. The first result supplies the conversation ID and triggers `session_started`. Its reported `private_home` is the final `session-<id>` path; the live child uses the temporary path until session settlement. The reported directory exists for caller configuration only after that settlement or on resume.
+- **opencode** keeps login and the native session database in private data/state directories across turns and resume. The login is a hard link to the real `auth.json`, which OpenCode rewrites in place, so a token refresh during the session reaches the real login. HOME, configuration, and cache remain fresh per turn. The first completed turn settles the private directory under the native session ID; later sandbox allowances follow that path. `--final` waits for child settlement before removal; failed removal keeps the session resumable. Project-settings mode adds the project's config and drops `--pure`.
+- **aider** keeps `history.md` in its session private home and redirects HOME on every turn. It requires a clean explicit working directory. `--final` removes the private home after child settlement. Interruption removes only the canceled turn's history delta; later turns retain completed history.
+- **droid** keeps a managed private home whose `.factory/auth.json` hard-links the real login. Each turn unsets the Factory override, disables self-update, and redirects HOME. A provider override rewrites the BYOK entry each turn. The first native session ID settles the home onto `session-<id>`.
+- **pi** keeps a home under `~/.pi/agent/.codemux-hermetic/` (a
+  passed-through `PI_CODING_AGENT_DIR` redirects it) and points
+  `PI_CODING_AGENT_DIR` there on every turn; under a provider override
+  the home's `models.json` carries the routing entry and `--model` is
+  required. A pi provider override works only hermetic: plain pi runs
+  relocate the whole session store with `PI_CODING_AGENT_DIR`, so only
+  the session home is stable across turns (plain + override exits 64).
+- **gemini** keeps a home under `~/.gemini/.codemux-hermetic/` whose
+  `.gemini/` holds hard links to the OAuth login files (skipped under an
+  API-key override); `GEMINI_CLI_HOME` never routes a session.
+- **copilot** keeps a home under `~/.copilot/.codemux-hermetic/` holding
+  the hard-linked `config.json` login; `COPILOT_HOME` never routes a
+  session.
+- **goose** keeps an empty home under `~/.config/goose/.codemux-hermetic/`
+  on purpose: the operator's goose config carries the system prompt, so
+  nothing may ride into the private home — a hermetic goose session
+  therefore requires the provider override (exit 64 without it), and
+  each turn sets `GOOSE_PATH_ROOT` and the XDG trio at the home.
+- **openhands** keeps an empty home under `~/.openhands/.codemux-hermetic/` and requires the provider override (exit 64 without it), because the operator's `~/.openhands` holds the whole agent spec. Each turn sets `HOME`, `OPENHANDS_PERSISTENCE_DIR`, and `OPENHANDS_CONVERSATIONS_DIR` at the home, so the conversation store that `--resume` reads lives there; the first turn's Conversation ID settles the home onto `session-<id>`. The working directory must be explicit and hold no `.openhands`. `--permission-policy deny` writes a PreToolUse rule to the home's `.openhands/hooks.json`; a resume applies the policy its own command names.
+- **qwen** keeps no session-keyed home: safe mode is
+  the whole hermetic claim, the native sessions stay in the real data
+  directory, and `private_home` reports null.
 
-`--final` removes the home when the session ends. On the claude family
-and on agy the driver's end path runs the removal twice before it stamps
-the record, and a failed pair keeps the home, exits 1, and leaves the
-record resumable — on agy the kept home also settles onto the
-session-keyed name, so the resume the verdict promises finds it (the
-project-settings section below spells this out). On
-codex and kimi the CLI removes the home after the session's children settled; a
-fresh session's record keeps its resumable stamp (the harness's own id
-never reaches the CLI), so a later resume of it answers the missing-home
-refusal, exit 78. Without `--final`, the home persists for the next
-`--resume`, and the stale sweep removes it once it has been quiet for two
-days and its registry record is free: ended without a final stamp, or
-gone. A session that ended normally and was never resumed therefore
-loses its home after two quiet days, and a later `--resume` answers the
-missing-home refusal, exit 78.
+`--final` removes the home when the session ends. On the claude family, on agy, and on the six hermetic second-wave agents (droid, pi, gemini, copilot, goose, openhands) the driver's end path runs the removal twice before it stamps the record, and a failed pair keeps the home, exits 1, and leaves the record resumable — on agy and those six the kept home also settles onto the session-keyed name, so the resume the verdict promises finds it (the project-settings section below spells this out).
+On codex, kimi, and aider the CLI removes the home after the session's children settled; a fresh session's record keeps its resumable stamp (the harness's own id never reaches the CLI), so a later resume of it answers the missing-home refusal, exit 78.
+Without `--final`, the home persists for the next `--resume`, and the stale sweep removes it once it has been quiet for two days and its registry record is free: ended without a final stamp, or gone. A session that ended normally and was never resumed therefore loses its home after two quiet days, and a later `--resume` answers the missing-home refusal, exit 78.
 
 ## Hermetic project-settings sessions
 
@@ -316,16 +313,22 @@ provider override carries an access-token-only copy of the credential
 mirror inside the directory; ZAI and override sessions carry no operator
 login ([authentication](authentication.md)).
 
-Provider overrides via `CODEMUX_<AGENT>_PROVIDER_*` are supported on session
-spawns for Claude, Codex, OpenCode, Aider, and Kimi. ZAI and Agy refuse
-overrides. The adapter validates them as on `run`; the selected provider
-must match on resume. See [CLI reference](cli.md).
+On OpenHands the mode is the hermetic session without the clean-working-directory rule: every turn runs in the empty private home and loads the working directory's own `.openhands` (1.16.0 reads `{working_dir}/.openhands/hooks.json` before the home's). It requires scode and `--auto low`, and refuses `--permission-policy deny`, whose rule in the home that file would replace.
+
+Provider overrides via `CODEMUX_<AGENT>_PROVIDER_*` are supported on session spawns for Aider, Claude, Cline, Codex, Copilot, Cursor, Droid, Goose, Gemini, Kimi, OpenCode, OpenHands, Pi, Qwen, and ZAI. Agy sessions refuse overrides.
+The adapter validates overrides as on `run`; the selected provider must match on resume. Qwen requires a non-legacy binary. A Pi override session requires `--hermetic` because its session home keeps the session store stable across turns. A hermetic Goose session requires an override because its private home contains no operator configuration. See [CLI reference](cli.md).
 
 Claude/ZAI account redirects use `CLAUDE_CONFIG_DIR`, Codex uses `CODEX_HOME`,
 and Kimi uses `KIMI_CODE_HOME`, only when included in `--pass-env`. Values
 must be absolute; Claude/Codex reject whitespace padding, and Kimi and
-Codex reject an empty value. OpenCode uses its resolved XDG data directory. Aider keeps
-history in `~/.aider`; Agy uses `~/.gemini/antigravity-cli`.
+Codex reject an empty value. OpenCode uses its resolved XDG data directory.
+Aider keeps history in `~/.aider`; Agy uses `~/.gemini/antigravity-cli`.
+Cursor keeps state in `~/.cursor`, droid in `~/.factory`, Pi in
+`~/.pi/agent` (a passed-through `PI_CODING_AGENT_DIR` redirects it), Qwen
+in its brand home (`QWEN_HOME`-aware), Gemini in `~/.gemini`, Copilot in
+`~/.copilot`, and Goose in `~/.config/goose`. `GEMINI_CLI_HOME` and
+`COPILOT_HOME` never route a session: their adapters refuse the
+pass-through, because isolation owns the variable.
 
 ## Permissions and attribution
 
@@ -333,41 +336,60 @@ An accepted `user` or `steer` produces `user_message` with the original text
 and optional author. This event is the attribution record. The default
 `[author] ` prefix is only a display aid and is not an identity check.
 
-For a `permission_request`, answer using its `request_id` and one of its
-`options`. Decisions apply to that request only. Codemux denies requests
-on timeout, interrupt, completion, or shutdown. A late answer receives
-`unknown_request`. A caller's `allow` cannot exceed the launch autonomy:
-the harness receives a deny and the input receives `autonomy_escalation`.
+The Permissions column means an ask channel, independent of native deny rules.
+`codemux autonomy` reports the same fact and the reason when no channel exists.
+`--permission-policy deny` uses ask channels for Claude/ZAI/Codex and native
+rules for hermetic Kimi/OpenCode/agy/OpenHands sessions. Aider answers native stdin confirmations negatively in plain and hermetic sessions.
 
-On Claude/ZAI a deny may carry a `message` (1–2000 UTF-16 code units, no
-NUL, no control characters other than newline), which the harness shows
-the model as the rejection text; Codex rejects the field as `unsupported`.
-Without one, every deny codemux sends — yours, the permission policy, the
-autonomy ceiling, the timeouts, supersession, shutdown — uses the text
-Claude Code itself gives the model on a user rejection (it begins "The
-user doesn't want to proceed with this tool use."), so the agent reads the
-denial as its own harness's answer rather than an outside wrapper's. The
-`permission_denied` and `permission_resolved` events and the
-`autonomy_escalation` rejection record the text that was sent.
+| Agent | Ask channel | `--permission-policy deny` |
+|---|---|---|
+| Claude/ZAI | `can_use_tool` requests over stdio | Immediate wire denial |
+| Codex | App-server command, file-change, and permission requests | Immediate wire denial |
+| Kimi | None: 2.5.2 `--prompt` forces auto mode; configured denies run first | Hermetic private `config.toml`, wildcard deny rule |
+| OpenCode | None: 1.19.5 `run` answers `permission.asked` itself, once with `--auto`, reject otherwise | Hermetic per-turn config; project-settings mode refused |
+| agy | None: 1.5.3 print mode soft-denies confirmations it cannot show | Hermetic private settings plus native `--settings` deny overlay |
+| OpenHands | None: 1.16.0 headless mode selects NeverConfirm | Hermetic home `.openhands/hooks.json` PreToolUse rule that exits 2 for every tool but `finish` and `think`; project-settings mode refused |
+| Aider | None: 0.86.2 confirmations are stdin yes/no prompts | Repeating negative stdin answers and `AIDER_YES_ALWAYS=false`; no `--yes-always` flag |
 
-`--permission-policy deny` (Claude/ZAI) answers every request with an
-immediate deny instead of forwarding it to you: the request is still
-emitted, then a `permission_denied` event records it, and no
-`permission_resolved` follows — a decision for it receives
-`unknown_request`. This is the shortest safe setting for a session with
-no human on the input; without it, the permission timeout (default 300
-seconds) and the turn timeout remain the fallbacks.
+For a `permission_request`, send `permission_decision` with its `request_id`
+and one of its `options`. `permission_response` is an alias with the same
+fields, validation, and autonomy ceiling.
+A caller decision produces `permission_resolved`. Timeout, interrupt,
+completion, and shutdown deny pending requests; a late answer receives
+`unknown_request`. The permission timeout defaults to 300 seconds.
+An allow beyond the launch autonomy is denied with `autonomy_escalation`.
 
-On Claude/ZAI, read-only approves no tool; medium permits scoped editing
-outside executable configuration; high grants editing and Bash; low lets
-the caller decide. Edit, Write, NotebookEdit, and Bash arguments must fit
-their known schemas even at low. Other tools have no such schema check at
-low. Operator allow rules may bypass this permission channel; scode supplies
-the enforced containment boundary. Codex's ceiling allows requests at low,
-scoped file changes at medium, and commands/file changes at high; it denies
-read-only requests. Its sandboxed launch uses `approvalPolicy: "never"`,
-so the capability does not promise approval requests will occur. Codex
-rejects substituted `updated_input`, which its wire cannot carry.
+Claude/ZAI denials accept a `message` of 1–2000 UTF-16 code units, without
+NUL or control characters except newline. Omission uses Claude's native
+rejection text. Denial events record the text sent. Codex has no wire
+denial text and rejects `message` and `updated_input` as `unsupported`.
+
+For Claude/ZAI/Codex, the deny policy emits `permission_request`, answers
+immediately, then emits `permission_denied`. It creates no pending request
+or timer. No `permission_resolved` follows; later answers get `unknown_request`.
+Codex omits `permission_denied.message` because its decline carries no text.
+
+Claude/ZAI read-only approves no tool; medium allows scoped editing outside
+executable configuration; high grants editing and Bash; low lets the caller
+decide. Edit, Write, NotebookEdit, and Bash arguments must fit their schemas.
+Operator allow rules can bypass requests; scode enforces containment.
+Codex allows requests at low, scoped file changes at medium, and commands
+and file changes at high. Read-only denies every allow. Above read-only,
+Codex uses `approvalPolicy: "on-request"`; low and medium use its native
+read-only sandbox as well as scode so writes require approval. Ordinary
+read-only commands need not ask. High keeps native full access; read-only
+keeps `never`. Codex 0.166.0 rejects the old public `untrusted` config value.
+
+Kimi adds `{decision="deny", scope="user", pattern="*"}` to the private
+config before each deny-policy turn. Existing rules and values remain;
+the insertion can normalize TOML formatting. The generated rule denies all
+tools, including reads. It persists on disk across default resumes; remove
+it explicitly before resuming without that restriction. OpenCode requires
+plain `--hermetic`: project agent permissions can override global denies.
+agy preserves consumer settings and applies the deny overlay before spawn.
+These three agents emit no permission events for native denials. Read the
+harness tool error or result instead. Aider answers no at read-only and low,
+and uses `--yes-always` at medium and high; it has no machine approval wire.
 
 ## End conditions and failures
 
@@ -455,14 +477,15 @@ Malformed caller JSON receives a rejection and does not itself end a session.
 Aider's stdout is a human transcript: non-JSON lines become `unknown`.
 Its assistant message is extracted from persistent history. History is
 checked before each turn, reads are bounded per turn, and the accumulated
-file has no codemux size cap. A killed partial turn is not resumable because
-restoring history could replay its unanswered prompt; a turn that failed the
-same way — its prompt recorded, no reply, whatever the exit code was — ends
-the session, since the next turn would replay it. The test is what aider
+file has no codemux size cap. An explicit interrupt stops the turn child and
+removes only that turn's history delta after the child settles. The session
+can continue; its end event retains the raw signal. Other unanswered failed
+turns end the session because a resume would replay them. The test is what aider
 itself restores: a reply that is only a reasoning block counts as a reply,
 and a reply made only of `> `, `# `, or `#### ` lines does not, because
 aider writes its tool output and the user's text in those shapes and
-restores none of them as assistant text. Aider refuses harness text
+restores none of them as assistant text. Local analytics report native output
+tokens, which Aider may estimate, and known cost; input, cache, and total counts stay null. Aider refuses text
 beginning with `/` or `!`;
 Kimi refuses `/goal` followed by whitespace or end, and `!`; OpenCode
 refuses a message that is empty after trimming, which its wire exits 1 on.

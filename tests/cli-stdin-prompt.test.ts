@@ -158,18 +158,19 @@ describe("CLI - stdin prompt", () => {
 
   test("an argv-prompt harness keeps its 32 KiB cap for stdin prompts", async () => {
     // Stdin is not argv, but a harness that must pass the prompt as an
-    // argument still gets the argv bound enforced at validation.
-    const fake = createFakeBinaryEnv({ aider: "exit 0" });
+    // argument still gets the argv bound enforced at validation. Kimi's
+    // print mode has no stdin carrier (the run.prompt-stdin limitation).
+    const fake = createFakeBinaryEnv({ kimi: "exit 0" });
     try {
       const { stderr, exitCode } = await runCli(
-        ["run", "-a", "aider", "--no-sandbox", "--auto", "high", "-f", "-"],
+        ["run", "-a", "kimi", "--no-sandbox", "--auto", "high", "-f", "-"],
         fake.env,
         { stdin: "a".repeat(33 * 1024) }
       );
       // A pre-launch refusal of a CLI request: exit 64 like every other
       // (review round 11, contracts-2 2), never the old 1.
       expect(exitCode).toBe(64);
-      expect(stderr).toContain("prompt exceeds the 32768-byte safe limit");
+      expect(stderr).toContain("kimi passes prompts in argv; prompt exceeds the 32768-byte safe limit");
     } finally {
       fake.cleanup();
     }
@@ -261,12 +262,13 @@ describe("CLI - stdin prompt", () => {
   }, 10_000);
 
   // Round10: `-f -` consumed stdin before adapter validation, so an
-  // unsupported combination (-a droid --hermetic -f -) waited on the
+  // unsupported combination (-a cline --hermetic -f -) waited on the
   // read -- up to the full timeout for a producer that never closes the
   // pipe -- instead of rejecting the flags at once. Validation now runs
-  // before anything consumes stdin.
+  // before anything consumes stdin. cline is the harness with no
+  // verified hermetic mode (droid gained one in the 2.0.0 parity pass).
   test("an unsupported flag combination is rejected before stdin is consumed", async () => {
-    const fake = createFakeBinaryEnv({ droid: "exit 0" });
+    const fake = createFakeBinaryEnv({ cline: "exit 0" });
     const home = mkdtempSync(join(tmpdir(), "codemux-order-home-"));
     const repoRoot = join(import.meta.dir, "..");
     let proc: ReturnType<typeof Bun.spawn> | undefined;
@@ -275,7 +277,7 @@ describe("CLI - stdin prompt", () => {
       proc = Bun.spawn(
         [
           join(repoRoot, "bin", "codemux"),
-          "run", "-a", "droid", "--no-sandbox", "--auto", "high",
+          "run", "-a", "cline", "--no-sandbox", "--auto", "high",
           "--hermetic", "-f", "-", "--timeout", "30",
         ],
         {
@@ -299,7 +301,9 @@ describe("CLI - stdin prompt", () => {
       ]);
       const elapsed = Date.now() - startedAt;
       expect(exitCode).toBe(64);
-      expect(stderr).toContain("no verified hermetic mode");
+      // Any pre-launch refusal shows the order; cline's hermetic run needs
+      // an explicit --cwd it owns.
+      expect(stderr).toContain("cline --hermetic requires an explicit --cwd owned by this run");
       // It never reached the stdin read, so no timeout fired.
       expect(stderr).not.toContain("before --timeout elapsed");
       expect(elapsed).toBeLessThan(8_000);

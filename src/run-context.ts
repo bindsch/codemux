@@ -4,14 +4,28 @@ import type { ExecutableCheck } from "./executable-security.js";
 import type { ExperimentBridge } from "./experiment-bridge.js";
 import type { ExperimentCodexRun } from "./experiment-codex-run.js";
 import type { ExperimentKimiRun } from "./experiment-kimi-run.js";
+import type { OpencodeExperimentRun } from "./opencode-experiment-run.js";
+import type { GeminiExperimentRun } from "./gemini-experiment-run.js";
+import type { PiExperimentRun } from "./pi-experiment-run.js";
+import type { GooseExperimentRun } from "./goose-experiment-run.js";
+import type { QwenExperimentRun } from "./qwen-experiment-run.js";
+import type { ClineExperimentRun } from "./cline-experiment-run.js";
 import type { ClaudeProjectConfigDir } from "./claude-project-config.js";
 import type { CodexProviderHome } from "./codex-provider.js";
 import type { AiderHistoryFile } from "./aider-history.js";
+import type { AiderHermeticHome } from "./aider-hermetic.js";
 import type { OpencodeHermeticHome } from "./opencode-hermetic.js";
 import type { OpencodeProviderConfig } from "./opencode-provider.js";
 import type { DroidProviderSettings } from "./droid-provider.js";
+import type { DroidHermeticHome } from "./droid-hermetic.js";
+import type { QwenEffortSettings } from "./qwen-effort.js";
 import type { KimiNoToolsFile } from "./kimi-no-tools.js";
 import type { KimiHermeticHome } from "./kimi-hermetic.js";
+import type { GeminiHermeticHome } from "./gemini-hermetic.js";
+import type { CopilotHermeticHome } from "./copilot-hermetic.js";
+import type { GooseHermeticHome } from "./goose-hermetic.js";
+import type { OpenhandsHermeticHome } from "./openhands-hermetic.js";
+import type { OpenhandsTaskFile } from "./openhands-task-file.js";
 import type { TrustedParentRecord } from "./safe-remove.js";
 import type { PiProviderAgentDir } from "./pi-provider.js";
 
@@ -39,6 +53,15 @@ export interface RunContext {
   experimentBridge?: ExperimentBridge;
   experimentCodex?: ExperimentCodexRun;
   experimentKimi?: ExperimentKimiRun;
+  experimentOpencode?: OpencodeExperimentRun;
+  experimentGemini?: GeminiExperimentRun;
+  experimentPi?: PiExperimentRun;
+  /** Goose: this run's planted-config experiment host (src/goose-experiment-run.ts). */
+  experimentGoose?: GooseExperimentRun;
+  /** Qwen: this run's planted-config experiment host (src/qwen-experiment-run.ts). */
+  experimentQwen?: QwenExperimentRun;
+  /** Cline: the owned native plugin and final provider-request capture. */
+  experimentCline?: ClineExperimentRun;
   /** Per-run experiment recording, independent of the harness transport. */
   experimentRecording?: string;
   /**
@@ -79,7 +102,8 @@ export interface RunContext {
    * lastMessageDir or not at all.
    */
   lastMessageParentRecord?: TrustedParentRecord;
-  /** Codex: this run's private hermetic home, when the run is hermetic. */
+  /** Codex: this run's private home, on a hermetic run or the experiment
+   * check's non-hermetic control (codex.ts prepareRun). */
   hermeticHome?: HermeticHome;
   /**
    * Codex: this run's private CODEX_HOME holding the provider override's
@@ -94,12 +118,12 @@ export interface RunContext {
    * which processRunResult extracts the reply (aider's stdout is a
    * transcript around it). Only a hermetic run creates it; plain runs keep
    * `--chat-history-file /dev/null` and write no history at all (h6
-   * review), and cleanupRun removes it. The hermetic check that would
-   * consume the extraction is refused for now (aider's own config layers
-   * have no switch; src/aider-history.ts, docs/isolation.md), so nothing
-   * reads it today.
+   * review), and cleanupRun removes it.
    */
   aiderHistoryFile?: AiderHistoryFile;
+  /** Aider: this run's private HOME for a hermetic run, closing aider's own
+   * home config layers beside the pinned flags (src/aider-hermetic.ts). */
+  aiderHermeticHome?: AiderHermeticHome;
   /**
    * OpenCode: this run's private HOME for a hermetic run, redirecting the
    * XDG world while the real data directory keeps the login.
@@ -118,13 +142,28 @@ export interface RunContext {
   opencodeSelectedModel?: string;
   /** Droid: this run's private settings file, when a provider override is configured. */
   droidProviderSettings?: DroidProviderSettings;
+  /** Droid: private HOME and brand home for a hermetic run. */
+  droidHermeticHome?: DroidHermeticHome;
+  /** Qwen: this run's system settings file, when the run asks for an effort tier. */
+  qwenEffortSettings?: QwenEffortSettings;
   /** Kimi: this run's generated `tools: []` agent file, when the run asks for `--tools none`. */
   kimiNoToolsFile?: KimiNoToolsFile;
   /** Kimi: private HOME and brand home for a hermetic run. */
   kimiHermeticHome?: KimiHermeticHome;
+  /** Gemini: private GEMINI_CLI_HOME for a hermetic or --tools none run. */
+  geminiHermeticHome?: GeminiHermeticHome;
+  /** Copilot: private COPILOT_HOME (the config directory) for a hermetic run. */
+  copilotHermeticHome?: CopilotHermeticHome;
+  /** Goose: private XDG root for a hermetic run. */
+  gooseHermeticHome?: GooseHermeticHome;
+  /** OpenHands: private HOME for a hermetic run. */
+  openhandsHermeticHome?: OpenhandsHermeticHome;
+  /** OpenHands: this run's task file carrying the prompt (`--file`). */
+  openhandsTaskFile?: OpenhandsTaskFile;
   /** Kimi: the session wire log read before the private home is finalized. */
   kimiWireLogPath?: string;
-  /** Pi: this run's private agent directory, when a provider override is configured. */
+  /** Pi: this run's private agent directory, when a provider override is
+   * configured or the run is hermetic. */
   piProviderAgentDir?: PiProviderAgentDir;
   /**
    * An incremental stdout consumer the launcher feeds instead of capturing

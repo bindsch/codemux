@@ -20,6 +20,7 @@ import {
 } from "../scripts/live-gate.js";
 import { AGENT_IDS } from "../src/adapters/index.js";
 import { SERVED_MODEL_EVIDENCE_HARNESSES } from "../src/result-envelope/index.js";
+import { agentsSupporting } from "../src/parity/index.js";
 import type { AgentId } from "../src/types.js";
 import * as registry from "../src/session/registry.js";
 import { cleanupLoggedInHomes, factsFor, fixtureDirectory, loggedInEnv } from "./helpers/live-gate.js";
@@ -336,18 +337,13 @@ test("probe C requires the requested OK answer, not merely a string (round 18, e
     .toContain("result' is not the requested OK reply");
 });
 
-test("probe H runs exactly on the harnesses whose envelopes carry served-model evidence", () => {
-  // The SERVED_MODEL_EVIDENCE set is derived from the envelope builders'
-  // own table (SERVED_MODEL_EVIDENCE_HARNESSES,
-  // src/result-envelope/index.ts — round 20, minor 13), and the hard-coded
-  // membership catches a wrong edit there: claude and zai read modelUsage,
-  // codex reads its reroute; opencode's pinned run wire and kimi's
-  // stream-json and wire log expose no served-model field, so their rows
-  // print UNSUPPORTED (review round 14, edges 2).
+test("probe H requires provider routing, result JSON, and served-model evidence", () => {
+  // Envelope evidence alone does not establish provider-override support.
+  // The independent parity declarations pin both sets.
   expect(SERVED_MODEL_EVIDENCE).toBe(SERVED_MODEL_EVIDENCE_HARNESSES);
-  // Codex reports a served model only in a reroute notice, so it carries no
-  // evidence an override probe can assert on (round 26, edges 2).
-  expect([...SERVED_MODEL_EVIDENCE].sort()).toEqual(["claude", "zai"]);
+  expect([...SERVED_MODEL_EVIDENCE].sort()).toEqual(agentsSupporting("run.served-model-evidence").sort());
+  expect(AGENT_IDS.filter((id) => probeApplies("H", factsFor(id))).sort())
+    .toEqual(agentsSupporting("check.provider-override.served-model").sort());
   for (const id of AGENT_IDS) {
     const facts = factsFor(id);
     expect(probeApplies("H", facts)).toBe(facts.providerOverride && facts.resultJson && SERVED_MODEL_EVIDENCE.has(id));

@@ -132,6 +132,27 @@ export function opencodeBareModel(model: string): string {
   return bare;
 }
 
+/** Native configuration shared by file-backed runs and environment-backed TUI launches. */
+export function opencodeProviderConfig(
+  override: ProviderOverride & { baseUrl: string; apiKey: string },
+  model: string
+) {
+  const bareModel = opencodeBareModel(model);
+  const limit = opencodeLimit(override);
+  return {
+    $schema: "https://opencode.ai/config.json",
+    provider: {
+      [OPENCODE_PROVIDER_ID]: {
+        npm: "@ai-sdk/openai-compatible",
+        name: "codemux provider override",
+        options: { baseURL: override.baseUrl, apiKey: `{env:${OPENCODE_PROVIDER_KEY_ENV}}` },
+        models: { [bareModel]: { name: bareModel, ...(limit === undefined ? {} : { limit }) } },
+      },
+    },
+    model: opencodeProviderModel(bareModel),
+  };
+}
+
 // A codemux that died without its exit handler leaves the file behind; it is
 // swept only once older than any run could still be reading it.
 const STALE_DIR_MS = 2 * 86_400_000;
@@ -179,10 +200,9 @@ export function writeOpencodeProviderConfig(
   override: ProviderOverride & { baseUrl: string; apiKey: string },
   model: string
 ): OpencodeProviderConfig {
-  const bareModel = opencodeBareModel(model);
   // Refused before anything is created: an unwritable cap leaves no
   // directory behind for the sweep to find.
-  const limit = opencodeLimit(override);
+  const config = opencodeProviderConfig(override, model);
   const parent = join(dataDir, PARENT_DIR_NAME);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   // A run with write access to the data directory could have replaced the
@@ -207,30 +227,6 @@ export function writeOpencodeProviderConfig(
   // already sits at the name is not this run's to remove (review round 124).
   mkdirSync(dir, { mode: 0o700 });
   try {
-    const config = {
-      $schema: "https://opencode.ai/config.json",
-      provider: {
-        [OPENCODE_PROVIDER_ID]: {
-          npm: "@ai-sdk/openai-compatible",
-          name: "codemux provider override",
-          options: {
-            baseURL: override.baseUrl,
-            apiKey: `{env:${OPENCODE_PROVIDER_KEY_ENV}}`,
-          },
-          models: {
-            // limit rides only when the override carries both caps; the
-            // conditional spread keeps an uncapped override's file
-            // byte-identical to the pre-caps shape (opencodeLimit refuses
-            // one-sided before anything is written).
-            [bareModel]: {
-              name: bareModel,
-              ...(limit !== undefined ? { limit } : {}),
-            },
-          },
-        },
-      },
-      model: opencodeProviderModel(bareModel),
-    };
     writeFileSync(path, JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });
   } catch (error) {
     removeUnderTrustedParent(dir, parentRecord, `the opencode provider config directory ${dir}`);

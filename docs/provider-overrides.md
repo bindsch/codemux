@@ -14,16 +14,22 @@ URLs must be absolute HTTP(S), without user/password credentials, fragments, bra
 | Adapter | Required endpoint/protocol | Delivery | TUI |
 | --- | --- | --- | --- |
 | Claude | Anthropic Messages; base URL at host root | `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, selected model, and inline model-picker settings | Yes |
-| Codex | OpenAI Responses; normally base URL includes `/v1` | Private CODEX_HOME/config.toml with an environment-key reference; no operator auth.json | Refused |
-| OpenCode | OpenAI-compatible provider | Per-run OPENCODE_CONFIG file with environment-key reference | Refused |
-| Aider | OpenAI-compatible provider | OPENAI_API_BASE/OPENAI_API_KEY; litellm `openai/` model prefix | Yes |
+| Z.AI | Anthropic Messages; host root or gateway path | `CODEMUX_ZAI_PROVIDER_*` selects the same Claude transport and model-picker settings; replaces the fixed Z.AI gateway | Yes |
+| Codex | OpenAI Responses; normally base URL includes `/v1` | Private CODEX_HOME/config.toml with an environment-key reference; no operator auth.json | Yes |
+| OpenCode | OpenAI-compatible provider | Run: OPENCODE_CONFIG file; TUI: OPENCODE_CONFIG_CONTENT; both reference the key environment variable | Yes |
+| Aider | OpenAI-compatible provider | OPENAI_API_BASE/OPENAI_API_KEY; litellm `openai/` model prefix; TUI output caps are refused | Yes |
 | Kimi | Supported Kimi model endpoint | KIMI_MODEL_* environment group | Yes |
-| Droid | BYOK provider | Private settings file with customModels entry and environment-key reference | Refused |
-| Pi | OpenAI-compatible provider | Private PI_CODING_AGENT_DIR/models.json with environment-key reference | Refused |
+| Droid | BYOK provider | Private settings file with customModels entry and environment-key reference; the same settings file carries the TUI launch | Yes |
+| Pi | OpenAI-compatible provider | Private PI_CODING_AGENT_DIR/models.json with environment-key reference | Yes |
 | Goose | Built-in OpenAI provider | GOOSE_PROVIDER, OPENAI_HOST, OPENAI_BASE_PATH, OPENAI_API_KEY, GOOSE_MODEL | Yes |
 | OpenHands | OpenAI-compatible provider | LLM_BASE_URL/LLM_API_KEY/LLM_MODEL through `--override-with-envs`; litellm prefix | Yes |
+| Cursor | Cursor-compatible endpoint | CURSOR_API_ENDPOINT/CURSOR_API_KEY and selected model | Yes |
+| Gemini | Gemini-compatible endpoint | GOOGLE_GEMINI_BASE_URL/GEMINI_API_KEY and selected model; output cap in private modelConfigs settings | Yes |
+| Copilot | OpenAI-compatible endpoint | COPILOT_PROVIDER_* environment; private providers.json for a context cap | Yes |
+| Qwen | OpenAI-compatible provider | OPENAI_BASE_URL/OPENAI_API_KEY/OPENAI_MODEL; the TUI launch injects the same group | Yes |
+| Cline | OpenAI-compatible provider | Private `CLINE_PROVIDER_SETTINGS_PATH` file carries endpoint, key, model, maxTokens and contextWindow; required for `--hermetic` | Yes |
 
-Z.AI, Antigravity, Cursor, Copilot, Gemini, Cline, and Qwen do not support this override group. Z.AI is its own fixed gateway adapter, not a configurable provider override.
+Antigravity's runs do not support this override group. Without an override, Z.AI uses its fixed gateway.
 
 No override set is not the same thing as the vendor's first-party endpoint. Without an override, codemux changes nothing about where a harness sends its traffic: a harness whose own configuration or ambient variables name another endpoint keeps using it. OpenHands is the recorded example — its credential variables are `LLM_BASE_URL`/`LLM_API_KEY`, environment sanitization keeps them when the operator exported them, and under `--model` codemux passes `--override-with-envs`, which makes OpenHands read that environment. Those variables are then the operator's own OpenHands configuration, not a codemux override; a codemux override, when set, replaces them.
 
@@ -33,7 +39,7 @@ The override survives supported hermetic modes because codemux explicitly suppli
 
 Claude Code appends `/v1/messages` to the base URL itself, so codemux strips one trailing `/v1` from `CODEMUX_CLAUDE_PROVIDER_BASE_URL`: the OpenAI-style `http://host:port/v1` form every other override takes and the host root `http://host:port` both work. Any other path, such as a gateway's `/api/anthropic`, is kept as given. The endpoint must serve the Anthropic Messages API; a chat-completions endpoint alone is insufficient. Claude Code asks for 64000 output tokens by default; an endpoint whose context window is smaller (vLLM answers `max_completion_tokens=64000 cannot be greater than max_model_len`) needs `CODEMUX_CLAUDE_PROVIDER_MAX_OUTPUT_TOKENS` set below that window, which codemux passes as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. Claude Code 2.1.280's default prompt with its full tool set is at least 31,745 input tokens (measured live against vLLM, which then answers `This model's maximum context length is 32768 tokens`), so a 32k endpoint cannot host a full-tools run at any output cap; `--hermetic --tools none` fits (a few thousand tokens), and larger windows host the full set. Claude Code retries such 500s until the run's timeout, so an oversized prompt surfaces as `agent timed out`.
 
-Codemux passes an inline `modelPicker` entry mapping the effective model to `behavesAs: "claude-sonnet-5"`. This supplies client-side catalog behavior without changing the model ID sent to the endpoint. The JSON rides argv and contains model settings, not the provider key. Run, TUI, and session all carry it. Retained Claude 2.1.280 evidence confirms that `--safe-mode` still honors this explicit settings argument. The same picker row rides zai (`-m glm-5.3`, the `clerk`/`worker`/`judge` tiers) whenever the model is not a binary catalog alias (`opus`, `sonnet`, `haiku`, `claude-*`); zai's fixed Z.AI gateway never carries an override, but its model ids hit the same 2.1.280+ client-side catalog check.
+Codemux passes an inline `modelPicker` entry mapping the effective model to `behavesAs: "claude-sonnet-5"`. This supplies client-side catalog behavior without changing the model ID sent to the endpoint. The JSON rides argv and contains model settings, not the provider key. Run, TUI, and session all carry it. Retained Claude 2.1.280 evidence confirms that `--safe-mode` still honors this explicit settings argument. The same picker row rides zai (`-m glm-5.3`, the `clerk`/`worker`/`judge` tiers) whenever the model is not a binary catalog alias (`opus`, `sonnet`, `haiku`, `claude-*`); zai's fixed gateway and custom provider overrides use the same 2.1.280+ client-side catalog mapping.
 
 When the override's MODEL variable is set, codemux pins Claude's haiku, small-fast, sonnet, and opus environment defaults to it. With only `--model`, those background defaults stay Claude's own. Plain runs still load user settings, whose `env` entries can compete with endpoint settings. Hermetic safe mode suppresses operator settings, but managed settings remain.
 
@@ -58,14 +64,20 @@ from 1 through 9007199254740991. Signs, fractions, and exponent notation fail.
 
 | Harness | Output limit | Context limit |
 | --- | --- | --- |
-| Claude | CLAUDE_CODE_MAX_OUTPUT_TOKENS | Refused |
+| Claude | CLAUDE_CODE_MAX_OUTPUT_TOKENS | CLAUDE_CODE_MAX_CONTEXT_TOKENS for an uncataloged model |
+| Z.AI | CLAUDE_CODE_MAX_OUTPUT_TOKENS | CLAUDE_CODE_MAX_CONTEXT_TOKENS for an uncataloged model |
 | Codex | Refused | model_context_window |
 | OpenCode | limit.output | limit.context; both limits required together |
-| Aider | Refused | Refused |
+| Aider | Private model settings `extra_params.max_tokens` on run; TUI refuses | Refused: `max_input_tokens` only asks whether to continue |
 | Kimi | KIMI_MODEL_MAX_COMPLETION_TOKENS | KIMI_MODEL_MAX_CONTEXT_SIZE |
 | Droid | maxOutputTokens | Refused |
 | Pi | maxTokens | contextWindow |
-| Goose, OpenHands | Refused | Refused |
+| Goose | GOOSE_MAX_TOKENS | GOOSE_CONTEXT_LIMIT |
+| OpenHands | Refused | Refused |
+| Cursor | Refused | Refused |
+| Qwen | QWEN_CODE_MAX_OUTPUT_TOKENS | Refused |
+| Gemini | generateContentConfig.maxOutputTokens in private run/TUI settings | Refused: native tokenLimit(model) table has no numeric override |
+| Copilot | COPILOT_PROVIDER_MAX_OUTPUT_TOKENS or maxOutputTokens | Private providers.json maxContextWindowTokens on run and TUI |
 
 These configure the harness's budget or context assumption. They do not guarantee that every endpoint accepts the requested size.
 

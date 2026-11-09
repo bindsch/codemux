@@ -1,5 +1,6 @@
 import type { RunContext } from "./base.js";
-import { UsageRefusalError } from "../validation.js";
+import { claudeEffortFlags, validateClaudeEffort } from "../claude-effort.js";
+import { validatedClaudeProvider, claudeProviderModel, claudeProviderEnv } from "../claude-provider.js";
 import { ClaudeCredentialAdapter } from "./claude-credentials.js";
 import { PROJECT_SETTING_SOURCES, validateProjectSettingsRunRequest } from "../claude-project-settings.js";
 import {
@@ -23,15 +24,14 @@ import {
   assertExperimentConfigRootSingleLine,
   canonicalInstructionDir,
   claudeChildProject,
-  claudeGatewayEnv,
   claudeGatewayOmissions,
   claudeModelArgv,
+  claudeModelNeedsPickerSettings,
+  claudeProviderPickerSettings,
   resolveInstructionDir,
 } from "../claude-family.js";
 import {
-  assertProviderCap,
   readProviderOverride,
-  requireProviderOverride,
   type ProviderOverride,
 } from "../provider-override.js";
 import type {
@@ -70,23 +70,7 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
    * operator's endpoint, never the Claude subscription.
    */
   private validatedProvider(): (ProviderOverride & { baseUrl: string; apiKey: string }) | null {
-    const override = readProviderOverride("claude", this.environment);
-    if (override === null) return null;
-    // Claude Code exposes no context-window knob: its environment surface
-    // carries CLAUDE_CODE_MAX_OUTPUT_TOKENS only (verified against the
-    // installed 2.1.280 binary), so a context cap cannot ride the override.
-    assertProviderCap(
-      "claude",
-      override,
-      "maxContextTokens",
-      "Claude Code exposes no context-window environment variable (only " +
-        "CLAUDE_CODE_MAX_OUTPUT_TOKENS, verified against the installed 2.1.280 " +
-        "binary), so a context cap cannot ride the override"
-    );
-    return requireProviderOverride("claude", override, [
-      "baseUrl",
-      "apiKey",
-    ]) as ProviderOverride & { baseUrl: string; apiKey: string };
+    return validatedClaudeProvider("claude", this.environment);
   }
 
   /**
@@ -95,44 +79,13 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
    * operator's endpoint with a name it may not serve.
    */
   private modelFor(model: string | undefined): string | undefined {
-    const override = this.validatedProvider();
-    const resolved = model ?? override?.model;
-    if (resolved === undefined && override !== null) {
-      throw new UsageRefusalError(
-        "claude needs a model for the provider override; pass --model or set CODEMUX_CLAUDE_PROVIDER_MODEL");
-    }
-    return resolved;
+    return claudeProviderModel("claude", model, this.validatedProvider());
   }
 
   override resultModel(request: RunRequest): string | undefined { return this.modelFor(request.model); }
 
   override getEnv(): Record<string, string> {
-    const override = this.validatedProvider();
-    if (override === null) {
-      return { CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1" };
-    }
-    // Every model tier Claude Code may pick on its own — the haiku tier for
-    // background requests and subagents, the small-fast model, and the
-    // sonnet/opus defaults a `--model` alias can resolve to — is pinned to
-    // the override model, so no request leaves for a model the endpoint
-    // does not serve (the four names are verified against Claude Code
-    // 2.1.280's binary strings). The model may instead arrive on `--model`
-    // alone (modelFor); the tiers are pinned when the override names it,
-    // which the README states.
-    const env: Record<string, string> = {
-      ...claudeGatewayEnv(override.apiKey, override.baseUrl),
-      CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1",
-    };
-    if (override.model !== undefined) {
-      env.ANTHROPIC_DEFAULT_HAIKU_MODEL = override.model;
-      env.ANTHROPIC_SMALL_FAST_MODEL = override.model;
-      env.ANTHROPIC_DEFAULT_SONNET_MODEL = override.model;
-      env.ANTHROPIC_DEFAULT_OPUS_MODEL = override.model;
-    }
-    if (override.maxOutputTokens !== undefined) {
-      env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(override.maxOutputTokens);
-    }
-    return env;
+    return claudeProviderEnv(this.validatedProvider());
   }
 
   override getEnvOmissions(): readonly string[] {
@@ -151,11 +104,7 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
       supportsAutonomy: true,
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
-      // `none` is deliberately absent (round al21, contracts-2 minor 4):
-      // claude never accepted the spelling at this gate, and zai — the
-      // same binary — diverges on purpose by carrying it (its comment
-      // says why). mapEffort below still maps `none` for the paths that
-      // resolve effort below the CLI gate.
+      // Keep none closed until native version and effective model overrides are checked.
       effortLevels: ["low", "medium", "high", "xhigh", "max"],
       supportsHermetic: true,
       supportsToolSelection: true,
@@ -174,7 +123,14 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
   }
 
   override mapEffort(level: ReasoningEffort): string[] {
-    return level === "none" ? [] : ["--effort", level];
+    return claudeEffortFlags(level);
+  }
+
+  private validateEffort(effort?: ReasoningEffort, model?: string, passthroughEnv?: readonly string[]): void {
+    const resolved = this.modelFor(model);
+    validateClaudeEffort({ agent: "claude", effort, model: resolved, passthroughEnv,
+      providerSettings: resolved !== undefined && claudeModelNeedsPickerSettings(resolved)
+        ? claudeProviderPickerSettings(resolved) : undefined });
   }
 
   override validateRunRequest(request: RunRequest): void {
@@ -189,6 +145,7 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
     // operator's endpoint with a name it may not serve. The context-cap
     // refusal lives in validatedProvider, so this call covers it too.
     this.modelFor(request.model);
+    this.validateEffort(request.effort, request.model, request.passthroughEnv);
   }
 
   override validateTuiRequest(
@@ -204,6 +161,7 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
     // The override is environment-only, so an interactive session carries
     // it too -- with the same model requirement as a headless run.
     this.modelFor(model);
+    this.validateEffort(effort, model, passthroughEnv);
   }
 
   override prepareRun(request: RunRequest): RunContext {
@@ -274,6 +232,7 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
   }
 
   buildRunCommand(request: RunRequest, context?: RunContext): string[] {
+    this.validateEffort(request.effort, request.model, request.passthroughEnv);
     // The Playwright build is decided first, because the settings branch
     // reads it: the Playwright binary's trust check rides the context
     // (review round 110) — its path is embedded in the --mcp-config JSON
@@ -454,6 +413,7 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
     cwd?: string,
     nestedChecks?: ExecutableCheck[]
   ): string[] {
+    this.validateEffort(effort, model);
     // The TUI's default launch carries --safe-mode: the same every-
     // customization-off baseline as a hermetic run (see buildRunCommand),
     // and the only verified way to keep an interactive session from

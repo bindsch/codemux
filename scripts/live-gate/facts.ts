@@ -7,6 +7,11 @@
 import type { AgentId } from "../../src/types.js";
 import { EXPERIMENT_MCP_HARNESSES } from "../../src/experiment-mcp.js";
 import { SERVED_MODEL_EVIDENCE_HARNESSES } from "../../src/result-envelope/index.js";
+import { SESSION_AGENTS } from "../../src/session/cli-agents.js";
+import { HERMETIC_CHECK_CHANNELS, type HermeticCheckChannel } from "../../src/hermetic-check-channels.js";
+import type { ParityFeature } from "../../src/parity/features.js";
+
+export type CandidateLimitations = Partial<Record<ParityFeature, { reason: string; evidence: string }>>;
 
 // What a probe needs to know about one harness. Derived from the adapter's
 // declared capabilities plus the session and experiment sets, so the report's
@@ -15,12 +20,24 @@ export interface HarnessFacts {
   id: AgentId;
   hermetic: boolean;
   resultJson: boolean;
+  /** `--tools none` works only inside a hermetic run (opencode): probe E
+   * carries `--hermetic` for exactly these adapters. */
   toolsNoneRequiresHermetic: boolean;
   sessions: boolean;
+  /** Session isolation has a separate declaration from one-shot runs. */
+  sessionHermetic?: boolean;
+  /** A paired canary needs an instruction channel for its plain control. */
+  checkHermetic?: boolean;
+  declarationSource?: "checkout" | "candidate";
+  limitations?: CandidateLimitations;
   experiment: boolean;
   experimentPrefixes: readonly string[];
   providerOverride: boolean;
   servedModelEvidence: boolean;
+  /** The adapter declares `--tools none` (supportsToolSelection): probe E
+   * runs wherever this is true, plain except where the hermetic form above
+   * is required. */
+  toolsNone: boolean;
   /** The harness carries `run --max-budget-usd` (Claude Code's own spend
    * cap; claude and zai). No probe keys on it yet — carried so the report
    * can state the fact the listing declared. */
@@ -43,15 +60,9 @@ export interface HarnessFacts {
 export const EXPERIMENT_HARNESSES: Readonly<Partial<Record<AgentId, readonly string[]>>> =
   EXPERIMENT_MCP_HARNESSES;
 
-// The harnesses whose result envelope carries provider-reported model
-// evidence (`codemux.served_model`, from claude's and zai's modelUsage key
-// or codex's reroute). OpenCode's pinned 1.18.18 run wire and kimi's
-// stream-json and wire log expose no served-model field (their envelopes
-// report `served_model: null`), so probe H cannot verify an override for
-// them in-band and reports UNSUPPORTED instead. Derived from the envelope
-// builders' own table (SERVED_MODEL_EVIDENCE_HARNESSES,
-// src/result-envelope/index.ts); tests/live-gate-verify.test.ts pins the
-// lockstep.
+// Unconditional provider-reported model evidence in result envelopes.
+// Probe H also requires provider overrides and result JSON. The envelope
+// builders own this table; tests compare it with the parity declaration.
 export const SERVED_MODEL_EVIDENCE: ReadonlySet<AgentId> = SERVED_MODEL_EVIDENCE_HARNESSES;
 
 /** The experiment and served-model facts a candidate build declared for
@@ -68,17 +79,32 @@ export interface CandidateExperimentFacts {
 
 export function harnessFacts(
   id: AgentId,
-  capabilities: { supportsHermetic?: boolean; supportsResultJson?: boolean; budgetLimit?: boolean; toolsNoneRequiresHermetic?: boolean; supportsProviderOverride?: boolean; supportsModel?: boolean; supportsEffort?: boolean },
+  capabilities: { supportsHermetic?: boolean; supportsResultJson?: boolean; budgetLimit?: boolean; toolsNoneRequiresHermetic?: boolean; supportsToolSelection?: boolean; supportsProviderOverride?: boolean; supportsModel?: boolean; supportsEffort?: boolean },
   sessions: boolean,
-  candidate?: CandidateExperimentFacts & { model?: boolean; effort?: boolean; binaryName?: string }
+  candidate?: CandidateExperimentFacts & { model?: boolean; effort?: boolean; toolsNone?: boolean; binaryName?: string;
+    sessionHermetic?: boolean; checkHermetic?: boolean; limitations?: CandidateLimitations }
 ): HarnessFacts {
   const experimentPrefixes = EXPERIMENT_HARNESSES[id];
+  const checkChannels: Readonly<Partial<Record<AgentId, HermeticCheckChannel>>> = HERMETIC_CHECK_CHANNELS;
   return {
     id,
+    declarationSource: candidate === undefined ? "checkout" : "candidate",
+    ...(candidate?.limitations === undefined ? {} : { limitations: candidate.limitations }),
     hermetic: capabilities.supportsHermetic === true,
     resultJson: capabilities.supportsResultJson === true,
+    // A candidate that declares its own tools-none fact (a newer listing)
+    // gets its own E probe matrix; an older listing without it is refused
+    // by candidate.ts before facts are built, the same rule as model and
+    // effort.
+    toolsNone: candidate?.toolsNone ?? capabilities.supportsToolSelection === true,
     toolsNoneRequiresHermetic: capabilities.toolsNoneRequiresHermetic === true,
     sessions,
+    sessionHermetic: candidate === undefined
+      ? sessions && SESSION_AGENTS[id]?.hermetic === true
+      : candidate.sessionHermetic,
+    checkHermetic: candidate === undefined
+      ? checkChannels[id]?.kind === "channel"
+      : candidate.checkHermetic,
     experiment: candidate?.experiment ?? experimentPrefixes !== undefined,
     experimentPrefixes: candidate === undefined
       ? experimentPrefixes ?? []

@@ -15,31 +15,35 @@ Read-only runs under scode `--ro` on every harness; the rows below name each har
 | --- | --- | --- | --- | --- |
 | Claude, Z.AI | Plan, with headless web grants | Manual, with headless web grants | Accept edits, with headless edit grant scoped to launch directory, shell grant, and web grants | Skip permissions, with headless edit/write/notebook/shell and web grants |
 | Codex | read-only + never approve | workspace-write + untrusted approval | workspace-write + never approve | danger-full-access + never approve |
-| Antigravity | Plan + required scode | Native prompting | Accept edits, with headless command grant | Skip permissions |
+| Antigravity | Plan + required scode | Print-mode soft denials (default) | Accept edits, with headless command grant | Skip permissions |
 | Aider | dry-run | Decline headless confirmations | Auto-confirm | Auto-confirm |
 | Cline | Plan | Auto-approve false | Auto-approve true | Auto-approve true |
 | Copilot | Plan | Allow read | Allow all tools | Allow all tools, paths, and URLs |
-| Cursor | Plan + required scode | Default approvals | Auto-review | Force |
-| Droid | Default mode | Native low | Native medium | Native high |
+| Cursor | Plan + required scode | Default approvals (print mode rejects a command that needs approval) | Auto-review | Force |
+| Droid | Default (read-only mode: no execution without --auto) | Native low | Native medium | Native high |
 | Goose | chat | approve | smart_approve | auto |
 | Gemini | plan | default | yolo | yolo |
 | Kimi | Interactive plan | Interactive prompting | Interactive yolo | Interactive auto |
-| OpenHands | Interactive always-ask | Interactive always-ask | Interactive always-ask | Always approve |
+| OpenHands | Interactive always-ask | Interactive always-ask | Interactive always-ask | Always approve (the headless default) |
 | OpenCode | Plan + required scode | Build | Build | Build + auto |
 | Pi | No extensions; read/grep/find/ls | No extensions; add edit/write | Default tools | Default tools |
 | Qwen | plan | default | auto (classifier approves shell commands) | yolo |
 
-Kimi's headless `--prompt` rejects its interactive autonomy flags. OpenHands headless mode auto-approves. Their headless boundaries therefore depend on scode, not the interactive rows. Antigravity can soft-deny a headless approval while still exiting 0; native success alone does not establish that a requested action ran.
+Kimi 2.5.2's headless `--prompt` rejects its interactive autonomy flags (`--plan`, `--yolo`, `--auto`) and their hidden yolo aliases (`--yes`, `--auto-approve`). OpenHands 1.16.0 headless mode auto-approves: its TUI selects the never-confirm policy whenever `--headless` is set. Their headless boundaries therefore depend on scode, not the interactive rows. Antigravity can soft-deny a headless approval while still exiting 0; native success alone does not establish that a requested action ran.
+
+Each cell names what carries the level: a harness flag, the harness's own default state, a stdin answer, or an environment variable; where no native headless carrier exists, scode alone carries the level and the cell says so. Kimi at every level, OpenHands below high, and Pi at medium and high have no native headless carrier, so scode carries them; OpenHands high, Antigravity low, Cursor low, and Droid read-only are carried by the harness's own default state; Aider low is carried by the stdin decline stream; Goose is carried by `GOOSE_MODE`. `codemux autonomy` prints the carrier class per cell.
 
 Aider's low row declines headless confirmations through its stdin: codemux feeds a repeating stream of `n` lines for the child's whole lifetime and never sends EOF while it lives, because aider reads EOF as acceptance of a yes-default confirmation prompt. The stream is bounded and paced: one pending write at a time, and at most one block of 64 lines every 10 ms. A child that stops reading does not grow codemux's memory, and a child that discards its stdin does not keep codemux busy. The child's exit or the run's own termination ends the feeding. Runs and session turns both behave this way.
 
-Codex's row names the flags an unsandboxed launch passes. On the default sandboxed path codex runs with `--dangerously-bypass-approvals-and-sandbox` and none of the row's native flags, so scode alone enforces the level.
+Codex's row names the flags an unsandboxed launch passes. On the default sandboxed `run` path Codex uses `--dangerously-bypass-approvals-and-sandbox`, so scode alone enforces the level; low and medium sessions keep native read-only access plus `on-request` approvals, including inside scode.
 
-Pi's TUI passes `--no-approve` at medium and high only; read-only and low keep pi's native approvals in the TUI. Pi's headless runs pass `--no-approve` at every level, because no one is present to answer an approval.
+Pi passes `--no-approve` at every level, in the TUI and in headless runs: at 0.85.1 the flag means ignore project-local files (its `--approve` counterpart trusts them), so it gates project trust, not autonomy.
 
 Antigravity medium headless runs add `command(*)` to `permissions.allow` in a private copy of the operator's settings. Existing allow, ask, and deny rules remain; deny rules take precedence. The command grant relies on scode for filesystem and network limits. Read-only, low, and interactive runs keep their native policies.
 
 Claude's subprocess environment hardening can reset its requested native mode to default, which headless denies every tool that would prompt. Codemux's scoped headless edit grant and shell grant preserve the intended write and command behavior, and every headless `run` level also grants `WebSearch` and `WebFetch`; without that grant a read-only or low run could not search or fetch. Neither web tool writes locally, but the web grant is a trade-off: the run reads pages nobody approved, and the model picks the URLs it fetches, so content it reads (a prompt injection in an untrusted repository) can carry local data out in a URL. `--sandbox-no-net` would deny that but also denies the model provider, so it is no remedy here; a review of an untrusted tree passes `--no-web`, which denies the two tools with a deny rule (so it holds at high, where the bypass flag would ignore an absent allow rule, and over an allow rule saved in the operator's settings) and changes nothing else. Persistent sessions do not take the web grant: their ceiling answers each tool call and denies the web tools at every level but low. This is a version-sensitive adapter mapping, not a property scode can enforce for Claude.
+
+Persistent Claude and Z.AI sessions map autonomy with different flags by design: no web grants, medium keeps only the scoped edit grant (no shell grant), and high is `--permission-mode default` plus an explicit grant list rather than the bypass flag, so the session ceiling still answers every tool call. The meaning of each level is unchanged; the flags are not. `codemux autonomy` prints the session note per agent.
 
 For programmatic Claude and Z.AI requests, `web: false` denies both tools even when `autonomy` is omitted. A defined `web` value must be a boolean. Programmatic requests meet the CLI's Playwright option rules in the shared validators: `enablePlaywrightMcp: true` is refused without `sandboxed: true`, refused for an agent whose command builder never attaches the server, and refused with `hermetic: true` or `tools: "none"`; the unsandboxed interactive entry point refuses it outright.
 

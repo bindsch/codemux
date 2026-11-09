@@ -1,11 +1,5 @@
-/**
- * The codex driver's shared state and wire plumbing: the constructor, the
- * options record, the outbound event queue, the JSON-RPC call registry, and
- * the emit/ack/write helpers every side of the driver speaks through.
- * src/session/codex-driver.ts owns the lifecycle.
- */
-
 import type { AutonomyLevel, ReasoningEffort } from "../types.js";
+import { validateCodexSessionTools, type CodexSessionSettings } from "./codex-config.js";
 import { reportSpawnThrow } from "./stdin-frame.js";
 import { providerHost, type SessionCallContext } from "../call-log.js";
 import {
@@ -16,8 +10,8 @@ import {
   type CodexSessionPolicy,
 } from "./codex-session.js";
 import { SessionFsm } from "./fsm.js";
+import { SessionOutputQueue } from "./completion.js";
 import {
-  BoundedOutboundQueue,
   codemuxFatalMessage,
   SESSION_SIGNAL_EXIT_CODE,
   type SessionFatal,
@@ -33,12 +27,16 @@ import {
 } from "./protocol.js";
 import type { SandboxTrust } from "./registry.js";
 import type { SessionPrivateHome } from "./private-home-types.js";
+import { isCallerHarnessHome } from "./harness-home.js";
 
-export interface CodexDriverOptions {
+export interface CodexDriverOptions extends CodexSessionSettings {
   /** The thread id to resume, or null to start a fresh thread. */
   resumeThreadId: string | null;
   autonomy: AutonomyLevel;
   model?: string;
+  /** The `-m` value as typed when it resolved through `config.models`,
+   * else null: `model_alias` on the events and the start record (P5). */
+  modelAlias?: string | null;
   /** The model the wire requests carry, when the caller computed one
    * itself: a string sends exactly that, null sends none, and undefined
    * falls back to `model`. Under a provider override the session home's
@@ -49,8 +47,7 @@ export interface CodexDriverOptions {
   /** The validated working directory — also the ceiling's launch scope. */
   cwd: string;
   sandboxed: boolean;
-  /** The trust the session actually runs at; recorded and reported as-is
-   * (the resume guard compares against exactly this value). */
+  /** Recorded sandbox trust, compared exactly on resume. */
   sandboxTrust: SandboxTrust;
   /** The containment flags this session actually runs with; recorded
    * as-is, and the resume guard refuses a resume that clears either. */
@@ -59,12 +56,13 @@ export interface CodexDriverOptions {
    * compared on resume (registry/format.ts). */
   sandboxBlock?: readonly string[];
   sandboxScrubEnv: boolean;
-  /** The `--pass-env` names the child runs with; recorded for the
-   * resume guard (review live16). */
+  /** Passed environment names, recorded for the resume guard. */
   passEnv: readonly string[];
   /** Prefix harness-bound text with `[<author>] ` (§4.4, default on). */
   authorPrefix: boolean;
   permissionTimeoutMs: number;
+  /** Answer every approval immediately, without creating a pending request. */
+  permissionPolicy?: "default" | "deny";
   turnTimeoutMs: number | null;
   sessionTimeoutMs: number | null;
   /** Null disables registry writes (unit tests); the CLI always passes one. */
@@ -88,9 +86,8 @@ export interface CodexDriverOptions {
    * finds it; the reported `resumable` is false without it (review D2,
    * correctness-2 2). Never throws out of the end path. */
   settleSessionHome?: (sessionId: string | null, resumable: boolean) => boolean;
-  /** True when the session runs hermetic; recorded in the call ledger
-   * and the registry record. */
-  hermetic?: boolean;
+  /** Recorded for the resume guard; argv owns the MCP server config. */
+  playwrightMcp?: boolean;
   /** The launcher's per-session private home a hermetic session runs in
    * (src/session/private-home-types.ts): reported on
    * session_started.private_home, keyed by the thread id in the
@@ -129,7 +126,7 @@ export abstract class CodexDriverIo {
   protected readonly parser = new CodexStreamParser();
   protected readonly capabilities = codexSessionCapabilities();
   protected readonly policy: CodexSessionPolicy;
-  protected readonly out: BoundedOutboundQueue;
+  protected readonly out: SessionOutputQueue;
   protected readonly pendingTimers = new Map<string, Timer>();
 
   /** Codemux-originated JSON-RPC requests awaiting their response. */
@@ -143,9 +140,8 @@ export abstract class CodexDriverIo {
    * session_started fires so their acks and echoes carry the thread id.
    * Two event classes in that window carry the empty id: the
    * starting-state shutdown path's ack and `shutting_down` rejections,
-   * which end the session without waiting for a handshake, and the end
-   * path's `shutting_down` rejections of what the replay never reached
-   * (review live10). */
+   * and the end path's `shutting_down` rejections of what the replay
+   * never reached (review live10). */
   protected readonly preSessionLines: string[] = [];
   /** The parked lines' bytes, bounded with their count: a handshake
    * that never answers must not grow codemux's memory without limit. */
@@ -158,6 +154,12 @@ export abstract class CodexDriverIo {
   /** The thread id: the codemux session id. Null on a fresh thread until
    * the thread/start response (or thread/started) names it. */
   protected threadId: string | null;
+  /** The model the thread/start (or thread/resume) response named at its
+   * top level (design P5): what the harness configured, reported on
+   * `session_started` with source `harness`; null when the response
+   * carried none (codex 0.159.3's recorded frame in
+   * tests/fixtures/live/codex-app-server.ndjson; 0.166.0 keeps the field). */
+  protected harnessModel: string | null = null;
 
   /** The launch facts the call ledger records on every turn and at the
    * end (call-log.ts); the provider is the override's host or "default". */
@@ -187,23 +189,25 @@ export abstract class CodexDriverIo {
   protected resolveDone!: (code: number) => void;
 
   constructor(protected readonly options: CodexDriverOptions) {
+    validateCodexSessionTools(options.tools, options.autonomy, options.noToolsCatalog);
     this.done = new Promise<number>((resolve) => {
       this.resolveDone = resolve;
     });
     this.callLedger = {
       agent: "codex",
       model: options.model ?? null,
+      modelAlias: options.modelAlias ?? null,
       provider: providerHost(options.providerBaseUrl),
       autonomy: options.autonomy,
       // The real value: either flag says hermetic, so a launcher that
       // hands only the private home still records it.
-      hermetic: options.hermetic === true || options.privateHome != null,
+      hermetic: options.hermetic === true || (options.privateHome != null && !isCallerHarnessHome(options.privateHome)),
       sandboxed: options.sandboxed,
       cwd: options.cwd,
     };
     this.threadId = options.resumeThreadId;
     this.policy = codexSessionPolicy(options.autonomy, options.sandboxed, options.cwd);
-    this.out = new BoundedOutboundQueue(
+    this.out = new SessionOutputQueue(
       options.sink ?? defaultEventSink(),
       (failure) => {
         // Both failure classes end the session (§4.2): the caller stopped
@@ -271,16 +275,15 @@ export abstract class CodexDriverIo {
   }
 
   /** True once an end path has begun: the spawn-throw catch hands the
-   * ending to that path (round 20, minor 8; review round 65). */
+   * ending to that path (round 20, minor 8; round 65). */
   endPathStarted(): boolean {
     return this.finished;
   }
 
   /** The spawn-throw catch's exit once endPathStarted() is true: the end
    * path owns the ending — session_ended and the record's release in
-   * its own ordering — so await its verdict and leave through the
-   * session's exit code; a rethrow would release the record twice
-   * (review round 65). */
+   * its own ordering — so await its verdict and leave through the exit
+   * code; a rethrow would release the record twice (review round 65). */
   async finishAfterSpawnThrow(error: unknown): Promise<void> {
     reportSpawnThrow(error);
     const code = await this.done;
@@ -300,14 +303,12 @@ export abstract class CodexDriverIo {
    * run are replayed in order. */
   attach(proc: SessionProcess): void {
     this.proc = proc;
-    // A signal between construction and this call finished the driver with
-    // no child to stop (the CLI's spawn runs an async compatibility probe
-    // before it attaches). The end path waiting on this child drains it
-    // the way every shutdown does, EOF first, the grace, then the stop
-    // request, and awaits its settlement before the record release and
-    // session_ended (review round 64); an immediate SIGTERM here turned a
-    // child that would have exited on EOF into a harness failure (round
-    // 69).
+    // A signal between construction and this call finished the driver
+    // with no child to stop (the spawn runs an async probe first). The
+    // end path waiting on this child drains it like every shutdown —
+    // EOF, the grace, the stop request — and awaits settlement before
+    // the record release and session_ended (round 64); an immediate
+    // SIGTERM here turned an EOF exit into a harness failure (round 69).
     if (this.finished && this.resolveLateChild === null) {
       // No end path waits for this child (the end completed with no spawn
       // pending): nothing will drain it, so it is stopped at once or it
@@ -382,17 +383,14 @@ export abstract class CodexDriverIo {
   }
 
   /** Queue one event line. The session's end events (the option) ride
-   * the queue's terminal lane (round al32): session_ended and the fatals
-   * that end the session reach the caller even when the ordinary bounds
-   * refuse everything else, while turn_completed and the input acks are
-   * ordinary entries that drop with the rest. Two terminal classes
-   * (round al35, edges major 4): `terminal: true` is session_ended
-   * alone, and `terminal: "fatal"` is a fatal, so the lane reserves its
-   * last slot for the end event and a flood of fatals cannot take it.
-   * The enqueue's boolean is deliberately ignored — a refused line has
-   * already fired the queue's own failure callback, which starts the
-   * crash end; a terminal line is refused only when its lane class is
-   * full, and the overflow that reports starts the same end. */
+   * the queue's terminal lane (round al32): session_ended and the ending
+   * fatals reach the caller even when the ordinary bounds refuse the
+   * rest, while turn_completed and the input acks drop with them. Two
+   * terminal classes (round al35, edges major 4): `terminal: true` is
+   * session_ended alone, `terminal: "fatal"` a fatal, so the lane keeps
+   * its last slot for the end event against a flood of fatals. The
+   * enqueue's boolean is ignored — a refused line already fired the
+   * queue's own failure callback, which starts the same crash end. */
   protected emit(line: string, options?: { terminal?: boolean | "fatal" }): void {
     this.out.enqueue(line, options);
   }
@@ -405,8 +403,8 @@ export abstract class CodexDriverIo {
 
   /** Tier 2 (§4.2): a harness line that breaks the stream's grammar
    * still goes out raw, then the fatal names the violation (review
-   * live21, the claude-family sibling). A null line is the
-   * response-adoption path, codemux-originated, with nothing to mirror. */
+   * live21). A null line is the response-adoption path, codemux-made,
+   * with nothing to mirror. */
   protected emitGrammarViolation(rawLine: string | null, message: string): void {
     if (rawLine !== null) {
       this.emit(buildUnknownEvent(++this.seq, this.sessionIdOrEmpty(), rawLine));
@@ -456,15 +454,14 @@ export abstract class CodexDriverIo {
   }
 
   /** Send one request under the next integer id and remember what it
-   * waits on. Returns the id, so the caller that needs to match its own
-   * response or rejection to this exact call can (the interrupt state,
-   * review live11), or null when the write was refused (no response can
-   * then arrive, so nothing is left pending). The call is registered
-   * only after the write succeeds: a refused write starts the crash end
-   * synchronously, and a `turn_start` still registered then made the end
-   * path queue its interrupt behind a response that could never come and
-   * wait the whole grace (review live25). No response can arrive between
-   * the write and the registration, because both run in one tick. */
+   * waits on. Returns the id — the caller can match its own response or
+   * rejection to this exact call (the interrupt state, review live11) —
+   * or null when the write was refused (no response can then arrive, so
+   * nothing is left pending). Registration follows a successful write:
+   * a refused write starts the crash end synchronously, and a
+   * `turn_start` still registered then made the end path queue its
+   * interrupt behind a response that could never come (review live25).
+   * No response can arrive between the write and the registration. */
   protected call(kind: PendingCall, build: (id: number) => string): number | null {
     this.requestCounter += 1;
     const id = this.requestCounter;
@@ -482,7 +479,6 @@ export abstract class CodexDriverIo {
     for (const timer of this.pendingTimers.values()) clearTimeout(timer);
     this.pendingTimers.clear();
   }
-
 }
 
 /** The default event sink: one JSONL line per write on stdout. */

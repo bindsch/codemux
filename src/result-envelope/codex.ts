@@ -185,6 +185,7 @@ export function codexResult(
   const block: CodemuxResultBlock = {
     agent: "codex",
     labels: request.labels ?? null,
+    model_alias: request.modelAlias ?? null,
     // The model is the one that served the run: a reroute (servedModel)
     // replaces the selection mid-run, and otherwise the stream names no
     // model, so it is the one codemux selected or null (the harness

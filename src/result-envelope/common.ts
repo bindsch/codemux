@@ -2,6 +2,10 @@ import { MAX_CAPTURE_BYTES, OUTPUT_LIMIT_EXIT_CODE } from "../process-runner.js"
 import type { ResultUsageBlock, RunResult } from "../types.js";
 import { markOverflowed } from "../usage-overflow.js";
 
+// Re-exported for the per-agent envelope builders (the copilot and pi
+// builders mark an overflowed cache sum through it).
+export { markOverflowed };
+
 export function emptyUsage(): ResultUsageBlock {
   return {
     input_tokens: null,

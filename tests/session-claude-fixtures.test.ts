@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { ClaudeStreamParser } from "../src/session/claude-session.js";
+import { servedModelForTurn } from "../src/session/driver-turns.js";
 import { emptyUsage } from "../src/result-envelope.js";
 import { addTurnUsage } from "../src/session/usage.js";
 
@@ -74,6 +75,43 @@ describe("fixture replay - zai-session-a.ndjson", () => {
     expect(cumulative.output_tokens).toBe(40);
     expect(cumulative.cached_input_tokens).toBe(75840);
     expect(cumulative.cost_usd).toBe(0.118512);
+  });
+
+  test("the naming frames flow: init model at start, message.model per turn (design P5)", () => {
+    // The recorded wire names its model three ways — `model` on every
+    // init frame, `model` on every assistant message, `modelUsage` keyed
+    // by it on every result — all "claude-opus-5-5". The announcement
+    // reports the init value as source `harness`; each turn reports the
+    // single provider-named id as source `provider` (servedModelForTurn,
+    // the driver's own rule, applied to the replayed facts).
+    const records = readFileSync(
+      fileURLToPath(new URL("./fixtures/live/zai-session-a.ndjson", import.meta.url)),
+      "utf8"
+    )
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .map((line) => JSON.parse(line) as { dir: string; line: string });
+    const parser = new ClaudeStreamParser();
+    let initModel: string | null = null;
+    const turnModels = new Set<string>();
+    const served: (string | null)[] = [];
+    for (const record of records) {
+      if (record.dir !== "out") continue;
+      for (const parse of parser.feed(record.line, {
+        expectedSessionId: "cf65c7fd-b902-4d5b-908f-92159e3829d5",
+      })) {
+        if (parse.kind === "init") initModel = parse.model;
+        if (parse.kind === "assistant_model") turnModels.add(parse.model);
+        if (parse.kind === "turn_completed") {
+          served.push(servedModelForTurn(turnModels, parse.models));
+          turnModels.clear();
+        }
+      }
+    }
+    expect(initModel).toBe("claude-opus-5-5");
+    // Four turns (the fixture's own header), each attributed to the one
+    // model the provider named — including the aborted last one.
+    expect(served).toEqual(["claude-opus-5-5", "claude-opus-5-5", "claude-opus-5-5", "claude-opus-5-5"]);
   });
 });
 

@@ -8,7 +8,8 @@
 
 import { describe, expect, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { homedir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import * as cliHomes from "../src/session/cli-homes.js";
@@ -121,7 +122,8 @@ describe("the harness-home resolvers", () => {
     expect(claude && claude.resumePattern.test("0123456789abcdef")).toBe(false);
     expect(codex && codex.resumePattern.test("0123456789abcdef")).toBe(true);
     expect(Object.keys(SESSION_AGENTS).sort()).toEqual(
-      ["agy", "aider", "claude", "codex", "kimi", "opencode", "zai"]
+      ["agy", "aider", "claude", "cline", "codex", "copilot", "cursor", "droid", "gemini",
+        "goose", "kimi", "opencode", "openhands", "pi", "qwen", "zai"]
     );
   });
 });
@@ -209,6 +211,9 @@ describe("prepareSessionChild called directly", () => {
     adapter: {
       getEnv: (): Record<string, string> => ({}),
       getEnvOmissions: (): string[] => [],
+      // The codex Playwright MCP check reads the adapter's execution PATH
+      // on every codex launch (src/session/cli-spawn-prep.ts).
+      executionPathEnv: (): string => process.env.PATH ?? "",
     },
     override: null,
     runLike: {},
@@ -285,6 +290,48 @@ describe("prepareSessionChild called directly", () => {
       expect(() => config.finalize()).not.toThrow();
       expect(built.env).toBe(fake.env);
     } finally {
+      fake.cleanup();
+    }
+  });
+
+  test("a codex session home's run-context finalize is a no-op: the session owns its removal", async () => {
+    // Both codex private homes (hermetic and caller-owned) reach the
+    // adapter through run-context entries whose finalize must not remove
+    // per-session state: --final and the sweep own that lifetime.
+    const fake = createFakeBinaryEnv({ scode: KEEPENV_SCODE });
+    const root = mkdtempSync(join(tmpdir(), "codemux-codex-session-home-"));
+    try {
+      for (const callerOwned of [false, true]) {
+        const dir = join(root, callerOwned ? "caller" : "private");
+        mkdirSync(join(dir, ".codex"), { recursive: true });
+        const contexts: unknown[] = [];
+        const outcome = await prepareSessionChild({
+          ...baseCall,
+          codexSessionHome: null,
+          sessionProjectDir: null,
+          sessionPrivateHome: { dir, ...(callerOwned ? { callerOwned: true, environment: {}, environmentOmissions: [] } : {}) },
+          buildSessionEnvironment: (context: unknown): { runEnv: Record<string, string>; env: Record<string, string> } => {
+            contexts.push(context);
+            return { runEnv: {}, env: fake.env };
+          },
+        } as unknown as Parameters<typeof prepareSessionChild>[0]);
+        outcome.buildLongLivedEnvironment();
+        const context = contexts[0] as {
+          hermeticHome: { codexHome: string; finalize: () => void };
+          codexProviderHome?: { codexHome: string; finalize: () => void };
+        };
+        expect(context.hermeticHome.codexHome).toBe(join(dir, ".codex"));
+        context.hermeticHome.finalize();
+        if (callerOwned) {
+          expect(context.codexProviderHome!.codexHome).toBe(join(dir, ".codex"));
+          context.codexProviderHome!.finalize();
+        } else {
+          expect(context.codexProviderHome).toBeUndefined();
+        }
+        expect(existsSync(join(dir, ".codex"))).toBe(true);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
       fake.cleanup();
     }
   });

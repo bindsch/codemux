@@ -25,7 +25,8 @@ export function synthesizedTurnCompletion(
   drainFailureCode: number | null,
   firstFatal: string | null,
   agent: string,
-  childOutcome: SessionChildOutcome
+  childOutcome: SessionChildOutcome,
+  modelAlias: string | null
 ): { event: string; finish: "failed" | "interrupted" } {
   const finish: "failed" | "interrupted" =
     reason === "crash" || drainFailureCode !== null || firstFatal !== null
@@ -45,6 +46,12 @@ export function synthesizedTurnCompletion(
       finish,
       reason: reasonText,
       usage: emptyUsage(),
+      // The harness never answered this turn, so no provider naming
+      // (message.model) ever completed it: no served model is attributed
+      // to a synthesized completion (design P5's fail-closed rule).
+      model_served: null,
+      model_served_source: null,
+      model_alias: modelAlias,
     }),
     finish,
   };

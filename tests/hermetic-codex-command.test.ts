@@ -77,16 +77,18 @@ describe("hermetic runs: codex", () => {
     expect(cmd[cmd.length - 1]).toBe("-");
   });
 
-  test("--tools none is accepted only at read-only autonomy (apply_patch cannot be removed)", () => {
+  test("--tools none at writable autonomy needs an explicit model for the native tool-free catalog", () => {
     const adapter = codexAdapter({}, fakeHome());
     const cwd = mkdtempSync(join(tmpdir(), "codemux-codex-ro-"));
     scratch.push(cwd);
     mkdirSync(join(cwd, ".git"));
     expect(() => adapter.validateRunRequest({ agent: "codex", prompt: "p", cwd, tools: "none" })).not.toThrow();
     expect(() => adapter.validateRunRequest({ agent: "codex", prompt: "p", cwd, tools: "none", autonomy: "read-only" })).not.toThrow();
+    // Writable autonomy is carried by the model_catalog_json path
+    // (src/codex-no-tools.ts); without a model it refuses, never runs with apply_patch.
     for (const autonomy of ["low", "medium", "high"] as const) {
       expect(() => adapter.validateRunRequest({ agent: "codex", prompt: "p", cwd, tools: "none", autonomy }))
-        .toThrow("needs --auto read-only");
+        .toThrow("codex --tools none at writable autonomy requires an explicit --model or provider override model");
     }
   });
 

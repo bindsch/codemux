@@ -5,6 +5,8 @@
 // added, removed, or re-capabilityed an agent would be probed against the
 // wrong matrix. The candidate answers `list --json` (src/info-commands.ts,
 // schema codemux-list-1) and the gate builds its facts from that listing.
+import { PARITY_FEATURES, type ParityFeature } from "../../src/parity/features.js";
+import type { CandidateLimitations } from "./facts.js";
 import { runCapturedCommand } from "../../src/process-runner.js";
 import { AGENT_IDS, type AgentId } from "../../src/types.js";
 import { harnessFacts, type HarnessFacts } from "./probes.js";
@@ -114,12 +116,36 @@ export function candidateFacts(
     if (effortField === undefined) {
       throw new Error(`${where}: capabilities.effort is absent; the listing is from an older build`);
     }
+    // The plain tools-none fact (probe E) follows the same rule: required,
+    // so a candidate's E probe set is its own rather than this checkout's
+    // (parity pass, 2.0.0 — E runs wherever the capability is declared).
+    const toolsNoneField = (caps as Record<string, unknown>).toolsNone;
+    if (toolsNoneField === undefined) {
+      throw new Error(`${where}: capabilities.toolsNone is absent; the listing is from an older build`);
+    }
     // The spend-limit fact rides the listing too, but no probe keys on it,
     // so a listing without the field (an older build) is not refused: the
     // fact reads false, and a malformed value still is.
     const budgetLimitField = (caps as Record<string, unknown>).budgetLimit;
     if (budgetLimitField !== undefined && typeof budgetLimitField !== "boolean") {
       throw new Error(`${where}: capabilities.budgetLimit must be a boolean`);
+    }
+    const rawLimitations = (caps as Record<string, unknown>).limitations;
+    if (!rawLimitations || typeof rawLimitations !== "object" || Array.isArray(rawLimitations)) {
+      throw new Error(`${where}: capabilities.limitations must be an object; older listings are refused`);
+    }
+    const limitations: CandidateLimitations = {};
+    for (const [feature, raw] of Object.entries(rawLimitations)) {
+      if (!(PARITY_FEATURES as readonly string[]).includes(feature) ||
+          !raw || typeof raw !== "object" || Array.isArray(raw)) {
+        throw new Error(`${where}: invalid limitation declaration for ${feature}`);
+      }
+      const entry = raw as Record<string, unknown>;
+      if (typeof entry.reason !== "string" || !entry.reason.trim() ||
+          typeof entry.evidence !== "string" || !entry.evidence.trim()) {
+        throw new Error(`${where}: ${feature} requires a reason and evidence`);
+      }
+      limitations[feature as ParityFeature] = { reason: entry.reason, evidence: entry.evidence };
     }
     facts.push(harnessFacts(id, {
       supportsHermetic: booleanField((caps as Record<string, unknown>).hermetic, `${where}: capabilities.hermetic`),
@@ -129,11 +155,16 @@ export function candidateFacts(
       supportsProviderOverride: booleanField((caps as Record<string, unknown>).providerOverride, `${where}: capabilities.providerOverride`),
       supportsModel: booleanField(modelField, `${where}: capabilities.model`),
       supportsEffort: booleanField(effortField, `${where}: capabilities.effort`),
+      supportsToolSelection: booleanField(toolsNoneField, `${where}: capabilities.toolsNone`),
     }, booleanField((caps as Record<string, unknown>).sessions, `${where}: capabilities.sessions`),
       {
+        checkHermetic: booleanField((caps as Record<string, unknown>).checkHermetic, `${where}: capabilities.checkHermetic`),
+        sessionHermetic: booleanField((caps as Record<string, unknown>).sessionHermetic, `${where}: capabilities.sessionHermetic`),
+        limitations,
         experiment: booleanField(experimentMcpField, `${where}: capabilities.experimentMcp`),
         experimentPrefix: experimentPrefixField as string | null,
         servedModelEvidence: booleanField(servedModelField, `${where}: capabilities.servedModelEvidence`),
+        toolsNone: booleanField(toolsNoneField, `${where}: capabilities.toolsNone`),
         ...(binaryName === undefined ? {} : { binaryName }),
       }));
     contractHarnesses.push(binaryName === undefined ? { id } : { id, binaryName });

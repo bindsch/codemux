@@ -33,12 +33,12 @@ describe("opencode session - contract", () => {
     expect(OPENCODE_SESSION_FLOOR).toBe("1.18.18");
   });
 
-  test("the capability matrix is honest: only live input and resume", () => {
+  test("the capability matrix includes interruption of the current child", () => {
     expect(opencodeSessionCapabilities()).toEqual({
       live_input: true,
       user_during_turn: false,
       steer: false,
-      interrupt: false,
+      interrupt: true,
       permissions: false,
       deltas: false,
       file_changes: false,

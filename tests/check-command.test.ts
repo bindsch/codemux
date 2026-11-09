@@ -226,9 +226,10 @@ describe("CLI - check pre-launch usage refusals exit 64", () => {
     },
     {
       label: "unsupported tools none request",
-      binaries: { cline: "exit 0" },
-      argv: ["check", "-a", "cline", "--no-sandbox", "--auto", "high", "--tools", "none"],
-      message: "cline cannot remove its built-in tools",
+      // openhands keeps the declared run.tools-none limitation.
+      binaries: { openhands: "exit 0" },
+      argv: ["check", "-a", "openhands", "--no-sandbox", "--auto", "high", "--tools", "none"],
+      message: "openhands cannot remove its built-in tools",
     },
   ];
   test.each(refusalCases)("$label", async ({ binaries, argv, message }) => {

@@ -3,11 +3,12 @@
 // the entry barrel scripts/live-gate.ts (only spawned children run it as
 // an entry; review round 8, edges).
 import { afterAll, expect, test } from "bun:test";
-import { CHECKOUT_VERSION, main } from "../scripts/live-gate.js";
+import { CHECKOUT_VERSION, discoverCandidate, main, probeApplies, unsupportedNote } from "../scripts/live-gate.js";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { AGENT_IDS } from "../src/types.js";
+import { PROBE_FEATURE } from "../src/parity/probe-features.js";
 import { ROOT, fixtureDirectory } from "./helpers/live-gate.js";
 
 // The gate snapshots the Keychain search list through `security` before
@@ -33,7 +34,10 @@ function fakeCandidate(directory: string, installed: readonly string[]): string 
     agents: installed.map((id) => ({
       id,
       available: true,
-      capabilities: { hermetic: false, resultJson: false, toolsNoneRequiresHermetic: false, providerOverride: false, sessions: false, experimentMcp: false, experimentPrefix: null, servedModelEvidence: false, model: false, effort: false },
+      capabilities: { hermetic: false, checkHermetic: false, sessionHermetic: false,
+        limitations: Object.fromEntries(Object.values(PROBE_FEATURE).filter((feature) => feature !== null)
+          .map((feature) => [feature, { reason: `Synthetic candidate does not implement ${feature}`, evidence: "Synthetic fixture 1.0.0" }])),
+        resultJson: false, toolsNone: false, toolsNoneRequiresHermetic: false, providerOverride: false, sessions: false, experimentMcp: false, experimentPrefix: null, servedModelEvidence: false, model: false, effort: false },
     })),
   };
   const path = join(directory, "candidate");
@@ -52,6 +56,25 @@ function fakeCandidate(directory: string, installed: readonly string[]): string 
   chmodSync(path, 0o700);
   return path;
 }
+
+test("the main candidate fixture declares isolation and limitation evidence", async () => {
+  const directory = fixtureDirectory();
+  try {
+    const candidate = fakeCandidate(directory, ["claude"]);
+    const { facts } = await discoverCandidate(candidate, CHECKOUT_VERSION, false, CHECKOUT_VERSION);
+    expect(facts).toHaveLength(1);
+    const fact = facts[0]!;
+    expect(fact).toMatchObject({ id: "claude", checkHermetic: false, sessionHermetic: false });
+    for (const letter of ["D", "K"] as const) {
+      const feature = PROBE_FEATURE[letter]!;
+      expect(probeApplies(letter, fact)).toBe(false);
+      expect(unsupportedNote(letter, fact)).toBe(`Synthetic candidate does not implement ${feature}`);
+      expect(fact.limitations?.[feature]?.evidence).toBe("Synthetic fixture 1.0.0");
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test.each(["missing", "non-executable", "directory"])("live gate refuses a %s binary with exit 2 before probing", (kind) => {
   const directory = fixtureDirectory();

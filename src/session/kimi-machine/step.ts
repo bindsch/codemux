@@ -6,6 +6,7 @@
  */
 
 import { MAX_ARGV_PROMPT_BYTES } from "../../process-runner.js";
+import { emptyUsage } from "../../result-envelope.js";
 import { kimiPromptIsCommand } from "../kimi-session.js";
 import { applyAuthorPrefix, parseInputLine } from "../protocol.js";
 import {
@@ -165,6 +166,10 @@ export function step(
           state.end.record({ reason: "shutdown", code: 0 });
           return [{ kind: "ack", inputSeq, accepted: true }, ...startEndPath(state)];
         }
+        case "interrupt": {
+          if (state.turn !== null) state.turn.interruption ??= message.reason ?? "caller interrupted the turn";
+          return [{ kind: "ack", inputSeq, accepted: true }, { kind: "stop_turn" }];
+        }
         default:
           // kimi's capability matrix rejects every other type inside
           // parseInputLine; this arm is the checked backup.
@@ -199,7 +204,8 @@ export function step(
       // the turn it owes (the drain continues in `draining`); a live
       // session attaches it as the running turn's child.
       if (state.end.cause === null) state.phase = "running";
-      return [{ kind: "attach_child", child: event.child }];
+      return [{ kind: "attach_child", child: event.child },
+        ...(state.turn?.interruption === undefined ? [] : [{ kind: "stop_turn" } as KimiEffect])];
     }
     case "spawn_failed": {
       if (!state.spawnInFlight || state.spawnAbandoned) {
@@ -227,8 +233,18 @@ export function step(
     }
     case "child_line":
       return childLine(state, event.line, config);
+    case "session_identified":
+      if (state.sessionId !== null) return [];
+      state.sessionId = event.sessionId;
+      if (config.registryEnabled) { state.recordPending = true; return [{ kind: "record_start" }]; }
+      state.announced = true;
+      return [{ kind: "announce" }];
+    case "turn_timeout":
+      if (state.turn === null || state.end.cause !== null) return [];
+      state.turn.interruption ??= "the turn exceeded its timeout";
+      return [{ kind: "stop_turn" }];
     case "child_exit":
-      return childExit(state, event.child, event.outcome);
+      return childExit(state, event.child, event.outcome, event.usage);
     case "stdin_eof": {
       if (state.end.cause === null) {
         if (event.error !== undefined) {
@@ -379,12 +395,18 @@ export function step(
             turnId: state.turn.id,
             finish,
             reason,
+            // The synthesized completion happens at children_settled,
+            // after the child_exit that carried the read; the open turn's
+            // delta already folded there when its verdict did, and this
+            // path's turn never closed — no counts are attributed.
+            usage: emptyUsage(),
           },
           {
             kind: "ledger_turn",
             turnId: state.turn.id,
             startedAt: state.turn.startedAt,
             finish,
+            usage: emptyUsage(),
           }
         );
         state.turn = null;

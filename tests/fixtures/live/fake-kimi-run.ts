@@ -21,6 +21,12 @@
  * under $FAKE_STATE_DIR for the assertions.
  *
  *   basic (default) — one assistant text line, the resume hint, exit 0
+ *   permission-tools — the native deny-rule scenario of
+ *                     fake-kimi-run-parts/permission-tools.ts: one
+ *                     tool call per monitored tool name, each denied or
+ *                     allowed by the config.toml deny rules the fixture
+ *                     reads under $KIMI_CODE_HOME, then the final text
+ *                     and the hint, exit 0
  *   tools           — assistant tool_calls, a tool result, final text,
  *                     the hint, exit 0
  *   danglingtool    — assistant tool_calls, then the hint and exit 0
@@ -109,6 +115,7 @@
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { runKimiPermissionTools } from "./fake-kimi-run-parts/permission-tools.js";
 
 const stateDir = process.env.FAKE_STATE_DIR ?? "/tmp/fake-kimi-run";
 mkdirSync(stateDir, { recursive: true });
@@ -170,6 +177,10 @@ const hint = (id = sessionId): void => {
  * when the turn stays open (wait/garbage — only a signal ends it). */
 const runTurn = (scenario: string): number | null => {
   switch (scenario) {
+    case "permission-tools":
+      runKimiPermissionTools(write);
+      hint();
+      return 0;
     case "basic":
       write({ role: "assistant", content: `Done: ${prompt}` });
       hint();

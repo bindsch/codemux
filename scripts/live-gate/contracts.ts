@@ -3,7 +3,7 @@ import { probeVersionVerdict, type VersionVerdict } from "../../src/harness-heal
 import type { HarnessContract } from "../../src/harness-compatibility.js";
 import { HARNESS_CONTRACTS } from "../../src/harness-contracts.js";
 import type { AgentId } from "../../src/types.js";
-import { parseUsageSnapshot, USAGEMUX_PROTOCOL_VERSION } from "../../src/usage-protocol.js";
+import { parseUsageSnapshot, USAGEMUX_PROTOCOL_VERSION, type UsageSnapshot } from "../../src/usage-protocol.js";
 import { readUsagemuxVersion, USAGEMUX_MINIMUM_VERSION, type UsagemuxVersionStatus } from "../../src/usage.js";
 
 // Probe 0: zero model quota. The version-contract column reads each installed
@@ -154,6 +154,11 @@ export function staleContracts(rows: readonly ContractRow[]): ContractRow[] {
 export interface UsageCheck {
   status: "PASS" | "SKIP" | "FAIL";
   detail: string;
+  /** The parsed snapshot on PASS (parity pass, 2.0.0): one reading per
+   * gate, handed to the per-harness quota decisions
+   * (scripts/live-gate/quota.ts) instead of a second query. Absent on SKIP
+   * and FAIL, which already stop or fail the gate on their own terms. */
+  snapshot?: UsageSnapshot;
 }
 
 export interface UsageDeps {
@@ -220,7 +225,11 @@ export async function runUsageCheck(codemux: string, deps: UsageDeps = {}): Prom
   // src/usage-protocol.ts): any parseable JSON used to pass, so a codemux
   // and a usagemux that disagree on the protocol shape passed the gate.
   try {
-    parseUsageSnapshot(captured.stdout);
+    return {
+      status: "PASS",
+      detail: `usagemux answered a snapshot that validates against protocol ${USAGEMUX_PROTOCOL_VERSION}`,
+      snapshot: parseUsageSnapshot(captured.stdout),
+    };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     return {
@@ -228,7 +237,6 @@ export async function runUsageCheck(codemux: string, deps: UsageDeps = {}): Prom
       detail: `usage --json stdout is not a valid usagemux protocol ${USAGEMUX_PROTOCOL_VERSION} snapshot: ${reason}`,
     };
   }
-  return { status: "PASS", detail: `usagemux answered a snapshot that validates against protocol ${USAGEMUX_PROTOCOL_VERSION}` };
 }
 
 /** The exact `--version` output of the binary under test, stamped in the

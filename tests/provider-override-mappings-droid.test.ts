@@ -208,13 +208,24 @@ describe("droid provider override", () => {
     expect(existsSync(join(home, ".factory"))).toBe(false);
   });
 
-  test("the tui refuses the override; without one it is unchanged", () => {
+  test("the tui rides the override through the same settings file", () => {
     const plain = adapterOf();
     expect(() => plain.validateTuiRequest(undefined, cwdOf())).not.toThrow();
     expect(plain.buildTuiCommand(undefined, "high")).toEqual(["droid", "--auto", "high"]);
     const adapter = adapterOf(ZAI_DROID);
-    expect(() => adapter.validateTuiRequest(undefined, cwdOf()))
-      .toThrow("supports headless runs only");
+    expect(() => adapter.validateTuiRequest(undefined, cwdOf())).not.toThrow();
+    const cmd = adapter.buildTuiCommand(undefined, "high");
+    expect(cmd.slice(0, 2)).toEqual(["droid", "--settings"]);
+    expect(cmd.slice(3)).toEqual(["--auto", "high"]);
+    const settings = JSON.parse(readFileSync(cmd[2]!, "utf8"));
+    expect(settings.sessionDefaultSettings.model).toBe(settings.customModels[0].id);
+    expect(settings.customModels[0]).toMatchObject({
+      model: "glm-5.3",
+      baseUrl: "https://api.z.ai/api/coding/paas/v4",
+      apiKey: "${CODEMUX_DROID_PROVIDER_API_KEY}",
+    });
+    expect(adapter.getTuiEnv()).toEqual({ CODEMUX_DROID_PROVIDER_API_KEY: "test-key-do-not-print" });
+    expect(cmd.join(" ")).not.toContain("test-key-do-not-print");
   });
 
   test("the output cap rides the BYOK entry; the context cap is refused", () => {

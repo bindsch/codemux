@@ -230,7 +230,8 @@ describe("aider chat history file", () => {
     expect(context.aiderHistoryFile).toBeUndefined();
     const cmd = adapter.buildRunCommand(request, context);
     expect(cmd[cmd.indexOf("--chat-history-file") + 1]).toBe("/dev/null");
-    expect(existsSync(join(dir, ".aider"))).toBe(false);
+    // Prompt and analytics files have a separate per-run lifecycle.
+    expect(existsSync(join(dir, ".aider", ".codemux"))).toBe(false);
   });
 
   test("processRunResult reads the answer from the run's history", () => {

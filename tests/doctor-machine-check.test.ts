@@ -212,7 +212,7 @@ describe("doctor harness rows", () => {
     const fake = createFakeBinaryEnv({
       scode: fakeScodeHelp(),
       usagemux: fakeUsagemux(),
-      opencode: `if [ "$1" = "--version" ]; then printf '1.18.18\\n'; exit 0; fi`,
+      opencode: `if [ "$1" = "--version" ]; then printf '1.19.5\\n'; exit 0; fi`,
     });
     try {
       const home = fixtureHome({ ".local/share/opencode/auth.json": '{"github":{}}' });

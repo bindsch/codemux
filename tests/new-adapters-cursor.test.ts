@@ -32,10 +32,13 @@ describe("CursorAdapter", () => {
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: false,
       effortLevels: [],
+      supportsResultJson: true,
+      supportsToolSelection: true,
+      supportsProviderOverride: true,
     });
   });
 
-  test("builds plain-text headless commands", () => {
+  test("builds stream-json headless commands for every run", () => {
     expect(adapter.buildRunCommand({
       agent: "cursor",
       prompt: "fix the tests",
@@ -45,7 +48,7 @@ describe("CursorAdapter", () => {
       "agent",
       "--print",
       "--output-format",
-      "text",
+      "stream-json",
       "--trust",
       "--model",
       "gpt-5",
@@ -98,7 +101,7 @@ describe("CursorAdapter", () => {
       "cursor-agent",
       "--print",
       "--output-format",
-      "text",
+      "stream-json",
       "--trust",
       "--sandbox",
       "disabled",
@@ -123,7 +126,7 @@ describe("CursorAdapter", () => {
       "agent",
       "--print",
       "--output-format",
-      "text",
+      "stream-json",
       "--trust",
       "--sandbox",
       "disabled",
@@ -211,7 +214,7 @@ describe("CursorAdapter", () => {
       "agent",
       "--print",
       "--output-format",
-      "text",
+      "stream-json",
       "--trust",
       "--sandbox",
       "disabled",
@@ -335,7 +338,7 @@ describe("CursorAdapter", () => {
         "agent",
         "--print",
         "--output-format",
-        "text",
+        "stream-json",
         "--trust",
         "--sandbox",
         "disabled",

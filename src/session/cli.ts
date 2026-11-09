@@ -13,6 +13,7 @@
 import type { Command } from "commander";
 import type { ProjectSettingsSessionDir } from "../claude-project-config.js";
 import type { CodexSessionProviderHome } from "../codex-provider.js";
+import { prepareCodexSessionCatalog, type CodexSessionCatalog } from "./codex-catalog.js";
 import type { CodemuxConfig } from "../types.js";
 import { exitOnResumeRefusal } from "./cli-usage.js";
 import { registerSessionOptions } from "./cli-options.js";
@@ -35,7 +36,8 @@ import {
 import type { SessionPrivateHome } from "./private-home-types.js";
 import { spawnSessionChild } from "./spawn.js";
 import { launchRedirectCheck } from "../cli-runtime.js";
-import { UsageRefusalError } from "../validation.js";
+import { assertSessionOptionsSupported } from "./cli-policy.js";
+import { abandonFreshSessionDirectories } from "./cli-abandon.js";
 
 // The modules the action is split into, re-exported so this path keeps
 // every public symbol importable (readRegistry and friends live in
@@ -57,12 +59,8 @@ export function registerSessionCommand(
   // nothing else; the action below stays with the state it manages.
   registerSessionOptions(session, config.defaultAgent);
   session.action(async (options) => {
-      // Session-scoped state the CATCH below must reach: block-scoped
-      // locals inside the try are invisible in its catch clause (a
-      // sibling scope), so these live outside both — the codex override
-      // session home, abandoned on any exit that never reached the
-      // spawn (review D5), the project-settings session's private config
-      // directory (same rule), and whether that spawn began.
+      // The catch owns pre-spawn homes; the catalog lasts until the child settles.
+      let codexSessionCatalog: CodexSessionCatalog | null = null;
       let codexSessionHome: CodexSessionProviderHome | null = null;
       let sessionProjectDir: ProjectSettingsSessionDir | null = null;
       let sessionProjectDirResumed = false;
@@ -70,65 +68,31 @@ export function registerSessionCommand(
       // fresh/resumed removal rule as the claude family's directory.
       let sessionPrivateHome: SessionPrivateHome | null = null;
       let sessionPrivateHomeResumed = false;
+      let turnAgentFreshHome: SessionPrivateHome | null = null; // review m5 (cli-drivers.ts)
       const spawnBegan = { value: false };
-      // The record this process owns from the resume claim or a fresh
-      // start record until the spawn, with its release rule (fresh and
-      // unconfirmed is discarded, a claimed one is stamped ended). The
-      // CATCH below reaches this so the claim is always released on the
-      // way out (round 13, edges 3).
+      // Release fresh unconfirmed records or stamp claimed resumes on abort.
       let owned: { registryPath: string; id: string; fresh: boolean } | null = null;
-      // An abort release never stamps final: the end path alone writes
-      // it, after the private directory was removed (round 16, edges 1),
-      // so a claim released before that leaves a directory it never
-      // removed resumable, not refusing every later resume as final.
+      // Only the end path stamps final, after removing the private directory.
       const releaseOwnedRecord = (): void => {
         if (owned === null) return;
         if (owned.fresh) discardUnconfirmedRecord(owned.registryPath, owned.id);
         else releaseSessionRecord(owned.registryPath, owned.id, false);
       };
-      // The driver, once built: its constructor installs the session's
-      // signal handlers, so an exit decided after that point and before
-      // the spawn (a lost resume claim, a registry that cannot record)
-      // disposes it on the way out instead of leaving the handlers behind.
+      // Dispose driver signal handlers on any pre-spawn exit.
       let builtDriver: SessionDriver | null = null;
       /** Aborting removes only a FRESH private directory (its record was
        * never confirmed); a resumed one stays — that removal is the end
        * path's (round 17, edges 1), the codex/kimi/agy home included. */
       const abandonSessionProjectDir = (): void => {
-        if (sessionProjectDir !== null && !sessionProjectDirResumed) {
-          sessionProjectDir.remove();
-        }
-        if (sessionPrivateHome !== null && !sessionPrivateHomeResumed) {
-          try {
-            sessionPrivateHome.remove();
-          } catch (error) {
-            console.error(
-              `codemux: cannot remove the fresh hermetic session home ${sessionPrivateHome.dir} ` +
-                `(${error instanceof Error ? error.message : String(error)}); the stale sweep removes it later`
-            );
-          }
-        }
+        abandonFreshSessionDirectories(
+          sessionProjectDir, sessionProjectDirResumed,
+          sessionPrivateHome, sessionPrivateHomeResumed
+        );
+        abandonFreshSessionDirectories(null, false, turnAgentFreshHome, false);
       };
       try {
         requireValidConfig();
-        // Registered so the flag is refused by name (exit 64) instead of
-        // commander's generic parse error (exit 1): a session spawns
-        // several children per turn, so scode's per-run accounting file has
-        // no single stream to append to here.
-        if (options.sandboxAccount !== undefined || options.sandboxAccountId !== undefined) {
-          throw new UsageRefusalError(
-            "--sandbox-account and --sandbox-account-id are not supported for sessions: the per-turn agents spawn several children with no single accounting stream; use run or tui"
-          );
-        }
-        // Registered so the flag is refused by name (exit 64) instead of
-        // commander's generic parse error (exit 1): Claude Code's own flag
-        // works with --print only, so a multi-turn session cannot carry it,
-        // whatever the agent.
-        if (options.maxBudgetUsd !== undefined) {
-          throw new UsageRefusalError(
-            "--max-budget-usd is not supported for sessions: Claude Code applies the spend limit to headless runs only; use run"
-          );
-        }
+        assertSessionOptionsSupported(options);
         const {
           agentId,
           sessionSupport,
@@ -149,6 +113,7 @@ export function registerSessionCommand(
           permissionTimeoutMs,
           shutdownGraceMs,
           model,
+          modelAlias,
           autonomy,
           effort,
           workdir,
@@ -236,6 +201,10 @@ export function registerSessionCommand(
         sessionProjectDirResumed = launch.sessionProjectDirResumed;
         sessionPrivateHome = launch.sessionPrivateHome;
         sessionPrivateHomeResumed = resumeId !== undefined;
+        codexSessionCatalog = agentId === "codex" ? prepareCodexSessionCatalog({
+          request: { ...runLike, model }, realCodexHome: codexHome(), binary: launch.codexCatalogBinary,
+          harnessVersion: launch.harnessVersion, sandboxOptions, callerBlockPaths: sandboxBlock, printOnly,
+        }) : null;
         const {
           needsKeepEnvPreflight,
           buildSessionEnvironment,
@@ -243,7 +212,7 @@ export function registerSessionCommand(
           claudeBuilt,
           turnPerProcess,
         } = launch;
-        const { argv, buildLongLivedEnvironment, printedSandbox } =
+        const { argv, buildLongLivedEnvironment, extraExecutableChecks, printedSandbox } =
           await prepareSessionChild({
             options,
             agentId,
@@ -256,9 +225,11 @@ export function registerSessionCommand(
             effort,
             workdir,
             requestedAutonomy,
-            sandboxOptions,
+            sandboxOptions: codexSessionCatalog?.sandboxOptions ?? sandboxOptions,
+            callerBlockPaths: agentId === "opencode" ? sandboxBlock : undefined,
             claudeBuilt,
             codexSessionHome,
+            codexSessionCatalog,
             sessionProjectDir,
             sessionPrivateHome,
             turnPerProcess,
@@ -277,7 +248,16 @@ export function registerSessionCommand(
           });
           return;
         }
-        const { driver, claudeDriver, agyDriver, aiderDriver, aiderSessionId, turnState } =
+        const {
+          driver,
+          claudeDriver,
+          agyDriver,
+          aiderDriver,
+          aiderSessionId,
+          aiderPrivateHome,
+          turnState,
+          turnAgentFreshHome: freshTurnHome,
+        } =
           createSessionDriver({
             options,
             agentId,
@@ -286,10 +266,12 @@ export function registerSessionCommand(
             codexHome,
             codexOverride,
             codexSessionHome,
+            codexSessionCatalog,
             resumeId,
             claudeFamilyAgent,
             claudeBuilt,
             model,
+            modelAlias,
             autonomy,
             effort,
             workdir,
@@ -317,6 +299,16 @@ export function registerSessionCommand(
             kimiSourceBrandHome: launch.kimiSourceBrandHome,
             sessionProjectDir,
           });
+        // LANE S1 (flagged edit): a hermetic aider session opens its
+        // private home inside the driver arm (the session id that keys
+        // it is minted there), so it is bound here — after the arm,
+        // before the spawn — for the catch and the finally that own its
+        // removal, the same positions codex and kimi reach through the
+        // launch phase above.
+        if (aiderPrivateHome !== null) {
+          sessionPrivateHome = aiderPrivateHome;
+        }
+        turnAgentFreshHome = freshTurnHome;
         builtDriver = driver;
         if (resumeId !== undefined) {
           // The claim was taken ahead of the launch preparation (see
@@ -366,13 +358,14 @@ export function registerSessionCommand(
             // resume that lost the claim — or printed only — must write
             // nothing there (review round 3, edges finding on the claim
             // order).
-            const { env, longLivedSandboxOptions } = buildLongLivedEnvironment();
+            const { env, longLivedSandboxOptions, validateBeforeSpawn } = buildLongLivedEnvironment();
             if (env === null) throw new Error("the long-lived session child has no environment");
             proc = await spawnSessionChild(argv, env, {
               cwd: workdir,
               sandboxed: Boolean(options.sandbox),
               autonomy: requestedAutonomy,
               sandboxOptions: longLivedSandboxOptions,
+              validateBeforeSpawn: () => { validateBeforeSpawn?.(); codexSessionCatalog?.assertPrepared(); },
               graceMs: shutdownGraceMs,
               envOmissions: adapter.getEnvOmissions(),
               // The Playwright binary the claude-family argv embeds in its
@@ -384,7 +377,7 @@ export function registerSessionCommand(
               // item 5), so a replacement between the probe and the
               // spawn fails the re-stat.
               extraExecutableChecks: [
-                ...(claudeBuilt?.playwrightMcpCheck != null ? [claudeBuilt.playwrightMcpCheck] : []),
+                ...extraExecutableChecks, ...(claudeBuilt?.playwrightMcpCheck != null ? [claudeBuilt.playwrightMcpCheck] : []),
                 ...((check) => check === null ? [] : [check])(
                   launchRedirectCheck(agentId, env, workdir)
                 ),
@@ -429,7 +422,7 @@ export function registerSessionCommand(
         // the session's own verdict was.
         let finalRemovalFailed = false;
         try {
-          code = await driver.run();
+          turnAgentFreshHome = null; code = await driver.run(); // the driver's end path owns the home now
         } finally {
           // A turn spawn the end path gave up waiting on (review round
           // 110) can still land a child after run() resolved; the
@@ -475,7 +468,7 @@ export function registerSessionCommand(
           // fresh session's harness id never reaches the CLI, so only a
           // --final RESUME stamps its record; a fresh record stays
           // resumable while its home is gone (the next --resume: 78).
-          if (sessionPrivateHome !== null && finalSession && !agyDriver?.finalRemovalRan) {
+          if (agentId !== "opencode" && sessionPrivateHome !== null && finalSession && !agyDriver?.finalRemovalRan) {
             finalRemovalFailed =
               !removeFinalProjectDir(sessionPrivateHome) || finalRemovalFailed;
             if (!finalRemovalFailed && resumeId !== undefined) {
@@ -488,6 +481,8 @@ export function registerSessionCommand(
         process.stdin.destroy();
         process.exitCode = finalRemovalFailed ? Math.max(code, 1) : code;
       } catch (error) {
+        // handleSessionAbort exits synchronously, so cleanup must precede it.
+        removeFinalProjectDir(codexSessionCatalog);
         handleSessionAbort(error, {
           spawnBegan: spawnBegan.value,
           codexSessionHome,
@@ -495,6 +490,8 @@ export function registerSessionCommand(
           releaseOwnedRecord,
           builtDriver,
         });
+      } finally {
+        if (!removeFinalProjectDir(codexSessionCatalog)) process.exitCode = Math.max(Number(process.exitCode ?? 0), 1);
       }
     });
 }

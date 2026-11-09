@@ -13,7 +13,7 @@ import {
 } from "./cli-runtime.js";
 import { getAdapter, AGENT_IDS } from "./adapters/index.js";
 import { resolveModel } from "./config.js";
-import { supportsPlaywrightMcpAgent } from "./mcp.js";
+import { PLAYWRIGHT_MCP_AGENT_LIST, supportsPlaywrightMcpAgent } from "./mcp.js";
 import type { Command } from "commander";
 import type { AgentId, CodemuxConfig, RunRequest } from "./types.js";
 import { assertExperimentMcpUnavailable, validateExperimentRequest } from "./experiment-mcp.js";
@@ -25,23 +25,21 @@ import { parseTimeoutOption, parseToolsOption } from "./cli-runtime.js";
 import { collectLabel, LABELS_ENV, parseLabels } from "./labels.js";
 import { assertQuotaHeadroomForLaunch, resolveQuotaGate } from "./quota-gate.js";
 import { UsageRefusalError, requireNonEmptyOption } from "./validation.js";
+import { agentsSupporting } from "./parity/index.js";
 
-/** A prompt-source refusal is usage (exit 64) like every other
- * pre-launch refusal of the caller's request: the prompt is part of the
- * request, so an empty, oversized, malformed, or ambiguous prompt source
- * is a mistake only the caller can fix. The one prompt failure that is
- * NOT usage stays a plain error: a stdin producer that stalls past
- * --timeout is a runtime failure (exit 1), like the run timeouts. */
+/** A prompt-source refusal is usage (exit 64): the prompt is part of
+ * the request, so an empty, oversized, malformed, or ambiguous source
+ * is a mistake only the caller can fix. The one exception is a plain
+ * error (exit 1): a stdin producer that stalls past --timeout. */
 const promptRefusal = (message: string): UsageRefusalError =>
   new UsageRefusalError(message);
 
 const MAX_PROMPT_FILE_BYTES = 16 * 1024 * 1024;
 
-// The stand-in prompt for the run command's preflight validation: the
-// shortest text that satisfies every prompt rule (non-empty, no NUL byte,
-// under every byte cap), so the validation that runs before `-f -` consumes
-// stdin exercises every other check exactly as it will run. The content
-// rules are re-applied to the real prompt after it is read.
+// The stand-in prompt for preflight validation: the shortest text that
+// satisfies every prompt rule, so the validation that runs before `-f -`
+// consumes stdin exercises every check. The rules are re-applied to the
+// real prompt after it is read.
 const PREFLIGHT_PROMPT = "x";
 
 /**
@@ -144,19 +142,19 @@ export function registerRunCommand(
       "Suppress supported automatic customization loading; exceptions and harness requirements: docs/isolation.md"
     )
     .option("--tools <selection>", "Built-in tools the harness exposes: default, none")
-    .option("--no-web", "Keep the Claude-family web tools (WebSearch, WebFetch) gated in a headless run")
+    .option("--no-web", "Deny the harness's built-in web tools in a headless run (agents: docs/harnesses.md)")
     .option(
       "--experiment-project-settings",
-      "Load the repository's own settings on a hermetic run (claude, zai, opencode), for experiments on the native permission system; requires scode and auto low (claude, zai) or auto low/high (opencode)"
+      "Load the repository's own settings on a hermetic run, for experiments on the native permission system; requires scode (agents and autonomy: docs/cli.md)"
     )
-    .option("--experiment-mcp <spec.json>", "One experiment stdio MCP server for claude, zai, codex, or kimi; requires hermetic, tools none, read-only")
+    .option("--experiment-mcp <spec.json>", "One experiment stdio MCP server; requires hermetic, tools none, read-only (agents: docs/experiment-mcp.md)")
     .option(
       "--result-json",
       "Return a structured result with harness-specific normalization and reported token usage"
     )
     .option(
       "--max-budget-usd <amount>",
-      "Maximum dollar amount the harness may spend on API calls (claude, zai); a positive amount with at most two fraction digits"
+      "Maximum dollar amount the harness may spend on API calls (agents: docs/harnesses.md); a positive amount with at most two fraction digits"
     )
     .option("-s, --sandbox", "Run in sandbox (default; requires scode)", true)
     .option("--no-sandbox", "Run without the scode boundary (autonomy below high is unavailable)")
@@ -223,7 +221,7 @@ export function registerRunCommand(
           throw new UsageRefusalError("--enable-playwright-mcp requires --sandbox");
         }
         if (enablePlaywrightMcp && !supportsPlaywrightMcpAgent(agentId)) {
-          throw new UsageRefusalError("--enable-playwright-mcp is supported only by claude and zai");
+          throw new UsageRefusalError(`--enable-playwright-mcp is supported only by ${PLAYWRIGHT_MCP_AGENT_LIST}`);
         }
         const hermetic = Boolean(options.hermetic);
         const tools = parseToolsOption(options.tools);
@@ -245,8 +243,8 @@ export function registerRunCommand(
         // The flag denies Claude Code's own web tools; another harness's web
         // tools are untouched, so accepting it there would promise a gate
         // that does not exist.
-        if (options.web === false && agentId !== "claude" && agentId !== "zai") {
-          throw new UsageRefusalError(`--no-web applies to the claude and zai agents only; ${agentId} keeps its own web tools`);
+        if (options.web === false && !agentsSupporting("run.no-web").includes(agentId)) {
+          throw new UsageRefusalError(`--no-web applies to the ${agentsSupporting("run.no-web").join(", ")} agents only; ${agentId} keeps its own web tools`);
         }
         if (options.experimentProjectSettings) {
           validateProjectSettingsRequest({ agent: agentId, hermetic, autonomy: requestedAutonomy,
@@ -264,11 +262,10 @@ export function registerRunCommand(
 
         const adapter = getAdapter(agentId);
 
-        // Parsed before the prompt is read: a `-f -` read is bounded by the
-        // same timeout the run itself honors, and an invalid value should
-        // fail before anything consumes stdin. The spend limit parses here
-        // for the same reason — a malformed amount is the caller's mistake
-        // and must not wait on a stdin producer.
+        // Parsed before the prompt is read: a `-f -` read is bounded by
+        // the same timeout the run honors, and an invalid value must
+        // fail before anything consumes stdin. The spend limit parses
+        // here for the same reason.
         const timeoutMs = parseTimeoutOption(options.timeout);
         const maxBudgetUsd = parseBudgetUsdOption(options.maxBudgetUsd);
 
@@ -339,6 +336,12 @@ export function registerRunCommand(
         if (model !== undefined && !caps.supportsModel) {
           throw new UsageRefusalError(`${agentId} does not support model selection`);
         }
+        // The alias is the -m value as typed, only when it resolved
+        // through config.models (design P5); a raw id reports no alias.
+        const modelAlias =
+          options.model !== undefined && config.models[options.model] !== undefined
+            ? options.model
+            : undefined;
 
         const autonomy = resolveAutonomyForAdapter(agentId, caps, requestedAutonomy);
         if (adapter.requiresSandboxForAutonomy(autonomy) && !options.sandbox) {
@@ -357,6 +360,7 @@ export function registerRunCommand(
           // validated above.
           prompt: earlyPrompt,
           model,
+          ...(modelAlias !== undefined ? { modelAlias } : {}),
           autonomy,
           effort,
           cwd: options.cwd,

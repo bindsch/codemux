@@ -1,4 +1,5 @@
 import type { AgentId, AutonomyLevel } from "./types.js";
+import { CLINE_HARNESS_CONTRACT } from "./cline-contract.js";
 
 /**
  * Declared compatibility between this Codemux release and each upstream harness.
@@ -103,6 +104,7 @@ export interface HarnessContract {
 const SEMVER_PRERELEASE = "(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?";
 
 export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract>>> = {
+  cline: CLINE_HARNESS_CONTRACT,
   agy: {
     // Ceiling 1.5.3 from the 2026-11-07 live gate (read-only, medium shell,
     // result JSON, hermetic check, one session turn, and the two zero-quota
@@ -328,17 +330,31 @@ export const FEATURE_FLOORS: Readonly<
   // Sessions: the floors design §4.3 pins (2.1.280 the
   // --permission-prompt-tool stdio build, 0.159.3 the app-server method
   // table, 1.2.14 agy's audited release, 0.31.1 kimi's session wire,
-  // 1.18.18 opencode's, 0.86.2 aider's). Experiment MCP: codex 0.165.0,
-  // kimi 2.3.2, claude and zai 2.1.280 (launch.ts's gate). Project
-  // settings: the same claude-family build the session wire and the
-  // experiment capture were recorded on.
+  // 1.18.18 opencode's, 0.86.2 aider's; 0.60.0 gemini's, 1.0.85
+  // copilot's, and 1.50.1 goose's session wires; 2026.11.05 cursor's,
+  // 0.221.0 droid's, 0.85.1 pi's, and 0.24.0 qwen's — the builds the
+  // session modules' flag and output pins were read on, 2026-11-09).
+  // Experiment
+  // MCP: codex 0.165.0, kimi 2.3.2, claude and zai 2.1.280 (launch.ts's
+  // gate), goose 1.50.1 (the planted-config relay carrier,
+  // src/goose-experiment-run.ts). Project settings: the same claude-family build the session
+  // wire and the experiment capture were recorded on.
   claude: { sessions: "2.1.280", "experiment-mcp": "2.1.280", "project-settings": "2.1.280" },
-  zai: { sessions: "2.1.280", "experiment-mcp": "2.1.280" },
-  codex: { sessions: "0.159.3", "experiment-mcp": "0.165.0" },
-  kimi: { sessions: "0.31.1", "experiment-mcp": "2.3.2" },
+  zai: { sessions: "2.1.280", "experiment-mcp": "2.1.280", "project-settings": "2.1.280" },
+  codex: { sessions: "0.159.3", "experiment-mcp": "0.165.0", "project-settings": "0.166.0" },
+  kimi: { sessions: "2.5.2", "experiment-mcp": "2.3.2", "project-settings": "2.5.2" },
   agy: { sessions: "1.2.14" },
   aider: { sessions: "0.86.2" },
-  opencode: { sessions: "1.18.18", "project-settings": "1.18.18" },
+  opencode: { sessions: "1.18.18", "project-settings": "1.18.18", "experiment-mcp": "1.19.5" },
+  gemini: { sessions: "0.60.0", "experiment-mcp": "0.60.0", "project-settings": "0.60.0" },
+  copilot: { sessions: "1.0.85", "project-settings": "1.0.85", "experiment-mcp": "1.0.85" },
+  goose: { sessions: "1.50.1", "experiment-mcp": "1.50.1" },
+  cursor: { sessions: "2026.11.05" },
+  droid: { sessions: "0.221.0" },
+  pi: { sessions: "0.85.1", "experiment-mcp": "0.85.1" },
+  qwen: { sessions: "0.24.0", "experiment-mcp": "0.24.0" },
+  cline: { sessions: "3.0.74", "experiment-mcp": "3.0.74", "project-settings": "3.0.74" },
+  openhands: { sessions: "1.16.0", "project-settings": "1.16.0" },
 };
 
 /** The scode release a harness's sandboxed launch needs, above the global

@@ -67,15 +67,17 @@ const contracts = [
     {
       binary: "aider",
       args: ["--help"],
-      // --map-tokens and --read are deliberately absent, the same rule as
-      // copilot's --available-tools below: codemux never emits them on a
-      // reachable run. --map-tokens rides only the --hermetic branch, and
-      // aider refuses --hermetic (2026-10-04 review); --read rides
-      // instructionDirs, which only the hermetic check sets on its probe.
-      // A pin on either would fail the gate on an upstream removal codemux
-      // is indifferent to.
+      // --map-tokens and --read are deliberately absent: neither rides the
+      // plain run or TUI shapes the reachable-pin test below builds.
+      // --map-tokens rides only the --hermetic and --tools none branches;
+      // --read rides instructionDirs, which only the hermetic check sets on
+      // its probe. The prompt rides --message-file (prompt bytes stay out
+      // of argv), and every headless spawn passes --no-stream and
+      // --analytics-log (src/adapters/aider.ts).
       required: [
-        "--message",
+        "--message-file",
+        "--no-stream",
+        "--analytics-log",
         "--dry-run",
         "--yes-always",
         "--reasoning-effort",
@@ -400,7 +402,7 @@ describe("contract pins match what the adapters send", () => {
         }),
         adapter.buildTuiCommand("m", "read-only", "none"),
       ];
-      // `--message=<prompt>` is one token, so a pin matches an exact token
+      // A `--flag=<value>` form is one token, so a pin matches an exact token
       // or a `pin=` prefix — never a substring (--model would otherwise
       // match --model-settings-file).
       const sent = (pin: string): boolean =>

@@ -11,7 +11,7 @@ import {
   noteSignaledRun,
   signalShutdownPending,
 } from "./process-runner-signals.js";
-export { hasActiveCapturedCommand } from "./process-runner-signals.js";
+export { hasActiveCapturedCommand, hasActiveSignalOwner } from "./process-runner-signals.js";
 export { guardedWait } from "./process-guarded-wait.js";
 export { MAX_CAPTURE_BYTES, OUTPUT_LIMIT_EXIT_CODE } from "./process-capture.js";
 import {

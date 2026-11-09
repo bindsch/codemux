@@ -254,16 +254,21 @@ export abstract class AgyTurns extends AgyFinalize {
     // The shared fold (usage.ts): agy's envelope carries no cost, so
     // this is the uniform rule, not an agy behavior (review live8).
     this.cumulative = addTurnUsage(this.cumulative, parse.usage);
-    const reason =
-      parse.errorText !== null
+    const completion = this.out.completeTurn(turnId, parse.isError ? "failed" : "end",
+      !parse.isError ? undefined : parse.errorText !== null
         ? `status "${parse.status}": ${parse.errorText}`
-        : `status "${parse.status}"`;
+        : `status "${parse.status}"`);
     this.emit(
       buildEvent(++this.seq, this.sessionIdOrEmpty(), "turn_completed", rawLine, {
         turn_id: turnId,
-        finish: parse.isError ? "failed" : "end",
-        ...(parse.isError ? { reason } : {}),
+        ...completion,
         usage: parse.usage,
+        // agy's wire carries no recorded init frame naming the configured
+        // model, and the result envelope names none either (design P5's
+        // declared gap): no served model exists to report.
+        model_served: null,
+        model_served_source: null,
+        model_alias: this.options.modelAlias ?? null,
       })
     );
     // The ledger's turn record mirrors the event the caller just saw
@@ -274,8 +279,10 @@ export abstract class AgyTurns extends AgyFinalize {
       this.ledgerSessionId(),
       turnId ?? "none",
       this.turnStartedAt.get(turnId ?? "") ?? Date.now(),
-      parse.isError ? "failed" : "end",
-      parse.usage
+      completion.finish,
+      parse.usage,
+      // The wire names no model (see the event above): none to record.
+      null
     );
     this.turnStartedAt.delete(turnId ?? "");
     if (this.registryRecorded && this.options.registryPath !== null) {

@@ -61,7 +61,7 @@ describe("CodexAdapter", () => {
             cwd: workdir,
           }
         )
-      ).rejects.toThrow(/codex cannot remove its apply_patch tool/);
+      ).rejects.toThrow(/requires an explicit --model/);
       expect(existsSync(fileA)).toBe(true);
 
       // Rejection after prepareRun: the .scode.yaml workdir refuses the
@@ -237,7 +237,7 @@ describe("CodexAdapter", () => {
       buildRunCommand(): string[] {
         // A real command shape, so the control launch below spawns a real
         // (harmless) process through the launch path run() now shares.
-        return [process.execPath, "-e", "process.exit(0)"];
+        return [process.execPath, "-e", "console.log('synthetic reply')"];
       }
       buildTuiCommand(): string[] {
         return ["claude"];

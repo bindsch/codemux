@@ -235,19 +235,18 @@ export const resumeAfterApproval = (decision: string): void => {
         durationMs: 5,
       },
     }));
-  } else if (approval.kind === "patch" && decision === "accept") {
+  } else if (approval.kind === "patch") {
     notify("item/completed", itemParams(approval.turnId, {
       completedAtMs: Date.now(),
       item: {
         type: "fileChange",
         id: "fc-ask",
-        status: "completed",
+        status: decision === "accept" ? "completed" : "declined",
         changes: [{ diff: "-a\n+b\n", kind: { type: "update" }, path: join(FAKE_CWD, "file.txt") }],
       },
     }));
   }
-  // A patch decline and every permissions answer have no item to complete:
-  // the decision itself ends the turn.
+  // Permissions answers have no item to complete; the answer ends the turn.
   agentMessageCompleted(approval.turnId, "msg-ask", decision === "accept" ? "Allowed." : "Denied.");
   completeTurn(approval.turnId, "completed");
 };

@@ -137,4 +137,18 @@ describe("kimi provider override", () => {
       KIMI_MODEL_MAX_CONTEXT_SIZE: "32768",
     });
   });
+
+  test("a single provider cap never supplies the other cap", () => {
+    for (const [source, target, absent] of [
+      ["MAX_OUTPUT_TOKENS", "KIMI_MODEL_MAX_COMPLETION_TOKENS", "KIMI_MODEL_MAX_CONTEXT_SIZE"],
+      ["MAX_CONTEXT_TOKENS", "KIMI_MODEL_MAX_CONTEXT_SIZE", "KIMI_MODEL_MAX_COMPLETION_TOKENS"],
+    ]) {
+      const environment = { ...ZAI_KIMI, [`CODEMUX_KIMI_PROVIDER_${source}`]: "4096" };
+      const before = { ...environment };
+      const actual = adapterOf(environment).getRunEnv({ agent: "kimi", prompt: "p" });
+      expect(actual[target!]).toBe("4096");
+      expect(actual).not.toHaveProperty(absent!);
+      expect(environment).toEqual(before);
+    }
+  });
 });

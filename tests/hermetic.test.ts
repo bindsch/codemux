@@ -7,6 +7,7 @@ import { ClaudeAdapter } from "../src/adapters/claude.js";
 import { ZaiAdapter } from "../src/adapters/zai.js";
 import { createCodexHermeticHome } from "../src/hermetic-home.js";
 import { evaluateCanary, plantCanary } from "../src/hermetic-canary.js";
+import { agentsSupporting } from "../src/parity/index.js";
 import { AGENT_IDS, type RunRequest } from "../src/types.js";
 
 // The verified harnesses (claude, zai, codex, opencode) and the shared
@@ -119,10 +120,17 @@ describe("hermetic home signal handling", () => {
 });
 
 describe("hermetic runs: the other harnesses refuse", () => {
-  const supportedHermetic = new Set(["claude", "zai", "codex", "opencode", "kimi"]);
-  const supportedTools = new Set(["claude", "zai", "codex", "opencode", "kimi", "droid", "pi", "goose"]);
+  // The sets come from the parity declarations, so a harness that gains
+  // either feature drops out of the refusal arm here only when its
+  // declaration says so. Agy keeps its explicit read-only arm below.
+  const supportedHermetic = new Set<string>(agentsSupporting("run.hermetic"));
+  const supportedTools = new Set<string>(agentsSupporting("run.tools-none"));
+  test("at least one harness still refuses each feature", () => {
+    expect(AGENT_IDS.filter((id) => !supportedHermetic.has(id)).length).toBeGreaterThan(0);
+    expect(AGENT_IDS.filter((id) => !supportedTools.has(id)).length).toBeGreaterThan(0);
+  });
   for (const agentId of AGENT_IDS) {
-    if (supportedHermetic.has(agentId) && supportedTools.has(agentId)) continue;
+    if (agentId !== "agy" && supportedHermetic.has(agentId) && supportedTools.has(agentId)) continue;
     test(`${agentId} refuses what it cannot do but accepts --tools default`, () => {
       const adapter = getAdapter(agentId);
       const cwd = mkdtempSync(join(tmpdir(), "codemux-hermetic-refuse-"));

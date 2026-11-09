@@ -6,6 +6,7 @@
 
 import { recordSessionStart, type UpdateOutcome } from "./registry.js";
 import { ClaudeDriverIo } from "./driver-io.js";
+import { isCallerHarnessHome } from "./harness-home.js";
 
 export abstract class ClaudeDriverLedger extends ClaudeDriverIo {
 
@@ -61,7 +62,9 @@ export abstract class ClaudeDriverLedger extends ClaudeDriverIo {
       cwd: this.options.cwd,
       hermetic: this.options.hermetic ?? false,
       harness_home: this.options.harnessHome,
+      ...(isCallerHarnessHome(this.options.privateHome) ? { caller_owned_home: true } : {}),
       model: this.options.model ?? null,
+      model_alias: this.options.modelAlias ?? null,
       autonomy: this.options.autonomy,
       sandboxed: this.options.sandboxed,
       sandbox_trust: this.options.sandboxTrust,

@@ -23,6 +23,7 @@ import {
   removeDir,
 } from "./helpers/session-command.js";
 import { result, window } from "./helpers/quota-gate.js";
+import { PROJECT_SETTINGS_AGENTS } from "../src/claude-project-settings.js";
 
 // --version answers the contract's floor; any other invocation exits 7.
 const FAKE_CLAUDE = `if [ "$1" = "--version" ]; then printf '2.1.280\\n'; exit 0; fi
@@ -39,22 +40,17 @@ describe("the session command's option validation in process", () => {
     expect(outcome.stderr).toContain("Available agents:");
   });
 
-  test("an agent without a session driver is refused by name", async () => {
-    const outcome = await runSessionCommand(["-a", "cline"]);
-    expect(outcome.exitCode).toBe(64);
-    expect(outcome.stderr).toContain("sessions are not implemented for 'cline' in this release");
-  });
-
-  test("--tools none is refused for sessions", async () => {
-    const outcome = await runSessionCommand(["-a", "claude", "--tools", "none"]);
+  test("--tools none is refused for sessions without a carrier", async () => {
+    // agy has no tool-selection carrier on its session wire.
+    const outcome = await runSessionCommand(["-a", "agy", "--tools", "none"]);
     expect(outcome.exitCode).toBe(64);
     expect(outcome.stderr).toContain("--tools none is refused for sessions");
   });
 
   test("--tools default names no selection a session carries", async () => {
-    const outcome = await runSessionCommand(["-a", "claude", "--tools", "default"]);
+    const outcome = await runSessionCommand(["-a", "agy", "--tools", "default"]);
     expect(outcome.exitCode).toBe(64);
-    expect(outcome.stderr).toContain("--tools is not implemented for 'claude' sessions");
+    expect(outcome.stderr).toContain("--tools is not implemented for 'agy' sessions");
   });
 
   test("--enable-playwright-mcp without --sandbox is refused", async () => {
@@ -69,22 +65,28 @@ describe("the session command's option validation in process", () => {
     expect(outcome.stderr).toContain("--enable-playwright-mcp requires --auto low for sessions");
   });
 
-  test("--hermetic with an agent that has no verified mode is refused with the run path's reason", async () => {
-    // The agent gate is the adapter's own validateRunRequest (run's
-    // gate on the run-like), so an aider session answers the run
-    // refusal verbatim; claude, zai, codex, kimi, opencode, and agy
-    // accept it.
-    const outcome = await runSessionCommand(["-a", "aider", "--hermetic"]);
+  test("--hermetic with an agent that has no verified session mode is refused with the session's reason", async () => {
+    // The session table's own gate (cli-agents.ts), ahead of the
+    // run-like validation: cursor has no state relocation a
+    // session-lifetime private home could build on, so the session
+    // refuses the flag itself, exit 64. Every other session agent —
+    // aider included since its session-lifetime home landed — accepts
+    // the flag.
+    const outcome = await runSessionCommand(["-a", "cursor", "--hermetic"]);
     expect(outcome.exitCode).toBe(64);
-    expect(outcome.stderr).toContain("aider has no verified hermetic mode; see docs/isolation.md");
+    expect(outcome.stderr).toContain("cursor has no verified hermetic mode for sessions");
   });
 
-  test("--experiment-project-settings is claude/zai/opencode only", async () => {
-    const outcome = await runSessionCommand(["-a", "codex", "--hermetic", "--experiment-project-settings"]);
+  test.each([
+    // An agent outside the run-path list keeps the list's refusal.
+    ["droid", `--experiment-project-settings applies to the ${PROJECT_SETTINGS_AGENTS.join(", ")} agents only in this release`],
+    // Codex sessions carry the mode at low and high only: the default
+    // medium level grants every shell command, so it is refused.
+    ["codex", "--experiment-project-settings requires --auto low or high for codex sessions"],
+  ])("--experiment-project-settings on a %s session is refused", async (agent, message) => {
+    const outcome = await runSessionCommand(["-a", agent, "--hermetic", "--experiment-project-settings"]);
     expect(outcome.exitCode).toBe(64);
-    expect(outcome.stderr).toContain(
-      "--experiment-project-settings applies to the claude, zai, and opencode agents only in this release"
-    );
+    expect(outcome.stderr).toContain(message);
   });
 
   test("--final without --hermetic is refused", async () => {
@@ -99,10 +101,11 @@ describe("the session command's option validation in process", () => {
     expect(outcome.stderr).toContain("--permission-policy accepts 'default' or 'deny' in this release");
   });
 
-  test("--permission-policy deny is claude/zai only", async () => {
+  test("--permission-policy deny for codex passes validation before the missing binary check", async () => {
     const outcome = await runSessionCommand(["-a", "codex", "--permission-policy", "deny"]);
-    expect(outcome.exitCode).toBe(64);
-    expect(outcome.stderr).toContain("--permission-policy deny is supported only by claude and zai sessions");
+    expect(outcome.exitCode).toBe(1);
+    expect(outcome.stderr).toContain("codex is not installed");
+    expect(outcome.stderr).not.toContain("--permission-policy");
   });
 
   test("--permission-policy default is accepted for every session agent", async () => {
@@ -276,15 +279,14 @@ describe("the session command's --print-sandbox in process", () => {
     expect(outcome.stderr).toContain("--print-sandbox requires --sandbox");
   });
 
-  test("--print-sandbox on a turn-per-process agent is refused", async () => {
+  test("--print-sandbox on Kimi prints a representative turn", async () => {
     const outcome = await runSessionCommand(
       ["-a", "kimi", "--print-sandbox"],
-      { kimi: fakeWithVersion("0.31.1"), scode: "exit 9" }
+      { kimi: fakeWithVersion("2.5.2"), scode: "exit 9" }
     );
-    expect(outcome.exitCode).toBe(64);
-    expect(outcome.stderr).toContain(
-      "--print-sandbox is not available for this agent: its session children spawn per turn"
-    );
+    expect(outcome.exitCode).toBe(0);
+    expect(outcome.stdout).toContain("--prompt");
+    expect(outcome.stdout).toContain("<session prompt>");
   });
 });
 

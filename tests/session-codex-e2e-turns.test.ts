@@ -126,6 +126,7 @@ describe("codex session e2e - lifecycle", () => {
         harness_home: join(dir, "home"),
         provider_base_url: null,
         model: null,
+        model_alias: null,
         autonomy: "high",
         sandboxed: true,
         sandbox_trust: "standard",

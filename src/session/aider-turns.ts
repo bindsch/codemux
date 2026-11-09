@@ -21,11 +21,27 @@ import {
 } from "./process.js";
 import { buildEvent, type InputRejectionReason } from "./protocol.js";
 import { touchSession } from "./registry.js";
-import { addTurnUsage } from "./usage.js";
+import { addUsage } from "./usage.js";
 import { AiderDriverCore } from "./aider-finalize.js";
+import { rollbackAiderInterruptedTurn } from "./aider-cancel.js";
+import { readAiderSessionUsage } from "./aider-analytics.js";
 
 export abstract class AiderTurns extends AiderDriverCore {
   private turnCounter = 0;
+  private turnTimer: ReturnType<typeof setTimeout> | null = null;
+  protected turnAnalyticsReady = false;
+
+  protected clearTurnTimer(): void {
+    if (this.turnTimer !== null) clearTimeout(this.turnTimer);
+    this.turnTimer = null;
+  }
+
+  protected interruptTurn(): void {
+    if (this.finished || this.fsm.state !== "turn_active" || this.turnInterrupted) return;
+    this.turnInterrupted = true;
+    this.clearTurnTimer();
+    this.turnProc?.requestStop();
+  }
 
   /** How many bytes of the history file earlier turns have consumed;
    * each turn's exchange is the slice past it. A byte offset, not a
@@ -68,12 +84,27 @@ export abstract class AiderTurns extends AiderDriverCore {
    * failure: the file IS the session's state, so the session ends
    * rather than continue blind. */
   protected completeTurn(outcome: SessionChildOutcome): void {
+    this.clearTurnTimer();
     this.lastChildOutcome = outcome;
-    this.sawHarnessFailure ||= harnessFailed(outcome);
+    this.lastChildInterrupted = this.turnInterrupted;
+    this.sawHarnessFailure ||= !this.turnInterrupted && harnessFailed(outcome);
     if (this.fsm.state !== "turn_active") return; // the synthesis answered it
     this.turnProc = null;
     const turnId = this.fsm.activeTurn;
     if (turnId === null) return;
+    if (this.turnInterrupted) {
+      try {
+        rollbackAiderInterruptedTurn(this.options.historyPath, this.consumedBytes);
+      } catch (error) {
+        this.finishTurn(turnId, "failed", "the interrupted history could not be restored");
+        this.emitError(true, "codemux", String(error));
+        void this.finish("crash", 1);
+        return;
+      }
+      this.turnPrompt = null;
+      this.finishTurn(turnId, "interrupted", "the caller or turn timeout stopped the turn");
+      return;
+    }
     const read = readAiderHistoryDelta(this.options.historyPath, this.consumedBytes);
     if (read === null) {
       this.finishTurn(turnId, "failed", "the chat history file is unreadable or truncated");
@@ -170,40 +201,47 @@ export abstract class AiderTurns extends AiderDriverCore {
     void this.finish("crash", 1);
   }
 
-  /** The turn's pairing completion: FSM transition, the uniform usage
-   * fold (aider reports nothing machine-readable, so the usage is
-   * honestly all-null), the event, and the activity stamp. */
+  /** Complete the turn and fold its local analytics into this session. */
   protected finishTurn(
     turnId: string,
-    finish: "end" | "failed",
+    finish: "end" | "failed" | "interrupted",
     reason?: string
   ): void {
+    ({ finish, reason } = this.out.completeTurn(turnId, finish, reason));
     const error = this.fsm.transition({ kind: "turn_completed", turnId });
     if (error !== null) {
       this.emitError(true, "codemux", error.message);
       void this.finish("crash", 1);
       return;
     }
-    const usage = emptyUsage();
-    this.cumulative = addTurnUsage(this.cumulative, usage);
+    const usage = this.turnAnalyticsReady
+      ? readAiderSessionUsage(this.options.historyPath) : emptyUsage();
+    this.cumulative = addUsage(this.cumulative, usage);
     this.emit(
       buildEvent(++this.seq, this.options.sessionId, "turn_completed", null, {
         turn_id: turnId,
         finish,
         ...(reason !== undefined ? { reason } : {}),
         usage,
+        // The transcript names the model in prose only (see the announce
+        // in aider-driver.ts): no machine-readable fact exists, so no
+        // served model is reported (design P5's declared limitation).
+        model_served: null,
+        model_served_source: null,
+        model_alias: this.options.modelAlias ?? null,
       })
     );
-    // The ledger's turn record mirrors the event the caller just saw
-    // (call-log.ts); aider reports no usage, so the block is all-null —
-    // the honest null, not a guessed zero.
+    // The ledger records the same available metrics as the event.
     appendSessionTurnCallRecord(
       this.callLedger,
       this.options.sessionId,
       turnId,
       this.turnStartedAt.get(turnId) ?? Date.now(),
       finish,
-      usage
+      usage,
+      // The transcript names no model machine-readably (see the event
+      // above): none to record.
+      null
     );
     this.turnStartedAt.delete(turnId);
     this.stampActivity();
@@ -211,6 +249,8 @@ export abstract class AiderTurns extends AiderDriverCore {
 
   /** Assign the next codemux turn id and open it in the FSM. */
   protected submitTurn(): string | null {
+    this.turnInterrupted = false;
+    this.turnAnalyticsReady = false;
     this.turnCounter += 1;
     const turnId = `t${this.turnCounter}`;
     const error = this.fsm.transition({ kind: "turn_started", turnId });
@@ -225,6 +265,10 @@ export abstract class AiderTurns extends AiderDriverCore {
       })
     );
     this.turnStartedAt.set(turnId, Date.now());
+    if (!this.finished && this.options.turnTimeoutMs != null) {
+      this.turnTimer = setTimeout(() => this.interruptTurn(), this.options.turnTimeoutMs);
+      this.turnTimer.unref?.();
+    }
     return turnId;
   }
 

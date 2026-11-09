@@ -1,6 +1,29 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, afterAll } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { DroidAdapter } from "../src/adapters/droid.js";
+import { AUTONOMY_EQUIVALENCE } from "../src/autonomy.js";
 import type { RunRequest } from "../src/types.js";
+
+// The TUI settings file must never land in the real brand home, so every
+// test that triggers a write constructs the adapter over a scratch home.
+const tuiScratch: string[] = [];
+afterAll(() => {
+  for (const dir of tuiScratch) rmSync(dir, { recursive: true, force: true });
+});
+
+function tuiAdapter(): DroidAdapter {
+  const home = mkdtempSync(join(tmpdir(), "codemux-droid-tui-"));
+  tuiScratch.push(home);
+  return new DroidAdapter({}, home);
+}
+
+function tuiSettings(cmd: readonly string[]): Record<string, unknown> {
+  const flag = cmd.indexOf("--settings");
+  expect(flag).toBeGreaterThanOrEqual(0);
+  return JSON.parse(readFileSync(cmd[flag + 1]!, "utf8")) as Record<string, unknown>;
+}
 
 describe("DroidAdapter", () => {
   const adapter = new DroidAdapter();
@@ -42,6 +65,10 @@ describe("DroidAdapter", () => {
       .toEqual(["droid", "exec", "--auto", "medium"]);
     expect(adapter.buildRunCommand({ agent: "droid", prompt: "t", autonomy: "high" }))
       .toEqual(["droid", "exec", "--auto", "high"]);
+    // The read-only argv is empty because the default state IS read-only
+    // ("DEFAULT (no flags)  Read-only mode", droid 0.221.0), so the
+    // equivalence cell must say so rather than naming a flag.
+    expect(AUTONOMY_EQUIVALENCE.droid.byLevel["read-only"]).toContain("read-only");
   });
 
   test("buildRunCommand with effort levels", () => {
@@ -99,27 +126,44 @@ describe("DroidAdapter", () => {
     expect(adapter.getStdinInput(request)).toBe("my prompt");
   });
 
+  test("--no-web removes exactly the two web tools", () => {
+    expect(adapter.buildRunCommand({ agent: "droid", prompt: "t", web: false }))
+      .toEqual(["droid", "exec", "--remove-tools", "WebSearch,FetchUrl"]);
+    expect(adapter.buildRunCommand({ agent: "droid", prompt: "t", web: true }))
+      .toEqual(["droid", "exec"]);
+  });
+
   test("buildTuiCommand basic", () => {
     expect(adapter.buildTuiCommand()).toEqual(["droid"]);
+    // Autonomy alone carries no settings file: nothing to select.
+    expect(tuiAdapter().buildTuiCommand(undefined, "high")).toEqual(["droid", "--auto", "high"]);
   });
 
   test("buildTuiCommand with model", () => {
-    expect(adapter.buildTuiCommand("gpt-5.1")).toEqual(["droid"]);
+    const cmd = tuiAdapter().buildTuiCommand("gpt-5.1");
+    expect(cmd).toHaveLength(3);
+    expect([cmd[0], cmd[1]]).toEqual(["droid", "--settings"]);
+    expect(tuiSettings(cmd)).toEqual({ sessionDefaultSettings: { model: "gpt-5.1" } });
   });
 
-  test("buildTuiCommand with autonomy", () => {
-    expect(adapter.buildTuiCommand(undefined, "high")).toEqual(["droid", "--auto", "high"]);
-    expect(adapter.buildTuiCommand("gpt-5.1", "low")).toEqual(["droid", "--auto", "low"]);
+  test("buildTuiCommand composes model, autonomy, and effort", () => {
+    const cmd = tuiAdapter().buildTuiCommand("gpt-5.1", "low", "medium");
+    expect(cmd.slice(0, 2)).toEqual(["droid", "--settings"]);
+    expect(cmd.slice(3)).toEqual(["--auto", "low"]);
+    expect(tuiSettings(cmd)).toEqual({ sessionDefaultSettings: { model: "gpt-5.1", reasoningEffort: "medium" } });
   });
 
-  test("buildTuiCommand with effort", () => {
-    expect(adapter.buildTuiCommand(undefined, undefined, "high")).toEqual(["droid"]);
-    expect(adapter.buildTuiCommand("gpt-5.1", undefined, "medium")).toEqual(["droid"]);
+  test("buildTuiCommand with effort, none on the settings spelling off", () => {
+    const cmd = tuiAdapter().buildTuiCommand(undefined, undefined, "none");
+    expect(cmd.slice(0, 2)).toEqual(["droid", "--settings"]);
+    expect(tuiSettings(cmd)).toEqual({ sessionDefaultSettings: { reasoningEffort: "off" } });
+    const high = tuiAdapter().buildTuiCommand(undefined, undefined, "high");
+    expect(tuiSettings(high)).toEqual({ sessionDefaultSettings: { reasoningEffort: "high" } });
   });
 
-  test("TUI rejects unsupported model and effort flags", () => {
-    expect(adapter.supportsTuiModel()).toBe(false);
-    expect(adapter.supportsTuiEffort()).toBe(false);
+  test("the TUI selects model and effort (the settings file carries them)", () => {
+    expect(adapter.supportsTuiModel()).toBe(true);
+    expect(adapter.supportsTuiEffort()).toBe(true);
   });
 
   test("mapAutonomy returns correct flags", () => {

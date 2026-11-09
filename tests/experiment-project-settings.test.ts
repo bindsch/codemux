@@ -1,7 +1,8 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -10,9 +11,12 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ClaudeAdapter } from "../src/adapters/claude.js";
+import { CodexAdapter } from "../src/adapters/codex.js";
 import { ZaiAdapter } from "../src/adapters/zai.js";
-import { validateProjectSettingsRequest } from "../src/claude-project-settings.js";
+import { PROJECT_SETTINGS_AGENTS, validateProjectSettingsRequest } from "../src/claude-project-settings.js";
 import { UsageRefusalError } from "../src/validation.js";
+import { newSignalListeners, signalListeners } from "./helpers/signal-listeners.js";
+import type { RunContext } from "../src/adapters/base.js";
 import type { RunRequest } from "../src/types.js";
 
 describe("--experiment-project-settings", () => {
@@ -88,7 +92,7 @@ describe("--experiment-project-settings", () => {
   });
 
   test.each([
-    ["another agent", { agent: "codex" }, "claude, zai, and opencode agents only"],
+    ["another agent", { agent: "aider" }, `${PROJECT_SETTINGS_AGENTS.join(", ")} agents only`],
     ["a non-hermetic run", { hermetic: false }, "requires --hermetic"],
     ["no sandbox", { sandbox: false }, "requires the scode sandbox"],
     ["medium autonomy", { autonomy: "medium" }, "requires --auto low"],
@@ -123,6 +127,114 @@ describe("--experiment-project-settings", () => {
   ])("a session refuses %s autonomy", (_name, autonomy) => {
     expect(() => validateProjectSettingsRequest({ ...valid(), session: true, autonomy })).toThrow(
       "requires --auto low or high for sessions"
+    );
+  });
+
+  test("codex accepts a hermetic, sandboxed, low-autonomy run and both session levels", () => {
+    expect(() => validateProjectSettingsRequest({ ...valid(), agent: "codex" })).not.toThrow();
+    expect(() =>
+      validateProjectSettingsRequest({ ...valid(), agent: "codex", session: true, autonomy: "high" })
+    ).not.toThrow();
+  });
+
+  test.each([
+    ["a non-hermetic run", { hermetic: false }, "requires --hermetic"],
+    ["no sandbox", { sandbox: false }, "requires the scode sandbox"],
+    ["medium autonomy", { autonomy: "medium" }, "requires --auto low for codex"],
+    ["high autonomy", { autonomy: "high" }, "requires --auto low for codex"],
+    ["a read-only session", { session: true, autonomy: "read-only" }, "requires --auto low or high for codex sessions"],
+    ["a medium session", { session: true, autonomy: "medium" }, "requires --auto low or high for codex sessions"],
+    ["no tools", { tools: "none" }, "--tools none"],
+    ["an experiment server", { experimentMcp: "spec.json" }, "--experiment-mcp"],
+    ["a passed-through home", { passthroughEnv: ["CODEX_HOME"] }, "--pass-env CODEX_HOME"],
+  ])("codex refuses %s", (_name, change, message) => {
+    expect(() => validateProjectSettingsRequest({ ...valid(), agent: "codex", ...change })).toThrow(message);
+  });
+});
+
+describe("--experiment-project-settings: codex carrier", () => {
+  // Codex has no settings-source flag: the mode's carrier is a trust
+  // entry in the private home's config.toml plus the unsuppressed
+  // repository channels (codex-project-settings.ts), so these tests pin
+  // the command shape and the home's one file.
+  let root = "";
+  let home = "";
+  let cwd = "";
+  let baseline = new Set<unknown>();
+  const prepared: { adapter: CodexAdapter; context: RunContext }[] = [];
+
+  beforeAll(() => {
+    baseline = signalListeners();
+  });
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "codemux-pps-codex-"));
+    home = join(root, "home");
+    cwd = join(root, "work");
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    writeFileSync(join(home, ".codex", "auth.json"), '{"tokens":{"access_token":"a"}}\n', { mode: 0o600 });
+    mkdirSync(join(cwd, ".git"), { recursive: true });
+  });
+  afterEach(() => {
+    for (const { adapter, context } of prepared.splice(0)) adapter.cleanupRun(context);
+    // A home may not leave a signal handler behind (the hermetic suite's
+    // rule): a later synthetic signal would end the test process.
+    expect(newSignalListeners(baseline)).toBe(0);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const adapter = () => new CodexAdapter({ HOME: home }, home);
+  const request = (extra: Partial<RunRequest> = {}): RunRequest => ({
+    agent: "codex",
+    prompt: "p",
+    cwd,
+    hermetic: true,
+    autonomy: "low",
+    sandboxed: true,
+    experimentProjectSettings: true,
+    ...extra,
+  });
+
+  test("loads the repository's layers: the AGENTS.md pair and the hooks disable stay out", () => {
+    const codex = adapter();
+    prepared.push({ adapter: codex, context: codex.prepareRun(request()) });
+    const cmd = codex.buildRunCommand(request(), prepared[0]!.context);
+    // The account surfaces stay disabled exactly as a plain hermetic
+    // run disables them.
+    expect(cmd).toContain('cli_auth_credentials_store="file"');
+    for (const feature of ["apps", "plugins", "shell_snapshot"]) {
+      expect(cmd[cmd.indexOf(feature) - 1]).toBe("--disable");
+    }
+    // The repository's own inputs load: the two keys that skip AGENTS.md
+    // discovery stay out, and so does the hooks disable — a hermetic
+    // run's only possible hooks are the project's own config.toml
+    // entries, which this mode loads on purpose.
+    expect(cmd).not.toContain("project_doc_max_bytes=0");
+    expect(cmd).not.toContain("project_doc_fallback_filenames=[]");
+    expect(cmd[cmd.indexOf("hooks") - 1]).not.toBe("--disable");
+    // --ignore-user-config skips "$CODEX_HOME/config.toml" itself (the
+    // 0.160 help text), exactly where the trust entry lives, so the
+    // mode's run must not pass it.
+    expect(cmd).not.toContain("--ignore-user-config");
+  });
+
+  test("a hermetic run without the flag keeps the suppression and the skip", () => {
+    const codex = adapter();
+    prepared.push({ adapter: codex, context: codex.prepareRun(request({ experimentProjectSettings: false })) });
+    const cmd = codex.buildRunCommand(request({ experimentProjectSettings: false }), prepared[0]!.context);
+    expect(cmd).toContain("project_doc_max_bytes=0");
+    expect(cmd[cmd.indexOf("hooks") - 1]).toBe("--disable");
+    expect(cmd).toContain("--ignore-user-config");
+  });
+
+  test("the private home's only config.toml trusts the project root", () => {
+    const codex = adapter();
+    const context = codex.prepareRun(request());
+    prepared.push({ adapter: codex, context });
+    const config = readFileSync(join(context.hermeticHome!.codexHome, "config.toml"), "utf8");
+    // cwd is the project root (its own .git), and the file carries the
+    // credential-store key plus exactly one trust entry — nothing else.
+    expect(config).toBe(
+      `cli_auth_credentials_store = "file"\n[projects.${JSON.stringify(cwd)}]\ntrust_level = "trusted"\n`
     );
   });
 });

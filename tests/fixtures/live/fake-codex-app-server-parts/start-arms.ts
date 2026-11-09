@@ -8,6 +8,19 @@
 import { THREAD_ID, notify, respond, respondError, state } from "./wire.js";
 import { usage } from "./items.js";
 
+/** Refuse the policy-sensitive scenarios before they can fabricate an ask.
+ * Codex 0.166.0 asks for patches under on-request + read-only (upstream
+ * core/src/safety.rs); an unrestricted file sandbox would auto-approve. */
+export function checkApprovalPolicy(method: string, id: unknown, params: Record<string, unknown>): boolean {
+  if (process.env.FAKE_REQUIRE_ASKING_POLICY !== "1") return true;
+  if (!["thread/start", "thread/resume", "turn/start"].includes(method)) return true;
+  const sandbox = params["sandboxPolicy"] as Record<string, unknown> | undefined;
+  const readOnly = method === "turn/start" ? sandbox?.["type"] === "readOnly" : params["sandbox"] === "read-only";
+  if (params["approvalPolicy"] === "on-request" && readOnly) return true;
+  respondError(id, "the approval fixture requires on-request with native read-only access");
+  return false;
+}
+
 export function startArm(scenario: string, turnId: string, id: unknown): boolean {
   if (scenario === "failstart") {
     respondError(id, "the turn was refused");

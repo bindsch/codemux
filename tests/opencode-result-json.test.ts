@@ -70,7 +70,7 @@ describe("OpenCode result-json", () => {
         usage: foldedUsage,
         codemux: {
           agent: "opencode", model: "test-model", labels: { wf: "synthetic" },
-          served_model: null,
+          served_model: null, model_alias: null,
           usage: foldedUsage, session_id: null, recording: null, failure_code: null,
         },
       });

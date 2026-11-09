@@ -37,10 +37,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { aiderBaseFlags } from "../adapters/aider.js";
-import type { AutonomyLevel, ReasoningEffort } from "../types.js";
+import { aiderBaseFlags, AIDER_NO_TOOLS_FLAGS } from "../adapters/aider.js";
+import type { AutonomyLevel, ReasoningEffort, ToolSelection } from "../types.js";
 import type { SessionCapabilities } from "./protocol.js";
 import type { SessionHold } from "./registry.js";
+import { callerHarnessHomeEnvAssignments, type CallerHarnessHome } from "./harness-home.js";
 
 /** The session-only version floor (§4.3): 0.86.2, the audited build the
  * flag set (the pinned config/env/history files, --restore-chat-history,
@@ -55,18 +56,17 @@ export const AIDER_SESSION_ID_PATTERN =
 
 /**
  * Capability flags for aider sessions (§3.4): live input yes (one caller
- * input, one aider process), everything else honestly no — there is no
- * steering or interrupt channel into a one-shot process, no permission
- * round-trip (the headless negatives decline every prompt), no deltas,
- * no file-change frames, no usage report at all (usage is all-null on
- * every event), and resume yes through the history file.
+ * input, one aider process). Interrupt stops that child and removes its
+ * unfinished history delta. There is no steering, permission round-trip,
+ * delta stream, or file-change stream. Local analytics report output tokens
+ * and known cost at turn completion; history carries resume state.
  */
 export function aiderSessionCapabilities(): SessionCapabilities {
   return {
     live_input: true,
     user_during_turn: false,
     steer: false,
-    interrupt: false,
+    interrupt: true,
     permissions: false,
     deltas: false,
     file_changes: false,
@@ -104,10 +104,32 @@ export interface AiderSessionCommand {
    * undefined without one (aider picks its own default). */
   weakModel?: string;
   effort?: ReasoningEffort;
+  permissionPolicy?: "default" | "deny";
+  tools?: ToolSelection;
+  analyticsPath?: string;
+  modelSettingsPath?: string;
   /** The per-session chat history file every turn appends to. */
   historyPath: string;
   /** The turn's prompt (the `--message=` value, author prefix applied). */
   prompt: string;
+  /** The env(1) assignments a HERMETIC session turn is wrapped in (the
+   * run path's HOME redirect, src/aider-hermetic.ts): when present the
+   * command is wrapped, so session turns and hermetic runs cannot
+   * drift. */
+  hermeticEnvAssignments?: readonly string[];
+  callerHome?: CallerHarnessHome;
+}
+
+/**
+ * The env(1) middle a hermetic aider session turn wraps its command in
+ * (the run path's shape, adapters/aider.ts buildRunCommand): HOME at
+ * the session's private home, closing every home-rooted config entry
+ * (.aider.conf.yml, .env, .aider.model.settings.yml, the oauth-keys
+ * file) at once. scode keeps the real HOME, so the assignment rides
+ * argv — the kimi/agy rule.
+ */
+export function aiderSessionHermeticAssignments(home: string): string[] {
+  return [`HOME=${home}`];
 }
 
 /**
@@ -115,21 +137,42 @@ export interface AiderSessionCommand {
  * history file, `--restore-chat-history` to replay it, then the run
  * adapter's flag order (model, weak model, autonomy, effort) and the
  * prompt as `--message=` — argv, so the run path's argv byte bound is
- * the per-turn cap the driver enforces before the ack.
+ * the per-turn cap the driver enforces before the ack. A hermetic turn
+ * wraps the command in the run path's env(1) shape.
  */
 export function buildAiderSessionCommand(command: AiderSessionCommand): string[] {
-  const argv = ["aider", ...aiderBaseFlags(command.historyPath)];
+  const assignments = command.callerHome
+    ? callerHarnessHomeEnvAssignments(command.callerHome) : [...(command.hermeticEnvAssignments ?? [])];
+  // yes-always is store_true, not BooleanOptionalAction. Its false env
+  // setting suppresses an inherited grant; the live stdin feeder denies.
+  if (command.permissionPolicy === "deny") assignments.push("AIDER_YES_ALWAYS=false");
+  const argv = assignments.length === 0 ? ["aider"] : ["env", ...assignments, "aider"];
+  const baseFlags = aiderBaseFlags(command.historyPath);
+  const callerConfigFlags = new Set(["--config", "--env-file", "--model-settings-file", "--model-metadata-file"]);
+  argv.push(...baseFlags.filter((flag, index) => !command.callerHome ||
+    (!callerConfigFlags.has(flag) && !callerConfigFlags.has(baseFlags[index - 1] ?? ""))));
+  if (command.modelSettingsPath !== undefined) {
+    const index = argv.indexOf("--model-settings-file");
+    if (index === -1) argv.push("--model-settings-file", command.modelSettingsPath);
+    else argv[index + 1] = command.modelSettingsPath;
+  }
   argv.push("--restore-chat-history");
+  if (command.analyticsPath !== undefined) {
+    argv.push("--no-stream", "--analytics-log", command.analyticsPath);
+  }
   if (command.model !== undefined) {
     argv.push("--model", command.model);
   }
   if (command.weakModel !== undefined) {
     argv.push("--weak-model", command.weakModel);
   }
-  argv.push(...aiderSessionAutonomyFlags(command.autonomy));
+  argv.push(...aiderSessionAutonomyFlags(command.autonomy).filter(
+    (flag) => command.permissionPolicy !== "deny" || flag !== "--yes-always"
+  ));
   if (command.effort !== undefined) {
     argv.push("--reasoning-effort", command.effort);
   }
+  if (command.tools === "none") argv.push(...AIDER_NO_TOOLS_FLAGS);
   argv.push(`--message=${command.prompt}`);
   return argv;
 }
@@ -252,7 +295,8 @@ export function assertAiderHistoryForTurn(historyPath: string): void {
  */
 export function createAiderSessionHistory(
   historyPath: string,
-  holdStateOf?: (id: string) => SessionHold
+  holdStateOf?: (id: string) => SessionHold,
+  sweep = true
 ): void {
   const sessionDir = dirname(historyPath);
   // The pre-pass refuses a planted link BEFORE mkdirSync resolves it and
@@ -261,7 +305,7 @@ export function createAiderSessionHistory(
   assertOwnedHistoryChain(historyPath, true);
   mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
   assertOwnedHistoryChain(historyPath);
-  sweepStaleSessionDirs(dirname(sessionDir), holdStateOf);
+  if (sweep) sweepStaleSessionDirs(dirname(sessionDir), holdStateOf);
   writeFileSync(historyPath, "", { mode: 0o600, flag: "wx" });
 }
 

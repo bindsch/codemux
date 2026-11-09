@@ -10,6 +10,7 @@ import { bufferable, CODEX_THREAD_ID_PATTERN, isRecord, PARSE_BUFFER_MAX_BYTES, 
 import { checkThread, lifecycleTurnId, scopedParams, threadScopedParams } from "./codex-parse-scope.js";
 import { unusableFacts } from "./process.js";
 import type { CodexParse, CodexParseContext } from "./codex-session.js";
+import { CodexPatchApprovals } from "./codex-patch-approvals.js";
 
 const UTF8 = new TextEncoder();
 /** The rejoin bounds are byte bounds: a string's `.length` counts UTF-16
@@ -27,6 +28,7 @@ const utf8Bytes = (text: string): number => UTF8.encode(text).byteLength;
 export class CodexStreamParser {
   private threadStartedSeen = false;
   private pendingParse: PendingParse | null = null;
+  private readonly patchApprovals = new CodexPatchApprovals();
 
   feed(line: string, context: CodexParseContext): CodexParse[] {
     if (this.pendingParse !== null) {
@@ -183,7 +185,10 @@ export class CodexStreamParser {
         },
       ];
     }
-    if (kindOfApproval === "fileChange" && fileChangePaths(params).length === 0) {
+    const input = kindOfApproval === "fileChange" && params["changes"] === undefined
+      ? { ...params, changes: this.patchApprovals.changes(thread, turn, params["itemId"]) }
+      : params;
+    if (kindOfApproval === "fileChange" && fileChangePaths(input).length === 0) {
       // The ceiling cannot judge a patch without paths; the driver
       // answers decline rather than forward an opaque action.
       return [{ kind: "unparseable_approval", id, method }];
@@ -197,7 +202,7 @@ export class CodexStreamParser {
         id,
         requestId: JSON.stringify(id),
         kindOfApproval,
-        input: params,
+        input,
       },
     ];
   }
@@ -250,6 +255,7 @@ export class CodexStreamParser {
         if (scoped.error !== null) return [scoped.error];
         const turnId = lifecycleTurnId(scoped.params, "turn/completed", context);
         if (typeof turnId !== "string") return [turnId];
+        this.patchApprovals.forgetTurn(turnId);
         const turn = scoped.params?.["turn"] as Record<string, unknown>;
         const status = turn["status"];
         if (status === "completed") {
@@ -297,6 +303,15 @@ export class CodexStreamParser {
           },
         ];
       }
+      case "item/fileChange/patchUpdated": {
+        const scoped = scopedParams(params, context);
+        if (scoped.error !== null) return [scoped.error];
+        const itemId = scoped.params?.["itemId"];
+        if (typeof itemId === "string" && itemId.length > 0) {
+          this.patchApprovals.record(scoped.threadId, scoped.turnId as string, itemId, scoped.params?.["changes"]);
+        }
+        return [{ kind: "unknown" }];
+      }
       case "item/started":
       case "item/updated":
       case "item/completed": {
@@ -307,6 +322,13 @@ export class CodexStreamParser {
         const itemId = item["id"];
         if (typeof itemId !== "string" || itemId.length === 0) return [{ kind: "unknown" }];
         const type = item["type"];
+        if (type === "fileChange") {
+          if (method === "item/completed") {
+            this.patchApprovals.forgetItem(scoped.threadId, scoped.turnId as string, itemId);
+          } else {
+            this.patchApprovals.record(scoped.threadId, scoped.turnId as string, itemId, item["changes"]);
+          }
+        }
         if (type === "agentMessage" && method === "item/completed") {
           // Commentary is mid-turn chatter, not the final answer.
           const phase = item["phase"];
@@ -350,6 +372,9 @@ export class CodexStreamParser {
           ];
         }
         if (type === "fileChange" && method === "item/completed") {
+          // Native denials complete the proposed item as declined. Its
+          // changes describe the refused patch, not writes that occurred.
+          if (item["status"] === "declined") return [{ kind: "unknown" }];
           const changes = item["changes"];
           if (!Array.isArray(changes) || changes.length === 0) return [{ kind: "unknown" }];
           const parses: CodexParse[] = [];
@@ -393,6 +418,21 @@ export class CodexStreamParser {
             usage: normalizeCodexTokenUsage(last),
           },
         ];
+      }
+      case "model/rerouted": {
+        // The provider rerouted the turn's model (design P5). No recorded
+        // app-server frame carries the notification, so the field name is
+        // read from the binary's own serde definitions: codex 0.166.0
+        // strings run `ModelReroutedNotificationfromModeltoModelreason`
+        // (camelCase) beside snake_case `from_model`/`to_model` variants,
+        // so both spellings of the to-model are accepted. Anything else —
+        // no params, no readable model — is tier-1 unknown, never an
+        // attribution codemux invented (fail-closed).
+        const toModel = params === null ? undefined : params["toModel"] ?? params["to_model"];
+        if (typeof toModel !== "string" || toModel.length === 0) {
+          return [{ kind: "unknown" }];
+        }
+        return [{ kind: "model_rerouted", model: toModel }];
       }
       case "thread/status/changed": {
         // A cosmetic status flip: thread-checked when parseable, then a

@@ -9,16 +9,18 @@ import {
 
 describe("CLI - Hermetic runs", () => {
   test("run --hermetic is refused for a harness without a verified mechanism", async () => {
-    const fake = createFakeBinaryEnv({ droid: "exit 0", copilot: "exit 0" });
+    // cursor keeps the declared run.hermetic limitation and openhands the
+    // run.tools-none one (cline gained both in the 2.0.0 parity pass).
+    const fake = createFakeBinaryEnv({ "cursor-agent": "exit 0", openhands: "exit 0" });
     try {
       const { stderr, exitCode } = await runCli(
-        ["run", "-a", "droid", "--no-sandbox", "--auto", "high", "--hermetic", "-p", "test"],
+        ["run", "-a", "cursor", "--no-sandbox", "--auto", "high", "--hermetic", "-p", "test"],
         fake.env
       );
       expect(exitCode).not.toBe(0);
       expect(stderr).toContain("no verified hermetic mode");
       const tools = await runCli(
-        ["run", "-a", "copilot", "--no-sandbox", "--auto", "high", "--tools", "none", "-p", "test"],
+        ["run", "-a", "openhands", "--no-sandbox", "--auto", "high", "--tools", "none", "-p", "test"],
         fake.env
       );
       expect(tools.exitCode).not.toBe(0);
@@ -253,14 +255,16 @@ describe("CLI - Hermetic runs", () => {
   });
 
   test("check --hermetic refuses an unsupported harness before probing", async () => {
-    const fake = createFakeBinaryEnv({ droid: "printf 'OK\\n'" });
+    // cursor: no verified hermetic mode (cline and droid gained one in the
+    // 2.0.0 parity pass).
+    const fake = createFakeBinaryEnv({ "cursor-agent": "printf 'OK\\n'" });
     try {
       const { stderr, exitCode } = await runCli(
-        ["check", "-a", "droid", "--no-sandbox", "--auto", "high", "--hermetic"],
+        ["check", "-a", "cursor", "--no-sandbox", "--auto", "high", "--hermetic"],
         fake.env
       );
       expect(exitCode).not.toBe(0);
-      expect(stderr).toContain("no verified hermetic mode");
+      expect(stderr).toContain("cursor does not support a hermetic instruction check");
       expect(stderr).not.toContain("Checking");
     } finally {
       fake.cleanup();

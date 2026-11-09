@@ -10,6 +10,15 @@ import { AGY_SESSION_FLOOR } from "../src/session/agy-session.js";
 import { OPENCODE_SESSION_FLOOR } from "../src/session/opencode-session.js";
 import { AIDER_SESSION_FLOOR } from "../src/session/aider-session.js";
 import { KIMI_SESSION_FLOOR } from "../src/session/kimi-session.js";
+import { CURSOR_SESSION_FLOOR } from "../src/session/cursor-session.js";
+import { DROID_SESSION_FLOOR } from "../src/session/droid-session.js";
+import { PI_SESSION_FLOOR } from "../src/session/pi-session.js";
+import { QWEN_SESSION_FLOOR } from "../src/session/qwen-session.js";
+import { GEMINI_SESSION_FLOOR } from "../src/session/gemini-session.js";
+import { COPILOT_SESSION_FLOOR } from "../src/session/copilot-session.js";
+import { GOOSE_SESSION_FLOOR } from "../src/session/goose-session.js";
+import { CLINE_SESSION_FLOOR } from "../src/session/cline-session.js";
+import { openhandsSessionFloor } from "../src/session/openhands-session.js";
 import { readExperimentSpec } from "../src/experiment-mcp.js";
 import { getAllAdapters } from "../src/adapters/index.js";
 import { FEATURE_FLOORS, HARNESS_CONTRACTS } from "../src/harness-contracts.js";
@@ -187,8 +196,13 @@ describe("documentation integrity", () => {
 
   test("experiment option rows and structured adapter count match current capabilities", () => {
     const structured = getAllAdapters().filter((adapter) => adapter.capabilities().supportsResultJson);
-    expect(structured).toHaveLength(6);
-    expect(read("docs/harnesses.md")).toContain("describe the six structured adapters");
+    // The count follows the adapters; the matrix row's Result JSON cell is
+    // the pinned statement (tests/harness-compatibility-policy.ts).
+    expect(structured.length).toBeGreaterThanOrEqual(6);
+    expect(read("docs/harnesses.md")).toContain("describe the structured adapters");
+    for (const adapter of structured) {
+      expect(read("docs/results-and-usage.md"), adapter.id).toContain(adapter.id);
+    }
     const rows = read("docs/cli.md").split("\n").filter((line) => line.startsWith("| `--experiment-mcp"));
     expect(rows).toHaveLength(2);
     for (const row of rows) {
@@ -348,7 +362,10 @@ describe("current documentation set", () => {
     const floors: Record<string, string | undefined> = {
       claude: CLAUDE_SESSION_FLOOR, zai: ZAI_SESSION_FLOOR, codex: CODEX_SESSION_FLOOR,
       agy: AGY_SESSION_FLOOR, opencode: OPENCODE_SESSION_FLOOR, aider: AIDER_SESSION_FLOOR,
-      kimi: KIMI_SESSION_FLOOR,
+      kimi: KIMI_SESSION_FLOOR, cursor: CURSOR_SESSION_FLOOR, droid: DROID_SESSION_FLOOR,
+      pi: PI_SESSION_FLOOR, qwen: QWEN_SESSION_FLOOR, gemini: GEMINI_SESSION_FLOOR,
+      copilot: COPILOT_SESSION_FLOOR, goose: GOOSE_SESSION_FLOOR,
+      cline: CLINE_SESSION_FLOOR, openhands: openhandsSessionFloor(),
     };
     expect([...rows.keys()].sort()).toEqual(Object.keys(floors).sort());
     for (const [agent, floor] of Object.entries(floors)) {
@@ -447,7 +464,7 @@ describe("current documentation set", () => {
     const numeric = (values: number[]): number[] => values.sort((a, b) => a - b);
     const cli = numeric([...section(read("docs/cli.md"), "Exit codes").matchAll(/^\| (\d+) \|/gm)]
       .map((match) => Number(match[1]!)));
-    expect(cli).toEqual([0, 1, 64, 66, 69, 78, 124, 125, 143]);
+    expect(cli).toEqual([0, 1, 2, 64, 66, 69, 78, 124, 125, 143]);
     const header = read("src/session/cli.ts").split("Exit codes:")[1]!.split("*/")[0]!;
     const session = numeric([...header.matchAll(/\b(\d{1,3})\b/g)].map((match) => Number(match[1]!)));
     expect(session).toEqual([0, 1, 64, 66, 78, 143]);

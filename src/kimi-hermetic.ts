@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
 import { writeOwnedSync } from "./fs-durable.js";
 import { join, resolve } from "node:path";
 import { prepareRunDirParent } from "./hermetic-home.js";
-import { hasActiveCapturedCommand } from "./process-runner.js";
+import { hasActiveSignalOwner } from "./process-runner.js";
 import { readBoundedKimiFile } from "./kimi-wire-log.js";
 import { recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
 
@@ -39,6 +39,94 @@ export const MAX_KIMI_STATE_BYTES = 4096;
 const liveHomes = new Set<() => void>();
 const signals = [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const;
 const handlers = new Map<NodeJS.Signals, () => void>();
+// Bun 1.4 returns Temporal values. Their normalized string loses the
+// consumer's offset and fractional precision, so retain validated tokens.
+const kimiTomlLiterals = new WeakMap<object, string>();
+const TOML_TIME = String.raw`\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?`;
+const TOML_DATETIME = new RegExp(
+  String.raw`(?:\d{4}-\d{2}-\d{2}(?:[Tt ]${TOML_TIME}(?:[Zz]|[+-]\d{2}:\d{2})?)?|${TOML_TIME})(?=$|[\s,#\]}=.])`,
+  "y"
+);
+
+/** Skip one already-validated TOML string, including multiline quote runs. */
+function tomlStringEnd(source: string, start: number): number {
+  const quote = source[start]!;
+  const multiline = source.startsWith(quote.repeat(3), start);
+  let end = start + (multiline ? 3 : 1);
+  while (end < source.length) {
+    if (quote === '"' && source[end] === "\\") { end += 2; continue; }
+    if (source[end] !== quote) { end++; continue; }
+    if (!multiline) return end + 1;
+    const runStart = end;
+    while (source[end] === quote) end++;
+    if (end - runStart >= 3) return end;
+  }
+  return end;
+}
+
+/** Validate first, then use a second parse to associate literal spellings
+ * with their exact values. Bun still owns tables, dotted keys, and arrays;
+ * the scanner labels date/time values while leaving every key untouched.
+ */
+export function parseKimiConfig(source: string): Record<string, unknown> {
+  const parsed = Bun.TOML.parse(source) as Record<string, unknown>;
+  const occupied = source + JSON.stringify(parsed);
+  let prefix = "__codemux_toml_literal_";
+  while (occupied.includes(prefix)) prefix = `__codemux_toml_${crypto.randomUUID()}_`;
+  const literals = new Map<string, string>();
+  const pieces: string[] = [];
+  const contexts: { kind: "root" | "array" | "table"; key: boolean }[] = [{ kind: "root", key: true }];
+  for (let at = 0; at < source.length;) {
+    const char = source[at];
+    const context = contexts.at(-1)!;
+    if (char === '"' || char === "'") {
+      const end = tomlStringEnd(source, at);
+      pieces.push(source.slice(at, end));
+      at = end;
+    } else if (char === "#" || (char === "[" && context.kind === "root" && context.key)) {
+      // Validated table headers contain keys only and end on this line.
+      const newline = source.indexOf("\n", at);
+      const end = newline < 0 ? source.length : newline;
+      pieces.push(source.slice(at, end));
+      at = end;
+    } else {
+      TOML_DATETIME.lastIndex = at;
+      const match = !context.key && (at === 0 || /[\s=,\[.{]/.test(source[at - 1]!))
+        ? TOML_DATETIME.exec(source) : null;
+      if (match === null) {
+        if (char === "=") context.key = false;
+        else if (char === "[") contexts.push({ kind: "array", key: false });
+        else if (char === "{") contexts.push({ kind: "table", key: true });
+        else if (char === "]" || char === "}") contexts.pop();
+        else if (char === "," && context.kind === "table") context.key = true;
+        else if (char === "\n" && context.kind === "root") context.key = true;
+        pieces.push(char!);
+        at++;
+        continue;
+      }
+      const marker = `${prefix}${literals.size}`;
+      literals.set(marker, match[0]);
+      pieces.push(JSON.stringify(marker));
+      at += match[0].length;
+    }
+  }
+  if (literals.size === 0) return parsed;
+  const labeled = Bun.TOML.parse(pieces.join(""));
+  const retain = (value: unknown, label: unknown): void => {
+    if (typeof label === "string" && literals.has(label)) {
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("kimi hermetic config cannot preserve a TOML datetime");
+      }
+      kimiTomlLiterals.set(value, literals.get(label)!);
+    } else if (value !== null && typeof value === "object" && label !== null && typeof label === "object") {
+      for (const [key, entry] of Object.entries(label)) {
+        retain((value as Record<string, unknown>)[key], entry);
+      }
+    }
+  };
+  retain(parsed, labeled);
+  return parsed;
+}
 
 function track(finalize: () => void): void {
   liveHomes.add(finalize);
@@ -46,7 +134,7 @@ function track(finalize: () => void): void {
   if (handlers.size) return;
   for (const [signal, code] of signals) {
     const handler = () => {
-      if (hasActiveCapturedCommand()) return;
+      if (hasActiveSignalOwner()) return;
       for (const dispose of [...liveHomes]) dispose();
       process.exit(code);
     };
@@ -63,12 +151,21 @@ function untrack(finalize: () => void): void {
   handlers.clear();
 }
 
+function isKimiTomlTable(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" &&
+    (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+}
+
 export function kimiTomlValue(value: unknown): string {
   if (typeof value === "string") return JSON.stringify(value);
   if (typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) return String(value);
   if (Array.isArray(value)) return `[${value.map(kimiTomlValue).join(", ")}]`;
-  if (value !== null && typeof value === "object" && !(value instanceof Date)) {
-    return `{ ${Object.entries(value).map(([key, entry]) => `${JSON.stringify(key)} = ${kimiTomlValue(entry)}`).join(", ")} }`;
+  if (value !== null && typeof value === "object") {
+    const literal = kimiTomlLiterals.get(value);
+    if (literal !== undefined) return literal;
+    if (isKimiTomlTable(value)) {
+      return `{ ${Object.entries(value).map(([key, entry]) => `${JSON.stringify(key)} = ${kimiTomlValue(entry)}`).join(", ")} }`;
+    }
   }
   throw new Error("kimi hermetic config contains an unsupported TOML value");
 }
@@ -78,7 +175,7 @@ export function kimiHermeticConfig(sourceBrandHome: string): string {
   return serializeKimiConfig({ ...filteredKimiHermeticConfig(sourceBrandHome), auto_session_title: false });
 }
 
-function serializeKimiConfig(config: Record<string, unknown>): string {
+export function serializeKimiConfig(config: Record<string, unknown>): string {
   return Object.entries(config).map(([key, value]) => `${JSON.stringify(key)} = ${kimiTomlValue(value)}\n`).join("");
 }
 
@@ -111,7 +208,7 @@ function readBrandConfig(sourceBrandHome: string | null): { parsed: Record<strin
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  return { parsed: Bun.TOML.parse(source) as Record<string, unknown>, path };
+  return { parsed: parseKimiConfig(source), path };
 }
 
 function filteredKimiHermeticConfig(sourceBrandHome: string | null): Record<string, unknown> {
@@ -159,7 +256,7 @@ export function kimiSessionHermeticConfig(sourceBrandHome: string | null, destBr
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   if (existing !== "") {
-    const parsed = Bun.TOML.parse(existing) as Record<string, unknown>;
+    const parsed = parseKimiConfig(existing);
     Object.assign(config, filterKimiConfigKeys(parsed, destPath));
     if (Object.hasOwn(parsed, "permission")) config.permission = parsed.permission;
   }
@@ -173,6 +270,46 @@ export function writeKimiSessionHermeticConfig(destBrandHome: string, sourceBran
   writeOwnedSync(join(destBrandHome, "config.toml"), kimiSessionHermeticConfig(sourceBrandHome, destBrandHome), 0o600);
 }
 
+/** Kimi 2.5.2's bundled agent-core-v2/src/agent/permissionRules/matchesRule.ts:
+ * `if (openIdx === -1) return { toolName: trimmed };`
+ * `if (parsed.toolName !== "*" && !import_picomatch.default.isMatch(toolName, parsed.toolName)) return;`
+ * `if (parsed.argPattern === void 0) return {` then `strategy: "tool_name_only"`.
+ * Thus `pattern: "*"` covers every tool and every argument, including Bash,
+ * Write, Edit, reads, and extension tools. configSection.ts accepts `decision`,
+ * `scope` (default "user"), `pattern`, and `reason`; permissionPolicyService.ts
+ * places UserConfiguredDenyPermissionPolicyService before AutoModeApprovePermissionPolicyService.
+ * Build evidence: `version: optionalBuildString("2.5.2")` in the installed bundle.
+ */
+export const KIMI_SESSION_DENY_RULE = {
+  decision: "deny", scope: "user", pattern: "*", reason: "codemux --permission-policy deny",
+} as const;
+
+/** Enforce the native deny before each turn, including resumes. Consumer
+ * rules and every other config key survive. Existing native catch-all denies
+ * avoid rewriting the file. Generated denies persist until the consumer removes
+ * them; a default-policy session never removes or weakens private policy.
+ */
+export function enforceKimiSessionDenyPolicy(destBrandHome: string): void {
+  const { parsed: config, path } = readBrandConfig(destBrandHome);
+  const permission = config.permission === undefined ? {} : config.permission;
+  if (!isKimiTomlTable(permission)) {
+    throw new Error("kimi deny policy requires a permission table in config.toml");
+  }
+  const table = permission;
+  // configSection.ts: `const entries = Array.isArray(value) ? value : [value]`.
+  // A single inline rule is valid native syntax; preserve it when appending.
+  const rules = table.rules === undefined ? [] : Array.isArray(table.rules) ? table.rules : [table.rules];
+  if (rules.some((rule) => !isKimiTomlTable(rule))) {
+    throw new Error("kimi deny policy requires permission.rules to contain rule tables");
+  }
+  if (rules.some((rule: Record<string, unknown>) =>
+    rule.decision === "deny" && rule.pattern === "*" && rule.tool === undefined &&
+    (rule.scope === undefined || rule.scope === "user" || rule.scope === "project" || rule.scope === "turn-override")
+  )) return;
+  config.permission = { ...table, rules: [...rules, KIMI_SESSION_DENY_RULE] };
+  writeOwnedSync(path, serializeKimiConfig(config), 0o600);
+}
+
 /**
  * Populates the launcher's per-session private home for a hermetic kimi
  * session (the SessionPrivateHome the driver consumes,
@@ -182,10 +319,9 @@ export function writeKimiSessionHermeticConfig(destBrandHome: string, sourceBran
  * files, and the empty skills directory the per-turn `--skills-dir`
  * names. config.toml is deliberately NOT written here — the first turn
  * generates it, after the consumer's pre-write window
- * (`kimiSessionHermeticConfig`). No agent file exists to populate: the
- * private brand home ships no SYSTEM.md and no agents/, which is
- * exactly how the builtin default profile stays selected (the recorded
- * 2.5.2 limitation — `--agent-file` conflicts with `--session`).
+ * (`kimiSessionHermeticConfig`). The default profile needs no agent file.
+ * Tools-none profiles are supplied only on creation; native resume
+ * restores their bound tool allowlist without --agent-file.
  */
 export function populateKimiHermeticSessionHome(
   dir: string,

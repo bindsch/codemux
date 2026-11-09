@@ -15,7 +15,7 @@ describe("CLI - session home passthrough", () => {
   test("a KIMI_CODE_HOME passthrough that is empty is refused", async () => {
     const outcome = await runSessionCommand(
       ["-a", "kimi", "--pass-env", "KIMI_CODE_HOME"],
-      { kimi: fakeWithVersion("0.31.1"), scode: "exit 9" },
+      { kimi: fakeWithVersion("2.5.2"), scode: "exit 9" },
       { env: { KIMI_CODE_HOME: "" } }
     );
     expect(outcome.exitCode).toBe(64);
@@ -25,7 +25,7 @@ describe("CLI - session home passthrough", () => {
   test("a KIMI_CODE_HOME passthrough that is relative is refused", async () => {
     const outcome = await runSessionCommand(
       ["-a", "kimi", "--pass-env", "KIMI_CODE_HOME"],
-      { kimi: fakeWithVersion("0.31.1"), scode: "exit 9" },
+      { kimi: fakeWithVersion("2.5.2"), scode: "exit 9" },
       { env: { KIMI_CODE_HOME: "relative/path" } }
     );
     expect(outcome.exitCode).toBe(64);

@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
 import {
   CLAUDE_ENVELOPE,
@@ -35,6 +38,7 @@ describe("CLI - result envelopes", () => {
         agent: "claude",
         model: "claude-opus-5",
         served_model: "claude-opus-5",
+        model_alias: null,
         usage: {
           input_tokens: 24114,
           output_tokens: 98,
@@ -71,6 +75,7 @@ describe("CLI - result envelopes", () => {
         agent: "codex",
         model: null,
         served_model: null,
+        model_alias: null,
         usage: {
           input_tokens: 200,
           output_tokens: 50,
@@ -154,14 +159,15 @@ describe("CLI - result envelopes", () => {
     }
   });
 
-  test("under --sandbox-trust untrusted a codex plan-only turn reports null: no fallback file", async () => {
+  test("under --sandbox-trust untrusted a codex plan-only turn is an empty answer: no fallback file", async () => {
     // The round27 untrusted branch, end to end: the untrusted preset denies
     // harness state (where the fallback file now lives), so the launch
     // passes no --output-last-message file at all and the event stream is
     // the result's only source. A Plan-only turn -- the one case the file
-    // existed for -- reports result: null and exits 1, the documented
-    // carve-out (README). The fake codex announces the flag on stderr and
-    // exits 5 if it ever sees one, so the assertions prove it never did.
+    // existed for -- has no answer, so it follows the empty-answer contract
+    // (src/result-empty.ts, docs/results-and-usage.md): result "" with
+    // codemux.empty_answer and exit 1. The fake codex announces the flag on
+    // stderr and exits 5 if it ever sees one, so the assertions prove it never did.
     const planOnlyEvents = [
       '{"type":"thread.started","thread_id":"0192b8d4-4d4f-7c4a-9d0e-6f5a4b3c2d1e"}',
       '{"type":"turn.started"}',
@@ -189,7 +195,8 @@ describe("CLI - result envelopes", () => {
       // child saw the flag this branch must not pass.
       expect(exitCode).toBe(1);
       const envelope = JSON.parse(stdout);
-      expect(envelope.result).toBeNull();
+      expect(envelope.result).toBe("");
+      expect(envelope.codemux).toMatchObject({ empty_answer: true, finish: "empty-answer" });
       expect(stderr).toContain("ended without a final assistant message");
       expect(stderr).not.toContain("UNEXPECTED-FALLBACK-FLAG");
     } finally {
@@ -210,6 +217,37 @@ describe("CLI - result envelopes", () => {
       expect(stdout).toBe("the reply\n");
     } finally {
       fake.cleanup();
+    }
+  });
+
+  test("a -m config alias reports the resolved model with model_alias beside it (design P5)", async () => {
+    const fake = createFakeBinaryEnv({
+      claude: `${claudeVersionPreamble}cat >/dev/null; printf '%s\\n' '${CLAUDE_ENVELOPE}'`,
+    });
+    const configDir = mkdtempSync(join(tmpdir(), "codemux-envelope-config-"));
+    mkdirSync(join(configDir, "codemux"), { recursive: true });
+    writeFileSync(
+      join(configDir, "codemux", "config.yaml"),
+      "models:\n  judge:\n    claude: claude-opus-5\n"
+    );
+    try {
+      const { stdout, exitCode } = await runCli(
+        [
+          "run", "-a", "claude", "--no-sandbox", "--auto", "high",
+          "--result-json", "-m", "judge", "-p", "test",
+        ],
+        { ...fake.env, XDG_CONFIG_HOME: configDir }
+      );
+      expect(exitCode).toBe(0);
+      const envelope = JSON.parse(stdout);
+      // `model` is the id the alias resolved to; `model_alias` is the
+      // value as typed — the same pair the ledger line records.
+      expect(envelope.codemux.model).toBe("claude-opus-5");
+      expect(envelope.codemux.model_alias).toBe("judge");
+      expect(envelope.codemux.served_model).toBe("claude-opus-5");
+    } finally {
+      fake.cleanup();
+      rmSync(configDir, { recursive: true, force: true });
     }
   });
 

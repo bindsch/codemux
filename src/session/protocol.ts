@@ -13,6 +13,8 @@
  * and bound violations are rejections, never silent drops.
  */
 
+import type { AutonomyLevel } from "../types.js";
+
 /** `text` bound (§4.1). This is not the deliverability bound: the harness
  * frame adds a JSON wrapper, an author prefix, and JSON-escaping of the
  * text (quotes double), so a text at this cap can serialize past the
@@ -53,6 +55,36 @@ export function isAnswerableRequestId(value: unknown): value is string {
 }
 
 export type UserDuringTurn = "inject" | "queue" | false;
+
+/** The served-model fields every `session_started` and `turn_completed`
+ * carries (design P5): the model a wire line named, which side named it
+ * (`provider`: the provider's own report, claude `message.model`/
+ * `modelUsage` or codex `model/rerouted`; `harness`: the configured
+ * model, claude init or the codex thread response), and the `-m` alias
+ * as typed. A wire that names no model reports null: a declared
+ * limitation, never a missing field (docs/session-protocol). */
+export interface SessionModelFields {
+  model_served: string | null;
+  model_served_source: "provider" | "harness" | null;
+  /** The `-m` value as typed when it resolved through config.models, else null. */
+  model_alias: string | null;
+}
+
+/** The payload every driver's `session_started` carries beside its own
+ * extra keys (agy adds `hermetic`): one interface, one builder, so the
+ * field set cannot drift per driver. `sandbox_trust` serializes as the
+ * trust string the driver recorded. */
+export interface SessionStartedFields extends SessionModelFields {
+  agent: string;
+  model: string | null;
+  autonomy: AutonomyLevel;
+  cwd: string;
+  sandboxed: boolean;
+  sandbox_trust: string;
+  capabilities: SessionCapabilities;
+  protocol: string;
+  private_home: string | null;
+}
 
 /** Capability flags exactly as `session_started` reports them (§4.3). */
 export interface SessionCapabilities {
@@ -198,11 +230,8 @@ export function parseInputLine(
       if (!context.capabilities.live_input) {
         return { ok: false, reason: "unsupported" };
       }
-      if (
-        type === "user" &&
-        context.hasActiveTurn &&
-        context.capabilities.user_during_turn === false
-      ) {
+      const duringTurn = type === "user" && context.hasActiveTurn;
+      if (duringTurn && context.capabilities.user_during_turn === false) {
         return { ok: false, reason: "busy" };
       }
       if (type === "steer" && !context.hasActiveTurn) {
@@ -244,20 +273,13 @@ export function parseInputLine(
       // acks and no-ops it (§4.1).
       return { ok: true, message: { type } };
     }
+    case "permission_response":
     case "permission_decision": {
       if (!context.capabilities.permissions) {
         return { ok: false, reason: "unsupported" };
       }
-      if (
-        keys.some(
-          (key) =>
-            key !== "type" &&
-            key !== "request_id" &&
-            key !== "decision" &&
-            key !== "updated_input" &&
-            key !== "message"
-        )
-      ) {
+      const allowedDecisionKeys = ["type", "request_id", "decision", "updated_input", "message"];
+      if (keys.some((key) => !allowedDecisionKeys.includes(key))) {
         return { ok: false, reason: "malformed" };
       }
       const requestId = record["request_id"];
@@ -295,7 +317,9 @@ export function parseInputLine(
       return {
         ok: true,
         message: {
-          type,
+          // `permission_response` is the consumer's alias (the Self-Grant
+          // study's runner); it normalizes to the one decision frame.
+          type: "permission_decision",
           request_id: requestId,
           decision,
           ...(updatedInput === undefined
@@ -371,6 +395,20 @@ export function buildEvent(
     envelope[key] = value;
   }
   return JSON.stringify(envelope);
+}
+
+/** The `session_started` announcement (§4.2), built once for every
+ * driver, so the payload set stays uniform (design P5, the parity
+ * rule). `raw` mirrors the harness line that proved the identity when
+ * one exists, null on codemux-made ones; extra keys pass through (agy's
+ * `hermetic`). */
+export function buildSessionStarted(
+  seq: number,
+  sessionId: string,
+  raw: string | null,
+  fields: SessionStartedFields & Record<string, unknown>
+): string {
+  return buildEvent(seq, sessionId, "session_started", raw, { ...fields });
 }
 
 /** The `input_accepted`/`input_rejected` ack for one input line. The

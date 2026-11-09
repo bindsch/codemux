@@ -16,6 +16,8 @@ import {
   runCli,
 } from "./helpers/cli.js";
 import { fakeScodeHelp } from "./helpers/doctor.js";
+import { getAllAdapters } from "../src/adapters/index.js";
+import { SESSION_AGENTS } from "../src/session/cli-agents.js";
 
 describe("CLI - Help", () => {
   test("--help shows usage", async () => {
@@ -151,8 +153,24 @@ describe("CLI - List", () => {
 
   test("list shows feature flags", async () => {
     const { stdout } = await runCli(["list"]);
-    expect(stdout).toContain("[model, autonomy]");
-    expect(stdout).toContain("[model, autonomy, effort]");
+    const printed = new Map([...stdout.matchAll(/^  [✅❌] (\S+)(?: \[([^\]]*)\])?$/gm)]
+      .map((match) => [match[1]!, match[2]?.split(", ") ?? []]));
+    for (const adapter of getAllAdapters()) {
+      const caps = adapter.capabilities();
+      const session = SESSION_AGENTS[adapter.id];
+      expect(printed.get(adapter.id), adapter.id).toEqual([
+        caps.supportsModel ? (adapter.supportsTuiModel() ? "model" : "model(run)") : null,
+        caps.supportsAutonomy ? "autonomy" : null,
+        caps.supportsEffort ? (adapter.supportsTuiEffort() ? "effort" : "effort(run)") : null,
+        caps.supportsHermetic ? (caps.isolationRequiresReadOnly ? "hermetic(read-only)" : "hermetic") : null,
+        caps.supportsToolSelection ? (caps.toolsNoneRequiresHermetic ? "tools(hermetic)"
+          : caps.toolsNoneRequiresReadOnly || caps.isolationRequiresReadOnly ? "tools(read-only)" : "tools") : null,
+        caps.supportsProviderOverride ? "provider" : null,
+        caps.supportsResultJson ? "result-json" : null,
+        caps.budgetLimit ? "budget" : null,
+        session ? (session.approvals === "ask" ? "sessions(permissions)" : "sessions(no-permissions)") : null,
+      ].filter((label) => label !== null));
+    }
   });
 });
 

@@ -11,8 +11,29 @@ import {
   SIGNAL_EXIT_CODE,
 } from "../process-runner.js";
 import { emptyUsage } from "../result-envelope.js";
+import { emptyAnswerFinish } from "../result-empty.js";
 import type { LaunchOptions } from "../launch.js";
 import type { RunRequest, RunResult } from "../types.js";
+
+/** A provider quota refusal in a completed run's stderr, as the finish
+ * that closes its ledger row, or null. The two evidenced spellings from
+ * the live gate of 2026-11-08 (the saved report's agy and kimi rows):
+ * agy prints `error: Individual quota reached. ...`, kimi
+ * `provider.api_error: You've reached your weekly (7-day) usage
+ * limit. ...`. Substring matches, because the captured stderr can be
+ * cut mid-line. codemux's own pre-spawn gate refusal never reaches a
+ * receipt: it refuses before the spawn and records nothing. */
+const PROVIDER_QUOTA_REFUSAL: RegExp[] = [
+  /Individual quota reached\./,
+  /reached your weekly \(7-day\) usage limit/,
+];
+
+function quotaRefusalFinish(stderr: string): string | null {
+  if (PROVIDER_QUOTA_REFUSAL.some((pattern) => pattern.test(stderr))) {
+    return "provider-quota-refused";
+  }
+  return null;
+}
 
 /** Records a processed launch; refusals, capture failures, and signals use other paths. */
 export function recordCompletedLaunch(
@@ -28,6 +49,7 @@ export function recordCompletedLaunch(
     labels: request.labels ?? null, // a check keeps its labels too (doctor --spend selects by machine-check=<stamp>; round 51)
     agent: request.agent,
     model: request.model ?? null,
+    model_alias: request.modelAlias ?? null,
     model_effective: result.servedModel ?? null,
     provider,
     session_id: null,
@@ -37,7 +59,9 @@ export function recordCompletedLaunch(
     sandboxed: Boolean(request.sandboxed),
     ...sandboxFieldsFor(options),
     exit_code: result.exitCode,
-    finish: null,
+    // A run the provider refused for quota closed its row with that
+    // verdict, so `calls` reads it apart from an ordinary failure.
+    finish: emptyAnswerFinish(result) ?? quotaRefusalFinish(result.stderr),
     duration_ms: Math.max(0, Date.now() - startedAt),
     cwd: request.cwd ?? process.cwd(),
     usage: result.usage ?? emptyUsage(),
@@ -67,6 +91,7 @@ export function appendInterruptedLaunchReceipt(
       labels: request.labels ?? null, // a check keeps its labels too (doctor --spend selects by machine-check=<stamp>; round 51)
       agent: request.agent,
       model: request.model ?? null,
+    model_alias: request.modelAlias ?? null,
       model_effective: null,
       provider,
       session_id: null,
@@ -120,6 +145,7 @@ export function appendFailedLaunchReceipt(
       labels: request.labels ?? null, // a check keeps its labels too (doctor --spend selects by machine-check=<stamp>; round 51)
       agent: request.agent,
       model: request.model ?? null,
+    model_alias: request.modelAlias ?? null,
       model_effective: processed?.servedModel ?? null,
       provider,
       session_id: null,
@@ -129,7 +155,7 @@ export function appendFailedLaunchReceipt(
       sandboxed: Boolean(request.sandboxed),
       ...sandboxFieldsFor(options),
       exit_code: exitCode,
-      finish: null,
+      finish: processed ? emptyAnswerFinish(processed) : null,
       duration_ms: Math.max(0, Date.now() - startedAt),
       cwd: request.cwd ?? process.cwd(),
       usage: processed?.usage ?? folded ?? emptyUsage(),

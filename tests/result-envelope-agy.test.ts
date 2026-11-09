@@ -216,6 +216,7 @@ describe("agyResult", () => {
       session_id: null,
       recording: null,
       served_model: null,
+      model_alias: null,
       failure_code: null,
       labels: null,
     });

@@ -5,18 +5,7 @@ read_when: "Checking run envelopes, quotas, the ledger, or usage reporting."
 
 ## Run results
 
-`run` normally prints the reply on stdout and diagnostics on stderr.
-`--result-json` requests a structured result with harness-specific
-normalization. Claude/Z.AI retain their JSON envelope. Agy normally uses
-`--output-format=json`; its isolation/probe paths use
-`--output-format=stream-json` and normalize the terminal result.
-Codex JSONL is reduced into a codemux-built envelope.
-Kimi selects `--output-format stream-json` on every run and builds
-an envelope from the parsed events and session wire log; plain runs unwrap
-the reply and wire-log usage off the same stream. OpenCode's `--format json`
-event stream — the same wire every plain run folds — becomes a codemux-built
-envelope carrying the folded reply and step usage; the raw event lines are
-never re-emitted, and stdout that never used the wire fails the run.
+`run` normally prints the reply on stdout and diagnostics on stderr. `--result-json` requests a structured result with harness-specific normalization. Claude/Z.AI retain their JSON envelope. Agy normally uses `--output-format=json`; its isolation/probe paths use `--output-format=stream-json` and normalize the terminal result. Codex JSONL is reduced into a codemux-built envelope. Kimi selects `--output-format stream-json` on every run and builds an envelope from the parsed events and session wire log; plain runs unwrap the reply and wire-log usage off the same stream. OpenCode's `--format json` event stream — the same wire every plain run folds — becomes a codemux-built envelope carrying the folded reply and step usage; the raw event lines are never re-emitted, and stdout that never used the wire fails the run.
 
 The codemux-owned block contains:
 
@@ -25,6 +14,7 @@ The codemux-owned block contains:
   "agent": "codex",
   "model": "gpt-5.3-codex",
   "served_model": "gpt-5.3-codex",
+  "model_alias": null,
   "labels": {
     "wf": "review",
     "step": "scan"
@@ -76,12 +66,22 @@ Claude and Z.AI report serve evidence), and Agy,
 OpenCode, and Kimi report null on their pinned wires (Aider has no
 result-JSON envelope at all; OpenCode's run wire carries no model field;
 Kimi's stream JSON and wire log carry none).
+`model_alias` is the `-m` value as typed when it resolved through
+`config.models`, else null; an override-selected model resolves no alias.
+The session protocol reports the same fact as `model_alias` beside
+`model_served` (the model a session turn was actually served) and
+`model_served_source` (`provider` when the wire names what served the turn,
+`harness` when it names what it configured, null when neither appears) on
+every `session_started` and `turn_completed` event — see
+[session protocol](session-protocol.md).
 Kimi's selected model includes `CODEMUX_KIMI_PROVIDER_MODEL` when `--model`
 is omitted. A later experiment cleanup failure preserves an already
 normalized model, including Z.AI's default `opus` selection, and a
 deliberate null (several models served) survives it too rather than
 resurfacing an earlier value. Codex normalizes its captured reply and reads `--output-last-message` before rollout verification, so a verification failure preserves that reply before private-home cleanup. Experiment failure diagnostics appear once on stderr.
 Codex reroute events can identify the served model and produce a stderr note.
+
+On Codex 0.166.0 or later, ordinary successful runs can also read native thread dollar usage through one bounded `account/usage/read` metadata request. The read uses the same pinned executable, environment, private home, and sandbox policy after the model run ends. Only `nativeUsageUsdMicros` is normalized into `cost_usd`; estimated dollars are ignored. Provider overrides, unavailable API-key/backend pricing, failed reads, and network-denied sandboxes leave cost null. This backend usage value is not a subscription invoice or an external provider price estimate. App-server turn-cost telemetry can report API-key/custom-provider priced costs and model identity, but the ordinary exec path does not yet collect that telemetry.
 `codemux.labels` contains the run's labels, or null when none are supplied.
 See [label syntax and environment defaults](cli.md#labels).
 Unsupported structured-result adapters refuse `--result-json`; capability
@@ -92,86 +92,28 @@ stops the run, the stop surfaces as Claude Code's own error result, and the
 envelope path already fails a run whose envelope reports `is_error` — the
 envelope is still emitted, with the codemux diagnostic on stderr.
 
-Run `codemux.session_id` is always null: codemux does not register a run for resume.
-Claude/Z.AI request `--no-session-persistence`; ordinary Codex runs request
-`--ephemeral`. Codex experiment runs read their private rollout before cleanup.
-Other harnesses can retain native state. A null field is not a promise that no
-upstream conversation state survives. See [persistence](isolation.md).
+Run `codemux.session_id` is always null: codemux does not register a run for resume. Claude/Z.AI request `--no-session-persistence`; ordinary Codex runs request `--ephemeral`. Codex experiment runs read their private rollout before cleanup. Other harnesses can retain native state. A null field is not a promise that no upstream conversation state survives. See [persistence](isolation.md).
 
-Codex experiment recordings are written while the harness runs. Codemux polls
-the rollout every 250 ms. Native response items emit `turn` and `turn_call`
-without waiting for usage; `token_count` emits `turn_usage` with its own timestamp.
-Each delivery is written when its output line is observed. Final verification
-uses the same cursor and requires exactly one usage record per turn on ordinary
-completed runs, otherwise `harness_log_missing`. A nonempty request `_meta.callId` is used immediately,
-copied to `params._meta["codemux/callId"]`, and recorded on `tool_call` with
-`native_call_id_source: "request_meta"`. Live and final rollout correlation
-then verifies the ID, name, and arguments regardless of parallel HTTP arrival
-order. Without request metadata,
-resolution waits up to five seconds for native call evidence, without waiting
-for usage. Unresolved calls fail before dispatch. Claude and Z.AI retain
-`claudecode/toolUseId` too. Their first assistant frame emits `turn` with null usage. Experiment launches include `--include-partial-messages`. Native `message_start` and `message_delta` events supply per-message counters; zero placeholders never replace real counts. `turn_usage` records the final values at `message_stop`, message ID change, or result. A completed turn without real counters fails with `harness_log_missing`. Later frames can add calls.
-Message IDs are native. A Codex response with neither a message item ID nor
-a function-call item ID fails with `message_id_missing`.
+Codex experiment recordings are written while the harness runs. Codemux polls the rollout every 250 ms. Native response items emit `turn` and `turn_call` without waiting for usage; `token_count` emits `turn_usage` with its own timestamp. Each delivery is written when its output line is observed. Final verification uses the same cursor and requires exactly one usage record per turn on ordinary completed runs, otherwise `harness_log_missing`. A nonempty request `_meta.callId` is used immediately, copied to `params._meta["codemux/callId"]`, and recorded on `tool_call` with `native_call_id_source: "request_meta"`. Live and final rollout correlation then verifies the ID, name, and arguments regardless of parallel HTTP arrival order. Without request metadata, resolution waits up to five seconds for native call evidence, without waiting for usage. Unresolved calls fail before dispatch. Claude and Z.AI retain `claudecode/toolUseId` too. Their first assistant frame emits `turn` with null usage. Experiment launches include `--include-partial-messages`. Native `message_start` and `message_delta` events supply per-message counters; zero placeholders never replace real counts. `turn_usage` records the final values at `message_stop`, message ID change, or result. A completed turn without real counters fails with `harness_log_missing`. Later frames can add calls. Message IDs are native. A Codex response with neither a message item ID nor a function-call item ID fails with `message_id_missing`.
 
-Before private-home cleanup, successful and failed Codex/Kimi experiments
-attempt to copy the native log beside the recording as `<run-id>.codex-rollout.jsonl`
-or `<run-id>.kimi-wire.jsonl`, with mode 0600 and a 256 MiB cap.
-`harness_log_copy` contains `{harness, path, bytes}` or `{harness, path, error}`,
-besides the common record fields. `path` names the copy. Copy errors preserve
-the run's existing verdict.
-Private-home cleanup precedes recording closure. A cleanup failure is
-recorded in `failure` and `run_end` and changes the result to a failure. Kimi interruptions record `protocol` with `interrupted before harness evidence` before stdout, or `interrupted before verification` afterward.
+Before private-home cleanup, successful and failed Codex/Kimi experiments attempt to copy the native log beside the recording as `<run-id>.codex-rollout.jsonl` or `<run-id>.kimi-wire.jsonl`, with mode 0600 and a 256 MiB cap. `harness_log_copy` contains `{harness, path, bytes}` or `{harness, path, error}`, besides the common record fields. `path` names the copy. Copy errors preserve the run's existing verdict. Private-home cleanup precedes recording closure. A cleanup failure is recorded in `failure` and `run_end` and changes the result to a failure. Kimi interruptions record `protocol` with `interrupted before harness evidence` before stdout, or `interrupted before verification` afterward.
 
-Every Codex experiment `run_start` records a `catalog_override` boolean. Codex
-override runs also record `catalog_override` with `slug`, `source_path`,
-`source_fetched_at`, `served_models`, `served_bytes`, `removed: ["tool_mode",
-"experimental_supported_tools.clock", "multi_agent_version",
-"apply_patch_tool_type"]`, and `requested_only`. The last field is true when the 1 MiB response cap
-requires serving only the requested model. A finished fetch records
-`catalog_served` with `client_version` and `bytes`; a transfer that closes
-before it finishes records nothing, and a client that resets the connection
-with the body unread adds `catalog_fetch_reset` with the same fields. Catalog `http_request`
-records contain only the method, `path: "/catalog"`, `client_version`,
-`authorization_present`, `body_complete: true`, and an empty body. They omit request headers,
-authorization values, and the nonce. See [Codex catalog details](experiment-codex-catalog.md).
-Missing explicit `-m` fails with `model_required`. The October 29, 2026, 01:58
-probe called the experiment tool directly and reached the relay, then failed
-while waiting for usage. The preserved `gpt-6-astra` probe completed direct delivery and now verifies by replay. No new live probe was run for these fixes.
+Every Codex experiment `run_start` records a `catalog_override` boolean. Codex override runs also record `catalog_override` with `slug`, `source_path`, `source_fetched_at`, `served_models`, `served_bytes`, `removed: ["tool_mode", "experimental_supported_tools.clock", "multi_agent_version", "apply_patch_tool_type"]`, and `requested_only`. The last field is true when the 1 MiB response cap requires serving only the requested model. A finished fetch records `catalog_served` with `client_version` and `bytes`; a transfer that closes before it finishes records nothing, and a client that resets the connection with the body unread adds `catalog_fetch_reset` with the same fields. Catalog `http_request` records contain only the method, `path: "/catalog"`, `client_version`, `authorization_present`, `body_complete: true`, and an empty body. They omit request headers, authorization values, and the nonce. See [Codex catalog details](experiment-codex-catalog.md). Missing explicit `-m` fails with `model_required`. The October 29, 2026, 01:58 probe called the experiment tool directly and reached the relay, then failed while waiting for usage. The preserved `gpt-6-astra` probe completed direct delivery and now verifies by replay. No new live probe was run for these fixes.
 
-Kimi's envelope has `reply`, `events`, `session_id`, and `codemux` fields.
-`reply` is the assistant text with the same block spacing and final newline
-as the normalized plain reply. `events` retains each parsed assistant, tool,
-meta, or error line. The top-level `session_id` comes from the
-`session.resume_hint` meta event and identifies Kimi's native session;
-`codemux.session_id` stays null because the run is not registered for resume.
-The hint ends an experiment stream. A second hint or any later frame fails
-with `protocol`.
-Usage sums `usage.record` entries in
-`<brand home>/sessions/*/session_<id>/agents/main/wire.jsonl`: `inputOther`
-becomes uncached input, `inputCacheRead + inputCacheCreation` becomes cached
-input, and `output` becomes output tokens. Their sum is the total; cost is
-null. Missing counts remain null, with one exception: Kimi Code 2.5.0 leaves
-`inputCacheRead` out of a record that read nothing from cache, and that
-absent field counts as zero, as it does in Kimi's own total. The wire log is read before hermetic home
-cleanup, with a 16 MiB limit. A missing session ID, missing log, malformed
-stream/log, or error event fails the run and reports a diagnostic; when an error
-event is present it is the diagnostic, and a resume hint that never arrived after
-it is that failure's consequence, not the report.
-An experiment provider attempt that fails without usage and without tool calls emits `harness_retry`
-with its step UUID and no `turn`, including attempts with partial content.
-An error step with tool calls emits a `turn` and fails later with `harness_log_missing` if usage is absent.
-Content-first turns wait for a call or successful end and retain their first-content timestamp. Inventory evidence checks descriptions and the unchanged
-`inputSchema` to `parameters` mapping as well as qualified names.
+Kimi's envelope has `reply`, `events`, `session_id`, and `codemux` fields. `reply` is the assistant text with the same block spacing and final newline as the normalized plain reply. `events` retains each parsed assistant, tool, meta, or error line. The top-level `session_id` comes from the `session.resume_hint` meta event and identifies Kimi's native session; `codemux.session_id` stays null because the run is not registered for resume. The hint ends an experiment stream. A second hint or any later frame fails with `protocol`. Usage sums `usage.record` entries in `<brand home>/sessions/*/session_<id>/agents/main/wire.jsonl`: `inputOther` becomes uncached input, `inputCacheRead + inputCacheCreation` becomes cached input, and `output` becomes output tokens. Their sum is the total; cost is null. Missing counts remain null, with one exception: Kimi Code 2.5.0 leaves `inputCacheRead` out of a record that read nothing from cache, and that absent field counts as zero, as it does in Kimi's own total. The wire log is read before hermetic home cleanup, with a 16 MiB limit. A missing session ID, missing log, malformed stream/log, or error event fails the run and reports a diagnostic; when an error event is present it is the diagnostic, and a resume hint that never arrived after it is that failure's consequence, not the report. An experiment provider attempt that fails without usage and without tool calls emits `harness_retry` with its step UUID and no `turn`, including attempts with partial content. An error step with tool calls emits a `turn` and fails later with `harness_log_missing` if usage is absent. Content-first turns wait for a call or successful end and retain their first-content timestamp. Inventory evidence checks descriptions and the unchanged `inputSchema` to `parameters` mapping as well as qualified names.
 
-Plain launches also select structured output for Claude/Z.AI, Agy, OpenCode,
-Codex, and Kimi, then unwrap the reply. OpenCode trims each text part onto its own
-line. Codex preserves the final assistant message and appends one newline,
-as its human-mode printer does. Other adapters currently collect plain text
-or their adapter-specific transcript without extracting structured usage;
-this describes codemux's selected path, not all upstream CLI capabilities.
+Plain launches also select structured output for Claude/Z.AI, Agy, OpenCode, Codex, and Kimi, then unwrap the reply. OpenCode trims each text part onto its own line. Codex preserves the final assistant message and appends one newline, as its human-mode printer does. Other adapters currently collect plain text or their adapter-specific transcript without extracting structured usage; this describes codemux's selected path, not all upstream CLI capabilities.
 
 ## Failure and output limits
+
+A successful run must contain a non-whitespace answer on every agent. After
+adapter normalization, exit 0 with empty or whitespace-only plain stdout,
+or an empty structured answer field, becomes protocol-failure exit 1.
+Stderr reports `Error: <agent> exited 0 with an empty answer`.
+The structured envelope is preserved with `codemux.empty_answer: true`
+and `codemux.finish: "empty-answer"`; the call ledger also records
+`finish: "empty-answer"`. Existing nonzero failures keep their exit codes.
+This rule has no opt-out and also covers Codex completed message-free turns.
 
 Captured output is bounded at 16 MiB. The streaming Codex and OpenCode
 reducers have separate limits for an individual input line and retained
@@ -217,7 +159,8 @@ exit, but the run still fails and records unknown usage.
 Codex's Plan-only completion can require its `--output-last-message` file.
 The fallback is consulted only for a completed turn with no assistant message,
 never after protocol failure. A named missing/unreadable file fails.
-An empty readable file represents a message-free completion. Non-hermetic
+An empty readable file represents a message-free completion and fails the
+empty-answer check. Non-hermetic
 untrusted sandbox runs cannot write that fallback file and do not request it.
 
 OpenCode malformed/truncated streams retain text and usage folded before the
@@ -225,16 +168,13 @@ error, with a diagnostic. Claude-family/Agy JSON that is not a valid result
 fails instead of becoming plain reply text, and an OpenCode JSON-object line
 that breaks the event grammar is wire evidence, not plain text. Output that
 never uses the requested structured grammar can pass through as plain text
-without usage; empty output cannot — a zero-exit run that printed nothing on
-Claude, Z.AI, Agy, or OpenCode fails rather than passing through as an empty
-success.
+without usage. Empty or whitespace-only output fails on every agent.
 The Codex fallback can recover a blended `tokens used` stderr total only, and
 only when the figure is plain digits, digit groups of three (`1,234,567`),
 or Indian grouping (`12,34,567`), with one separator style throughout;
 anything else records no usage rather than a stripped-digit guess.
 Result errors fail even when the child exited zero. Empty structured replies
-fail; Codex plain-mode completed empty/message-free replies retain the
-upstream success behavior.
+and empty plain replies fail on every agent.
 
 ## Usage fields
 
@@ -294,14 +234,14 @@ Each record contains:
 | `ts` | Start time as an RFC 3339 timestamp; a `ts` that is not one makes the line malformed |
 | `kind` | `run`, `check`, `session_turn`, or closing `session` |
 | `agent`, `provider`, `cwd` | Strings; provider is `default` or the override URL host read from the launch adapter's own environment, never its key. `default` means no codemux provider override: the harness's own configuration or ambient variables may still name another endpoint (OpenHands under `--model` reads exported `LLM_BASE_URL`/`LLM_API_KEY`), so `default` is not a claim about the vendor's first-party endpoint |
-| `model`, `model_effective` | Requested and reported model, each string or null |
+| `model`, `model_effective`, `model_alias` | Requested and reported model, each string or null, and the `-m` value as typed when it resolved through `config.models` (else null). A `session_turn` records the model that served that turn in `model_effective`; the closing `session` keeps it null — no single model serves a whole session. Older session-turn lines carry no `model_effective`, and no pre-2.0.0 line carries `model_alias` |
 | `session_id`, `turn_id` | Strings or null; turns identify their session |
 | `autonomy` | Autonomy string or null |
 | `labels` | String-keyed object of string values, or null |
 | `hermetic`, `sandboxed` | Booleans |
 | `sandbox_no_net`, `sandbox_trust` | The sandbox the launch ran: a network-restriction boolean (true under the `untrusted` trust level, which implies it) and a trust level, null on a direct run; absent on session records and older ledgers |
 | `exit_code` | Number or null (turns use finish instead) |
-| `finish` | End/turn reason string or null |
+| `finish` | End/turn reason string or null; a run the provider refused for quota after the spawn ends `provider-quota-refused`; an empty-answer run ends `empty-answer` |
 | `duration_ms` | Nonnegative elapsed time from the record's start |
 | `usage` | The five-field object above |
 | `cost_source` | `billed`, `harness-estimate`, `subscription-zero`, or null; written by the ledger from the agent and the figure, never taken from the caller |
@@ -539,3 +479,10 @@ and warning messages print in local time with a relative span —
 timestamp by hand. Batch callers get the
 strict fail-closed behavior from cmx (codemux-workflows), which keeps its own
 policy and pauses on a quota refusal instead of proceeding.
+
+## Structured adapters
+
+Result envelopes exist for agy, claude, cline, codex, copilot, cursor, droid, gemini, goose, kimi, opencode,
+openhands, pi, qwen, and zai. The harness matrix in [harnesses](harnesses.md) is the pinned statement;
+the per-adapter envelope builders live under `src/result-envelope/`. Where a wire carries no token usage
+(copilot, openhands), the usage block is null throughout, never guessed.

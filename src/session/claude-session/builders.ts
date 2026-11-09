@@ -6,11 +6,12 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { claudeEffortFlags, validateClaudeEffort } from "../../claude-effort.js";
 import { claudeAutonomyFlags, claudeNativeAutonomyFlags, grantRule } from "../../claude-autonomy.js";
 import { PROJECT_SETTING_SOURCES } from "../../claude-project-settings.js";
 import { buildPlaywrightSandboxMcp } from "../../mcp.js";
 import type { ExecutableCheck } from "../../executable-security.js";
-import type { AutonomyLevel, ReasoningEffort } from "../../types.js";
+import type { AutonomyLevel, ReasoningEffort, ToolSelection } from "../../types.js";
 import type { SessionCapabilities } from "../protocol.js";
 
 export interface ClaudeSessionCommand {
@@ -19,6 +20,8 @@ export interface ClaudeSessionCommand {
   model?: string;
   autonomy: AutonomyLevel;
   effort?: ReasoningEffort;
+  passthroughEnv?: readonly string[];
+  tools?: ToolSelection;
   cwd?: string;
   /** Whether scode wraps the session; drives the Playwright MCP args. */
   sandboxed?: boolean;
@@ -53,6 +56,8 @@ export interface ClaudeSessionCommand {
    * (the project-settings mode requires --hermetic; the CLI passes
    * projectSettings alone when both flags arrive). */
   hermetic?: boolean;
+  /** Caller-owned settings, skills, and MCP configuration remain enabled. */
+  harnessHome?: boolean;
   /** The session id to pin on a fresh launch, when the caller has
    * already minted it — the CLI does, so the private config directory,
    * the registry record, and `--session-id` all name one id before
@@ -119,6 +124,7 @@ export interface ClaudeSessionBuilt {
 export function buildClaudeSessionCommand(
   command: ClaudeSessionCommand
 ): ClaudeSessionBuilt {
+  validateClaudeEffort(command);
   const sessionId = command.resumeId ?? command.sessionId ?? randomUUID();
   // The whole family spawns the same `claude` binary: the zai agent is
   // that binary pointed at the Z.AI endpoint through the adapter's env
@@ -145,6 +151,10 @@ export function buildClaudeSessionCommand(
   } else {
     argv.push("--session-id", sessionId);
   }
+  // Claude Code 2.1.317 bin/claude.exe, audited 2026-11-09: --tools at
+  // byte 273384187 accepts "" and "default". The action initializes
+  // baseTools at 273158041 on every invocation, including --resume.
+  if (command.tools !== undefined) argv.push("--tools", command.tools === "none" ? "" : "default");
   // The setting sources are the isolation boundary (§4.7): the user
   // source by default, or the project and local sources the
   // project-settings mode exists to observe — never both, because the
@@ -159,7 +169,8 @@ export function buildClaudeSessionCommand(
     argv.push("--safe-mode");
     argv.push("--setting-sources", "user", "--strict-mcp-config");
   } else {
-    argv.push("--setting-sources", "user", "--strict-mcp-config");
+    argv.push("--setting-sources", "user");
+    if (!command.harnessHome) argv.push("--strict-mcp-config");
   }
   // Run parity for --enable-playwright-mcp (§4.5): the same verified
   // carrier, in run's position — after the writable roots, before the
@@ -183,8 +194,8 @@ export function buildClaudeSessionCommand(
     argv.push("--settings", command.providerSettings);
   }
   argv.push(...claudeSessionAutonomyFlags(command.autonomy, launchDir));
-  if (command.effort !== undefined && command.effort !== "none") {
-    argv.push("--effort", command.effort);
+  if (command.effort !== undefined) {
+    argv.push(...claudeEffortFlags(command.effort));
   }
   return { argv, sessionId, playwrightMcpCheck: playwright.check };
 }

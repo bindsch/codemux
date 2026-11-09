@@ -412,7 +412,7 @@ export function touchSession(path: string, id: string, lockOptions?: LockOptions
  * non-resumable in the SAME atomic write as the end: the record is
  * either live-owned or ended-and-final, never ended-and-claimable
  * (review round 10, edges 4). */
-export function recordSessionEnd(path: string, id: string, final = false): UpdateOutcome {
+export function recordSessionEnd(path: string, id: string, final = false, lockOptions?: LockOptions): UpdateOutcome {
   return updateRegistry(
     path,
     (file) => {
@@ -425,7 +425,8 @@ export function recordSessionEnd(path: string, id: string, final = false): Updat
       if (final) entry.final = true;
       return null;
     },
-    "fail"
+    "fail",
+    lockOptions
   );
 }
 
@@ -437,8 +438,10 @@ export function recordSessionEnd(path: string, id: string, final = false): Updat
  * once this process is dead. `recordSessionEnd` returns failures as
  * values, so a caller that drops the outcome leaves no trace (review
  * live13 for the drivers, live21 for the CLI). */
-export function releaseSessionRecord(path: string, id: string, final = false): boolean {
-  const outcome = recordSessionEnd(path, id, final);
+export function releaseSessionRecord(path: string, id: string, final = false, lockOptions?: LockOptions): boolean {
+  // The shared turn driver's end path asks for one attempt: a held rival lock
+  // must not block shutdown for the default forty tries.
+  const outcome = recordSessionEnd(path, id, final, lockOptions);
   if (!outcome.ok) {
     console.error(
       `codemux: cannot stamp the session end for ${id} ` +

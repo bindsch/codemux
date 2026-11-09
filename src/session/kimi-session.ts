@@ -5,7 +5,7 @@ import { featureFloor } from "../harness-contracts.js";
  * parser under the three tiers. Pure functions only — all live state
  * lives in the launcher-owned driver (src/session/kimi-driver.ts).
  *
- * Wire facts pinned against the installed 0.31.1 binary (the run
+ * Wire facts read from the installed 2.5.2 bundle (the run
  * adapter, src/adapters/kimi.ts, pins the flag surface; the facts below
  * come from the binary's bundled sources):
  *
@@ -30,12 +30,12 @@ import { featureFloor } from "../harness-contracts.js";
  *   to it (the agy/opencode model). A turn that throws exits before its
  *   hint (read from the source, not live-verified), so the hint follows
  *   only completed turns.
- * - Headless kimi auto-approves every tool call and answers no question
- *   (installHeadlessHandlers), and fresh sessions are created with
- *   permission "auto": no permission round-trip exists to relay, and the
- *   autonomy ceiling rides the scode boundary exactly as the run path
- *   documents. The autonomy flags (--plan/--yolo/--auto) are refused with
- *   --prompt, so the per-turn command carries none.
+ * - Kimi 2.5.2's runV2Print forces `permissionMode.setMode("auto")`.
+ *   Its `user-configured-deny` policy runs before `auto-mode-approve`, so
+ *   native deny rules still apply. Hermetic --permission-policy deny
+ *   installs a catch-all rule. No permission round-trip reaches the print
+ *   wire. The autonomy ceiling rides scode; the per-turn command carries
+ *   none of the autonomy flags (--plan/--yolo/--auto).
  * - The headless path dispatches exactly one command: a `/goal` create
  *   (parseHeadlessGoalCreate, `GOAL_PREFIX = /^\/goal(\s|$)/` on the
  *   trimmed prompt; the create spellings are `/goal <objective>` and
@@ -44,12 +44,9 @@ import { featureFloor } from "../harness-contracts.js";
  *   status, pause, resume, cancel, next) are not creates and fall through
  *   to the model as prompt text, and so does every other prompt: the other
  *   slash commands and the `!` shell escape are interactive-TUI dispatch
- *   only (both headless entry points, runPrompt and its v2 twin, parse
- *   only goal-creates before sending the prompt as the turn's user
- *   message). codemux refuses the word-bounded `/goal` name and the `!`
+ *   only. codemux refuses the word-bounded `/goal` name and the `!`
  *   shape — kimiPromptIsCommand below states the rule.
- * - No usage appears on the wire at all: usage is all-null on every
- *   event, the honest null.
+ * - The print wire omits usage; the driver reads native wire-log deltas.
  */
 
 import {
@@ -60,10 +57,9 @@ import {
 } from "../kimi-hermetic.js";
 import { unusableFacts } from "./process.js";
 import type { SessionCapabilities } from "./protocol.js";
+import { callerHarnessHomeEnvAssignments, type CallerHarnessHome } from "./harness-home.js";
 
-/** The session-only version floor (§4.3): 0.31.1, the audited build
- * whose stream-json line shapes, `--session` resume, and resume hint
- * the parser and command are pinned against. */
+/** The session version floor is centralized with the other native contracts. */
 export const KIMI_SESSION_FLOOR = featureFloor("kimi", "sessions");
 
 /** The id shape `--session` accepts: `session_` plus a lowercase UUID —
@@ -73,20 +69,20 @@ export const KIMI_SESSION_ID_PATTERN =
   /^session_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
- * Capability flags for kimi sessions (§3.4): live input yes (one caller
- * input, one kimi process), everything else the wire cannot carry no —
- * there is no steering or interrupt channel into a one-shot process
- * (its signal handlers self-exit 130/129/143 without answering), no
- * permission round-trip (headless kimi auto-approves), no deltas (each
+ * Capability flags for kimi sessions (§3.4): one process per caller input.
+ * The supervisor interrupts a turn by stopping its child; the next child
+ * resumes the native session. The print wire has no steering channel or
+ * permission round-trip (native denies precede auto-approval), no deltas (each
  * assistant line is a complete message), no file-change frames, no
- * usage at all. Resume yes through kimi's own store, registry-vouched.
+ * streaming usage. Completed-turn usage comes from the native wire log.
+ * Resume uses kimi's own store, registry-vouched.
  */
 export function kimiSessionCapabilities(): SessionCapabilities {
   return {
     live_input: true,
     user_during_turn: false,
     steer: false,
-    interrupt: false,
+    interrupt: true,
     permissions: false,
     deltas: false,
     file_changes: false,
@@ -155,12 +151,12 @@ export function kimiWireShapedLine(line: string): boolean {
   }
   const record = parsed as Record<string, unknown>;
   // A wire line carries one of the three roles, the error type, or any
-  // string `type` at all: kimi's forward-compatible events (a roleless
-  // `system.*` meta line first of all) are typed, and parseKimiStreamLine
-  // accepts them as `unknown` events, so the regime decision agrees with it
-  // (round 33, edges 2). A JSON value with neither role nor type is the
-  // model's own plain answer (round 20, edges 3), and a pretty-printed
-  // object's bare `{` first line does not parse alone, so both stay plain.
+  // string `type` at all: kimi's forward-compatible events are typed, and
+  // parseKimiStreamLine accepts them as `unknown` events, so the regime
+  // decision agrees with it (round 33, edges 2). A JSON value with
+  // neither role nor type is the model's own plain answer (round 20,
+  // edges 3), and a pretty-printed object's bare `{` first line does not
+  // parse alone, so both stay plain.
   return (
     (typeof record.role === "string" && ["assistant", "tool", "meta"].includes(record.role)) ||
     typeof record.type === "string"
@@ -185,22 +181,28 @@ export interface KimiSessionCommand {
    * brand home ships no SYSTEM.md and no agents/, so the builtin default
    * profile runs. */
   hermeticHome?: string;
+  brandHome?: string;
+  callerHome?: CallerHarnessHome;
+  /** A project-settings session: the per-turn command drops its
+   * --skills-dir, because that option replaces auto-discovered user
+   * AND project skill directories (2.5.2 root option table) — the
+   * repository's own skills are what the mode exists to expose, while
+   * the env prefix still keeps the operator's global channels out. */
+  projectSettings?: boolean;
 }
 
 /**
  * The per-turn spawn command: the model when one applies, `--session`
  * for every turn after the first (the id the first turn's resume hint
  * named), stream-json output, and the prompt as the argv tail — the run
- * adapter's flag order, so session turns and runs cannot drift. No
- * autonomy flags: kimi refuses them with `--prompt` (0.31.1), and the
- * level rides the scode boundary, exactly as headless runs document.
- * A hermetic turn wraps the command in the run path's exact env(1)
- * shape, so session turns and hermetic runs cannot drift either.
+ * adapter's flag order. Autonomy rides the scode boundary.
  */
 export function buildKimiSessionCommand(command: KimiSessionCommand): string[] {
   const argv =
-    command.hermeticHome === undefined
-      ? ["kimi"]
+    command.callerHome !== undefined
+      ? ["env", ...callerHarnessHomeEnvAssignments(command.callerHome), "kimi"]
+      : command.hermeticHome === undefined
+      ? command.brandHome === undefined ? ["kimi"] : ["env", `KIMI_CODE_HOME=${command.brandHome}`, "kimi"]
       : [
           "env", ...KIMI_HERMETIC_ENV_OMISSIONS.flatMap((name) => ["-u", name]),
           ...KIMI_HERMETIC_ENV_ASSIGNMENTS,
@@ -214,7 +216,7 @@ export function buildKimiSessionCommand(command: KimiSessionCommand): string[] {
   if (command.resumeSessionId !== undefined) {
     argv.push("--session", command.resumeSessionId);
   }
-  if (command.hermeticHome !== undefined) {
+  if (command.callerHome === undefined && command.hermeticHome !== undefined && command.projectSettings !== true) {
     argv.push("--skills-dir", kimiPrivateSkillsDir(command.hermeticHome));
   }
   argv.push("--output-format", "stream-json");
@@ -294,11 +296,10 @@ export function parseKimiStreamLine(
       // role codemux maps is the error event, recognized exactly as the
       // plain path recognizes it (kimi-fold-lines.ts: a line the role arms
       // do not claim whose `type` is "error"). The plain verdict fails a
-      // run on every such event whatever else it carries
-      // (result-envelope/kimi.ts), so the session does too. An error event
-      // with no usable message — missing, empty, or not a string — is
-      // still the harness reporting a failure and gets a fixed reason
-      // instead of passing as a harmless line (review round 129).
+      // run on every such event whatever else it carries, so the session
+      // does too. An error event with no usable message — missing, empty,
+      // or not a string — still gets a fixed reason instead of passing as
+      // a harmless line (review round 129).
       if (event["type"] === "error") {
         const message = event["message"];
         return {
@@ -319,16 +320,15 @@ export function parseKimiStreamLine(
  * tool calls or not (round al13). A tool call is exactly
  * `{type:"function", id, function:{name, arguments}}` — `type` present
  * and function, `id` non-empty, `name` non-empty, and `arguments` a
- * JSON STRING (missing or non-string breaks the pin; round al14): the
- * mapped input is the parsed value, or the raw string when it does not
- * parse (never guessed), so `input` is never `undefined`. */
+ * JSON STRING (round al14): the mapped input is the parsed value, or
+ * the raw string when it does not parse, so `input` is never
+ * `undefined`. */
 function parseAssistantLine(event: Record<string, unknown>): KimiParse {
   // The writer drops an empty content entirely (flushAssistant passes
   // void 0), so a present-but-invalid content — empty, null, a number, an
-  // object — breaks the pin whatever else the line carries: nulled
-  // silently, it let valid tool calls carry a line whose malformed content
-  // was dropped while the turn counted as answered (round al13, edges 2).
-  // Absent content is the tool-calls-only spelling the writer emits.
+  // object — breaks the pin whatever else the line carries (round al13,
+  // edges 2). Absent content is the tool-calls-only spelling the writer
+  // emits.
   const rawText = event["content"];
   if (
     rawText !== undefined &&
@@ -343,8 +343,7 @@ function parseAssistantLine(event: Record<string, unknown>): KimiParse {
   const rawCalls = event["tool_calls"];
   // An empty tool_calls array is no calls — the writer emits the field
   // only with entries to flush, so `[]` breaks the pin exactly like its
-  // absence and must not slip the line past the neither-nor check (round
-  // al11's re-review, correctness 2).
+  // absence and must not slip the line past the neither-nor check.
   const noCalls =
     rawCalls === undefined || (Array.isArray(rawCalls) && rawCalls.length === 0);
   if (text === null && noCalls) {
@@ -374,8 +373,7 @@ function parseAssistantLine(event: Record<string, unknown>): KimiParse {
       // The writer's exact spelling is
       // {type:"function",id,function:{name,arguments}} — every piece
       // pinned, round al14: before this, an empty name passed, `type` went
-      // unchecked, and `arguments` could be missing or non-string, which
-      // handed the event layer an `input` of `undefined` whose
+      // unchecked, and `arguments` could be missing or non-string, whose
       // serialization drops the required `input` field.
       if (
         typeof id !== "string" ||

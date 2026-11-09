@@ -150,6 +150,7 @@ export function kimiResult(result: RunResult, request: RunRequest, brandHome: st
   }
   const block: CodemuxResultBlock = {
     agent: "kimi", labels: request.labels ?? null, model: request.model ?? null,
+    model_alias: request.modelAlias ?? null,
     // No provider-reported evidence exists: the pinned stream-json lines
     // (assistant, tool, meta resume hints) and the wire log's records
     // (loop events, agent.message.appended, usage.record) carry no model

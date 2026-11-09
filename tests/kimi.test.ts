@@ -28,17 +28,29 @@ describe("KimiAdapter", () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
-  test("advertises no effort control, because 0.31.1 has none", () => {
+  test("carries effort through the KIMI_MODEL_THINKING_EFFORT env alias (2.5.2)", () => {
+    // kimi 2.5.2 binds [thinking] forcedEffort to KIMI_MODEL_THINKING_EFFORT
+    // (bundle byte ~97385100) and applies it to every run kind; `off` is the
+    // vocabulary's disable value (resolveThinkingEffort byte ~97226900), so
+    // `none` maps to `off` — the goose pattern verbatim.
     const caps = adapter.capabilities();
-    expect(caps.supportsEffort).toBe(false);
-    expect(caps.effortLevels).toEqual([]);
+    expect(caps.supportsEffort).toBe(true);
+    expect(caps.effortLevels).toEqual(["none", "low", "medium", "high"]);
     expect(caps.autonomyLevels).toEqual(["read-only", "low", "medium", "high"]);
+    expect(adapter.getRunEnv({ agent: "kimi", prompt: "p", effort: "high" }).KIMI_MODEL_THINKING_EFFORT).toBe("high");
+    expect(adapter.getRunEnv({ agent: "kimi", prompt: "p", effort: "none" }).KIMI_MODEL_THINKING_EFFORT).toBe("off");
+    expect(adapter.getRunEnv({ agent: "kimi", prompt: "p" })).not.toHaveProperty("KIMI_MODEL_THINKING_EFFORT");
+    expect(adapter.getTuiEnv(undefined, undefined, "medium").KIMI_MODEL_THINKING_EFFORT).toBe("medium");
+    expect(adapter.getTuiEnv(undefined, undefined, "none").KIMI_MODEL_THINKING_EFFORT).toBe("off");
+    expect(adapter.getTuiEnv()).not.toHaveProperty("KIMI_MODEL_THINKING_EFFORT");
   });
 
   test("headless runs carry no autonomy flag at any level", () => {
-    // Verified against the installed binary: --prompt rejects --plan, --yolo,
-    // and --auto with "Cannot combine --prompt with ...". Emitting one would
-    // make every headless run fail.
+    // Verified against the installed 2.5.2 binary: --prompt rejects --plan,
+    // --yolo, and --auto with "Cannot combine --prompt with ...", and the
+    // hidden yolo aliases --yes and --auto-approve hit the same refusal
+    // (the option reader maps them onto yolo). Emitting one would make
+    // every headless run fail.
     for (const level of ["read-only", "low", "medium", "high"] as const) {
       const cmd = adapter.buildRunCommand({
         agent: "kimi",
@@ -48,6 +60,8 @@ describe("KimiAdapter", () => {
       expect(cmd).not.toContain("--plan");
       expect(cmd).not.toContain("--yolo");
       expect(cmd).not.toContain("--auto");
+      expect(cmd).not.toContain("--yes");
+      expect(cmd).not.toContain("--auto-approve");
       expect(cmd).toContain("--prompt");
     }
   });

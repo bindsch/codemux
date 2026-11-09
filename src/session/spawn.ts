@@ -51,6 +51,8 @@ export interface SessionSpawnOptions {
    * in a probe then rejects instead of starting a child the session's
    * cleanup has already run past (review round 111). */
   abandoned?: () => boolean;
+  /** Recheck caller-owned state after asynchronous probes, before creating a child. */
+  validateBeforeSpawn?: () => void;
 }
 
 /** The refusal of a spawn its caller abandoned while it was resolving. */
@@ -155,6 +157,8 @@ export async function spawnSessionChild(
   options: SessionSpawnOptions,
   hooks: {
     onLine: (line: string) => void;
+    onBytes?: (bytes: Uint8Array) => void;
+    onStdoutEnd?: () => void;
     onFatal: (fatal: SessionFatal) => void;
   }
 ): Promise<SessionProcess> {
@@ -177,6 +181,7 @@ export async function spawnSessionChild(
       workdir
     );
     refuseAbandonedSpawn(options);
+    options.validateBeforeSpawn?.();
     return new SessionProcess({
       command: scodeCmd,
       cwd: workdir,
@@ -196,6 +201,7 @@ export async function spawnSessionChild(
     env.PATH ?? ""
   );
   refuseAbandonedSpawn(options);
+  options.validateBeforeSpawn?.();
   return new SessionProcess({
     command: resolved,
     cwd: workdir,

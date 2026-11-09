@@ -32,10 +32,13 @@
 
 import { randomBytes } from "node:crypto";
 import {
+  linkSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -54,6 +57,7 @@ export interface PiProviderAgentDir {
 
 const PARENT_DIR_NAME = ".codemux";
 const DIR_PREFIX = "provider-";
+const HERMETIC_PREFIX = "hermetic-";
 
 /**
  * The environment name the `models.json` `${VAR}` apiKey reference
@@ -106,7 +110,7 @@ function sweepStaleDirectories(parent: string): void {
     return;
   }
   for (const entry of entries) {
-    const match = /^provider-(\d+)-/.exec(entry);
+    const match = /^(?:provider|hermetic)-(\d+)-/.exec(entry);
     if (!match) continue;
     const pid = Number(match[1]);
     if (pid === process.pid || pidProbeAlive(pid)) continue;
@@ -128,6 +132,55 @@ function sweepStaleDirectories(parent: string): void {
       console.error(`pi: could not remove the stale agent directory ${path}${detail}`);
     }
   }
+}
+
+/**
+ * The `models.json` content a private agent directory carries for an
+ * override run. The model entry stays minimal on purpose: capabilities
+ * such as the thinking format or the context window are the provider's to
+ * know, and pinning one provider's shape would silently misdescribe
+ * another endpoint's models. Only what pi needs to route and stream is
+ * set, with one exception: `reasoning: true`, because pi 0.85.1 defaults
+ * a custom model's reasoning to false, and that default clamps the
+ * `--thinking` flag --effort maps to (0.85.1's model composer answered
+ * {"reasoning":false,"requested":"high","effective":"off"} for the bare
+ * entry), so an override run with --effort high would silently disable
+ * reasoning (h4 review).
+ */
+export function piProviderModelsJson(
+  override: ProviderOverride & { baseUrl: string; apiKey: string },
+  bareModel: string
+): string {
+  const models = {
+    providers: {
+      [PI_PROVIDER_ID]: {
+        name: "codemux provider override",
+        baseUrl: override.baseUrl,
+        apiKey: `\${${PI_PROVIDER_KEY_ENV}}`,
+        api: "openai-completions",
+        models: [
+          {
+            id: bareModel,
+            name: bareModel,
+            api: "openai-completions",
+            reasoning: true,
+            // The caps, when the override carries them: maxTokens is the
+            // reply budget pi requests and contextWindow the window it
+            // truncates to (both first-class models.json fields). The
+            // conditional spreads keep an uncapped override's file
+            // byte-identical to the pre-caps shape.
+            ...(override.maxOutputTokens !== undefined
+              ? { maxTokens: override.maxOutputTokens }
+              : {}),
+            ...(override.maxContextTokens !== undefined
+              ? { contextWindow: override.maxContextTokens }
+              : {}),
+          },
+        ],
+      },
+    },
+  };
+  return JSON.stringify(models, null, 2) + "\n";
 }
 
 /**
@@ -159,47 +212,8 @@ export function writePiProviderAgentDir(
   // already sits at the name is not this run's to remove (review round 124).
   mkdirSync(dir, { mode: 0o700 });
   try {
-    // The model entry stays minimal on purpose: capabilities such as the
-    // thinking format or the context window are the provider's to know, and
-    // pinning one provider's shape would silently misdescribe another
-    // endpoint's models. Only what pi needs to route and stream is set, with
-    // one exception: `reasoning: true`, because pi 0.85.1 defaults a custom
-    // model's reasoning to false, and that default clamps the `--thinking`
-    // flag --effort maps to (0.85.1's model composer answered
-    // {"reasoning":false,"requested":"high","effective":"off"} for the bare
-    // entry), so an override run with --effort high would silently disable
-    // reasoning (h4 review).
-    const models = {
-      providers: {
-        [PI_PROVIDER_ID]: {
-          name: "codemux provider override",
-          baseUrl: override.baseUrl,
-          apiKey: `\${${PI_PROVIDER_KEY_ENV}}`,
-          api: "openai-completions",
-          models: [
-            {
-              id: bareModel,
-              name: bareModel,
-              api: "openai-completions",
-              reasoning: true,
-              // The caps, when the override carries them: maxTokens is the
-              // reply budget pi requests and contextWindow the window it
-              // truncates to (both first-class models.json fields). The
-              // conditional spreads keep an uncapped override's file
-              // byte-identical to the pre-caps shape.
-              ...(override.maxOutputTokens !== undefined
-                ? { maxTokens: override.maxOutputTokens }
-                : {}),
-              ...(override.maxContextTokens !== undefined
-                ? { contextWindow: override.maxContextTokens }
-                : {}),
-            },
-          ],
-        },
-      },
-    };
     const path = join(dir, "models.json");
-    writeFileSync(path, JSON.stringify(models, null, 2) + "\n", { mode: 0o600 });
+    writeFileSync(path, piProviderModelsJson(override, bareModel), { mode: 0o600 });
   } catch (error) {
     removeUnderTrustedParent(dir, parentRecord, `the pi agent directory ${dir}`);
     throw error;
@@ -211,6 +225,92 @@ export function writePiProviderAgentDir(
     // Thrown when refused or failed, so the run's cleanup reports the kept
     // directory; it stays retryable, and the exit hook retries and reports
     // (review round 97).
+    removeUnderTrustedParentOrThrow(dir, parentRecord, `the pi agent directory ${dir}`);
+    finalized = true;
+    process.off("exit", atExit);
+  };
+  const atExit = reportingHook(finalize);
+  process.once("exit", atExit);
+
+  return { path: dir, finalize };
+}
+
+/**
+ * The private agent directory a `--hermetic` pi run reads (the same
+ * relocation `PI_CODING_AGENT_DIR` already performs for an override). The
+ * directory starts empty and stays near-empty, so nothing the operator
+ * placed in the real agent directory loads: no global SYSTEM.md or
+ * APPEND_SYSTEM.md (`discoverSystemPromptFile` falls back to
+ * `<agentDir>/SYSTEM.md` only when the project copy is absent, and the
+ * private dir has neither), no settings.json extension sources, no
+ * prompts, themes, skills or stored sessions (pi 0.85.1
+ * chunk-JVUZSMYM.js, read 2026-11-09). With an override, the same
+ * models.json the non-hermetic override run writes rides along; without
+ * one, the run's login is the operator's `auth.json`, shared by HARD LINK
+ * for the same reason codex's is (pi rewrites the file in place with
+ * `writeFileSync`, never a rename, so a rotation through the link updates
+ * the shared inode). A missing auth.json links nothing: the run then
+ * authenticates with a provider key from the environment or fails pi's
+ * own login check, which is the operator's to fix.
+ *
+ * The run additionally passes `--no-context-files` (the adapter) so the
+ * cwd and its ancestors contribute no AGENTS.md/CLAUDE.md, and every
+ * headless run already passes `--no-approve`, which at 0.85.1 means the
+ * project is untrusted: `<cwd>/.pi/SYSTEM.md` and every other
+ * project-local file pi gates on trust stays out.
+ */
+export function createPiHermeticAgentDir(
+  realAgentDir: string,
+  override: (ProviderOverride & { baseUrl: string; apiKey: string }) | null,
+  model: string | undefined,
+  copyLogin = true
+): PiProviderAgentDir {
+  const parent = join(realAgentDir, PARENT_DIR_NAME);
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const parentRecord = recordTrustedParent(parent);
+  sweepStaleDirectories(parent);
+  const dir = join(parent, `${HERMETIC_PREFIX}${process.pid}-${randomBytes(6).toString("hex")}`);
+  mkdirSync(dir, { mode: 0o700 });
+  try {
+    if (override !== null && model !== undefined) {
+      writeFileSync(
+        join(dir, "models.json"),
+        piProviderModelsJson(override, piProviderBareModel(model)),
+        { mode: 0o600 }
+      );
+    } else if (copyLogin) {
+      // No override: the operator's own login is the only credential the
+      // run may use. A symlink login file is refused rather than followed
+      // (the codex rule): a swapped link is an attack on the run, not a
+      // channel it should honor.
+      const sourceAuth = join(realAgentDir, "auth.json");
+      let stat;
+      try {
+        stat = lstatSync(sourceAuth);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      if (stat !== undefined) {
+        if (stat.isSymbolicLink() || !stat.isFile()) {
+          throw new Error(`pi hermetic runs need a file login: ${sourceAuth} is not a regular file`);
+        }
+        try {
+          linkSync(sourceAuth, join(dir, "auth.json"));
+        } catch {
+          // A filesystem without hard links: a symlink still lets pi's
+          // in-place rewrite reach the real file.
+          symlinkSync(sourceAuth, join(dir, "auth.json"));
+        }
+      }
+    }
+  } catch (error) {
+    removeUnderTrustedParent(dir, parentRecord, `the pi agent directory ${dir}`);
+    throw error;
+  }
+
+  let finalized = false;
+  const finalize = (): void => {
+    if (finalized) return;
     removeUnderTrustedParentOrThrow(dir, parentRecord, `the pi agent directory ${dir}`);
     finalized = true;
     process.off("exit", atExit);

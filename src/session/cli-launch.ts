@@ -10,32 +10,33 @@ import {
   projectSettingsSessionDirPath,
 } from "../claude-project-config.js";
 import { assertHarnessSupported } from "../cli-runtime.js";
+import { assertClineToolVersion } from "../cline-experiment-policy.js";
 import {
   createCodexSessionProviderHome,
   openCodexSessionProviderHome,
   readCodexMultiAgent,
   writeCodexProviderConfigInto,
 } from "../codex-provider.js";
+import { assertCodexNoToolsCatalogVersion } from "../codex-no-tools.js";
+import { writeCodexProjectSettingsConfig } from "../codex-project-settings.js";
+import { pinCodexSessionCatalogBinary } from "./codex-catalog.js";
 import { populateCodexHermeticSessionHome } from "../hermetic-home.js";
 import { populateKimiHermeticSessionHome } from "../kimi-hermetic.js";
+import { populateKimiPolicySessionHome } from "../kimi-run-policy.js";
+import { applyAgyIsolationSandboxBlocks } from "../launch/agy-isolation-sandbox.js";
 import { assertQuotaHeadroomForLaunch, resolveQuotaGate } from "../quota-gate.js";
 import {
   assertNoCallerBlockOverStateDirs,
-  isCredentialEnvName,
   withKeepEnvExemption,
   type SandboxOptions,
   type ScodeTrustLevel,
 } from "../sandbox.js";
-import type {
-  AgentId,
-  AutonomyLevel,
-  CodemuxConfig,
-  ReasoningEffort,
-  RunRequest,
-} from "../types.js";
-import type { BaseAdapter, RunContext } from "../adapters/base.js";
+import type { AgentId, AutonomyLevel, CodemuxConfig, ReasoningEffort, RunRequest } from "../types.js";
+import type { BaseAdapter } from "../adapters/base.js";
 import type { ProviderOverride } from "../provider-override.js";
+import { isTurnAgent } from "./turn-driver-launch.js";
 import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { buildClaudeSessionCommand } from "./claude-session.js";
 import type { SessionAgentSupport } from "./cli-agents.js";
 import { agyHarnessHome, kimiHarnessHome } from "./cli-homes.js";
@@ -49,15 +50,13 @@ import { CODEX_THREAD_ID_PATTERN } from "./codex-parse-facts.js";
 import { KIMI_SESSION_ID_PATTERN } from "./kimi-session.js";
 import { openSessionPrivateHome } from "./private-home.js";
 import type { SessionPrivateHome } from "./private-home-types.js";
+import { prepareSessionEnvironment } from "./cli-environment.js";
+import { openOpenCodeSessionHome } from "./opencode-home.js";
+import { opencodeRealDataDir, opencodeRealStateDir } from "../adapters/opencode-home.js";
+import { callerHarnessHomeApiKeyAuth, callerHarnessHomeEnvAssignments, callerHarnessHomeSharedLogins, openCallerHarnessHome, type CallerHarnessHome } from "./harness-home.js";
+import { applyHarnessHomeSandboxBlocks, harnessHomeBlockedPaths } from "../launch/harness-home-sandbox.js";
 
-/** The shared session environment builder this module creates and the
- * spawn prep and every turn spawn reuse: one call per launch context. */
-export interface SessionEnvironmentBuilder {
-  (context: RunContext | undefined): {
-    runEnv: Record<string, string>;
-    env: Record<string, string>;
-  };
-}
+export type { SessionEnvironmentBuilder } from "./cli-environment.js";
 
 export async function prepareSessionLaunch({
   options,
@@ -104,54 +103,18 @@ export async function prepareSessionLaunch({
   codexOverride: (ProviderOverride & { baseUrl: string; apiKey: string }) | null;
   runLike: RunRequest;
 }) {
-  // An override session under --sandbox-scrub-env cannot run on a
-  // scode without --keep-env: the scrub would strip the override's
-  // key, the session's only credential. Refused HERE, before
-  // anything spawns or records — the run path's refusal
-  // (resolveKeepEnvSandboxOptions in cli-runtime.ts, thrown when a
-  // required exemption meets an unsupported scode) with its message
-  // verbatim through assertScodeKeepEnvSupport — because
-  // a turn-per-process session would otherwise ack its first caller
-  // input and only then die at the turn spawn. The names ride the
-  // per-spawn options below; the NEED is known now.
-  //
-  // The probe runs scode under the environment the session's
-  // children spawn with — the adapter's standing environment through
-  // buildExecutionEnv, HOME and PATH included — never an empty one
-  // (round al14's blocker: the installed scode refuses to run
-  // without HOME, so an empty-env probe answered "unprobeable" and
-  // refused valid sessions before launch). The scode resolves
-  // through that environment's PATH, the same resolver the run
-  // runner and every session spawn use
-  // (resolveScodeExecutableForEnv), so the preflight judges the
-  // binary the launches will run. Both probes use the shared
-  // session environment builder, including getRunEnv credentials.
-  // The probe is memoized by executable, environment, and cwd.
-  //
-  // The need is the run path's rule (withKeepEnvExemption): an
-  // override's key, or a credential-shaped name the adapter injects
-  // on its own (zai's gateway token). That question is computed
-  // lazily, HERE — after every earlier refusal, the resume guards
-  // included (round al16): adapter.getEnv() resolves the agent's
-  // credentials, and zai's throws outright when no key exists, so
-  // the round-al15 spelling ran that resolution before the resume
-  // guards and a keyless zai --resume of another agent's session
-  // answered the key error (exit 1) where the resume guard exists
-  // to answer the policy refusal (78). A keyless zai still refuses
-  // before the spawn once the guards have spoken — under a scrubbed
-  // launch here, at the probe's own getEnv call below, and otherwise
-  // at beforeLaunch.
-  // Either spelling of a scrubbed launch needs the probe (round
-  // al32, security minor): the explicit scrub flag, or an untrusted
-  // trust level — refused for sessions at the gate above, so that
-  // arm is defense in depth, but the cause it states is the truth
-  // either way, never a hard-coded scrub-only one.
-  const needsKeepEnvPreflight = Boolean(options.sandbox) &&
-    (sandboxOptions?.scrubEnv === true || sandboxOptions?.trust === "untrusted") &&
-    (override !== null || Object.keys(adapter.getEnv()).some(isCredentialEnvName));
-  const buildSessionEnvironment = (context: RunContext | undefined) => {
-    const runEnv = adapter.getRunEnv(runLike, context);
-    return { runEnv, env: adapter.buildExecutionEnv(runEnv, passthroughEnv) };
+  // Both preflight and child launches use the adapter's built environment,
+  // including the per-launch credentials and command resolution context.
+  let callerHome: CallerHarnessHome | null = null;
+  const baseEnvironment = prepareSessionEnvironment({
+    adapter, runLike, passthroughEnv, sandboxed: Boolean(options.sandbox), sandboxOptions, override,
+    callerHomeAgent: options.harnessHome === undefined ? undefined : agentId,
+  });
+  const { needsKeepEnvPreflight } = baseEnvironment;
+  const buildSessionEnvironment: import("./cli-environment.js").SessionEnvironmentBuilder = (context) => {
+    callerHome?.verify();
+    // scode keeps the operator HOME; only the harness argv redirects it.
+    return baseEnvironment.buildSessionEnvironment(context);
   };
 
   // The claude-family identity for this session: zai rides the same
@@ -170,6 +133,7 @@ export async function prepareSessionLaunch({
         model,
         autonomy,
         effort,
+        tools: runLike.tools,
         cwd: workdir,
         // Run parity for --enable-playwright-mcp (§4.5): the same
         // sandbox-scoped carrier, in run's argv position. The binary
@@ -202,24 +166,16 @@ export async function prepareSessionLaunch({
         // so the two branches never mix.
         projectSettings: experimentProjectSettings,
         hermetic: hermetic && !experimentProjectSettings,
+        harnessHome: options.harnessHome !== undefined,
       })
     : null;
-  // Turn-per-process agents (opencode, aider, kimi) have no
-  // session-long child: their driver spawns one process per caller
-  // input, so there is no argv to build here.
+  // Turn-per-process agents (opencode, aider, kimi, and every
+  // turn-driver agent) spawn one process per caller input: no argv here.
   const turnPerProcess =
-    agentId === "opencode" || agentId === "aider" || agentId === "kimi";
+    agentId === "opencode" || agentId === "aider" || agentId === "kimi" || isTurnAgent(agentId);
 
-  // The quota gate (src/quota-gate.ts): the first command of a
-  // session and every resume pass it — after every request check,
-  // resume guard, and the resume claim itself (cli.ts claims before
-  // this preparation opens anything keyed by the record, review round
-  // 13, edges 3), but before anything spawns, records a fresh session,
-  // or creates a home. A refusal exits 64; a fresh session has written
-  // nothing, while a resume's claim — one registry write — is released
-  // by the CLI's catch (handleSessionAbort), leaving the record
-  // resumable for the next attempt. A provider override in force skips
-  // the native gate (assertQuotaHeadroomForLaunch).
+  // Check quota after request/resume validation, before creating homes or
+  // children. The CLI releases an already-claimed resume after refusal.
   const quotaPolicy = resolveQuotaGate({
     config: config.quota,
     ceiling: options.quotaCeiling,
@@ -228,33 +184,34 @@ export async function prepareSessionLaunch({
   // A print-only session spends nothing (review round 56).
   if (quotaPolicy !== null && !options.printSandbox) await assertQuotaHeadroomForLaunch(adapter, quotaPolicy);
 
-  // The session floor, above the run contract (§4.3): the resume
-  // ladder's reasoning and the permission carrier are only audited
-  // down to this build. The gate scans the child's built environment,
-  // not process.env (round 401, item 9): an adapter-injected redirect
-  // name must be visible here, and a name that is ambient but not
-  // passed through is not.
-  await assertHarnessSupported(
+  // Pin before probing; app-server argv and spawn keep this executable identity.
+  const harnessEnvironment = adapter.buildExecutionEnv(adapter.getEnv(), passthroughEnv);
+  const codexCatalogBinary = agentId === "codex"
+    ? pinCodexSessionCatalogBinary(runLike, adapter.binaryName, workdir, harnessEnvironment.PATH ?? "") : null;
+  const harnessVersion = await assertHarnessSupported(
     agentId,
-    adapter.binaryName,
+    codexCatalogBinary?.binary ?? adapter.binaryName,
     options.cwd,
-    adapter.buildExecutionEnv(adapter.getEnv(), passthroughEnv),
+    harnessEnvironment,
     autonomy,
     Boolean(options.sandbox),
     passthroughEnv,
     sessionSupport.floor
   );
+  if (codexCatalogBinary !== null) assertCodexNoToolsCatalogVersion(harnessVersion);
+  if (agentId === "cline" && runLike.tools === "none") assertClineToolVersion(harnessVersion);
 
   adapter.beforeLaunch();
   if (options.sandbox && !options.printSandbox) {
     // prepareSandbox is skipped on a print-only invocation for the same
     // reason the run path skips it (launch.ts, review round 18, edges 2):
     // the claude family's implementation refreshes or scrubs the
-    // operator's default credential mirror, and a command that prints the
-    // scode argv and runs nothing (cli-spawn-prep.ts) must not mutate
-    // authentication state on the way. It contributes nothing to the
-    // printed argv.
-    adapter.prepareSandbox({ sandboxTrust, passthroughEnv });
+    // operator's default credential mirror, and a print must not mutate
+    // authentication state. --harness-home runs it too (review R420 B1):
+    // it guards the mirror the caller home's access-only copy comes from,
+    // and the caller home replaces every Claude profile redirect in the child.
+    adapter.prepareSandbox({ sandboxTrust, passthroughEnv: options.harnessHome === undefined ? passthroughEnv
+      : passthroughEnv.filter((name) => name !== "CLAUDE_CONFIG_DIR" && name !== "CLAUDE_SECURESTORAGE_CONFIG_DIR") });
   }
   // A codex override session's CODEX_HOME (review D1): created only
   // after every refusing step, and its config.toml written only
@@ -278,7 +235,7 @@ export async function prepareSessionLaunch({
   // override's config.toml rides inside it, exactly as a hermetic
   // override run's does (adapters/codex.ts).
   const codexSessionHome =
-    agentId === "codex" && codexOverride !== null && !hermetic
+    agentId === "codex" && codexOverride !== null && !hermetic && options.harnessHome === undefined
       ? resumeId !== undefined
         ? openCodexSessionProviderHome(
             codexHome(),
@@ -387,7 +344,25 @@ export async function prepareSessionLaunch({
   // (private-home.ts populateOrRemove).
   let sessionPrivateHome: SessionPrivateHome | null = null;
   let kimiSourceBrandHome: string | null = null;
-  if (hermetic && (agentId === "codex" || agentId === "kimi" || agentId === "agy")) {
+  if (options.harnessHome !== undefined) {
+    const blockedPaths = harnessHomeBlockedPaths(process.env, undefined, workdir);
+    const sourceHome = agentId === "codex" ? codexHome()
+      : agentId === "claude" || agentId === "zai" ? process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR || process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || homedir(), ".claude")
+      : process.env.HOME || homedir();
+    const apiKeyAuth = override !== null || callerHarnessHomeApiKeyAuth(agentId, process.env);
+    if (sandboxOptions !== undefined) applyHarnessHomeSandboxBlocks(sandboxOptions, options.harnessHome, blockedPaths,
+      callerHarnessHomeSharedLogins(agentId, sourceHome, process.env, workdir, apiKeyAuth));
+    callerHome = openCallerHarnessHome({
+      agent: agentId, dir: options.harnessHome, cwd: workdir, blockedPaths, sourceHome, apiKeyAuth, providerOverride: override !== null,
+      resumed: resumeId !== undefined, printOnly: options.printSandbox === true,
+    });
+    if (agentId === "claude" || agentId === "zai") {
+      sessionProjectDir = callerHome;
+      claudeBuilt!.argv.unshift("env", ...callerHarnessHomeEnvAssignments(callerHome));
+    }
+    else sessionPrivateHome = callerHome;
+  }
+  if ((hermetic && (agentId === "codex" || agentId === "kimi" || agentId === "agy")) || (agentId === "kimi" && enablePlaywrightMcp && options.harnessHome === undefined)) {
     // Print-only launches need the home's path for the argv and none of
     // the operator's state, so nothing is populated and the print exit
     // removes the fresh directory (cli-exit.ts) — the run path's rule
@@ -417,6 +392,9 @@ export async function prepareSessionLaunch({
               readCodexMultiAgent()
             );
           }
+          if (experimentProjectSettings) {
+            writeCodexProjectSettingsConfig(privateCodexHome, workdir, codexOverride !== null);
+          }
         },
       });
     } else if (agentId === "kimi") {
@@ -433,7 +411,8 @@ export async function prepareSessionLaunch({
         idPattern: KIMI_SESSION_ID_PATTERN,
         blockedPaths: [],
         populate: printOnly ? undefined : (dir) => {
-          populateKimiHermeticSessionHome(dir, kimiSourceBrandHome);
+          if (hermetic) populateKimiHermeticSessionHome(dir, kimiSourceBrandHome);
+          else populateKimiPolicySessionHome(dir, kimiSourceBrandHome);
         },
       });
     } else {
@@ -450,18 +429,55 @@ export async function prepareSessionLaunch({
           (policy.scrubEnv === true || policy.trust === "untrusted"),
         keepEnv: policy?.keepEnv,
       };
+      // The real state tree the child must not reach: the ~/.gemini with
+      // the operator's antigravity-cli state, GEMINI.md, and every other
+      // run's and session's probe home. Only this session's private home
+      // is re-allowed after it (launch/agy-isolation-sandbox.ts).
+      const realAgyState = dirname(agyHarnessHome());
       sessionPrivateHome = openSessionPrivateHome({
-        parent: join(dirname(agyHarnessHome()), ".codemux-isolation-probes"),
+        parent: join(realAgyState, ".codemux-isolation-probes"),
         sessionId: resumeId,
         resume: resumeId !== undefined,
         idPattern: AGY_CONVERSATION_ID_PATTERN,
-        blockedPaths: [],
+        blockedPaths: [realAgyState],
         populate: printOnly ? undefined : (dir) => {
           populateAgySessionPrivateHome(dir, agyHomeOptions);
         },
       });
+      if (sandboxOptions !== undefined) {
+        // A fresh home's name is minted at creation, so the caller-block
+        // conflict check runs after the open against the exact path: a
+        // resume's open reads only, and a refusal on a fresh home removes
+        // it here — the CLI binds sessionPrivateHome only after this
+        // function returns (review round 11, contracts-2 1).
+        try {
+          applyAgyIsolationSandboxBlocks(sandboxOptions,
+            { realStateRoot: realAgyState, privateHome: sessionPrivateHome.dir });
+        } catch (error) {
+          if (resumeId === undefined) sessionPrivateHome.remove();
+          throw error;
+        }
+      }
       if (resumeId !== undefined && !printOnly) {
         verifyAgySessionPrivateHome(sessionPrivateHome.dir, agyHomeOptions);
+      }
+    }
+  }
+  if (agentId === "opencode" && hermetic) {
+    sessionPrivateHome = openOpenCodeSessionHome({
+      dataDir: opencodeRealDataDir(process.env),
+      stateDir: opencodeRealStateDir(process.env),
+      resumeSessionId: resumeId,
+      printOnly: options.printSandbox === true,
+    });
+    if (sandboxOptions !== undefined) {
+      try {
+        assertNoCallerBlockOverStateDirs(sandboxOptions.blockPaths ?? [], [sessionPrivateHome.dir]);
+        sandboxOptions.blockPaths = [...(sandboxOptions.blockPaths ?? []), ...sessionPrivateHome.blockedPaths];
+        sandboxOptions.harnessStateDirs = [...(sandboxOptions.harnessStateDirs ?? []), sessionPrivateHome.dir];
+      } catch (error) {
+        if (resumeId === undefined) sessionPrivateHome.remove();
+        throw error;
       }
     }
   }
@@ -476,5 +492,6 @@ export async function prepareSessionLaunch({
     sessionProjectDirResumed,
     sessionPrivateHome,
     kimiSourceBrandHome,
+    codexCatalogBinary, harnessVersion,
   };
 }

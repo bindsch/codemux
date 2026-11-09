@@ -21,7 +21,8 @@ export function setup(fail = "") {
     security: `exec ${quote(process.execPath)} ${quote(join(import.meta.dir, "..", "fixtures/agy-security.ts"))} "$@"`,
     agy: `if [ "$1" = "--version" ]; then printf '1.3.3\\n'; exit 0; fi
 printf 'launched\\n' >> ${quote(join(home, "harness.log"))}
-printf '%s\\n' '{"status":"SUCCESS","response":"OK"}'`,
+cat >/dev/null
+printf '%s\\n' '{"event":"init","init":{}}' '{"event":"result","result":{"status":"SUCCESS","response":"OK"}}'`,
     scode: 'while [ "$1" != "--" ]; do shift; done; shift; exec "$@"',
   });
   cleanup.push(fake.cleanup);

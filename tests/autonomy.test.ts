@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { AGENT_IDS, getAdapter } from "../src/adapters/index.js";
-import { AUTONOMY_EQUIVALENCE } from "../src/autonomy.js";
+import { AUTONOMY_EQUIVALENCE, type AutonomyCarrier } from "../src/autonomy.js";
 import {
   AUTONOMY_LEVELS,
   type AgentId,
@@ -206,5 +206,212 @@ describe("Autonomy equivalence matrix", () => {
     // an operator reading the old order would reach for the alias first.
     const note = AUTONOMY_EQUIVALENCE.cursor.notes ?? "";
     expect(note).toContain("cursor-agent is the standalone entry; agent is its alias");
+  });
+});
+
+/** The carrier class per cell, committed like the golden argv table above
+ * (design P4): a review sees a class change here instead of a declared
+ * limitation quietly becoming a flag or the reverse. Evidence for the
+ * no-carrier and default cells lives in the adapter comments named in
+ * scratch/fix/design-p4-p5-autonomy-served-model.md §1.2. */
+const GOLDEN_CARRIERS: Record<AgentId, Record<AutonomyLevel, AutonomyCarrier>> = {
+  agy: {
+    "read-only": "native",
+    low: "default",
+    medium: "native",
+    high: "native",
+  },
+  aider: {
+    "read-only": "native",
+    low: "stdin",
+    medium: "native",
+    high: "native",
+  },
+  claude: {
+    "read-only": "native",
+    low: "native",
+    medium: "native",
+    high: "native",
+  },
+  cline: {
+    "read-only": "native",
+    low: "native",
+    medium: "native",
+    high: "native",
+  },
+  codex: {
+    "read-only": "scode",
+    low: "scode",
+    medium: "scode",
+    high: "scode",
+  },
+  copilot: {
+    "read-only": "native",
+    low: "native",
+    medium: "native",
+    high: "native",
+  },
+  cursor: {
+    "read-only": "native",
+    low: "default",
+    medium: "native",
+    high: "native",
+  },
+  droid: {
+    "read-only": "default",
+    low: "native",
+    medium: "native",
+    high: "native",
+  },
+  gemini: {
+    "read-only": "native",
+    low: "native",
+    medium: "native",
+    high: "native",
+  },
+  goose: {
+    "read-only": "env",
+    low: "env",
+    medium: "env",
+    high: "env",
+  },
+  kimi: {
+    "read-only": "scode",
+    low: "scode",
+    medium: "scode",
+    high: "scode",
+  },
+  openhands: {
+    "read-only": "scode",
+    low: "scode",
+    medium: "scode",
+    high: "default",
+  },
+  opencode: {
+    "read-only": "native",
+    low: "native",
+    medium: "native",
+    high: "native",
+  },
+  pi: {
+    "read-only": "native",
+    low: "native",
+    medium: "scode",
+    high: "scode",
+  },
+  qwen: {
+    "read-only": "native",
+    low: "native",
+    medium: "native",
+    high: "native",
+  },
+  zai: {
+    "read-only": "native",
+    low: "native",
+    medium: "native",
+    high: "native",
+  },
+};
+
+describe("Autonomy carrier classes", () => {
+  test("every cell matches the committed golden carrier table", () => {
+    for (const agentId of AGENT_IDS) {
+      for (const level of AUTONOMY_LEVELS) {
+        expect(AUTONOMY_EQUIVALENCE[agentId].carrier[level], `${agentId} ${level}`)
+          .toBe(GOLDEN_CARRIERS[agentId][level]);
+      }
+    }
+  });
+
+  test("a native cell builds a per-level flag; a default or scode cell adds none to the run path", () => {
+    // mapAutonomy alone cannot be the witness: kimi's and openhands's
+    // rows are the TUI spelling and codex's is the unsandboxed one, so
+    // the proof for a default or scode cell is that the headless run
+    // command does not change with the level. Codex's sandboxed launch is
+    // pinned separately below; goose's level rides getRunEnv, not argv.
+    for (const agentId of AGENT_IDS) {
+      if (agentId === "codex" || agentId === "goose") continue;
+      const adapter = getAdapter(agentId, { PATH: "" });
+      const uncarried = AUTONOMY_LEVELS.filter(
+        (level) => AUTONOMY_EQUIVALENCE[agentId].carrier[level] !== "native"
+      );
+      const commands = uncarried.map((level) =>
+        adapter.buildRunCommand({ agent: agentId, prompt: "t", autonomy: level }).join(" ")
+      );
+      for (let index = 1; index < commands.length; index++) {
+        expect(commands[index], `${agentId} level ${uncarried[index]}`).toBe(commands[0]);
+      }
+      for (const level of AUTONOMY_LEVELS) {
+        if (AUTONOMY_EQUIVALENCE[agentId].carrier[level] !== "native") continue;
+        expect(
+          adapter.mapAutonomy(level).length,
+          `${agentId} ${level} native builds a flag`
+        ).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  test("env is goose alone, carried by GOOSE_MODE per level", () => {
+    for (const agentId of AGENT_IDS) {
+      for (const level of AUTONOMY_LEVELS) {
+        if (agentId === "goose") continue;
+        expect(AUTONOMY_EQUIVALENCE[agentId].carrier[level], `${agentId} ${level}`)
+          .not.toBe("env");
+      }
+    }
+    const goose = getAdapter("goose", { PATH: "" });
+    for (const level of AUTONOMY_LEVELS) {
+      expect(goose.getRunEnv({ agent: "goose", prompt: "t", autonomy: level }).GOOSE_MODE, level)
+        .toBeDefined();
+    }
+  });
+
+  test("stdin is aider low alone, carried by the fed decline stream", () => {
+    for (const agentId of AGENT_IDS) {
+      for (const level of AUTONOMY_LEVELS) {
+        if (agentId === "aider" && level === "low") continue;
+        expect(AUTONOMY_EQUIVALENCE[agentId].carrier[level], `${agentId} ${level}`)
+          .not.toBe("stdin");
+      }
+    }
+    const aider = getAdapter("aider", { PATH: "" });
+    expect(aider.getStdinInput({ agent: "aider", prompt: "t", autonomy: "low" })).not.toBeNull();
+  });
+
+  test("codex is scode at every level: the row is the unsandboxed spelling", () => {
+    // The sandboxed launch (the default) passes the bypass flag, so scode
+    // carries every level; the notes say so (design §1.5). The sandboxed
+    // command itself is the witness: it does not change with the level.
+    for (const level of AUTONOMY_LEVELS) {
+      expect(AUTONOMY_EQUIVALENCE.codex.carrier[level]).toBe("scode");
+    }
+    expect(AUTONOMY_EQUIVALENCE.codex.notes ?? "").toContain("unsandboxed");
+    const codex = getAdapter("codex", { PATH: "" });
+    const commands = AUTONOMY_LEVELS.map((level) =>
+      codex.buildRunCommand({ agent: "codex", prompt: "t", autonomy: level, sandboxed: true }).join(" ")
+    );
+    const first = commands[0]!;
+    for (const command of commands) {
+      expect(command).toBe(first);
+      expect(command).toContain("--dangerously-bypass-approvals-and-sandbox");
+    }
+  });
+
+  test("pi's notes state the no-approval-gate limitation, not an approval flag", () => {
+    // 0.85.1 --no-approve ignores project-local files; it is not an
+    // autonomy carrier, and the notes must not describe one (design
+    // §1.3 item 1, the R-a fix's wording).
+    expect(AUTONOMY_EQUIVALENCE.pi.notes ?? "").toContain("no approval gate");
+  });
+
+  test("the kimi note names the hidden yolo aliases the bundle refuses", () => {
+    expect(AUTONOMY_EQUIVALENCE.kimi.notes ?? "").toContain("--yes");
+    expect(AUTONOMY_EQUIVALENCE.kimi.notes ?? "").toContain("--auto-approve");
+    expect(AUTONOMY_EQUIVALENCE.kimi.notes ?? "").toContain("2.5.2");
+  });
+
+  test("the droid read-only cell names the default mode", () => {
+    expect(AUTONOMY_EQUIVALENCE.droid.byLevel["read-only"]).toContain("read-only");
+    expect(AUTONOMY_EQUIVALENCE.droid.byLevel["read-only"]).toContain("--auto");
   });
 });

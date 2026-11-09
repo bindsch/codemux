@@ -3,9 +3,15 @@ read_when: "Checking the experiment MCP server contract, flags, or recordings."
 ---
 # Experiment MCP
 
-`run --experiment-mcp <spec.json>` connects one experiment-owned stdio MCP server with `-a claude`, `-a zai`, `-a codex`, or `-a kimi`. It requires `--hermetic --tools none --auto read-only`, scode, and no Playwright MCP. Claude and Z.AI use Claude Code's SDK control bridge. Codex and Kimi use a loopback HTTP relay and require explicit result-header opt-ins. Other adapters refuse before reading the spec or starting a model.
+`run --experiment-mcp <spec.json>` connects one experiment-owned stdio MCP server with Claude, Z.AI, Codex, Kimi, OpenCode, Copilot, Gemini, Goose, Pi, or Qwen. It requires `--hermetic --tools none --auto read-only`, scode, and no Playwright MCP. Claude and Z.AI use Claude Code's SDK control bridge. Codex and Kimi use a loopback HTTP relay and require explicit result-header opt-ins. Unsupported adapters refuse before reading the spec or starting a model; [harness limitations](harnesses.md) give their native evidence.
 
 The server runs **outside scode** with only the environment names in the spec. Its command and arguments are operator-controlled. The harness remains inside read-only scode. Hermetic mode excludes operator-configured MCP integrations; this explicitly requested server is the exception.
+
+Qwen requires version 0.24.0 or later. A private `--mcp-config` file supplies the authenticated loopback relay while `--safe-mode` stays enabled. Built-in tools are excluded. Native OpenAI request logs must show exactly the original tool schemas, every native call, and unchanged delivered text. A schema Qwen rewrites fails verification. Results must contain one successful, unannotated text block of at most 500000 characters; error, media, multipart, metadata, and structured-content conversions are refused. Network-blocking sandbox modes are refused because the relay needs loopback access.
+
+Qwen experiments use a private home and settings layers. They require an OpenAI-compatible provider override, a complete OpenAI environment passed to the child, or the native OAuth credential file. Qwen replaces that file by rename on refresh, so the private home receives only its access token, type, expiry, and resource URL, never the refresh token; an access token at or near expiry refuses the run. Safe mode still loads workspace settings and dotenv files. Qwen 0.24.0 reads `.qwen/settings.json` from the working directory only, so that file is refused there, and `.qwen/.env` and `.env` are refused through every working-directory ancestor. `check --experiment-mcp` retains the same relay and tool policy in both runs. Its control alone loads the planted instruction file through `QWEN_SYSTEM_MD`. This explicit-file control does not change the limitation on ordinary Qwen instruction-discovery checks.
+
+Agy 1.5.3 can load private MCP servers, but its headless display stream cannot establish the complete model-bound inventory and exact result bytes. OpenHands 1.16.0 with SDK 1.21.0 changes MCP input schemas and omits the final provider declarations from its completion logs. Both refuse experiment runs and checks before creating private state or starting a server.
 
 ## Specification
 
@@ -374,6 +380,7 @@ codemux: experiment failure [<code>]: <message>
 | `server_error` | The experiment server failed or returned a JSON-RPC error, or native Kimi evidence identified a tool-call timeout. |
 | `unsupported_result` | The server returned a result shape the harness path cannot preserve. |
 | `protocol` | Other malformed, duplicate, incomplete, or inconsistent protocol evidence was observed. |
+| `empty_answer` | The relay verified the run, but the harness exited 0 with an empty answer. `run_end` and `--result-json` both carry this code. |
 
 Shutdown stops the server process tree, bounds pipe drainage, finalizes the
 recording, and reports incomplete capture or cleanup. A protocol failure

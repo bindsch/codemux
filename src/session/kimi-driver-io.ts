@@ -17,21 +17,44 @@ import {
   type KimiMachineState,
   type TurnChild,
 } from "./kimi-machine.js";
+import { SessionOutputQueue } from "./completion.js";
 import {
-  BoundedOutboundQueue,
   installSessionSignalHandlers,
   type SessionSignalGate,
 } from "./process.js";
 import type { SandboxTrust } from "./registry.js";
 import type { SessionPrivateHome } from "./private-home-types.js";
+import type { KimiNoToolsFile } from "../kimi-no-tools.js";
+import { writeKimiNoToolsFile } from "../kimi-no-tools.js";
+import { assertKimiResumeTools } from "./kimi-tools.js";
+import { buildKimiSessionCommand } from "./kimi-session.js";
+import { currentPrivateHomeDir } from "./private-home-key.js";
+import { enforceKimiSessionDenyPolicy, kimiPrivateBrandHome, writeKimiSessionHermeticConfig } from "../kimi-hermetic.js";
+import { kimiSessionIds } from "./kimi-session-index.js";
+import { prepareKimiPlaywright } from "../kimi-run-policy.js";
+import { kimiHermeticTurnContext } from "./kimi-turn-context.js";
+import type { ExecutableCheck } from "../executable-security.js";
+import { isCallerHarnessHome } from "./harness-home.js";
 
 export interface KimiDriverOptions {
   /** The native session id to resume, or null to start fresh. */
   resumeSessionId: string | null;
   autonomy: AutonomyLevel;
+  /** Hermetic sessions can deny every tool through native config rules.
+   * This does not create a permission request channel on the print wire. */
+  permissionPolicy?: "default" | "deny";
+  tools?: "none" | "default";
+  turnTimeoutMs?: number | null;
+  playwrightMcp?: boolean;
+  playwrightPathEnv?: string;
+  preserveCustomization?: boolean;
   /** The model reported on session_started and recorded in the registry
    * (the CLI's resolved model, override included). */
   model?: string;
+  /** The `-m` value as typed when it resolved through `config.models`,
+   * else null: reported as `model_alias` on the model-bearing events and
+   * recorded with every ledger line (design P5). */
+  modelAlias?: string | null;
   /** The `--model` value the per-turn commands carry: the resolved
    * model, except under a provider override, where the synthesized
    * `KIMI_MODEL_*` provider is the default and `--model` stays off (the
@@ -41,6 +64,12 @@ export interface KimiDriverOptions {
    * and the directory kimi's own store pins the session to. */
   cwd: string;
   hermetic: boolean;
+  /** A project-settings session (--experiment-project-settings, which
+   * requires hermetic mode): the per-turn commands drop their
+   * --skills-dir so the repository's own skill directories load
+   * (kimi-session.ts), and the record carries `project_settings` for
+   * the resume guard. */
+  experimentProjectSettings?: boolean;
   sandboxed: boolean;
   /** The trust the session actually runs at; recorded and reported as-is. */
   sandboxTrust: SandboxTrust;
@@ -69,7 +98,7 @@ export interface KimiDriverOptions {
    * SessionProcess); a throw is reported as a codemux failure, never an
    * unhandled rejection. Typed to the slice the machine names; real
    * children are SessionProcess instances. */
-  spawnTurn: (argv: string[]) => Promise<TurnChild>;
+  spawnTurn: (argv: string[], abandoned?: () => boolean, checks?: readonly ExecutableCheck[]) => Promise<TurnChild>;
   /** The operator brand home a hermetic session's filtered config is
    * generated from (null when the operator has none); the driver reads it
    * once, generating the private brand home's config.toml at the first
@@ -89,9 +118,59 @@ export interface KimiDriverOptions {
 type Timer = ReturnType<typeof setTimeout>;
 
 export abstract class KimiDriverIo {
+  protected noToolsProfile?: KimiNoToolsFile;
+  protected resumeToolsChecked = false;
+  protected sessionIdsBeforeTurn: ReadonlySet<string> = new Set();
+  protected playwrightChecks: ExecutableCheck[] = [];
+
+  protected cleanupNoToolsProfile(): void {
+    try { this.noToolsProfile?.finalize(); this.noToolsProfile = undefined; }
+    catch (error) { console.error("codemux: Kimi no-tools profile cleanup failed", error); }
+  }
+
+  protected currentBrandHome(): string {
+    return this.options.privateHome != null ? kimiPrivateBrandHome(this.options.privateHome.dir) : this.options.harnessHome;
+  }
+
+  protected prepareTurn(prompt: string): string[] {
+    const home = this.options.privateHome;
+    const callerHome = isCallerHarnessHome(home) ? home : undefined;
+    callerHome?.verify();
+    const brandHome = this.currentBrandHome();
+    if (home != null && this.state.sessionId === null) this.sessionIdsBeforeTurn = kimiSessionIds(brandHome, this.options.cwd);
+    const argv = buildKimiSessionCommand({ model: this.options.wireModel,
+      resumeSessionId: this.state.sessionId ?? undefined, prompt,
+      callerHome,
+      hermeticHome: home == null || callerHome || this.options.preserveCustomization ? undefined : currentPrivateHomeDir(home, this.state.sessionId ?? ""),
+      brandHome: home != null && this.options.preserveCustomization ? brandHome : undefined,
+      projectSettings: this.options.experimentProjectSettings === true });
+    if (this.options.resumeSessionId !== null && !this.resumeToolsChecked) {
+      assertKimiResumeTools(brandHome, this.options.resumeSessionId, this.options.tools);
+      this.resumeToolsChecked = true;
+    } else if (this.state.sessionId === null && this.options.tools === "none") {
+      this.noToolsProfile = writeKimiNoToolsFile(brandHome);
+      argv.splice(argv.indexOf("--output-format"), 0, "--agent-file", this.noToolsProfile.path);
+    }
+    if (this.options.permissionPolicy === "deny" && home == null) {
+      throw new Error("kimi --permission-policy deny requires a hermetic private home");
+    }
+    if (home != null && !callerHome && !home.resumed && !this.hermeticConfigWritten && !this.options.preserveCustomization) {
+      writeKimiSessionHermeticConfig(brandHome, this.options.hermeticSourceHome ?? null);
+      this.hermeticConfigWritten = true;
+    }
+    if (this.options.permissionPolicy === "deny") enforceKimiSessionDenyPolicy(brandHome);
+    if (this.options.playwrightMcp) {
+      if (home == null || this.options.playwrightPathEnv === undefined) throw new Error("Kimi session Playwright needs a private home and execution PATH");
+      const context = kimiHermeticTurnContext(home);
+      prepareKimiPlaywright({ agent: "kimi", prompt, sandboxed: this.options.sandboxed, enablePlaywrightMcp: true }, context,
+        { pathEnv: this.options.playwrightPathEnv, forbiddenRoot: this.options.cwd });
+      this.playwrightChecks = context.playwrightMcpCheck ? [context.playwrightMcpCheck] : [];
+    }
+    return argv;
+  }
   private readonly config: KimiMachineConfig;
   protected readonly state: KimiMachineState = initialKimiState(null);
-  protected readonly out: BoundedOutboundQueue;
+  protected readonly out: SessionOutputQueue;
   protected readonly signals: SessionSignalGate;
   protected seq = 0;
   /** Codemux's own id for this session, minted at construction: what the
@@ -141,6 +220,19 @@ export abstract class KimiDriverIo {
    * best-effort, single-attempt, never a wait). */
   protected touchWarned = false;
   protected sessionTimer: Timer | null = null;
+  protected turnTimer: Timer | null = null;
+
+  protected clearTurnTimer(): void {
+    if (this.turnTimer !== null) clearTimeout(this.turnTimer);
+    this.turnTimer = null;
+  }
+
+  protected armTurnTimer(): void {
+    this.clearTurnTimer();
+    if (this.options.turnTimeoutMs == null) return;
+    this.turnTimer = setTimeout(() => this.deliver({ kind: "turn_timeout" }), this.options.turnTimeoutMs);
+    this.turnTimer.unref?.();
+  }
   protected runDelivered = false;
   /** True while an event is being dispatched through the machine and its
    * effects performed. A delivery raised inside that window — the
@@ -180,15 +272,16 @@ export abstract class KimiDriverIo {
     this.callLedger = {
       agent: "kimi",
       model: options.model ?? null,
+      modelAlias: options.modelAlias ?? null,
       provider: providerHost(options.providerBaseUrl),
       autonomy: options.autonomy,
       // The real value: either flag says hermetic, so a launcher that
       // hands only the private home still records it.
-      hermetic: options.hermetic || options.privateHome != null,
+      hermetic: options.hermetic || (options.privateHome != null && !isCallerHarnessHome(options.privateHome) && !options.preserveCustomization),
       sandboxed: options.sandboxed,
       cwd: options.cwd,
     };
-    this.out = new BoundedOutboundQueue(
+    this.out = new SessionOutputQueue(
       options.sink ?? defaultEventSink(),
       (failure) => {
         // Both failure classes end the session (§4.2); the diagnostic
@@ -279,7 +372,7 @@ export abstract class KimiDriverIo {
    * session_ended's resumable fold reports honestly. */
   protected settlePrivateHome(): void {
     const home = this.options.privateHome;
-    if (home == null || home.settled || this.state.sessionId === null) return;
+    if (home == null || isCallerHarnessHome(home) || home.settled || this.state.sessionId === null) return;
     try {
       home.settle(this.state.sessionId);
     } catch (error) {

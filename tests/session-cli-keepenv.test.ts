@@ -37,7 +37,7 @@ describe("CLI - session keep-env under --sandbox-scrub-env (review al2, correctn
       : "printf 'Usage: scode [options] command\\n'; exit 0";
     const preamble =
       harness === "kimi"
-        ? `if [ "$1" = "--version" ]; then printf '0.31.1\\n'; exit 0; fi\n`
+        ? `if [ "$1" = "--version" ]; then printf '2.5.2\\n'; exit 0; fi\n`
         : "";
     return createFakeBinaryEnv({
       // Appends: a session spawns through scode once per turn (kimi) or
@@ -78,7 +78,7 @@ describe("CLI - session keep-env under --sandbox-scrub-env (review al2, correctn
         `if [ "$1" = "--help" ]; then if [ -z "$HOME" ]; then exit 1; fi; ` +
         `printf 'Usage: scode [options] command\\n  --keep-env NAME[,NAME...]  keep named variables under --scrub-env\\n'; exit 0; fi\n` +
         `printf '%s\\n' "$@" >> '${argvFile}'\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"`,
-      kimi: `if [ "$1" = "--version" ]; then printf '0.31.1\\n'; exit 0; fi\nexec bun '${FAKE_KIMI}' "$@"`,
+      kimi: `if [ "$1" = "--version" ]; then printf '2.5.2\\n'; exit 0; fi\nexec bun '${FAKE_KIMI}' "$@"`,
     });
     try {
       const session = await driveSession(
@@ -153,7 +153,7 @@ describe("CLI - session keep-env under --sandbox-scrub-env (review al2, correctn
         `  printf 'Usage: scode [options] command\\n  --keep-env NAME[,NAME...]\\n'; exit 0\nfi\n` +
         `[ "$KIMI_MODEL_API_KEY" = "preflight-test-key" ] || exit 1\n` +
         `while [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"`,
-      kimi: `if [ "$1" = "--version" ]; then printf '0.31.1\\n'; exit 0; fi\nexec bun '${FAKE_KIMI}' "$@"`,
+      kimi: `if [ "$1" = "--version" ]; then printf '2.5.2\\n'; exit 0; fi\nexec bun '${FAKE_KIMI}' "$@"`,
     });
     try {
       const session = await driveSession([

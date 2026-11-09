@@ -15,12 +15,20 @@ import { resolveModel } from "./config.js";
 import type { Command } from "commander";
 import type { AgentId, CodemuxConfig } from "./types.js";
 import { resolveSandboxOptionsForAgent } from "./sandbox-policy.js";
-import { supportsPlaywrightMcpAgent } from "./mcp.js";
+import { PLAYWRIGHT_MCP_AGENT_LIST, supportsPlaywrightMcpAgent } from "./mcp.js";
 import { withKeepEnvExemption } from "./sandbox.js";
 import type { ExecutableCheck } from "./executable-security.js";
 import { runSandboxed } from "./cli-runtime.js";
 import { assertQuotaHeadroomForLaunch, resolveQuotaGate } from "./quota-gate.js";
 import { UsageRefusalError, validateWorkingDirectory } from "./validation.js";
+import type { GeminiAdapter } from "./adapters/gemini.js";
+import { prepareGeminiTuiLaunch } from "./gemini-tui.js";
+import { PiAdapter } from "./adapters/pi.js";
+import { preparePiTuiLaunch } from "./pi-launch.js";
+import type { ClineAdapter } from "./adapters/cline.js";
+import { prepareClineTuiLaunch } from "./cline-tui.js";
+import { KimiAdapter } from "./adapters/kimi.js";
+import { prepareKimiTuiLaunch } from "./kimi-tui-launch.js";
 
 export function registerTuiCommand(
   program: Command,
@@ -73,6 +81,7 @@ export function registerTuiCommand(
     )
     .option("--no-quota-gate", "Skip the pre-launch usagemux quota check for this invocation")
     .action(async (options) => {
+      let finalizeTui: (() => void) | undefined;
       try {
         requireValidConfig();
         const agentId = options.agent as AgentId;
@@ -93,7 +102,7 @@ export function registerTuiCommand(
           throw new UsageRefusalError("--enable-playwright-mcp requires --sandbox");
         }
         if (enablePlaywrightMcp && !supportsPlaywrightMcpAgent(agentId)) {
-          throw new UsageRefusalError("--enable-playwright-mcp is supported only by claude and zai");
+          throw new UsageRefusalError(`--enable-playwright-mcp is supported only by ${PLAYWRIGHT_MCP_AGENT_LIST}`);
         }
         // Registered so the flag is refused by name (exit 64) instead of
         // commander's generic parse error (exit 1): Claude Code's own flag
@@ -142,8 +151,8 @@ export function registerTuiCommand(
           );
         }
         // The same resolution as run: a value outside the adapter's effort
-        // set is a usage refusal (exit 64), never a dropped flag. Droid and
-        // opencode accept effort on run but have no TUI carrier for it, so
+        // set is a usage refusal (exit 64), never a dropped flag. Droid
+        // accepts effort on run but has no TUI carrier for it, so
         // a materialized level on their TUI refuses by name. `none` is the
         // no-flag spelling everywhere: on a no-TUI-effort adapter it maps
         // to undefined here, or the adapter's own validateTuiRequest would
@@ -176,7 +185,10 @@ export function registerTuiCommand(
         // or scode (the version gate, the spawn) stay behind the
         // availability blocks below.
         const workdir = validateWorkingDirectory(options.cwd) ?? process.cwd();
-        adapter.validateTuiRequest(
+        const validateTui = adapter.id === "gemini" && enablePlaywrightMcp
+          ? (adapter as GeminiAdapter).validateTuiSettingsRequest.bind(adapter)
+          : adapter.validateTuiRequest.bind(adapter);
+        validateTui(
           model,
           workdir,
           autonomy,
@@ -252,9 +264,30 @@ export function registerTuiCommand(
           // having been omitted on purpose — so a scode without the flag
           // refuses the launch rather than run it stripped. The same rule
           // the run and session spawns apply (withKeepEnvExemption).
+          const geminiLaunch = adapter.id === "gemini" && enablePlaywrightMcp
+            ? prepareGeminiTuiLaunch(adapter as GeminiAdapter, { model, cwd: workdir, autonomy, effort, passthroughEnv,
+              enablePlaywrightMcp, sandboxed: true, printOnly: Boolean(options.printSandbox) })
+            : undefined;
+          const piLaunch = adapter instanceof PiAdapter && enablePlaywrightMcp
+            ? preparePiTuiLaunch(adapter, { model, cwd: workdir, autonomy, effort, passthroughEnv, enablePlaywrightMcp, sandboxed: true })
+            : undefined;
+          const clineLaunch = adapter.id === "cline" && enablePlaywrightMcp
+            ? prepareClineTuiLaunch(adapter as ClineAdapter, { model, cwd: workdir, autonomy, effort, passthroughEnv,
+              enablePlaywrightMcp, sandboxed: true }, sandboxOptions) : undefined;
+          const kimiLaunch = adapter instanceof KimiAdapter && enablePlaywrightMcp
+            ? prepareKimiTuiLaunch(adapter, { model, cwd: workdir, autonomy, effort, passthroughEnv,
+              enablePlaywrightMcp, sandboxed: true, printOnly: Boolean(options.printSandbox) })
+            : undefined;
+          const preparedTui = kimiLaunch ? { env: kimiLaunch.env, finalize: kimiLaunch.cleanup }
+            : clineLaunch ? { env: clineLaunch.env, finalize: clineLaunch.cleanup } : piLaunch
+            ? { env: piLaunch.env, finalize: piLaunch.cleanup }
+            : geminiLaunch
+              ? { env: geminiLaunch.env, finalize: geminiLaunch.cleanup }
+              : adapter.prepareTuiEnvironment(model, autonomy, effort, true, passthroughEnv, Boolean(options.printSandbox));
+          finalizeTui = preparedTui.finalize;
           const injectedEnv = {
             ...adapter.getEnv(),
-            ...adapter.getTuiEnv(model, autonomy, effort, true, passthroughEnv),
+            ...preparedTui.env,
           };
           const adapterEnv = adapter.buildExecutionEnv(injectedEnv, passthroughEnv);
           // The Playwright binary the command embeds is trust-checked
@@ -265,7 +298,11 @@ export function registerTuiCommand(
           // would trust whatever replaced the binary in between), and the
           // spawn's re-stat compares against it.
           const nestedChecks: ExecutableCheck[] = [];
-          const command = adapter.buildTuiCommand(
+          if (kimiLaunch?.playwrightCheck) nestedChecks.push(kimiLaunch.playwrightCheck);
+          if (clineLaunch?.playwrightCheck) nestedChecks.push(clineLaunch.playwrightCheck);
+          if (piLaunch?.playwrightCheck) nestedChecks.push(piLaunch.playwrightCheck);
+          if (geminiLaunch?.playwrightCheck) nestedChecks.push(geminiLaunch.playwrightCheck);
+          const command = kimiLaunch?.command ?? clineLaunch?.command ?? piLaunch?.command ?? geminiLaunch?.command ?? adapter.buildTuiCommand(
             model,
             autonomy,
             effort,
@@ -309,6 +346,8 @@ export function registerTuiCommand(
         }
       } catch (error) {
         handleUnexpectedError(error);
+      } finally {
+        finalizeTui?.();
       }
     });
 }

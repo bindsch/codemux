@@ -78,6 +78,7 @@ export interface KimiTurnSlot {
    * error message is the reason). */
   errorMessage: string | null;
   sawHint: boolean;
+  interruption?: string;
 }
 
 export interface KimiMachineState {
@@ -127,8 +128,9 @@ export interface KimiMachineState {
   sawHarnessFailure: boolean;
   turnCounter: number;
   inputSeq: number;
-  /** The cumulative usage fold: kimi reports none, so every addend is
-   * the honest all-null block and the totals stay all-null. */
+  /** The cumulative usage fold over the per-turn wire-log deltas the
+   * executor reads at each child exit (kimi-driver-events.ts); a turn
+   * whose read failed contributes the honest all-null block. */
   cumulative: ResultUsageBlock;
 }
 
@@ -138,10 +140,20 @@ export type KimiEvent =
   | { kind: "spawn_settled"; child: TurnChild }
   | { kind: "spawn_failed"; error: unknown }
   | { kind: "child_line"; line: string }
-  | { kind: "child_exit"; child: TurnChild; outcome: SessionChildOutcome }
+  | {
+      kind: "child_exit";
+      child: TurnChild;
+      outcome: SessionChildOutcome;
+      /** The turn's token counts, read from the session's wire log after
+       * the child settled (the executor's read; all-null when no counts
+       * could be attributed). */
+      usage: ResultUsageBlock;
+    }
   | { kind: "stdin_eof"; error?: unknown }
   | { kind: "signal" }
   | { kind: "session_timeout" }
+  | { kind: "turn_timeout" }
+  | { kind: "session_identified"; sessionId: string }
   | { kind: "fatal"; source: "codemux" | "harness"; message: string }
   | { kind: "registry_error"; message: string }
   | { kind: "record_outcome"; ok: boolean; error?: string; failure?: "busy" | "untrusted" | "unavailable" }
@@ -159,6 +171,9 @@ export type KimiEffect =
       turnId: string;
       finish: "end" | "failed" | "interrupted";
       reason?: string;
+      /** The turn's token counts (the child_exit read); all-null when
+       * none could be attributed. */
+      usage: ResultUsageBlock;
     }
   | { kind: "emit"; event: "assistant_message"; raw: string; text: string; turnId: string }
   | { kind: "emit"; event: "tool_call"; raw: string; callId: string; name: string; input: unknown }
@@ -191,6 +206,7 @@ export type KimiEffect =
   | { kind: "stop_child"; child: TurnChild }
   | { kind: "arm_session_timer" }
   | { kind: "disarm_session_timer" }
+  | { kind: "stop_turn" }
   /** Write the registry start record; the outcome arrives as
    * record_outcome. */
   | { kind: "record_start" }
@@ -212,7 +228,7 @@ export type KimiEffect =
    * and no verdict: the busy-exhaustion notice a resumed session emits
    * while it keeps running (round 361, item 16). */
   | { kind: "notice"; message: string }
-  | { kind: "ledger_turn"; turnId: string; startedAt: number; finish: "end" | "failed" | "interrupted" }
+  | { kind: "ledger_turn"; turnId: string; startedAt: number; finish: "end" | "failed" | "interrupted"; usage: ResultUsageBlock }
   | { kind: "ledger_session"; reason: SessionEndReason; exitCode: number | null; usage: ResultUsageBlock }
   | { kind: "resolve_done"; code: number };
 

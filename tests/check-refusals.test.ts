@@ -20,12 +20,6 @@ describe("CLI - check pre-launch usage refusals exit 64", () => {
     message: string;
   }[] = [
     {
-      label: "codex experiment MCP on the paired check",
-      binaries: { codex: "exit 0" },
-      argv: () => ["check", "-a", "codex", "--hermetic", "--tools", "none", "--experiment-mcp", spec],
-      message: "Codex --experiment-mcp supports run only",
-    },
-    {
       label: "hermetic check with an explicit --cwd",
       binaries: { claude: "exit 0" },
       argv: () => ["check", "-a", "claude", "--hermetic", "--cwd", "/tmp"],
@@ -145,9 +139,10 @@ printf 'OK\\n'; printf ran >> ${JSON.stringify(ranMarker)}; exit 0`,
     }
   });
 
-  test("the codex experiment-mcp refusal precedes the spec-prefix demand (round 381)", async () => {
-    // A codex check is refused outright; an operator whose spec also lacks
-    // accept_harness_prefix used to be sent to fix the spec first.
+  test("a prefixless codex spec is refused on check before the installation gate (round 381)", async () => {
+    // Round 381 removed a codex-only throw that used to hide the spec's own
+    // problem: an operator whose spec lacks accept_harness_prefix is sent to
+    // fix the spec, not told the harness is missing.
     const dir = mkdtempSync(join(tmpdir(), "codemux-check-codex-order-"));
     const prefixless = join(dir, "spec.json");
     writeFileSync(prefixless, JSON.stringify({ name: "probe", command: "/bin/true", args: [], env: [] }));
@@ -158,8 +153,8 @@ printf 'OK\\n'; printf ran >> ${JSON.stringify(ranMarker)}; exit 0`,
         fake.env
       );
       expect(exitCode).toBe(64);
-      expect(stderr).toContain("Codex --experiment-mcp supports run only");
-      expect(stderr).not.toContain("accept_harness_prefix");
+      expect(stderr).toContain("requires accept_harness_prefix:");
+      expect(stderr).not.toContain("is not installed");
     } finally {
       fake.cleanup();
       rmSync(dir, { recursive: true, force: true });

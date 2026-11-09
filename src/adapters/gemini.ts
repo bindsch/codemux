@@ -1,17 +1,36 @@
 import { BaseAdapter } from "./base.js";
 import { assertNoGeminiProjectExecutionConfig, assertNoGeminiRepositoryEnv } from "../project-safety.js";
-import { validateWorkingDirectory } from "../validation.js";
+import { validateWorkingDirectory, UsageRefusalError } from "../validation.js";
 import { statSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  assertCleanInstructionFiles,
+} from "../clean-cwd.js";
+import { createGeminiHermeticHome } from "../gemini-hermetic.js";
+import { GEMINI_POLICY_FILENAME, geminiToolPolicy, writeGeminiToolPolicy } from "../gemini-policy.js";
+import { validateGeminiProjectSettings } from "../gemini-project-settings.js";
+import { geminiPlaywrightSettings } from "../gemini-mcp.js";
+import { geminiExperimentResult, geminiResult } from "../result-envelope/gemini.js";
+import { readExperimentRunSpec } from "../experiment-mcp.js";
+import { GeminiExperimentRun, type GeminiExperimentContext } from "../gemini-experiment-run.js";
+import { geminiTelemetryEnvironment, prepareGeminiTelemetry } from "../gemini-telemetry.js";
+import { loginHome, geminiLoginState, type LoginState } from "../harness-health.js";
+import {
+  readProviderOverride,
+  requireProviderOverride,
+  type ProviderOverride,
+} from "../provider-override.js";
 import type {
   AgentId,
   AutonomyLevel,
   ReasoningEffort,
   RunRequest,
+  RunResult,
   AdapterCapabilities,
+  LaunchIntent,
 } from "../types.js";
-import { geminiLoginState, loginHome, type LoginState } from "../harness-health.js";
+import type { SandboxOptions, ScodeTrustLevel } from "../sandbox.js";
 
 export const GEMINI_SYSTEM_SETTINGS_PATH = fileURLToPath(
   new URL("../../resources/gemini-system-settings.json", import.meta.url)
@@ -74,18 +93,131 @@ export class GeminiAdapter extends BaseAdapter {
       supportsModel: true,
       supportsAutonomy: true,
       autonomyLevels: ["read-only", "low", "medium", "high"],
+      // The shared effort levels still need a model-specific thinkingConfig
+      // mapping. Native modelConfigs settings exist; lack of a CLI flag
+      // alone does not establish a harness limitation (0.60.0, 2026-11-09).
       supportsEffort: false,
       effortLevels: [],
-      // Exercised live at 0.60.0 on 2026-09-17: nothing closes the
-      // workspace context-file channels, so --hermetic is refused, and the
-      // tools.core allowlist a --tools none mapping would ride sits in the
-      // system-settings layer, which never loads on a user-owned prefix
-      // (the file and every ancestor must be root-owned), so the
-      // capability is refused rather than claimed on a layer that cannot
-      // load; see docs/isolation.md.
-      supportsHermetic: false,
-      supportsToolSelection: false,
+      // GEMINI_CLI_HOME isolates operator settings; workspace settings
+      // still require the clean-cwd guard. Tool denial is independent:
+      // --policy accepts a private TOML file in plain and hermetic runs.
+      // Installed Gemini 0.60.0 bundle, read 2026-11-09.
+      supportsHermetic: true,
+      supportsToolSelection: true,
+      toolsNoneRequiresHermetic: false,
+      // `--output-format json` (0.60.0): the final JsonFormatter object on
+      // stdout with the streaming forced to stderr (src/result-envelope/
+      // gemini.ts holds the field evidence).
+      supportsResultJson: true,
+      // The GATEWAY auth route: GOOGLE_GEMINI_BASE_URL selects it
+      // (chunk-M6NSK26M.js, getBaseUrl/getEnv) and GEMINI_API_KEY carries
+      // the key; read in the installed 0.60.0 bundle, 2026-11-09.
+      supportsProviderOverride: true,
     };
+  }
+
+  /**
+   * The provider override, validated: gemini's env delivery needs a base
+   * URL and a key (the model may come from `-m` instead of the variable).
+   */
+  private validatedProvider(): (ProviderOverride & { baseUrl: string; apiKey: string }) | null {
+    const override = readProviderOverride("gemini", this.environment);
+    if (override === null) return null;
+    if (override.maxContextTokens !== undefined) {
+      throw new UsageRefusalError(
+        "gemini cannot set provider max-context-tokens: Gemini CLI 0.60.0 uses its hard-coded tokenLimit(model) table"
+      );
+    }
+    return requireProviderOverride("gemini", override, [
+      "baseUrl",
+      "apiKey",
+    ]) as ProviderOverride & { baseUrl: string; apiKey: string };
+  }
+
+  /** The model the gateway routes: the request's, else the override's. */
+  private modelFor(model: string | undefined): string | undefined {
+    const override = this.validatedProvider();
+    const resolved = model ?? override?.model;
+    if (resolved === undefined && override !== null) {
+      throw new UsageRefusalError(
+        "gemini needs a model for the provider override; pass --model or set CODEMUX_GEMINI_PROVIDER_MODEL"
+      );
+    }
+    return resolved;
+  }
+
+  private providerEnv(model: string | undefined): Record<string, string> {
+    const override = this.validatedProvider();
+    if (override === null) return {};
+    this.modelFor(model);
+    return {
+      GOOGLE_GEMINI_BASE_URL: override.baseUrl,
+      GEMINI_API_KEY: override.apiKey,
+    };
+  }
+
+  /** The real gemini directory the private home's parent lives under. */
+  private realGeminiDir(): string {
+    return join(loginHome(this.environment), ".gemini");
+  }
+
+  override prepareRun(
+    request: RunRequest,
+    _sandboxTrust?: ScodeTrustLevel,
+    _sandboxOptions?: SandboxOptions,
+    launch: LaunchIntent = {}
+  ): GeminiExperimentContext {
+    const printOnly = launch.printOnly === true;
+    const experimentSpec = request.experimentMcp ? readExperimentRunSpec(request) : undefined;
+    if (experimentSpec && !request.hermetic && !experimentSpec.control) throw new UsageRefusalError("Gemini experiment requires a private hermetic home");
+    const override = this.validatedProvider();
+    const tokens = override?.maxOutputTokens;
+    const mcp = geminiPlaywrightSettings(request.sandboxed, request.enablePlaywrightMcp, this.executionPathEnv(), request.cwd);
+    if (request.hermetic || request.resultJson || experimentSpec || geminiToolPolicy(request) !== null || tokens !== undefined || mcp.check !== null) {
+      const home = createGeminiHermeticHome(this.realGeminiDir(), {
+          toolsNone: request.tools === "none" || experimentSpec !== undefined,
+          apiKeyAuth: override !== null,
+          printOnly: printOnly || (!request.hermetic && !request.resultJson && request.tools !== "none" && tokens === undefined && mcp.check === null),
+          preserveCustomization: !request.hermetic && !experimentSpec && (request.resultJson || request.tools === "none" || tokens !== undefined || mcp.check !== null),
+          outputLimit: tokens === undefined ? undefined : { model: this.modelFor(request.model)!, tokens },
+          mcpServers: mcp.servers,
+        });
+      try {
+        writeGeminiToolPolicy(home.home, request);
+        const context: GeminiExperimentContext = { geminiHermeticHome: home, playwrightMcpCheck: mcp.check };
+        if (experimentSpec) {
+          const experiment = new GeminiExperimentRun(experimentSpec, request.cwd ?? process.cwd(), home.home, this.environment, request.prompt);
+          context.experimentGemini = experiment;
+          context.stdoutSink = experiment;
+          context.experimentRecording = experiment.recordingPath;
+        } else if (request.resultJson) {
+          context.geminiTelemetryPath = prepareGeminiTelemetry(home.home);
+        }
+        return context;
+      } catch (error) {
+        home.finalize();
+        throw error;
+      }
+    }
+    return {};
+  }
+
+  override cleanupRunSync(context?: GeminiExperimentContext): void {
+    try { context?.experimentGemini?.closeSync(); }
+    finally { context?.geminiHermeticHome?.finalize(); }
+  }
+
+  override cleanupRun(context?: GeminiExperimentContext): void | Promise<void> {
+    if (context?.experimentGemini) return context.experimentGemini.close().finally(() => this.cleanupRunSync(context));
+    this.cleanupRunSync(context);
+  }
+
+  override getRunEnv(request: RunRequest, context?: GeminiExperimentContext): Record<string, string> {
+    if ((request.hermetic || request.resultJson || request.enablePlaywrightMcp || geminiToolPolicy(request) !== null || this.validatedProvider()?.maxOutputTokens !== undefined) && context?.geminiHermeticHome === undefined) {
+      throw new Error("gemini hermetic home was not prepared before launch");
+    }
+    return { ...this.providerEnv(request.model), ...(context?.geminiTelemetryPath ? geminiTelemetryEnvironment(context.geminiTelemetryPath) : {}),
+      ...context?.experimentGemini?.environment };
   }
 
   override mapAutonomy(level: AutonomyLevel): string[] {
@@ -102,27 +234,118 @@ export class GeminiAdapter extends BaseAdapter {
     }
   }
 
-  buildRunCommand(request: RunRequest): string[] {
-    const cmd = ["gemini", "--sandbox=false"];
+  buildRunCommand(request: RunRequest, context?: GeminiExperimentContext): string[] {
+    if (request.experimentMcp && !context?.experimentGemini) throw new Error("Gemini experiment was not prepared");
+    const isolated = request.hermetic || request.resultJson || request.experimentMcp || request.tools === "none" || request.enablePlaywrightMcp || this.validatedProvider()?.maxOutputTokens !== undefined;
+    // Run and session commands carry the native home redirect in argv.
+    // The interactive lifecycle carries it in its prepared environment.
+    // Both keep HOME unchanged and put mirrors under the real .gemini root.
+    const unprepared = join(this.realGeminiDir(), ".codemux-hermetic", "unprepared");
+    const cmd = isolated
+      ? ["env", `GEMINI_CLI_HOME=${context?.geminiHermeticHome?.home ?? unprepared}`, "gemini"]
+      : ["gemini"];
+    cmd.push("--sandbox=false");
+    if (request.experimentMcp || geminiToolPolicy(request) !== null) {
+      cmd.push("--policy", join(context?.geminiHermeticHome?.home ?? unprepared, GEMINI_POLICY_FILENAME));
+    }
 
-    if (request.model) {
-      cmd.push("-m", request.model);
+    const model = this.modelFor(request.model);
+    if (model) {
+      cmd.push("-m", model);
     }
 
     if (request.autonomy) {
       cmd.push(...this.mapAutonomy(request.autonomy));
     }
 
-    cmd.push("-p", request.prompt);
+    if (request.experimentMcp) {
+      cmd.push("--output-format", "stream-json");
+    } else if (request.resultJson) {
+      // 0.60.0 prints the final JsonFormatter object on stdout and moves
+      // the stream to stderr under this flag (bundle gemini-LUNNHKPJ.js).
+      cmd.push("--output-format", "json");
+    }
+
+    // The empty flag selects headless mode; the exact prompt arrives on stdin.
+    // Gemini 0.60.0 readStdin() uses piped input verbatim (2026-11-09).
+    cmd.push("-p", "");
 
     return cmd;
+  }
+
+  override getStdinInput(request: RunRequest): string {
+    return request.prompt;
+  }
+
+  override getTuiEnv(model?: string): Record<string, string> {
+    return this.providerEnv(model);
+  }
+
+  /** Both interactive launch paths own this environment until finalize.
+   * Gemini 0.60.0 reads GEMINI_CLI_HOME before global settings discovery
+   * (bundle/chunk-M6NSK26M.js homedir/getGlobalGeminiDir, 2026-11-09).
+   * The mirror stays under the real .gemini state root; scode selects that
+   * root through HOME, which this hook leaves intact (scode:2058). */
+  override prepareTuiEnvironment(
+    model?: string, _autonomy?: AutonomyLevel, _effort?: ReasoningEffort,
+    _sandboxed?: boolean, _passthroughEnv?: readonly string[], printOnly = false
+  ) {
+    const env = this.providerEnv(model);
+    const override = this.validatedProvider();
+    if (override?.maxOutputTokens === undefined) return { env, finalize: () => {} };
+    const home = createGeminiHermeticHome(this.realGeminiDir(), {
+      apiKeyAuth: true, preserveCustomization: true, printOnly,
+      outputLimit: { model: this.modelFor(model)!, tokens: override.maxOutputTokens },
+    });
+    return { env: { ...env, GEMINI_CLI_HOME: home.home }, finalize: home.finalize };
+  }
+
+  override processRunResult(result: RunResult, request: RunRequest, context?: GeminiExperimentContext): RunResult {
+    if (context?.experimentGemini) return geminiExperimentResult(result, { ...request, model: this.modelFor(request.model) }, context.experimentRecording, context.experimentGemini.evidencePath);
+    if (!request.resultJson) return result;
+    return geminiResult(result, { ...request, model: this.modelFor(request.model) }, context?.geminiTelemetryPath);
   }
 
   override validateRunRequest(request: RunRequest): void {
     super.validateRunRequest(request);
     const workdir = validateWorkingDirectory(request.cwd) ?? process.cwd();
-    assertNoGeminiProjectExecutionConfig(workdir);
+    if (request.experimentProjectSettings) {
+      if (this.validatedProvider()?.maxOutputTokens !== undefined) {
+        throw new UsageRefusalError("gemini project settings can override provider output token caps; omit one of these options");
+      }
+      validateGeminiProjectSettings({
+        agent: "gemini", hermetic: request.hermetic === true,
+        autonomy: request.autonomy ?? "read-only", sandbox: request.sandboxed === true,
+        cwd: workdir, tools: request.tools, experimentMcp: request.experimentMcp,
+        passthroughEnv: request.passthroughEnv,
+      });
+    } else {
+      assertNoGeminiProjectExecutionConfig(workdir);
+    }
     if (!geminiSystemSettingsLoadable()) assertNoGeminiRepositoryEnv(workdir);
+    if (request.hermetic) {
+      if (request.cwd === undefined) {
+        throw new UsageRefusalError("gemini isolation requires an explicit --cwd owned by this run");
+      }
+      if (request.passthroughEnv?.includes("GEMINI_CLI_HOME")) {
+        throw new UsageRefusalError("gemini isolation owns GEMINI_CLI_HOME; remove --pass-env GEMINI_CLI_HOME");
+      }
+      // The workspace channels the private home cannot close: the context
+      // file GEMINI.md (DEFAULT_CONTEXT_FILENAME, chunk-VCAJDPDX.js) and
+      // the .gemini/ workspace settings and policy directory. A dangling
+      // symlink counts (lstat): the harness resolves it.
+      if (!request.experimentProjectSettings) {
+        assertCleanInstructionFiles("gemini", validateWorkingDirectory(request.cwd)!, [
+          "GEMINI.md",
+          ".gemini",
+          ".agents/skills",
+        ]);
+      }
+    }
+    // Fail before launch on a half-configured override, and surface the
+    // model requirement early: gemini's own default would otherwise
+    // silently answer through the operator's gateway.
+    this.modelFor(request.model);
   }
 
   override validateTuiRequest(
@@ -133,10 +356,27 @@ export class GeminiAdapter extends BaseAdapter {
     passthroughEnv: readonly string[] = [],
     enablePlaywrightMcp = false
   ): void {
-    super.validateTuiRequest(model, cwd, autonomy, effort, passthroughEnv, enablePlaywrightMcp);
+    this.validateTuiSettingsRequest(model, cwd, autonomy, effort, passthroughEnv, enablePlaywrightMcp);
+    if (enablePlaywrightMcp) {
+      throw new UsageRefusalError("gemini Playwright MCP requires a run settings context; TUI delivery is not implemented");
+    }
+  }
+
+  /** Validate workspace settings before creating any private mirror.
+   * The MCP helper also uses this entry point while public attachment
+   * still depends on the unapplied shared whitelist/lifecycle patch. */
+  validateTuiSettingsRequest(
+    model?: string, cwd?: string, autonomy: AutonomyLevel = "read-only", effort?: ReasoningEffort,
+    passthroughEnv: readonly string[] = [], enablePlaywrightMcp = false
+  ): void {
+    // The helper carries MCP itself; the public CLI's shared whitelist
+    // remains a separate gate until its integration patch is applied.
+    super.validateTuiRequest(model, cwd, autonomy, effort, passthroughEnv, false);
+    if (typeof enablePlaywrightMcp !== "boolean") throw new Error("enablePlaywrightMcp must be a boolean");
     const workdir = validateWorkingDirectory(cwd) ?? process.cwd();
     assertNoGeminiProjectExecutionConfig(workdir);
     if (!geminiSystemSettingsLoadable()) assertNoGeminiRepositoryEnv(workdir);
+    this.modelFor(model);
   }
 
   buildTuiCommand(
@@ -146,8 +386,9 @@ export class GeminiAdapter extends BaseAdapter {
     _sandboxed?: boolean
   ): string[] {
     const cmd = ["gemini", "--sandbox=false"];
-    if (model) {
-      cmd.push("-m", model);
+    const resolvedModel = this.modelFor(model);
+    if (resolvedModel) {
+      cmd.push("-m", resolvedModel);
     }
     if (autonomy) {
       cmd.push(...this.mapAutonomy(autonomy));

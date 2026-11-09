@@ -67,7 +67,7 @@ describe("the session command driven in process", () => {
         // The badbytes scenario writes undecodable bytes and stays open,
         // so the turn's own child — not the session process — reports
         // the fatal the spawn's onFatal arrow carries to the driver.
-        { kimi: withVersion(fakeHarness(FAKE_KIMI), "0.31.1") },
+        { kimi: withVersion(fakeHarness(FAKE_KIMI), "2.5.2") },
         {
           registryFile: registry,
           stdin,

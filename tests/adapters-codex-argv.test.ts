@@ -89,10 +89,7 @@ describe("CodexAdapter", () => {
     expect(caps.supportsAutonomy).toBe(true);
     expect(caps.autonomyLevels).toEqual(["read-only", "low", "medium", "high"]);
     expect(caps.supportsEffort).toBe(true);
-    // `none` left the list in audit round 2 (A2): codex has no audited
-    // `none` carrier, so `--effort none` is the CLI-wide "send no effort
-    // flag" spelling here, not a config override.
-    expect(caps.effortLevels).toEqual(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(caps.effortLevels).toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
   });
 
   // Every exec run carries the event stream flag and names the
@@ -179,6 +176,23 @@ describe("CodexAdapter", () => {
         .toEqual(["codex", "-c", 'model_reasoning_effort="medium"', "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", ...tail]);
       expect(scoped.buildRunCommand({ agent: "codex", prompt: "t", effort: "high" }))
         .toEqual(["codex", "-c", 'model_reasoning_effort="high"', "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", ...tail]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("buildRunCommand with --no-web disables the web search tool through a config override", () => {
+    const home = mkdtempSync(join(tmpdir(), "codemux-codex-"));
+    try {
+      const scoped = new CodexAdapter({}, home);
+      const tail = runTail(home);
+      // codex 0.166.0: ToolsToml's web_search field takes a WebSearchMode
+      // (disabled|cached|indexed|live) and -c overrides config.toml per
+      // invocation, so the denial rides the top-level WebSearchMode key.
+      expect(scoped.buildRunCommand({ agent: "codex", prompt: "t", web: false }))
+        .toEqual(["codex", "-c", 'web_search="disabled"', "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", ...tail]);
+      expect(scoped.buildRunCommand({ agent: "codex", prompt: "t" }))
+        .toEqual(["codex", "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-rules", ...tail]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

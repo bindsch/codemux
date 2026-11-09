@@ -390,6 +390,7 @@ describe("session records", () => {
       const context = {
         agent: "codex" as const,
         model: "g-5",
+        modelAlias: "judge" as string | null,
         provider: "default",
         autonomy: "low" as const,
         hermetic: false,
@@ -403,7 +404,7 @@ describe("session records", () => {
         total_tokens: 18,
       };
       appendSessionTurnCallRecord(
-        context, "sess-1", "t1", Date.now() - 4000, "end", usage, withPath
+        context, "sess-1", "t1", Date.now() - 4000, "end", usage, "g-5-pro", withPath
       );
       appendSessionCallRecord(
         context, "sess-1", Date.now() - 9000, "stdin-close", 0, usage, withPath
@@ -417,7 +418,8 @@ describe("session records", () => {
       expect(turn.finish).toBe("end");
       expect(turn.exit_code).toBeNull();
       expect(turn.model).toBe("g-5");
-      expect(turn.model_effective).toBeNull();
+      expect(turn.model_effective).toBe("g-5-pro");
+      expect(turn.model_alias).toBe("judge");
       expect(turn.usage.input_tokens).toBe(11);
       expect(turn.duration_ms).toBeGreaterThanOrEqual(4000);
       const session = log.entries[1]!.record!;
@@ -426,6 +428,10 @@ describe("session records", () => {
       expect(session.finish).toBe("stdin-close");
       expect(session.exit_code).toBe(0);
       expect(session.usage.total_tokens).toBe(18);
+      // The closing record keeps model_effective null — no single model
+      // serves a whole session — and the alias rides it like every line.
+      expect(session.model_effective).toBeNull();
+      expect(session.model_alias).toBe("judge");
     } finally {
       cleanup();
     }

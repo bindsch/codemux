@@ -8,6 +8,13 @@ import { agySessionCapabilities, AGY_SESSION_FLOOR } from "../src/session/agy-se
 import { opencodeSessionCapabilities, OPENCODE_SESSION_FLOOR } from "../src/session/opencode-session.js";
 import { aiderSessionCapabilities, AIDER_SESSION_FLOOR } from "../src/session/aider-session.js";
 import { kimiSessionCapabilities, KIMI_SESSION_FLOOR } from "../src/session/kimi-session.js";
+import { cursorSessionCapabilities, CURSOR_SESSION_FLOOR } from "../src/session/cursor-session.js";
+import { droidSessionCapabilities, DROID_SESSION_FLOOR } from "../src/session/droid-session.js";
+import { piSessionCapabilities, PI_SESSION_FLOOR } from "../src/session/pi-session.js";
+import { qwenSessionCapabilities, QWEN_SESSION_FLOOR } from "../src/session/qwen-session.js";
+import { geminiSessionCapabilities, GEMINI_SESSION_FLOOR } from "../src/session/gemini-session.js";
+import { copilotSessionCapabilities, COPILOT_SESSION_FLOOR } from "../src/session/copilot-session.js";
+import { gooseSessionCapabilities, GOOSE_SESSION_FLOOR } from "../src/session/goose-session.js";
 import { MAX_INPUT_TEXT_BYTES, MAX_AUTHOR_CODEPOINTS, MAX_REASON_CHARS, MAX_ID_CHARS } from "../src/session/protocol.js";
 import { MAX_HARNESS_LINE_BYTES, MAX_INPUT_LINE_BYTES, MAX_PENDING_EVENTS, MAX_PENDING_EVENT_BYTES } from "../src/session/process.js";
 
@@ -24,6 +31,13 @@ const agents = [
   ["opencode", OPENCODE_SESSION_FLOOR, opencodeSessionCapabilities],
   ["aider", AIDER_SESSION_FLOOR, aiderSessionCapabilities],
   ["kimi", KIMI_SESSION_FLOOR, kimiSessionCapabilities],
+  ["cursor", CURSOR_SESSION_FLOOR, cursorSessionCapabilities],
+  ["droid", DROID_SESSION_FLOOR, droidSessionCapabilities],
+  ["pi", PI_SESSION_FLOOR, piSessionCapabilities],
+  ["qwen", QWEN_SESSION_FLOOR, qwenSessionCapabilities],
+  ["gemini", GEMINI_SESSION_FLOOR, geminiSessionCapabilities],
+  ["copilot", COPILOT_SESSION_FLOOR, copilotSessionCapabilities],
+  ["goose", GOOSE_SESSION_FLOOR, gooseSessionCapabilities],
 ] as const;
 
 describe("published session contract", () => {

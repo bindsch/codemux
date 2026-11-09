@@ -6,8 +6,10 @@ import { assertNoKimiProjectExecutionConfig } from "../project-safety.js";
 import { kimiPromptIsCommand } from "../session/kimi-session.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import { writeKimiNoToolsFile } from "../kimi-no-tools.js";
+import { createKimiPolicyHome, prepareKimiPlaywright } from "../kimi-run-policy.js";
 import { createKimiHermeticHome, KIMI_HERMETIC_ENV_ASSIGNMENTS, KIMI_HERMETIC_ENV_OMISSIONS } from "../kimi-hermetic.js";
 import { assertNoKimiHermeticProjectConfig } from "../kimi-project-safety.js";
+import { validateProjectSettingsRunRequest } from "../claude-project-settings.js";
 import { kimiPlainResult, kimiResult } from "../result-envelope/kimi.js";
 import { appendDiagnostic } from "../result-envelope.js";
 import { foldOverflowEvidence, foldScanEvidence, KimiPlainFold } from "../plain-unwrap/kimi-fold.js";
@@ -18,13 +20,15 @@ import { readExperimentRunSpec } from "../experiment-mcp.js";
 import { ExperimentKimiRun } from "../experiment-kimi-run.js";
 import type { ExperimentFailure } from "../experiment-records.js";
 import {
-  readProviderOverride,
-  requireProviderOverride,
-  type ProviderOverride,
-} from "../provider-override.js";
+  kimiProviderEnv,
+  kimiProviderModelFor,
+  kimiValidatedProvider,
+} from "../kimi-provider.js";
+import type { ProviderOverride } from "../provider-override.js";
 import type {
   AgentId,
   AutonomyLevel,
+  ReasoningEffort,
   RunRequest,
   RunResult,
   AdapterCapabilities,
@@ -40,19 +44,17 @@ import { kimiLoginState, loginHome, type LoginState } from "../harness-health.js
  * continuations, removed by processRunResult only for installed major
  * versions 2 and higher when all stdout matches; older ones stay as-is.
  *
- * Autonomy maps onto three native switches in interactive sessions: the default
- * asks before acting, `--yolo` auto-approves tool calls while still asking
- * questions, `--auto` removes the questions too, and `--plan` is the read-only
- * equivalent. None of them may be combined with `--prompt`, so headless runs
- * carry no native control and depend on the scode boundary that every level
- * below `high` already requires.
+ * Autonomy maps onto three native switches in interactive sessions: the
+ * default asks before acting, `--yolo` auto-approves tool calls, `--auto`
+ * removes the questions too, and `--plan` is the read-only equivalent.
+ * None of them may be combined with `--prompt`, so headless runs carry no
+ * native control and depend on the scode boundary that every level below
+ * `high` already requires.
  *
  * `--tools none`: no flag removes kimi's tools, but an agent definition's
  * `tools: []` frontmatter is the profile's own allowlist, and the tool
  * manager's gates are strict membership tests, so an empty list exposes no
- * built-in and no MCP tool (see src/kimi-no-tools.ts for the grounding). The
- * file's required prompt body is `${base_prompt}`, the default profile's own
- * prompt, so the run keeps kimi's base instructions. Verified live on
+ * built-in and no MCP tool (src/kimi-no-tools.ts). Verified live on
  * 2026-09-17 through the provider override: under it neither the read nor
  * the shell capability probe could produce its secret, while a plain run
  * produced both.
@@ -83,9 +85,17 @@ export class KimiAdapter extends BaseAdapter {
       supportsModel: true,
       supportsAutonomy: true,
       autonomyLevels: ["read-only", "low", "medium", "high"],
-      // 0.31.1 exposes no reasoning-effort or thinking-budget control.
-      supportsEffort: false,
-      effortLevels: [],
+      // KIMI_MODEL_THINKING_EFFORT, the config layer's env alias for the
+      // [thinking] forcedEffort field (kimi 2.5.2 bundle byte ~97385100:
+      // envBindings(ThinkingConfigSchema, { forcedEffort:
+      // "KIMI_MODEL_THINKING_EFFORT" }), applied to every run kind).
+      // resolveForcedThinkingEffort (byte ~98845400) applies the value
+      // whenever the model's thinking is not already "off", and the
+      // vocabulary's "off" is the disable state (resolveThinkingEffort,
+      // byte ~97226900), so `none` maps to `off` and a model that rejects
+      // the level fails at its own thinking-cannot-disable error.
+      supportsEffort: true,
+      effortLevels: ["none", "low", "medium", "high"],
       // Verified live on 2026-09-17 through a provider override (GLM-5.3
       // via Z.AI): under --tools none the read and shell probes produced
       // neither secret, while a plain run produced both (docs/isolation.md).
@@ -96,55 +106,19 @@ export class KimiAdapter extends BaseAdapter {
     };
   }
 
-  /**
-   * The provider override, validated: kimi's only env-driven custom provider
-   * is the `KIMI_MODEL_*` synthesis, which needs a base URL and a key.
-   */
+  /** The provider override, validated (kimi-provider.ts holds the rule). */
   private validatedProvider(): (ProviderOverride & { baseUrl: string; apiKey: string }) | null {
-    const override = readProviderOverride("kimi", this.environment);
-    if (override === null) return null;
-    return requireProviderOverride("kimi", override, [
-      "baseUrl",
-      "apiKey",
-    ]) as ProviderOverride & { baseUrl: string; apiKey: string };
+    return kimiValidatedProvider(this.environment);
   }
 
   /** The model id the synthesized provider sends: the request's, else the override's. */
   private modelFor(model: string | undefined): string | undefined {
-    const override = this.validatedProvider();
-    const resolved = model ?? override?.model;
-    if (resolved === undefined && override !== null) {
-      throw new UsageRefusalError(
-        "kimi needs a model for the provider override; pass --model or set CODEMUX_KIMI_PROVIDER_MODEL"
-      );
-    }
-    return resolved;
+    return kimiProviderModelFor(this.environment, model);
   }
 
   /** The `KIMI_MODEL_*` environment for an active override, else nothing. */
   private providerEnv(model: string | undefined): Record<string, string> {
-    const override = this.validatedProvider();
-    if (override === null) return {};
-    return {
-      KIMI_MODEL_NAME: this.modelFor(model)!,
-      KIMI_MODEL_API_KEY: override.apiKey,
-      KIMI_MODEL_BASE_URL: override.baseUrl,
-      // The Z.AI-style endpoints the override targets speak the OpenAI
-      // chat-completions protocol; kimi's own protocol is the default.
-      KIMI_MODEL_PROVIDER_TYPE: "openai",
-      // The caps ride the sibling variables the synthesis reads:
-      // KIMI_MODEL_MAX_COMPLETION_TOKENS is the reply budget's hard cap and
-      // KIMI_MODEL_MAX_CONTEXT_SIZE the context window (both parsed from the
-      // environment in the installed binary; the cap names differ by one
-      // word and are not interchangeable — MAX_OUTPUT_SIZE is an output-SIZE
-      // knob of a different unit, deliberately unused).
-      ...(override.maxOutputTokens !== undefined
-        ? { KIMI_MODEL_MAX_COMPLETION_TOKENS: String(override.maxOutputTokens) }
-        : {}),
-      ...(override.maxContextTokens !== undefined
-        ? { KIMI_MODEL_MAX_CONTEXT_SIZE: String(override.maxContextTokens) }
-        : {}),
-    };
+    return kimiProviderEnv(this.environment, model);
   }
 
   /**
@@ -164,6 +138,11 @@ export class KimiAdapter extends BaseAdapter {
 
   override prepareRun(request: RunRequest, _sandboxTrust?: ScodeTrustLevel, _sandboxOptions?: SandboxOptions, launch: LaunchIntent = {}): RunContext {
     const printOnly = launch.printOnly === true;
+    // The project-settings gate runs before any artifact this method
+    // creates (claude's ordering rule): a programmatic caller cannot
+    // reach the private home without hermetic mode, the scode sandbox,
+    // and low autonomy.
+    if (request.experimentProjectSettings) validateProjectSettingsRunRequest(request);
     if (request.experimentMcp) {
       const spec = readExperimentRunSpec(request);
       if (!request.hermetic && !spec.control) throw new UsageRefusalError("Kimi experiment requires a private hermetic home");
@@ -184,9 +163,9 @@ export class KimiAdapter extends BaseAdapter {
         return context;
       } catch (error) { this.cleanupRunSync(context); throw error; }
     }
-    if (request.hermetic) {
+    if (request.hermetic || request.web === false || request.enablePlaywrightMcp) {
       const context: RunContext = {
-        kimiHermeticHome: createKimiHermeticHome(this.realBrandHome(), request.tools === "none", printOnly),
+        kimiHermeticHome: createKimiPolicyHome(this.realBrandHome(request.passthroughEnv), request, printOnly),
       };
       if (!request.resultJson) context.stdoutSink = new KimiPlainFold();
       return context;
@@ -265,27 +244,44 @@ export class KimiAdapter extends BaseAdapter {
     }
   }
 
-  override getRunEnv(request: RunRequest, context?: RunContext): Record<string, string> {
-    if (request.hermetic && context?.kimiHermeticHome === undefined) {
-      throw new Error("kimi hermetic home was not prepared before launch");
-    }
-    return this.providerEnv(request.model);
+  /** kimi's effort env value: `none` is kimi's `off`. */
+  private effortEnvValue(level: ReasoningEffort): string {
+    return level === "none" ? "off" : level;
   }
 
-  override getTuiEnv(model?: string): Record<string, string> {
-    return this.providerEnv(model);
+  override getRunEnv(request: RunRequest, context?: RunContext): Record<string, string> {
+    if ((request.hermetic || request.web === false || request.enablePlaywrightMcp) && context?.kimiHermeticHome === undefined) {
+      throw new Error(`kimi ${request.hermetic ? "hermetic" : "private policy"} home was not prepared before launch`);
+    }
+    return {
+      ...this.providerEnv(request.model),
+      ...(request.effort ? { KIMI_MODEL_THINKING_EFFORT: this.effortEnvValue(request.effort) } : {}),
+    };
+  }
+
+  override getTuiEnv(
+    model?: string,
+    _autonomy?: AutonomyLevel,
+    effort?: ReasoningEffort
+  ): Record<string, string> {
+    return {
+      ...this.providerEnv(model),
+      ...(effort ? { KIMI_MODEL_THINKING_EFFORT: this.effortEnvValue(effort) } : {}),
+    };
   }
 
   buildRunCommand(request: RunRequest, context?: RunContext): string[] {
     const privateHome = context?.kimiHermeticHome;
     const unpreparedHome = join(this.realBrandHome(), ".codemux-hermetic", "unprepared");
+    prepareKimiPlaywright(request, context, { pathEnv: this.executionPathEnv(), forbiddenRoot: request.cwd });
     // Scode must keep the real HOME for policy and credential access. Redirect only its child.
     const cmd = request.hermetic
       ? ["env", ...KIMI_HERMETIC_ENV_OMISSIONS.flatMap((name) => ["-u", name]),
         ...KIMI_HERMETIC_ENV_ASSIGNMENTS,
         `HOME=${privateHome?.home ?? unpreparedHome}`,
         `KIMI_CODE_HOME=${privateHome?.kimiHome ?? join(unpreparedHome, ".kimi-code")}`, "kimi"]
-      : ["kimi"];
+      : privateHome && (request.web === false || request.enablePlaywrightMcp)
+        ? ["env", `KIMI_CODE_HOME=${privateHome.kimiHome}`, "kimi"] : ["kimi"];
 
     // With an override the synthesized provider is the default model, and
     // `-m` names a config alias that outranks it — one that does not exist
@@ -293,17 +289,26 @@ export class KimiAdapter extends BaseAdapter {
     if (request.model && this.validatedProvider() === null) {
       cmd.push("--model", request.model);
     }
-    // 0.31.1 rejects --plan, --yolo, and --auto when combined with --prompt
-    // ("Cannot combine --prompt with --plan"), verified against the installed
-    // binary. Headless Kimi therefore has no native autonomy control at all,
-    // and the level is enforced entirely by the scode boundary that every level
-    // below `high` already requires. The flags below are interactive-only and
-    // are applied in buildTuiCommand.
+    // 2.5.2 rejects --plan, --yolo, and --auto when combined with --prompt
+    // ("Cannot combine --prompt with --plan."), and the hidden yolo aliases
+    // --yes and --auto-approve hit the same refusal: the option reader maps
+    // them onto yolo (`raw["yolo"] === true || raw["yes"] === true ||
+    // raw["autoApprove"] === true`, kimi 2.5.2 bundle strings, read
+    // 2026-11-08). Headless Kimi therefore has no native autonomy control
+    // at all, and the level is enforced entirely by the scode boundary
+    // that every level below `high` already requires.
 
     if (request.hermetic) {
       const unprepared = join(this.realBrandHome(), ".codemux-hermetic", "unprepared");
-      cmd.push("--skills-dir", context?.kimiHermeticHome?.skillsDir ?? join(unprepared, "skills-dir"),
-        "--agent-file", context?.kimiHermeticHome?.agentFile ?? join(unprepared, "agent.md"));
+      // A project-settings run drops --skills-dir: the option replaces
+      // auto-discovered user AND project skill directories (2.5.2 root
+      // option table), so keeping it would keep the repository's own
+      // skills out of the run the flag exists to expose. The operator's
+      // global channels stay blocked by the HOME/KIMI_CODE_HOME redirect.
+      if (request.experimentProjectSettings !== true) {
+        cmd.push("--skills-dir", context?.kimiHermeticHome?.skillsDir ?? join(unprepared, "skills-dir"));
+      }
+      cmd.push("--agent-file", context?.kimiHermeticHome?.agentFile ?? join(unprepared, "agent.md"));
     } else if (request.tools === "none") {
       // A static preview (`verify`) has no prepared file; the placeholder
       // path does not exist, and kimi fails to read it, so a command built
@@ -313,19 +318,11 @@ export class KimiAdapter extends BaseAdapter {
         ".codemux",
         "unprepared"
       );
-      cmd.push("--agent-file", context?.kimiNoToolsFile?.path ?? unprepared);
+      cmd.push("--agent-file", privateHome?.agentFile ?? context?.kimiNoToolsFile?.path ?? unprepared);
     }
 
-    // 0.31.1 has no stdin transport: the prompt is an argv value. BaseAdapter
-    // bounds its length, the same as the other argv-only harnesses. Every run
-    // asks for the stream-json wire (0.31.1 prints it; the session driver
-    // rests on the same floor), not only --result-json ones: the plain path
-    // reads the reply and the wire-log usage off the same stream
-    // (kimiPlainResult), so a plain run records tokens like claude, zai, agy,
-    // codex, and opencode plain runs do. A plain run never captures that
-    // stream whole — prepareRun hangs KimiPlainFold on the context, which
-    // drops the tool payloads as they arrive, so tool volume cannot reach
-    // the capture bound (the opencode/codex rule).
+    // Kimi 2.5.2 reads opts.prompt in runV2Print. Every run uses stream-json;
+    // plain output folds the reply and reads usage from the native wire log.
     cmd.push("--output-format", "stream-json");
     cmd.push("--prompt", request.prompt);
     return cmd;
@@ -360,19 +357,17 @@ export class KimiAdapter extends BaseAdapter {
     }
     // Plain runs: the same structured launch, unwrapped. The reply and the
     // wire-log usage come off the stream exactly as a --result-json run's
-    // do, while stdout keeps the plain contract (the reply, never the wire);
-    // a binary that ignored --output-format keeps its verbatim, bullet
-    // unwrapped text and records no usage (kimiPlainResult's hatch). When
-    // the launch streamed (the context's KimiPlainFold), result.stdout is
-    // already the folded subset — the hatch's raw bytes or the kept wire
-    // lines — and the unwrap below parses it unchanged.
+    // do, while stdout keeps the plain contract (the reply, never the
+    // wire); a binary that ignored --output-format keeps its verbatim,
+    // bullet unwrapped text and records no usage (kimiPlainResult's
+    // hatch). When the launch streamed, result.stdout is already the
+    // folded subset and the unwrap below parses it unchanged.
     if (result.captureLimitExceeded) {
       // The 125 said only that a line passed 16 MiB; the fold held the
       // offender's first bytes as it latched, so the failure names the
       // line instead of leaving the run's killer nameless (lane C30,
-      // item 2). Controls escape with the helper the other stderr-bearing
-      // paths use, so a hostile line cannot repaint the terminal from the
-      // failure message itself.
+      // item 2). Controls escape so a hostile line cannot repaint the
+      // terminal from the failure message itself.
       const overflow = foldOverflowEvidence(context?.stdoutSink);
       if (overflow !== null) {
         const length = overflow.final
@@ -407,24 +402,24 @@ export class KimiAdapter extends BaseAdapter {
       if (request.passthroughEnv?.includes("KIMI_CODE_HOME")) {
         throw new UsageRefusalError("kimi --hermetic owns KIMI_CODE_HOME; remove --pass-env KIMI_CODE_HOME");
       }
-      assertNoKimiHermeticProjectConfig(cwd);
+      // Project-settings mode flips exactly this refusal: the
+      // repository's own channels (kimi-project-settings.ts) load inside
+      // the hermetic boundary, and prepareRun's gate has already judged
+      // the request against that mode's rules.
+      if (request.experimentProjectSettings !== true) assertNoKimiHermeticProjectConfig(cwd);
     } else assertNoKimiProjectExecutionConfig(cwd);
     // The refusal class is usage (exit 64, UsageRefusalError), the aider
-    // rule the session driver already applies before its ack (round al11;
-    // the README's live-sessions sentence names the run path's refusal,
-    // which did not exist). What is refused narrowed in al17 to what
-    // kimi's headless path actually dispatches: 0.31.1 parses only
-    // goal-creates before the model turn, so every other `/`-leading
-    // prompt (a path like /tmp/notes.md first among them) reaches the
-    // model unchanged, and the refusals are the word-bounded `/goal`
-    // name (dispatched as the goal flow with its own exit codes, never
-    // a model turn) and the `!` shell-escape shape (kimiPromptIsCommand
-    // states the full rule). Round al18 corrected the message to the
-    // per-shape truth: only /goal CREATES dispatch (the goal flow, its
-    // own exit codes), while the other /goal subcommands fall through
-    // to the model as prompt text in 0.31.1 — the whole name is refused
-    // as codemux's own policy, not as a claim that kimi would have run
-    // every spelling headlessly.
+    // rule the session driver already applies before its ack (round al11).
+    // What is refused narrowed in al17 to what kimi's headless path
+    // actually dispatches: 0.31.1 parses only goal-creates before the
+    // model turn, so every other `/`-leading prompt (a path like
+    // /tmp/notes.md first among them) reaches the model unchanged, and
+    // the refusals are the word-bounded `/goal` name and the `!`
+    // shell-escape shape (kimiPromptIsCommand states the full rule).
+    // Round al18 corrected the message to the per-shape truth: only /goal
+    // CREATES dispatch, while the other /goal subcommands fall through to
+    // the model as prompt text — the whole name is refused as codemux's
+    // own policy, not as a claim that kimi would run every spelling.
     if (kimiPromptIsCommand(request.prompt)) {
       throw new UsageRefusalError(
         "kimi prompts must not be the /goal command or a '!' shell line: " +
@@ -443,14 +438,13 @@ export class KimiAdapter extends BaseAdapter {
     this.modelFor(request.model);
     // The passed-through KIMI_CODE_HOME is checked exactly as the child
     // reads it here, before prepareRun writes the agent file under it
-    // (round al21, contracts-2 minor 7). Round al29 (correctness major 5)
-    // widened the check to EVERY run that passes the variable through: the
-    // child reads its config, skills and store from that directory
-    // whatever the run kind, so the empty/relative/missing refusals cannot
-    // depend on --tools none being the one kind codemux itself writes
-    // under it — and the refusals are UsageRefusalErrors (exit 64, the
-    // session boundary's own class for them, zero drift between the two
-    // paths). The default home (no passthrough) stays exempt.
+    // (round al21). Round al29 widened the check to EVERY run that passes
+    // the variable through: the child reads its config, skills and store
+    // from that directory whatever the run kind, so the
+    // empty/relative/missing refusals cannot depend on --tools none being
+    // the one kind codemux itself writes under it — and the refusals are
+    // UsageRefusalErrors (exit 64, zero drift between the two paths). The
+    // default home (no passthrough) stays exempt.
     this.realBrandHome(request.passthroughEnv);
   }
 

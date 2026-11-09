@@ -342,8 +342,13 @@ export const makeScenarioHandlers = (deps: ScenarioDeps) => ({
 
   badinit: (): void => {
     // The per-turn init already ran in runUserText, so this is the
-    // second one; the turn then completes normally.
+    // second one; the turn then answers and completes normally (an
+    // answerless turn would fail as an empty answer, src/result-empty.ts).
     write({ type: "system", subtype: "init", session_id: sessionId, tools: ["Bash"] });
+    write({
+      type: "assistant",
+      message: { id: "msg-badinit", content: [{ type: "text", text: "Answered after the duplicate init." }], usage: { input_tokens: 7, output_tokens: 2 } },
+    });
     write({
       type: "result",
       subtype: "success",

@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { initialKimiState, step } from "../src/session/kimi-machine.js";
 import { buildSessionEnded, harnessFailed, SessionProcess } from "../src/session/process.js";
+import { emptyUsage } from "../src/result-envelope.js";
 
 const ID = "session_11111111-2222-3333-4444-555555555555";
 const hint = JSON.stringify({ role: "meta", type: "session.resume_hint", session_id: ID,
@@ -58,7 +59,7 @@ for (const code of [0, 1, 7, 137, 143]) {
         step(state, { kind: "stdin_eof" }, config);
         child.requestStop();
         const outcome = await child.exited;
-        step(state, { kind: "child_exit", child, outcome }, config);
+        step(state, { kind: "child_exit", child, outcome, usage: emptyUsage() }, config);
         const effects = step(state, { kind: "children_settled" }, config);
         expect(outcome).toEqual({ code, signal: null });
         expect(effects).toContainEqual({ kind: "resolve_done", code: code === 0 ? 0 : 1 });

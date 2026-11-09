@@ -7,19 +7,36 @@
 import type { AgentId } from "../types.js";
 import { AGY_ANSWER_FIELD } from "./agy.js";
 import { CLAUDE_FAMILY_ANSWER_FIELD } from "./claude.js";
+import { COPILOT_ANSWER_FIELD } from "./copilot.js";
 import { CODEX_ANSWER_FIELD } from "./codex.js";
+import { GEMINI_ANSWER_FIELD } from "./gemini.js";
+import { GOOSE_ANSWER_FIELD } from "./goose.js";
 import { KIMI_ANSWER_FIELD } from "./kimi.js";
+import { CURSOR_ANSWER_FIELD } from "./cursor.js";
+import { DROID_ANSWER_FIELD } from "./droid.js";
 import { OPENCODE_ANSWER_FIELD } from "./opencode.js";
+import { OPENHANDS_ANSWER_FIELD } from "./openhands.js";
+import { PI_ANSWER_FIELD } from "./pi.js";
+import { QWEN_ANSWER_FIELD } from "./qwen.js";
 
-/** The six --result-json harnesses and the field each envelope spells its
+/** The --result-json harnesses and the field each envelope spells its
  * answer with. Agents without --result-json support are absent; a lookup
  * that misses is the caller's refusal (no documented envelope). */
 export const RESULT_ANSWER_FIELD: Partial<Record<AgentId, string>> = {
   agy: AGY_ANSWER_FIELD,
   claude: CLAUDE_FAMILY_ANSWER_FIELD,
+  cline: "text",
   codex: CODEX_ANSWER_FIELD,
+  copilot: COPILOT_ANSWER_FIELD,
+  cursor: CURSOR_ANSWER_FIELD,
+  droid: DROID_ANSWER_FIELD,
+  gemini: GEMINI_ANSWER_FIELD,
+  goose: GOOSE_ANSWER_FIELD,
   kimi: KIMI_ANSWER_FIELD,
   opencode: OPENCODE_ANSWER_FIELD,
+  openhands: OPENHANDS_ANSWER_FIELD,
+  pi: PI_ANSWER_FIELD,
+  qwen: QWEN_ANSWER_FIELD,
   zai: CLAUDE_FAMILY_ANSWER_FIELD,
 };
 
@@ -29,12 +46,45 @@ export const RESULT_ANSWER_FIELD: Partial<Record<AgentId, string>> = {
  * a successful run that was not rerouted reports `served_model: null` and
  * codex is NOT in this set: probe H cannot assert an override on evidence
  * that arrives only when the provider rerouted (round 26, edges 2). Agy,
- * kimi, and opencode pins expose no served-model field, so their
- * envelopes report `served_model: null`. The release gate's
+ * kimi, openhands, and opencode pins expose no served-model field, so their
+ * envelopes report `served_model: null`. Qwen's result message names no
+ * model either, but every assistant frame in its message array does, so
+ * its envelope reports the LAST assistant frame's model
+ * (src/result-envelope/qwen.ts). The release gate's
  * probe H (the override is asserted on the envelope's served_model) and
  * `codemux list --json` (candidate discovery) read this one table, so
  * the gate's set, the envelope builders, and the listing cannot drift. */
 export const SERVED_MODEL_EVIDENCE_HARNESSES: ReadonlySet<AgentId> = new Set([
   "claude",
+  "gemini",
+  "pi",
   "zai",
+  "goose",
+  "qwen",
+  // A --result-json run is the observed RPC session; the model comes from
+  // the provider response bytes (src/copilot-model-evidence.ts).
+  "copilot",
 ]);
+
+/** Where a SESSION's served model comes from (design P5): "provider"
+ * when the wire names what served each turn (claude and zai's
+ * message.model / modelUsage; codex's model/rerouted notice), "harness"
+ * when the wire names what it configured (claude's init frame, codex's
+ * thread response — both agents carry the two sources side by side: the
+ * events report whichever named one), "none" when no machine-readable
+ * naming exists on the recorded wire (a declared limitation, never a
+ * missing field). An absent entry is an agent whose session driver
+ * reports no served model yet; its events carry the fields as null. */
+export type SessionServedModelSource = "provider" | "harness" | "none";
+
+export const SESSION_SERVED_MODEL: Partial<
+  Record<AgentId, SessionServedModelSource[]>
+> = {
+  claude: ["provider", "harness"],
+  zai: ["provider", "harness"],
+  codex: ["provider", "harness"],
+  agy: ["none"],
+  kimi: ["none"],
+  opencode: ["none"],
+  aider: ["none"],
+};

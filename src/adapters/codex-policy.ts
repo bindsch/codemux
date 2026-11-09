@@ -10,6 +10,7 @@ import {
   CODEX_PROVIDER_ID,
   CODEX_PROVIDER_KEY_ENV,
   readCodexMultiAgent,
+  writeCodexProviderConfig,
 } from "../codex-provider.js";
 import {
   assertProviderCap,
@@ -22,6 +23,7 @@ import {
   assertNoCodexProjectSkills,
 } from "../project-safety.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
+import { codexNoToolsCatalogBody, needsCodexNoToolsCatalog } from "../codex-no-tools.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -50,19 +52,13 @@ export abstract class CodexPolicy extends BaseAdapter {
       supportsAutonomy: true,
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
-      // `none` is absent on purpose: run once carried it as the config
-      // override `-c model_reasoning_effort="none"`, but the session's one
-      // verified carrier (turn/start's `effort`) has no audited `none`, so
-      // the same spelling meant three things across commands. Under the
-      // 2.0.0 rule `none` is the CLI's "send no effort flag" spelling on
-      // every adapter (resolveEffortForAdapter): run launches with no
-      // override and the model's default applies, the same behavior the
-      // session refusal used to send callers to by hand.
-      effortLevels: ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+      // rust-v0.166.0 protocol/openai_models.rs:61-80,137-151 maps None
+      // to "none"; app-server TurnStartParams uses the same enum.
+      effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
       supportsHermetic: true,
       supportsToolSelection: true,
-      // The validator below refuses --tools none above read-only autonomy.
-      toolsNoneRequiresReadOnly: true,
+      // Writable autonomy uses a sanitized native model_catalog_json file.
+      toolsNoneRequiresReadOnly: false,
       // `codex exec --json` prints its events as JSONL, which processRunResult
       // reduces to the result envelope.
       supportsResultJson: true,
@@ -153,8 +149,8 @@ export abstract class CodexPolicy extends BaseAdapter {
   /**
    * The provider override, validated: a base URL and a key routed through a
    * private per-run CODEX_HOME (codex-provider.ts), plus the model the
-   * endpoint serves. The output-token cap is refused — no release Codemux
-   * supports reads one — while the context cap rides `model_context_window`
+   * endpoint serves. The pinned native schema has no output-token cap,
+   * while the context cap rides `model_context_window`
    * in the same config.toml. The multi-agent knob rides that config too, so
    * it is validated here as well: every launch path (validateRunRequest
    * through modelFor, the TUI check, prepareRun's writers) fails loudly on
@@ -176,9 +172,9 @@ export abstract class CodexPolicy extends BaseAdapter {
       "codex",
       override,
       "maxOutputTokens",
-      "no release Codemux supports reads a model_max_output_tokens key — the " +
-        "0.160 config reference lists model_context_window but no output cap, " +
-        "and the key never existed in the source through 0.160"
+      "Codex 0.166.0 has no model output cap in its config schema, native " +
+        "ModelInfo catalog, or ResponsesApiRequest; context/compaction limits " +
+        "and tool-output truncation do not cap generated model tokens"
     );
     return requireProviderOverride("codex", override, [
       "baseUrl",
@@ -274,15 +270,19 @@ export abstract class CodexPolicy extends BaseAdapter {
     if (request.experimentMcp) this.experimentModel(request);
     else this.modelFor(request.model);
     const cwd = validateWorkingDirectory(request.cwd) ?? process.cwd();
-    assertNoCodexProjectExecutionConfig(cwd);
-    if (request.hermetic) {
-      assertNoCodexProjectSkills(cwd, this.effectiveHome());
+    // The project-settings mode is the one caller that wants exactly the
+    // repository inputs these guards refuse: its validator (reached at
+    // prepareRun, validateProjectSettingsRunRequest) has already required
+    // hermetic isolation and the sandbox, so the guards flip rather than
+    // fire (codex-project-settings.ts).
+    if (request.experimentProjectSettings !== true) {
+      assertNoCodexProjectExecutionConfig(cwd);
+      if (request.hermetic) {
+        assertNoCodexProjectSkills(cwd, this.effectiveHome());
+      }
     }
-    if (request.tools === "none" && (request.autonomy ?? "read-only") !== "read-only") {
-      throw new UsageRefusalError(
-        "codex cannot remove its apply_patch tool; --tools none needs --auto read-only, " +
-          "where the sandbox denies writes to the working directory"
-      );
+    if (needsCodexNoToolsCatalog(request)) {
+      codexNoToolsCatalogBody(this.modelFor(request.model), this.realCodexHome(request));
     }
   }
 
@@ -298,16 +298,41 @@ export abstract class CodexPolicy extends BaseAdapter {
     assertNoCodexProjectExecutionConfig(
       validateWorkingDirectory(cwd) ?? process.cwd()
     );
-    // The private CODEX_HOME's lifecycle rides prepareRun, which only the
-    // headless launch path calls; an interactive session has no hook to
-    // write and remove the override's config.toml, and pointing one at the
-    // operator's real CODEX_HOME would mean writing codemux's provider
-    // table into the operator's config.
-    if (this.validatedProvider() !== null) {
-      throw new UsageRefusalError(
-        "the codex provider override supports headless runs only; unset CODEMUX_CODEX_PROVIDER_* for an interactive session"
-      );
+    // An override in TUI mode carries the run path's model requirement
+    // (modelFor): a session without one would write no model into the
+    // private config.toml. A caller mistake, so it fires at validation —
+    // before any launch-owned directory exists (claude's TUI rule).
+    if (this.validatedProvider() !== null) this.modelFor(model);
+  }
+
+  /** The TUI twin of the run path's private provider home. Both launch
+   * paths (the sandboxed tui command and the plain interactive one) call
+   * this before spawning and finalize it on every exit, so the override's
+   * config.toml gets the same per-launch CODEX_HOME a run gets — never a
+   * merge into the operator's config — and the key the config's env_key
+   * names rides the environment codemux provides (codex-provider.ts). */
+  override prepareTuiEnvironment(
+    model?: string,
+    autonomy?: AutonomyLevel,
+    effort?: ReasoningEffort,
+    sandboxed?: boolean,
+    passthroughEnv?: readonly string[],
+    _printOnly = false
+  ) {
+    const override = this.validatedProvider();
+    if (override === null) {
+      return super.prepareTuiEnvironment(model, autonomy, effort, sandboxed, passthroughEnv, _printOnly);
     }
+    const home = writeCodexProviderConfig(
+      this.realCodexHome({ agent: "codex", prompt: "", passthroughEnv }),
+      override,
+      this.modelFor(model)!,
+      readCodexMultiAgent(this.environment)
+    );
+    return {
+      env: { CODEX_HOME: home.codexHome, [CODEX_PROVIDER_KEY_ENV]: override.apiKey },
+      finalize: home.finalize,
+    };
   }
 
 }

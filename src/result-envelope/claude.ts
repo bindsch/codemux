@@ -155,6 +155,7 @@ export function claudeFamilyResult(
   const block = (): CodemuxResultBlock => ({
     agent,
     labels: request.labels ?? null,
+    model_alias: request.modelAlias ?? null,
     // The served model when the envelope names it, else the model codemux
     // selected, else null: the harness default, which nothing reported.
     // Several modelUsage entries are a report in the other direction -- the

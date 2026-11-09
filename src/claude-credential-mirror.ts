@@ -58,7 +58,12 @@ function removeStaleCredentialCopy(configDir: string): void {
  * directory was writable by the previous harness child, so a planted
  * symlink at `.credentials.json` must refuse the resume, not follow it.
  */
-export function copyClaudeCredentialMirror(configDir: string, mirrorPath: string): void {
+export function copyClaudeCredentialMirror(
+  configDir: string,
+  mirrorPath: string,
+  /** The launch a refusal names; --harness-home sessions pass their own. */
+  run = "--experiment-project-settings run"
+): void {
   // lstat, never stat — the sync path's rule (credentials/sync.ts): a
   // symlink at the mirror path is not read through, whatever it points at
   // (review round 15, edges 1). A non-regular mirror (a link, a device
@@ -83,7 +88,7 @@ export function copyClaudeCredentialMirror(configDir: string, mirrorPath: string
   const refuseIrregularMirror = (): Error =>
     new Error(
       `claude: the credential mirror at ${mirrorPath} is not a regular file; refusing the ` +
-        "--experiment-project-settings run (a symlinked mirror is never read through)"
+        `${run} (a symlinked mirror is never read through)`
     );
   if (!info.isFile()) throw refuseIrregularMirror();
   // One read feeds both the check and the write: a second read could see a
@@ -109,12 +114,12 @@ export function copyClaudeCredentialMirror(configDir: string, mirrorPath: string
     // far above every real credential object (small JSON, a few KiB).
     const stated = fstatSync(fd);
     if (!stated.isFile()) {
-      throw new Error(`claude: the credential mirror at ${mirrorPath} is not a regular file; refusing the --experiment-project-settings run`);
+      throw new Error(`claude: the credential mirror at ${mirrorPath} is not a regular file; refusing the ${run}`);
     }
     if (stated.size > MIRROR_READ_LIMIT_BYTES) {
       oversize = new Error(
         `claude: the credential mirror at ${mirrorPath} is ${stated.size} bytes, over the ` +
-          `${MIRROR_READ_LIMIT_BYTES}-byte read bound; refusing the --experiment-project-settings run`
+          `${MIRROR_READ_LIMIT_BYTES}-byte read bound; refusing the ${run}`
       );
       throw oversize;
     }
@@ -136,7 +141,7 @@ export function copyClaudeCredentialMirror(configDir: string, mirrorPath: string
     } catch {
       invalid = new Error(
         `claude: the credential mirror at ${mirrorPath} is not valid UTF-8; refusing the ` +
-          "--experiment-project-settings run"
+          run
       );
       throw invalid;
     }
@@ -154,7 +159,7 @@ export function copyClaudeCredentialMirror(configDir: string, mirrorPath: string
       ?? (error instanceof Error ? error.message : String(error));
     throw new Error(
       `claude: could not read the credential mirror at ${mirrorPath} (${reason}); ` +
-        "refusing the --experiment-project-settings run"
+        `refusing the ${run}`
     );
   } finally {
     if (fd !== null) closeSync(fd);
@@ -162,7 +167,7 @@ export function copyClaudeCredentialMirror(configDir: string, mirrorPath: string
   if (credentialTextCarriesRefreshToken(text)) {
     throw new Error(
       `claude: the credential mirror at ${mirrorPath} holds a refresh token; refusing the ` +
-        "--experiment-project-settings run (a child holding that token could revoke your " +
+        `${run} (a child holding that token could revoke your ` +
         "Claude login). One plain sandboxed claude run scrubs it, then retry."
     );
   }
@@ -170,7 +175,7 @@ export function copyClaudeCredentialMirror(configDir: string, mirrorPath: string
   if (oauth === null) {
     throw new Error(
       `claude: the credential mirror at ${mirrorPath} is not a parseable credential object; ` +
-        "refusing the --experiment-project-settings run (nothing unparseable is copied into " +
+        `refusing the ${run} (nothing unparseable is copied into ` +
         "the private config directory)"
     );
   }

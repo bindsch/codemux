@@ -8,7 +8,7 @@
  * lives in a per-session private home that persists across turns and
  * across --resume, and --final removes that home at session end. Only a
  * model's answer across a real resume can prove that, so the check
- * drives three live sessions of this checkout's own session CLI:
+ * drives this checkout's own session CLI:
  *
  *  1. a hermetic session (one turn, the run canary's question): the
  *     planted code word must not reach the model, and the private home
@@ -19,6 +19,9 @@
  *  3. the first session resumed with --resume <id> --final: the code
  *     word must stay out across the resume, and --final must remove the
  *     private home.
+ *  4. claude, zai, and codex also start and resume a caller-owned home:
+ *     its private skill must load, the operator's instructions must stay
+ *     out, and --final must preserve the caller's directory.
  *
  * `--final` rides the resumed session alone: it removes the private home
  * at session end, and the resume must reopen that home, so a --final on
@@ -35,7 +38,11 @@ import { plantKimiCanary } from "./kimi-isolation-probe.js";
 import { plantAgyCanary } from "./agy-isolation-probe.js";
 import type { SandboxPolicyOverrides } from "./sandbox-policy.js";
 import { UsageRefusalError } from "./validation.js";
-import { SESSION_KILL_GRACE_MS, runCanarySession, type SessionRun } from "./hermetic-session-canary-driver.js";
+import { canarySessionProtocolProblem, SESSION_KILL_GRACE_MS, runCanarySession, type SessionRun } from "./hermetic-session-canary-driver.js";
+import {
+  plantHarnessHomeCanary, runHarnessHomeSessionCanary, supportsHarnessHomeCanary,
+  type PlantedHarnessHomeCanary,
+} from "./hermetic-session-canary-home.js";
 import { SESSION_AGENTS } from "./session/cli-agents.js";
 import type { AgentId } from "./types.js";
 
@@ -86,7 +93,7 @@ export function assertSessionCanaryRequest(guards: SessionCanaryGuards): void {
     throw new UsageRefusalError("--session cannot carry --agy-isolation-probe: that is the run-shaped agy canary");
   }
   if (guards.printSandbox) {
-    throw new UsageRefusalError("--session cannot carry --print-sandbox: the canary runs three sessions with no single scode argv");
+    throw new UsageRefusalError("--session cannot carry --print-sandbox: the canary runs several sessions with no single scode argv");
   }
   if (!guards.sandbox) {
     throw new UsageRefusalError("--session cannot carry --no-sandbox: the canary's sessions always run sandboxed");
@@ -155,29 +162,8 @@ function sessionProblem(
   resumed: boolean
 ): string | null {
   const where = resumed ? `resumed hermetic ${agent} session` : `hermetic ${agent} session`;
-  if (run.failure !== null) {
-    return `the ${where} failed: ${run.failure}` +
-      (run.rejection === undefined ? "" : ` (input rejected: ${run.rejection})`);
-  }
-  if (run.exitCode !== 0) {
-    return `the ${where} exited ${run.exitCode ?? "without an exit status"}`;
-  }
-  if (run.sessionId === undefined) {
-    return `the ${where} printed no session_started event naming its session id`;
-  }
-  if (!run.completed) {
-    return `the ${where} ended without completing the turn` +
-      (run.rejection === undefined ? "" : ` (input rejected: ${run.rejection})`);
-  }
-  if (run.ended === undefined) {
-    return `the ${where} exited without a session_ended event`;
-  }
-  if (run.ended.reason !== "shutdown") {
-    return `the ${where} ended with reason '${String(run.ended.reason)}', not 'shutdown'`;
-  }
-  if (run.ended.exitCode !== 0) {
-    return `the ${where} ended with exit_code '${String(run.ended.exitCode)}', not 0`;
-  }
+  const protocolProblem = canarySessionProtocolProblem(run, where);
+  if (protocolProblem !== null) return protocolProblem;
   const verdict = evaluateCanary(run.stdout, plant.marker, run.assistantText);
   if (verdict.kind === "leak" && verdict.what === "marker") {
     return `the ${where} is NOT hermetic: the planted code word reached the model`;
@@ -212,7 +198,7 @@ export interface HermeticSessionCanaryRequest {
   killGraceMs?: number;
 }
 
-/** Runs the three-session hermetic canary and returns the check's exit
+/** Runs the hermetic canary and its supported caller-home arm. Returns the check's exit
  * code (0 only when the hermetic sessions answered clean across the
  * resume, the control leaked, the private home persisted, and --final
  * removed it). */
@@ -221,6 +207,7 @@ export async function runHermeticSessionCanary(
 ): Promise<number> {
   const plant = plantSessionCanary(request.agent);
   const homes = new Set<string>();
+  let callerPlant: PlantedHarnessHomeCanary | undefined;
   const killGraceMs = request.killGraceMs ?? SESSION_KILL_GRACE_MS;
   const timeoutSeconds = String(Math.max(1, Math.ceil(request.timeoutMs / 1000)));
   const sessionArgv = (hermetic: boolean, resume: string | undefined, final: boolean): string[] => [
@@ -305,6 +292,13 @@ export async function runHermeticSessionCanary(
     }
     console.error(controlLine);
 
+    // Preserve only the authenticated credential source before --final
+    // removes the hermetic home. Caller skills and operator instructions
+    // are planted in separate homes for the two additional sessions.
+    if (supportsHarnessHomeCanary(request.agent)) {
+      callerPlant = plantHarnessHomeCanary(request.agent, first.privateHome!);
+    }
+
     // 3. The resume: the code word must stay out across it, and --final
     //    must remove the private home at the resumed session's end.
     console.error(`Resuming hermetic session ${sessionId} with --final...`);
@@ -318,6 +312,10 @@ export async function runHermeticSessionCanary(
       reportSessionFailure(resumed);
       return 1;
     }
+    if (resumed.privateHome !== first.privateHome || resumed.sessionId !== sessionId) {
+      console.error("Error: the resumed hermetic session changed its private home or session id");
+      return 1;
+    }
     const finalHome = resumed.privateHome ?? first.privateHome;
     if (finalHome !== undefined && existsSync(finalHome)) {
       console.error(`Error: --final left the private session home behind: ${finalHome}`);
@@ -327,10 +325,12 @@ export async function runHermeticSessionCanary(
       `Resumed session ${resumed.sessionId ?? sessionId} answered clean across the resume` +
         (finalHome === undefined ? " (no private home was reported to remove)" : "; --final removed the private home")
     );
+    if (callerPlant !== undefined && await runHarnessHomeSessionCanary(request, callerPlant) !== 0) return 1;
     process.stdout.write(`HERMETIC SESSION ${request.agent}: OK\n`);
     return 0;
   } finally {
     plant.cleanup();
+    callerPlant?.cleanup();
     for (const home of homes) rmSync(home, { recursive: true, force: true });
   }
 }

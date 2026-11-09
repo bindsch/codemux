@@ -235,6 +235,10 @@ export class CodexSessionDriver extends CodexDriverInput {
           reason === "crash" || drainFailureCode !== null || this.firstFatal !== null
             ? "failed"
             : "interrupted";
+        // A reroute the open turn latched before the end names the model
+        // the provider actually served it — the same read-and-clear rule
+        // completeTurn and failOpenTurn apply (codex-turns.ts).
+        const served = this.takeTurnReroutedModel();
         this.emit(
           buildEvent(++this.seq, this.sessionIdOrEmpty(), "turn_completed", null, {
             turn_id: turnId,
@@ -251,6 +255,11 @@ export class CodexSessionDriver extends CodexDriverInput {
                     ? crashSynthesisReason(this.firstFatal)
                     : `the session ended (${reason}) before the turn completed`,
             usage,
+            // The provider's reroute naming when one landed before the end
+            // (source `provider`, design P5); null when none did.
+            model_served: served,
+            model_served_source: served !== null ? "provider" : null,
+            model_alias: this.options.modelAlias ?? null,
           }),
           { terminal: "fatal" }
         );
@@ -262,7 +271,8 @@ export class CodexSessionDriver extends CodexDriverInput {
           turnId ?? "none",
           this.turnStartedAt.get(turnId ?? "") ?? Date.now(),
           synthFinish,
-          usage
+          usage,
+          served
         );
         this.turnStartedAt.delete(turnId ?? "");
       }

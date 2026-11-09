@@ -9,30 +9,34 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { minimalPath, runCli } from "./helpers/cli.js";
+import { PLAYWRIGHT_MCP_AGENT_LIST } from "../src/mcp.js";
 import { sessionRegistryPath } from "../src/session/registry.js";
 import { fakeClaudeEnv, fakeCodexEnv } from "./helpers/session-cli.js";
+import { SESSION_AGENTS } from "../src/session/cli-agents.js";
+import { AGENT_IDS } from "../src/types.js";
+import { agentsSupporting } from "../src/parity/index.js";
 
 describe("CLI - session refusals", () => {
-  test("sessions for an agent whose driver has not landed refuse with 64", async () => {
-    const { stderr, exitCode } = await runCli(
-      ["session", "-a", "gemini"],
-      { PATH: minimalPath() }
-    );
-    expect(exitCode).toBe(64);
-    expect(stderr).toContain("not implemented for 'gemini'");
+  test("every agent has a session driver entry", () => {
+    // cline and openhands were the last agents without one; the
+    // "sessions are not implemented" refusal now guards unknown table
+    // edits only.
+    for (const agent of AGENT_IDS) expect(SESSION_AGENTS[agent], agent).toBeDefined();
   });
 
-  test("--hermetic for an agent with no verified mode is refused with 64", async () => {
-    // The gate is the adapter's own validateRunRequest on the
-    // run-like, so the session answers the run path's refusal verbatim
-    // (exit 64); the agents with a verified hermetic mode — claude,
-    // zai, codex, kimi, opencode, agy — accept the flag.
+  test("--hermetic for an agent with no verified session mode is refused with 64", async () => {
+    // The session table's own gate (cli-agents.ts), ahead of the
+    // run-like validation below it (cli-request.ts): cursor has no
+    // state relocation to build a session-lifetime home on, so the
+    // session refuses --hermetic on the table's field. claude, zai,
+    // codex, kimi, opencode, agy, aider, droid, pi, qwen, gemini,
+    // copilot, and goose accept the flag.
     const { stderr, exitCode } = await runCli(
-      ["session", "-a", "aider", "--hermetic"],
+      ["session", "-a", "cursor", "--hermetic"],
       { PATH: minimalPath() }
     );
     expect(exitCode).toBe(64);
-    expect(stderr).toContain("aider has no verified hermetic mode; see docs/isolation.md");
+    expect(stderr).toContain("cursor has no verified hermetic mode for sessions");
   });
 
   test("--sandbox-trust untrusted is refused for sessions with 64", async () => {
@@ -156,11 +160,7 @@ describe("CLI - session refusals", () => {
     }
   });
 
-  test("the --tools help text says the flag itself is refused", async () => {
-    // Review live4, contracts 2: the string implied `default` was
-    // accepted ("Tool selection: default ('none' is refused for
-    // sessions)") while every value exits 64. The help must state the
-    // refusal outright, the way --hermetic's entry does.
+  test("the --tools help text names the declared session tool carriers", async () => {
     const { stdout, exitCode } = await runCli(
       ["session", "--help"],
       { PATH: minimalPath() }
@@ -170,7 +170,10 @@ describe("CLI - session refusals", () => {
     // output so the wrap point cannot break the assertion.
     const flat = stdout.replace(/\s+/g, " ");
     expect(flat).toContain("--tools <selection>");
-    expect(flat).toContain("Tool selection (refused for sessions in this release)");
+    expect(flat).toContain(
+      `Tool selection: default or none (${agentsSupporting("session.tools").join(", ")}; opencode none requires --hermetic)`
+    );
+    expect(flat).toContain("representative per-turn command for Aider/OpenCode");
   });
 
   test("a well-formed --resume id the registry never recorded exits 66", async () => {
@@ -227,7 +230,8 @@ describe("CLI - session refusals", () => {
     }
   });
 
-  test("--tools none is refused for sessions with 64", async () => {
+  test("codex --tools none at writable autonomy without a model is refused with 64", async () => {
+    // The native tool-free catalog is built for one named model.
     const fake = fakeCodexEnv();
     try {
       const { stderr, exitCode } = await runCli(
@@ -238,7 +242,7 @@ describe("CLI - session refusals", () => {
         fake.env
       );
       expect(exitCode).toBe(64);
-      expect(stderr).toContain("--tools none is refused for sessions");
+      expect(stderr).toContain("codex --tools none at writable autonomy requires an explicit --model");
     } finally {
       fake.cleanup();
     }
@@ -249,22 +253,33 @@ describe("CLI - session refusals", () => {
     try {
       const { stderr, exitCode } = await runCli(
         [
-          "session", "-a", "claude", "--no-sandbox", "--auto", "high",
+          "session", "-a", "agy", "--no-sandbox", "--auto", "high",
           "--tools", "default",
         ],
         fake.env
       );
       expect(exitCode).toBe(64);
-      expect(stderr).toContain("--tools is not implemented for 'claude' sessions");
+      expect(stderr).toContain("--tools is not implemented for 'agy' sessions");
     } finally {
       fake.cleanup();
     }
   });
 
-  test("codex --tools is refused like every other agent (honest capability flag)", async () => {
-    // Codex has no verified carrier either — the flag is false, so
-    // `--tools default` must refuse exactly like claude's, not pass
-    // through as a silent no-op (README documents a blanket refusal).
+  test("the mode on a codex session at low passes the request gate", async () => {
+    // With no codex on PATH, the first failure is the installation check,
+    // which runs after every request refusal.
+    const { stderr, exitCode } = await runCli(
+      ["session", "-a", "codex", "--hermetic", "--experiment-project-settings", "--auto", "low"],
+      { PATH: minimalPath() }
+    );
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("codex is not installed");
+    expect(stderr).not.toContain("--experiment-project-settings");
+  });
+
+  test("codex --tools default passes the request gate (native carrier)", async () => {
+    // Codex sessions carry --tools natively; with no codex on PATH the
+    // first failure is the installation check, after every request check.
     const { stderr, exitCode } = await runCli(
       [
         "session", "-a", "codex", "--no-sandbox", "--auto", "high",
@@ -272,8 +287,9 @@ describe("CLI - session refusals", () => {
       ],
       { PATH: minimalPath() }
     );
-    expect(exitCode).toBe(64);
-    expect(stderr).toContain("--tools is not implemented for 'codex' sessions");
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("codex is not installed");
+    expect(stderr).not.toContain("--tools is not implemented");
   });
 
   test("--enable-playwright-mcp without --sandbox is refused with 64", async () => {
@@ -288,13 +304,12 @@ describe("CLI - session refusals", () => {
     expect(stderr).toContain("--enable-playwright-mcp requires --sandbox");
   });
 
-  test("a provider override an agent cannot carry is refused with run's own message (zai, agy)", async () => {
+  test("a provider override an agent cannot carry is refused with run's own message (agy)", async () => {
     // Overrides reach session spawns through the same adapters `run`
     // uses, so the refusal is the adapter's own (base.ts), surfaced by
     // the uniform validateRunRequest gate — verbatim, exit 64 exactly as
     // `codemux run` exits for it, with no key material echoed.
     const cases: Array<{ agent: string; env: Record<string, string> }> = [
-      { agent: "zai", env: { CODEMUX_ZAI_PROVIDER_MODEL: "glm" } },
       { agent: "agy", env: { CODEMUX_AGY_PROVIDER_BASE_URL: "https://gateway.example" } },
     ];
     for (const { agent, env } of cases) {
@@ -307,6 +322,12 @@ describe("CLI - session refusals", () => {
         `${agent} does not support a provider override; unset CODEMUX_${agent.toUpperCase()}_PROVIDER_* to run it, or route through an agent that does (codemux list marks them "provider")`
       );
     }
+    const partialZai = await runCli(
+      ["session", "-a", "zai", "--no-sandbox", "--auto", "high"],
+      { PATH: minimalPath(), CODEMUX_ZAI_PROVIDER_MODEL: "glm" }
+    );
+    expect(partialZai.exitCode).toBe(64);
+    expect(partialZai.stderr).toContain("provider override is missing CODEMUX_ZAI_PROVIDER_BASE_URL, CODEMUX_ZAI_PROVIDER_API_KEY");
     // A half-configured override for an agent that does carry them fails
     // at the same gate with the override module's own message — a usage
     // refusal (64) since review round 5, contracts-2 finding 2.
@@ -406,18 +427,19 @@ describe("CLI - session refusals", () => {
     }
   });
 
-  test("--enable-playwright-mcp is refused for codex with 64", async () => {
+  test("--enable-playwright-mcp is refused for droid with 64", async () => {
     // The agent check fires before any scode resolution, so no scode
-    // stub is needed on PATH.
+    // stub is needed on PATH. Codex sessions carry the server now
+    // (tests/session-codex-playwright-pin.test.ts).
     const { stderr, exitCode } = await runCli(
       [
-        "session", "-a", "codex", "--sandbox", "--auto", "high",
+        "session", "-a", "droid", "--sandbox", "--auto", "high",
         "--enable-playwright-mcp",
       ],
       { PATH: minimalPath() }
     );
     expect(exitCode).toBe(64);
-    expect(stderr).toContain("--enable-playwright-mcp is supported only by claude and zai");
+    expect(stderr).toContain(`--enable-playwright-mcp is supported only by ${PLAYWRIGHT_MCP_AGENT_LIST}`);
   });
 
   test("a codex workdir with .codex/config.toml is refused before spawn", async () => {

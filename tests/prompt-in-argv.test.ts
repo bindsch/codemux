@@ -27,20 +27,19 @@ describe("the argv prompt rules follow promptInArgv", () => {
     return cwd;
   };
 
-  test("aider reports its prompt in argv while stdin carries the declines", () => {
+  test("aider keeps its prompt in a private file while stdin carries the declines", () => {
     const aider = new AiderAdapter();
     const request = { agent: "aider", prompt: "p" } as RunRequest;
     expect(aider.getStdinInput(request)).not.toBeNull();
-    expect(aider.promptInArgv(request)).toBe(true);
-    // The argv byte bound applies through the shared validator: the local
-    // copy is gone and the shared wording refuses.
+    expect(aider.promptInArgv(request)).toBe(false);
+    // The private message file has the ordinary prompt bound, not argv limits.
     expect(() =>
       aider.validateRunRequest({
         agent: "aider",
         prompt: "x".repeat(40_000),
         cwd: cwdOf(),
       })
-    ).toThrow("passes prompts in argv");
+    ).not.toThrow();
   });
 
   test("a stdin-transport adapter accepts a NUL-free prompt past the argv bound", () => {

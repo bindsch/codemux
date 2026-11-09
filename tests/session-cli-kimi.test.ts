@@ -51,11 +51,21 @@ describe("CLI - kimi sessions", () => {
         // The override's model is what the session reports; the spawn
         // carries none of it as a `-m` alias.
         expect(started.model).toBe("clawvm-qwen32b-coder");
+        // kimi 2.5.2's print wire names no model (PromptJsonWriter writes
+        // role/meta lines only), so no served model is reported on either
+        // event — a declared null, never a missing field (design P5).
+        expect(started.model_served).toBeNull();
+        expect(started.model_served_source).toBeNull();
+        // An override-selected model resolves no alias.
+        expect(started.model_alias).toBeNull();
         const completed = await session.waitFor(
           "turn_completed",
           (event) => event.type === "turn_completed"
         );
         expect(completed.finish).toBe("end");
+        expect(completed.model_served).toBeNull();
+        expect(completed.model_served_source).toBeNull();
+        expect(completed.model_alias).toBeNull();
 
         session.send({ type: "user", text: "scenario:basic two" });
         await session.waitFor(
@@ -104,6 +114,7 @@ describe("CLI - kimi sessions", () => {
         expect(entry?.agent).toBe("kimi");
         expect(entry?.harness_home).toBe(join(isolatedHome, ".kimi-code"));
         expect(entry?.model).toBe("clawvm-qwen32b-coder");
+        expect(entry?.model_alias).toBeNull();
         expect(entry?.provider_base_url).toBe("http://127.0.0.1:9/v1");
       } finally {
         await session.proc.kill();
@@ -114,15 +125,101 @@ describe("CLI - kimi sessions", () => {
     }
   }, 30_000);
 
-  test("--turn-timeout is refused: kimi sessions cannot interrupt a turn", async () => {
+  test("-m reports the resolved model with model_alias when the value is a config alias, null when it is a raw id (design P5)", async () => {
+    const fake = fakeKimiEnv();
+    const isolatedHome = mkdtempSync(join(tmpdir(), "codemux-session-kimi-"));
+    const workdir = join(isolatedHome, "work");
+    mkdirSync(workdir);
+    mkdirSync(join(isolatedHome, ".config", "codemux"), { recursive: true });
+    writeFileSync(
+      join(isolatedHome, ".config", "codemux", "config.yaml"),
+      "models:\n  judge:\n    kimi: kimi-code/k3.1-pro\n"
+    );
+    try {
+      const session = await driveSession(
+        [
+          "session", "-a", "kimi", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--shutdown-grace", "2", "-m", "judge",
+          "--pass-env", "FAKE_STATE_DIR",
+        ],
+        { HOME: isolatedHome, FAKE_STATE_DIR: fake.stateDir, ...fake.env }
+      );
+      try {
+        session.send({ type: "user", text: "scenario:basic one" });
+        const started = await session.waitFor(
+          "session_started",
+          (event) => event.type === "session_started"
+        );
+        // The announcement reports the alias the caller typed beside the
+        // id it resolved to; the served model stays null (the wire names
+        // none).
+        expect(started.model).toBe("kimi-code/k3.1-pro");
+        expect(started.model_alias).toBe("judge");
+        expect(started.model_served).toBeNull();
+        const completed = await session.waitFor(
+          "turn_completed",
+          (event) => event.type === "turn_completed"
+        );
+        expect(completed.model_alias).toBe("judge");
+        expect(completed.model_served).toBeNull();
+        session.send({ type: "shutdown" });
+        const [exitCode] = await session.exit;
+        expect(exitCode).toBe(0);
+        // The per-turn spawn carries the resolved id as --model, and the
+        // registry records the same pair the events reported.
+        const argv = JSON.parse(
+          readFileSync(join(fake.stateDir, "argv.jsonl"), "utf8").split("\n")[0] as string
+        ) as { args: string[] };
+        expect(argv.args[argv.args.indexOf("--model") + 1]).toBe("kimi-code/k3.1-pro");
+        const registry = readRegistry(sessionRegistryPath(isolatedHome));
+        expect(registry.outcome).toBe("ok");
+        const entry =
+          registry.outcome === "ok"
+            ? registry.file.sessions.find((r) => r.model_alias === "judge")
+            : undefined;
+        expect(entry?.model).toBe("kimi-code/k3.1-pro");
+      } finally {
+        await session.proc.kill();
+      }
+
+      // A raw id is not an alias: the same resolved model, a null alias.
+      const raw = await driveSession(
+        [
+          "session", "-a", "kimi", "--no-sandbox", "--auto", "high",
+          "--cwd", workdir, "--shutdown-grace", "2", "-m", "kimi-code/k3.1-pro",
+          "--pass-env", "FAKE_STATE_DIR",
+        ],
+        { HOME: isolatedHome, FAKE_STATE_DIR: fake.stateDir, ...fake.env }
+      );
+      try {
+        raw.send({ type: "user", text: "scenario:basic one" });
+        const started = await raw.waitFor(
+          "session_started",
+          (event) => event.type === "session_started"
+        );
+        expect(started.model).toBe("kimi-code/k3.1-pro");
+        expect(started.model_alias).toBeNull();
+        raw.send({ type: "shutdown" });
+        const [exitCode] = await raw.exit;
+        expect(exitCode).toBe(0);
+      } finally {
+        await raw.proc.kill();
+      }
+    } finally {
+      fake.cleanup();
+      rmSync(isolatedHome, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test("--turn-timeout is accepted for Kimi supervisor interruption", async () => {
     const fake = fakeKimiEnv();
     try {
       const { stderr, exitCode } = await runCli(
-        ["session", "-a", "kimi", "--turn-timeout", "30"],
+        ["session", "-a", "kimi", "--turn-timeout", "30", "--no-sandbox", "--auto", "high"],
         fake.env
       );
-      expect(exitCode).toBe(64);
-      expect(stderr).toContain("--turn-timeout requires an agent whose sessions support interrupt");
+      expect(exitCode).toBe(0);
+      expect(stderr).not.toContain("--turn-timeout requires an agent whose sessions support interrupt");
     } finally {
       fake.cleanup();
     }
@@ -148,7 +245,7 @@ describe("CLI - kimi sessions", () => {
     mkdirSync(workdir);
     writeFileSync(
       join(binDir, "kimi"),
-      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf '0.31.1\\n'; exit 0; fi\nexec bun '${FAKE_KIMI}' "$@"\n`
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf '2.5.2\\n'; exit 0; fi\nexec bun '${FAKE_KIMI}' "$@"\n`
     );
     writeFileSync(
       join(binDir, "scode"),

@@ -7,20 +7,22 @@ import { GooseAdapter } from "../src/adapters/goose.js";
 // Goose's `--tools none` is claimed: verified live at 1.50.1 on 2026-09-17
 // through the provider override — under `--no-profile` neither capability
 // probe could produce its secret while plain runs produced both
-// (docs/isolation.md). `--hermetic` stays refused: the live control probe
-// leaked the planted code word, and the config-file system-prompt override
-// `GOOSE_SYSTEM_PROMPT_FILE_PATH` has no switch.
+// (docs/isolation.md). `--hermetic` is implemented (the 2.0.0 parity pass,
+// the XDG redirect of src/goose-hermetic.ts) and FAILS CLOSED without the
+// provider override: the private home carries no config.yaml, and that
+// file holds the operator's system prompt next to any keys, so no
+// configuration can ride along (the adapter's own validateRunRequest).
 
 describe("tools none: goose", () => {
   const adapter = new GooseAdapter();
   const noTools = { agent: "goose" as const, prompt: "p", tools: "none" as const };
   const head = ["goose", "run"];
 
-  test("goose refuses --hermetic; --tools none is claimed (verified live)", () => {
+  test("goose --hermetic is claimed but fails closed without the provider override; --tools none is claimed (verified live)", () => {
     const cwd = mkdtempSync(join(tmpdir(), "codemux-goose-refuse-"));
     try {
       mkdirSync(join(cwd, ".git"));
-      expect(adapter.capabilities().supportsHermetic ?? false).toBe(false);
+      expect(adapter.capabilities().supportsHermetic ?? false).toBe(true);
       expect(adapter.capabilities().supportsToolSelection ?? false).toBe(true);
       expect(() => adapter.validateRunRequest({ ...noTools, cwd }))
         .not.toThrow();
@@ -29,17 +31,19 @@ describe("tools none: goose", () => {
         prompt: "p",
         cwd,
         hermetic: true,
-      })).toThrow("no verified hermetic mode");
+      })).toThrow("goose --hermetic requires the provider override");
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
 
   test("every run carries --no-profile before the prompt", () => {
-    expect(adapter.buildRunCommand(noTools)).toEqual([...head, "--no-profile", "-t", "p"]);
+    expect(adapter.buildRunCommand(noTools)).toEqual([...head, "--no-profile", "-i", "-"]);
+    // The prompt rides stdin (goose run -i -), never argv.
+    expect(adapter.getStdinInput(noTools)).toBe("p");
     for (const autonomy of ["read-only", "low", "medium", "high"] as const) {
       expect(adapter.buildRunCommand({ ...noTools, autonomy }))
-        .toEqual([...head, "--no-profile", "-t", "p"]);
+        .toEqual([...head, "--no-profile", "-i", "-"]);
     }
   });
 
@@ -51,12 +55,12 @@ describe("tools none: goose", () => {
 
   test("plain runs keep the bare command", () => {
     expect(adapter.buildRunCommand({ agent: "goose", prompt: "p" }))
-      .toEqual([...head, "-t", "p"]);
+      .toEqual([...head, "-i", "-"]);
     expect(adapter.buildRunCommand({
       agent: "goose",
       prompt: "p",
       tools: "default",
       autonomy: "high",
-    })).toEqual([...head, "-t", "p"]);
+    })).toEqual([...head, "-i", "-"]);
   });
 });

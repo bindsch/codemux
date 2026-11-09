@@ -34,12 +34,18 @@ describe("aider session e2e - lifecycle", () => {
     expect(UUID.test(started.session_id)).toBe(true);
     expect(started.agent).toBe("aider");
     expect(started.autonomy).toBe("high");
+    // Aider's stdout is a human transcript that names the model in prose
+    // only ("Main model: ...", 0.86.2), so no served model is reported —
+    // a declared null (design P5).
+    expect(started.model_served).toBeNull();
+    expect(started.model_served_source).toBeNull();
+    expect(started.model_alias).toBeNull();
     expect(started.protocol).toBe("codemux-live-session/1");
     expect(started.capabilities).toEqual({
       live_input: true,
       user_during_turn: false,
       steer: false,
-      interrupt: false,
+      interrupt: true,
       permissions: false,
       deltas: false,
       file_changes: false,
@@ -67,6 +73,9 @@ describe("aider session e2e - lifecycle", () => {
     expect(message.turn_id).toBe("t1");
     const completed = await waitFor(session.events, of("turn_completed"), "turn_completed");
     expect(completed.finish).toBe("end");
+    expect(completed.model_served).toBeNull();
+    expect(completed.model_served_source).toBeNull();
+    expect(completed.model_alias).toBeNull();
     expect(completed.usage).toEqual({
       input_tokens: null,
       output_tokens: null,

@@ -129,12 +129,12 @@ test("the checks ahead of the login read keep their precedence (audit D8)", asyn
   const fixture = loggedOutEnv();
   const reportDirectory = fixtureDirectory();
   try {
-    // cursor: no provider override (H unsupported); gemini: operator skip;
+    // cursor: no provider override (H unsupported); agy: operator skip;
     // claude: H's opt-in gate (claude is the one H harness, and an absent
     // mirror reads unknown, so its cells run and H skips on the opt-in).
     const rows = await runProbes(
-      [factsFor("cursor"), factsFor("gemini"), factsFor("claude")],
-      parseOptions(["--probe", "A,H", "--skip", "gemini"], ""),
+      [factsFor("cursor"), factsFor("agy"), factsFor("claude")],
+      parseOptions(["--probe", "A,H", "--skip", "agy"], ""),
       {
         async run() { return { status: "PASS", seconds: 0, stderr: "" }; },
         async capture() { throw new Error("nothing here captures"); },
@@ -143,8 +143,9 @@ test("the checks ahead of the login read keep their precedence (audit D8)", asyn
     expect(rows[0]!.results.A).toMatchObject({ status: "SKIP", note: "no credentials detected: ~/.cursor/auth.json" });
     expect(rows[0]!.results.H).toMatchObject({ status: "UNSUPPORTED" });
     expect(rows[1]!.results.A).toMatchObject({ status: "SKIP", note: "no credentials; operator requested" });
-    // The capability check runs before the operator skip: gemini declares
-    // no provider override, so H is UNSUPPORTED, not the operator's SKIP.
+    // The capability check runs before the operator skip: agy declares
+    // no provider override (a harness limitation), so H is UNSUPPORTED,
+    // not the operator's SKIP. Gemini gained an override in 2.0.0.
     expect(rows[1]!.results.H).toMatchObject({ status: "UNSUPPORTED" });
     expect(rows[2]!.results.A).toMatchObject({ status: "PASS" });
     expect(rows[2]!.results.H).toMatchObject({

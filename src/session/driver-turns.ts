@@ -57,6 +57,13 @@ export abstract class ClaudeDriverTurns extends ClaudeDriverPermissions {
    * ledger's session_turn records carry each turn's own duration. */
   protected readonly turnStartedAt = new Map<string, number>();
 
+  /** The provider-named models (`message.model`) the open turn's
+   * assistant frames carried (design P5): cleared when a turn opens,
+   * read at its completion. One distinct id is the turn's served model;
+   * two mean no single attribution is honest, and the result's own
+   * `modelUsage` report decides. */
+  protected readonly turnModels = new Set<string>();
+
   /** Empties the derived file-change candidates the finishing turn leaves
    * behind (§4.3): a tool_use whose result never arrived belongs to the
    * turn that ends now, and a later turn's reused or delayed call id must
@@ -120,8 +127,9 @@ export abstract class ClaudeDriverTurns extends ClaudeDriverPermissions {
     // the interrupted shape; both modeled a forwarded mid-turn line the
     // harness had queued, which review live21 removed.)
     const struck = parse.isError && this.interruptPending;
-    const finish = struck ? "interrupted" : parse.isError ? "failed" : "end";
-    const reason = struck && this.interruptFromTimeout ? "turn-timeout" : parse.reason;
+    const { finish, reason } = this.out.completeTurn(turnId,
+      struck ? "interrupted" : parse.isError ? "failed" : "end",
+      struck && this.interruptFromTimeout ? "turn-timeout" : parse.reason);
     this.interruptPending = false;
     this.interruptFromTimeout = false;
     this.clearTurnTimer();
@@ -150,12 +158,20 @@ export abstract class ClaudeDriverTurns extends ClaudeDriverPermissions {
     // figures. The cumulative fold above keeps the real figure for
     // `session_ended.usage.cost_usd`, where the wire's own number
     // belongs.
+    // The turn's served model (design P5): the one provider-named
+    // `message.model` the turn's assistant frames carried, else the one
+    // `modelUsage` key this result named, else null. Both are the
+    // provider's own report, so the source is `provider` either way.
+    const served = servedModelForTurn(this.turnModels, parse.models);
     this.emit(
       buildEvent(++this.seq, this.options.sessionId, "turn_completed", rawLine, {
         turn_id: turnId,
         finish,
         ...(reason !== null ? { reason } : {}),
         usage: { ...parse.usage, cost_usd: null },
+        model_served: served,
+        model_served_source: served !== null ? "provider" : null,
+        model_alias: this.options.modelAlias ?? null,
       })
     );
     // The ledger's turn record mirrors the event the caller just saw; the
@@ -167,9 +183,11 @@ export abstract class ClaudeDriverTurns extends ClaudeDriverPermissions {
       turnId ?? "none",
       this.turnStartedAt.get(turnId ?? "") ?? Date.now(),
       finish,
-      { ...parse.usage, cost_usd: null }
+      { ...parse.usage, cost_usd: null },
+      served
     );
     this.turnStartedAt.delete(turnId ?? "");
+    this.turnModels.clear();
     if (this.registryRecorded && this.options.registryPath !== null) {
       // Best-effort stamp, and never a wait: the lock's retry sleep is a
       // synchronous Atomics.wait on the main thread, and this runs inside
@@ -209,6 +227,7 @@ export abstract class ClaudeDriverTurns extends ClaudeDriverPermissions {
       })
     );
     this.turnStartedAt.set(turnId, Date.now());
+    this.turnModels.clear();
     this.turnTimeoutFired = false;
     this.armTurnTimer();
     return turnId;
@@ -269,4 +288,21 @@ export abstract class ClaudeDriverTurns extends ClaudeDriverPermissions {
       this.turnTimer = null;
     }
   }
+}
+
+/** The turn's served model (design P5): the one provider-named
+ * `message.model` the turn's assistant frames carried, else the one
+ * `modelUsage` key the result named (an empty key names nothing, the
+ * run envelope's round-211 rule), else null. Two distinct ids in either
+ * place mean no single attribution is honest, so none is made. */
+export function servedModelForTurn(
+  frameModels: ReadonlySet<string>,
+  resultModels: readonly string[]
+): string | null {
+  if (frameModels.size === 1) return [...frameModels][0] ?? null;
+  if (resultModels.length === 1) {
+    const key = resultModels[0]!;
+    return key !== "" ? key : null;
+  }
+  return null;
 }

@@ -19,16 +19,16 @@ import {
 import { ID } from "./helpers/session-kimi.js";
 
 describe("kimi session - contract", () => {
-  test("the floor is the pinned 0.31.1", () => {
-    expect(KIMI_SESSION_FLOOR).toBe("0.31.1");
+  test("the floor is the pinned 2.5.2", () => {
+    expect(KIMI_SESSION_FLOOR).toBe("2.5.2");
   });
 
-  test("the capability matrix is honest: only live input and resume", () => {
+  test("the capability matrix includes supervisor interruption", () => {
     expect(kimiSessionCapabilities()).toEqual({
       live_input: true,
       user_during_turn: false,
       steer: false,
-      interrupt: false,
+      interrupt: true,
       permissions: false,
       deltas: false,
       file_changes: false,

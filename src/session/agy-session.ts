@@ -24,6 +24,8 @@ import type { AutonomyLevel, ReasoningEffort, ResultUsageBlock } from "../types.
 import { agyPrivateHomeEnvPrefix } from "../adapters/agy-homes.js";
 import { unusableFacts } from "./process.js";
 import type { SessionCapabilities } from "./protocol.js";
+import { agySessionDenySettings } from "./agy-permission-policy.js";
+import { callerHarnessHomeEnvAssignments, type CallerHarnessHome } from "./harness-home.js";
 
 /** The session-only version floor (§4.3): the installed-and-audited 1.2.14,
  * the build whose help text and binary the input loop, the `=` flag forms,
@@ -67,11 +69,14 @@ export interface AgySessionCommand {
   model?: string;
   autonomy: AutonomyLevel;
   effort?: ReasoningEffort;
+  /** Native deny rules; print mode has no permission request channel. */
+  permissionPolicy?: "default" | "deny";
   /** The hermetic session's private home: the spawn carries the same
    * `env HOME=… XDG_*=…` prefix the run path carries (adapters/agy.ts),
    * so the child's home is the private directory for every turn of the
    * session's life and across `--resume`. */
   privateHomeDir?: string;
+  callerHome?: CallerHarnessHome;
 }
 
 /**
@@ -105,15 +110,25 @@ export function agySessionAutonomyFlags(level: AutonomyLevel): string[] {
  */
 export function buildAgySessionCommand(command: AgySessionCommand): string[] {
   const argv = [
-    ...(command.privateHomeDir !== undefined
+    ...(command.callerHome !== undefined
+      ? ["env", ...callerHarnessHomeEnvAssignments(command.callerHome)]
+      : command.privateHomeDir !== undefined
       ? agyPrivateHomeEnvPrefix(command.privateHomeDir)
       : []),
     "agy",
-    "--disable-slash-commands",
+    ...(command.callerHome ? [] : ["--disable-slash-commands"]),
     "--input-format=stream-json",
     "--output-format=stream-json",
   ];
-  argv.push(...agySessionAutonomyFlags(command.autonomy));
+  // agy 1.5.3's printmode/headless_permissions.go soft-denies asks. Deny
+  // uses explicit action rules through --settings and omits the high
+  // skip-permissions flag, so it never relies on that bypass's ordering.
+  if (command.permissionPolicy === "deny") {
+    argv.push(`--settings=${agySessionDenySettings(command.callerHome?.dir ?? command.privateHomeDir)}`);
+    if (command.autonomy !== "high") argv.push(...agySessionAutonomyFlags(command.autonomy));
+  } else {
+    argv.push(...agySessionAutonomyFlags(command.autonomy));
+  }
   if (command.model !== undefined) {
     argv.push(`--model=${command.model}`);
   }

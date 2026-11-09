@@ -88,11 +88,11 @@ describe("call ledger labels", () => {
   test("session helpers normalize absent labels to null", () => {
     const path = ledgerPath();
     const context: SessionCallContext = {
-      agent: "claude", model: null, provider: "default", autonomy: "high",
+      agent: "claude", model: null, modelAlias: null, provider: "default", autonomy: "high",
       hermetic: false, sandboxed: false, cwd: process.cwd(),
     };
     const environment = { [CALL_LOG_ENV]: path };
-    appendSessionTurnCallRecord(context, "session", "turn", Date.now(), "end", emptyUsage(), environment);
+    appendSessionTurnCallRecord(context, "session", "turn", Date.now(), "end", emptyUsage(), null, environment);
     appendSessionCallRecord(context, "session", Date.now(), "shutdown", 0, emptyUsage(), environment);
     const records = readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     expect(records.map((record) => record.labels)).toEqual([null, null]);

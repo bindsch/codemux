@@ -10,6 +10,7 @@ import {
   type TerminationTarget,
 } from "./process-tree.js";
 import { FORCE_KILL_DELAY_MS, SIGNAL_EXIT_CODE, validateTimeout } from "./process-runner.js";
+import { beginGuardedWait, endGuardedWait } from "./process-runner-signals.js";
 
 /** The window inside which three SIGINTs count as the burst that forces the
  * child's termination; exported for the tests that pace it. */
@@ -122,6 +123,7 @@ export async function guardedWait(
   process.on("SIGINT", onSigint);
   process.on("SIGTERM", onSigterm);
   process.on("SIGHUP", onSighup);
+  beginGuardedWait();
 
   let proc: ReturnType<typeof Bun.spawn>;
   try {
@@ -133,6 +135,7 @@ export async function guardedWait(
     process.off("SIGINT", onSigint);
     process.off("SIGTERM", onSigterm);
     process.off("SIGHUP", onSighup);
+    endGuardedWait();
     throw error;
   }
   target = createTerminationTarget(proc);
@@ -169,5 +172,6 @@ export async function guardedWait(
     process.off("SIGINT", onSigint);
     process.off("SIGTERM", onSigterm);
     process.off("SIGHUP", onSighup);
+    endGuardedWait();
   }
 }

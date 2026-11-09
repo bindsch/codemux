@@ -10,6 +10,7 @@ import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { initialKimiState, step } from "../src/session/kimi-machine.js";
+import { emptyUsage } from "../src/result-envelope.js";
 import {
   BoundedOutboundQueue,
   SessionProcess,
@@ -206,7 +207,7 @@ describe("kimi session interleavings (round al28)", () => {
       const outcome = await child.exited;
       expect(outcome).toEqual({ code: 0, signal: null });
 
-      const effects = step(state, { kind: "child_exit", child, outcome }, config);
+      const effects = step(state, { kind: "child_exit", child, outcome, usage: emptyUsage() }, config);
       expect(effects).toContainEqual(expect.objectContaining({
         kind: "emit", event: "turn_completed", finish: "end",
       }));

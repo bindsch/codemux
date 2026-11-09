@@ -1,5 +1,7 @@
 import { join } from "node:path";
-import { BaseAdapter, type RunContext } from "./base.js";
+import { BaseAdapter } from "./base.js";
+import { OpencodeExperimentRun, OPENCODE_EXPERIMENT_TOKEN_ENV, type OpencodeExperimentContext as RunContext } from "../opencode-experiment-run.js";
+import { readExperimentRunSpec } from "../experiment-mcp.js";
 import { createOpencodeHermeticHome } from "../opencode-hermetic.js";
 import { opencodeRemoteConfigCarrier } from "../opencode-remote-config.js";
 import {
@@ -7,6 +9,7 @@ import {
   OPENCODE_PROVIDER_KEY_ENV,
   opencodeBareModel,
   opencodeLimit,
+  opencodeProviderConfig,
   writeOpencodeProviderConfig,
 } from "../opencode-provider.js";
 import { assertNoOpenCodeProjectExecutionConfig } from "../project-safety.js";
@@ -28,6 +31,7 @@ import type {
 } from "../types.js";
 import { OpenCodePlainFold, openCodeResultData, opencodePlainResult } from "../plain-unwrap.js";
 import { opencodeResult } from "../result-envelope/opencode.js";
+import { appendDiagnostic } from "../result-envelope/common.js";
 import {
   hermeticRemoteConfigRefusal,
   OPENCODE_HERMETIC_ENV,
@@ -36,6 +40,9 @@ import {
 } from "./opencode-env.js";
 import { assertAbsoluteOpencodeXdgHome, opencodeRealDataDir, opencodeRealDataParent, opencodeRealStateDir } from "./opencode-home.js";
 import { fileStoreLoginState, type LoginState } from "../harness-health.js";
+import { opencodeNoWebConfig, opencodePlaywrightConfig } from "../opencode-launch-config.js";
+import type { ExecutableCheck } from "../executable-security.js";
+import { prepareOpencodeTuiEffort, validateOpencodeTuiEffortModel } from "../opencode-tui-effort.js";
 
 export { opencodeRealDataParent, opencodeRealDataDir } from "./opencode-home.js";
 
@@ -59,28 +66,13 @@ export class OpencodeAdapter extends BaseAdapter {
       supportsAutonomy: true,
       autonomyLevels: ["read-only", "low", "medium", "high"],
       supportsEffort: true,
-      effortLevels: ["low", "medium", "high"],
-      // Verified live on 2026-09-17 through a provider override (GLM-5.3
-      // via Z.AI): the two-probe check passed with and without --tools
-      // none, and the read and shell probes fail under --tools none
-      // (docs/isolation.md). The h2 review scoped --tools none to hermetic
-      // runs: a plain run's operator config can override the deny per
-      // agent (see OPENCODE_NO_TOOLS_PERMISSION above). The h3 review
-      // added the matching login-side refusal: a login carrying remote
-      // configuration (a well-known login, an active organization) breaks
-      // both guarantees on hermetic runs too, so the run refuses while one
-      // exists (opencode-remote-config.ts). The h7 review adds the
-      // check-level consequence: `check --hermetic --tools none` refuses
-      // for this harness, because its control probe would be a plain
-      // --tools none run.
+      effortLevels: ["none", "low", "medium", "high"],
+      // Plain operator config can override the global deny per agent.
+      // Hermetic runs also refuse login-supplied remote configuration.
       supportsHermetic: true,
       supportsToolSelection: true,
       toolsNoneRequiresHermetic: true,
-      // The wire --format json asks for is the same one every plain run
-      // folds, so the envelope (result-envelope/opencode.ts) is built over
-      // that fold's finished outcome: reply and step_finish usage, never
-      // the raw event lines (dropped as they arrive to stay under the
-      // capture bound).
+      // Plain and envelope results fold the same bounded JSON event stream.
       supportsResultJson: true,
       supportsProviderOverride: true,
     };
@@ -104,33 +96,20 @@ export class OpencodeAdapter extends BaseAdapter {
   }
 
   override supportsTuiEffort(): boolean {
-    return false;
+    return true;
   }
 
-  /**
-   * The real OpenCode data directory holding the login state the
-   * remote-config inspection reads (opencode-remote-config.ts).
-   */
+  /** Login state location for the remote-config inspection. */
   private realDataDir(): string {
     return opencodeRealDataDir(this.environment, this.homeDirectory);
   }
 
-  /**
-   * The remote-config carriers in the real login state, or null when the
-   * login carries none. Read fresh on every call: the store can change
-   * between validation and launch, and a hermetic run must refuse the
-   * moment one appears (see hermeticRemoteConfigRefusal).
-   */
+  /** Read fresh: login-supplied settings can change between validation and launch. */
   private remoteConfigCarrier(): string | null {
     return opencodeRemoteConfigCarrier(this.realDataDir());
   }
 
-  /**
-   * The provider override, validated: OpenCode reaches a custom provider only
-   * through a config layer (there are no provider environment variables), so
-   * the override needs a base URL and a key, delivered through a file codemux
-   * writes and an environment name it provides (opencode-provider.ts).
-   */
+  /** Custom providers require a base URL and key in native configuration. */
   private validatedProvider(): (ProviderOverride & { baseUrl: string; apiKey: string }) | null {
     const override = readProviderOverride("opencode", this.environment);
     if (override === null) return null;
@@ -172,28 +151,19 @@ export class OpencodeAdapter extends BaseAdapter {
   buildRunCommand(request: RunRequest, context?: RunContext): string[] {
     const cmd: string[] = [];
 
-    // A project-settings run without --hermetic would be a plain run with
-    // the project's config loaded and none of the isolation — the env
-    // prefix below IS the isolation. The CLI refuses it earlier with the
-    // same words; this fails every other builder closed.
+    const experiment = context?.experimentOpencode;
+    if (request.experimentMcp && !experiment) throw new Error("OpenCode experiment was not prepared");
     if (request.experimentProjectSettings && !request.hermetic) {
       throw new UsageRefusalError("--experiment-project-settings requires --hermetic");
     }
 
     const envPrefix: string[] = [];
+    if (experiment) envPrefix.push("-u", "OPENCODE_PURE", "-u", "OPENCODE_EXPERIMENTAL_NATIVE_LLM");
     if (request.hermetic) {
-      // The remote-config refusal, ahead of everything else a hermetic run
-      // builds: no env prefix removes the login's own configuration, so a
-      // carrier breaks both guarantees and every builder — the CLI through
-      // validateRunRequest, `verify` through this — fails closed.
       const carrier = this.remoteConfigCarrier();
       if (carrier !== null) {
         throw new UsageRefusalError(hermeticRemoteConfigRefusal(carrier));
       }
-      // The project-settings ancestor refusal: dropping
-      // OPENCODE_DISABLE_PROJECT_CONFIG reopens every ancestor the walk can
-      // reach, so the run is refused before it is built, on this path and
-      // validateRunRequest's alike.
       if (request.experimentProjectSettings) {
         assertNoAncestorOpenCodeProjectConfig(request.cwd ?? process.cwd());
       }
@@ -215,7 +185,7 @@ export class OpencodeAdapter extends BaseAdapter {
         )
       );
     }
-    if (request.tools === "none") {
+    if (request.tools === "none" && !experiment) {
       // Hermetic only: on a plain run the operator's config can override
       // the deny per agent (OPENCODE_NO_TOOLS_PERMISSION above), so the
       // capability refuses there instead of launching a run whose deny
@@ -226,23 +196,26 @@ export class OpencodeAdapter extends BaseAdapter {
       }
       envPrefix.push(OPENCODE_NO_TOOLS_PERMISSION);
     }
+    const mcp = opencodePlaywrightConfig(request.sandboxed, request.enablePlaywrightMcp,
+      this.executionPathEnv(), request.cwd);
+    if (context) context.playwrightMcpCheck = mcp.check;
+    const noWeb = request.web === false ? opencodeNoWebConfig(request.autonomy) : undefined;
+    if (request.web === false || mcp.check || experiment) {
+      this.assertNoRemoteLaunchConfig();
+      const config = { ...noWeb?.config, ...mcp.config, ...experiment?.config };
+      envPrefix.push(`OPENCODE_CONFIG_CONTENT=${JSON.stringify(config)}`);
+    }
     if (envPrefix.length > 0) {
       cmd.push("env", ...envPrefix);
     }
-    // `--pure` sets OPENCODE_PURE, which drops every external plugin at the
-    // plugin layer (plugin/index.ts reads the flag; the CLI middleware in
-    // index.ts sets it). A project-settings run goes without it, so the
-    // project's own plugins run — that is the channel under observation.
+    // Installed bin/opencode 1.19.5, UTF-16LE byte 102534694 (2026-11-09):
+    // `let T=n.pure?[]:y.plugin_origins??[];` excludes every external plugin,
+    // including a private-home observer. No per-origin exception exists.
+    // Project-settings and experiment runs explicitly enable their plugins.
     cmd.push("opencode");
-    if (!request.experimentProjectSettings) cmd.push("--pure");
+    if (!request.experimentProjectSettings && !experiment) cmd.push("--pure");
     cmd.push("run");
-    // Always the JSON event lines, plain runs included (the same wire the
-    // session driver's per-turn spawns read): the launcher streams them
-    // through the fold on the run context instead of capturing stdout
-    // whole, and processRunResult reads the reply and usage back off that
-    // fold — so stdout keeps its contract and the call ledger gets the
-    // step_finish usage without tool output ever filling the capture
-    // bound (review ul4).
+    // Plain results and envelopes share the native event stream.
     cmd.push("--format", "json");
 
     const model = this.modelFor(request.model);
@@ -250,7 +223,12 @@ export class OpencodeAdapter extends BaseAdapter {
       cmd.push("--model", model);
     }
 
-    if (request.autonomy) {
+    if (experiment) {
+      cmd.push("--agent", experiment.agent);
+    } else if (noWeb) {
+      cmd.push("--agent", noWeb.agent);
+      if (request.autonomy === "high") cmd.push("--auto");
+    } else if (request.autonomy) {
       cmd.push(...this.mapAutonomy(request.autonomy));
     }
     if (request.effort) {
@@ -269,15 +247,9 @@ export class OpencodeAdapter extends BaseAdapter {
     request: RunRequest,
     context?: RunContext
   ): RunResult {
-    // The run was launched with --format json, so stdout is the event-line
-    // wire — streamed through the fold prepareRun hung on the context, so
-    // tool output never fills the capture bound (review ul4). Anything the
-    // fold saw that was not the wire passed through verbatim with the run
-    // unchanged (plain-unwrap.ts's escape hatch). Callers that reach here
-    // without the context's sink (a result already captured whole) get the
-    // same fold and verdict from the captured stdout. A --result-json run
-    // reads the same fold's outcome and wraps it in the envelope.
-    const sink = context?.stdoutSink;
+    if (context?.experimentOpencode) result = { ...result, scanSurface: context.experimentOpencode.scanSurface(),
+      stderr: appendDiagnostic(result.stderr, `codemux: experiment MCP recording: ${context.experimentRecording}`) };
+    const sink = context?.experimentOpencode?.fold ?? context?.stdoutSink;
     if (request.resultJson) {
       const data = sink instanceof OpenCodePlainFold
         ? sink.resultData()
@@ -286,27 +258,22 @@ export class OpencodeAdapter extends BaseAdapter {
         result,
         request,
         data,
-        context?.opencodeSelectedModel ?? request.model ?? null
+        context?.opencodeSelectedModel ?? request.model ?? null,
+        context?.experimentRecording ?? null,
+        context?.experimentOpencode?.servedModel ?? null
       );
     }
-    if (sink instanceof OpenCodePlainFold) return sink.verdict(result);
+    if (sink instanceof OpenCodePlainFold) return { ...sink.verdict(result), servedModel: context?.experimentOpencode?.servedModel ?? null };
     return opencodePlainResult(result);
   }
 
   override prepareRun(request: RunRequest): RunContext {
-    // The launch-path project-settings gate, from the request's own
-    // fields (review round 2, edges 1): the CLI's early check — and the
-    // two rules validateRunRequest surfaces early — are duplicates, so
-    // a programmatic caller cannot reach the config state — or the
-    // spawn — without the sandbox and an observing autonomy level.
+    if (request.web === false || request.enablePlaywrightMcp || request.experimentMcp) this.assertNoRemoteLaunchConfig();
+    // Programmatic launches enforce the same project-settings gate as the CLI.
     if (request.experimentProjectSettings) {
       validateProjectSettingsRunRequest(request);
     }
-    // The provider config rides every run with an override, hermetic or
-    // not: one file per run, never shared, finalized in cleanupRun. Hermetic
-    // runs also get their private home. Nothing is recorded on the adapter;
-    // the launcher owns the returned context, so two launches through this
-    // singleton each carry their own artifacts.
+    // Per-run artifacts belong to the launcher, never the singleton adapter.
     const context: RunContext = {};
     const override = this.validatedProvider();
     if (override !== null) {
@@ -319,15 +286,18 @@ export class OpencodeAdapter extends BaseAdapter {
         );
       }
     }
-    // The envelope's model contract: record what this launch runs with —
-    // the request's model, else the override's selection.
     context.opencodeSelectedModel = this.rawModelFor(request.model);
-    if (request.hermetic) {
+    if (request.hermetic || request.experimentMcp) {
       try {
         context.opencodeHermeticHome = createOpencodeHermeticHome(
           this.realDataDir(),
           opencodeRealStateDir(this.environment, this.homeDirectory)
         );
+        if (request.experimentMcp) {
+          context.experimentOpencode = new OpencodeExperimentRun(readExperimentRunSpec(request), request.cwd ?? process.cwd(),
+            context.opencodeHermeticHome.home, this.environment, request.prompt);
+          context.experimentRecording = context.experimentOpencode.recordingPath;
+        }
       } catch (error) {
         // The provider configuration above is already on disk; a context
         // that never reaches the launcher would strand it (review round 39).
@@ -335,24 +305,15 @@ export class OpencodeAdapter extends BaseAdapter {
         throw error;
       }
     }
-    // The JSON event stream carries every tool's output, so the launcher
-    // feeds it to this fold instead of capturing stdout whole: the fold
-    // keeps the reply text, the folded step_finish usage, and the break
-    // notes — tool parts dropped as they arrive — so no volume of tool
-    // output can reach the 16 MiB capture bound (review ul4).
-    context.stdoutSink = new OpenCodePlainFold();
+    // Streaming keeps reply and usage while dropping completed tool events.
+    context.stdoutSink = context.experimentOpencode ?? new OpenCodePlainFold();
     return context;
   }
 
   override cleanupRunSync(context?: RunContext): void {
-    // The launcher calls this exactly once per context it created, after a
-    // finished run and after a rejected one alike; each artifact dies with
-    // its own launch only. Both finalizers run even when the first throws
-    // (review round 87): a hermetic home that cannot be removed must not
-    // strand the provider config too. One failure rethrows as itself;
-    // several combine into one AggregateError naming each (kimi's
-    // cleanupHome follows the same rule).
+    // Attempt every finalizer even when one fails; report all retained artifacts.
     const failures: unknown[] = [];
+    try { context?.experimentOpencode?.closeSync(); } catch (error) { failures.push(error); }
     for (const artifact of [context?.opencodeHermeticHome, context?.opencodeProviderConfig]) {
       if (artifact === undefined) continue;
       try { artifact.finalize(); } catch (error) { failures.push(error); }
@@ -362,6 +323,11 @@ export class OpencodeAdapter extends BaseAdapter {
       const messages = failures.map((f) => f instanceof Error ? f.message : String(f));
       throw new AggregateError(failures, `codemux: opencode cleanup failed ${failures.length} times: ${messages.join("; ")}`);
     }
+  }
+
+  override cleanupRun(context?: RunContext): void | Promise<void> {
+    if (context?.experimentOpencode) return context.experimentOpencode.close().finally(() => this.cleanupRunSync(context));
+    this.cleanupRunSync(context);
   }
 
   override getRunEnv(
@@ -374,8 +340,9 @@ export class OpencodeAdapter extends BaseAdapter {
     if (request.hermetic && context?.opencodeHermeticHome === undefined) {
       throw new Error("opencode hermetic home was not prepared before launch");
     }
+    const experimentEnv: Record<string, string> = context?.experimentOpencode ? { [OPENCODE_EXPERIMENT_TOKEN_ENV]: context.experimentOpencode.relay.token } : {};
     const override = this.validatedProvider();
-    if (override === null) return {};
+    if (override === null) return experimentEnv;
     const config = context?.opencodeProviderConfig;
     if (config === undefined) {
       throw new Error("opencode provider config was not prepared before launch");
@@ -385,9 +352,10 @@ export class OpencodeAdapter extends BaseAdapter {
     // (an env(1) assignment would clobber it here); a plain run has no
     // prefix, so it rides along.
     if (request.hermetic) {
-      return { [OPENCODE_PROVIDER_KEY_ENV]: override.apiKey };
+      return { ...experimentEnv, [OPENCODE_PROVIDER_KEY_ENV]: override.apiKey };
     }
     return {
+      ...experimentEnv,
       [OPENCODE_PROVIDER_KEY_ENV]: override.apiKey,
       OPENCODE_CONFIG: config.path,
     };
@@ -395,6 +363,7 @@ export class OpencodeAdapter extends BaseAdapter {
 
   override validateRunRequest(request: RunRequest): void {
     super.validateRunRequest(request);
+    if (request.web === false || request.enablePlaywrightMcp || request.experimentMcp) this.assertNoRemoteLaunchConfig();
     // The inherited XDG directories are refused while still relative,
     // before any walk or spawn: OpenCode resolves them against the run's
     // working directory, past every check below (review round 286).
@@ -414,11 +383,8 @@ export class OpencodeAdapter extends BaseAdapter {
       validateWorkingDirectory(request.cwd) ?? process.cwd(),
       request.experimentProjectSettings === true
     );
-    // The plain-run --tools none refusal, surfaced early with its reason
-    // (see OPENCODE_NO_TOOLS_PERMISSION for the channel that cannot be
-    // closed). A usage refusal (exit 64), like every pre-launch refusal
-    // of the request (review round 5, contracts-2 finding 2).
-    if (request.tools === "none" && !request.hermetic) {
+    // Operator per-agent permissions can override a plain run's global denial.
+    if (request.tools === "none" && !request.hermetic && !request.experimentMcp) {
       throw new UsageRefusalError(PLAIN_NO_TOOLS_REFUSAL);
     }
     // The hermetic remote-config refusal, surfaced with its reason too:
@@ -429,13 +395,7 @@ export class OpencodeAdapter extends BaseAdapter {
         throw new UsageRefusalError(hermeticRemoteConfigRefusal(carrier));
       }
     }
-    // Fail before launch on a half-configured override, surface the model
-    // requirement early (the operator's own login and default model would
-    // otherwise silently answer), and refuse a model the config file
-    // cannot carry verbatim: OpenCode substitutes {env:…}/{file:…} in
-    // config text (opencode-provider.ts). A one-sided token cap is refused
-    // here for the same reason it is refused at the write: the schema's
-    // limit object takes the pair, not a half.
+    // Validate model substitutions and the paired context/output token caps.
     const resolved = this.modelFor(request.model);
     const override = this.validatedProvider();
     if (resolved !== undefined && override !== null) {
@@ -467,25 +427,64 @@ export class OpencodeAdapter extends BaseAdapter {
     assertNoOpenCodeProjectExecutionConfig(
       validateWorkingDirectory(cwd) ?? process.cwd()
     );
-    // The provider config's lifecycle rides prepareRun, which only the
-    // headless launch path calls; an interactive session has no hook to
-    // write and remove the file.
-    if (this.validatedProvider() !== null) {
-      throw new UsageRefusalError(
-        "the opencode provider override supports headless runs only; unset CODEMUX_OPENCODE_PROVIDER_* for an interactive session"
-      );
-    }
+    this.tuiProviderConfig(model);
+    if (effort !== undefined) validateOpencodeTuiEffortModel(this.modelFor(model));
+    if (enablePlaywrightMcp || this.validatedProvider()) this.assertNoRemoteLaunchConfig();
+  }
+
+  private assertNoRemoteLaunchConfig(): void {
+    const carrier = this.remoteConfigCarrier();
+    if (carrier !== null) throw new UsageRefusalError(
+      `opencode launch configuration is refused while the login carries remote configuration: ${carrier}; it can override the requested native settings`
+    );
+  }
+
+  private tuiProviderConfig(model?: string): Record<string, unknown> {
+    const override = this.validatedProvider();
+    return override ? opencodeProviderConfig(override, this.rawModelFor(model)!) : {};
+  }
+
+  override getTuiEnv(model?: string): Record<string, string> {
+    const override = this.validatedProvider();
+    if (!override) return {};
+    this.assertNoRemoteLaunchConfig();
+    return {
+      OPENCODE_CONFIG_CONTENT: JSON.stringify(this.tuiProviderConfig(model)),
+      [OPENCODE_PROVIDER_KEY_ENV]: override.apiKey,
+    };
+  }
+
+  /** The launcher owns private effort state until the TUI settles. */
+  override prepareTuiEnvironment(model?: string, _autonomy?: AutonomyLevel, effort?: ReasoningEffort,
+    _sandboxed?: boolean, _passthroughEnv?: readonly string[], printOnly = false) {
+    const env = this.getTuiEnv(model);
+    if (effort === undefined) return { env, finalize: () => {} };
+    const selected = validateOpencodeTuiEffortModel(this.modelFor(model));
+    if (printOnly) return { env: { ...env, XDG_STATE_HOME: join(this.realDataDir(), ".codemux-hermetic", "unprepared", ".local", "state") }, finalize: () => {} };
+    const prepared = prepareOpencodeTuiEffort(this.realDataDir(), selected, effort);
+    return { env: { ...env, ...prepared.env }, finalize: prepared.finalize };
   }
 
   buildTuiCommand(
     model?: string,
     autonomy?: AutonomyLevel,
     _effort?: ReasoningEffort,
-    _sandboxed?: boolean
+    sandboxed?: boolean,
+    enablePlaywrightMcp?: boolean,
+    cwd?: string,
+    nestedChecks?: ExecutableCheck[]
   ): string[] {
-    const cmd = ["opencode", "--pure"];
-    if (model) {
-      cmd.push("--model", model);
+    const mcp = opencodePlaywrightConfig(sandboxed, enablePlaywrightMcp, this.executionPathEnv(), cwd);
+    const cmd: string[] = [];
+    if (mcp.check) {
+      this.assertNoRemoteLaunchConfig();
+      nestedChecks?.push(mcp.check);
+      cmd.push("env", `OPENCODE_CONFIG_CONTENT=${JSON.stringify({ ...this.tuiProviderConfig(model), ...mcp.config })}`);
+    }
+    cmd.push("opencode", "--pure");
+    const selected = this.modelFor(model);
+    if (selected) {
+      cmd.push("--model", selected);
     }
     if (autonomy) {
       cmd.push(...this.mapAutonomy(autonomy));

@@ -170,7 +170,8 @@ export async function runSessionCommand(
       if (before === undefined) delete process.env[name];
       else if (now !== before) process.env[name] = before;
     }
-    process.exitCode = originalExitCode;
+    // Bun does not clear a numeric exit code when assigned undefined.
+    process.exitCode = originalExitCode ?? 0;
     error.mockRestore();
     warn.mockRestore();
     write.mockRestore();

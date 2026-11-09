@@ -23,7 +23,7 @@ import { markOverflowed } from "./usage.js";
  * beyond this one-shot output, so the session is turn-per-process: one
  * `run` per caller input, state carried by the native session id.
  *
- * Every capability the wire cannot evidence (steer, interrupt, permissions,
+ * Every capability the wire cannot evidence (steer, permissions,
  * user-during-turn, deltas, file changes, a usage stream) reports false,
  * honestly: usage rides only the per-turn step_finish parts, a report not a
  * stream.
@@ -34,6 +34,7 @@ import { OPENCODE_HERMETIC_ENV } from "../adapters/opencode-env.js";
 import { reportedTokenCount, safeTokenSum } from "../result-envelope/common.js";
 import { unusableFacts } from "./process.js";
 import type { SessionCapabilities } from "./protocol.js";
+import { UsageRefusalError } from "../validation.js";
 
 /** The session-only version floor (§4.3): 1.18.18, the build whose run wire
  * (the JSON line shapes, the stdin-to-EOF message, `--session` resume) the
@@ -48,17 +49,18 @@ export const OPENCODE_SESSION_ID_PATTERN = /^ses_[A-Za-z0-9]{8,64}$/;
 /**
  * Capability flags for opencode sessions (§3.4): live input yes (one caller
  * input, one `run` process), everything else the run wire cannot carry no —
- * there is no steering or interrupt channel into a one-shot process, no
- * permission round-trip (--auto answers "once" or the process dies on
- * stderr), no deltas (text parts arrive only when complete), no file-change
+ * there is no steering channel into a one-shot process, no
+ * permission round-trip (1.19.5 run answers "once" under --auto and
+ * "reject" otherwise, with a stderr warning), no deltas, no file-change
  * frames, and usage arrives only in the per-turn step_finish parts.
+ * Interrupt stops the current child and resumes its native id next turn.
  */
 export function opencodeSessionCapabilities(): SessionCapabilities {
   return {
     live_input: true,
     user_during_turn: false,
     steer: false,
-    interrupt: false,
+    interrupt: true,
     permissions: false,
     deltas: false,
     file_changes: false,
@@ -91,6 +93,8 @@ export interface OpenCodeSessionCommand {
   autonomy: AutonomyLevel;
   model?: string;
   effort?: ReasoningEffort;
+  /** Native deny config is supplied by openCodeHermeticTurnPrefix. */
+  permissionPolicy?: "default" | "deny";
   /** The native session id to resume, or undefined to start fresh. */
   resumeSessionId?: string;
   /** The `--experiment-project-settings` isolation: `--pure` is dropped
@@ -114,7 +118,9 @@ export function buildOpenCodeSessionCommand(command: OpenCodeSessionCommand): st
   if (command.model !== undefined) {
     argv.push("--model", command.model);
   }
-  argv.push(...opencodeSessionAutonomyFlags(command.autonomy));
+  argv.push(...opencodeSessionAutonomyFlags(command.autonomy).filter(
+    (flag) => command.permissionPolicy !== "deny" || flag !== "--auto"
+  ));
   if (command.effort !== undefined) {
     argv.push("--variant", command.effort);
   }
@@ -128,8 +134,8 @@ export function buildOpenCodeSessionCommand(command: OpenCodeSessionCommand): st
  * The env(1) prefix a HERMETIC session's per-turn argv rides: the run
  * path's own prefix (adapters/opencode.ts buildRunCommand), built from
  * the turn's freshly prepared context — a new private home per turn,
- * the session's own state (the native session id, the login) living in
- * the real data directory the prefix keeps. Null when the session is
+ * the session's native database and login redirected again by the
+ * driver's inner lifetime-home prefix. Null when the session is
  * not hermetic: a plain session spawns `opencode` with no prefix. The
  * assignments ride argv, never the environment handed to scode (the
  * run path's rule, adapters/opencode-env.ts).
@@ -143,7 +149,14 @@ export function openCodeHermeticTurnPrefix(input: {
   home: string | undefined;
   providerConfigPath: string | null;
   realDataParent: string;
+  permissionPolicy?: "default" | "deny";
 }): string[] | null {
+  if (input.permissionPolicy === "deny" && (!input.hermetic || input.projectSettings)) {
+    throw new UsageRefusalError(
+      "opencode --permission-policy deny requires --hermetic without --experiment-project-settings: " +
+      "project agent and mode permissions can override the global deny"
+    );
+  }
   if (!input.hermetic) return null;
   if (input.home === undefined) {
     throw new Error("opencode hermetic home was not prepared before launch");
@@ -156,6 +169,17 @@ export function openCodeHermeticTurnPrefix(input: {
       input.providerConfigPath,
       input.projectSettings
     ),
+    // OpenCode 1.19.5's bundled chunk-qyq939w0.js PermissionActionConfig
+    // accepts ask|allow|deny; PermissionConfig decodes a string as
+    // {"*": action}. chunk-k6e3nkfx.js Permission.ask / disabled use
+    // findLast, and Agent.state appends
+    // configured agent permissions after global rules. A fresh hermetic
+    // home excludes those layers; project settings must therefore refuse.
+    // OPENCODE_PERMISSION is merged after config and mode processing.
+    // Set both per-turn carriers after the hermetic env's -u removals.
+    ...(input.permissionPolicy === "deny"
+      ? ['OPENCODE_CONFIG_CONTENT={"permission":"deny"}', 'OPENCODE_PERMISSION={"*":"deny"}']
+      : []),
   ];
 }
 

@@ -43,7 +43,7 @@ describe("goose provider override", () => {
     const adapter = new GooseAdapter({});
     expect(adapter.getRunEnv({ agent: "goose", prompt: "p", autonomy: "high" } as RunRequest))
       .toEqual({ GOOSE_MODE: "auto" });
-    expect(run({})).toEqual(["goose", "run", "-t", "p"]);
+    expect(run({})).toEqual(["goose", "run", "-i", "-"]);
     // An operator model still rides GOOSE_MODEL.
     expect(adapter.getRunEnv({ agent: "goose", prompt: "p", model: "gpt-5.3" } as RunRequest))
       .toEqual({ GOOSE_MODE: "chat", GOOSE_MODEL: "gpt-5.3" });
@@ -61,7 +61,7 @@ describe("goose provider override", () => {
         GOOSE_MODEL: "glm-5.3",
       });
     const cmd = run(ZAI_GOOSE);
-    expect(cmd).toEqual(["goose", "run", "-t", "p"]);
+    expect(cmd).toEqual(["goose", "run", "-i", "-"]);
     expect(cmd.join(" ")).not.toContain(ZAI_GOOSE.CODEMUX_GOOSE_PROVIDER_API_KEY);
   });
 
@@ -142,7 +142,7 @@ describe("goose provider override", () => {
     const adapter = new GooseAdapter(ZAI_GOOSE);
     const request = { agent: "goose" as const, prompt: "p", cwd: cwdOf(), tools: "none" as const };
     expect(adapter.buildRunCommand(request as RunRequest))
-      .toEqual(["goose", "run", "--no-profile", "-t", "p"]);
+      .toEqual(["goose", "run", "--no-profile", "-i", "-"]);
     expect(adapter.getRunEnv(request as RunRequest)).toMatchObject({
       OPENAI_API_KEY: ZAI_GOOSE.CODEMUX_GOOSE_PROVIDER_API_KEY,
       GOOSE_MODEL: "glm-5.3",
@@ -182,22 +182,33 @@ describe("goose provider override", () => {
     });
   });
 
-  test("both token caps are refused: the knobs live only in goose's config file", () => {
-    // Regression: goose's per-model max_tokens/context_limit exist only in
-    // the config file the override never writes; a set cap must fail the
-    // run rather than ride along silently uncapped.
+  test("both token caps ride the config layer's env aliases", () => {
+    // GOOSE_MAX_TOKENS and GOOSE_CONTEXT_LIMIT are the per-model
+    // max_tokens/context_limit environment aliases (1.50.1 config layer),
+    // so a set cap reaches the run; a non-positive value is refused
+    // rather than silently uncapped.
     const request = { agent: "goose" as const, prompt: "p", cwd: cwdOf() };
     const outputCap = new GooseAdapter({
       ...ZAI_GOOSE,
       CODEMUX_GOOSE_PROVIDER_MAX_OUTPUT_TOKENS: "4096",
     });
-    expect(() => outputCap.validateRunRequest(request as RunRequest))
-      .toThrow("CODEMUX_GOOSE_PROVIDER_MAX_OUTPUT_TOKENS cannot be honored");
+    expect(outputCap.getRunEnv(request as RunRequest)).toMatchObject({
+      GOOSE_MAX_TOKENS: "4096",
+      GOOSE_MODEL: "glm-5.3",
+    });
+    expect(() => outputCap.validateRunRequest(request as RunRequest)).not.toThrow();
     const contextCap = new GooseAdapter({
       ...ZAI_GOOSE,
       CODEMUX_GOOSE_PROVIDER_MAX_CONTEXT_TOKENS: "32768",
     });
-    expect(() => contextCap.getRunEnv(request as RunRequest))
-      .toThrow("CODEMUX_GOOSE_PROVIDER_MAX_CONTEXT_TOKENS cannot be honored");
+    expect(contextCap.getRunEnv(request as RunRequest)).toMatchObject({
+      GOOSE_CONTEXT_LIMIT: "32768",
+    });
+    const refused = new GooseAdapter({
+      ...ZAI_GOOSE,
+      CODEMUX_GOOSE_PROVIDER_MAX_OUTPUT_TOKENS: "0",
+    });
+    expect(() => refused.getRunEnv(request as RunRequest))
+      .toThrow("CODEMUX_GOOSE_PROVIDER_MAX_OUTPUT_TOKENS must be a positive integer");
   });
 });

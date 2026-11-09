@@ -34,13 +34,9 @@ describe("ZaiAdapter", () => {
     expect(caps.supportsModel).toBe(true);
     expect(caps.supportsAutonomy).toBe(true);
     expect(caps.autonomyLevels).toEqual(["read-only", "low", "medium", "high"]);
-    // Claude's flag verbatim (same binary), enabled live 2026-10-10
-    // against the Z.AI endpoint: glm-5.3 answered under --effort low.
-    // `none` leads the list: it is the adapter's "no flag" spelling
-    // mapEffort accepts, so the capability list must carry it or the CLI
-    // refuses what the mapper maps (review al11).
+    // Native thinking disable is checked against the resolved model.
     expect(caps.supportsEffort).toBe(true);
-    expect(caps.effortLevels).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
+    expect(caps.effortLevels).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
 
   test("buildRunCommand defaults to opus model", () => {
@@ -87,13 +83,13 @@ describe("ZaiAdapter", () => {
       .toEqual([...safeHeadlessArgs, "--model", "claude-opus-5"]);
   });
 
-  test("buildRunCommand with effort rides claude's flag; none adds nothing", () => {
-    // Claude's mapping verbatim (same binary): a level rides --effort,
-    // and `none` is the adapter's "no flag", not a value the binary takes.
+  test("effort none disables thinking for a compatible model and refuses the default alias", () => {
     expect(adapter.buildRunCommand({ agent: "zai", prompt: "t", effort: "low" }))
       .toEqual([...safeHeadlessArgs, "--model", "opus", "--effort", "low"]);
-    expect(adapter.buildRunCommand({ agent: "zai", prompt: "t", effort: "none" }))
-      .toEqual([...safeHeadlessArgs, "--model", "opus"]);
+    expect(adapter.buildRunCommand({ agent: "zai", prompt: "t", model: "claude-sonnet-5", effort: "none" }))
+      .toEqual([...safeHeadlessArgs, "--model", "claude-sonnet-5", "--thinking", "disabled"]);
+    expect(() => adapter.buildRunCommand({ agent: "zai", prompt: "t", effort: "none" }))
+      .toThrow("requires a verified thinking-disable model");
   });
 
   test("buildRunCommand with autonomy levels", () => {
@@ -248,6 +244,7 @@ describe("ZaiAdapter", () => {
       agent: "zai",
       model: "glm-5.3",
       served_model: "glm-5.3",
+      model_alias: null,
       usage: {
         input_tokens: 5,
         output_tokens: 2,
