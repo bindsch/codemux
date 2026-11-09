@@ -337,6 +337,9 @@ export class AiderSessionDriver extends AiderCallerInput {
         sandbox_trust: this.options.sandboxTrust,
         capabilities: this.capabilities,
         protocol: "codemux-live-session/1",
+        // Aider has no hermetic mode, so no private home: the key is
+        // still present, null, as the protocol promises for every agent.
+        private_home: null,
       })
     );
   }

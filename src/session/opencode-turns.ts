@@ -43,6 +43,7 @@ export abstract class OpenCodeTurns extends OpenCodeDriverCore {
       model: this.options.model,
       effort: this.options.effort,
       resumeSessionId: this.sessionId ?? undefined,
+      projectSettings: this.options.projectSettings === true,
     });
     let proc: SessionProcess;
     let spawn: Promise<SessionProcess> | null = null;
@@ -248,6 +249,11 @@ export abstract class OpenCodeTurns extends OpenCodeDriverCore {
           sandbox_trust: this.options.sandboxTrust,
           capabilities: this.capabilities,
           protocol: "codemux-live-session/1",
+          // An opencode session keeps no session-keyed private home: the
+          // native session (and the login) live in the real data
+          // directory the hermetic prefix deliberately keeps, so there
+          // is no directory to report.
+          private_home: null,
         })
       );
     });
@@ -289,7 +295,7 @@ export abstract class OpenCodeTurns extends OpenCodeDriverCore {
         pass_env: [...(this.options.passEnv)],
         playwright_mcp: false,
         provider_base_url: this.options.providerBaseUrl,
-        project_settings: false,
+        project_settings: this.options.projectSettings === true,
       },
       () => this.settled,
       (outcome) => {

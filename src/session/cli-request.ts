@@ -127,35 +127,32 @@ export function resolveSessionRequest(
   if (agentId === "claude" || agentId === "zai") {
     asUsage(() => assertAbsoluteClaudeConfigDir(passthroughEnv));
   }
-  // Hermetic sessions exist in exactly one mode: the project-settings
-  // isolation (claude/zai), which pairs --hermetic with
-  // --experiment-project-settings. Every other spelling is refused
-  // with the reason, so a plain --hermetic never silently becomes a
-  // different isolation than `run` gives it.
+  // Hermetic sessions take the same flags `run` takes: plain --hermetic
+  // (the run path's isolation, plus a per-session private home the
+  // harness keeps its transcript in) and --hermetic
+  // --experiment-project-settings (the repository's own settings in
+  // place of the operator's). The adapter's own validateRunRequest —
+  // run's gate, on runLike below — refuses a --hermetic an agent has no
+  // verified mode for, with the run path's reason verbatim, so the two
+  // paths cannot drift.
+  const hermetic = Boolean(options.hermetic);
   const experimentProjectSettings = Boolean(options.experimentProjectSettings);
-  if (options.hermetic && !experimentProjectSettings) {
+  if (experimentProjectSettings && agentId !== "claude" && agentId !== "zai" && agentId !== "opencode") {
     usageError(
-      "--hermetic is refused for sessions in this release: no verified hermetic " +
-        "canary covers a persistent, resumable session. The one hermetic session mode " +
-        "is --experiment-project-settings, which requires --hermetic (see docs/sessions.md)"
+      "--experiment-project-settings applies to the claude, zai, and opencode agents only in this release"
     );
   }
-  if (experimentProjectSettings && agentId !== "claude" && agentId !== "zai") {
-    usageError(
-      "--experiment-project-settings applies to the claude and zai agents only in this release"
-    );
-  }
-  // Run refuses playwright under --hermetic; the session's one hermetic
-  // mode is no exception (review round 14, edges 6).
-  if (enablePlaywrightMcp && (options.hermetic || experimentProjectSettings)) {
+  // Run refuses playwright under --hermetic; a hermetic session is no
+  // exception (review round 14, edges 6).
+  if (enablePlaywrightMcp && (hermetic || experimentProjectSettings)) {
     usageError(
       "--enable-playwright-mcp cannot be combined with --hermetic --experiment-project-settings"
     );
   }
-  if (options.final !== undefined && !experimentProjectSettings) {
+  if (options.final !== undefined && !hermetic) {
     usageError(
-      "--final requires --hermetic --experiment-project-settings: it removes the private " +
-        "config directory those flags give a session"
+      "--final requires --hermetic: it removes the private home a hermetic session's " +
+        "harness state lives in"
     );
   }
   // The deny policy rides the claude-family permission channel alone;
@@ -326,7 +323,11 @@ export function resolveSessionRequest(
     cwd: workdir,
     passthroughEnv,
     sandboxed: Boolean(options.sandbox),
-    hermetic: experimentProjectSettings,
+    // Plain --hermetic, or the pair the mode requires (the gate above
+    // and validateProjectSettingsRequest both refuse the mode without
+    // the flag, exactly as run does), so a project-settings session's
+    // per-turn prepareRun builds the private home its env prefix names.
+    hermetic,
     experimentProjectSettings,
   };
   adapter.validateRunRequest(runLike);
@@ -358,6 +359,7 @@ export function resolveSessionRequest(
     requestedAutonomy,
     passthroughEnv,
     enablePlaywrightMcp,
+    hermetic,
     experimentProjectSettings,
     sandboxOptions,
     sandboxTrust,

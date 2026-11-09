@@ -69,25 +69,28 @@ describe("the session command's option validation in process", () => {
     expect(outcome.stderr).toContain("--enable-playwright-mcp requires --auto low for sessions");
   });
 
-  test("--hermetic without --experiment-project-settings is refused with the reason", async () => {
-    const outcome = await runSessionCommand(["-a", "claude", "--hermetic"]);
+  test("--hermetic with an agent that has no verified mode is refused with the run path's reason", async () => {
+    // The agent gate is the adapter's own validateRunRequest (run's
+    // gate on the run-like), so an aider session answers the run
+    // refusal verbatim; claude, zai, codex, kimi, opencode, and agy
+    // accept it.
+    const outcome = await runSessionCommand(["-a", "aider", "--hermetic"]);
     expect(outcome.exitCode).toBe(64);
-    expect(outcome.stderr).toContain("--hermetic is refused for sessions in this release");
-    expect(outcome.stderr).toContain("--experiment-project-settings");
+    expect(outcome.stderr).toContain("aider has no verified hermetic mode; see docs/isolation.md");
   });
 
-  test("--experiment-project-settings is claude/zai only", async () => {
+  test("--experiment-project-settings is claude/zai/opencode only", async () => {
     const outcome = await runSessionCommand(["-a", "codex", "--hermetic", "--experiment-project-settings"]);
     expect(outcome.exitCode).toBe(64);
     expect(outcome.stderr).toContain(
-      "--experiment-project-settings applies to the claude and zai agents only in this release"
+      "--experiment-project-settings applies to the claude, zai, and opencode agents only in this release"
     );
   });
 
-  test("--final without --experiment-project-settings is refused", async () => {
+  test("--final without --hermetic is refused", async () => {
     const outcome = await runSessionCommand(["-a", "claude", "--final"]);
     expect(outcome.exitCode).toBe(64);
-    expect(outcome.stderr).toContain("--final requires --hermetic --experiment-project-settings");
+    expect(outcome.stderr).toContain("--final requires --hermetic");
   });
 
   test("a --permission-policy value outside the two supported ones is refused", async () => {

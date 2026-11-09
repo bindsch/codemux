@@ -62,12 +62,16 @@ describe("--experiment-project-settings", () => {
     expect(() =>
       validateProjectSettingsRequest({ ...valid(), agent: "opencode", autonomy: "high" })
     ).not.toThrow();
+    // An opencode SESSION carries the project's rules per turn, so the
+    // same gates admit it (hermetic sessions, 2.0.0).
+    expect(() =>
+      validateProjectSettingsRequest({ ...valid(), agent: "opencode", session: true })
+    ).not.toThrow();
   });
 
   test.each([
     ["read-only autonomy", { autonomy: "read-only" }, "requires --auto low or high"],
     ["medium autonomy", { autonomy: "medium" }, "requires --auto low or high"],
-    ["a session", { session: true }, "claude and zai only"],
     ["a passed-through config file", { passthroughEnv: ["OPENCODE_CONFIG"] }, "--pass-env OPENCODE_CONFIG"],
     ["a passed-through config directory", { passthroughEnv: ["OPENCODE_CONFIG_DIR"] }, "--pass-env OPENCODE_CONFIG_DIR"],
     ["a passed-through config content", { passthroughEnv: ["OPENCODE_CONFIG_CONTENT"] }, "--pass-env OPENCODE_CONFIG_CONTENT"],

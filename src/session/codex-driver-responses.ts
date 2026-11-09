@@ -12,6 +12,7 @@ import {
   CODEX_THREAD_ID_PATTERN,
 } from "./codex-session.js";
 import { buildEvent, buildUnknownEvent } from "./protocol.js";
+import { settledPrivateHomePath } from "./private-home-key.js";
 import { CodexDriverSteer } from "./codex-steer.js";
 import { inputSeqList } from "./codex-turns.js";
 import type { PendingCall } from "./codex-driver-io.js";
@@ -51,6 +52,14 @@ export abstract class CodexDriverResponses extends CodexDriverSteer {
         sandbox_trust: this.options.sandboxTrust,
         capabilities: this.capabilities,
         protocol: "codemux-live-session/1",
+        // The hermetic session's private home, named as the resume guard
+        // finds it (the settled path keyed by this thread id); a plain
+        // session reports null. The key is always present (the protocol
+        // doc promises no omission).
+        private_home:
+          this.options.privateHome != null
+            ? settledPrivateHomePath(this.options.privateHome.dir, this.sessionIdOrEmpty())
+            : null,
       })
     );
     while (this.preSessionLines.length > 0 && !this.finished) {
@@ -67,6 +76,15 @@ export abstract class CodexDriverResponses extends CodexDriverSteer {
     const wire = this.options.wireModel;
     if (wire === null) return undefined;
     return wire ?? this.options.model;
+  }
+
+  /** The thread builders' hermetic arm (round 413, item 1): either flag
+   * says hermetic — the same predicate the call ledger records with — so
+   * a launcher that hands only the private home still skips AGENTS.md
+   * discovery, and a plain session loads project documents exactly as a
+   * plain codex run does. */
+  private threadHermetic(): boolean {
+    return this.options.hermetic === true || this.options.privateHome != null;
   }
 
   protected applyResponse(id: number | string, result: unknown, rawLine: string): void {
@@ -112,13 +130,20 @@ export abstract class CodexDriverResponses extends CodexDriverSteer {
         this.options.resumeThreadId === null ? "thread_start" : "thread_resume",
         (nextId) =>
           this.options.resumeThreadId === null
-            ? buildThreadStartRequest(nextId, this.policy, this.options.cwd, this.threadWireModel())
+            ? buildThreadStartRequest(
+                nextId,
+                this.policy,
+                this.options.cwd,
+                this.threadWireModel(),
+                this.threadHermetic()
+              )
             : buildThreadResumeRequest(
                 nextId,
                 this.options.resumeThreadId,
                 this.policy,
                 this.options.cwd,
-                this.threadWireModel()
+                this.threadWireModel(),
+                this.threadHermetic()
               )
       );
       return;

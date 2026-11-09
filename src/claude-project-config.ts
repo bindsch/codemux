@@ -52,12 +52,7 @@
  * days.
  */
 
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  realpathSync,
-} from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { writePrivateFile } from "./private-write.js";
@@ -65,15 +60,11 @@ import type { SessionHold } from "./session/registry.js";
 import {
   PARENT_DIR_NAME,
   RUN_PREFIX,
-  assertTrustedDirectory,
   prepareRunDirParent,
 } from "./hermetic-home.js";
 import { trackPrivateDir, untrackPrivateDir } from "./private-dir-signals.js";
-import {
-  recordTrustedParent,
-  removeUnderTrustedParent,
-  removeUnderTrustedParentOrThrow,
-} from "./safe-remove.js";
+import { recordTrustedParent, removeUnderTrustedParent } from "./safe-remove.js";
+import { openSessionPrivateHome } from "./session/private-home.js";
 export { copyClaudeCredentialMirror } from "./claude-credential-mirror.js";
 
 export interface ClaudeProjectConfigDir {
@@ -262,10 +253,12 @@ export interface ProjectSettingsSessionDir {
    * resolved this directory. */
   blockedPaths: readonly string[];
   /** Removes the directory, the token copy with it — the session's
-   * `--final` flag. Idempotent, and the only removal path: no exit hook,
-   * no signal tracking, because the directory must survive the process
-   * that created it for the next `--resume`. */
-  remove: () => void;
+   * `--final` flag. One attempt per call: true once the directory is
+   * gone, a thrown reason when the removal is refused or fails
+   * (retryable). The only removal path: no exit hook, no signal
+   * tracking, because the directory must survive the process that
+   * created it for the next `--resume`. */
+  remove: () => boolean;
 }
 
 /**
@@ -296,66 +289,22 @@ export function openProjectSettingsSessionConfigDir(
   holdStateOf?: (id: string) => SessionHold
 ): ProjectSettingsSessionDir {
   const root = projectSettingsConfigRoot(environment);
-  // Path first: it validates the id shape, so the sweep below can key its
-  // registry consult on the name alone.
-  const dir = projectSettingsSessionDirPath(root, sessionId);
-  const parent = prepareRunDirParent(
-    root,
-    PARENT_DIR_NAME,
-    holdStateOf,
-    projectSettingsSessionDirName(sessionId)
-  );
-  // Recorded at open time for the removal's revalidation (src/safe-remove.ts,
-  // review round 104): the lstat check this variant used caught a swapped
-  // symlink but not another directory put at the same path, and the sandboxed
-  // child of any earlier command of this session can write the parent.
-  const parentRecord = recordTrustedParent(parent);
-  if (resume) {
-    if (!existsSync(dir)) {
-      throw new Error(
-        `session ${sessionId} has no private config directory at ${dir}: it was removed ` +
-          "(--final or the stale sweep) and the session's transcript with it, so it cannot resume"
-      );
-    }
-    // The sweep's own check, on the leaf: a link or a foreign-owned
-    // directory must not become CLAUDE_CONFIG_DIR for a resumed child.
-    assertTrustedDirectory(dir);
-  } else {
-    // A fresh UUID that lands on an existing entry is not this session's
-    // to reuse: whatever is there belongs to something else (or someone
-    // pre-created the name), and writing over it would hand the session a
-    // directory whose contents it never chose.
-    if (existsSync(dir)) {
-      throw new Error(
-        `the private config directory for session ${sessionId} already exists at ${dir}; ` +
-          "refusing to reuse a directory this command did not create"
-      );
-    }
-    mkdirSync(dir, { mode: 0o700 });
-    try {
+  // A thin delegate over the shared hermetic-session home
+  // (session/private-home.ts): the same create-or-open lifetime, sweep,
+  // and removal rules every hermetic session agent uses, with this
+  // family's own root, id shape, blocked state, and generated state
+  // file. The id is validated inside, before anything is created.
+  return openSessionPrivateHome({
+    parent: join(root, PARENT_DIR_NAME),
+    sessionId,
+    resume,
+    idPattern: SESSION_ID_PATTERN,
+    blockedPaths: projectSettingsBlockedStatePaths(environment),
+    populate: (dir) => {
       writePrivateFile(dir, ".claude.json", `${generatedGlobalState(claudeProjectKey(cwd))}\n`);
-    } catch (error) {
-      // Unreferenced: remove it, parent revalidated first like every removal
-      // here (round 30, contracts 1); the write error stays the one reported.
-      removeUnderTrustedParent(dir, parentRecord, `the project-settings directory ${dir}`);
-      throw error;
-    }
-  }
-  let removed = false;
-  const remove = (): void => {
-    if (removed) return;
-    // The parent is revalidated first by the record's identity, like the
-    // run-path finalize above (and every codex-provider removal): a parent
-    // swapped for a symlink or replaced by another directory must refuse
-    // the removal instead of resolving the path elsewhere (review round 15,
-    // edges 2; the shared rule is src/safe-remove.ts).
-    removeUnderTrustedParentOrThrow(dir, parentRecord, `the project-settings directory ${dir}`);
-    // Marked only after the removal succeeded: a failed removal stays
-    // retryable, so the caller's next attempt gets a real second try
-    // instead of a no-op (review round 11, contracts-2 4).
-    removed = true;
-  };
-  return { dir, blockedPaths: projectSettingsBlockedStatePaths(environment), remove };
+    },
+    holdStateOf,
+  });
 }
 
 /**
@@ -373,4 +322,21 @@ export function projectSettingsRunEnv(
     throw new Error("--experiment-project-settings run was not prepared before launch");
   }
   return { CLAUDE_CONFIG_DIR: configDir.dir };
+}
+
+/**
+ * The getRunEnv divider both claude-family adapters share: the
+ * project-settings modes always point at a prepared directory (and
+ * fail closed without one, projectSettingsRunEnv above), while plain
+ * --hermetic points only when the caller supplied a directory — a
+ * session's keyed home — and answers null for the argv-only run, where
+ * no directory exists. Null means "no environment to add".
+ */
+export function projectSettingsOrHermeticHome(
+  request: { hermetic?: boolean; experimentProjectSettings?: boolean },
+  configDir: ClaudeProjectConfigDir | undefined
+): { CLAUDE_CONFIG_DIR: string } | null {
+  if (!request.experimentProjectSettings && request.hermetic !== true) return null;
+  if (configDir === undefined && !request.experimentProjectSettings) return null;
+  return projectSettingsRunEnv(configDir);
 }

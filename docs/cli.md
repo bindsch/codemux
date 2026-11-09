@@ -87,9 +87,9 @@ warned about and ignored. See
 
 `--enable-playwright-mcp` is available on `run`, `tui`, and `session`.
 It requires Claude or Z.AI and sandboxing; sessions also require `--auto low`.
-It is incompatible with `--hermetic` and `--tools none`; the sessions spelling
-of hermetic isolation, `--hermetic --experiment-project-settings`, is refused
-the same way. The locally installed
+It is incompatible with `--hermetic` and `--tools none`; a session refuses it
+under `--hermetic`, with or without `--experiment-project-settings`, the same
+way. The locally installed
 `playwright-mcp`, resolved through the adapter-built child environment's PATH
 (the same source every other launch binary resolves by), must pass executable trust checks, revalidated immediately
 before the spawn; codemux cannot control the moment Claude starts the server
@@ -226,6 +226,7 @@ they do not prove that every possible customization channel is absent.
 |---|---|
 | `--timeout <seconds>` | 60 per probe; same positive/86400 bound and rounding as run |
 | `--hermetic` | Off; paired checks in a managed directory; incompatible with `--cwd` |
+| `--session` | Off; with `--hermetic`, runs the session form of the canary instead of the run form: three sessions of this build (hermetic, a control without `--hermetic`, and the first resumed with `--resume <id> --final`) against the planted instruction files. The hermetic sessions must answer without the planted code word across the resume, the control must reveal it, and `--final` must remove the private session home. Agents with a session driver and hermetic support only; spends real quota |
 | `--tools <selection>` | `default` or `none`, subject to harness restrictions |
 | `--experiment-mcp <spec.json>` | Extend the `claude`, `zai`, or `kimi` hermetic canary with an experiment MCP server; `codex` paired checks are unsupported |
 | `--agy-isolation-probe <mode>` | Diagnostic mode: `login`, `hermetic`, `control`, `tools`, `tools-control` |
@@ -254,17 +255,23 @@ Its additional options and resume restrictions are defined once in the
 [session guide](sessions.md#options).
 The [protocol reference](session-protocol.md) defines JSONL input and output.
 It supports Claude, Z.AI, Codex, Agy, OpenCode, Aider, and Kimi.
-Tool selection is refused for sessions, and so is a plain `--hermetic`, and
-`--max-budget-usd` (Claude Code applies the spend limit to headless runs
-only; use run); the
-one hermetic session mode is `--hermetic --experiment-project-settings`
-(Claude/Z.AI), which runs the session in a private per-session Claude config
-directory with the repository's own settings — see
+Tool selection and `--max-budget-usd` are refused for sessions (Claude Code
+applies the spend limit to headless runs only; use run). `--hermetic` gives
+a session the run path's isolation on claude, zai, codex, kimi, opencode,
+and agy — none of the operator's instructions, skills, hooks, MCP servers,
+or permission rules load. On claude, zai, codex, kimi, and agy the
+harness's state lives in a per-session private home removed by `--final`
+or the stale sweep; opencode keeps no session-keyed home (its sessions
+live in the real data directory). See
 [isolation](isolation.md) and
+[hermetic sessions](sessions.md#hermetic-sessions).
+`--hermetic --experiment-project-settings` (Claude/Z.AI) additionally runs
+the session in a private per-session Claude config directory with the
+repository's own settings — see
 [hermetic project-settings sessions](sessions.md#hermetic-project-settings-sessions).
 Sessions also take `--permission-policy <policy>` (`default`, or `deny` to
 answer every permission request with an immediate deny) and `--final`
-(remove that session's private config directory when it ends).
+(requires `--hermetic`; removes that session's private home when it ends).
 
 ## calls
 

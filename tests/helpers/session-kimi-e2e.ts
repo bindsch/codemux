@@ -44,6 +44,9 @@ interface Session {
   /** Lifecycle milestones from the turn children and the session's done
    * promise, in the order they happened ("spawned", "settled", "done"). */
   order: string[];
+  /** Every per-turn argv the driver built, in turn order (the fake's
+   * command strips the `env` prefix, so this is the one record of it). */
+  argvs: string[][];
 }
 
 export const cleanups: Array<() => Promise<void> | void> = [];
@@ -81,6 +84,7 @@ export async function startSession(
   const order: string[] = [];
   let driver!: KimiSessionDriver;
   const procs: SessionProcess[] = [];
+  const argvs: string[][] = [];
   let turnCount = 0;
   const options: KimiDriverOptions = {
     resumeSessionId: null,
@@ -102,18 +106,36 @@ export async function startSession(
     spawnTurn: async (argv) => {
       turnCount++;
       if (spawnDelayMs > 0 && turnCount >= delayFromTurn) await Bun.sleep(spawnDelayMs);
-      // The fake replaces the binary name and keeps every flag, so the
-      // recorded argv is the argv the driver built.
+      argvs.push([...argv]);
+      // The fake replaces the binary name and keeps every flag. Under a
+      // hermetic launch the command is the real spawn shape — `env -u K
+      // ... NAME=VALUE ... kimi <flags>` — so the rig applies what
+      // env(1) would to the child's environment (dropped names, then
+      // assignments) before swapping in the fake: the turn child really
+      // runs on the private HOME and KIMI_CODE_HOME the argv names.
+      const kimiAt = argv.indexOf("kimi");
+      const childEnv: Record<string, string> = {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        FAKE_STATE_DIR: stateDir,
+        FAKE_TURN_NUMBER: String(turnCount),
+        HOME: dir,
+        ...extraEnv,
+      };
+      if (argv[0] === "env") {
+        for (let i = 1; i < kimiAt; i++) {
+          const token = argv[i]!;
+          if (token === "-u") {
+            delete childEnv[argv[++i]!];
+            continue;
+          }
+          const eq = token.indexOf("=");
+          if (eq > 0) childEnv[token.slice(0, eq)] = token.slice(eq + 1);
+        }
+      }
       const proc = new SessionProcess({
-        command: ["bun", FAKE, ...argv.slice(1)],
+        command: ["bun", FAKE, ...argv.slice(kimiAt + 1)],
         cwd: options.cwd,
-        env: {
-          PATH: process.env.PATH ?? "/usr/bin:/bin",
-          FAKE_STATE_DIR: stateDir,
-          FAKE_TURN_NUMBER: String(turnCount),
-          HOME: dir,
-          ...extraEnv,
-        },
+        env: childEnv,
         onLine: (line) => driver.handleHarnessLine(line),
         onFatal: (fatal) => driver.handleFatal(fatal),
         graceMs,
@@ -150,7 +172,7 @@ export async function startSession(
       await proc.settled;
     }
   });
-  return { driver, events, code, options, stateDir, workDir, order };
+  return { driver, events, code, options, stateDir, workDir, order, argvs };
 }
 
 /** What the fake recorded, re-read so late appends are visible. */

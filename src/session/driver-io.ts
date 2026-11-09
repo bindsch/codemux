@@ -64,21 +64,29 @@ export interface SessionDriverOptions {
   /** The provider identity recorded for the resume guard (review D3):
    * the override's base URL, or null for the operator's own login. */
   providerBaseUrl: string | null;
-  /** Whether the session runs hermetic — true only for the
-   * project-settings mode, the one hermetic sessions accept. Recorded and
-   * compared by the resume guard; the call ledger carries it too. */
+  /** Whether the session runs hermetic — plain `--hermetic` (the run
+   * path's argv isolation, plus the session-keyed private config
+   * directory) or the project-settings mode, which requires it.
+   * Recorded and compared by the resume guard; the call ledger carries
+   * it too. */
   hermetic?: boolean;
   /** Whether the session runs the project-settings isolation (a private
    * Claude config directory, `--setting-sources project,local`).
    * Recorded as `project_settings` and refused as a resume mismatch in
    * both directions (registry.ts). */
   projectSettings?: boolean;
-  /** True only for a project-settings session the CLI launched with
-   * `--final`: the command removes the private config directory once
-   * the session ends, transcript and trust record with it, so
-   * `session_ended` reports `resumable: false` — a resume would open a
-   * fresh directory with no transcript (review round 7, edges finding
-   * 1). Other agents never set it. */
+  /** The session's private home, reported on `session_started` as
+   * `private_home` (the directory the harness keeps its transcript in);
+   * null when the agent's hermetic sessions keep no session-keyed
+   * directory (opencode's transcript stays in its real data dir) and
+   * for every non-hermetic session. */
+  privateHome?: { dir: string } | null;
+  /** True only for a hermetic session the CLI launched with `--final`:
+   * the command removes the private home once the session ends,
+   * transcript and trust record with it, so `session_ended` reports
+   * `resumable: false` — a resume would open a fresh directory with no
+   * transcript (review round 7, edges finding 1). Other agents never
+   * set it. */
   final?: boolean;
   /** The `--final` directory removal, handed in by the CLI so the end
    * path can run it — both attempts — BEFORE the end stamp releases the

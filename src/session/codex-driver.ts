@@ -318,6 +318,26 @@ export class CodexSessionDriver extends CodexDriverInput {
         settledHome = false;
       }
     }
+    // The hermetic session's private home settles by the same rule, right
+    // here before the record release: the child is gone, so nothing writes
+    // it anymore, and only a session the registry vouches for (a recorded
+    // thread, or a claimed resume whose home arrived already settled)
+    // reaches the keyed name a resume computes. Removal is never this
+    // path's — `--final` and the stale sweep own it — so a home that
+    // cannot settle stays in place and the resume guard's harness_home
+    // check refuses the next resume (fail closed), which the folded
+    // `settledHome` reports honestly now.
+    if (this.options.privateHome != null && !this.options.privateHome.settled) {
+      if (this.threadId !== null && (this.registryRecorded || this.resumeClaimed)) {
+        try {
+          this.options.privateHome.settle(this.threadId);
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          console.error(`codemux: hermetic session home settlement failed: ${detail}`);
+        }
+      }
+      if (!this.options.privateHome.settled) settledHome = false;
+    }
     const ownsRecord = this.registryRecorded || this.resumeClaimed;
     if (ownsRecord && this.options.registryPath !== null && this.threadId !== null) {
       // A lost stamp rides stderr (releaseSessionRecord, review live13).

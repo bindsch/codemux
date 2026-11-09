@@ -14,9 +14,10 @@ import type { Command } from "commander";
 import type { ProjectSettingsSessionDir } from "../claude-project-config.js";
 import type { CodexSessionProviderHome } from "../codex-provider.js";
 import type { CodemuxConfig } from "../types.js";
-import { exitOnResumeRefusal, exitWithCode } from "./cli-usage.js";
+import { exitOnResumeRefusal } from "./cli-usage.js";
 import { registerSessionOptions } from "./cli-options.js";
 import { cleanupAfterSpawnThrow, exitPrintedSandbox, handleSessionAbort, removeFinalProjectDir } from "./cli-exit.js";
+import { recordSessionBeforeSpawn } from "./cli-record.js";
 import { resolveSessionRequest } from "./cli-request.js";
 import { resolveSessionContext } from "./cli-resume.js";
 import { prepareSessionLaunch } from "./cli-launch.js";
@@ -28,9 +29,10 @@ import type { SessionProcess } from "./process.js";
 import {
   claimForResume,
   discardUnconfirmedRecord,
-  probeRegistryForStart,
+  recordSessionEnd,
   releaseSessionRecord,
 } from "./registry.js";
+import type { SessionPrivateHome } from "./private-home-types.js";
 import { spawnSessionChild } from "./spawn.js";
 import { launchRedirectCheck } from "../cli-runtime.js";
 import { UsageRefusalError } from "../validation.js";
@@ -64,6 +66,10 @@ export function registerSessionCommand(
       let codexSessionHome: CodexSessionProviderHome | null = null;
       let sessionProjectDir: ProjectSettingsSessionDir | null = null;
       let sessionProjectDirResumed = false;
+      // The hermetic codex/kimi/agy session's private home: the same
+      // fresh/resumed removal rule as the claude family's directory.
+      let sessionPrivateHome: SessionPrivateHome | null = null;
+      let sessionPrivateHomeResumed = false;
       const spawnBegan = { value: false };
       // The record this process owns from the resume claim or a fresh
       // start record until the spawn, with its release rule (fresh and
@@ -87,10 +93,20 @@ export function registerSessionCommand(
       let builtDriver: SessionDriver | null = null;
       /** Aborting removes only a FRESH private directory (its record was
        * never confirmed); a resumed one stays — that removal is the end
-       * path's (round 17, edges 1). */
+       * path's (round 17, edges 1), the codex/kimi/agy home included. */
       const abandonSessionProjectDir = (): void => {
         if (sessionProjectDir !== null && !sessionProjectDirResumed) {
           sessionProjectDir.remove();
+        }
+        if (sessionPrivateHome !== null && !sessionPrivateHomeResumed) {
+          try {
+            sessionPrivateHome.remove();
+          } catch (error) {
+            console.error(
+              `codemux: cannot remove the fresh hermetic session home ${sessionPrivateHome.dir} ` +
+                `(${error instanceof Error ? error.message : String(error)}); the stale sweep removes it later`
+            );
+          }
         }
       };
       try {
@@ -121,6 +137,7 @@ export function registerSessionCommand(
           requestedAutonomy,
           passthroughEnv,
           enablePlaywrightMcp,
+          hermetic,
           experimentProjectSettings,
           sandboxOptions,
           sandboxTrust,
@@ -154,6 +171,7 @@ export function registerSessionCommand(
           autonomy,
           passthroughEnv,
           enablePlaywrightMcp,
+          hermetic,
           experimentProjectSettings,
           sandboxTrust,
           sandboxNoNet,
@@ -163,9 +181,10 @@ export function registerSessionCommand(
         });
         // The same --final predicate the driver options carry
         // (cli-drivers.ts): the end path alone stamps the record final,
-        // and only after it removed the private directory (review round
-        // 10, edges 4; round 16, edges 1).
-        const finalSession = Boolean(options.final) && experimentProjectSettings;
+        // and only after the removal (review round 10, edges 4; round
+        // 16, edges 1). Plain --hermetic qualifies; opencode has no
+        // session-keyed home, so its --final decides about nothing.
+        const finalSession = Boolean(options.final) && hermetic;
         // A print-only invocation records NOTHING (round 17, edges 2; cli-spawn-prep.ts has the story).
         const printOnly = Boolean(options.printSandbox);
         if (resumeId !== undefined && !printOnly) {
@@ -199,6 +218,7 @@ export function registerSessionCommand(
           workdir,
           passthroughEnv,
           enablePlaywrightMcp,
+          hermetic,
           experimentProjectSettings,
           sandboxOptions,
           sandboxTrust,
@@ -214,6 +234,8 @@ export function registerSessionCommand(
         codexSessionHome = launch.codexSessionHome;
         sessionProjectDir = launch.sessionProjectDir;
         sessionProjectDirResumed = launch.sessionProjectDirResumed;
+        sessionPrivateHome = launch.sessionPrivateHome;
+        sessionPrivateHomeResumed = resumeId !== undefined;
         const {
           needsKeepEnvPreflight,
           buildSessionEnvironment,
@@ -238,6 +260,7 @@ export function registerSessionCommand(
             claudeBuilt,
             codexSessionHome,
             sessionProjectDir,
+            sessionPrivateHome,
             turnPerProcess,
             needsKeepEnvPreflight,
             buildSessionEnvironment,
@@ -248,11 +271,13 @@ export function registerSessionCommand(
             finalFlag: Boolean(options.final),
             sessionProjectDir,
             sessionProjectDirResumed,
+            sessionPrivateHome,
+            sessionPrivateHomeResumed,
             releaseOwnedRecord,
           });
           return;
         }
-        const { driver, claudeDriver, aiderDriver, aiderSessionId, turnState } =
+        const { driver, claudeDriver, agyDriver, aiderDriver, aiderSessionId, turnState } =
           createSessionDriver({
             options,
             agentId,
@@ -270,6 +295,7 @@ export function registerSessionCommand(
             workdir,
             passthroughEnv,
             enablePlaywrightMcp,
+            hermetic,
             experimentProjectSettings,
             sandboxTrust,
             sandboxNoNet,
@@ -287,6 +313,9 @@ export function registerSessionCommand(
             providerBaseUrl,
             buildSessionEnvironment,
             removeFinalProjectDir: () => removeFinalProjectDir(sessionProjectDir),
+            sessionPrivateHome: launch.sessionPrivateHome,
+            kimiSourceBrandHome: launch.kimiSourceBrandHome,
+            sessionProjectDir,
           });
         builtDriver = driver;
         if (resumeId !== undefined) {
@@ -296,59 +325,23 @@ export function registerSessionCommand(
           // its every end path stamps `ended`.
           driver.adoptResumeClaim();
         }
-        if (resumeId === undefined && (agentId === "agy" || agentId === "opencode" || agentId === "kimi")) {
-          // agy, opencode, and kimi name a fresh conversation only in
-          // their first turn's output (kimi's resume hint is that turn's
-          // last line), so that turn runs before the record can exist;
-          // the registry is proven writable first (review live22). Fresh
-          // sessions only: a resume's claim just wrote the same file, and
-          // a failing probe here would otherwise exit past the claim's
-          // release (round 31, contracts 1).
-          const probe = probeRegistryForStart(registryPath);
-          if (!probe.ok) {
-            releaseOwnedRecord();
-            exitWithCode(1, `cannot record the session in the registry: ${probe.error} (registry: ${registryPath})`);
-          }
-        }
-        if (claudeDriver !== null && claudeBuilt !== null) {
-          // A claude-family session is recorded before the spawn, fresh
-          // or resumed (review live22): its init frame follows the
-          // caller's first input, so recording there let that turn run
-          // untracked when the write failed (§4.8: an untracked live
-          // session must not run). codemux chose the id, or the claim
-          // above vouched for it, so nothing waits on the harness.
-          const failure = claudeDriver.recordBeforeSpawn();
-          if (failure !== null) {
-            // The private config directory of a session that never
-            // recorded is an orphan: nothing will ever resume it. Removed
-            // BEFORE the release (review round 10, edges 4); the release
-            // itself stamps nothing final (round 16, edges 1).
-            abandonSessionProjectDir();
-            releaseOwnedRecord();
-            exitWithCode(1, `cannot record the session in the registry: ${failure} (registry: ${registryPath})`);
-          }
-          if (owned === null) {
-            owned = { registryPath, id: claudeBuilt.sessionId, fresh: true };
-          }
-        }
-        if (aiderDriver !== null && aiderSessionId !== null) {
-          // The same pre-spawn record for the other codemux-owned
-          // identity: the fresh session's history file and the start
-          // record are in place before anything spawns; a resume rewrites
-          // only the record, never the history.
-          const failure = aiderDriver.recordBeforeSpawn();
-          if (failure !== null) {
-            releaseOwnedRecord();
-            // A fresh session's history directory was just created ahead
-            // of this record; with the record failed, nothing points at
-            // it, so remove it now rather than orphan it to the 28-day
-            // sweep (review D2, correctness-2 3). No-op on a resume.
-            aiderDriver.removeFreshHistory();
-            exitWithCode(1, `cannot record the session in the registry: ${failure} (registry: ${registryPath})`);
-          }
-          if (owned === null) {
-            owned = { registryPath, id: aiderSessionId, fresh: true };
-          }
+        // The pre-spawn registry record steps (cli-record.ts): the
+        // writable-registry probe for the first-turn-id agents, the
+        // claude-family and aider records, and the fresh id this
+        // process comes to own.
+        const { freshOwnedId } = recordSessionBeforeSpawn({
+          registryPath,
+          agentId,
+          resumeId,
+          claudeDriver,
+          claudeSessionId: claudeBuilt?.sessionId ?? null,
+          aiderDriver,
+          aiderSessionId,
+          releaseOwnedRecord,
+          abandonSessionProjectDir,
+        });
+        if (owned === null && freshOwnedId !== null) {
+          owned = { registryPath, id: freshOwnedId, fresh: true };
         }
         let proc: SessionProcess | null = null;
         if (argv !== null) {
@@ -472,6 +465,22 @@ export function registerSessionCommand(
           const orphaned = claudeDriver?.recordDiscarded === true && !sessionProjectDirResumed;
           if ((finalSession || orphaned) && !claudeDriver?.finalRemovalRan && !sessionProjectDirResumed) {
             finalRemovalFailed = !removeFinalProjectDir(sessionProjectDir);
+          }
+          // --final divides by family: the codex and kimi drivers settle
+          // their homes only, so the CLI removes them here (after run(),
+          // the spawn hold, and cleanupRun); the agy and claude-family
+          // drivers remove in their end paths before the end stamp, and a
+          // home agy's end path decided (finalRemovalRan) is never
+          // re-decided here; the call covers agy's no-child end only. A
+          // fresh session's harness id never reaches the CLI, so only a
+          // --final RESUME stamps its record; a fresh record stays
+          // resumable while its home is gone (the next --resume: 78).
+          if (sessionPrivateHome !== null && finalSession && !agyDriver?.finalRemovalRan) {
+            finalRemovalFailed =
+              !removeFinalProjectDir(sessionPrivateHome) || finalRemovalFailed;
+            if (!finalRemovalFailed && resumeId !== undefined) {
+              recordSessionEnd(registryPath, resumeId, true);
+            }
           }
         }
         unframe();

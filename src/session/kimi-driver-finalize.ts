@@ -66,6 +66,10 @@ export abstract class KimiDriverFinalize extends KimiDriverIo {
       // sees it.
       await this.childDelivery;
     }
+    // No child ran or the last one just settled: settle the private home
+    // before children_settled releases the record, so a resume never
+    // meets a free record whose keyed home is missing.
+    this.settlePrivateHome();
     this.deliver({ kind: "children_settled" });
   }
 

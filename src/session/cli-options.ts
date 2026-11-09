@@ -22,15 +22,15 @@ export function registerSessionOptions(command: Command, defaultAgent: string): 
     .option("--pass-env <names>", "Pass comma-separated sensitive environment names")
     .option(
       "--hermetic",
-      "Hermetic session mode; accepted only together with --experiment-project-settings (claude/zai), refused alone"
+      "Hermetic session: no operator instructions, skills, hooks, or MCP servers load, and the harness keeps its state in a per-session private home (claude, zai, codex, kimi, opencode, agy)"
     )
     .option(
       "--experiment-project-settings",
-      "Run the session under the repository's Claude settings in a private per-session config directory (claude/zai; requires --hermetic and scode)"
+      "Run the session under the repository's own settings in a private per-session config directory (claude/zai; opencode keeps the project's config; requires --hermetic and scode)"
     )
     .option(
       "--final",
-      "With --experiment-project-settings: remove the session's private config directory when this command ends"
+      "With --hermetic: remove the session's private home — its transcript with it — when this command ends"
     )
     .option(
       "--permission-policy <policy>",

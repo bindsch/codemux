@@ -21,6 +21,7 @@ import {
   buildAgyUserMessage,
   parseAgySessionLine,
 } from "../src/session/agy-session.js";
+import { agyPrivateHomeEnvPrefix } from "../src/adapters/agy-homes.js";
 import type { AutonomyLevel } from "../src/types.js";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/live/agy-session.ndjson", import.meta.url));
@@ -117,6 +118,33 @@ describe("agy session - spawn command", () => {
         buildAgySessionCommand({ autonomy }).some((arg) => arg.startsWith("--print"))
       ).toBe(false);
     }
+  });
+
+  test("a private home carries the run path's env prefix, fresh and resumed, every autonomy", () => {
+    const home = "/tmp/agy-session-home";
+    const prefix = agyPrivateHomeEnvPrefix(home);
+    for (const autonomy of ["read-only", "low", "medium", "high"] as AutonomyLevel[]) {
+      const fresh = buildAgySessionCommand({ autonomy, privateHomeDir: home });
+      expect(fresh.slice(0, prefix.length)).toEqual(prefix);
+      expect(fresh[prefix.length]).toBe("agy");
+      const resumed = buildAgySessionCommand({
+        autonomy,
+        privateHomeDir: home,
+        resumeConversationId: "conv-7",
+      });
+      expect(resumed.slice(0, prefix.length)).toEqual(prefix);
+      expect(resumed.at(-1)).toBe("--conversation=conv-7");
+    }
+  });
+
+  test("no private home, no prefix: the argv is unchanged", () => {
+    expect(buildAgySessionCommand({ autonomy: "low" })[0]).toBe("agy");
+  });
+
+  test("a relative private home is refused, not spawned", () => {
+    expect(() => buildAgySessionCommand({ autonomy: "low", privateHomeDir: "relative/dir" })).toThrow(
+      "agy private HOME must be absolute"
+    );
   });
 });
 

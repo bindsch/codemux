@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { featureFloor } from "../harness-contracts.js";
 /**
  * The codex app-server session wiring (design §4.7): the version floor,
@@ -34,13 +35,31 @@ export const CODEX_SESSION_FLOOR = featureFloor("codex", "sessions");
  * shared daemon (§4.7) — a singleton escapes per-session sandbox and
  * account boundaries. Everything else rides JSON-RPC. The optional env
  * prefix is the provider-override launch (CODEX_HOME pointing at the
- * session's persistent provider home), shaped exactly like the run path's
+ * session's persistent provider home) or the hermetic launch (HOME and
+ * CODEX_HOME pointing at the session's private home,
+ * codexSessionHermeticEnvPrefix), shaped exactly like the run path's
  * `["env", …, "codex", …]` so the two spawn shapes cannot drift. */
 export function buildCodexSessionCommand(envPrefix?: string[]): string[] {
   if (envPrefix === undefined || envPrefix.length === 0) {
     return ["codex", "app-server"];
   }
   return ["env", ...envPrefix, "codex", "app-server"];
+}
+
+/** The env prefix a HERMETIC session's spawn carries: the private home
+ * as both HOME and CODEX_HOME, the run path's own rule (no operator
+ * config, instructions, plugins, or rules load from a home codemux made
+ * empty). `codex app-server` (0.166.0) accepts `-c, --config
+ * <key=value>` (its `--help` lists the option, checked 2026-11-09) but
+ * the session passes none — `--ignore-user-config` and `--ignore-rules`
+ * remain `codex exec` options in that binary (its strings say so) —
+ * because the private CODEX_HOME's config.toml already carries the
+ * credential store for the whole session (src/hermetic-home.ts) and
+ * the project-doc keys ride the hermetic thread config only
+ * (codex-protocol-builders.ts), so the argv carries only the two home
+ * variables. */
+export function codexSessionHermeticEnvPrefix(privateHomeDir: string): string[] {
+  return [`HOME=${privateHomeDir}`, `CODEX_HOME=${join(privateHomeDir, ".codex")}`];
 }
 
 /** Capability flags for codex sessions (§4.3): mid-turn input queues in

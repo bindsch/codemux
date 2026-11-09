@@ -24,8 +24,80 @@ import {
   releaseSessionRecord,
 } from "./registry.js";
 import { AgyDriverIo, type SessionEndReason } from "./agy-driver-io.js";
+import { settledAgyHarnessHome } from "./agy-private-home.js";
+import { settledPrivateHomePath } from "./private-home-key.js";
+import type { SessionPrivateHome } from "./private-home-types.js";
+
+/** The pause between the two --final removal attempts: long enough for
+ * an ephemeral rmSync failure (a scanner holding the directory open) to
+ * pass (the claude driver's constant). */
+const FINAL_REMOVE_RETRY_MS = 100;
 
 export abstract class AgyFinalize extends AgyDriverIo {
+  /** True once the end path ran the `--final` removal sequence (both
+   * attempts, whatever the outcome): the CLI's tail removes a --final
+   * home only while this is false, so it never re-decides a home the
+   * end path already decided (the claude driver's rule, round 15). */
+  finalRemovalRan = false;
+
+  /** The `--final` removal, inside the end path (the claude family's
+   * shape, driver.ts): one attempt, a short pause on failure, one
+   * retry. A removal that throws is reported on stderr instead — the
+   * end path still owes the caller its record release and
+   * session_ended. By the time it answers, the home is gone (either
+   * attempt) or both attempts failed. A session with no private home
+   * leaves nothing private behind, so it answers true without touching
+   * the disk. */
+  private async removeFinalHomeSettled(): Promise<boolean> {
+    this.finalRemovalRan = true;
+    const home = this.options.privateHome;
+    if (home === undefined || home === null) return true;
+    const attempt = (): boolean => {
+      try {
+        return home.remove();
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        console.error(
+          `codemux: could not remove the session's private home ${home.dir} ` +
+            `(${reason}); the directory was kept`
+        );
+        return false;
+      }
+    };
+    if (attempt()) return true;
+    await new Promise((resolve) => setTimeout(resolve, FINAL_REMOVE_RETRY_MS));
+    return attempt();
+  }
+
+  /** The end path's keep-or-remove for a hermetic private home: a
+   * resumed home is never removed here and needs no settle (it was
+   * opened settled); a fresh resumable one settles onto `session-<id>`
+   * so the reported resume path exists; a fresh non-resumable one is an
+   * abandoned home — removed when `allowRemove`, else left to the sweep
+   * (the `--final` sequence already attempted its own removal, round
+   * 413 item 2). An error never escapes; false breaks the keep promise. */
+  private settleHomeAtEnd(
+    home: SessionPrivateHome,
+    resumable: boolean,
+    allowRemove: boolean
+  ): boolean {
+    try {
+      if (home.resumed) {
+        if (!home.settled && this.conversationId !== null) home.settle(this.conversationId);
+        return true;
+      }
+      if (resumable && this.conversationId !== null) {
+        home.settle(this.conversationId);
+        return home.settled;
+      }
+      return !allowRemove || home.remove();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error(`codemux: agy session private home settlement failed: ${detail}`);
+      return false;
+    }
+  }
+
   /** A start record is out (`recordStart`) and its verdict has not
    * landed: the end path fails the session closed when it is still out
    * at the summary (review round 345) — the off-stream retries stop
@@ -54,6 +126,20 @@ export abstract class AgyFinalize extends AgyDriverIo {
           cwd: this.options.cwd,
           sandboxed: this.options.sandboxed,
           sandbox_trust: this.options.sandboxTrust,
+          hermetic: this.options.hermetic === true,
+          // The SETTLED spelling, the codex and kimi drivers' rule: the
+          // path a --resume computes and the one the home sits on after
+          // this driver's end path settles it. While the session runs,
+          // the live directory — the child's HOME — is still the
+          // run-shaped one (the settle waits for the end, when nothing
+          // writes the home anymore); a resumed home's `dir` is the
+          // settled path already, and the computation is idempotent on
+          // it. The canary and probe K require exactly this: the
+          // reported path must still exist once the session ended.
+          private_home:
+            this.options.privateHome != null
+              ? settledPrivateHomePath(this.options.privateHome.dir, this.sessionIdOrEmpty())
+              : null,
           capabilities: this.capabilities,
           protocol: "codemux-live-session/1",
         })
@@ -79,8 +165,17 @@ export abstract class AgyFinalize extends AgyDriverIo {
         id: this.conversationId,
         agent: "agy",
         cwd: this.options.cwd,
-        hermetic: false,
-        harness_home: this.options.harnessHome,
+        hermetic: this.options.hermetic === true,
+        // A hermetic session records its private home's state directory
+        // on the stable session-keyed spelling (settledAgyHarnessHome):
+        // the live directory is still run-shaped when this record is
+        // written, and a resume guard comparing paths must meet the one
+        // spelling a resume can compute. Everything else records the
+        // harness home the CLI resolved.
+        harness_home:
+          this.options.privateHome !== undefined && this.options.privateHome !== null
+            ? settledAgyHarnessHome(this.options.privateHome.dir, this.conversationId)
+            : this.options.harnessHome,
         model: this.options.model ?? null,
         autonomy: this.options.autonomy,
         sandboxed: this.options.sandboxed,
@@ -304,14 +399,6 @@ export abstract class AgyFinalize extends AgyDriverIo {
     this.fsm.transition({ kind: "shutdown_started" });
     this.fsm.transition({ kind: "ended" });
     const ownsRecord = this.registryRecorded || this.resumeClaimed;
-    if (
-      ownsRecord &&
-      this.options.registryPath !== null &&
-      this.conversationId !== null
-    ) {
-      // A lost stamp rides stderr (releaseSessionRecord, review live13).
-      releaseSessionRecord(this.options.registryPath, this.conversationId);
-    }
     // Resumable means a result named this conversation, or, for a
     // recorded or claimed session agy never confirmed, that the end did
     // not fail (exit 0): a resume agy refused dies on the crash path or
@@ -327,6 +414,48 @@ export abstract class AgyFinalize extends AgyDriverIo {
       this.capabilities.resume &&
       ownsRecord &&
       (this.harnessConfirmed || this.endExitCode === 0);
+    // The hermetic private home's settlement runs here and only here,
+    // after the child is dead and the verdict is final; a broken keep
+    // cancels resumable (review D2: a resume computes the session-keyed
+    // path and would be refused on a home that never reached it).
+    let settledHome = true;
+    // `--final` replaces the settlement with the claude family's removal
+    // contract (driver.ts): the whole two-attempt sequence runs here,
+    // BEFORE the record release below, and the end stamp then writes
+    // `final: true` with the release in one atomic update. A removal
+    // that failed both attempts keeps the directory and the record
+    // non-final, so the resumable verdict's promise must be real: the
+    // kept home settles onto `session-<id>` here (round 413, item 2),
+    // and the failure costs the exit code. A session whose spawn never
+    // attached a child removes nothing here (a resume keeps its
+    // transcript; a fresh home is the CLI tail's to remove).
+    let finalRemoved = false;
+    const home = this.options.privateHome;
+    if (this.options.final === true && childOutcome !== null) {
+      finalRemoved = await this.removeFinalHomeSettled();
+      if (!finalRemoved) {
+        this.endExitCode = Math.max(this.endExitCode, 1);
+        if (home !== undefined && home !== null) {
+          settledHome = this.settleHomeAtEnd(home, resumable, false);
+        }
+      }
+    } else if (home !== undefined && home !== null) {
+      settledHome = this.settleHomeAtEnd(home, resumable, true);
+    }
+    if (
+      ownsRecord &&
+      this.options.registryPath !== null &&
+      this.conversationId !== null
+    ) {
+      // A lost stamp rides stderr (releaseSessionRecord, review live13);
+      // after a --final removal it also fails the exit code (round 56).
+      const stamped = releaseSessionRecord(
+        this.options.registryPath,
+        this.conversationId,
+        this.options.final === true && finalRemoved
+      );
+      if (!stamped && finalRemoved) this.endExitCode = Math.max(this.endExitCode, 1);
+    }
     // The exit code the report carries, read once here: a signal or a
     // failure landing during the final flush (through `finish`'s re-entry
     // arm) no longer changes the process exit code — the session had
@@ -341,7 +470,11 @@ export abstract class AgyFinalize extends AgyDriverIo {
         shutdown_requested: this.shutdownWasRequested,
         exit_code: reported,
         usage: this.cumulative,
-        resumable,
+        // `--final` that removed the home leaves nothing to resume; a
+        // --final removal that failed both attempts kept the home and
+        // the record non-final, so the base verdict's promise is real
+        // (the claude driver's rule, driver.ts review round 14).
+        resumable: resumable && settledHome && !(this.options.final === true && finalRemoved),
       }),
       { terminal: true }
     );

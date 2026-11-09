@@ -30,6 +30,7 @@ import { markOverflowed } from "./usage.js";
  */
 
 import type { AutonomyLevel, ReasoningEffort, ResultUsageBlock } from "../types.js";
+import { OPENCODE_HERMETIC_ENV } from "../adapters/opencode-env.js";
 import { reportedTokenCount, safeTokenSum } from "../result-envelope/common.js";
 import { unusableFacts } from "./process.js";
 import type { SessionCapabilities } from "./protocol.js";
@@ -92,6 +93,10 @@ export interface OpenCodeSessionCommand {
   effort?: ReasoningEffort;
   /** The native session id to resume, or undefined to start fresh. */
   resumeSessionId?: string;
+  /** The `--experiment-project-settings` isolation: `--pure` is dropped
+   * (the run path's rule, adapters/opencode.ts) so the project's own
+   * plugins run — that is the channel under observation. */
+  projectSettings?: boolean;
 }
 
 /**
@@ -101,7 +106,11 @@ export interface OpenCodeSessionCommand {
  * stdin, read to EOF, so a multi-line prompt stays one message.
  */
 export function buildOpenCodeSessionCommand(command: OpenCodeSessionCommand): string[] {
-  const argv = ["opencode", "--pure", "run", "--format", "json"];
+  const argv = ["opencode"];
+  if (command.projectSettings !== true) {
+    argv.push("--pure");
+  }
+  argv.push("run", "--format", "json");
   if (command.model !== undefined) {
     argv.push("--model", command.model);
   }
@@ -113,6 +122,41 @@ export function buildOpenCodeSessionCommand(command: OpenCodeSessionCommand): st
     argv.push("--session", command.resumeSessionId);
   }
   return argv;
+}
+
+/**
+ * The env(1) prefix a HERMETIC session's per-turn argv rides: the run
+ * path's own prefix (adapters/opencode.ts buildRunCommand), built from
+ * the turn's freshly prepared context — a new private home per turn,
+ * the session's own state (the native session id, the login) living in
+ * the real data directory the prefix keeps. Null when the session is
+ * not hermetic: a plain session spawns `opencode` with no prefix. The
+ * assignments ride argv, never the environment handed to scode (the
+ * run path's rule, adapters/opencode-env.ts).
+ */
+export function openCodeHermeticTurnPrefix(input: {
+  hermetic: boolean;
+  /** The project-settings spelling: drops the project-config disable. */
+  projectSettings: boolean;
+  /** The turn's prepared hermetic home (adapters/opencode.ts
+   * prepareRun); a hermetic turn without one fails closed here. */
+  home: string | undefined;
+  providerConfigPath: string | null;
+  realDataParent: string;
+}): string[] | null {
+  if (!input.hermetic) return null;
+  if (input.home === undefined) {
+    throw new Error("opencode hermetic home was not prepared before launch");
+  }
+  return [
+    "env",
+    ...OPENCODE_HERMETIC_ENV(
+      input.home,
+      input.realDataParent,
+      input.providerConfigPath,
+      input.projectSettings
+    ),
+  ];
 }
 
 const COST = (value: unknown): number | null =>

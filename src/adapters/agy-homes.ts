@@ -3,13 +3,19 @@
 // after its directory identity (device and inode) is confirmed on disk,
 // and only identified homes whose owner process is gone are swept.
 
-import { lstatSync, readdirSync, realpathSync, rmSync, type Stats } from "node:fs";
-import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { lstatSync, readdirSync, realpathSync, rmSync, writeFileSync, type Stats } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { UNREADABLE_OWNER_STALE_MS, parseOwnerPid, pidProbeAlive } from "../process-table.js";
 import { FileContentError, FileShapeError, readFileBytesBounded } from "../file-io.js";
 
 export const PROBE_MARKER = ".codemux-probe-owner";
 export const PROBE_PID = ".codemux-probe-pid";
+
+/** A settled session home's name prefix: `session-<conversation id>`, on
+ * the same probe root a run-shaped home is born under. The sweep below
+ * processes `run-` names only, so a settled home is never its to judge. */
+export const AGY_SESSION_HOME_PREFIX = "session-";
 
 /** The read bound on a probe marker or PID file: a marker is a
  * 36-character UUID and a PID file a short decimal, so 256 bytes holds
@@ -90,6 +96,36 @@ export function sweepStaleHomes(root: string): void {
 export function sameDirectory(path: string, identity: Stats): boolean {
   const stat = lstatSync(path, { throwIfNoEntry: false });
   return Boolean(stat?.isDirectory() && stat.dev === identity.dev && stat.ino === identity.ino);
+}
+
+/** The `env(1)` argv prefix that points a child's HOME and every XDG base
+ * at one private home — the exact spelling the run path spawns with
+ * (adapters/agy.ts), shared with the session spawn so the two surfaces
+ * cannot drift (a session home the run spelling cannot reproduce would
+ * break resume the same way a mismatched run home breaks a run). */
+export function agyPrivateHomeEnvPrefix(home: string): string[] {
+  if (!isAbsolute(home)) throw new Error("agy private HOME must be absolute");
+  return [
+    "env",
+    `HOME=${home}`,
+    `XDG_CONFIG_HOME=${join(home, ".config")}`,
+    `XDG_CACHE_HOME=${join(home, ".cache")}`,
+    `XDG_DATA_HOME=${join(home, ".local/share")}`,
+    `XDG_STATE_HOME=${join(home, ".local/state")}`,
+  ];
+}
+
+/** Identify a fresh private home for the pid-owned sweep above: the PID
+ * file first, then the marker, both exclusive (`wx`) and mode 0600 — the
+ * run path's own two writes (adapters/agy.ts), shared with the session
+ * home so a codemux that dies mid-session leaves the same identified,
+ * sweepable home a dead run leaves. Answers the marker written, the value
+ * the run path's cleanup compares a still-present marker against. */
+export function markAgyPrivateHome(home: string): string {
+  writeFileSync(join(home, PROBE_PID), String(process.pid), { flag: "wx", mode: 0o600 });
+  const marker = randomUUID();
+  writeFileSync(join(home, PROBE_MARKER), marker, { flag: "wx", mode: 0o600 });
+  return marker;
 }
 
 /** Where `identity` now lives under `parent`, by device and inode. */

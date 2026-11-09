@@ -124,6 +124,7 @@ record("argv.jsonl", { args, pid: process.pid });
 record("env.jsonl", {
   hasOverride: process.env.KIMI_MODEL_NAME !== undefined,
   kimiCodeHome: process.env.KIMI_CODE_HOME ?? null,
+  home: process.env.HOME ?? null,
   pid: process.pid,
 });
 

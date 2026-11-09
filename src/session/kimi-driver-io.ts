@@ -23,6 +23,7 @@ import {
   type SessionSignalGate,
 } from "./process.js";
 import type { SandboxTrust } from "./registry.js";
+import type { SessionPrivateHome } from "./private-home-types.js";
 
 export interface KimiDriverOptions {
   /** The native session id to resume, or null to start fresh. */
@@ -69,6 +70,19 @@ export interface KimiDriverOptions {
    * unhandled rejection. Typed to the slice the machine names; real
    * children are SessionProcess instances. */
   spawnTurn: (argv: string[]) => Promise<TurnChild>;
+  /** The operator brand home a hermetic session's filtered config is
+   * generated from (null when the operator has none); the driver reads it
+   * once, generating the private brand home's config.toml at the first
+   * turn of a fresh home. */
+  hermeticSourceHome?: string | null;
+  /** The launcher's per-session private home a hermetic session runs in
+   * (src/session/private-home-types.ts): reported on
+   * session_started.private_home, keyed by the session id in the
+   * registry's harness_home, and settled at the first resume hint's
+   * child exit (the hint arrives while the turn child still writes its
+   * store under the private KIMI_CODE_HOME, so the rename waits for the
+   * child). */
+  privateHome?: SessionPrivateHome | null;
   sink?: (line: string) => Promise<void> | void;
 }
 
@@ -138,6 +152,10 @@ export abstract class KimiDriverIo {
   private readonly pendingEvents: KimiEvent[] = [];
   /** The session's own start, for the closing ledger record's duration. */
   protected readonly sessionStartedAt = Date.now();
+  /** True once this process generated the private brand home's
+   * config.toml (the first turn of a fresh hermetic home; later turns
+   * and resumes never rewrite it). */
+  protected hermeticConfigWritten = false;
   /** The launch facts the call ledger records on every turn and at the
    * end (call-log.ts); the provider is the override's host or "default". */
   protected readonly callLedger: SessionCallContext;
@@ -164,7 +182,9 @@ export abstract class KimiDriverIo {
       model: options.model ?? null,
       provider: providerHost(options.providerBaseUrl),
       autonomy: options.autonomy,
-      hermetic: options.hermetic,
+      // The real value: either flag says hermetic, so a launcher that
+      // hands only the private home still records it.
+      hermetic: options.hermetic || options.privateHome != null,
       sandboxed: options.sandboxed,
       cwd: options.cwd,
     };
@@ -247,6 +267,25 @@ export abstract class KimiDriverIo {
 
   protected sessionIdOrEmpty(): string {
     return this.state.announced ? this.state.sessionId ?? "" : "";
+  }
+
+  /** Settle the hermetic private home once the session id exists and no
+   * child is alive: kimi is turn-per-process, and a turn's child writes
+   * its store under the private KIMI_CODE_HOME until it exits, so the
+   * rename onto the session-keyed name waits for the exit — the first
+   * one after the resume hint, always before the record's release. A
+   * settle that fails leaves the home run-shaped: the resume guard's
+   * harness_home check then refuses the next resume (fail closed), which
+   * session_ended's resumable fold reports honestly. */
+  protected settlePrivateHome(): void {
+    const home = this.options.privateHome;
+    if (home == null || home.settled || this.state.sessionId === null) return;
+    try {
+      home.settle(this.state.sessionId);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error(`codemux: hermetic session home settlement failed: ${detail}`);
+    }
   }
 
   /** The id the call ledger keys this session's records by: the harness's

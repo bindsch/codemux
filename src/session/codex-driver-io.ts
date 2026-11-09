@@ -32,6 +32,7 @@ import {
   type InputRejectionReason,
 } from "./protocol.js";
 import type { SandboxTrust } from "./registry.js";
+import type { SessionPrivateHome } from "./private-home-types.js";
 
 export interface CodexDriverOptions {
   /** The thread id to resume, or null to start a fresh thread. */
@@ -75,9 +76,10 @@ export interface CodexDriverOptions {
   providerBaseUrl: string | null;
   /** The same record's home keyed by the session id, when the recorded
    * value depends on the id the harness has not named yet — a codex
-   * override session starts in a fresh run-shaped CODEX_HOME whose final
-   * (resume-computed) path names the thread (codex-provider.ts). Preferred
-   * over `harnessHome` at the record, and only once the id exists. */
+   * override session's fresh run-shaped CODEX_HOME, or a hermetic
+   * session's private home, whose final (resume-computed) path names
+   * the thread. Preferred over `harnessHome` at the record, once the id
+   * exists. */
   harnessHomeFor?: (sessionId: string) => string;
   /** The end-of-session settlement of a per-session harness home (the
    * codex override session home's `settle`, codex-provider.ts), called
@@ -86,6 +88,15 @@ export interface CodexDriverOptions {
    * finds it; the reported `resumable` is false without it (review D2,
    * correctness-2 2). Never throws out of the end path. */
   settleSessionHome?: (sessionId: string | null, resumable: boolean) => boolean;
+  /** True when the session runs hermetic; recorded in the call ledger
+   * and the registry record. */
+  hermetic?: boolean;
+  /** The launcher's per-session private home a hermetic session runs in
+   * (src/session/private-home-types.ts): reported on
+   * session_started.private_home, keyed by the thread id in the
+   * registry's harness_home, and settled by the end path once the child
+   * is gone (the long-lived app-server cannot survive the rename). */
+  privateHome?: SessionPrivateHome | null;
   /** Injectable event sink; defaults to codemux stdout, one line each. */
   sink?: (line: string) => Promise<void> | void;
 }
@@ -131,15 +142,13 @@ export abstract class CodexDriverIo {
   /** Caller lines that arrived before the thread existed; replayed once
    * session_started fires so their acks and echoes carry the thread id.
    * Two event classes in that window carry the empty id: the
-   * starting-state shutdown path's ack and its `shutting_down`
-   * rejections of lines parked ahead of it (see `handleCallerLine`),
-   * which must end the session without waiting for a handshake that may
-   * never answer, and the end path's `shutting_down` rejections of
-   * whatever the replay never reached (see `finish`, review live10). */
+   * starting-state shutdown path's ack and `shutting_down` rejections,
+   * which end the session without waiting for a handshake, and the end
+   * path's `shutting_down` rejections of what the replay never reached
+   * (review live10). */
   protected readonly preSessionLines: string[] = [];
   /** The parked lines' bytes, bounded with their count: a handshake
-   * that never answers must not let the caller grow codemux's memory
-   * without limit. */
+   * that never answers must not grow codemux's memory without limit. */
   protected preSessionBytes = 0;
 
   protected readonly signals: SessionSignalGate;
@@ -156,19 +165,16 @@ export abstract class CodexDriverIo {
 
   protected finished = false;
   /** The end path's exit code, updatable while cleanup drains: a failure
-   * arriving inside the grace window (a tier-3 fatal, a handler exception,
-   * an unknown-response-id fatal, a registry failure) must still cost
-   * success — `finish` stays idempotent, the verdict does not freeze
-   * until the child settles (review live7). Monotone: only a higher code
-   * ever wins. */
+   * arriving inside the grace window (a tier-3 fatal, a handler
+   * exception, a registry failure) must still cost success. Monotone:
+   * only a higher code ever wins (review live7). */
   protected endExitCode = 0;
   /** True only once the end path has settled the child: harness lines
-   * keep flowing (and keep being parsed and emitted) through the whole
-   * shutdown drain, because the grace window exists precisely so the
-   * harness can finish persisting and say so — the interrupted turn's
-   * completion and its usage arrive during it and must reach the caller
-   * (review live5). `finished` alone is the end path's re-entry guard
-   * and flips at its start. */
+   * keep flowing (parsed and emitted) through the whole shutdown drain,
+   * because the grace window exists so the harness can finish
+   * persisting — the interrupted turn's completion and usage arrive
+   * during it (review live5). `finished` alone is the end path's
+   * re-entry guard and flips at its start. */
   protected settled = false;
 
   /** The first fatal the session reported, carried by a crash end's
@@ -189,7 +195,9 @@ export abstract class CodexDriverIo {
       model: options.model ?? null,
       provider: providerHost(options.providerBaseUrl),
       autonomy: options.autonomy,
-      hermetic: false,
+      // The real value: either flag says hermetic, so a launcher that
+      // hands only the private home still records it.
+      hermetic: options.hermetic === true || options.privateHome != null,
       sandboxed: options.sandboxed,
       cwd: options.cwd,
     };
@@ -200,9 +208,8 @@ export abstract class CodexDriverIo {
       (failure) => {
         // Both failure classes end the session (§4.2): the caller stopped
         // reading (overflow) or the sink itself failed (a closed pipe). A
-        // codemux failure, not a harness one, but the end path is the same
-        // and the final events may not fit — the diagnostic rides on
-        // stderr.
+        // codemux failure, not a harness one, but the end path is the
+        // same; the diagnostic rides on stderr.
         if (failure.kind === "overflow") {
           console.error(
             `codemux: event output overran its bounds (${failure.events} events, ` +
@@ -224,10 +231,7 @@ export abstract class CodexDriverIo {
 
   /** Every end path's funnel (§4.6); the final class owns it
    * (src/session/codex-driver.ts). */
-  protected abstract finish(
-    reason: SessionEndReason,
-    exitCode: number
-  ): Promise<void>;
+  protected abstract finish(reason: SessionEndReason, exitCode: number): Promise<void>;
 
   /** One line from the harness stdout
    * (src/session/codex-driver-events.ts). */
@@ -245,17 +249,14 @@ export abstract class CodexDriverIo {
 
   /** Set between spawnPending() and attach()/spawnAbandoned(): an end
    * path that begins inside that window holds at the late-child wait in
-   * finish until one of them answers, so the record release,
-   * session_ended, and run()'s resolution never report the session ended
-   * while its child is still being born (review round 64; the claude
-   * driver's round 18 rule). */
+   * finish until one answers, so session never reports ended while its
+   * child is still being born (review round 64). */
   private lateChild: Promise<SessionProcess | null> | null = null;
   private resolveLateChild: ((proc: SessionProcess | null) => void) | null = null;
 
-  /** The CLI calls this immediately before its spawn, whose preflight is
-   * async: a signal delivered there starts the end path with no child to
-   * stop, and the end path must not release the resume record and emit
-   * session_ended before the child that needs stopping exists. */
+  /** The CLI calls this immediately before its spawn, whose preflight
+   * is async: a signal delivered there starts the end path with no
+   * child to stop yet. */
   spawnPending(): void {
     this.lateChild = new Promise((resolve) => {
       this.resolveLateChild = resolve;
@@ -263,25 +264,23 @@ export abstract class CodexDriverIo {
   }
 
   /** The CLI's spawn ended without a child (it threw): an end path
-   * waiting on the late child proceeds with none — this invocation never
-   * ran its harness. */
+   * waiting on the late child proceeds with none. */
   spawnAbandoned(): void {
     this.resolveLateChild?.(null);
     this.resolveLateChild = null;
   }
 
-  /** True once an end path has begun: the CLI's spawn-throw catch hands
-   * the ending to that path (round 20, minor 8; review round 65). */
+  /** True once an end path has begun: the spawn-throw catch hands the
+   * ending to that path (round 20, minor 8; review round 65). */
   endPathStarted(): boolean {
     return this.finished;
   }
 
   /** The spawn-throw catch's exit once endPathStarted() is true: the end
-   * path owns the ending — session_ended and the record's release inside
-   * its own ordering, over the late child spawnAbandoned() answered with
-   * none — so await its verdict and leave through the session's exit
-   * code; a rethrow would release the record a second time and exit the
-   * process hard first (review round 65). */
+   * path owns the ending — session_ended and the record's release in
+   * its own ordering — so await its verdict and leave through the
+   * session's exit code; a rethrow would release the record twice
+   * (review round 65). */
   async finishAfterSpawnThrow(error: unknown): Promise<void> {
     reportSpawnThrow(error);
     const code = await this.done;
@@ -291,9 +290,8 @@ export abstract class CodexDriverIo {
   }
 
   /** The pending-spawn wait an end path holds when it begins before
-   * attach(): resolves with the child once it has settled (attach()
-   * stopped it first), with null when the spawn abandoned, and is null
-   * when no spawn was pending. */
+   * attach(): resolves with the stopped child, null when the spawn
+   * abandoned, and is null when no spawn was pending. */
   protected awaitLateChild(): Promise<SessionProcess | null> | null {
     return this.lateChild;
   }

@@ -22,6 +22,7 @@ import {
 } from "./process.js";
 import { buildEvent, buildInputAck, type InputRejectionReason } from "./protocol.js";
 import type { SandboxTrust } from "./registry.js";
+import type { SessionPrivateHome } from "./private-home-types.js";
 import { SessionStopEscalation } from "./stop-escalation.js";
 
 export interface AgyDriverOptions {
@@ -32,6 +33,22 @@ export interface AgyDriverOptions {
   effort?: ReasoningEffort;
   /** The validated working directory — also the registry's cwd record. */
   cwd: string;
+  /** True for a `--hermetic` session: none of the operator's agy state
+   * loads, and the record and the call ledger say so. Requires
+   * `privateHome` — a hermetic session without its private home is a
+   * wiring defect, refused at construction. */
+  hermetic?: boolean;
+  /** The hermetic session's private home (private-home-types.ts): the
+   * directory the child runs against, settled onto the session-keyed
+   * name at a resumable end and reported as `session_started.private_home`.
+   * The launcher populates it (session/agy-private-home.ts); the driver
+   * owns only its end-of-session settlement and the abandoned-fresh
+   * removal. */
+  privateHome?: SessionPrivateHome | null;
+  /** `--final`: the end path removes the private home (two attempts,
+   * before the record release) and stamps the record final when it
+   * succeeded — the claude family's contract (driver.ts). */
+  final?: boolean;
   sandboxed: boolean;
   /** The trust the session actually runs at; recorded and reported as-is
    * (the resume guard compares against exactly this value). */
@@ -147,6 +164,14 @@ export abstract class AgyDriverIo {
   protected resolveDone!: (code: number) => void;
 
   constructor(protected readonly options: AgyDriverOptions) {
+    // Before anything with a cleanup of its own is created: a hermetic
+    // session whose launcher passed no private home would run against
+    // the operator's real state — the one thing --hermetic exists to
+    // prevent — so it is refused here, fail closed, with nothing to
+    // dispose (the signal gate installs last).
+    if (options.hermetic === true && (options.privateHome === undefined || options.privateHome === null)) {
+      throw new Error("a hermetic agy session requires its private home; the launcher passed none");
+    }
     this.done = new Promise<number>((resolve) => {
       this.resolveDone = resolve;
     });
@@ -156,7 +181,7 @@ export abstract class AgyDriverIo {
       model: options.model ?? null,
       provider: providerHost(options.providerBaseUrl),
       autonomy: options.autonomy,
-      hermetic: false,
+      hermetic: options.hermetic === true,
       sandboxed: options.sandboxed,
       cwd: options.cwd,
     };

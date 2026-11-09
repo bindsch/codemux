@@ -130,7 +130,7 @@ no extra length guarantee beyond the framing and queue bounds below.
 
 | `type` | Fields |
 |---|---|
-| `session_started` | `agent: string`; `model: string \| null`; `autonomy: "read-only" \| "low" \| "medium" \| "high"`; `cwd: string`; `sandboxed: boolean`; `sandbox_trust: "trusted" \| "standard" \| "untrusted"`; `capabilities: object` below; `protocol: "codemux-live-session/1"` |
+| `session_started` | `agent: string`; `model: string \| null`; `autonomy: "read-only" \| "low" \| "medium" \| "high"`; `cwd: string`; `sandboxed: boolean`; `sandbox_trust: "trusted" \| "standard" \| "untrusted"`; `capabilities: object` below; `protocol: "codemux-live-session/1"`; `private_home: string \| null` — always present, never omitted: the hermetic session's private home directory named by its settled session-keyed path (the spelling a `--resume` reopens), which for an agent that mints its session id later is not yet the live run-shaped directory the child writes while the session runs; null for a plain session or an agent whose hermetic mode keeps no session-keyed home (opencode) |
 | `input_accepted` | `input_seq: positive integer` |
 | `input_rejected` | `input_seq: positive integer`; `reason: string` from the rejection table; optional `message: string` — the denial text sent to the harness, present on `autonomy_escalation` |
 | `user_message` | `input_seq: positive integer`; `text: string`; optional `author: string`; optional `turn_id: string` |

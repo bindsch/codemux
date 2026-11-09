@@ -23,6 +23,8 @@ import {
   buildUserMessage,
 } from "./protocol.js";
 import { recordSessionStartOffStream, touchSession } from "./registry.js";
+import { settledPrivateHomePath, currentPrivateHomeDir } from "./private-home-key.js";
+import { kimiPrivateBrandHome, writeKimiSessionHermeticConfig } from "../kimi-hermetic.js";
 import { KimiDriverFinalize } from "./kimi-driver-finalize.js";
 
 export abstract class KimiDriverEvents extends KimiDriverFinalize {
@@ -73,6 +75,14 @@ export abstract class KimiDriverEvents extends KimiDriverFinalize {
             sandbox_trust: this.options.sandboxTrust,
             capabilities: kimiSessionCapabilities(),
             protocol: "codemux-live-session/1",
+            // The hermetic session's private home, named as the resume
+            // guard finds it (the settled path keyed by this session id);
+            // a plain session reports null. The key is always present
+            // (the protocol doc promises no omission).
+            private_home:
+              this.options.privateHome != null
+                ? settledPrivateHomePath(this.options.privateHome.dir, this.state.sessionId ?? "")
+                : null,
           })
         );
         return;
@@ -81,9 +91,33 @@ export abstract class KimiDriverEvents extends KimiDriverFinalize {
           model: this.options.wireModel,
           resumeSessionId: this.state.sessionId ?? undefined,
           prompt: effect.prompt,
+          // The CURRENT directory: `dir` follows the settle rename (the
+          // launcher's contract), so on every respawned turn it already
+          // names the path the home sits on — run-shaped before the
+          // settle, session-keyed after.
+          hermeticHome:
+            this.options.privateHome != null
+              ? currentPrivateHomeDir(this.options.privateHome, this.state.sessionId ?? "")
+              : undefined,
         });
         let promise: Promise<TurnChild>;
         try {
+          // A hermetic session's private brand home gets its config.toml
+          // here, once, at the first turn of a FRESH home — before the
+          // child it is about to spawn reads it, after the consumer's
+          // pre-write window. A resumed home already carries the config
+          // the earlier process generated; later turns never rewrite it.
+          if (
+            this.options.privateHome != null &&
+            !this.options.privateHome.resumed &&
+            !this.hermeticConfigWritten
+          ) {
+            writeKimiSessionHermeticConfig(
+              kimiPrivateBrandHome(this.options.privateHome.dir),
+              this.options.hermeticSourceHome ?? null
+            );
+            this.hermeticConfigWritten = true;
+          }
           promise = this.options.spawnTurn(argv);
         } catch (error) {
           // A synchronous throw from the spawn closure (the CLI's
@@ -115,6 +149,9 @@ export abstract class KimiDriverEvents extends KimiDriverFinalize {
           // drained output the caller is owed arrived first.
           await child.settled;
           if (this.activeChild === child) this.activeChild = null;
+          // The child is gone, so nothing writes the private home
+          // anymore: this is the one settle point between turns.
+          this.settlePrivateHome();
           this.deliver({ kind: "child_exit", child, outcome });
         });
         child.endInput();
@@ -151,8 +188,16 @@ export abstract class KimiDriverEvents extends KimiDriverFinalize {
             id: sessionId,
             agent: "kimi",
             cwd: this.options.cwd,
-            hermetic: this.options.hermetic,
-            harness_home: this.options.harnessHome,
+            // The real value: either flag says hermetic.
+            hermetic: this.options.hermetic || this.options.privateHome != null,
+            // A hermetic session's home is the private brand home, named
+            // as the resume guard finds it: the settled path keyed by
+            // this session id (settle lands before the record's release,
+            // so a resume never sees the keyed name missing).
+            harness_home:
+              this.options.privateHome != null
+                ? kimiPrivateBrandHome(settledPrivateHomePath(this.options.privateHome.dir, sessionId))
+                : this.options.harnessHome,
             model: this.options.model ?? null,
             autonomy: this.options.autonomy,
             sandboxed: this.options.sandboxed,
@@ -281,7 +326,14 @@ export abstract class KimiDriverEvents extends KimiDriverFinalize {
             [this.state.end.cause, ...this.state.end.later].some((cause) => shutdownRequested(cause.reason)),
           exit_code: Math.max(effect.exitCode ?? 0, this.finalEmissionFailed ? 1 : 0),
           usage: effect.usage,
-          resumable: effect.resumable && !this.finalEmissionFailed,
+          // A hermetic session whose private home never reached its
+          // session-keyed name is not resumable: the registry's
+          // harness_home names that path, so an honest report refuses
+          // the caller now instead of letting a resume fail on it.
+          resumable:
+            effect.resumable &&
+            !this.finalEmissionFailed &&
+            (this.options.privateHome == null || this.options.privateHome.settled),
         });
     }
   }

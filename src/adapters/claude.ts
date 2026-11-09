@@ -5,7 +5,7 @@ import { PROJECT_SETTING_SOURCES, validateProjectSettingsRunRequest } from "../c
 import {
   copyClaudeCredentialMirror,
   createProjectSettingsConfigDir,
-  projectSettingsRunEnv,
+  projectSettingsOrHermeticHome,
 } from "../claude-project-config.js";
 import { ExperimentBridge } from "../experiment-bridge.js";
 import { readExperimentRunSpec } from "../experiment-mcp.js";
@@ -233,18 +233,20 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
   }
 
   /**
-   * The per-run environment of an --experiment-project-settings launch:
-   * CLAUDE_CONFIG_DIR pointed at the private directory, plus the
-   * credential copy made here — after prepareSandbox refreshed the
-   * default mirror, before the child reads <private>/.credentials.json —
-   * unless the context defers the copy (deferCredentialCopy: a pre-claim
+   * The per-run environment of a hermetic launch or session:
+   * CLAUDE_CONFIG_DIR pointed at the private directory (a run's own, or
+   * the session-keyed one the CLI opened — plain --hermetic and the
+   * project-settings mode share the divider in claude-project-config.ts),
+   * plus the credential copy made here — after prepareSandbox refreshed
+   * the default mirror, before the child reads <private>/.credentials.json
+   * — unless the context defers the copy (deferCredentialCopy: a pre-claim
    * probe or print answers the environment without writing). A provider
    * override authenticates with its own token, so nothing of the
    * operator's login is copied; Z.AI rides its gateway token (zai.ts).
    */
   override getRunEnv(request: RunRequest, context?: RunContext): Record<string, string> {
-    if (!request.experimentProjectSettings) return {};
-    const env = projectSettingsRunEnv(context?.claudeProjectConfigDir);
+    const env = projectSettingsOrHermeticHome(request, context?.claudeProjectConfigDir);
+    if (env === null) return {};
     if (
       readProviderOverride("claude", this.environment) === null &&
       context?.claudeProjectConfigDir?.deferCredentialCopy !== true

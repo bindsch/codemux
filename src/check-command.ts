@@ -24,6 +24,10 @@ import {
   evaluateCanary,
   plantCanary,
 } from "./hermetic-canary.js";
+import {
+  assertSessionCanaryRequest,
+  runHermeticSessionCanary,
+} from "./hermetic-session-canary.js";
 import { launchRunRequest, type LaunchOptions } from "./launch.js";
 import { assertQuotaHeadroomForLaunch, resolveQuotaGate } from "./quota-gate.js";
 import { UsageRefusalError } from "./validation.js";
@@ -60,6 +64,10 @@ export function registerCheckCommand(
     .option(
       "--hermetic",
       "Test specified customization channels against a positive control in a managed directory; incompatible with --cwd"
+    )
+    .option(
+      "--session",
+      "With --hermetic: the session form of the canary — three codemux sessions (hermetic, control, resumed with --final) against planted files"
     )
     .option("--tools <selection>", "Built-in tools for the probe: default, none")
     .option("--experiment-mcp <spec.json>", "Extend the Claude, Z.AI, or Kimi hermetic canary with an experiment MCP server")
@@ -209,6 +217,21 @@ export function registerCheckCommand(
           );
         }
 
+        // The session canary's own request checks, in the same wording
+        // class as the others, before any probe spends quota.
+        assertSessionCanaryRequest({
+          wanted: Boolean(options.session),
+          agent: agentId,
+          hermetic,
+          supportsHermetic: Boolean(caps.supportsHermetic),
+          sandbox: Boolean(options.sandbox),
+          tools,
+          experimentMcp: options.experimentMcp !== undefined,
+          agyProbe: options.agyIsolationProbe !== undefined,
+          printSandbox: Boolean(options.printSandbox),
+          sandboxOverrides: sandboxPolicyOverrides,
+        });
+
         const autonomy = resolveAutonomyForAdapter(agentId, caps, requestedAutonomy);
         if (adapter.requiresSandboxForAutonomy(autonomy) && !options.sandbox) {
           throw new UsageRefusalError(
@@ -304,6 +327,20 @@ export function registerCheckCommand(
           adapter.buildExecutionEnv(adapter.getEnv(), passthroughEnv),
           autonomy, Boolean(options.sandbox), passthroughEnv
         );
+        // The session canary runs before the run-shaped canaries: it is
+        // the --session spelling of --hermetic, and the agy branches
+        // below are its run-shaped twins for the same flags.
+        if (options.session) {
+          process.exitCode = await runHermeticSessionCanary({
+            agent: agentId,
+            model,
+            autonomy,
+            effort,
+            passthroughEnv,
+            timeoutMs,
+          });
+          return;
+        }
         if (options.agyIsolationProbe !== undefined) {
           process.exitCode = await runAgyIsolationProbe(options.agyIsolationProbe, timeoutMs, model, harnessVersion);
           return;

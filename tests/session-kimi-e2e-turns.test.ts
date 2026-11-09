@@ -290,7 +290,10 @@ describe("kimi session e2e - lifecycle", () => {
     // guaranteed to land and the milestones are the spawn evidence;
     // asserting the records here would pin that race.
     expect(session.order).toEqual(["spawned", "settled", "done"]);
-  });
+    // The explicit timeout: the blocked sink holds 1,024 queued events,
+    // and the final flush's give-up budget scales per event
+    // (finalFlushBudgetMs, ~6.2 s here) — past bun's 5 s default.
+  }, 15_000);
 
   test("a synchronous spawn throw under a blocked, near-full queue still completes the hold (al37)", async () => {
     // Round al37, edges major 1 — the opencode repro at this rig's queue

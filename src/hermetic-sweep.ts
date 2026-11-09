@@ -112,9 +112,9 @@ export function directoryMtimeMs(path: string): number | null {
  * Removes run directories (`run-<pid>-<random>`) left behind by codemux
  * processes that no longer exist, once they are also stale (the age gate
  * above), stale session homes (`session-home-…` — the session gate
- * above, plus the liveness skip below), and stale Claude project-settings
- * session directories (`session-<uuid>`, the run age gate plus the same
- * liveness skip — claude-project-config.ts). All ages are the tree-newest
+ * above, plus the liveness skip below), and stale hermetic session
+ * directories (`session-<id>`, the run age gate plus the same liveness
+ * skip — session/private-home.ts). All ages are the tree-newest
  * mtime (above), and the walk is bounded: a run-shaped entry's pid gate
  * comes from its NAME (no walk for a live run), a session home's
  * registry check comes BEFORE the walk (no walk for a held or unknown
@@ -243,32 +243,41 @@ function sweepStaleRunDirs(
       removeSweepEntry(path, record, "stale session home");
       continue;
     }
-    const sessionDirMatch =
-      /^session-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/.exec(entry);
+    const sessionDirMatch = /^session-(\S{1,128})$/.exec(entry);
     if (sessionDirMatch) {
-      // A Claude project-settings SESSION directory (claude-project-config.ts):
-      // keyed by a native claude session id, deliberately persistent across
-      // commands until `--final` or this sweep. It carries the session's own
-      // transcript, so the registry consult is the ownership proof — the run
-      // branch's pid gate has no equivalent here — and the age gate is the
-      // run directory's two days, not the 28-day session-home span: without
-      // `--final` a closed session waits for a resume that may never come,
-      // and two quiet days with no owning record is the same "owner gone"
-      // proof a dead run's pid provides.
+      // A hermetic SESSION's private home (session/private-home.ts):
+      // keyed by a native session id, deliberately persistent across
+      // commands until `--final` or this sweep. Every session agent's id
+      // shape matches the pattern — the claude family's and aider's
+      // lowercase UUIDs, codex thread ids, kimi's `session_<uuid>`,
+      // opencode's `ses_` ids, agy conversation ids — and the name alone
+      // never authorizes a removal (the registry consult below does), so
+      // the union costs nothing in proof. It carries the session's own
+      // transcript, so the registry consult is the ownership proof — the
+      // run branch's pid gate has no equivalent here — and the age gate
+      // is the run directory's two days, not the 28-day session-home
+      // span: without `--final` a closed session waits for a resume that
+      // may never come, and two quiet days with no owning record is the
+      // same "owner gone" proof a dead run's pid provides.
       const id = sessionDirMatch[1];
       const own = directoryMtimeMs(path);
       if (own !== null && Date.now() - own < STALE_RUN_DIR_MS) continue;
       // Only a POSITIVE `free` ever removes (the session-home rule): `held`
-      // is a live owner, `unknown` an unreadable registry, and both spare
-      // it. The id guard is the type's, not the regex's — one capture
-      // group always captures — kept in the session-home branch's shape.
+      // is a live owner and `unknown` an unreadable registry, and both
+      // spare it. An id no registry holds is NOT spared — a missing
+      // registry or an absent record answers `free` (registry/resume.ts)
+      // — so what makes a `free` id safe to remove is the two-day quiet
+      // age on the directory and its newest file below, never the name
+      // alone. The id guard is the type's, not the
+      // regex's — one capture group always captures — kept in the
+      // session-home branch's shape.
       if (id === undefined || holdStateOf(id) !== "free") continue;
       const newest = newestMtimeMs(path) ?? own;
       // Null (unstatable or over-budget) keeps the `own` fallback that
       // already passed the gate: `free` is the ownership proof, the run
       // branch's D9 rule under that proof.
       if (newest === null || Date.now() - newest < STALE_RUN_DIR_MS) continue;
-      removeSweepEntry(path, record, "stale project-settings session directory");
+      removeSweepEntry(path, record, "stale hermetic session directory");
       continue;
     }
     // Any other entry is not this sweep's to judge — never walked, never

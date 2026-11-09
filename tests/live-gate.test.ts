@@ -16,6 +16,7 @@ import {
   prepareExperimentProbe,
   probeApplies,
   providerOverridePreflight,
+  unsupportedNote,
   runProbes,
   sessionStartedId,
   type ProbeLetter,
@@ -42,7 +43,7 @@ test("live gate selects and excludes probes by letter or name", () => {
   expect(parseOptions(["--probe", "provider-override"], "").probes).toEqual(["H"]);
   expect(parseOptions(["--probe", " a , result-json "], "").probes).toEqual(["A", "C"]);
   expect(parseOptions(["--probe", "loopback-override,alias-effort,sandbox"], "").probes).toEqual(["H2", "I", "J"]);
-  expect(parseOptions(["--skip-probe", "B,D"], "").probes).toEqual(["A", "C", "E", "F", "G", "H2", "I", "J", "P"]);
+  expect(parseOptions(["--skip-probe", "B,D"], "").probes).toEqual(["A", "C", "E", "F", "G", "H2", "I", "J", "K", "P"]);
   expect(parseOptions(["--probe", "print-sandbox"], "").probes).toEqual(["P"]);
   expect(parseOptions(["--probe", "A,H", "--skip-probe", "h"], "").probes).toEqual(["A"]);
   expect(parseOptions(["--allow-stale-contracts"], "").allowStaleContracts).toBe(true);
@@ -176,6 +177,10 @@ test("the probe matrix matches the adapters' declared capabilities", () => {
     // cell here is a matrix drift and fails this test.
     I: ["agy", "aider", "claude", "cline", "codex", "copilot", "droid", "opencode", "pi", "zai"],
     J: [...AGENT_IDS],
+    // The session-shaped hermetic canary needs both halves: the session
+    // driver (probe F's set, minus aider, which declares no hermetic
+    // capability) and the hermetic capability (probe D's set).
+    K: ["agy", "claude", "codex", "kimi", "opencode", "zai"],
     // P prints the sandbox argv for every harness and spends nothing.
     P: [...AGENT_IDS],
   };
@@ -322,6 +327,18 @@ test("an unreadable or malformed registry fails the leak check instead of readin
     chmodSync(registry, 0o600);
     rmSync(mkdtemp, { recursive: true, force: true });
   }
+});
+
+test("the hermetic session canary's UNSUPPORTED note names the missing half", () => {
+  // Sessions without the hermetic capability (aider): the run-side
+  // hermetic refusal reason, since no hermetic session exists to canary.
+  expect(unsupportedNote("K", factsFor("aider")))
+    .toBe("adapter declares no hermetic capability, so no hermetic session exists to canary (docs/harnesses.md matrix)");
+  // No session driver at all (gemini): probe F's reason.
+  expect(unsupportedNote("K", factsFor("gemini")))
+    .toBe("no session driver for this harness (src/session/cli.ts SESSION_AGENTS)");
+  // Without facts the note stays generic; the run passes the fact.
+  expect(unsupportedNote("K")).toContain("session driver and a hermetic capability");
 });
 
 test("sessionStartedId reads the first session_started line", () => {

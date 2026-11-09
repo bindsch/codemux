@@ -5,7 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { AiderAdapter } from "../adapters/aider.js";
 import type { BaseAdapter, RunContext } from "../adapters/base.js";
-import { OpencodeAdapter } from "../adapters/opencode.js";
+import { OpencodeAdapter, opencodeRealDataParent } from "../adapters/opencode.js";
 import type { ProviderOverride } from "../provider-override.js";
 import {
   withKeepEnvExemption,
@@ -25,13 +25,17 @@ import { CodexSessionDriver } from "./codex-driver.js";
 import { codexSessionProviderHomePath } from "../codex-provider.js";
 import type { CodexSessionProviderHome } from "../codex-provider.js";
 import { KimiSessionDriver } from "./kimi-driver.js";
+import { kimiHermeticTurnContext } from "./kimi-turn-context.js";
 import { OpenCodeSessionDriver } from "./opencode-driver.js";
+import { openCodeHermeticTurnPrefix } from "./opencode-session.js";
 import { ClaudeSessionDriver } from "./driver.js";
 import type { SessionProcess } from "./process.js";
 import { spawnSessionChild } from "./spawn.js";
 import type { SessionEnvironmentBuilder } from "./cli-launch.js";
 import type { SessionCommandOptions } from "./cli-request.js";
 import type { ClaudeSessionBuilt } from "./claude-session/builders.js";
+import type { SessionPrivateHome } from "./private-home-types.js";
+import type { ProjectSettingsSessionDir } from "../claude-project-config.js";
 import type { SessionDriver } from "./stdin-frame.js";
 
 export function createSessionDriver({
@@ -68,6 +72,10 @@ export function createSessionDriver({
   providerBaseUrl,
   buildSessionEnvironment,
   removeFinalProjectDir,
+  hermetic,
+  sessionPrivateHome,
+  kimiSourceBrandHome,
+  sessionProjectDir,
 }: {
   options: SessionCommandOptions;
   agentId: AgentId;
@@ -105,6 +113,18 @@ export function createSessionDriver({
    * end path runs it before the end stamp releases the record (review
    * round 10, edges 4). */
   removeFinalProjectDir: () => boolean;
+  /** Whether the session runs hermetic (plain --hermetic; project
+   * settings implies it for the claude family). */
+  hermetic: boolean;
+  /** The hermetic codex/kimi/agy session's private home
+   * (cli-launch.ts), null for every other agent. */
+  sessionPrivateHome: SessionPrivateHome | null;
+  /** The operator brand home a hermetic kimi session's filtered config
+   * is generated from (null when the session is not kimi). */
+  kimiSourceBrandHome: string | null;
+  /** The claude family's session directory — the private home both
+   * hermetic modes share; passed to the driver as its privateHome. */
+  sessionProjectDir: ProjectSettingsSessionDir | null;
 }) {
   // The wire models for the turn-per-process agents, through the
   // adapters' public seam (wireModelFor): exactly what
@@ -129,6 +149,7 @@ export function createSessionDriver({
 
   let driver: SessionDriver;
   let claudeDriver: ClaudeSessionDriver | null = null;
+  let agyDriver: AgySessionDriver | null = null;
   let aiderDriver: AiderSessionDriver | null = null;
   let aiderSessionId: string | null = null;
   // Holder (not a bare let): the assignment happens inside the
@@ -144,6 +165,9 @@ export function createSessionDriver({
       sandboxOptions: SandboxOptions | undefined;
     } | null;
   } = { launch: null };
+  /** The env(1) prefix a hermetic/project-settings opencode turn's argv
+   * carries; null leaves the argv as built. */
+  let turnArgvPrefix: string[] | null = null;
   /** The keep-env exemption for one turn's spawn — the run path's
    * rule through the same helper (withKeepEnvExemption): the names
    * that turn's env assembly injected, required under an override.
@@ -159,6 +183,12 @@ export function createSessionDriver({
           { ...adapter.getEnv(), ...runEnv },
           override !== null
         );
+  // The kimi hermetic turn context (kimi-turn-context.ts): the adapter's
+  // getRunEnv refuses a hermetic launch whose context carries no home.
+  const kimiHermeticContext: RunContext | undefined =
+    agentId === "kimi" && sessionPrivateHome !== null
+      ? kimiHermeticTurnContext(sessionPrivateHome)
+      : undefined;
   const spawnTurn = (turnArgv: string[], abandoned?: () => boolean): Promise<SessionProcess> => {
     // Re-run the adapter's validation gate before EVERY turn
     // (review D2, security 1): the turn-per-process agents (opencode,
@@ -197,21 +227,39 @@ export function createSessionDriver({
         sandboxOptions: turnSandboxOptions(runEnv),
         context,
       };
+      // The run path's env prefix (adapters/opencode.ts), rebuilt per
+      // turn from THAT turn's fresh home: env(1) assignments riding
+      // argv, never an environment handed to scode. Project settings
+      // rides it minus the project-config disable.
+      turnArgvPrefix = openCodeHermeticTurnPrefix({
+        hermetic,
+        projectSettings: experimentProjectSettings,
+        home: context.opencodeHermeticHome?.home,
+        providerConfigPath: context.opencodeProviderConfig?.path ?? null,
+        realDataParent: opencodeRealDataParent(process.env),
+      });
     } else if (turnState.launch === null) {
       // Run's launch order in miniature (launch.ts): prepareRun,
       // then getRunEnv, then the built environment. Aider's and
       // kimi's overrides ride environment variables alone
       // (OPENAI_API_BASE / OPENAI_API_KEY; KIMI_MODEL_*) — nothing
       // on disk to refresh — so the env is built once and cached,
-      // keep-env exemption included.
-      const { runEnv, env } = buildSessionEnvironment(undefined);
+      // keep-env exemption included. A hermetic kimi session's env
+      // assembly needs the context above (getRunEnv's fail-closed
+      // gate); every other agent here has none.
+      const { runEnv, env } = buildSessionEnvironment(
+        agentId === "kimi" ? kimiHermeticContext : undefined
+      );
       turnState.launch = {
         env,
         sandboxOptions: turnSandboxOptions(runEnv),
         context: undefined,
       };
     }
-    return spawnSessionChild(turnArgv, turnState.launch.env, {
+    return spawnSessionChild(
+      turnArgvPrefix === null ? turnArgv : [...turnArgvPrefix, ...turnArgv],
+      turnState.launch.env,
+      {
       cwd: workdir,
       sandboxed: Boolean(options.sandbox),
       autonomy: requestedAutonomy,
@@ -257,18 +305,25 @@ export function createSessionDriver({
           ? (id) =>
               codexSessionProviderHomePath(codexHome(), codexOverride.baseUrl, id)
           : undefined,
-      // The home's end-of-session settlement: keep on a resumable
-      // end (renamed onto the key when it started run-shaped);
-      // remove otherwise — except a resumed home, which settlement
-      // never removes (review D3).
+      // The home's end-of-session settlement: keep on a resumable end,
+      // remove otherwise — except a resumed home (review D3). A HERMETIC
+      // session settles the shared private home through privateHome
+      // below instead (the override home is null there).
       settleSessionHome: codexSessionHome?.settle,
+      // A hermetic session's own state home: reported on
+      // session_started.private_home, keyed by the thread id (codex-driver-io.ts).
+      hermetic,
+      privateHome: sessionPrivateHome,
     });
   } else if (agentId === "agy") {
-    driver = new AgySessionDriver({
+    driver = agyDriver = new AgySessionDriver({
       resumeConversationId: resumeId ?? null,
       autonomy,
       model,
       cwd: workdir,
+      hermetic,
+      privateHome: sessionPrivateHome,
+      final: Boolean(options.final) && hermetic,
       sandboxed: Boolean(options.sandbox),
       sandboxTrust,
       sandboxNoNet,
@@ -288,7 +343,11 @@ export function createSessionDriver({
       model: opencodeWireModel,
       effort,
       cwd: workdir,
-      hermetic: false,
+      // Plain --hermetic (the mode always pairs with it, the gate in
+      // cli-request.ts): the per-turn argv prefix follows it, matching
+      // the claude family's convention.
+      hermetic,
+      projectSettings: experimentProjectSettings,
       sandboxed: Boolean(options.sandbox),
       sandboxTrust,
       sandboxNoNet,
@@ -316,7 +375,13 @@ export function createSessionDriver({
       // one.
       wireModel: kimiWireModel,
       cwd: workdir,
-      hermetic: false,
+      // The hermetic home and its source brand home come from the
+      // launcher; the driver carries the env redirect on its own
+      // per-turn argv and settles the home at the first resume hint's
+      // child exit (kimi-driver-io.ts).
+      hermetic,
+      hermeticSourceHome: kimiSourceBrandHome,
+      privateHome: sessionPrivateHome,
       sandboxed: Boolean(options.sandbox),
       sandboxTrust,
       sandboxNoNet,
@@ -385,15 +450,18 @@ export function createSessionDriver({
       registryPath,
       harnessHome,
       providerBaseUrl,
-      hermetic: experimentProjectSettings,
+      hermetic,
       projectSettings: experimentProjectSettings,
-      // --final reaches the driver only for a project-settings session
-      // (cli-request.ts refuses it otherwise): the driver's end path
-      // removes the directory — the whole two-attempt sequence — BEFORE
-      // the end stamp (review round 10, edges 4; round 15, major), and
-      // only a removal that settled removed makes the resumable verdict
-      // say false (review round 7, edges finding 1).
-      final: Boolean(options.final) && experimentProjectSettings,
+      // The session-keyed private home both isolation modes share:
+      // reported on session_started.private_home, null for a plain
+      // session.
+      privateHome: sessionProjectDir,
+      // --final reaches the driver only for a hermetic session (either
+      // mode): the end path removes the directory — the whole
+      // two-attempt sequence — BEFORE the end stamp, and only a removal
+      // that settled removed makes the resumable verdict say false
+      // (review rounds 10, 15, and 7).
+      final: Boolean(options.final) && hermetic,
       removeFinalProjectDir,
       permissionPolicy:
         options.permissionPolicy === "deny" ? "deny" : "default",
@@ -403,5 +471,5 @@ export function createSessionDriver({
     // command above or matched a branch already.
     throw new Error(`no session driver for '${agentId}'`);
   }
-  return { driver, claudeDriver, aiderDriver, aiderSessionId, turnState };
+  return { driver, claudeDriver, agyDriver, aiderDriver, aiderSessionId, turnState };
 }

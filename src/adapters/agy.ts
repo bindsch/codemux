@@ -1,11 +1,10 @@
 import { BaseAdapter, type RunContext } from "./base.js";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import type { AgyProbeMode } from "../agy-isolation-probe.js";
 import { summarizeAgyStream } from "../agy-stream.js";
-import { PROBE_FILE_MAX_BYTES, PROBE_MARKER, PROBE_PID, findDirectory, sameDirectory, sweepStaleHomes } from "./agy-homes.js";
+import { PROBE_FILE_MAX_BYTES, PROBE_MARKER, agyPrivateHomeEnvPrefix, findDirectory, markAgyPrivateHome, sameDirectory, sweepStaleHomes } from "./agy-homes.js";
 import { readFileBytesBounded } from "../file-io.js";
 import { AGY_MIRROR_PATH, agyKeychainHost, agyProbeRoots, insertAgyKeychainItem, prepareAgyPrivateKeychain, recoverAgyKeychainSearchList, verifyAgyKeychainSearchList } from "../agy-keychain.js";
 import { assertNoAgyProjectExecutionConfig } from "../project-safety.js";
@@ -153,9 +152,7 @@ export class AgyAdapter extends BaseAdapter {
       home = mkdtempSync(join(root, "run-"));
       homeFd = openSync(home, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
       const homeStat = fstatSync(homeFd);
-      const marker = randomUUID();
-      writeFileSync(join(home, PROBE_PID), String(process.pid), { flag: "wx", mode: 0o600 });
-      writeFileSync(join(home, PROBE_MARKER), marker, { flag: "wx", mode: 0o600 });
+      const marker = markAgyPrivateHome(home);
       ownedProbeHomes.set(context, { home, parent: root, parentDev: parentStat.dev, parentIno: parentStat.ino,
         homeDev: homeStat.dev, homeIno: homeStat.ino, marker, parentFd, homeFd });
       context.agyProbe!.home = home;
@@ -381,9 +378,7 @@ export class AgyAdapter extends BaseAdapter {
     const home = context?.agyProbe?.home ?? context?.agyProbe?.operatorHome ??
       (request.sandboxed ? join(this.environment.HOME ?? homedir(), ".gemini/.codemux-isolation-probes/unprepared") : undefined);
     // HOME changes only after scode establishes the real user's boundary.
-    return home ? ["env", `HOME=${home}`, `XDG_CONFIG_HOME=${join(home, ".config")}`,
-      `XDG_CACHE_HOME=${join(home, ".cache")}`, `XDG_DATA_HOME=${join(home, ".local/share")}`,
-      `XDG_STATE_HOME=${join(home, ".local/state")}`, ...cmd] : cmd;
+    return home ? [...agyPrivateHomeEnvPrefix(home), ...cmd] : cmd;
   }
 
   override getRunEnv(request: RunRequest, context?: RunContext): Record<string, string> {

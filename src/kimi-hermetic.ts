@@ -75,15 +75,16 @@ export function kimiTomlValue(value: unknown): string {
 
 /** Retain model/login settings and MCP timeouts; never copy discovery or hooks. */
 export function kimiHermeticConfig(sourceBrandHome: string): string {
-  const path = join(sourceBrandHome, "config.toml");
-  let source = "";
-  try {
-    // The file descriptor reader also rejects files that grow past the bound.
-    source = readBoundedKimiFile(path, MAX_CONFIG_BYTES);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  const parsed = Bun.TOML.parse(source) as Record<string, unknown>;
+  return serializeKimiConfig({ ...filteredKimiHermeticConfig(sourceBrandHome), auto_session_title: false });
+}
+
+function serializeKimiConfig(config: Record<string, unknown>): string {
+  return Object.entries(config).map(([key, value]) => `${JSON.stringify(key)} = ${kimiTomlValue(value)}\n`).join("");
+}
+
+/** The allowlist filter over one parsed config: the run path's rule,
+ * extracted so the session's merge reuses it unchanged. */
+function filterKimiConfigKeys(parsed: Record<string, unknown>, path: string): Record<string, unknown> {
   const filtered: Record<string, unknown> = {};
   for (const key of KIMI_CONFIG_ALLOWLIST) {
     if (!Object.hasOwn(parsed, key)) continue;
@@ -97,8 +98,118 @@ export function kimiHermeticConfig(sourceBrandHome: string): string {
         .map((name) => [name, (mcp as Record<string, unknown>)[name]]));
     } else filtered[key] = parsed[key];
   }
-  filtered.auto_session_title = false;
-  return Object.entries(filtered).map(([key, value]) => `${JSON.stringify(key)} = ${kimiTomlValue(value)}\n`).join("");
+  return filtered;
+}
+
+function readBrandConfig(sourceBrandHome: string | null): { parsed: Record<string, unknown>; path: string } {
+  const path = join(sourceBrandHome ?? ".", "config.toml");
+  if (sourceBrandHome === null) return { parsed: {}, path };
+  let source = "";
+  try {
+    // The file descriptor reader also rejects files that grow past the bound.
+    source = readBoundedKimiFile(path, MAX_CONFIG_BYTES);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return { parsed: Bun.TOML.parse(source) as Record<string, unknown>, path };
+}
+
+function filteredKimiHermeticConfig(sourceBrandHome: string | null): Record<string, unknown> {
+  const { parsed, path } = readBrandConfig(sourceBrandHome);
+  return filterKimiConfigKeys(parsed, path);
+}
+
+/** The brand home a hermetic session's private home carries kimi's state
+ * in (the store lives at `<dir>/.kimi-code/sessions`, so the session's
+ * lifetime IS the private home's lifetime). Shared by the driver's
+ * record (the registry's `harness_home` names it) and the per-turn
+ * command (KIMI_CODE_HOME points at it). */
+export function kimiPrivateBrandHome(privateHomeDir: string): string {
+  return join(privateHomeDir, ".kimi-code");
+}
+
+/** The empty skills directory the per-turn `--skills-dir` names: private,
+ * so no operator skill loads, and the only skills a session sees are the
+ * harness's own bundled defaults. */
+export function kimiPrivateSkillsDir(privateHomeDir: string): string {
+  return join(privateHomeDir, "skills-dir");
+}
+
+/**
+ * The config a hermetic SESSION's private brand home runs on. Like the
+ * run path, the operator's config is filtered by the allowlist at
+ * generation time; unlike the run path, the generation runs at the FIRST
+ * TURN — after the consumer's pre-write window — so a config.toml the
+ * consumer already placed in `destBrandHome` joins the merge: its
+ * allowlisted keys win over the operator's (the consumer chose them for
+ * this session), and its `permission` table is kept whole. `permission`
+ * is the one key the allowlist drops by design (operator policy); a
+ * consumer-added `[[permission.rules]]` is the caller's own policy
+ * channel, so the generation preserves it instead of filtering it. The
+ * file is written once, on the first turn of a FRESH home; later turns
+ * and resumes never rewrite it, so the consumer's edits stand.
+ */
+export function kimiSessionHermeticConfig(sourceBrandHome: string | null, destBrandHome: string): string {
+  const config = filteredKimiHermeticConfig(sourceBrandHome);
+  const destPath = join(destBrandHome, "config.toml");
+  let existing = "";
+  try {
+    existing = readBoundedKimiFile(destPath, MAX_CONFIG_BYTES);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (existing !== "") {
+    const parsed = Bun.TOML.parse(existing) as Record<string, unknown>;
+    Object.assign(config, filterKimiConfigKeys(parsed, destPath));
+    if (Object.hasOwn(parsed, "permission")) config.permission = parsed.permission;
+  }
+  config.auto_session_title = false;
+  return serializeKimiConfig(config);
+}
+
+/** Writes the session config into the private brand home (once, from the
+ * driver's first-turn spawn; the caller owns the once). */
+export function writeKimiSessionHermeticConfig(destBrandHome: string, sourceBrandHome: string | null): void {
+  writeOwnedSync(join(destBrandHome, "config.toml"), kimiSessionHermeticConfig(sourceBrandHome, destBrandHome), 0o600);
+}
+
+/**
+ * Populates the launcher's per-session private home for a hermetic kimi
+ * session (the SessionPrivateHome the driver consumes,
+ * src/session/private-home-types.ts): the `.kimi-code` brand home (the
+ * session store lives in it, so the session's turns and resumes share
+ * the home's lifetime), the credential symlink, the copied short state
+ * files, and the empty skills directory the per-turn `--skills-dir`
+ * names. config.toml is deliberately NOT written here — the first turn
+ * generates it, after the consumer's pre-write window
+ * (`kimiSessionHermeticConfig`). No agent file exists to populate: the
+ * private brand home ships no SYSTEM.md and no agents/, which is
+ * exactly how the builtin default profile stays selected (the recorded
+ * 2.5.2 limitation — `--agent-file` conflicts with `--session`).
+ */
+export function populateKimiHermeticSessionHome(
+  dir: string,
+  sourceBrandHome: string | null,
+  printOnly = false
+): { brandHome: string; skillsDir: string } {
+  const brandHome = kimiPrivateBrandHome(dir);
+  const skillsDir = join(dir, "skills-dir");
+  mkdirSync(brandHome, { mode: 0o700 });
+  chmodSync(brandHome, 0o700);
+  mkdirSync(skillsDir, { mode: 0o700 });
+  chmodSync(skillsDir, 0o700);
+  if (!printOnly && sourceBrandHome !== null) {
+    symlinkSync(resolve(sourceBrandHome, "credentials"), join(brandHome, "credentials"), "dir");
+    for (const name of ["region", "device_id"]) {
+      const source = join(sourceBrandHome, name);
+      try {
+        writeOwnedSync(join(brandHome, name), readBoundedKimiFile(source, MAX_KIMI_STATE_BYTES), 0o600);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+  }
+  return { brandHome, skillsDir };
 }
 
 /** Each private brand home shares the credential directory, including atomic token renames. */

@@ -23,6 +23,7 @@ import {
   buildTurnStartRequest,
   buildCodexSessionCommand,
   codexSessionCapabilities,
+  codexSessionHermeticEnvPrefix,
   codexSessionPolicy,
   steerElementBytes,
 } from "../src/session/codex-session.js";
@@ -36,6 +37,27 @@ function parseJson(line: string): Record<string, any> {
 describe("codex session - spawn and capabilities", () => {
   test("the spawn command is one dedicated app-server per session", () => {
     expect(buildCodexSessionCommand()).toEqual(["codex", "app-server"]);
+  });
+
+  test("the hermetic spawn carries only the two home variables: -c is available and unused (round 413, item 4)", () => {
+    // codex-cli 0.166.0's `codex app-server --help` lists
+    // `-c, --config <key=value>` under Options (checked by the session
+    // owner 2026-11-09; the binary's own strings carry the
+    // CliConfigOverrides/RAW_OVERRIDES help text). The session passes
+    // no -c anyway: the private CODEX_HOME's config.toml already
+    // carries cli_auth_credentials_store for the whole session, and the
+    // project-doc keys ride the thread config (hermetic threads only),
+    // so the argv stays the run path's two-home env(1) shape.
+    const prefix = codexSessionHermeticEnvPrefix("/private/home-1");
+    expect(prefix).toEqual(["HOME=/private/home-1", "CODEX_HOME=/private/home-1/.codex"]);
+    expect(buildCodexSessionCommand(prefix)).toEqual([
+      "env",
+      "HOME=/private/home-1",
+      "CODEX_HOME=/private/home-1/.codex",
+      "codex",
+      "app-server",
+    ]);
+    expect(buildCodexSessionCommand(prefix).includes("-c")).toBe(false);
   });
 
   test("every capability flag is true with queue semantics and native file changes", () => {
@@ -165,15 +187,30 @@ describe("codex session - method allowlist and builders", () => {
     expect(parseJson(buildJsonRpcResponse(-7, {}))).toEqual({ id: -7, result: {} });
   });
 
-  test("thread/start carries cwd, the policy pair, and exactly the AGENTS.md-skip config", () => {
+  test("a PLAIN thread/start carries cwd, the policy pair, and no config at all", () => {
+    // Review round 413, item 1: a plain session must load project
+    // documents exactly as a plain codex run does, so it sends no
+    // thread config — toEqual pins the exact key set, `config` absent.
+    const policy = codexSessionPolicy("low", false, CWD);
+    const frame = parseJson(buildThreadStartRequest(2, policy, CWD, "gpt-5"));
+    expect(frame.params).toEqual({
+      cwd: CWD,
+      sandbox: "workspace-write",
+      approvalPolicy: "untrusted",
+      model: "gpt-5",
+    });
+  });
+
+  test("a HERMETIC thread/start skips AGENTS.md discovery with exactly the two project-doc keys", () => {
     // Review live3, security 2: the config object is the project-doc
     // (AGENTS.md) skip and NOTHING else — toEqual pins the exact key set.
     // It is not run's `--ignore-rules` equivalent: execpolicy rules
-    // (~/.codex/rules) have no verified app-server carrier, so a codex
-    // session still loads them where a run does not (the parity gap is
-    // recorded in docs/harnesses.md).
+    // (~/.codex/rules) have no verified app-server carrier, and a
+    // hermetic session's fresh home carries none anyway; workspace
+    // .codex/rules still load, which is the caller's own policy channel
+    // (the parity gap is recorded in docs/harnesses.md).
     const policy = codexSessionPolicy("low", false, CWD);
-    const frame = parseJson(buildThreadStartRequest(2, policy, CWD, "gpt-5"));
+    const frame = parseJson(buildThreadStartRequest(2, policy, CWD, "gpt-5", true));
     expect(frame.params).toEqual({
       cwd: CWD,
       sandbox: "workspace-write",
@@ -183,13 +220,18 @@ describe("codex session - method allowlist and builders", () => {
     });
   });
 
-  test("thread/resume carries the thread id, cwd, the policy pair, and the config; model stays optional", () => {
+  test("thread/resume carries the thread id, cwd, the policy pair, and the config only when hermetic; model stays optional", () => {
     // Review live20, contracts 3: design §4.7 says every thread start,
     // thread/resume included, carries the sandbox/approval pair, or the
     // resumed thread falls back to config.toml. toEqual pins the whole
-    // params object, so dropping the pair fails here.
+    // params object, so dropping the pair fails here. The project-doc
+    // skip follows the session's mode, start and resume alike (round
+    // 413, item 1): a plain resume keeps AGENTS.md discovery, a
+    // hermetic one skips it.
     const policy = codexSessionPolicy("low", false, CWD);
-    const withModel = parseJson(buildThreadResumeRequest(3, "0123456789abcdef", policy, CWD, "gpt-5"));
+    const withModel = parseJson(
+      buildThreadResumeRequest(3, "0123456789abcdef", policy, CWD, "gpt-5", true)
+    );
     expect(withModel.params).toEqual({
       threadId: "0123456789abcdef",
       cwd: CWD,
@@ -198,9 +240,9 @@ describe("codex session - method allowlist and builders", () => {
       config: { project_doc_max_bytes: 0, project_doc_fallback_filenames: [] },
       model: "gpt-5",
     });
-    const withoutModel = parseJson(buildThreadResumeRequest(4, "0123456789abcdef", policy, CWD));
-    const { model: _model, ...rest } = withModel.params;
-    expect(withoutModel.params).toEqual(rest);
+    const plain = parseJson(buildThreadResumeRequest(4, "0123456789abcdef", policy, CWD));
+    const { model: _model, config: _config, ...rest } = withModel.params;
+    expect(plain.params).toEqual(rest);
   });
 
   test("turn/start carries the fixture's input shape, the policy pair, and the effort override", () => {

@@ -65,7 +65,7 @@ test("live gate builds the documented command for every probe letter", async () 
   const experimentSpecs = new Map<string, object>();
   let experimentVerify: ((captured: { exit: number | null; stdout: string }) => string | null) | undefined;
   let experimentResults: { bare: string | null; header: string | null } | undefined;
-  const letters: ProbeLetter[] = ["A", "B", "C", "D", "E", "F", "G", "H"];
+  const letters: ProbeLetter[] = ["A", "B", "C", "D", "E", "F", "G", "H", "K"];
   try {
     const rows = await runProbes(
       [factsFor("claude"), factsFor("opencode"), factsFor("cursor")],
@@ -100,13 +100,20 @@ test("live gate builds the documented command for every probe letter", async () 
       fixture.env,
     );
     const claudeCommands = calls.filter((call) => call.agent === "claude").map((call) => call.command.join(" "));
-    expect(claudeCommands.length).toBe(7);
+    expect(claudeCommands.length).toBe(8);
     // Probes C and H both run with --result-json (H asserts the override on
     // the envelope's model).
     expect(claudeCommands.filter((command) => command.includes("--result-json")).length).toBe(2);
-    const check = calls.find((call) => call.agent === "claude" && call.command[1] === "check")!;
+    const check = calls.find((call) => call.agent === "claude" && call.command[1] === "check" && !call.command.includes("--session"))!;
     expect(check.command).toContain("--hermetic");
     expect(check.command).toContain("--pass-env");
+    // Probe K is the session form of the hermetic check: the same check
+    // binary with --session added, so the canary's three session launches
+    // run under it (lane H4).
+    const sessionCheck = calls.find((call) => call.agent === "claude" && call.command[1] === "check" && call.command.includes("--session"))!;
+    expect(sessionCheck.command).toContain("--hermetic");
+    expect(sessionCheck.command).toContain("--session");
+    expect(sessionCheck.command).toContain("--pass-env");
     const session = calls.find((call) => call.agent === "claude" && call.command[1] === "session")!;
     expect(session.command).toContain("session");
     // The session stdin opens with one JSONL user frame naming a fresh
@@ -138,12 +145,12 @@ test("live gate builds the documented command for every probe letter", async () 
     const opencode = calls.filter((call) => call.agent === "opencode");
     // OpenCode runs every letter except H: its wire carries no served-model
     // evidence, so probe H reports UNSUPPORTED (review round 14, edges 2).
-    expect(opencode.length).toBe(6);
+    expect(opencode.length).toBe(7);
     expect(opencode.some((call) => call.command.includes("--tools") && call.command.includes("none"))).toBe(true);
     const cursor = calls.filter((call) => call.agent === "cursor");
     expect(cursor.length).toBe(2);
     expect(rows.map((row) => row.agent)).toEqual(["claude", "opencode", "cursor"]);
-    for (const letter of ["C", "D", "E", "F", "G", "H"] as const) {
+    for (const letter of ["C", "D", "E", "F", "G", "H", "K"] as const) {
       expect(rows[2]!.results[letter]).toMatchObject({ status: "UNSUPPORTED" });
     }
     expect(rows[2]!.results.A!.status).toBe("PASS");
@@ -412,7 +419,8 @@ test("the hermetic check's outer deadline covers both of its launches (round 18,
   // A hermetic check is two sequential children — the probe, then the
   // control — each with the full --timeout (src/check-command.ts), so D
   // needs 2 * timeout + 30 while every single-launch probe keeps
-  // timeout + 30.
+  // timeout + 30. The session form (K) is three sequential session
+  // launches — hermetic, control, resumed — so it needs 3 * timeout + 30.
   const reportDirectory = fixtureDirectory();
   const allowances: { letter: string; timeout: number }[] = [];
   const runner = {
@@ -421,18 +429,21 @@ test("the hermetic check's outer deadline covers both of its launches (round 18,
       return { status: "PASS" as const, seconds: 0, stderr: "" };
     },
     async capture(command: string[], _verify: unknown, timeout: number) {
-      allowances.push({ letter: command[1] === "check" ? "D" : "?", timeout });
+      const letter = command[1] === "check" ? (command.includes("--session") ? "K" : "D") : "?";
+      allowances.push({ letter, timeout });
       return { status: "PASS" as const, seconds: 0, stderr: "" };
     },
   };
   try {
-    const rows = await runProbes([factsFor("agy")], parseOptions(["--probe", "A,D", "--timeout", "12"], ""), runner, reportDirectory, loggedInEnv().env);
+    const rows = await runProbes([factsFor("agy")], parseOptions(["--probe", "A,D,K", "--timeout", "12"], ""), runner, reportDirectory, loggedInEnv().env);
     expect(allowances).toEqual([
       { letter: "A", timeout: 42 },
       { letter: "D", timeout: 54 },
+      { letter: "K", timeout: 66 },
     ]);
     expect(rows[0]!.results.A!.status).toBe("PASS");
     expect(rows[0]!.results.D!.status).toBe("PASS");
+    expect(rows[0]!.results.K!.status).toBe("PASS");
   } finally {
     rmSync(reportDirectory, { recursive: true, force: true });
   }

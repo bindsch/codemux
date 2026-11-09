@@ -4,11 +4,13 @@
 // after session/cli-request.ts has validated the flags.
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { projectSettingsConfigRoot, projectSettingsSessionDirPath } from "../claude-project-config.js";
 import {
   codexProviderSessionsParent,
   codexSessionProviderHomePath,
 } from "../codex-provider.js";
+import { kimiPrivateBrandHome } from "../kimi-hermetic.js";
 import {
   providerIdentityBaseUrl,
   requireProviderOverride,
@@ -26,6 +28,7 @@ import {
   opencodeHarnessHome,
 } from "./cli-homes.js";
 import type { SessionCommandOptions } from "./cli-request.js";
+import { sessionKeyedHomePath } from "./private-home-key.js";
 import { assertResumeIdShape, exitOnResumeRefusal, exitWithCode, usageError } from "./cli-usage.js";
 import {
   lookupForResume,
@@ -42,6 +45,7 @@ export function resolveSessionContext({
   autonomy,
   passthroughEnv,
   enablePlaywrightMcp,
+  hermetic,
   experimentProjectSettings,
   sandboxTrust,
   sandboxNoNet,
@@ -56,6 +60,7 @@ export function resolveSessionContext({
   autonomy: AutonomyLevel;
   passthroughEnv: string[];
   enablePlaywrightMcp: boolean;
+  hermetic: boolean;
   experimentProjectSettings: boolean;
   sandboxTrust: ScodeTrustLevel;
   sandboxNoNet: boolean;
@@ -95,12 +100,13 @@ export function resolveSessionContext({
     resumeId = options.resume;
   }
   // A claude-family session's id, minted HERE rather than inside
-  // buildClaudeSessionCommand: a project-settings session's private
-  // config directory is keyed by it, and both the harness home below
-  // and the record need that key before anything spawns. A resume
-  // reuses the recorded id (the same UUID the directory was keyed
-  // by). The aider precedent, one family earlier (aiderSessionId
-  // below).
+  // buildClaudeSessionCommand: a hermetic session's private config
+  // directory is keyed by it — plain --hermetic and
+  // --experiment-project-settings share the one directory — and both
+  // the harness home below and the record need that key before
+  // anything spawns. A resume reuses the recorded id (the same UUID
+  // the directory was keyed by). The aider precedent, one family
+  // earlier (aiderSessionId below).
   const claudeSessionId =
     agentId === "claude" || agentId === "zai" ? resumeId ?? randomUUID() : undefined;
   // The harness state home (§4.8). A codex override session's home
@@ -114,22 +120,53 @@ export function resolveSessionContext({
   // the `.codemux-provider` parent every final path sits under —
   // a conservative containment cover, while the record itself
   // gets the true keyed path (harnessHomeFor) once the id exists.
+  // A HERMETIC codex/kimi/agy session's home is its private home's
+  // settled spelling — the session-keyed directory the driver
+  // records at its settle (settledPrivateHomePath, settledAgyHarnessHome
+  // in the drivers) — on a resume, where the id is known;
+  // a fresh session's cover is the parent every keyed path sits
+  // under, the override arm's own conservative-cover rule.
+  // The PARENT spelling of the key (sessionKeyedHomePath): the drivers
+  // record settledPrivateHomePath(<run-shaped dir>, id), which is the
+  // same directory; passing the parent to that helper would look one
+  // directory too high (review round 412, blocker).
+  const hermeticSessionKey = (parent: string): string =>
+    resumeId !== undefined ? sessionKeyedHomePath(parent, resumeId) : parent;
   const harnessHome =
     agentId === "codex"
-      ? codexOverride !== null
-        ? resumeId !== undefined
-          ? codexSessionProviderHomePath(codexHome(), codexOverride.baseUrl, resumeId)
-          : codexProviderSessionsParent(codexHome())
-        : codexHome()
+      ? hermetic
+        ? hermeticSessionKey(join(codexHome(), ".codemux-hermetic"))
+        : codexOverride !== null
+          ? resumeId !== undefined
+            ? codexSessionProviderHomePath(codexHome(), codexOverride.baseUrl, resumeId)
+            : codexProviderSessionsParent(codexHome())
+          : codexHome()
       : agentId === "agy"
-        ? agyHarnessHome()
+        ? hermetic
+          ? resumeId !== undefined
+            ? join(
+                hermeticSessionKey(join(dirname(agyHarnessHome()), ".codemux-isolation-probes")),
+                ".gemini",
+                "antigravity-cli"
+              )
+            : join(dirname(agyHarnessHome()), ".codemux-isolation-probes")
+          : agyHarnessHome()
         : agentId === "opencode"
           ? opencodeHarnessHome()
           : agentId === "aider"
             ? aiderHarnessHome()
             : agentId === "kimi"
-              ? kimiHarnessHome(passthroughEnv)
-              : experimentProjectSettings && claudeSessionId !== undefined
+              ? hermetic
+                ? resumeId !== undefined
+                  ? kimiPrivateBrandHome(
+                      hermeticSessionKey(
+                        join(kimiHarnessHome(passthroughEnv), ".codemux-hermetic")
+                      )
+                    )
+                  : join(kimiHarnessHome(passthroughEnv), ".codemux-hermetic")
+                : kimiHarnessHome(passthroughEnv)
+              : claudeSessionId !== undefined &&
+                  (hermetic || experimentProjectSettings)
                 ? projectSettingsSessionDirPath(
                     projectSettingsConfigRoot(process.env),
                     claudeSessionId
@@ -161,7 +198,7 @@ export function resolveSessionContext({
     passEnv: passthroughEnv,
     playwrightMcp: enablePlaywrightMcp,
     providerBaseUrl,
-    hermetic: experimentProjectSettings,
+    hermetic,
     projectSettings: experimentProjectSettings,
   };
   if (resumeId !== undefined) {
@@ -170,16 +207,25 @@ export function resolveSessionContext({
       registryPath,
       lookupForResume(registryPath, resumeId, resumeProbe)
     );
-    // The one resume check the registry cannot make: a
-    // project-settings session's transcript lives in its private
-    // config directory (the recorded harness_home), and a directory
-    // removed by --final or the stale sweep takes the transcript
-    // with it. Refused as policy (78) — the entry is trustworthy,
-    // the state behind it is gone.
-    if (experimentProjectSettings && !existsSync(harnessHome)) {
+    // The one resume check the registry cannot make: a hermetic
+    // session's transcript lives in its private home (the recorded
+    // harness_home — the claude family's config directory, the
+    // codex/kimi/agy settled key), and a home removed by --final or
+    // the stale sweep takes the transcript with it. Refused as policy
+    // (78) — the entry is trustworthy, the state behind it is gone.
+    // opencode keeps no session-keyed home (its transcript stays in
+    // the real data dir the hermetic prefix keeps), and a plain
+    // session of any agent has nothing to check.
+    const sessionKeyedHome =
+      claudeSessionId !== undefined && (hermetic || experimentProjectSettings) ? harnessHome
+      : agentId === "codex" && hermetic ? harnessHome
+      : agentId === "kimi" && hermetic ? harnessHome
+      : agentId === "agy" && hermetic ? harnessHome
+      : null;
+    if (sessionKeyedHome !== null && !existsSync(sessionKeyedHome)) {
       exitWithCode(
         78,
-        `cannot resume session ${resumeId}: its private config directory (${harnessHome}) ` +
+        `cannot resume session ${resumeId}: its private config directory (${sessionKeyedHome}) ` +
           "is missing -- removed by --final or the stale sweep -- and the session's " +
           "transcript with it"
       );

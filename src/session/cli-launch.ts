@@ -14,9 +14,18 @@ import {
   createCodexSessionProviderHome,
   openCodexSessionProviderHome,
   readCodexMultiAgent,
+  writeCodexProviderConfigInto,
 } from "../codex-provider.js";
+import { populateCodexHermeticSessionHome } from "../hermetic-home.js";
+import { populateKimiHermeticSessionHome } from "../kimi-hermetic.js";
 import { assertQuotaHeadroomForLaunch, resolveQuotaGate } from "../quota-gate.js";
-import { assertNoCallerBlockOverStateDirs, isCredentialEnvName, type SandboxOptions, type ScodeTrustLevel } from "../sandbox.js";
+import {
+  assertNoCallerBlockOverStateDirs,
+  isCredentialEnvName,
+  withKeepEnvExemption,
+  type SandboxOptions,
+  type ScodeTrustLevel,
+} from "../sandbox.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -26,9 +35,20 @@ import type {
 } from "../types.js";
 import type { BaseAdapter, RunContext } from "../adapters/base.js";
 import type { ProviderOverride } from "../provider-override.js";
+import { dirname, join } from "node:path";
 import { buildClaudeSessionCommand } from "./claude-session.js";
 import type { SessionAgentSupport } from "./cli-agents.js";
+import { agyHarnessHome, kimiHarnessHome } from "./cli-homes.js";
 import type { SessionCommandOptions } from "./cli-request.js";
+import { AGY_CONVERSATION_ID_PATTERN } from "./agy-session.js";
+import {
+  populateAgySessionPrivateHome,
+  verifyAgySessionPrivateHome,
+} from "./agy-private-home.js";
+import { CODEX_THREAD_ID_PATTERN } from "./codex-parse-facts.js";
+import { KIMI_SESSION_ID_PATTERN } from "./kimi-session.js";
+import { openSessionPrivateHome } from "./private-home.js";
+import type { SessionPrivateHome } from "./private-home-types.js";
 
 /** The shared session environment builder this module creates and the
  * spawn prep and every turn spawn reuse: one call per launch context. */
@@ -52,6 +72,7 @@ export async function prepareSessionLaunch({
   workdir,
   passthroughEnv,
   enablePlaywrightMcp,
+  hermetic,
   experimentProjectSettings,
   sandboxOptions,
   sandboxTrust,
@@ -73,6 +94,7 @@ export async function prepareSessionLaunch({
   workdir: string;
   passthroughEnv: string[];
   enablePlaywrightMcp: boolean;
+  hermetic: boolean;
   experimentProjectSettings: boolean;
   sandboxOptions: SandboxOptions | undefined;
   sandboxTrust: ScodeTrustLevel;
@@ -172,10 +194,14 @@ export async function prepareSessionLaunch({
           model !== undefined && claudeModelNeedsPickerSettings(model)
             ? claudeProviderPickerSettings(model)
             : undefined,
-        // The isolation mode's own argv: the project and local
-        // setting sources with slash commands (skills) disabled,
-        // never --safe-mode (claude-session.ts).
+        // The isolation mode's own argv (claude-session.ts): the
+        // project-settings mode's setting sources with slash commands
+        // (skills) disabled, or the run path's --safe-mode argv for a
+        // plain --hermetic session. The CLI passes projectSettings
+        // alone when both flags arrive — hermetic is implied there —
+        // so the two branches never mix.
         projectSettings: experimentProjectSettings,
+        hermetic: hermetic && !experimentProjectSettings,
       })
     : null;
   // Turn-per-process agents (opencode, aider, kimi) have no
@@ -247,9 +273,12 @@ export async function prepareSessionLaunch({
   // driver settles it at the end path (a settlement that cannot
   // reach the key drops the resumable verdict; a resumed home is
   // never removed there, review D3 — its state predates this
-  // process); a spawn that throws abandons it below.
+  // process); a spawn that throws abandons it below. A HERMETIC
+  // session opens the shared private home below instead — the
+  // override's config.toml rides inside it, exactly as a hermetic
+  // override run's does (adapters/codex.ts).
   const codexSessionHome =
-    agentId === "codex" && codexOverride !== null
+    agentId === "codex" && codexOverride !== null && !hermetic
       ? resumeId !== undefined
         ? openCodexSessionProviderHome(
             codexHome(),
@@ -268,16 +297,18 @@ export async function prepareSessionLaunch({
             readCodexMultiAgent()
           )
       : null;
-  // A project-settings session's private config directory
-  // (claude-project-config.ts): FRESH at the first command, OPENED
-  // by every --resume (the harness's own transcript lives under it
+  // A hermetic claude-family session's private config directory
+  // (claude-project-config.ts, over session/private-home.ts): plain
+  // --hermetic and --experiment-project-settings share the one
+  // session-keyed directory. FRESH at the first command, OPENED by
+  // every --resume (the harness's own transcript lives under it
   // now), removed only by --final at session end or the two-day
   // sweep once the registry entry is gone. Opened after every
   // refusing step above — the resume guards included — so a refused
   // command writes nothing. The abort paths below abandon a fresh
   // one (nothing points at it) and honor --final everywhere.
   const wantsSessionProjectDir =
-    experimentProjectSettings && claudeSessionId !== undefined;
+    (hermetic || experimentProjectSettings) && claudeSessionId !== undefined;
   if (wantsSessionProjectDir && sandboxOptions !== undefined) {
     // The caller-block conflict check runs BEFORE the directory exists:
     // the session directory's path is deterministic (the same two
@@ -335,6 +366,105 @@ export async function prepareSessionLaunch({
     throw error;
   }
   const sessionProjectDirResumed = resumeId !== undefined;
+  // A hermetic codex, kimi, or agy session's private home (the shared
+  // core, session/private-home.ts): one directory per session, fresh at
+  // the first command and keyed by the harness's own session id at the
+  // driver's settle, reopened by every --resume (a missing key is
+  // refused, never remade — the transcript lived under it). Each
+  // agent's populate mirrors its run path exactly: codex's `.codex`
+  // CODEX_HOME with its one-line config.toml and the login link
+  // (hermetic-home.ts; an override rides inside it instead, the
+  // provider key being the credential), kimi's `.kimi-code` brand home
+  // with the shared credential symlink and the copied short state, and
+  // agy's private Keychain login (agy-private-home.ts). A resumed agy
+  // home is verified to still carry its login — a resume would else
+  // launch unauthenticated and could store a fresh login into the
+  // private home. Nothing is linked from the operator's home except
+  // codex's auth.json and kimi's credentials, the two the run path
+  // links too. Opened after every refusing step and after the quota
+  // gate, like the claude family's directory above; a throw past a
+  // fresh populate removes the directory itself
+  // (private-home.ts populateOrRemove).
+  let sessionPrivateHome: SessionPrivateHome | null = null;
+  let kimiSourceBrandHome: string | null = null;
+  if (hermetic && (agentId === "codex" || agentId === "kimi" || agentId === "agy")) {
+    // Print-only launches need the home's path for the argv and none of
+    // the operator's state, so nothing is populated and the print exit
+    // removes the fresh directory (cli-exit.ts) — the run path's rule
+    // for its own hermetic homes (review round 55).
+    const printOnly = options.printSandbox === true;
+    if (agentId === "codex") {
+      sessionPrivateHome = openSessionPrivateHome({
+        parent: join(codexHome(), ".codemux-hermetic"),
+        sessionId: resumeId,
+        resume: resumeId !== undefined,
+        idPattern: CODEX_THREAD_ID_PATTERN,
+        blockedPaths: [],
+        populate: printOnly ? undefined : (dir) => {
+          // The run path's own rule (adapters/codex.ts): API-key auth
+          // from CODEX_API_KEY alone, and an override run never links
+          // the operator's auth.json — the provider key is the
+          // credential.
+          const apiKeyAuth =
+            Boolean(process.env.CODEX_API_KEY?.trim()) || codexOverride !== null;
+          const { codexHome: privateCodexHome } =
+            populateCodexHermeticSessionHome(dir, codexHome(), apiKeyAuth);
+          if (codexOverride !== null) {
+            writeCodexProviderConfigInto(
+              privateCodexHome,
+              codexOverride,
+              model as string,
+              readCodexMultiAgent()
+            );
+          }
+        },
+      });
+    } else if (agentId === "kimi") {
+      // The brand home the filtered config and the credential link come
+      // from — the same resolver the registry's harness_home uses, so
+      // the private store and the record name one tree. A missing
+      // operator login fails the populate (and removes the fresh
+      // home), exactly as a hermetic run's does.
+      kimiSourceBrandHome = kimiHarnessHome(passthroughEnv);
+      sessionPrivateHome = openSessionPrivateHome({
+        parent: join(kimiSourceBrandHome, ".codemux-hermetic"),
+        sessionId: resumeId,
+        resume: resumeId !== undefined,
+        idPattern: KIMI_SESSION_ID_PATTERN,
+        blockedPaths: [],
+        populate: printOnly ? undefined : (dir) => {
+          populateKimiHermeticSessionHome(dir, kimiSourceBrandHome);
+        },
+      });
+    } else {
+      // The agy policy question the run path answers with
+      // withKeepEnvExemption (adapters/agy.ts): agy's getRunEnv carries
+      // no injected names ({} always), so getEnv() is the whole story.
+      const policy = sandboxOptions === undefined
+        ? null
+        : withKeepEnvExemption(sandboxOptions, adapter.getEnv(), override !== null);
+      const agyHomeOptions = {
+        environment: process.env,
+        cwd: workdir,
+        scrubbing: policy !== null &&
+          (policy.scrubEnv === true || policy.trust === "untrusted"),
+        keepEnv: policy?.keepEnv,
+      };
+      sessionPrivateHome = openSessionPrivateHome({
+        parent: join(dirname(agyHarnessHome()), ".codemux-isolation-probes"),
+        sessionId: resumeId,
+        resume: resumeId !== undefined,
+        idPattern: AGY_CONVERSATION_ID_PATTERN,
+        blockedPaths: [],
+        populate: printOnly ? undefined : (dir) => {
+          populateAgySessionPrivateHome(dir, agyHomeOptions);
+        },
+      });
+      if (resumeId !== undefined && !printOnly) {
+        verifyAgySessionPrivateHome(sessionPrivateHome.dir, agyHomeOptions);
+      }
+    }
+  }
   return {
     needsKeepEnvPreflight,
     buildSessionEnvironment,
@@ -344,5 +474,7 @@ export async function prepareSessionLaunch({
     codexSessionHome,
     sessionProjectDir,
     sessionProjectDirResumed,
+    sessionPrivateHome,
+    kimiSourceBrandHome,
   };
 }

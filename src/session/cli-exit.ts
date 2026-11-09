@@ -5,6 +5,7 @@
 import type { ProjectSettingsSessionDir } from "../claude-project-config.js";
 import { handleUnexpectedError } from "../cli-runtime.js";
 import type { CodexSessionProviderHome } from "../codex-provider.js";
+import type { SessionPrivateHome } from "./private-home-types.js";
 import type { SessionDriver } from "./stdin-frame.js";
 
 /**
@@ -20,13 +21,18 @@ import type { SessionDriver } from "./stdin-frame.js";
  * no-op guard. What the print did create still goes: a fresh codex
  * override home (its run-<pid>-* directory) is abandoned, a fresh
  * project-settings directory nothing points at is removed, and the
- * registry was never written (review rounds 2 and 13, edges 3).
+ * registry was never written (review rounds 2 and 13, edges 3). A fresh
+ * hermetic session home (codex, kimi, agy) goes the same way — the print
+ * populated nothing into it, and a failure is reported without failing
+ * the print's exit 0 (the stale sweep removes what stayed).
  */
 export function exitPrintedSandbox(exit: {
   codexSessionHome: CodexSessionProviderHome | null;
   finalFlag: boolean;
   sessionProjectDir: ProjectSettingsSessionDir | null;
   sessionProjectDirResumed: boolean;
+  sessionPrivateHome?: SessionPrivateHome | null;
+  sessionPrivateHomeResumed?: boolean;
   releaseOwnedRecord: () => void;
 }): void {
   exit.codexSessionHome?.abandon();
@@ -35,6 +41,19 @@ export function exitPrintedSandbox(exit: {
   }
   if (exit.sessionProjectDir !== null && !exit.sessionProjectDirResumed) {
     exit.sessionProjectDir.remove();
+  }
+  if (
+    exit.sessionPrivateHome != null &&
+    exit.sessionPrivateHomeResumed !== true
+  ) {
+    try {
+      exit.sessionPrivateHome.remove();
+    } catch (error) {
+      console.error(
+        `codemux: cannot remove the fresh hermetic session home ${exit.sessionPrivateHome.dir} ` +
+          `(${error instanceof Error ? error.message : String(error)}); the stale sweep removes it later`
+      );
+    }
   }
   exit.releaseOwnedRecord();
   process.exitCode = 0;
@@ -88,13 +107,19 @@ export function handleSessionAbort(
   handleUnexpectedError(error);
 }
 
-/** Removes the --final private directory, reporting a failure on stderr
- * instead of throwing, and answers whether the directory is gone. The
- * driver's end path runs this twice and stamps the record to match: final
- * when removed, ended and resumable with exit 1 when both attempts failed
- * (rounds 14-15). The CLI's finally calls it only for a fresh directory
- * the end path decided nothing about. */
-export function removeFinalProjectDir(dir: ProjectSettingsSessionDir | null): boolean {
+/** Removes the --final private directory — the claude family's session
+ * directory or a codex/kimi/agy private home, both spelled {dir, remove} —
+ * reporting a failure on stderr instead of throwing, and answers whether
+ * the directory is gone. The claude driver's end path runs this twice and
+ * stamps the record to match: final when removed, ended and resumable with
+ * exit 1 when both attempts failed (rounds 14-15); the agy driver's end
+ * path runs its own two-attempt removal the same way. The CLI's finally
+ * calls it where the driver end paths leave removal to the CLI: the codex
+ * and kimi homes, and a fresh claude directory the end path decided
+ * nothing about. */
+export function removeFinalProjectDir(
+  dir: Pick<ProjectSettingsSessionDir, "dir" | "remove"> | null
+): boolean {
   if (dir === null) return true;
   try {
     dir.remove();

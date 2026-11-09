@@ -9,12 +9,12 @@ import { EXPERIMENT_HARNESSES, type HarnessFacts } from "./facts.js";
 // The probe set the audit's release checklist names (scratch/audit/release.md
 // gap 3). Letters match docs/RELEASE-GATE.md's probe table. Probe 0 (the
 // version-contract column) is separate: it costs no quota and always runs.
-export const PROBE_LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H", "H2", "I", "J", "P"] as const;
+export const PROBE_LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H", "H2", "I", "J", "K", "P"] as const;
 export type ProbeLetter = (typeof PROBE_LETTERS)[number];
 // Every probe but H runs by default: H forwards real provider credentials
 // into the sandbox (opt-in), while H2 — its loopback twin — synthesizes its
 // own and spends no provider quota (audit D9).
-export const DEFAULT_PROBES: readonly ProbeLetter[] = ["A", "B", "C", "D", "E", "F", "G", "H2", "I", "J", "P"];
+export const DEFAULT_PROBES: readonly ProbeLetter[] = ["A", "B", "C", "D", "E", "F", "G", "H2", "I", "J", "K", "P"];
 
 // Probe H forwards provider credentials into the sandbox; it runs only when
 // the operator exports this variable set to exactly "1".
@@ -32,6 +32,7 @@ export const PROBE_LABELS: Record<ProbeLetter, string> = {
   H2: "loopback override",
   I: "alias + effort",
   J: "sandbox policy",
+  K: "hermetic session",
   P: "print-sandbox",
 };
 
@@ -47,6 +48,7 @@ const PROBE_NAMES: Readonly<Record<string, ProbeLetter>> = {
   h2: "H2", loopback: "H2", "loopback-override": "H2",
   i: "I", "alias-effort": "I",
   j: "J", sandbox: "J", "no-net": "J",
+  k: "K", "hermetic-session": "K",
   p: "P", "print-sandbox": "P",
 };
 
@@ -91,6 +93,10 @@ export function probeApplies(letter: ProbeLetter, facts: HarnessFacts): boolean 
       return facts.toolsNoneRequiresHermetic;
     case "F":
       return facts.sessions;
+    case "K":
+      // The session-shaped hermetic canary needs both halves: a session
+      // driver (probe F's set) and the hermetic capability (probe D's).
+      return facts.sessions && facts.hermetic;
     case "G":
       return facts.experiment;
     case "H":
@@ -114,7 +120,17 @@ export function probeApplies(letter: ProbeLetter, facts: HarnessFacts): boolean 
   }
 }
 
-export function unsupportedNote(letter: ProbeLetter): string {
+export function unsupportedNote(letter: ProbeLetter, facts?: HarnessFacts): string {
+  // Probe K's reason is the missing half, so the UNSUPPORTED cell names
+  // it: no session driver at all (probe F's note), or sessions without
+  // the hermetic capability (probe D's note — the run-side hermetic
+  // refusal reason, which leaves no hermetic session to canary). Without
+  // facts the map's generic K note below answers.
+  if (letter === "K" && facts !== undefined) {
+    return facts.sessions
+      ? "adapter declares no hermetic capability, so no hermetic session exists to canary (docs/harnesses.md matrix)"
+      : "no session driver for this harness (src/session/cli.ts SESSION_AGENTS)";
+  }
   const notes: Record<ProbeLetter, string> = {
     A: "adapter supports headless runs",
     B: "adapter supports medium autonomy",
@@ -127,6 +143,7 @@ export function unsupportedNote(letter: ProbeLetter): string {
     H2: "adapter declares no provider-override capability (docs/harnesses.md matrix); the loopback probe verifies the override through the request the harness itself sends",
     I: "adapter declares no model+effort pair (docs/harnesses.md matrix); probe I carries both -m and --effort",
     J: "the sandbox policy flags apply to every harness",
+    K: "the hermetic session canary needs a session driver and a hermetic capability",
     P: "--print-sandbox applies to every harness",
   };
   return notes[letter];

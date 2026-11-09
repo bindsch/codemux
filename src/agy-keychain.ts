@@ -90,8 +90,13 @@ function hasPrivateKeychainLayout(canonical: string, roots: readonly string[], t
   if (canonical === template) return true;
   return roots.some((root) => {
     if (!canonical.startsWith(root + sep)) return false;
-    const run = canonical.slice(root.length + 1).split(sep)[0]!;
-    return run.startsWith("run-") && canonical === join(root, run, AGY_MIRROR_PATH);
+    const entry = canonical.slice(root.length + 1).split(sep)[0]!;
+    // `session-<id>` is a settled hermetic SESSION's home (session/
+    // private-home.ts): the same mirror layout a run-shaped home carries,
+    // living past its creating process for --resume, so recovery and
+    // verification must recognize it exactly like a run's.
+    const named = entry.startsWith("run-") || entry.startsWith("session-");
+    return named && canonical === join(root, entry, AGY_MIRROR_PATH);
   });
 }
 
@@ -327,6 +332,46 @@ export function prepareAgyPrivateKeychain(home: string, environment: NodeJS.Proc
   const password = prepareKeychainCopy(invoke, home, roots);
   setMirrorDefault(invoke, home, join(home, AGY_MIRROR_PATH), environment, cwd);
   return password;
+}
+
+/** Re-select an existing mirror as a private HOME's default keychain —
+ * a resumed hermetic SESSION whose recorded selection drifted (the
+ * preference lives inside the private HOME, so drift means something
+ * rewrote it there). The fresh path's setMirrorDefault verbatim: it
+ * creates and inserts nothing, only selects under the private HOME and
+ * verifies the real default never moved. */
+export function ensureAgyMirrorDefault(home: string, environment: NodeJS.ProcessEnv, cwd?: string): void {
+  const invoke = client(environment, cwd);
+  if (!invoke) return;
+  setMirrorDefault(invoke, home, join(home, AGY_MIRROR_PATH), environment, cwd);
+}
+
+/** Best-effort unlock of a resumed session's mirror with the template's
+ * password (the mirror is a copy of the template, so its password is the
+ * template's own): securityd keeps unlock state per keychain, so a
+ * reboot between turns relocks the mirror. A failure is ignored exactly
+ * as the fresh path ignores a failed unlock (prepareKeychainCopy) — a
+ * harness read that works proves it unlocked, and one that does not
+ * fails inside the sandbox with the credential error; the private
+ * default keeps the failure from becoming a store prompt on the
+ * operator's screen. */
+export function unlockAgyMirrorBestEffort(home: string, environment: NodeJS.ProcessEnv, cwd?: string): void {
+  const invoke = client(environment, cwd);
+  if (!invoke) return;
+  const passwordPath = join(agyKeychainStateDir(), `${AGY_TEMPLATE_NAME}.password`);
+  let password = "";
+  try {
+    password = existsSync(passwordPath) ? readFileSync(passwordPath, "utf8") : "";
+  } catch {
+    return;
+  }
+  if (!/^[a-f0-9]{32}$/.test(password)) return;
+  try {
+    invoke(["-i"], "cannot unlock agy keychain mirror",
+      interactiveCommand(["unlock-keychain", "-p", password, join(home, AGY_MIRROR_PATH)]));
+  } catch {
+    /* best-effort, like the fresh path */
+  }
 }
 
 /** Never attach argv, output, or a subprocess error to an error. */

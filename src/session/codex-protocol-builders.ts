@@ -162,15 +162,19 @@ export function buildInitializedNotification(): string {
   return JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" });
 }
 
-/** The thread-level config object (§4.7): the same project-doc overrides
- * run's hermetic flags use, skipping AGENTS.md discovery on the one
- * carrier the app-server contract verifies. It is NOT the app-server
- * equivalent of run's `--ignore-rules` — execpolicy rules
- * (`~/.codex/rules`) have no verified thread-config carrier, so a codex
- * session still loads them where a run does not. That parity gap is
- * recorded in docs/harnesses.md; the pinned test asserts
- * the config carries exactly these two keys so the gap stays visible. */
-const IGNORE_RULES_CONFIG = {
+/** The hermetic thread-level config object (§4.7): the same project-doc
+ * overrides run's hermetic flags use, skipping AGENTS.md discovery on
+ * the one carrier the app-server contract verifies. Only a hermetic
+ * session sends it (round 413, item 1) — a plain session sends no
+ * config at all, so project documents load exactly as a plain codex
+ * run's do (the parity rule the session canary's control arm needs).
+ * It is NOT the app-server equivalent of run's `--ignore-rules` —
+ * execpolicy rules (`~/.codex/rules`) have no verified thread-config
+ * carrier, so a hermetic session still loads them where a run does
+ * not. That parity gap is recorded in docs/harnesses.md; the pinned
+ * test asserts the config carries exactly these two keys so the gap
+ * stays visible. */
+const HERMETIC_PROJECT_DOC_CONFIG = {
   project_doc_max_bytes: 0,
   project_doc_fallback_filenames: [],
 } as const;
@@ -178,13 +182,14 @@ const IGNORE_RULES_CONFIG = {
 function threadParams(
   policy: CodexSessionPolicy,
   cwd: string,
-  model: string | undefined
+  model: string | undefined,
+  hermetic: boolean
 ): Record<string, unknown> {
   return {
     cwd,
     sandbox: policy.sandbox,
     approvalPolicy: policy.approvalPolicy,
-    config: IGNORE_RULES_CONFIG,
+    ...(hermetic ? { config: HERMETIC_PROJECT_DOC_CONFIG } : {}),
     ...(model !== undefined ? { model } : {}),
   };
 }
@@ -193,9 +198,10 @@ export function buildThreadStartRequest(
   id: RequestId,
   policy: CodexSessionPolicy,
   cwd: string,
-  model?: string
+  model?: string,
+  hermetic?: boolean
 ): string {
-  return request(id, "thread/start", threadParams(policy, cwd, model));
+  return request(id, "thread/start", threadParams(policy, cwd, model, hermetic === true));
 }
 
 export function buildThreadResumeRequest(
@@ -203,12 +209,13 @@ export function buildThreadResumeRequest(
   threadId: string,
   policy: CodexSessionPolicy,
   cwd: string,
-  model?: string
+  model?: string,
+  hermetic?: boolean
 ): string {
   return request(
     id,
     "thread/resume",
-    { threadId, ...threadParams(policy, cwd, model) }
+    { threadId, ...threadParams(policy, cwd, model, hermetic === true) }
   );
 }
 

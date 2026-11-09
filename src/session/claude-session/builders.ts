@@ -38,10 +38,21 @@ export interface ClaudeSessionCommand {
   /** The `--experiment-project-settings` isolation: the project and
    * local setting sources replace the user source, plus
    * `--disable-slash-commands` (all skills off, project ones included —
-   * the run path's rule). No `--safe-mode` in this mode; a session never
-   * passes it in any mode. The CLI pairs this with a private
-   * CLAUDE_CONFIG_DIR keyed by the session id. */
+   * the run path's rule). No `--safe-mode` in this mode: it would
+   * ignore the project's rules, the thing this mode exists to observe.
+   * The CLI pairs this with a private CLAUDE_CONFIG_DIR keyed by the
+   * session id. */
   projectSettings?: boolean;
+  /** The plain `--hermetic` isolation: the run path's own argv
+   * (`--safe-mode`, the user setting source, `--strict-mcp-config`),
+   * inside the session's private CLAUDE_CONFIG_DIR — empty of operator
+   * state, so the user source resolves there and loads nothing. A
+   * plain session never passes `--safe-mode`: it keeps its state in
+   * the operator's config directory, whose customizations must keep
+   * loading. Mutually exclusive with `projectSettings` in practice
+   * (the project-settings mode requires --hermetic; the CLI passes
+   * projectSettings alone when both flags arrive). */
+  hermetic?: boolean;
   /** The session id to pin on a fresh launch, when the caller has
    * already minted it — the CLI does, so the private config directory,
    * the registry record, and `--session-id` all name one id before
@@ -87,11 +98,11 @@ export function claudeSessionAutonomyFlags(
  * emits exactly read-only's flags. Notably WITHOUT
  * `--no-session-persistence` (that flag is `run`'s statelessness, wrong
  * here) and with `--replay-user-messages` so the transcript echoes what
- * codemux submits. Never `--safe-mode`, in any mode: the plain session
- * keeps its state in the operator's config directory, and the
- * project-settings mode replaces the flag with its own setting sources
- * (`--safe-mode` would ignore the project's rules — the thing that mode
- * exists to observe).
+ * codemux submits. `--safe-mode` in the hermetic mode only: the plain
+ * session keeps its state in the operator's config directory, whose
+ * customizations must keep loading, and the project-settings mode
+ * replaces the flag with its own setting sources (`--safe-mode` would
+ * ignore the project's rules — the thing that mode exists to observe).
  */
 /** What buildClaudeSessionCommand leaves for the spawn site: the argv and
  * the session id, plus this build's trust check of the Playwright MCP
@@ -137,10 +148,16 @@ export function buildClaudeSessionCommand(
   // The setting sources are the isolation boundary (§4.7): the user
   // source by default, or the project and local sources the
   // project-settings mode exists to observe — never both, because the
-  // user source is what that mode keeps out.
+  // user source is what that mode keeps out. The hermetic mode keeps
+  // the user source and adds `--safe-mode` (the run path's own argv):
+  // the source resolves inside the session's private config directory,
+  // empty of operator state, so it loads nothing either way.
   if (command.projectSettings === true) {
     argv.push("--disable-slash-commands");
     argv.push("--setting-sources", PROJECT_SETTING_SOURCES, "--strict-mcp-config");
+  } else if (command.hermetic === true) {
+    argv.push("--safe-mode");
+    argv.push("--setting-sources", "user", "--strict-mcp-config");
   } else {
     argv.push("--setting-sources", "user", "--strict-mcp-config");
   }

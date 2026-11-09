@@ -192,7 +192,7 @@ export async function runProbes(
     const noCredential = login?.state === "no-credential" && !options.probeAnyway.has(fact.id);
     for (const letter of options.probes) {
       if (!probeApplies(letter, fact)) {
-        row.results[letter] = { status: "UNSUPPORTED", seconds: 0, stderr: "", note: unsupportedNote(letter) };
+        row.results[letter] = { status: "UNSUPPORTED", seconds: 0, stderr: "", note: unsupportedNote(letter, fact) };
         continue;
       }
       if (options.skip.has(fact.id)) {
@@ -225,6 +225,11 @@ export async function runProbes(
           // plus one grace (round 18, edges 3). The single-launch probes
           // keep the one-timeout allowance.
           const checkOuter = 2 * options.timeout + OUTER_TIMEOUT_GRACE_SECONDS;
+          // The hermetic session canary is three sequential session
+          // launches — hermetic, control, resumed with --final — each with
+          // the full --timeout (src/hermetic-session-canary.ts), so its
+          // outer allowance covers all three plus one grace (lane H4).
+          const sessionOuter = 3 * options.timeout + OUTER_TIMEOUT_GRACE_SECONDS;
           if (letter === "A") {
             row.results.A = await runner.run(base("read-only", "Reply with exactly: OK"), "OK", outer, prefix);
           } else if (letter === "B") {
@@ -263,6 +268,21 @@ export async function runProbes(
                 // live session of the same agent is not this probe's leak.
                 liveSessionLeak(fact.id, startedMs, sessionRegistryPath(), sessionStartedId(captured.stdout), canonicalCwd),
               outer, prefix, session.exchange);
+          } else if (letter === "K") {
+            // Lane H4: the session-shaped hermetic canary. `check
+            // --hermetic --session` drives three codemux session launches
+            // of the build under test (hermetic, control, resumed with
+            // --final), so the outer allowance above covers all three.
+            // The verdict is the check's own OK line: the canary already
+            // refuses, leaks, and cleans up inside itself.
+            row.results.K = await runner.capture([
+              options.codemux, "check", "-a", fact.id,
+              ...(options.passEnv === undefined ? [] : ["--pass-env", options.passEnv]),
+              "--hermetic", "--session", "--timeout", String(options.timeout),
+            ], (captured) => captured.stdout.includes(`HERMETIC SESSION ${fact.id}: OK`)
+              ? null
+              : `the check reported no HERMETIC SESSION ${fact.id}: OK line`,
+            sessionOuter, prefix);
           } else if (letter === "G") {
             // The spec carries the prefixes of the build under test: the
             // candidate's own listing when one is probed (harnessFacts folded

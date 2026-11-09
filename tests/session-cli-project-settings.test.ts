@@ -167,16 +167,16 @@ describe("CLI - project-settings session refusals", () => {
       { PATH: minimalPath() }
     );
     expect(exitCode).toBe(64);
-    expect(stderr).toContain("claude and zai agents only");
+    expect(stderr).toContain("claude, zai, and opencode agents only");
   });
 
-  test("--final without the mode refuses with 64", async () => {
+  test("--final without --hermetic refuses with 64", async () => {
     const { stderr, exitCode } = await runCli(
       ["session", "-a", "claude", "--final"],
       { PATH: minimalPath() }
     );
     expect(exitCode).toBe(64);
-    expect(stderr).toContain("--final requires --hermetic --experiment-project-settings");
+    expect(stderr).toContain("--final requires --hermetic");
   });
 
   test.each([

@@ -51,6 +51,56 @@ implementation narrative behind it is preserved in the
 
 ### Added
 
+- Hermetic sessions (core, claude, zai, opencode): `codemux session --hermetic` means the
+  same thing on every agent whose hermetic run is verified — none of the operator's
+  instructions, skills, hooks, MCP servers, or permission rules load, the harness's state
+  lives in a per-session private home that persists across turns and `--resume`, and the
+  home is reported as `session_started.private_home` and removed by `--final` (now the
+  flag's own requirement, not the project-settings mode's) or the two-day sweep, widened to
+  session keys that are not UUIDs; claude and zai run the hermetic argv inside a private
+  `CLAUDE_CONFIG_DIR` keyed by the session id — the same directory both isolation modes
+  share, carrying the credential copy, with the operator's real config root blocked for the
+  session's children — and a resume whose home went missing is refused as policy (78),
+  never silently remade; opencode rides the run path's hermetic environment prefix on every
+  turn's argv, keeps no session-keyed home (the real data directory carries the login, so
+  `private_home` reports null), and under `--experiment-project-settings` adds the
+  repository's own config to that prefix and drops `--pure`; `--final` removes a codex,
+  kimi, or agy home after the session's children settle, leaving the record to answer a
+  later resume of a fresh session with the same 78 refusal.
+- Hermetic sessions (agy): `codemux session -a agy --hermetic` runs the whole session —
+  turns, resume, and token refresh — in a per-session private HOME under the probe root,
+  with the run path's login selection (API key, else a mode 0600 copy of the file token,
+  else the Keychain item copied into a private keychain) created once at the first
+  command and verified on `--resume` against the arm a `.codemux-login` marker names
+  (the surviving key, the token file, or the item findable in the private mirror — never
+  the mirror file's existence); no operator state is linked and no
+  settings.json is written, so the caller's own policy file in the private home is the
+  only one loaded, the spawn carries the same `env HOME=… XDG_*=…` prefix a run carries,
+  the home settles onto `session-<conversation id>` at a resumable end and is reported as
+  `session_started.private_home`, and an abandoned fresh home is removed at a
+  non-resumable end or swept once its owner process is gone.
+- Hermetic sessions (codex, kimi): `codemux session --hermetic` runs codex and kimi
+  sessions in a per-session private home that persists across turns and `--resume` —
+  codex spawns its app-server with the home as HOME and CODEX_HOME, the private
+  config.toml carrying the file login store (`codex app-server` 0.166.0 accepts `-c`
+  overrides; the session passes none, the config file carries the setting), and kimi
+  wraps every turn in the run path's env prefix over the private
+  HOME and KIMI_CODE_HOME with an empty private `--skills-dir`, generating the private
+  brand home's config.toml once at the first turn from the operator's allowlisted
+  config, where a caller-placed config joins the merge with its `[[permission.rules]]`
+  kept whole; the home settles onto `session-<id>` before the registry record is
+  released, is reported as `session_started.private_home`, and is keyed in the
+  registry's `harness_home` so a resume refuses a home that went missing.
+- Hermetic session canary: `codemux check --hermetic --session -a <agent>` drives three
+  sessions of the same build — a hermetic one-turn question over planted instruction
+  files, a control without `--hermetic` that must leak the planted code word, and the
+  first session resumed with `--resume` and `--final`, whose end must remove the private
+  home — planting per harness the way the run canary does (kimi and agy through their
+  redirected operator homes), and cleaning up every planted file and reported private
+  home, failure included; the live gate runs it as probe K (label "hermetic session") on
+  every harness with both a session driver and the hermetic capability, with a
+  `3 × --timeout + 30` second outer deadline, and other harnesses keep an UNSUPPORTED
+  cell naming the missing half.
 - `codemux run --max-budget-usd <amount>` passes a spend threshold to a
   headless `claude` or `zai` run as Claude Code's own flag (a positive amount
   with at most ten integer digits and two fraction digits, so it reaches the
@@ -136,7 +186,7 @@ implementation narrative behind it is preserved in the
 
 - Review round 401, whole tree (registry, private writes, credentials): every rename-published
   file states its mode on the descriptor or right after creation, so a umask like 0277 can
-  no longer leave a private file or directory masked wider than its rule; corrupt-registry
+  no longer leave a private file or directory masked narrower than its rule; corrupt-registry
   recovery keeps the live file until the replacement write lands and leaves a hard-linked
   `.corrupt-` backup, keeping the newest five; the credential mirror's staging file is
   fsynced before the rename; private writes and verify's scratch cwd revalidate the

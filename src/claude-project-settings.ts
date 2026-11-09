@@ -162,17 +162,14 @@ export function validateProjectSettingsRunRequest(request: RunRequest): void {
 
 /** The OpenCode arm of the validator: the shared gates plus the levels,
  * passthrough names, and ancestor refusal from opencode-project-settings.
- * Runs only — the session CLI's project-settings mode is claude and zai
- * only. */
+ * Runs and sessions alike — an opencode session carries the project's
+ * rules per turn (opencode-turns.ts), so the same gates bind both. */
 function validateOpencodeProjectSettingsRequest(
   request: ProjectSettingsRequest,
   refuse: (reason: string) => never
 ): void {
   if (!request.hermetic) refuse("requires --hermetic");
   if (!request.sandbox) refuse("requires the scode sandbox");
-  if (request.session === true) {
-    refuse("for sessions is claude and zai only; an opencode session has no project-settings mode");
-  }
   // Both accepted levels keep the project's rules observable: at low a
   // headless run rejects every ask while unlisted calls ride the build
   // agent's allow-all defaults, and at high --auto approves every ask;

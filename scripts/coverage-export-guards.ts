@@ -22,6 +22,9 @@ export const TYPE_ONLY_FILES = new Set([
   "src/run-context.ts",
   "src/session/aider-options.ts",
   "src/session/opencode-options.ts",
+  // The SessionPrivateHome contract (hermetic sessions): an interface
+  // alone, so the launcher and the drivers compile independently.
+  "src/session/private-home-types.ts",
 ]);
 // Child-only entry surfaces: exercised by spawned `bin/codemux` tests whose
 // coverage Bun does not merge (docs/TESTING.md). They still count as fully

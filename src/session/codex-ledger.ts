@@ -7,6 +7,7 @@
 import { randomUUID } from "node:crypto";
 import { recordSessionStart } from "./registry.js";
 import { CodexDriverIo } from "./codex-driver-io.js";
+import { settledPrivateHomePath } from "./private-home-key.js";
 
 export abstract class CodexDriverLedger extends CodexDriverIo {
   /** Codemux's own id for this session, minted at construction: what the
@@ -42,11 +43,14 @@ export abstract class CodexDriverLedger extends CodexDriverIo {
       id: this.threadId,
       agent: "codex",
       cwd: this.options.cwd,
-      hermetic: false,
+      // The real value: either flag says hermetic (the driver-io rule).
+      hermetic: this.options.hermetic === true || this.options.privateHome != null,
       harness_home:
-        this.options.harnessHomeFor !== undefined
-          ? this.options.harnessHomeFor(this.threadId)
-          : this.options.harnessHome,
+        this.options.privateHome != null
+          ? settledPrivateHomePath(this.options.privateHome.dir, this.threadId)
+          : this.options.harnessHomeFor !== undefined
+            ? this.options.harnessHomeFor(this.threadId)
+            : this.options.harnessHome,
       model: this.options.model ?? null,
       autonomy: this.options.autonomy,
       sandboxed: this.options.sandboxed,

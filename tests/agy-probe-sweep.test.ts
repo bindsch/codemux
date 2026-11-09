@@ -121,4 +121,22 @@ describe("the stale agy probe-home sweep's entry-file reads", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("a settled session home is never the sweep's to judge, marker or not", () => {
+    // A hermetic SESSION home settles onto `session-<conversation id>`
+    // (session/private-home.ts) precisely so this pid-owned sweep — a
+    // run's lifetime rule — leaves it alone: the session must survive
+    // its creating process for --resume, even with the run-shaped
+    // marker and a dead owner pid inside from before the settle.
+    const root = sweepRoot();
+    try {
+      const settled = entry(root, "session-conv-1");
+      writeFileSync(join(settled, PROBE_MARKER), randomUUID(), { mode: 0o600 });
+      writeFileSync(join(settled, PROBE_PID), deadPid(), { mode: 0o600 });
+      sweepStaleHomes(root);
+      expect(existsSync(settled)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

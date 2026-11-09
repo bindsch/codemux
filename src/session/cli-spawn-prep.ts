@@ -2,8 +2,9 @@
 // context, the environment with its keep-env preflight, and the
 // --print-sandbox introspection. src/session/cli.ts owns the command
 // and the spawn itself.
+import { join } from "node:path";
 import { buildAgySessionCommand } from "./agy-session.js";
-import { buildCodexSessionCommand } from "./codex-session.js";
+import { buildCodexSessionCommand, codexSessionHermeticEnvPrefix } from "./codex-session.js";
 import type { BaseAdapter, RunContext } from "../adapters/base.js";
 import {
   assertScodeKeepEnvSupport,
@@ -14,9 +15,11 @@ import type { CodexSessionProviderHome } from "../codex-provider.js";
 import type { ProviderOverride } from "../provider-override.js";
 import { withKeepEnvExemption, type SandboxOptions } from "../sandbox.js";
 import { escapeArgvForPrint } from "../usage-protocol.js";
+import { agyPrivateHomeEnvPrefix } from "../adapters/agy-homes.js";
 import type { SessionEnvironmentBuilder } from "./cli-launch.js";
 import type { SessionCommandOptions } from "./cli-request.js";
 import type { ClaudeSessionBuilt } from "./claude-session/builders.js";
+import type { SessionPrivateHome } from "./private-home-types.js";
 import { usageError } from "./cli-usage.js";
 import { resolveSessionSandboxSpawn } from "./spawn.js";
 import type { AgentId, AutonomyLevel, ReasoningEffort, RunRequest } from "../types.js";
@@ -37,6 +40,7 @@ export async function prepareSessionChild({
   claudeBuilt,
   codexSessionHome,
   sessionProjectDir,
+  sessionPrivateHome,
   turnPerProcess,
   needsKeepEnvPreflight,
   buildSessionEnvironment,
@@ -56,6 +60,7 @@ export async function prepareSessionChild({
   claudeBuilt: ClaudeSessionBuilt | null;
   codexSessionHome: CodexSessionProviderHome | null;
   sessionProjectDir: ProjectSettingsSessionDir | null;
+  sessionPrivateHome: SessionPrivateHome | null;
   turnPerProcess: boolean;
   needsKeepEnvPreflight: boolean;
   buildSessionEnvironment: SessionEnvironmentBuilder;
@@ -65,21 +70,42 @@ export async function prepareSessionChild({
       ? claudeBuilt.argv
       : agentId === "codex"
         ? buildCodexSessionCommand(
-            // The override launch: CODEX_HOME pointed at the
-            // session's provider home — the live run-shaped one for
-            // a fresh session, the session-keyed one for a resume —
-            // through the same env(1) shape the run path spawns with.
-            codexSessionHome !== null
-              ? [`CODEX_HOME=${codexSessionHome.codexHome}`]
-              : undefined
+            // A HERMETIC session: the private home as both HOME and
+            // CODEX_HOME (codex-session.ts) — the run path's own argv
+            // shape. Read once here; the child this names spawns
+            // before the end path could settle the home, and it is
+            // long-lived, so the name never goes stale under it.
+            sessionPrivateHome !== null
+              ? codexSessionHermeticEnvPrefix(sessionPrivateHome.dir)
+              : // The override launch: CODEX_HOME pointed at the
+                // session's provider home — the live run-shaped one for
+                // a fresh session, the session-keyed one for a resume —
+                // through the same env(1) shape the run path spawns with.
+                codexSessionHome !== null
+                ? [`CODEX_HOME=${codexSessionHome.codexHome}`]
+                : undefined
           )
         : agentId === "agy"
-          ? buildAgySessionCommand({
-              resumeConversationId: resumeId,
-              model,
-              autonomy,
-              effort,
-            })
+          ? sessionPrivateHome !== null
+            ? [
+                // The private home's empty-environment redirect
+                // (adapters/agy-homes.ts), the run path's own prefix:
+                // no operator config, instructions, or state loads
+                // from a home codemux made.
+                ...agyPrivateHomeEnvPrefix(sessionPrivateHome.dir),
+                ...buildAgySessionCommand({
+                  resumeConversationId: resumeId,
+                  model,
+                  autonomy,
+                  effort,
+                }),
+              ]
+            : buildAgySessionCommand({
+                resumeConversationId: resumeId,
+                model,
+                autonomy,
+                effort,
+              })
           : null;
   // The run context, exactly as run's launch path builds one
   // (launch.ts). Codex under an override carries the SESSION's
@@ -89,16 +115,37 @@ export async function prepareSessionChild({
   // design: the home is per-SESSION state, settled by the driver at
   // the end path (kept on a resumable end; a fresh one removed
   // otherwise, a resumed one never — review D3), so no run-scoped
-  // cleanup may own its lifetime.
+  // cleanup may own its lifetime. A hermetic agy session carries its
+  // private home on the probe seam for the same reason — the
+  // adapter's getRunEnv refuses a hermetic launch without one — with
+  // the same no-run-scoped-lifetime rule.
   const runContext: RunContext | undefined =
-    codexSessionHome !== null
+    sessionPrivateHome !== null && agentId === "codex"
+      ? {
+          // The adapter requires the prepared home for native and
+          // provider-override launches. The session owns its removal.
+          hermeticHome: {
+            home: sessionPrivateHome.dir,
+            codexHome: join(sessionPrivateHome.dir, ".codex"),
+            finalize: () => {},
+          },
+        }
+      : codexSessionHome !== null
       ? {
           codexProviderHome: {
             codexHome: codexSessionHome.codexHome,
             finalize: () => {},
           },
         }
-      : sessionProjectDir !== null
+      : sessionPrivateHome !== null && agentId === "agy"
+        ? {
+            agyProbe: {
+              mode: "hermetic",
+              home: sessionPrivateHome.dir,
+              printOnly: options.printSandbox === true,
+            },
+          }
+        : sessionProjectDir !== null
         ? {
             // The session's private config directory through the
             // adapter's own getRunEnv seam: CLAUDE_CONFIG_DIR plus

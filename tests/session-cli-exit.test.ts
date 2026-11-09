@@ -25,7 +25,10 @@ test("exitPrintedSandbox removes only a fresh directory and never stamps final",
   const sessionDir = (fresh: boolean): ProjectSettingsSessionDir => ({
     dir: fresh ? "/fresh/session-dir" : "/resumed/session-dir",
     blockedPaths: [],
-    remove: () => { removed.push(fresh ? "fresh" : "resumed"); },
+    remove: (): boolean => {
+      removed.push(fresh ? "fresh" : "resumed");
+      return true;
+    },
   });
   const home = (calls: string[]): CodexSessionProviderHome =>
     ({ abandon: () => calls.push("abandon") }) as unknown as CodexSessionProviderHome;

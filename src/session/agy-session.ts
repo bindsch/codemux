@@ -21,6 +21,7 @@ import { featureFloor } from "../harness-contracts.js";
 
 import { parseAgyResultEnvelope } from "../result-envelope.js";
 import type { AutonomyLevel, ReasoningEffort, ResultUsageBlock } from "../types.js";
+import { agyPrivateHomeEnvPrefix } from "../adapters/agy-homes.js";
 import { unusableFacts } from "./process.js";
 import type { SessionCapabilities } from "./protocol.js";
 
@@ -66,6 +67,11 @@ export interface AgySessionCommand {
   model?: string;
   autonomy: AutonomyLevel;
   effort?: ReasoningEffort;
+  /** The hermetic session's private home: the spawn carries the same
+   * `env HOME=… XDG_*=…` prefix the run path carries (adapters/agy.ts),
+   * so the child's home is the private directory for every turn of the
+   * session's life and across `--resume`. */
+  privateHomeDir?: string;
 }
 
 /**
@@ -99,6 +105,9 @@ export function agySessionAutonomyFlags(level: AutonomyLevel): string[] {
  */
 export function buildAgySessionCommand(command: AgySessionCommand): string[] {
   const argv = [
+    ...(command.privateHomeDir !== undefined
+      ? agyPrivateHomeEnvPrefix(command.privateHomeDir)
+      : []),
     "agy",
     "--disable-slash-commands",
     "--input-format=stream-json",

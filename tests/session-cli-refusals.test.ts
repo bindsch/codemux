@@ -22,13 +22,17 @@ describe("CLI - session refusals", () => {
     expect(stderr).toContain("not implemented for 'gemini'");
   });
 
-  test("--hermetic is refused for sessions with 64", async () => {
+  test("--hermetic for an agent with no verified mode is refused with 64", async () => {
+    // The gate is the adapter's own validateRunRequest on the
+    // run-like, so the session answers the run path's refusal verbatim
+    // (exit 64); the agents with a verified hermetic mode — claude,
+    // zai, codex, kimi, opencode, agy — accept the flag.
     const { stderr, exitCode } = await runCli(
-      ["session", "-a", "claude", "--hermetic"],
+      ["session", "-a", "aider", "--hermetic"],
       { PATH: minimalPath() }
     );
     expect(exitCode).toBe(64);
-    expect(stderr).toContain("--hermetic is refused for sessions");
+    expect(stderr).toContain("aider has no verified hermetic mode; see docs/isolation.md");
   });
 
   test("--sandbox-trust untrusted is refused for sessions with 64", async () => {

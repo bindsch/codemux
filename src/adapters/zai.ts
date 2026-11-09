@@ -1,5 +1,5 @@
 import { PROJECT_SETTING_SOURCES, validateProjectSettingsRunRequest } from "../claude-project-settings.js";
-import { createProjectSettingsConfigDir, projectSettingsRunEnv } from "../claude-project-config.js";
+import { createProjectSettingsConfigDir, projectSettingsOrHermeticHome } from "../claude-project-config.js";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { type RunContext, type SandboxPreparation } from "./base.js";
@@ -259,14 +259,14 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
   }
 
   /**
-   * The per-run environment of an --experiment-project-settings launch:
-   * CLAUDE_CONFIG_DIR pointed at the private directory. No credential is
-   * copied into it — the gateway token (getEnv) is this run's credential,
-   * so the operator's Claude login stays out of a Z.AI run entirely.
+   * The per-run environment of a hermetic launch or session:
+   * CLAUDE_CONFIG_DIR pointed at the private directory (a run's own, or
+   * the session-keyed one the CLI opened). No credential copy — the
+   * gateway token (getEnv) is this run's credential, so the operator's
+   * Claude login stays out of a Z.AI run entirely.
    */
   override getRunEnv(request: RunRequest, context?: RunContext): Record<string, string> {
-    if (!request.experimentProjectSettings) return {};
-    return projectSettingsRunEnv(context?.claudeProjectConfigDir);
+    return projectSettingsOrHermeticHome(request, context?.claudeProjectConfigDir) ?? {};
   }
 
   override async cleanupRun(context?: RunContext): Promise<void> {

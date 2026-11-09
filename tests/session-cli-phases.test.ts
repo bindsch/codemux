@@ -222,6 +222,7 @@ describe("prepareSessionChild called directly", () => {
     claudeBuilt: null,
     turnPerProcess: false,
     needsKeepEnvPreflight: false,
+    sessionPrivateHome: null,
     abandonSessionProjectDir: (): void => {},
   } as unknown as Parameters<typeof prepareSessionChild>[0];
 

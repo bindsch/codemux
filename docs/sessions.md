@@ -155,8 +155,9 @@ are warned about and ignored.
 | `--shutdown-grace <seconds>` | 10 | Grace before SIGTERM, then another grace before SIGKILL |
 | `--no-author-prefix` | prefix enabled | Preserve attribution events without prepending `[author] ` to harness text |
 | `--permission-policy <policy>` | `default` | `deny` answers every permission request with an immediate deny (Claude/ZAI); see [permissions](#permissions-and-attribution). Per invocation: the registry record does not carry it, so a `--resume` that wants the deny policy passes the flag again |
-| `--experiment-project-settings` | Off; requires `--hermetic` | The one hermetic session mode (Claude/ZAI); see [below](#hermetic-project-settings-sessions) |
-| `--final` | Off; requires the project-settings mode | Remove the session's private config directory when this session ends |
+| `--hermetic` | Off | Hermetic session: none of the operator's instructions, skills, hooks, MCP servers, or permission rules load, and the harness keeps its state in a per-session private home that survives `--resume` (claude, zai, codex, kimi, agy; opencode keeps no session-keyed home — its sessions live in the real data directory and `private_home` reports null); see [below](#hermetic-sessions) |
+| `--experiment-project-settings` | Off; requires `--hermetic` | Hermetic plus the repository's own settings in place of the operator's (claude/zai; opencode keeps the project's config); see [below](#hermetic-project-settings-sessions) |
+| `--final` | Off; requires `--hermetic` | Remove the session's private home — its transcript with it — when this session ends |
 | `--sandbox-block <path>` | none | Repeatable; pass an extra scode `--block` for this session's children (absolute paths only), an operator-side extra on top of the project-settings blocks. Canonicalized once at flag parse (symlinks dereferenced, then deduplicated and sorted), and that same spelling is recorded and enforced by every child; a resume must carry every recorded block path and may add more |
 | `--print-sandbox` | Off; requires `--sandbox` | Print the scode argv the long-lived child would exec, one argument per line with control characters escaped (a newline inside an argument prints as `\n`), and exit 0 without starting a session (refused for the turn-per-process agents); the credential sandbox preparation is skipped and the credential copy deferred — the command is print only; a fresh session's private directory is removed on the way out |
 | `--quota-ceiling <percent>` | config `quota.minRemainingPercent`, initially 10 | Refuse the session when a bounding usage window is below this percent remaining; overrides the config ceiling for this one session |
@@ -175,12 +176,86 @@ records nothing; a refused resume has already written its ownership claim to
 the registry (the claim precedes the gate), and the refusal releases it, so
 the record stays resumable for the next attempt.
 
-A plain `--hermetic`, every `--tools` value, and `--max-budget-usd` (the
-spend limit applies to headless runs; use run) are refused for sessions;
-the one hermetic mode is `--hermetic --experiment-project-settings`
-(below). `--effort none` sends no effort field on every session harness, codex included.
-`--enable-playwright-mcp` is supported only for Claude/ZAI and requires
-`--sandbox` and `--auto low`.
+Every `--tools` value and `--max-budget-usd` (the spend limit applies to
+headless runs; use run) are refused for sessions. `--hermetic` is accepted
+by every agent whose `run --hermetic` is verified — claude, zai, codex,
+kimi, opencode, and agy — and refused with the run path's own reason
+elsewhere (aider, exit 64). `--effort none` sends no effort field on every
+session harness, codex included. `--enable-playwright-mcp` is supported
+only for Claude/ZAI, never combined with either isolation flag, and
+requires `--sandbox` and `--auto low`.
+
+## Hermetic sessions
+
+`--hermetic` on a session means what it means on `run` (see
+[isolation](isolation.md)), plus session lifetime: none of the operator's
+instructions, skills, hooks, MCP servers, or permission rules load, the
+harness's own state lives in a per-session private home, and that home is
+reported on `session_started.private_home` and removed by `--final` or the
+two-day stale sweep. Five agents keep such a home (claude, zai, codex,
+kimi, agy); opencode keeps none — its sessions live in the real data
+directory, and it reports `private_home: null`. A session cannot gain or
+lose the mode on resume; a
+missing home on resume is refused as policy (exit 78), never silently
+remade — the transcript the home exists to carry would be gone.
+
+Per agent:
+
+- **claude/zai** run the `run` path's own hermetic argv (`--safe-mode`,
+  `--setting-sources user`, `--strict-mcp-config`) inside a private
+  `CLAUDE_CONFIG_DIR` under `~/.claude/.codemux-hermetic/session-<id>/`
+  (a redirected config root is honored the same way), carrying the same
+  credential copy a project-settings session carries. The operator's real
+  config root is blocked for the session's children and only the private
+  directory re-allowed.
+- **codex** runs with `HOME` and `CODEX_HOME` pointed into the private
+  home under `~/.codex/.codemux-hermetic/` (`CODEX_HOME` redirects are
+  honored), holding the login link (or the override's provider config
+  under `CODEMUX_CODEX_PROVIDER_*`, whose key is the credential). The
+  home is keyed by the thread id once the harness mints it. A hermetic
+  session's threads skip AGENTS.md discovery (a thread config carries
+  `project_doc_max_bytes: 0` and an empty fallback list, start and
+  resume alike); a plain session sends no thread config, so project
+  documents load exactly as a plain codex run's do.
+- **kimi** runs each turn with `HOME` and `KIMI_CODE_HOME` pointed into
+  the private home under `~/.kimi-code/.codemux-hermetic/`, sharing the
+  credential directory and a filtered `config.toml` with the operator's
+  brand home and carrying copies of its `region` and `device_id`; the
+  session store lives inside the home.
+- **agy** runs with `HOME` and the XDG variables pointed into the private
+  home under `~/.gemini/.codemux-isolation-probes/`, carrying its own
+  private Keychain login (an API key or file token is used when the
+  sandbox policy keeps one). A fresh agy session emits `session_started`,
+  and with it `private_home`, only after its first turn's first result
+  names the conversation. The reported path is the settled one the home
+  will sit on — `session-<id>`, the spelling a `--resume` computes (the
+  codex and kimi rule); until the session ends, the live directory (the
+  child's `HOME`) is still the run-shaped one, and the rename onto the
+  settled name happens in the end path. A caller can therefore plant
+  `<private home>/.gemini/antigravity-cli/settings.json` before the first
+  turn only on a resume; a fresh session's reported path exists only
+  once the session has ended.
+- **opencode** keeps no session-keyed home: its login and native sessions
+  live in the real data directory, which the per-turn environment prefix
+  deliberately keeps, and `session_started.private_home` reports null.
+  An opencode session with `--experiment-project-settings` adds the
+  project's own config to that prefix and drops `--pure`.
+
+`--final` removes the home when the session ends. On the claude family
+and on agy the driver's end path runs the removal twice before it stamps
+the record, and a failed pair keeps the home, exits 1, and leaves the
+record resumable — on agy the kept home also settles onto the
+session-keyed name, so the resume the verdict promises finds it (the
+project-settings section below spells this out). On
+codex and kimi the CLI removes the home after the session's children settled; a
+fresh session's record keeps its resumable stamp (the harness's own id
+never reaches the CLI), so a later resume of it answers the missing-home
+refusal, exit 78. Without `--final`, the home persists for the next
+`--resume`, and the stale sweep removes it once it has been quiet for two
+days and its registry record is free: ended without a final stamp, or
+gone. A session that ended normally and was never resumed therefore
+loses its home after two quiet days, and a later `--resume` answers the
+missing-home refusal, exit 78.
 
 ## Hermetic project-settings sessions
 
@@ -202,7 +277,9 @@ or `.claude/rules` (a home normally carries `~/.claude/CLAUDE.md`, so
 place the working tree outside the home).
 
 The private directory is created at the first command under
-`~/.claude/.codemux-hermetic/session-<session id>/` and holds the
+`~/.claude/.codemux-hermetic/session-<session id>/` — the same directory a
+plain `--hermetic` session of this family uses, so a resume keys either
+mode onto one home — and holds the
 session's own transcript and trust record, so every `--resume` of that
 session reuses it. The operator's harness state is unreachable from the
 session's children: every spawn (the long-lived child and each turn's)
@@ -227,8 +304,8 @@ Three lifetimes:
   resumable with no final stamp — so a later `--resume --final` or the
   stale sweep can retry.
 - The stale sweep removes a directory that has been quiet for two days
-  and whose registry entry is gone, the same dead-owner rule as hermetic
-  run directories.
+  and whose registry record is free (ended without a final stamp, or
+  gone); a held or unreadable record spares it.
 
 The mode is containment provenance: a resume must carry the same flags,
 and a session cannot gain or lose the mode on resume. A project's
@@ -345,8 +422,9 @@ refused there.
 
 When a registry file is corrupt, the recovering write keeps the live file in
 place until its replacement lands, and leaves a hard-linked
-`<registry>.corrupt-<timestamp>` backup beside it, keeping the newest five.
-A failed replacement keeps the corrupt file, and a resume still exits 78.
+`<registry>.corrupt-<timestamp>` backup beside it, keeping the newest five
+only after a successful replacement write. A failed replacement keeps the
+corrupt file, and a resume still exits 78.
 
 The exit status is the `exit_code` that `session_ended` reported. A signal
 that stops a session is reported in that event and exits 143. A signal that

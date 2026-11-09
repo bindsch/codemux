@@ -39,6 +39,7 @@ import { join } from "node:path";
 import { prepareRunDirParent } from "./hermetic-sweep.js";
 import { recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
 import { trackPrivateDir, untrackPrivateDir } from "./private-dir-signals.js";
+import { writeOwnedSync } from "./fs-durable.js";
 export { assertTrustedDirectory, prepareRunDirParent, MTIME_WALK_ENTRY_CAP } from "./hermetic-sweep.js";
 
 export interface HermeticHome {
@@ -191,4 +192,52 @@ export function createCodexHermeticHome(
   }
 
   return { home, codexHome, finalize };
+}
+
+/** The config a hermetic SESSION's private CODEX_HOME carries: the file
+ * login store alone. `codex app-server` (0.166.0) does accept `-c,
+ * --config <key=value>` (its `--help` lists the option; the binary's
+ * own strings carry the CliConfigOverrides help text, read 2026-11-09),
+ * but the session passes none: the private home's own config.toml
+ * already carries `cli_auth_credentials_store` for the whole session.
+ * The project-doc keys ride the thread config of HERMETIC threads only
+ * (project_doc_max_bytes and project_doc_fallback_filenames,
+ * codex-protocol-builders.ts). */
+export const CODEX_SESSION_HERMETIC_CONFIG = 'cli_auth_credentials_store = "file"\n';
+
+/**
+ * Populates the launcher's per-session private home for a hermetic codex
+ * session (the SessionPrivateHome the drivers consume,
+ * src/session/private-home-types.ts). Unlike `createCodexHermeticHome`,
+ * the directory already exists — the launcher made and owns it — so this
+ * writes the content only: the `.codex` CODEX_HOME, its one-line
+ * config.toml, and the login link with the run path's own refusal (a
+ * Keychain login cannot be shared with the private home). Runs ONCE, at
+ * the home's creation; a resumed home is found settled and is never
+ * repopulated, so the session's own state and the caller's edits stay
+ * untouched. The login-rotation inspection and the removal are the
+ * launcher's (`--final` and the stale sweep), not this function's.
+ */
+export function populateCodexHermeticSessionHome(
+  dir: string,
+  sourceCodexHome: string,
+  apiKeyAuth = false,
+  loginLinks: LoginLinkOperations = realLoginLinks
+): { codexHome: string } {
+  const sourceAuth = join(sourceCodexHome, "auth.json");
+  if (!apiKeyAuth) assertRealLoginFile(sourceAuth);
+  const codexHome = join(dir, ".codex");
+  mkdirSync(codexHome, { mode: 0o700 });
+  chmodSync(codexHome, 0o700); // the mode is stated whatever the umask is
+  writeOwnedSync(join(codexHome, "config.toml"), CODEX_SESSION_HERMETIC_CONFIG, 0o600);
+  if (!apiKeyAuth) {
+    try {
+      loginLinks.hard(sourceAuth, join(codexHome, "auth.json"));
+    } catch {
+      // A filesystem without hard links: a symlink still lets Codex's
+      // in-place rewrite reach the real file.
+      loginLinks.symlink(sourceAuth, join(codexHome, "auth.json"));
+    }
+  }
+  return { codexHome };
 }

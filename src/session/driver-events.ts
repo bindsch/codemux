@@ -89,6 +89,7 @@ export abstract class ClaudeDriverEvents extends ClaudeDriverTurns {
             sandbox_trust: this.options.sandboxTrust,
             capabilities: this.capabilities,
             protocol: "codemux-live-session/1",
+            private_home: this.options.privateHome?.dir ?? null,
           })
         );
         // Input accepted before the init frame arrived was forwarded but

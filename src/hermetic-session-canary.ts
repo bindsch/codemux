@@ -1,0 +1,336 @@
+/**
+ * The session-shaped hermetic canary behind `codemux check --hermetic
+ * --session` (lane H4). The run canary (src/hermetic-canary.ts) proves a
+ * one-shot `run --hermetic` child answers from a context the operator's
+ * instructions never reached; the owner's release rule extends the claim
+ * to `session --hermetic`: none of the operator's instructions, skills,
+ * hooks, MCP servers, or permission rules load, the harness's own state
+ * lives in a per-session private home that persists across turns and
+ * across --resume, and --final removes that home at session end. Only a
+ * model's answer across a real resume can prove that, so the check
+ * drives three live sessions of this checkout's own session CLI:
+ *
+ *  1. a hermetic session (one turn, the run canary's question): the
+ *     planted code word must not reach the model, and the private home
+ *     session_started reports must still exist after the session ends;
+ *  2. a control session without --hermetic, same planted context: the
+ *     code word MUST reach the model, which is what makes (1) mean
+ *     isolation rather than a harness that loads nothing anywhere;
+ *  3. the first session resumed with --resume <id> --final: the code
+ *     word must stay out across the resume, and --final must remove the
+ *     private home.
+ *
+ * `--final` rides the resumed session alone: it removes the private home
+ * at session end, and the resume must reopen that home, so a --final on
+ * the first session would delete the state the third session exists to
+ * reopen. Every planted file and every private home the events report is
+ * removed in a finally, failure included. The child driver (spawn, JSONL
+ * exchange, deadline kill) lives in src/hermetic-session-canary-driver.ts.
+ */
+
+import { existsSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { HERMETIC_CANARY_PROMPT, evaluateCanary, plantCanary } from "./hermetic-canary.js";
+import { plantKimiCanary } from "./kimi-isolation-probe.js";
+import { plantAgyCanary } from "./agy-isolation-probe.js";
+import type { SandboxPolicyOverrides } from "./sandbox-policy.js";
+import { UsageRefusalError } from "./validation.js";
+import { SESSION_KILL_GRACE_MS, runCanarySession, type SessionRun } from "./hermetic-session-canary-driver.js";
+import { SESSION_AGENTS } from "./session/cli-agents.js";
+import type { AgentId } from "./types.js";
+
+// The command seam the tests point at a fake codemux (see the driver).
+export { sessionCanary, sessionCanaryCommand } from "./hermetic-session-canary-driver.js";
+
+/** The `--session` request checks, in the same wording class as every
+ * other check refusal: exit 64 through UsageRefusalError, before any
+ * probe spends quota. */
+export interface SessionCanaryGuards {
+  wanted: boolean;
+  agent: AgentId;
+  hermetic: boolean;
+  supportsHermetic: boolean;
+  sandbox: boolean;
+  /** Present only when --tools was given (parseToolsOption). */
+  tools: string | undefined;
+  experimentMcp: boolean;
+  agyProbe: boolean;
+  printSandbox: boolean;
+  /** The parsed sandbox policy, whose shape is always built for a
+   * sandboxed probe; the guard judges whether any override is set. */
+  sandboxOverrides: SandboxPolicyOverrides | undefined;
+}
+
+export function assertSessionCanaryRequest(guards: SessionCanaryGuards): void {
+  if (!guards.wanted) return;
+  if (!guards.hermetic) {
+    throw new UsageRefusalError("--session requires --hermetic: it is the session form of the hermetic canary");
+  }
+  if (SESSION_AGENTS[guards.agent] === undefined) {
+    throw new UsageRefusalError(
+      `${guards.agent} has no session driver: the session canary needs a persistent, resumable session (see docs/sessions.md)`
+    );
+  }
+  if (!guards.supportsHermetic) {
+    throw new UsageRefusalError(
+      `${guards.agent} has no verified hermetic mode; a session cannot be canaried against it (see docs/isolation.md)`
+    );
+  }
+  if (guards.tools !== undefined) {
+    throw new UsageRefusalError("--session cannot carry --tools: the session command takes no tool selection");
+  }
+  if (guards.experimentMcp) {
+    throw new UsageRefusalError("--session cannot carry --experiment-mcp: the session canary plants its own context");
+  }
+  if (guards.agyProbe) {
+    throw new UsageRefusalError("--session cannot carry --agy-isolation-probe: that is the run-shaped agy canary");
+  }
+  if (guards.printSandbox) {
+    throw new UsageRefusalError("--session cannot carry --print-sandbox: the canary runs three sessions with no single scode argv");
+  }
+  if (!guards.sandbox) {
+    throw new UsageRefusalError("--session cannot carry --no-sandbox: the canary's sessions always run sandboxed");
+  }
+  const overrides = guards.sandboxOverrides;
+  const overrideGiven = overrides !== undefined && Boolean(
+    overrides.trust !== undefined || overrides.noNet || overrides.scrubEnv ||
+    overrides.accountFile !== undefined || overrides.accountId !== undefined ||
+    (overrides.blockPaths !== undefined && overrides.blockPaths.length > 0)
+  );
+  if (overrideGiven) {
+    throw new UsageRefusalError("--session cannot carry the sandbox policy overrides: the canary's sessions run the default scode policy");
+  }
+}
+
+export interface PlantedSessionCanary {
+  cwd: string;
+  marker: string;
+  /** More planted strings that must not surface in a hermetic session's
+   * event stream (agy's planted MCP server name). */
+  secrets: readonly string[];
+  /** Extra environment the session children need to see the planted
+   * operator state (kimi's redirected homes; agy's operator home). */
+  env: Record<string, string>;
+  cleanup: () => void;
+}
+
+/** Plants the session canary's context for one agent: the same files the
+ * run canary plants, through the same planters, so the run and session
+ * claims are checked against one identical planted shape. kimi and agy
+ * carry their operator state in a scratch home the children are pointed
+ * at by env; every other hermetic agent loads project files from the
+ * planted cwd alone. */
+export function plantSessionCanary(agent: AgentId, parent = tmpdir()): PlantedSessionCanary {
+  if (agent === "kimi") {
+    const planted = plantKimiCanary();
+    return {
+      cwd: planted.cwd,
+      marker: planted.marker,
+      secrets: [],
+      env: { HOME: planted.operatorHome, KIMI_CODE_HOME: planted.brandHome },
+      cleanup: planted.cleanup,
+    };
+  }
+  if (agent === "agy") {
+    const planted = plantAgyCanary();
+    return {
+      cwd: planted.cwd,
+      marker: planted.marker,
+      secrets: [planted.server],
+      env: { HOME: planted.operatorHome },
+      cleanup: planted.cleanup,
+    };
+  }
+  const planted = plantCanary(false, parent);
+  return { cwd: planted.cwd, marker: planted.marker, secrets: [], env: {}, cleanup: planted.cleanup };
+}
+
+/** The protocol-level judgment of one canary session, before any verdict
+ * on the answer: a session that did not start, complete its turn, and
+ * end by the shutdown frame cleanly cannot carry a canary claim. */
+function sessionProblem(
+  agent: AgentId,
+  run: SessionRun,
+  plant: PlantedSessionCanary,
+  resumed: boolean
+): string | null {
+  const where = resumed ? `resumed hermetic ${agent} session` : `hermetic ${agent} session`;
+  if (run.failure !== null) {
+    return `the ${where} failed: ${run.failure}` +
+      (run.rejection === undefined ? "" : ` (input rejected: ${run.rejection})`);
+  }
+  if (run.exitCode !== 0) {
+    return `the ${where} exited ${run.exitCode ?? "without an exit status"}`;
+  }
+  if (run.sessionId === undefined) {
+    return `the ${where} printed no session_started event naming its session id`;
+  }
+  if (!run.completed) {
+    return `the ${where} ended without completing the turn` +
+      (run.rejection === undefined ? "" : ` (input rejected: ${run.rejection})`);
+  }
+  if (run.ended === undefined) {
+    return `the ${where} exited without a session_ended event`;
+  }
+  if (run.ended.reason !== "shutdown") {
+    return `the ${where} ended with reason '${String(run.ended.reason)}', not 'shutdown'`;
+  }
+  if (run.ended.exitCode !== 0) {
+    return `the ${where} ended with exit_code '${String(run.ended.exitCode)}', not 0`;
+  }
+  const verdict = evaluateCanary(run.stdout, plant.marker, run.assistantText);
+  if (verdict.kind === "leak" && verdict.what === "marker") {
+    return `the ${where} is NOT hermetic: the planted code word reached the model`;
+  }
+  for (const secret of plant.secrets) {
+    if (run.stdout.includes(secret)) {
+      return `the ${where} is NOT hermetic: the planted MCP server name '${secret}' reached the event stream`;
+    }
+  }
+  if (verdict.kind === "leak") {
+    return `the ${where} did not pass: the model answered '${verdict.answer}' ` +
+      "instead of OK (an owner's name is a leak; a refusal or anything else is inconclusive)";
+  }
+  return null;
+}
+
+function reportSessionFailure(run: SessionRun): void {
+  const text = run.stderr.trim();
+  if (text !== "") {
+    process.stderr.write(`${text.split("\n").slice(0, 4).join("\n")}\n`);
+  }
+}
+
+export interface HermeticSessionCanaryRequest {
+  agent: AgentId;
+  model?: string;
+  autonomy: string;
+  effort?: string;
+  passthroughEnv: readonly string[];
+  timeoutMs: number;
+  /** Test override for the wall grace past the child's --timeout. */
+  killGraceMs?: number;
+}
+
+/** Runs the three-session hermetic canary and returns the check's exit
+ * code (0 only when the hermetic sessions answered clean across the
+ * resume, the control leaked, the private home persisted, and --final
+ * removed it). */
+export async function runHermeticSessionCanary(
+  request: HermeticSessionCanaryRequest
+): Promise<number> {
+  const plant = plantSessionCanary(request.agent);
+  const homes = new Set<string>();
+  const killGraceMs = request.killGraceMs ?? SESSION_KILL_GRACE_MS;
+  const timeoutSeconds = String(Math.max(1, Math.ceil(request.timeoutMs / 1000)));
+  const sessionArgv = (hermetic: boolean, resume: string | undefined, final: boolean): string[] => [
+    "session",
+    "-a", request.agent,
+    ...(resume === undefined ? [] : ["--resume", resume]),
+    ...(request.model === undefined ? [] : ["-m", request.model]),
+    ...(request.effort === undefined ? [] : ["--effort", request.effort]),
+    ...(hermetic ? ["--hermetic"] : []),
+    ...(request.passthroughEnv.length === 0 ? [] : ["--pass-env", request.passthroughEnv.join(",")]),
+    ...(final ? ["--final"] : []),
+    "-s",
+    "--auto", request.autonomy,
+    "--cwd", plant.cwd,
+    "--timeout", timeoutSeconds,
+  ];
+  const env: NodeJS.ProcessEnv = { ...process.env, ...plant.env };
+  console.error(`Checking hermetic ${request.agent} session (planted code word ${plant.marker})...`);
+  try {
+    // 1. The hermetic session: the code word must stay out and the
+    //    private home must outlive the session that created it.
+    const first = await runCanarySession(
+      sessionArgv(true, undefined, false), env, HERMETIC_CANARY_PROMPT, request.timeoutMs, killGraceMs
+    );
+    if (first.privateHome !== undefined) homes.add(first.privateHome);
+    const firstProblem = sessionProblem(request.agent, first, plant, false);
+    if (firstProblem !== null) {
+      console.error(`Error: ${firstProblem}`);
+      reportSessionFailure(first);
+      return 1;
+    }
+    if (first.privateHome === undefined) {
+      // Every hermetic agent but opencode keeps a session-keyed home and
+      // reports it (docs/sessions.md); opencode keeps none and reports
+      // null, the one documented exemption. Anything else is a failure:
+      // the lifecycle half of this check (persistence, --final removal)
+      // would otherwise pass unchecked (review round 412).
+      if (request.agent !== "opencode") {
+        console.error("Error: the hermetic session reported no private_home on session_started");
+        return 1;
+      }
+      console.error("Note: opencode keeps no session-keyed home; private_home is null by contract");
+    } else if (!existsSync(first.privateHome)) {
+      console.error(
+        `Error: the private session home did not persist past the hermetic session's end: ${first.privateHome}`
+      );
+      return 1;
+    }
+    const sessionId = first.sessionId!;
+    console.error(
+      `Hermetic session ${sessionId} answered clean` +
+        (first.privateHome === undefined ? "" : ` (private home ${first.privateHome})`)
+    );
+
+    // 2. The control: the same planted context without --hermetic. Only
+    //    the planted code word reaching the model proves the check can
+    //    mean anything.
+    console.error("Control session without --hermetic...");
+    const control = await runCanarySession(
+      sessionArgv(false, undefined, false), env, HERMETIC_CANARY_PROMPT, request.timeoutMs, killGraceMs
+    );
+    if (control.privateHome !== undefined) homes.add(control.privateHome);
+    const controlVerdict = control.exitCode === 0 && control.failure === null
+      ? evaluateCanary(control.stdout, plant.marker, control.assistantText)
+      : null;
+    const controlLeaked =
+      controlVerdict !== null && controlVerdict.kind === "leak" && controlVerdict.what === "marker";
+    const controlLine = controlVerdict === null
+      ? `control: the session failed (exit ${control.exitCode ?? "without an exit status"})`
+      : controlLeaked
+        ? "control: planted code word reached the model, as expected"
+        : controlVerdict.kind === "clean"
+          ? "control: clean too, so the planted files never reached the model"
+          : `control: answered '${controlVerdict.answer}' without the planted code word`;
+    if (!controlLeaked) {
+      console.error(
+        `Error: hermetic ${request.agent} session answered OK, but the check proved nothing: ` +
+          controlLine.replace(/^control: /, "")
+      );
+      reportSessionFailure(control);
+      return 1;
+    }
+    console.error(controlLine);
+
+    // 3. The resume: the code word must stay out across it, and --final
+    //    must remove the private home at the resumed session's end.
+    console.error(`Resuming hermetic session ${sessionId} with --final...`);
+    const resumed = await runCanarySession(
+      sessionArgv(true, sessionId, true), env, HERMETIC_CANARY_PROMPT, request.timeoutMs, killGraceMs
+    );
+    if (resumed.privateHome !== undefined) homes.add(resumed.privateHome);
+    const resumedProblem = sessionProblem(request.agent, resumed, plant, true);
+    if (resumedProblem !== null) {
+      console.error(`Error: ${resumedProblem}`);
+      reportSessionFailure(resumed);
+      return 1;
+    }
+    const finalHome = resumed.privateHome ?? first.privateHome;
+    if (finalHome !== undefined && existsSync(finalHome)) {
+      console.error(`Error: --final left the private session home behind: ${finalHome}`);
+      return 1;
+    }
+    console.error(
+      `Resumed session ${resumed.sessionId ?? sessionId} answered clean across the resume` +
+        (finalHome === undefined ? " (no private home was reported to remove)" : "; --final removed the private home")
+    );
+    process.stdout.write(`HERMETIC SESSION ${request.agent}: OK\n`);
+    return 0;
+  } finally {
+    plant.cleanup();
+    for (const home of homes) rmSync(home, { recursive: true, force: true });
+  }
+}

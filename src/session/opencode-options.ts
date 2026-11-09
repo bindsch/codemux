@@ -22,7 +22,17 @@ export interface OpenCodeDriverOptions {
   effort?: ReasoningEffort;
   /** The validated working directory — also the registry's cwd record. */
   cwd: string;
+  /** Whether the session runs hermetic: the per-turn spawns ride the
+   * env prefix (opencode-session.ts openCodeHermeticTurnPrefix) inside
+   * a fresh private home per turn, the real data directory — session
+   * state and login — kept. Recorded and compared by the resume
+   * guard. */
   hermetic: boolean;
+  /** Whether the session runs the project-settings isolation: `--pure`
+   * dropped and the working directory's own config loaded. Recorded as
+   * `project_settings` and refused as a resume mismatch in both
+   * directions. */
+  projectSettings?: boolean;
   sandboxed: boolean;
   /** The trust the session actually runs at; recorded and reported as-is. */
   sandboxTrust: SandboxTrust;
