@@ -192,11 +192,12 @@ require `--auto low`, and Copilot requires `--auto medium` or `high`
 
 Codemux seeds only dedicated logins and checks them before every child launch, after sandbox preflight. A login a harness rewrites in place is hard-linked; use a directory on the login's filesystem. A replaced or missing real login refuses stale private credentials; remove the private login entry after restoring the real login, then retry. Claude and Qwen replace their login files by rename, so the caller home never holds their refresh tokens: codemux rewrites an access-token-only copy from the real login on every launch and resume. A Claude mirror that still carries a refresh token refuses the launch, and a sandboxed Claude session runs the same Keychain sync and mirror guard as any sandboxed run. A Qwen access token at or near expiry refuses the launch; run Qwen once outside codemux to refresh it. Kimi also renames token files, so `.kimi-code/credentials` is a symlink to the real credential directory, the hermetic home's mechanism, and the sandbox grants that one directory. API-key authentication needs no login. Codemux does not export a Keychain login or copy operator settings.
 
-All paths below are relative to `<dir>`. HOME, USERPROFILE, and XDG roots move inside it. Place trusted settings and skills at the listed paths; caller content remains enabled. Copilot and OpenHands require a configured `CODEMUX_<AGENT>_PROVIDER_*` override because their native login files mix settings with credentials. Goose requires one as its hermetic runs do: the installed binary does not establish that `secrets.yaml` is rewritten in place. Agy requires `GEMINI_API_KEY` because the audited binary exposes no portable file-login path.
+All paths below are relative to `<dir>`. HOME, USERPROFILE, and XDG roots move inside it. Place trusted settings and skills at the listed paths; caller content remains enabled. Cline, Copilot, and OpenHands require a configured `CODEMUX_<AGENT>_PROVIDER_*` override because their native login or provider files mix settings with credentials. Goose requires one as its hermetic runs do: the installed binary does not establish that `secrets.yaml` is rewritten in place. Agy requires `GEMINI_API_KEY` because the audited binary exposes no portable file-login path.
 
 | Agent | Native root and caller content | Login files or condition |
 | --- | --- | --- |
 | Claude / ZAI | `CLAUDE_CONFIG_DIR=.`; `settings.json`, `skills/` | Access-token-only `.credentials.json`, rewritten per launch; ZAI uses its gateway token |
+| Cline | HOME and `CLINE_DIR=.cline`; `.cline/data/settings/`, `.cline/skills/`; requested options go to overlay files under `.cline` | Provider override; never links the provider settings file |
 | Codex | `CODEX_HOME=.codex`; `config.toml`, `skills/` inside it | `.codex/auth.json` |
 | Agy | HOME; `.gemini/antigravity-cli/settings.json`, `.gemini/skills/` | Explicit API key; no Keychain access |
 | Aider | HOME; `.aider.conf.yml`; use its `read` setting for instruction files | `.aider/oauth-keys.env` |
@@ -211,12 +212,11 @@ All paths below are relative to `<dir>`. HOME, USERPROFILE, and XDG roots move i
 | Pi | `PI_CODING_AGENT_DIR=.pi/agent`; `settings.json`, `skills/` inside it | `.pi/agent/auth.json` |
 | Qwen | `QWEN_HOME=.qwen`; `settings.json`, `skills/` inside it; runtime stays in the root | Access-token-only `.qwen/oauth_creds.json`, rewritten per launch |
 
-With scode, real harness stores are blocked and only the caller directory receives writable state access. `--print-sandbox`, where supported, shows the same policy without creating the home. See [isolation](isolation.md#caller-owned-session-homes). Cline remains with the separate ACP integration.
+With scode, real harness stores are blocked and only the caller directory receives writable state access. `--print-sandbox`, where supported, shows the same policy without creating the home. See [isolation](isolation.md#caller-owned-session-homes).
 ## Hermetic sessions
 
 `--hermetic` applies the harness's run isolation to session turns; see [isolation](isolation.md) for each harness's conditions and unresolved limits. Flag acceptance alone does not promise a session-lifetime private home.
-Thirteen agents keep a session-lifetime private home: Claude, ZAI, Codex, Kimi, Agy, Aider, OpenCode, Droid, Pi, Gemini, Copilot, Goose, and OpenHands. The home is reported on `session_started.private_home` and removed by `--final` or the two-day stale sweep. Qwen keeps none: its sessions live in the real data directory, and it reports `private_home: null`.
-A session cannot gain or lose hermetic mode on resume. A missing home on resume is refused as policy (exit 78), never silently remade, because its transcript would be gone.
+Fourteen agents keep a session-lifetime private home: Claude, ZAI, Codex, Kimi, Agy, Aider, OpenCode, Droid, Pi, Gemini, Copilot, Goose, Cline, and OpenHands. The home is reported on `session_started.private_home` and removed by `--final` or the two-day stale sweep. Qwen keeps none: its sessions live in the real data directory, and it reports `private_home: null`. A session cannot gain or lose hermetic mode on resume. A missing home on resume is refused as policy (exit 78), never silently remade, because its transcript would be gone.
 
 Per agent:
 

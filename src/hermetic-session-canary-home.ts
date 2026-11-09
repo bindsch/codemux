@@ -7,15 +7,22 @@ import { canarySessionProtocolProblem, runCanarySession, SESSION_KILL_GRACE_MS }
 import type { HermeticSessionCanaryRequest } from "./hermetic-session-canary.js";
 import type { AgentId } from "./types.js";
 
-type HarnessHomeCanaryAgent = Exclude<AgentId, "cline">;
+type HarnessHomeCanaryAgent = AgentId;
 
+/** Every session agent has a caller-home recipe (session/harness-home.ts), so
+ * every one runs the caller-home arm. Kept as a predicate so a future agent
+ * without a recipe fails closed here instead of at launch. */
 export function supportsHarnessHomeCanary(agent: AgentId): agent is HarnessHomeCanaryAgent {
-  return agent !== "cline";
+  return Object.hasOwn(CANARY_LAYOUT, agent);
 }
 
 // Native root evidence is recorded in session/harness-home.ts. Aider 0.86.2
 // aider/main.py:682-683 loads args.read from .aider.conf.yml; it has no skill scanner.
+// Cline cli-v3.0.74 shared/src/storage/paths.ts:511-526 reads skills from
+// <CLINE_DIR>/skills and global rules from <HOME>/.agents/AGENTS.md; its
+// caller home needs a provider override, which rides the environment.
 const CANARY_LAYOUT: Record<HarnessHomeCanaryAgent, { skill: string; instruction: string; logins: string[] }> = {
+  cline: { skill: ".cline/skills/private-canary/SKILL.md", instruction: ".agents/AGENTS.md", logins: [] },
   claude: { skill: "skills/private-canary/SKILL.md", instruction: ".claude/CLAUDE.md", logins: [".credentials.json"] },
   zai: { skill: "skills/private-canary/SKILL.md", instruction: ".claude/CLAUDE.md", logins: [] },
   codex: { skill: ".codex/skills/private-canary/SKILL.md", instruction: ".codex/AGENTS.md", logins: [".codex/auth.json"] },
@@ -101,7 +108,8 @@ export function plantHarnessHomeCanary(
     // operator's configuration. --harness-home chooses the child root.
     for (const name of ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME",
       "KIMI_CODE_HOME", "GEMINI_CLI_HOME", "COPILOT_HOME", "CURSOR_CONFIG_DIR", "FACTORY_HOME_OVERRIDE", "PI_CODING_AGENT_DIR", "GOOSE_PATH_ROOT",
-      "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENHANDS_PERSISTENCE_DIR", "OPENHANDS_CONVERSATIONS_DIR", "PERSISTENCE_DIR", "QWEN_HOME", "QWEN_RUNTIME_DIR"]) {
+      "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENHANDS_PERSISTENCE_DIR", "OPENHANDS_CONVERSATIONS_DIR", "PERSISTENCE_DIR", "QWEN_HOME", "QWEN_RUNTIME_DIR",
+      "CLINE_DIR", "CLINE_DATA_DIR", "CLINE_SESSION_DATA_DIR", "CLINE_PROVIDER_SETTINGS_PATH", "CLINE_GLOBAL_SETTINGS_PATH", "CLINE_MCP_SETTINGS_PATH"]) {
       delete env[name];
     }
     if (agent === "zai") {
@@ -185,7 +193,7 @@ export async function runCallerHarnessHomeCanary(
   request: HermeticSessionCanaryRequest,
   input: { authenticatedHome?: string; environment?: NodeJS.ProcessEnv; parent?: string } = {}
 ): Promise<number> {
-  if (!supportsHarnessHomeCanary(request.agent)) throw new Error("Cline caller-home canary belongs to its ACP integration");
+  if (!supportsHarnessHomeCanary(request.agent)) throw new Error(`${request.agent} has no caller-home canary layout`);
   const plant = plantHarnessHomeCanary(request.agent, input.authenticatedHome, input.environment, input.parent);
   try { return await runHarnessHomeSessionCanary(request, plant); }
   finally { plant.cleanup(); }

@@ -160,25 +160,23 @@ result.
   state, the item/approval emitters, and the request handlers live in
   `fake-codex-app-server-parts/`; the entry keeps the header, the
   scenario switch, and the process lifecycle.
-- `fake-cursor-session.ts` — manual-only: imported by no test (the
-  inventory test in `tests/session-fake-headers.test.ts` pins that fact
-  to this entry). Not a recording but a fake harness (2026-11-09, the
-  cursor result-JSON item): a scenario-driven fake of headless
-  cursor-agent, the per-turn process a cursor session driver would
-  spawn. No driver exists to drive it — cursor's entries have no
-  bidirectional control wire upstream (docs/sessions.md) — so the
-  fixture waits: the session module's unit tests
-  (tests/cursor-session.test.ts) pin the same wire against the same
-  bundle source, and this script drives the driver when one lands.
-- `fake-droid-session.ts` — manual-only: imported by no test (the
-  inventory test in `tests/session-fake-headers.test.ts` pins that fact
-  to this entry). Not a recording but a fake harness (2026-11-09, the
-  droid result-JSON item): a scenario-driven fake of
-  `droid exec --output-format json`, the per-turn process a droid
-  session driver would spawn. No driver exists to drive it — droid has
-  no bidirectional control wire upstream (docs/sessions.md) — so the
-  fixture waits: tests/droid-session.test.ts pins the module's wire,
-  and this script drives the driver when one lands.
+- `fake-cursor-session.ts` — not a recording but a fake harness
+  (2026-11-09, the cursor result-JSON item): a scenario-driven fake of
+  headless cursor-agent, the per-turn process behind the cursor session
+  driver. `tests/helpers/session-turn-launch.ts` puts it on the fake
+  PATH as `cursor-agent`; `tests/session-cli-turn-launch.test.ts` (the
+  cursor turn tests) and `tests/session-harness-home-cli-turns.test.ts`
+  drive the real driver against it, and the session module's unit tests
+  (`tests/cursor-session.test.ts`) pin the same wire against the same
+  bundle source.
+- `fake-droid-session.ts` — not a recording but a fake harness
+  (2026-11-09, the droid result-JSON item): a scenario-driven fake of
+  `droid exec --output-format json`, the per-turn process behind the
+  droid session driver. `tests/helpers/session-turn-launch.ts` puts it on
+  the fake PATH; `tests/session-cli-turn-launch.test.ts` (fresh, resume,
+  and final in one private home), `tests/session-harness-home-cli-turns.test.ts`,
+  and `tests/turn-session-abort-home.test.ts` drive the real driver
+  against it, and `tests/droid-session.test.ts` pins the module's wire.
 - `fake-kimi-run.ts` — not a recording but a fake harness (2026-10-10,
   the kimi sessions item): a scenario-driven fake of headless kimi
   (`--prompt … --output-format stream-json`) built from the line shapes
@@ -199,25 +197,27 @@ result.
   line, the driver's deferred-identity model. The scenario list and the
   `FAKE_SIGTERM_PERSIST` drain modes are documented in the script's own
   header.
-- `fake-pi-session.ts` — manual-only: imported by no test (the
-  inventory test in `tests/session-fake-headers.test.ts` pins that fact
-  to this entry). Not a recording but a fake harness (2026-11-09, the
-  pi result-JSON item): a scenario-driven fake of headless pi
-  `--mode json`, the header-plus-event wire a pi session driver would
-  read. No driver exists to drive it — pi has no bidirectional control
-  wire upstream (docs/sessions.md) — so the fixture waits:
-  tests/pi-session.test.ts pins the module's wire, and this script
-  drives the driver when one lands.
-- `fake-qwen-session.ts` — manual-only: imported by no test (the
-  inventory test in `tests/session-fake-headers.test.ts` pins that fact
-  to this entry). Not a recording but a fake harness (2026-11-09, the
-  qwen result-JSON item): a scenario-driven fake of headless qwen
-  `--output-format json`, the one-line message array a qwen session
-  driver would parse, reproducing the binary's own flag-refusal texts
-  byte for byte. No driver exists to drive it — qwen has no
-  bidirectional control wire upstream (docs/sessions.md) — so the
-  fixture waits: tests/qwen-session.test.ts pins the module's wire, and
-  this script drives the driver when one lands.
+- `fake-pi-session.ts` — not a recording but a fake harness
+  (2026-11-09, the pi result-JSON item): a scenario-driven fake of
+  headless pi `--mode json` and its RPC mode, the wires behind the pi
+  session driver. `tests/helpers/session-turn-launch.ts` puts it on the
+  fake PATH; `tests/session-cli-turn-launch.test.ts`,
+  `tests/session-harness-home-cli-turns.test.ts`,
+  `tests/pi-gemini-copilot-session-lifecycle.test.ts`,
+  `tests/pi-gemini-copilot-session-preview.test.ts`,
+  `tests/turn-session-preview-fidelity.test.ts`, and
+  `tests/turn-session-abort-home.test.ts` drive the real driver against
+  it; `tests/pi-rpc-process.test.ts` drives the RPC process directly, and
+  `tests/pi-session.test.ts` pins the module's wire.
+- `fake-qwen-session.ts` — not a recording but a fake harness
+  (2026-11-09, the qwen result-JSON item): a scenario-driven fake of
+  headless qwen `--output-format json`, the one-line message array the
+  qwen session driver parses, reproducing the binary's own flag-refusal
+  texts byte for byte. `tests/helpers/session-turn-launch.ts` puts it on
+  the fake PATH; `tests/session-cli-turn-launch.test.ts` (the qwen turn
+  tests) and `tests/session-harness-home-cli-turns.test.ts` drive the
+  real driver against it, and `tests/qwen-session.test.ts` pins the
+  module's wire.
 
 ## Sanitization
 

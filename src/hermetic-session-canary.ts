@@ -19,7 +19,7 @@
  *  3. the first session resumed with --resume <id> --final: the code
  *     word must stay out across the resume, and --final must remove the
  *     private home.
- *  4. claude, zai, and codex also start and resume a caller-owned home:
+ *  4. every session agent also starts and resumes a caller-owned home:
  *     its private skill must load, the operator's instructions must stay
  *     out, and --final must preserve the caller's directory.
  *
@@ -31,11 +31,15 @@
  * exchange, deadline kill) lives in src/hermetic-session-canary-driver.ts.
  */
 
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { HERMETIC_CANARY_PROMPT, evaluateCanary, plantCanary } from "./hermetic-canary.js";
+import { dirname, join } from "node:path";
+import {
+  HERMETIC_CANARY_PROMPT, evaluateCanary, mintCanaryMarker, plantCanary, trackScratchRemoval, untrackScratchRemoval,
+} from "./hermetic-canary.js";
 import { plantKimiCanary } from "./kimi-isolation-probe.js";
 import { plantAgyCanary } from "./agy-isolation-probe.js";
+import { CLINE_INSTRUCTION_CHANNEL } from "./cline-isolation-probe.js";
 import type { SandboxPolicyOverrides } from "./sandbox-policy.js";
 import { UsageRefusalError } from "./validation.js";
 import { canarySessionProtocolProblem, SESSION_KILL_GRACE_MS, runCanarySession, type SessionRun } from "./hermetic-session-canary-driver.js";
@@ -116,18 +120,23 @@ export interface PlantedSessionCanary {
    * event stream (agy's planted MCP server name). */
   secrets: readonly string[];
   /** Extra environment the session children need to see the planted
-   * operator state (kimi's redirected homes; agy's operator home). */
+   * operator state (kimi's redirected homes; agy's and cline's operator
+   * homes). */
   env: Record<string, string>;
   cleanup: () => void;
 }
 
 /** Plants the session canary's context for one agent: the same files the
  * run canary plants, through the same planters, so the run and session
- * claims are checked against one identical planted shape. kimi and agy
- * carry their operator state in a scratch home the children are pointed
- * at by env; every other hermetic agent loads project files from the
- * planted cwd alone. */
+ * claims are checked against one identical planted shape. kimi, agy, and
+ * cline carry their operator state in a scratch home the children are
+ * pointed at by env; every other hermetic agent loads project files from
+ * the planted cwd alone. */
 export function plantSessionCanary(agent: AgentId, parent = tmpdir()): PlantedSessionCanary {
+  if (agent === "cline") {
+    const planted = plantClineSessionCanary(parent);
+    return { ...planted, secrets: [] };
+  }
   if (agent === "kimi") {
     const planted = plantKimiCanary();
     return {
@@ -150,6 +159,36 @@ export function plantSessionCanary(agent: AgentId, parent = tmpdir()): PlantedSe
   }
   const planted = plantCanary(false, parent);
   return { cwd: planted.cwd, marker: planted.marker, secrets: [], env: {}, cleanup: planted.cleanup };
+}
+
+/** Cline's hermetic launch refuses a cwd that holds instruction files (it
+ * has no project-discovery switch), so its operator rules go where the run
+ * check plants them: the global .agents/AGENTS.md beneath a scratch HOME
+ * (CLINE_INSTRUCTION_CHANNEL). The run check nests that HOME inside its
+ * cwd; a session cannot, because the session registry follows HOME and is
+ * refused inside the working directory. The HOME is a sibling of the cwd. */
+export function plantClineSessionCanary(parent = tmpdir()): Omit<PlantedSessionCanary, "secrets"> {
+  const root = realpathSync(mkdtempSync(join(parent, "codemux-cline-session-canary-")));
+  trackScratchRemoval(root);
+  const cleanup = (): void => {
+    rmSync(root, { recursive: true, force: true });
+    untrackScratchRemoval(root);
+  };
+  try {
+    const cwd = join(root, "work");
+    const home = join(root, "operator");
+    const marker = mintCanaryMarker();
+    mkdirSync(join(cwd, ".git"), { recursive: true, mode: 0o700 });
+    for (const [name, template] of Object.entries(CLINE_INSTRUCTION_CHANNEL.kind === "channel" ? CLINE_INSTRUCTION_CHANNEL.files : {})) {
+      const path = join(home, name);
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      writeFileSync(path, template.replaceAll("{{MARKER}}", marker), { mode: 0o600 });
+    }
+    return { cwd, marker, env: { HOME: home }, cleanup };
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
 }
 
 /** The protocol-level judgment of one canary session, before any verdict

@@ -12,14 +12,13 @@ import { AGENT_IDS, type AgentId } from "../src/types.js";
 const FAKE = new URL("./fixtures/live/fake-codemux-session.ts", import.meta.url).pathname;
 const scratch = (): string => mkdtempSync(join(tmpdir(), "caller-home-canary-test-"));
 
-const callerAgents = AGENT_IDS.filter((agent): agent is Exclude<AgentId, "cline"> => agent !== "cline");
-test("the caller-home arm selects only supported harnesses", () => {
+const callerAgents = AGENT_IDS;
+test("the caller-home arm covers every session agent, cline included", () => {
   for (const agent of callerAgents) {
     expect(supportsHarnessHomeCanary(agent)).toBe(true);
     expect(sessionCanaryLaunchCount(agent)).toBe(5);
   }
-  expect(supportsHarnessHomeCanary("cline")).toBe(false);
-  expect(sessionCanaryLaunchCount("cline")).toBe(3);
+  expect(callerAgents).toContain("cline");
 });
 
 for (const agent of ["claude", "codex", "zai"] as const) {
@@ -110,7 +109,7 @@ test("the expected caller home uses the canonical path when scratch has a symlin
   }
 });
 
-async function runArm(scenario: string, agent: Exclude<AgentId, "cline"> = "claude") {
+async function runArm(scenario: string, agent: AgentId = "claude") {
   const root = scratch();
   const state = join(root, "state.jsonl");
   const plant = plantHarnessHomeCanary(agent, root, {
@@ -221,7 +220,7 @@ test("protocol judgment rejects incomplete or unsuccessful sessions", () => {
   }
 });
 
-test.each(["cursor", "qwen", "openhands"] as const)("%s caller-only canary runs without a disposable hermetic prerequisite", async (agent) => {
+test.each(["cursor", "qwen", "openhands", "cline"] as const)("%s caller-only canary runs without a disposable hermetic prerequisite", async (agent) => {
   const root = scratch(); const state = join(root, "state.jsonl");
   const command = spyOn(sessionCanary, "command").mockReturnValue([process.execPath, FAKE]);
   const log = spyOn(console, "error").mockImplementation(() => {});
@@ -237,7 +236,18 @@ test.each(["cursor", "qwen", "openhands"] as const)("%s caller-only canary runs 
   } finally { log.mockRestore(); command.mockRestore(); rmSync(root, { recursive: true, force: true }); }
 });
 
-test("caller-only canary leaves Cline with its owning lane", async () => {
-  await expect(runCallerHarnessHomeCanary({ agent: "cline", autonomy: "read-only", passthroughEnv: [], timeoutMs: 1 }))
-    .rejects.toThrow("ACP integration");
+test("cline plants its caller skill under .cline and operator rules under .agents, with no login link", () => {
+  const root = scratch();
+  const plant = plantHarnessHomeCanary("cline", join(root, "source"), {
+    CLINE_DIR: "/fixture/ambient-cline", CLINE_DATA_DIR: "/fixture/ambient-data",
+    CLINE_PROVIDER_SETTINGS_PATH: "/fixture/providers.json", CODEMUX_CLINE_PROVIDER_MODEL: "fixture-model",
+  }, root);
+  try {
+    expect(plant.skillPath).toBe(join(plant.home, ".cline", "skills", "private-canary", "SKILL.md"));
+    expect(readFileSync(join(plant.operatorHome, ".agents", "AGENTS.md"), "utf8")).toContain(plant.operatorMarker);
+    for (const name of ["CLINE_DIR", "CLINE_DATA_DIR", "CLINE_PROVIDER_SETTINGS_PATH"]) expect(plant.env[name]).toBeUndefined();
+    // The provider override is cline's credential; it rides the environment.
+    expect(plant.env.CODEMUX_CLINE_PROVIDER_MODEL).toBe("fixture-model");
+    expect(readdirSync(plant.operatorHome)).toEqual([".agents"]);
+  } finally { plant.cleanup(); rmSync(root, { recursive: true, force: true }); }
 });
