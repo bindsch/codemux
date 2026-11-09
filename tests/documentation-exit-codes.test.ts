@@ -11,9 +11,22 @@
  *    the same rule documentation.test.ts already enforces for src/.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { Command } from "commander";
+import { getDefaultConfig } from "../src/config.js";
+import { OUTPUT_LIMIT_EXIT_CODE } from "../src/process-capture.js";
+import { TIMEOUT_EXIT_CODE } from "../src/process-runner.js";
+import { SIGNAL_EXIT_CODE } from "../src/process-runner-exit.js";
+import { EMPTY_ANSWER_EXIT_CODE } from "../src/result-empty.js";
+import { registerRunCommand } from "../src/run-command.js";
+import { exitOnResumeRefusal } from "../src/session/cli-usage.js";
+import { registerSessionOptions } from "../src/session/cli-options.js";
+import { SESSION_SIGNAL_EXIT_CODE } from "../src/session/process.js";
+import type { ResumeLookup } from "../src/session/registry/resume.js";
+import { USAGEMUX_UNAVAILABLE_EXIT_CODE } from "../src/usage.js";
+import { USAGE_REFUSAL_EXIT_CODE } from "../src/validation.js";
 
 const root = join(import.meta.dir, "..");
 const read = (path: string): string => readFileSync(join(root, path), "utf8");
@@ -24,6 +37,29 @@ const sourceFiles = (directory: string): string[] =>
       ? sourceFiles(path)
       : path.endsWith(".ts") ? [path] : [];
   });
+
+class ExitSentinel extends Error {
+  constructor(readonly code: number) { super(`process.exit(${code})`); }
+}
+
+/** Runs `action` with process.exit throwing its code and stderr captured. */
+async function captureExit(action: () => Promise<unknown>): Promise<{ code: number | undefined; stderr: string }> {
+  const lines: string[] = [];
+  const error = spyOn(console, "error").mockImplementation((...values: unknown[]) => { lines.push(values.map(String).join(" ")); });
+  const exit = spyOn(process, "exit").mockImplementation(((code?: number) => { throw new ExitSentinel(code ?? 0); }) as typeof process.exit);
+  const before = process.exitCode;
+  try {
+    await action();
+    return { code: typeof process.exitCode === "number" ? process.exitCode : undefined, stderr: lines.join("\n") };
+  } catch (thrown) {
+    if (thrown instanceof ExitSentinel) return { code: thrown.code, stderr: lines.join("\n") };
+    throw thrown;
+  } finally {
+    process.exitCode = before;
+    error.mockRestore();
+    exit.mockRestore();
+  }
+}
 
 describe("the exit-64 contract between docs/cli.md and the source", () => {
   const row = read("docs/cli.md")
@@ -57,10 +93,61 @@ describe("the exit-64 contract between docs/cli.md and the source", () => {
     }
   });
 
-  test("the run and session prompts share one quoted message", () => {
-    // The row quotes one prompt refusal; both commands that emit it must
-    // carry it, or the table describes only one of them.
-    expect(read("src/run-command.ts")).toContain(quoted[0]!);
+  test("the quoted prompt refusal is what run emits, and only run takes a prompt", async () => {
+    // Behavior, not text: a run with no prompt exits 64 with the quoted
+    // message. Session has no -p/-f (its prompts arrive as JSONL frames),
+    // so the row's prompt refusals describe run alone (review 422 #22).
+    const program = new Command();
+    program.exitOverride();
+    registerRunCommand(program, getDefaultConfig(), () => {});
+    // An empty PATH: the refusal must come before any harness is resolved.
+    const path = process.env.PATH;
+    process.env.PATH = "";
+    const outcome = await captureExit(() =>
+      program.parseAsync(["node", "codemux", "run", "--no-sandbox", "--auto", "high", "-a", "claude"]))
+      .finally(() => { process.env.PATH = path; });
+    expect(outcome.code).toBe(64);
+    expect(outcome.stderr).toContain(quoted[0]!);
+    const session = new Command();
+    registerSessionOptions(session, "claude");
+    const flags = session.options.flatMap((option) => [option.long, option.short]);
+    expect(flags).not.toContain("--prompt");
+    expect(flags).not.toContain("--file");
+    expect(flags).not.toContain("-p");
+  });
+});
+
+describe("documented exit codes equal the codes the code emits", () => {
+  const listed = (text: string): number[] => [...text.matchAll(/^\| (\d+) \|/gm)]
+    .map((match) => Number(match[1]!)).sort((a, b) => a - b);
+  const sorted = (values: Iterable<number>): number[] => [...new Set(values)].sort((a, b) => a - b);
+
+  // The resume verdicts, observed: exitOnResumeRefusal is the one place
+  // the session CLI maps a lookup to 66, 78, or 1.
+  async function resumeCodes(): Promise<number[]> {
+    const lookups: ResumeLookup[] = [{ outcome: "not_found" }, { outcome: "untrusted", reason: "r" },
+      { outcome: "refused", reason: "r" }, { outcome: "unavailable", reason: "r" }];
+    const codes: number[] = [];
+    for (const lookup of lookups) {
+      codes.push((await captureExit(async () => exitOnResumeRefusal("id", "/registry", lookup))).code!);
+    }
+    return codes;
+  }
+
+  test("docs/cli.md lists every code and no other (review 422 #23)", async () => {
+    const documented = listed(read("docs/cli.md").split("## Exit codes\n")[1]!.split("\n## ")[0]!);
+    // doctor's config verdict is a ternary inside runMachineCheck, which
+    // probes installed harnesses; read the expression instead of running it.
+    const doctorConfig = Number(read("src/doctor-machine-check.ts").match(/configError !== undefined\s*\?\s*(\d+)/)![1]);
+    expect(documented).toEqual(sorted([0, EMPTY_ANSWER_EXIT_CODE, doctorConfig, USAGE_REFUSAL_EXIT_CODE,
+      ...await resumeCodes(), USAGEMUX_UNAVAILABLE_EXIT_CODE, TIMEOUT_EXIT_CODE, OUTPUT_LIMIT_EXIT_CODE, SIGNAL_EXIT_CODE]));
+  });
+
+  test("the session CLI header lists the codes a session can end with", async () => {
+    const header = read("src/session/cli.ts").split("Exit codes:")[1]!.split("*/")[0]!;
+    const session = sorted([...header.matchAll(/\b(\d{1,3})\b/g)].map((match) => Number(match[1]!)));
+    expect(session).toEqual(sorted([0, EMPTY_ANSWER_EXIT_CODE, USAGE_REFUSAL_EXIT_CODE, ...await resumeCodes(),
+      SESSION_SIGNAL_EXIT_CODE]));
   });
 });
 

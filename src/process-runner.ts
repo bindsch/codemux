@@ -43,7 +43,7 @@ import {
   exitSignaledRun,
 } from "./process-runner-exit.js";
 
-const TIMEOUT_EXIT_CODE = 124;
+export const TIMEOUT_EXIT_CODE = 124;
 
 /** A capture failure of a command that ran: the child was spawned and a
  * stream's output could not be captured (invalid UTF-8). Wrapping marks the

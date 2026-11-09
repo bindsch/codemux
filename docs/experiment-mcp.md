@@ -3,7 +3,7 @@ read_when: "Checking the experiment MCP server contract, flags, or recordings."
 ---
 # Experiment MCP
 
-`run --experiment-mcp <spec.json>` connects one experiment-owned stdio MCP server with Claude, Z.AI, Codex, Kimi, OpenCode, Copilot, Gemini, Goose, Pi, or Qwen. It requires `--hermetic --tools none --auto read-only`, scode, and no Playwright MCP. Claude and Z.AI use Claude Code's SDK control bridge. Codex and Kimi use a loopback HTTP relay and require explicit result-header opt-ins. Unsupported adapters refuse before reading the spec or starting a model; [harness limitations](harnesses.md) give their native evidence.
+`run --experiment-mcp <spec.json>` connects one experiment-owned stdio MCP server with Claude, Z.AI, Codex, Kimi, OpenCode, Copilot, Gemini, Goose, Pi, Qwen, or Cline. It requires `--hermetic --tools none --auto read-only`, scode, and no Playwright MCP. Claude and Z.AI use Claude Code's SDK control bridge. The other harnesses use a loopback HTTP relay; Codex, Kimi, and Gemini require explicit result-header opt-ins, and Gemini also an explicit schema opt-in. Unsupported adapters refuse before reading the spec or starting a model; [harness limitations](harnesses.md) give their native evidence.
 
 The server runs **outside scode** with only the environment names in the spec. Its command and arguments are operator-controlled. The harness remains inside read-only scode. Hermetic mode excludes operator-configured MCP integrations; this explicitly requested server is the exception.
 
@@ -26,7 +26,8 @@ exactly these supported fields. Unknown properties, including `control`, fail.
 | `env` | Yes | Array of unique names matching `[A-Za-z_][A-Za-z0-9_]*`; every named variable must be set |
 | `recording` | No | Nonempty directory path without NUL; relative to the spec's directory; existing non-directory, symlinked leaf, or foreign-owned directory rejected; symlinked ancestors resolved before creation; mode forced to 0700 |
 | `tool_timeout_seconds` | No | Positive integer, default 7200, maximum 86400; private Codex and Kimi tool-call timeout |
-| `accept_harness_prefix` | No | Array of unique strings: `"codex-wall-time"` and `"kimi-wall-time"`. Each harness requires its own value; ignored on Claude/Z.AI |
+| `accept_harness_prefix` | No | Array of unique strings: `"codex-wall-time"`, `"kimi-wall-time"`, and `"gemini-untrusted-context"`. Codex, Kimi, and Gemini each require their own value; ignored elsewhere |
+| `accept_harness_schema` | No | Array of unique strings: `"gemini-wait-for-previous"` (Gemini adds an optional boolean `wait_for_previous` property to object tool schemas). Gemini requires it; ignored elsewhere |
 
 The command must be a trusted regular executable owned by the user or root, not group/world writable, and outside the execution cwd. No shell is inserted. Claude and Z.AI prompts must fit a 1 MiB serialized control frame, including escaping and wrapper. Codex uses a 16 MiB stdin limit; Kimi uses a 32 KiB argv bound.
 
@@ -313,8 +314,11 @@ Before private-home cleanup, successful and failed Codex/Kimi runs attempt to co
 
 ### Normalized records
 
-Claude, Z.AI, Codex, and Kimi recordings also contain these harness-neutral records
-with the same common fields:
+Claude, Z.AI, Codex, Kimi, Cline, and OpenCode recordings also contain the
+harness-neutral turn records (`turn`, `turn_usage`, `turn_call`). The
+`call_ledger` and relay records come from the shared loopback relay and the
+Claude control bridge, which every experiment harness uses. All share the
+same common fields:
 
 ```text
 Usage = {"input":int,"output":int,"cache_read":int,"cache_write":int}

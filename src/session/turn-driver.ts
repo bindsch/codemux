@@ -193,7 +193,7 @@ export class TurnAgentSessionDriver extends TurnDriverTurns {
           this.options.authorPrefix
         );
         // The carrier decides the deliverability bound: an argv carrier
-        // (gemini -p, copilot --prompt=, goose -t) rides the OS argv
+        // (goose -t; openhands, whose argv names a task file) rides the OS argv
         // limit codemux enforces for run prompts (32 KiB); a stdin
         // carrier rides the protocol's 16 MiB text bound.
         if (this.options.profile.promptCarrier === "argv") {

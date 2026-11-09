@@ -166,7 +166,9 @@ export function parseGooseResultEnvelope(stdout: string): GooseEnvelopeInfo | nu
  * the run fails loudly. An object with no answer text fails too: the
  * harness exited without a reply.
  */
-export function gooseResult(result: RunResult, request: RunRequest): RunResult {
+/** `recording` is the experiment run's JSONL path (null outside an
+ * experiment run), the field every experiment harness's envelope carries. */
+export function gooseResult(result: RunResult, request: RunRequest, recording: string | null = null): RunResult {
   const agent = "goose" as const;
   const parsed = parseGooseResultEnvelope(result.stdout);
   if (parsed === null) {
@@ -193,7 +195,7 @@ export function gooseResult(result: RunResult, request: RunRequest): RunResult {
     served_model: parsed.servedModel,
     usage: parsed.usage,
     session_id: parsed.sessionId,
-    recording: null,
+    recording,
     failure_code: failure !== null ? "harness-error" : null,
   };
   const envelope = `${JSON.stringify({ [GOOSE_ANSWER_FIELD]: parsed.answer ?? "", usage: parsed.usage, codemux: block })}\n`;

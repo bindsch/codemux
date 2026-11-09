@@ -157,7 +157,7 @@ are warned about and ignored.
 | `--shutdown-grace <seconds>` | 10 | Grace before SIGTERM, then another grace before SIGKILL |
 | `--no-author-prefix` | prefix enabled | Preserve attribution events without prepending `[author] ` to harness text |
 | `--permission-policy <policy>` | `default` | `deny` immediately denies Claude/ZAI/Codex requests; Kimi/OpenCode/agy use native rules with `--hermetic`; OpenHands plants a PreToolUse hook that blocks every tool but `finish` and `think` in its hermetic home (refused with `--experiment-project-settings`). Aider sends negative stdin confirmations and suppresses yes-always grants. See [permissions](#permissions-and-attribution). Pass the flag again on resume; the registry does not store it |
-| `--hermetic` | Off | Accepted by Claude, ZAI, Codex, Agy, OpenCode, Aider, Kimi, Droid, Pi, Qwen, Gemini, Copilot, Goose, Cline, and OpenHands. Cline and OpenHands require a provider override. Cursor refuses it. Private-home behavior and isolation conditions are described [below](#hermetic-sessions) |
+| `--hermetic` | Off | Accepted by Claude, ZAI, Codex, Agy, OpenCode, Aider, Kimi, Droid, Pi, Qwen, Gemini, Copilot, Goose, Cline, and OpenHands. Cline, Goose, and OpenHands require a provider override. Cursor refuses it. Private-home behavior and isolation conditions are described [below](#hermetic-sessions) |
 | `--experiment-project-settings` | Off; requires `--hermetic` | Hermetic plus the repository's own settings in place of the operator's (claude/zai; opencode keeps the project's config; openhands loads the working directory's `.openhands`); see [below](#hermetic-project-settings-sessions) |
 | `--final` | Off; requires an isolation mode | Remove a hermetic session's private home and transcript. A caller-owned `--harness-home` is always preserved |
 | `--sandbox-block <path>` | none | Repeatable; pass an extra scode `--block` for this session's children (absolute paths only), an operator-side extra on top of the project-settings blocks. Canonicalized once at flag parse (symlinks dereferenced, then deduplicated and sorted), and that same spelling is recorded and enforced by every child; a resume must carry every recorded block path and may add more |
@@ -182,10 +182,10 @@ Aider and OpenCode accept `--tools default` and `--tools none` on every turn and
 `--hermetic` is accepted by Claude, ZAI, Codex, Agy, OpenCode, Aider, Kimi, Droid, Pi, Qwen, Gemini, Copilot, Goose, Cline, and OpenHands. Cursor refuses it with exit 64 because its state cannot be relocated to a session-lifetime private home.
 `--effort none` sends no effort field on every
 session harness, codex included. `--enable-playwright-mcp` is supported
-for Claude/ZAI/Codex/Kimi/OpenCode/Copilot/Gemini/Goose/Pi/Qwen, never combined with either
-isolation flag, and requires `--sandbox`; Claude, ZAI, Codex, Gemini, Goose, Pi, and Qwen
-require `--auto low`, and Copilot requires `--auto medium` or `high`
-(low has no caller approval bridge).
+for Claude/ZAI/Cline/Codex/Kimi/OpenCode/Copilot/Gemini/Goose/Pi/Qwen, never combined with either
+isolation flag, and requires `--sandbox`; Claude, ZAI, Codex, Kimi, Gemini, Goose, Pi, and Qwen
+require `--auto low`, Copilot and Cline require `--auto medium` or `high`
+(low has no caller approval bridge), and OpenCode accepts any level.
 
 ## Caller-owned session homes
 `--harness-home <dir>` selects one persistent directory across turns and session restarts. Pass the same path with `--resume <id>`; a changed path or missing transcript directory refuses resume. Codemux creates absent directories with mode 0700 and requires ownership by the invoking user. The directory must be separate from the working directory and all real harness stores. It must also neither contain nor lie inside one of scode's default-blocked paths, such as `~/Library`, `~/.ssh`, or `~/.config/gh`: a sandbox grant beneath one would reopen it. Symlinks and symlink ancestors are refused. Neither `--final` nor failed-launch cleanup removes it; the caller owns retention and cleanup.

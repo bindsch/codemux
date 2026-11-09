@@ -327,18 +327,18 @@ export interface FeatureFloor {
 export const FEATURE_FLOORS: Readonly<
   Partial<Record<AgentId, Partial<Record<FeatureFloorKind, string>>>>
 > = {
-  // Sessions: the floors design §4.3 pins (2.1.280 the
-  // --permission-prompt-tool stdio build, 0.159.3 the app-server method
-  // table, 1.2.14 agy's audited release, 0.31.1 kimi's session wire,
-  // 1.18.18 opencode's, 0.86.2 aider's; 0.60.0 gemini's, 1.0.85
-  // copilot's, and 1.50.1 goose's session wires; 2026.11.05 cursor's,
-  // 0.221.0 droid's, 0.85.1 pi's, and 0.24.0 qwen's — the builds the
-  // session modules' flag and output pins were read on, 2026-11-09).
-  // Experiment
-  // MCP: codex 0.165.0, kimi 2.3.2, claude and zai 2.1.280 (launch.ts's
-  // gate), goose 1.50.1 (the planted-config relay carrier,
-  // src/goose-experiment-run.ts). Project settings: the same claude-family build the session
-  // wire and the experiment capture were recorded on.
+  // Each value is the build the mechanism's flag and output pins were
+  // read on (2026-11-09 for the session modules). Sessions: 2.1.280 is
+  // the claude-family --permission-prompt-tool stdio build, 0.159.3 the
+  // codex app-server method table, 1.2.14 agy's audited release, 2.5.2
+  // kimi's session wire, 1.18.18 opencode's, 0.86.2 aider's; the other
+  // agents' session floors are their session wires' builds. Experiment
+  // MCP: claude and zai 2.1.280 (launch.ts's gate), codex 0.165.0, kimi
+  // 2.3.2, opencode 1.19.5, goose 1.50.1 (the planted-config relay
+  // carrier, src/goose-experiment-run.ts), and the session build for
+  // gemini, copilot, pi, qwen, and cline. Project settings: the build the
+  // session wire or the experiment capture was recorded on (codex 0.166.0,
+  // kimi 2.5.2). The table below is the authority; this comment names why.
   claude: { sessions: "2.1.280", "experiment-mcp": "2.1.280", "project-settings": "2.1.280" },
   zai: { sessions: "2.1.280", "experiment-mcp": "2.1.280", "project-settings": "2.1.280" },
   codex: { sessions: "0.159.3", "experiment-mcp": "0.165.0", "project-settings": "0.166.0" },

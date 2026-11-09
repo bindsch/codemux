@@ -6,16 +6,15 @@ options, autonomy, results, and reported usage.
 
 ## What it does
 
-- Launches 16 harnesses with normalized options and autonomy; six adapters
-  (Claude Code, Codex, Kimi, OpenCode, Z.AI, Antigravity) also return
-  structured `--result-json` results.
+- Launches 16 harnesses with normalized options and autonomy; 15 adapters
+  (every harness but Aider) also return structured `--result-json` results.
 - Hermetic runs keep the operator's settings, memory, skills, and hooks out
   of a launch — a project's own rules are suppressed too; only
   `--experiment-project-settings` loads them back
   ([isolation](https://github.com/bindsch/codemux/blob/main/docs/isolation.md)).
 - Every launch below high autonomy runs under the scode sandbox;
   `--print-sandbox` prints the exact sandbox argv without launching.
-- Resumable JSONL sessions for seven agents, with explicit shutdown,
+- Resumable JSONL sessions for 16 agents, with explicit shutdown,
   permission policy, and a per-session isolated home.
 - An experiment MCP server: an authenticated loopback relay that records every
   harness exchange and verifies the harness delivered the bytes it reported.

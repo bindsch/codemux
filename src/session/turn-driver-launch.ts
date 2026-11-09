@@ -150,7 +150,7 @@ export interface TurnAgentDriverArmInput {
 }
 
 /**
- * Build the seven agents' driver arm. Refusals throw UsageRefusalError
+ * Build the turn agents' driver arm. Refusals throw UsageRefusalError
  * — never usageError — because this runs after a resume's claim, and
  * only a throw reaches the CLI catch that releases it.
  */

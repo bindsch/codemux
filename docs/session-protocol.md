@@ -52,9 +52,9 @@ driver dispatch. Both spellings resolve the same pending request.
 The whole input line is at most 17 MiB, measured on the delivered payload:
 the carriage return of a CRLF-terminated line is stripped before delivery
 and does not count against the cap. Transport wrapping and escaping can
-make a smaller text undeliverable and produce `text_too_long`. Aider and
-Kimi impose a stricter 32 KiB limit on harness-bound text, including the
-author prefix, because they pass the prompt in argv.
+make a smaller text undeliverable and produce `text_too_long`. Aider,
+Goose, Kimi, and OpenHands impose a stricter 32 KiB limit on harness-bound
+text, including the author prefix, because they pass the prompt in argv.
 
 An author has 1–64 Unicode code points. It cannot contain `[` or `]`, an
 unpaired surrogate, or characters in Unicode categories Cc, Cf, Zl, or Zp
@@ -134,7 +134,7 @@ no extra length guarantee beyond the framing and queue bounds below.
 
 | `type` | Fields |
 |---|---|
-| `session_started` | `agent: string`; `model: string \| null`; `model_served: string \| null`; `model_served_source: "provider" \| "harness" \| null`; `model_alias: string \| null`; `autonomy: "read-only" \| "low" \| "medium" \| "high"`; `cwd: string`; `sandboxed: boolean`; `sandbox_trust: "trusted" \| "standard" \| "untrusted"`; `capabilities: object` below; `protocol: "codemux-live-session/1"`; `private_home: string \| null` — always present, never omitted: the hermetic session's private home directory named by its settled session-keyed path (the spelling a `--resume` reopens), which for an agent that mints its session id later is not yet the live run-shaped directory the child writes while the session runs; null for a plain session or an agent whose hermetic mode keeps no session-keyed home (opencode) |
+| `session_started` | `agent: string`; `model: string \| null`; `model_served: string \| null`; `model_served_source: "provider" \| "harness" \| null`; `model_alias: string \| null`; `autonomy: "read-only" \| "low" \| "medium" \| "high"`; `cwd: string`; `sandboxed: boolean`; `sandbox_trust: "trusted" \| "standard" \| "untrusted"`; `capabilities: object` below; `protocol: "codemux-live-session/1"`; `private_home: string \| null` — always present, never omitted: the hermetic session's private home directory named by its settled session-keyed path (the spelling a `--resume` reopens), which for an agent that mints its session id later is not yet the live run-shaped directory the child writes while the session runs; null for a plain session or an agent whose hermetic mode keeps no session-keyed home (qwen). Agy additionally emits `hermetic: boolean` on this event |
 | `input_accepted` | `input_seq: positive integer` |
 | `input_rejected` | `input_seq: positive integer`; `reason: string` from the rejection table; optional `message: string` — the denial text sent to the harness, present on `autonomy_escalation` |
 | `user_message` | `input_seq: positive integer`; `text: string`; optional `author: string`; optional `turn_id: string` |
@@ -333,7 +333,7 @@ approval offering no refusal choice also interrupts its turn.
 |---|---|
 | Caller text | 16 MiB UTF-8; `text_too_long` |
 | Caller line / harness write | 17 MiB; caller line overflow is `malformed`; undeliverable text is `text_too_long` |
-| Aider/Kimi argv text | 32 KiB including author prefix; `text_too_long` |
+| Aider/Goose/Kimi/OpenHands argv text | 32 KiB including author prefix; `text_too_long` |
 | Harness stdout line | 16 MiB; fatal overflow |
 | Pending stdout events | 1024 ordinary events or 64 MiB; failure ends the session, and ordinary events stay refused after it |
 | Unread harness stdin backlog | 64 MiB; refusal is fatal |

@@ -47,8 +47,18 @@ test("headless matrix spends and conditional cells agree with declarations", () 
     const agent = row[0] as AgentId;
     const caps = getAdapter(agent, { PATH: "" }).capabilities();
     expect(row[8] === "yes", agent).toBe(PARITY[agent]["run.max-budget-usd"].state === "supported");
-    expect(row[5]!.includes("read-only only"), agent).toBe(caps.toolsNoneRequiresReadOnly === true);
-    expect(row[5]!.includes("hermetic only"), agent).toBe(caps.toolsNoneRequiresHermetic === true);
+    // The tools-none cell's conditions come from the declarations, which
+    // tests/parity-refusals.test.ts pins to what validateRunRequest does
+    // (tools none at medium autonomy; tools none without --hermetic). The
+    // advertised capability must agree with both (review 422 #24).
+    const toolsNone = PARITY[agent]["run.tools-none"].state === "supported";
+    const readOnlyOnly = toolsNone && PARITY[agent]["run.tools-none.writable-autonomy"].state !== "supported";
+    const hermeticOnly = toolsNone && PARITY[agent]["run.tools-none.plain"].state !== "supported";
+    expect(row[5] === "no", agent).toBe(!toolsNone);
+    expect(row[5]!.includes("read-only only"), agent).toBe(readOnlyOnly);
+    expect(caps.toolsNoneRequiresReadOnly === true, agent).toBe(readOnlyOnly);
+    expect(row[5]!.includes("hermetic only"), agent).toBe(hermeticOnly);
+    expect(caps.toolsNoneRequiresHermetic === true, agent).toBe(hermeticOnly);
     if (caps.supportsHermetic) {
       expect(/clean cwd|project restrictions|OPEN:/.test(row[4]!), agent)
         .toBe(PARITY[agent]["run.hermetic.any-cwd"].state !== "supported");

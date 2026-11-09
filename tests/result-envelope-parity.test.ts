@@ -18,6 +18,8 @@ import {
 } from "../src/result-envelope/copilot.js";
 import { RESULT_ANSWER_FIELD } from "../src/result-envelope/index.js";
 import type { RunRequest, RunResult } from "../src/types.js";
+import { GooseAdapter } from "../src/adapters/goose.js";
+import type { RunContext } from "../src/adapters/base.js";
 
 const request: RunRequest = { agent: "gemini", prompt: "p" };
 const ok = (stdout: string): RunResult => ({
@@ -143,6 +145,16 @@ describe("goose --result-json", () => {
     const noAnswer = gooseResult(ok(JSON.stringify({ content: "" })), request);
     expect(noAnswer.success).toBe(false);
     expect(noAnswer.stderr).toContain("no message content");
+  });
+
+  test("an experiment run's envelope carries its recording path (review 422 #15)", () => {
+    const wire = JSON.stringify({ content: "ok" });
+    const adapter = new GooseAdapter();
+    const goose: RunRequest = { agent: "goose", prompt: "p", resultJson: true };
+    const recorded = adapter.processRunResult(ok(wire), goose, { experimentRecording: "/runs/r.jsonl" } as RunContext);
+    expect(JSON.parse(recorded.stdout).codemux.recording).toBe("/runs/r.jsonl");
+    const plain = adapter.processRunResult(ok(wire), goose);
+    expect(JSON.parse(plain.stdout).codemux.recording).toBeNull();
   });
 });
 

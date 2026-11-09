@@ -115,6 +115,10 @@ result.
   model the driver implements; the scenario list (authfail, wrongid,
   noevent, …) and the recording protocol are documented in the script's
   own header.
+- `fake-aider-parity-observe.ts` — not a recording but an observation
+  helper the synthetic aider process runs: it appends the argv, the
+  model-settings file, and the approval variables to `parity.jsonl` under
+  `$FAKE_STATE_DIR`. `tests/session-cli-aider-parity.test.ts` reads it.
 - `fake-aider-run.ts` — not a recording but a fake harness (2026-10-08,
   the aider sessions item): a scenario-driven fake of headless aider,
   the per-turn process behind the aider session driver, built from the
@@ -148,6 +152,24 @@ result.
   bodies, the wire writer, and the control handlers live in
   `fake-claude-session-parts/`; the entry keeps the header, the scenario
   switch, and the process lifecycle.
+- `fake-cline-acp.ts` — not a recording but a fake harness: Cline
+  cli-v3.0.74's ACP and history wire. Every call appends its argv and
+  storage variables to `calls.jsonl`; a "Configuration test." prompt
+  answers with the planted code words its discovery roots expose.
+  `tests/session-cli-cline.test.ts`,
+  `tests/session-cli-cline-harness-home.test.ts`, and
+  `tests/hermetic-session-canary-cline.test.ts` drive it.
+- `fake-cline-parity.ts` — not a recording but a fake harness: Cline
+  cli-v3.0.74's headless NDJSON run, which also checks the tools-none
+  settings codemux writes. `tests/cline-run-parity.test.ts` and
+  `tests/cline-tools.test.ts` drive it.
+- `fake-codemux-session.ts` — not a recording but a fake of the codemux
+  session CLI itself, for the hermetic session canary: it speaks
+  `codemux-live-session/1`, reports a per-session private home, and
+  answers with the planted code word only in plain mode.
+  `tests/hermetic-session-canary.test.ts`,
+  `tests/hermetic-session-canary-home.test.ts`, and
+  `tests/check-session.test.ts` drive it.
 - `fake-codex-app-server.ts` — not a recording but a fake harness
   (2026-10-07, the live-sessions item): a scenario-driven fake of the
   codex app-server built from the shapes the step-0 fixture pins
@@ -160,6 +182,15 @@ result.
   state, the item/approval emitters, and the request handlers live in
   `fake-codex-app-server-parts/`; the entry keeps the header, the
   scenario switch, and the process lifecycle.
+- `fake-copilot-gemini-pi-run.ts` — not a recording but a fake harness
+  for headless copilot, gemini, and pi runs (copilot's `--result-json`
+  run rides the framed RPC in `fake-copilot-session-parts/rpc.ts`).
+  `tests/copilot-gemini-pi-run-launch.test.ts` drives it.
+- `fake-copilot-session.ts` — not a recording but a fake harness: the
+  per-turn headless copilot process behind the copilot session driver
+  (copilot 1.0.103 JSONL). `tests/helpers/session-turn-launch.ts` puts it
+  on the fake PATH; `tests/copilot-rpc-fixture.test.ts` drives its RPC
+  part directly.
 - `fake-cursor-session.ts` — not a recording but a fake harness
   (2026-11-09, the cursor result-JSON item): a scenario-driven fake of
   headless cursor-agent, the per-turn process behind the cursor session
@@ -177,6 +208,27 @@ result.
   and final in one private home), `tests/session-harness-home-cli-turns.test.ts`,
   and `tests/turn-session-abort-home.test.ts` drive the real driver
   against it, and `tests/droid-session.test.ts` pins the module's wire.
+- `fake-exit-on-eof.ts` — not a harness: a session child that prints
+  `READY` and exits 0 at stdin EOF, the shape of an orderly shutdown.
+  `tests/session-late-child-eof.test.ts` drives it.
+- `fake-gemini-session.ts` — not a recording but a fake harness: the
+  per-turn headless gemini process behind the gemini session driver
+  (gemini 0.60.0 stream-json), with its ACP peer in
+  `fake-gemini-session-parts/acp.ts`.
+  `tests/helpers/session-turn-launch.ts` puts it on the fake PATH;
+  `tests/gemini-acp-process.test.ts` drives the ACP peer.
+- `fake-goose-session.ts` — not a recording but a fake harness: the
+  per-turn headless goose process behind the goose session driver
+  (goose 1.50.1, progress lines around one final JSON object).
+  `tests/helpers/session-turn-launch.ts` puts it on the fake PATH.
+- `fake-hermetic-check.ts` — not a recording but a synthetic
+  instruction-discovery harness, one arm per agent, answering the canary
+  marker when the modeled instruction file is reachable.
+  `tests/check-hermetic-plan.test.ts` drives it.
+- `fake-hold-then-exit.ts` — not a harness: a session child that holds
+  SIGTERM for `FAKE_HOLD_MS` and then exits 0, the shape of a harness
+  inside its shutdown grace. The stop-escalation tests and the agy and
+  codex e2e helpers drive it.
 - `fake-kimi-run.ts` — not a recording but a fake harness (2026-10-10,
   the kimi sessions item): a scenario-driven fake of headless kimi
   (`--prompt … --output-format stream-json`) built from the line shapes
@@ -188,6 +240,13 @@ result.
   presence) as JSONL under `$FAKE_STATE_DIR`. The 2.0.0 permission-tools
   scenario's body (the config.toml deny rules) lives in
   `fake-kimi-run-parts/`, a piece of this entry fixture.
+- `fake-opencode-experiment.ts` — not a process but a data module: the
+  synthetic OpenCode experiment payloads (tool definitions, calls, and
+  provider request shapes) that `tests/opencode-experiment-content.test.ts`
+  and `tests/opencode-experiment-run.test.ts` import.
+- `fake-opencode-launch.ts` — not a recording but a fake harness for
+  headless opencode launches that records argv, stdin, environment, and
+  config per call. `tests/helpers/opencode-launch.ts` drives it.
 - `fake-opencode-run.ts` — not a recording but a fake harness
   (2026-10-08, the opencode sessions item): a scenario-driven fake of
   `opencode run --format json`, the per-turn process behind the opencode
@@ -197,6 +256,10 @@ result.
   line, the driver's deferred-identity model. The scenario list and the
   `FAKE_SIGTERM_PERSIST` drain modes are documented in the script's own
   header.
+- `fake-openhands-caller-session.ts` — not a recording but a fake
+  harness: the OpenHands headless CLI under a caller-owned
+  `--harness-home`, reading only the supplied fixture roots.
+  `tests/session-harness-home-openhands-cli.test.ts` drives it.
 - `fake-pi-session.ts` — not a recording but a fake harness
   (2026-11-09, the pi result-JSON item): a scenario-driven fake of
   headless pi `--mode json` and its RPC mode, the wires behind the pi
@@ -209,6 +272,9 @@ result.
   `tests/turn-session-abort-home.test.ts` drive the real driver against
   it; `tests/pi-rpc-process.test.ts` drives the RPC process directly, and
   `tests/pi-session.test.ts` pins the module's wire.
+- `fake-qwen-experiment.ts` — not a process but a data module: the
+  synthetic Qwen experiment wire (session id, prompt, tool definition,
+  and native events) that `tests/qwen-experiment-run.test.ts` imports.
 - `fake-qwen-session.ts` — not a recording but a fake harness
   (2026-11-09, the qwen result-JSON item): a scenario-driven fake of
   headless qwen `--output-format json`, the one-line message array the

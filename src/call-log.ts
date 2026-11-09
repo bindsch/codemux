@@ -393,12 +393,11 @@ function warnOnce(message: string): void {
 
 /** The fields every session-side record shares: what the driver knows about
  * its own launch. `provider` is `providerHost(options.providerBaseUrl)`.
- * `hermetic` is what the driver was constructed with: the session CLI
- * refuses `--hermetic` outright in this release (src/session/cli.ts — no
- * verified canary covers a persistent, resumable session), so every
- * CLI-launched record carries false; the opencode and aider drivers forward
- * their option all the same, and the claude-family, codex, and agy drivers
- * hard-code false because their session launches have no hermetic mode. */
+ * `hermetic` is whether the session runs hermetic: the session CLI passes
+ * `--hermetic` through to every driver (src/session/cli.ts), and each
+ * driver records its option. The codex and kimi drivers also count a
+ * disposable private home (not a caller-owned `--harness-home`) as
+ * hermetic, so a launcher that set only the home still records true. */
 export interface SessionCallContext {
   agent: AgentId;
   model: string | null;

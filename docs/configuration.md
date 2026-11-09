@@ -71,9 +71,9 @@ Built-in aliases are `sonnet`, `opus`, `haiku`, `gpt5`, `gpt5-codex`,
 
 | Alias | Built-in mappings |
 |---|---|
-| `sonnet` | Claude: sonnet; Droid/Copilot: claude-sonnet-5; Cursor: claude-sonnet-5-high |
-| `opus` | Claude: opus; Droid: claude-opus-5; Copilot: claude-opus-4.8; Cursor: claude-opus-5-high |
-| `haiku` | Claude: haiku; Droid: claude-haiku-4-5-20251001; Copilot: claude-haiku-4.5 |
+| `sonnet` | Claude/Z.AI: sonnet; Droid/Copilot: claude-sonnet-5; Cursor: claude-sonnet-5-high |
+| `opus` | Claude/Z.AI: opus; Droid: claude-opus-5; Copilot: claude-opus-4.8; Cursor: claude-opus-5-high |
+| `haiku` | Claude/Z.AI: haiku; Droid: claude-haiku-4-5-20251001; Copilot: claude-haiku-4.5 |
 | `gpt5` | Codex: gpt-5.6; Droid/Copilot: gpt-5.6-sol; Cursor: gpt-5.6-sol-medium |
 | `gpt5-codex`, `gpt53` | Codex/Droid/Copilot/Cursor: gpt-5.3-codex |
 | `gemini-pro` | Droid/Gemini/Copilot: gemini-3.1-pro-preview; Cursor: gemini-3.1-pro |

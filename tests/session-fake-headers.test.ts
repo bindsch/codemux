@@ -115,4 +115,15 @@ describe("every live fixture is imported by a test or manual-only", () => {
     // to be more than a tautology when an orphan exists.
     expect(readme.some((line) => line.includes("manual-only"))).toBe(true);
   });
+
+  test("every fixture and recording has its own README entry (review 422 #25)", () => {
+    // The README promises an entry per file; an entry is a list item that
+    // opens with the file's name, so a passing mention elsewhere does not
+    // count. Parts modules are pieces of their entry fixture.
+    const entries = new Set([...readFileSync(README_PATH, "utf8").matchAll(/^- `([^`]+)`/gm)].map((m) => m[1]!));
+    const files = readdirSync(FIXTURES_DIR).filter((name) => /\.(ts|ndjson)$/.test(name));
+    expect(files.length).toBeGreaterThan(fixtureNames.length);
+    expect(files.filter((name) => !entries.has(name))).toEqual([]);
+    expect([...entries].filter((name) => !files.includes(name))).toEqual([]);
+  });
 });

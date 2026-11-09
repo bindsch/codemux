@@ -460,13 +460,4 @@ describe("current documentation set", () => {
     }
   });
 
-  test("exit-code lists match what the code emits", () => {
-    const numeric = (values: number[]): number[] => values.sort((a, b) => a - b);
-    const cli = numeric([...section(read("docs/cli.md"), "Exit codes").matchAll(/^\| (\d+) \|/gm)]
-      .map((match) => Number(match[1]!)));
-    expect(cli).toEqual([0, 1, 2, 64, 66, 69, 78, 124, 125, 143]);
-    const header = read("src/session/cli.ts").split("Exit codes:")[1]!.split("*/")[0]!;
-    const session = numeric([...header.matchAll(/\b(\d{1,3})\b/g)].map((match) => Number(match[1]!)));
-    expect(session).toEqual([0, 1, 64, 66, 78, 143]);
-  });
 });

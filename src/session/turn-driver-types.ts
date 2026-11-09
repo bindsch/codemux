@@ -16,7 +16,7 @@ import type { SessionProcess } from "./process.js";
 /** How the turn's prompt reaches the harness process. */
 export type TurnPromptCarrier = "stdin" | "argv";
 
-/** The seven agents this engine serves (one profile each,
+/** The agents this engine serves (one profile each,
  * src/session/<agent>-driver.ts). */
 export type TurnAgentId =
   | "cline"

@@ -78,7 +78,7 @@ command.
 - `--only <agents>` / `--skip <agents>`: narrow the harness set,
   comma-separated.
 - `--timeout <seconds>`: the per-probe bound for one version verdict,
-  1 to 60, default 10.
+  0.001 to 60 with at most three decimals (whole milliseconds), default 10.
 - `--strict`: warnings count as broken for the exit code.
 - `--capabilities`: print only the per-harness capabilities block.
 - `--format <format>`: `text` (default) or `json`.

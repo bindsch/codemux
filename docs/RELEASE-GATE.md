@@ -109,13 +109,14 @@ missing file as broken, with the `security default-keychain -d user -s`
 remedy.
 
 Every model-backed probe is one agent turn, except D (a hermetic check is the
-isolated probe plus its plain control: two requests) and K (a hermetic session
-canary is three sessions: hermetic, control, and the resumed `--final`). On a
-machine with the
-full harness set, a default gate costs about 100 round trips — thirteen per
+isolated probe plus its plain control: two requests) and K (a session
+canary is five sessions, `sessionCanaryLaunchCount`: hermetic, control, the
+resumed `--final`, and the caller-owned `--harness-home` start and resume).
+On a machine with the
+full harness set, a default gate costs about 130 round trips — fifteen per
 harness with every capability (the result-JSON, hermetic, tools, session,
 experiment, loopback, and alias probes; the hermetic check launches
-twice, the session canary three times), two per harness with only the base
+twice, the session canary five times), two per harness with only the base
 probes.
 Scope the spend with `--only` and `--skip`. Probes 0, J, and P spend nothing;
 H2 spends no provider quota; J's script reaches only the gate's own loopback

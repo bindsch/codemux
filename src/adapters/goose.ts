@@ -299,9 +299,9 @@ export class GooseAdapter extends BaseAdapter {
     this.cleanupRunSync(context);
   }
 
-  override processRunResult(result: RunResult, request: RunRequest): RunResult {
+  override processRunResult(result: RunResult, request: RunRequest, context?: RunContext): RunResult {
     if (!request.resultJson) return result;
-    return gooseResult(result, request);
+    return gooseResult(result, request, context?.experimentRecording ?? null);
   }
 
   override getStdinInput(request: RunRequest): string | null {

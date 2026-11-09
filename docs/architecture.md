@@ -63,9 +63,10 @@ the provider modules translate operator login or explicit overrides into
 the selected harness's carriers. Provider overrides reuse these seams for
 sessions. [hermetic-home.ts](../src/hermetic-home.ts) manages isolated
 per-run homes and bounded cleanup. Hermetic runs and persistent sessions
-have different state lifetimes; a plain `--hermetic` session is refused —
-the one hermetic session mode is `--hermetic --experiment-project-settings`
-(Claude/Z.AI, [isolation](isolation.md)).
+have different state lifetimes: a hermetic session (every session agent
+but Cursor) holds a session-lifetime private home across turns and
+`--resume`, and `--final` or the stale sweep removes it
+([sessions](sessions.md#hermetic-sessions)).
 See [authentication](authentication.md) and [isolation](isolation.md).
 
 ## Sessions

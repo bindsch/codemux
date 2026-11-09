@@ -92,7 +92,7 @@ warned about and ignored. See
 [policy details](autonomy-and-sandboxing.md).
 
 `--enable-playwright-mcp` is available on `run`, `tui`, and `session`.
-On `run` it requires Claude, Z.AI, Codex, Copilot, Gemini, Goose, OpenCode, Pi, or Qwen and sandboxing. Sessions support it on Claude, Z.AI, Codex, Copilot, Gemini, Goose, OpenCode, and Pi; every session except Copilot (`--auto medium` or `high`) and OpenCode requires `--auto low`.
+On `run` it requires Claude, Cline, Codex, Copilot, Gemini, Goose, Kimi, OpenCode, Pi, Qwen, or Z.AI and sandboxing. Sessions support the same eleven agents. Copilot and Cline sessions require `--auto medium` or `high`, OpenCode sessions accept any level, and every other session requires `--auto low`.
 It is incompatible with `--hermetic` and `--tools none`; a session refuses it
 under `--hermetic`, with or without `--experiment-project-settings`, the same
 way. The locally installed
@@ -118,11 +118,11 @@ printf 'Reply with OK.\n' | codemux run -a claude -f -
 | `--hermetic` | Off; suppress supported automatic customization loading |
 | `--tools <selection>` | `default`; `none` has harness-specific residual capabilities |
 | `--experiment-project-settings` | Off; run `claude`/`zai` in a private per-run Claude config directory with `--setting-sources project,local`, `opencode` without `OPENCODE_DISABLE_PROJECT_CONFIG` and `--pure`, `copilot` under a private `COPILOT_HOME` that reads only the repository's `.github/copilot` settings, or `gemini` under a private `GEMINI_CLI_HOME` that reads only workspace settings, or `openhands` under a private persistence dir whose run keeps the working directory's own `.openhands` hooks, or `codex` under a private per-run CODEX_HOME whose config.toml marks the project root trusted so the repository's own `.codex` config layers, skills, and `AGENTS.md` load, or `kimi` in a hermetic run that keeps the repository's own `.kimi-code` instructions, skills, agents, and MCP servers, or `cline` in a hermetic run whose private HOME and config leave native project discovery (rules, skills, hooks) on, with `--cwd` at the fixture repository root, so a fixture repository's own permission rules and plugins apply without the operator's user-level customizations. Requires `--hermetic` and scode; `--auto low` on `claude`/`zai`, `--auto low` or `high` on `opencode`, `copilot`, and `gemini`; `--auto low` on `openhands`, `codex`, `kimi`, and `cline`. Refused when any ancestor of the working directory carries a project memory file (`claude`/`zai`: `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, `.claude/rules`; `opencode`: `opencode.json`, `opencode.jsonc`, `.opencode`, `AGENTS.md`, `CLAUDE.md`, `CONTEXT.md`; `copilot`: `.github`, `.claude`, `.mcp.json`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`; `gemini`: `GEMINI.md`, `.gemini`, `.agents/skills`) — a home directory normally does. See [isolation](isolation.md) |
-| `--no-web` | Off; Claude-family runs deny `WebSearch` and `WebFetch` at every autonomy level. Aider disables URL discovery with `--no-detect-urls`; slash-command prompts are refused before launch. OpenCode selects a fresh agent that denies webfetch, websearch, and delegation. Copilot excludes web_fetch/web_search and denies the GitHub MCP web_search tool. Gemini denies google_web_search/web_fetch through a private policy. Pi accepts the flag because its built-in registry has no web tools. Kimi denies WebSearch and FetchURL in a private config while preserving existing restrictions and customization. Other unsupported agents refuse the flag. |
+| `--no-web` | Off; Claude-family runs deny `WebSearch` and `WebFetch` at every autonomy level. Aider disables URL discovery with `--no-detect-urls`; slash-command prompts are refused before launch. OpenCode selects a fresh agent that denies webfetch, websearch, and delegation. Copilot excludes web_fetch/web_search and denies the GitHub MCP web_search tool. Gemini denies google_web_search/web_fetch through a private policy. Pi accepts the flag because its built-in registry has no web tools. Kimi denies WebSearch and FetchURL in a private config while preserving existing restrictions and customization. Cline disables fetch_web_content and web_search in private settings. Codex passes `-c web_search="disabled"`. Cursor passes `--exclude-tools web_search_tool_call,web_fetch_tool_call`, Droid `--remove-tools WebSearch,FetchUrl`, and Qwen `--exclude-tools web_search,web_fetch`. OpenHands accepts the flag because its CLI mode has no web tools. Agy and Goose refuse the flag. |
 | `--experiment-mcp <spec.json>` | Unset; experiment MCP server for `claude`, `zai`, `codex`, `kimi`, `opencode`, `copilot`, `gemini`, `goose`, `pi`, `qwen`, or `cline`; requires hermetic mode, tools none, and read-only scode; `codex`, `kimi`, and `gemini` require explicit spec opt-ins for their model-bound result headers and schema additions |
 | `--label <KEY=VALUE>` | Repeatable; metadata stored with the run; otherwise read `CODEMUX_LABELS` |
 | `--result-json` | Off; structured result with harness-specific normalization |
-| `--max-budget-usd <amount>` | Unset; a spend threshold for the run, a positive decimal with at most ten integer digits and two fraction digits (`2.5`, `0.75`), so the amount reaches the harness exactly as written. Claude and Z.AI only: Claude Code's own `--max-budget-usd` flag, which upstream applies to headless runs. The threshold is soft: Claude Code compares its own client-side estimate of the spend against it and stops the run once the estimate passes it, so the final cost can exceed the amount, and the estimate uses Anthropic's prices, which for a Z.AI run or a provider override are not the provider's billing. Every other agent refuses the flag before launch |
+| `--max-budget-usd <amount>` | Unset; a spend threshold for the run, a positive decimal with at most ten integer digits and two fraction digits (`2.5`, `0.75`), so the amount reaches the harness exactly as written. Claude, Z.AI, and Pi only. Claude and Z.AI use Claude Code's own `--max-budget-usd` flag, which upstream applies to headless runs. The threshold is soft: Claude Code compares its own client-side estimate of the spend against it and stops the run once the estimate passes it, so the final cost can exceed the amount, and the estimate uses Anthropic's prices, which for a Z.AI run or a provider override are not the provider's billing. Pi enforces a soft cap on its verified native USD estimates through a private extension ([harnesses](harnesses.md)). Every other agent refuses the flag before launch |
 
 Claude and Z.AI headless `--auto medium` runs use `--permission-mode acceptEdits`
 with `--allowedTools Edit(//<launch dir>/**) Bash WebSearch WebFetch`. Shell
@@ -175,7 +175,7 @@ With no `--label` flags, `run` reads comma-separated pairs from
 `CODEMUX_LABELS`, such as `CODEMUX_LABELS='wf=review,step=scan'`. Any
 `--label` flag ignores that variable entirely. A wrapper can set the variable
 to label nested `codemux run` calls. Use flags for values containing commas.
-`session`, `tui`, and `check` do not accept labels.
+`check` accepts repeatable `--label` flags and records them on every probe's ledger record. `session` and `tui` do not accept labels.
 
 Labels are stored as plain text under the state directory or the configured
 ledger path. Never put prompt text, secrets, or anything the ledger should
@@ -224,9 +224,9 @@ a read of the process table; when the table cannot be read (`ps` missing or
 timing out), the degraded mode reaches only the immediate child, and a
 descendant may survive the signal.
 
-Droid and OpenCode TUI refuse `--effort` with a level (exit 64): the interactive
-entry has no effort carrier; `--effort none` (no flag) and `run` remain. On every
-other harness, tui resolves effort exactly as run does, so a value outside the
+Cursor, Gemini, and OpenHands have no effort carrier, so their TUI refuses
+`--effort` with a level (exit 64), as their runs do. On every other harness,
+tui resolves effort exactly as run does, so a value outside the
 adapter's set refuses with exit 64 instead of a warning. Provider overrides can
 use both environment and argv configuration: Claude also receives inline
 `--settings` for its model picker. See [provider overrides](provider-overrides.md).
@@ -269,20 +269,21 @@ without the diagnostic-mode option. Model and timeout selection remain available
 `session` shares launch options and the Playwright option, but not accounting.
 Its additional options and resume restrictions are defined once in the
 [session guide](sessions.md#options).
-`--harness-home <dir>` selects a persistent caller-owned config and runtime home for Claude, ZAI, and Codex. It requires an absolute directory outside the working directory and real harness stores, rejects symlinks and `--hermetic`, and preserves caller settings and skills. Reuse the same path on `--resume`. Codemux links the login; callers seed trusted content and own cleanup. `--final` leaves this directory intact. [Layouts and duties](sessions.md#caller-owned-session-homes).
+`--harness-home <dir>` selects a persistent caller-owned config and runtime home for every session agent (Cline, Copilot, Goose, and OpenHands require a provider override). It requires an absolute directory outside the working directory and real harness stores, rejects symlinks and `--hermetic`, and preserves caller settings and skills. Reuse the same path on `--resume`. Codemux links the login; callers seed trusted content and own cleanup. `--final` leaves this directory intact. [Layouts and duties](sessions.md#caller-owned-session-homes).
 The [protocol reference](session-protocol.md) defines JSONL input and output.
-It supports Claude, Z.AI, Codex, Agy, OpenCode, Aider, Kimi, Cursor,
-Droid, Pi, Qwen, Gemini, Copilot, and Goose.
-Aider and OpenCode accept tool selection across turns and resume; OpenCode
-requires hermetic mode for `none`. `--max-budget-usd` is refused for sessions. `--hermetic` gives
-a session the run path's isolation on claude, zai, codex, kimi, opencode,
-agy, aider, droid, pi, gemini, copilot, and goose (cursor has no verified
-hermetic session mode) — none of the operator's instructions, skills,
-hooks, MCP servers, or permission rules load. On claude, zai, codex, kimi,
-agy, aider, opencode, droid, pi, gemini, copilot, and goose the
-harness's state lives in a per-session private home removed by `--final`
-or the stale sweep; opencode keeps native data/state across turns and refreshes executable configuration each turn.
-Qwen keeps no session-keyed home. See
+It supports Agy, Aider, Claude, Cline, Codex, Copilot, Cursor, Droid,
+Gemini, Goose, Kimi, OpenCode, OpenHands, Pi, Qwen, and Z.AI.
+Tool selection across turns and resume is described in the
+[session guide](sessions.md#options); OpenCode requires hermetic mode for
+`none`. `--max-budget-usd` is refused for sessions. `--hermetic` gives
+a session the run path's isolation on every session agent except cursor
+(cursor has no verified hermetic session mode); cline, goose, and
+openhands require a provider override. None of the operator's
+instructions, skills, hooks, MCP servers, or permission rules load. On
+every hermetic session agent except qwen the harness's state lives in a
+per-session private home removed by `--final` or the stale sweep;
+opencode keeps native data/state across turns and refreshes executable
+configuration each turn. Qwen keeps no session-keyed home. See
 [isolation](isolation.md) and
 [hermetic sessions](sessions.md#hermetic-sessions).
 `--hermetic --experiment-project-settings` (Claude/Z.AI) additionally runs

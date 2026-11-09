@@ -153,21 +153,24 @@ implementation narrative behind it is preserved in the
   kept whole; the home settles onto `session-<id>` before the registry record is
   released, is reported as `session_started.private_home`, and is keyed in the
   registry's `harness_home` so a resume refuses a home that went missing.
-- Hermetic session canary: `codemux check --hermetic --session -a <agent>` drives three
+- Hermetic session canary: `codemux check --hermetic --session -a <agent>` drives five
   sessions of the same build — a hermetic one-turn question over planted instruction
-  files, a control without `--hermetic` that must leak the planted code word, and the
+  files, a control without `--hermetic` that must leak the planted code word, the
   first session resumed with `--resume` and `--final`, whose end must remove the private
-  home — planting per harness the way the run canary does (kimi and agy through their
+  home, and a caller-owned `--harness-home` session started and resumed, which must load
+  a planted private skill — planting per harness the way the run canary does (kimi and agy through their
   redirected operator homes), and cleaning up every planted file and reported private
   home, failure included; the live gate runs it as probe K (label "hermetic session") on
   every harness with both a session driver and the hermetic capability, with a
-  `3 × --timeout + 30` second outer deadline, and other harnesses keep an UNSUPPORTED
+  `5 × --timeout + 30` second outer deadline, and other harnesses keep an UNSUPPORTED
   cell naming the missing half.
 - `codemux run --max-budget-usd <amount>` passes a spend threshold to a
-  headless `claude` or `zai` run as Claude Code's own flag (a positive amount
-  with at most ten integer digits and two fraction digits, so it reaches the
-  harness as written; every other agent refuses the flag before launch, and so
-  do tui and session, where upstream applies it to `--print` runs only). The
+  headless `claude` or `zai` run as Claude Code's own flag, and to a `pi` run
+  through a private extension that caps pi's verified native USD estimates (a
+  positive amount with at most ten integer digits and two fraction digits, so
+  it reaches the harness as written; every other agent refuses the flag before
+  launch, and so do tui and session, where upstream applies it to `--print`
+  runs only). The
   threshold is soft: Claude Code stops the run once its client-side estimate
   of the spend, at Anthropic's prices, passes it, so the final cost can exceed
   the amount and a Z.AI run's estimate is not its provider's billing. `list
@@ -219,9 +222,9 @@ implementation narrative behind it is preserved in the
 
 ### Changed
 
-- The audited ceilings move to the versions the 2026-11-02 live gate passed
-  on: agy 1.4.12, claude and zai 2.1.300, codex 0.165.0, kimi 2.4.0 (docs/
-  harnesses.md records the evidence per harness). droid 0.221.0 stays at
+- The audited ceilings move to the versions the 2026-11-06 to 2026-11-08
+  live gates passed on: agy 1.5.3, claude and zai 2.1.317, codex 0.166.0,
+  kimi 2.5.2 (docs/harnesses.md records the evidence per harness). droid 0.221.0 stays at
   0.186.0 for lack of credentials on the release machine.
 - The live-gate report has one row per harness and probe with
   PASS/FAIL/SKIP/UNSUPPORTED, keeps harness `Warning:` lines in the row
@@ -235,9 +238,9 @@ implementation narrative behind it is preserved in the
 - The coverage floor is per file (at least 80 percent line and function over
   `src/` and `scripts/`, with evidence-based waivers), and
   `tests/file-size.test.ts` fails on any `.ts` file over 500 lines.
-- `codemux tui -a pi` passes `--no-approve` at medium and high autonomy
-  only; at read-only and low the TUI keeps pi's native approvals, matching
-  the headless flag map.
+- `codemux tui -a pi` passes `--no-approve` at every autonomy level, as
+  the headless path does: the flag is pi's project-trust switch (it ignores
+  project-local files such as `.pi/SYSTEM.md`), not an approval grant.
 - Codex autonomy flags changed shape on `run`, `tui`, and `session`: the
   approval policy now rides the `-c approval_policy="never"|"untrusted"`
   config override instead of `-a never|untrusted`, because codex's root

@@ -33,7 +33,8 @@ The codemux-owned block contains:
 ```
 
 It appears under `codemux` in the envelope. `codemux.recording` is the JSONL
-path for every experiment run on Claude, Z.AI, Codex, or Kimi, and null otherwise.
+path for every experiment run (Claude, Cline, Codex, Copilot, Gemini, Goose,
+Kimi, OpenCode, Pi, Qwen, and Z.AI), and null otherwise.
 The recording includes raw evidence and normalized `turn`, `turn_usage`,
 `turn_call`, and `tool_result_delivered` records; see [experiment MCP](experiment-mcp.md).
 `turn` has `{message_id, t, usage, tool_calls}`; `usage` is an object or null.
@@ -208,9 +209,17 @@ publish components that do not sum to the published total.
 | Codex | Structured token snapshot, no cost; plain fallback total only | Reported turn tokens and driver-invocation accumulation; no cost |
 | Agy | Input/output/cache-read counts, computed total; no cost | Turn counts and driver-invocation accumulation; no cost |
 | OpenCode | Sum of step usage and reported step costs | Steps summed per turn, turns summed within the driver invocation |
-| Kimi | Result-json and plain runs sum wire-log usage; no cost. A binary that ignores the stream wire keeps its plain text and records unknown usage | Unknown |
-| Aider | Unknown | Unknown |
-| Other adapters | Unknown | Sessions unsupported |
+| Kimi | Result-json and plain runs sum wire-log usage; no cost. A binary that ignores the stream wire keeps its plain text and records unknown usage | Turn counts from the turn's wire log; no cost |
+| Aider | Native output tokens and known positive cost; input, cache, and total unknown | Same fields per turn from local analytics |
+| Cline | Input/output/cache and reported cost from `run_result` | Per-turn deltas of the cumulative usage in `cline history --json` |
+| Copilot | Native model metrics from a private usage report; no cost | Per-turn delta from a private usage artifact |
+| Cursor | Per-call usage events summed; no cost | Each turn's result line and per-call usage events |
+| Droid | Result-object usage; no cost | Each turn's result object |
+| Gemini | Result stats; no cost | Closing result stats; no cost |
+| Goose | Message usage and provider-denominated cost | Each turn's message usage |
+| Pi | Native usage and cost | Per-turn usage |
+| Qwen | Result usage; no cost | Each turn's result message; no cost |
+| OpenHands | Unknown | Unknown |
 
 A resumed driver starts token counters empty. If the first invocation reports
 100 input tokens and the resumed invocation reports 20, the new closing record
