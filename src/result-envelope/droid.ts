@@ -83,7 +83,14 @@ export function parseDroidResultEnvelope(stdout: string): DroidEnvelopeInfo | nu
         if (event.role === "user") collector.userTurn();
         else if (event.role === "assistant" && typeof event.text === "string") collector.message(event.text);
         break;
-      case "system": case "tool_call": case "tool_result": case "reasoning":
+      case "tool_call":
+        // A tool call opens an empty message (the cursor rule): a run that
+        // ends on one reports final_message "", as the docs promise.
+        sawStream = true;
+        collector.close();
+        collector.text("");
+        break;
+      case "system": case "tool_result": case "reasoning":
         sawStream = true;
         break;
       default: break;
@@ -118,13 +125,22 @@ export function parseDroidResultEnvelope(stdout: string): DroidEnvelopeInfo | nu
   };
 }
 
-/** Droid's stream lines the answer never reads: tool payloads and
- * reasoning (JSON.stringify writes `type` first). The fold sheds them. */
+/** Droid's stream lines whose payload the answer never reads: tool
+ * payloads and reasoning (JSON.stringify writes `type` first). The fold
+ * sheds them. */
 const DROID_SHED_PREFIXES = ['{"type":"tool_result"', '{"type":"tool_call"', '{"type":"reasoning"'] as const;
+const DROID_TOOL_CALL_PREFIX = ['{"type":"tool_call"'] as const;
+/** What the fold keeps in place of a shed tool call: the parser needs the
+ * event, not its parameters, to report final_message "" when the run ends
+ * on a tool call. */
+export const DROID_TOOL_CALL_STUB = '{"type":"tool_call"}';
 
 /** The streaming fold a droid run's stdout passes through. */
 export function droidStreamFold(): AnswerStreamFold {
-  return new AnswerStreamFold((head) => opensWith(head, DROID_SHED_PREFIXES) ? "drop" : "keep");
+  return new AnswerStreamFold(
+    (head) => opensWith(head, DROID_SHED_PREFIXES) ? "drop" : "keep",
+    (head) => opensWith(head, DROID_TOOL_CALL_PREFIX) ? DROID_TOOL_CALL_STUB : null,
+  );
 }
 
 /** A plain droid run: the stream folded to the complete answer. Stdout

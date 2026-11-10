@@ -20,7 +20,8 @@ const FULL = "Findings 1 to 19.\n\nFinding 20.";
 
 describe("droid: the stream-json wire", () => {
   // text, tool call, text, tool call, empty final message: droid omits an
-  // empty text block, so the final message is the last non-empty one.
+  // empty text block, so the run ends on a tool call and the final message
+  // is "" (the tool call opens an empty message, the cursor rule).
   const stream = lines([
     { type: "system", subtype: "init", session_id: "s1" },
     { type: "message", role: "user", id: "u1", text: "audit this" },
@@ -42,13 +43,45 @@ describe("droid: the stream-json wire", () => {
     expect(out.usage?.output_tokens).toBe(5);
   });
 
-  test("--result-json carries the whole answer; final_message keeps the last one", () => {
+  test("--result-json carries the whole answer; final_message is empty after a closing tool call", () => {
     const out = adapter.processRunResult(ok(stream), { agent: "droid", prompt: "p", resultJson: true });
     const envelope = JSON.parse(out.stdout);
     expect(envelope.result).toBe(FULL);
-    expect(envelope.codemux.final_message).toBe("Finding 20.");
+    expect(envelope.codemux.final_message).toBe("");
     expect(envelope.codemux.truncated).toBe(false);
     expect(envelope.codemux.session_id).toBe("s1");
+  });
+
+  test("text after the last tool call is the final message", () => {
+    const closing = stream.replace(/\{"type":"completion"/u,
+      `${JSON.stringify({ type: "message", role: "assistant", id: "a3", text: "Done." })}\n{"type":"completion"`);
+    const envelope = JSON.parse(adapter.processRunResult(ok(closing), { agent: "droid", prompt: "p", resultJson: true }).stdout);
+    expect(envelope.result).toBe(`${FULL}\n\nDone.`);
+    expect(envelope.codemux.final_message).toBe("Done.");
+  });
+
+  test("through the fold, a run that ends on a tool call reports an empty final_message", () => {
+    const fold = droidStreamFold();
+    // A long tool call is shed mid-line; short ones are shed whole.
+    const longCall = lines([{ type: "tool_call", id: "t0", toolName: "Write", parameters: { text: "z".repeat(5000) } }]);
+    for (let at = 0; at < longCall.length; at += 700) fold.push(longCall.slice(at, at + 700));
+    fold.push(stream);
+    const kept = fold.finish();
+    expect(kept).not.toContain("parameters");
+    const envelope = JSON.parse(adapter.processRunResult(ok(kept), { agent: "droid", prompt: "p", resultJson: true },
+      { stdoutSink: fold }).stdout);
+    expect(envelope.result).toBe(FULL);
+    expect(envelope.codemux.final_message).toBe("");
+  });
+
+  test("the fold keeps every marker of one shed line, not only the first", () => {
+    const fold = droidStreamFold();
+    const first = "CODEMUX-CANARY-0123ABCD";
+    const second = "CODEMUX-CANARY-4567CDEF";
+    fold.push(lines([{ type: "tool_result", id: "t1", value: `${first} ${"y".repeat(300)} ${second}` }]));
+    fold.finish();
+    expect(fold.droppedMarkerEvidence()).toContain(first);
+    expect(fold.droppedMarkerEvidence()).toContain(second);
   });
 
   test("an error event fails the run", () => {
@@ -211,6 +244,15 @@ describe("pi: the --mode json wire", () => {
     expect(envelope.reply).toBe(FULL);
     expect(envelope.codemux.final_message).toBe("");
     expect(envelope.codemux.truncated).toBe(false);
+  });
+
+  test("a failed plain run names a plain run on stderr, not --result-json", () => {
+    const plain = adapter.processRunResult(ok(stream("error")), { agent: "pi", prompt: "p" });
+    expect(plain.success).toBe(false);
+    expect(plain.stderr).toContain("so this run fails");
+    expect(plain.stderr).not.toContain("--result-json");
+    const json = adapter.processRunResult(ok(stream("error")), { agent: "pi", prompt: "p", resultJson: true });
+    expect(json.stderr).toContain("so this --result-json run fails");
   });
 
   test("a length stop on the last message sets truncated and prints one stderr line", () => {

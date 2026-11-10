@@ -21,7 +21,7 @@ export const ANSWER_COMPLETE: Readonly<Record<AgentId, FeatureState>> = {
   copilot: supported("tests/answer-complete-g2.test.ts",
     "Every run reads the JSONL wire (--output-format json): one assistant.message per model call. No stop reason is recorded."),
   droid: supported("tests/answer-complete-g3.test.ts",
-    "Every run uses exec -o stream-json: the json format's finalText is the last text block alone. The stream names no stop reason."),
+    "Every run uses exec -o stream-json: the json format's finalText is the last text block alone. The fold keeps a stub for each shed tool call, so a run that ends on one reports final_message \"\". The stream names no stop reason."),
   goose: supported("tests/answer-complete-g3.test.ts",
     "Every run uses run --output-format stream-json; chunks of one message id join, messages join with a blank line; outputTokenLimitReached on the last message sets truncated."),
   opencode: supported("tests/answer-complete-g3.test.ts",

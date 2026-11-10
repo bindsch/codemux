@@ -91,11 +91,14 @@ export function parseOpenhandsResultEnvelope(stdout: string): OpenhandsEnvelopeI
       const thought = textBlocks(event.thought);
       const action = event.action as Record<string, unknown> | null | undefined;
       const finish = action?.kind === "FinishAction" && typeof action.message === "string" ? action.message : "";
-      // One LLM response's actions share its thought: a response with no
-      // thought adds nothing, and the finish message is its own message.
+      // One LLM response's actions share its thought, and the finish
+      // message is its own message. Any other action is a tool call: it
+      // opens an empty message (the cursor rule), so a run that ends on a
+      // tool call reports final_message "" while its text stays in the
+      // answer.
       if (thought !== "") collector.message(thought);
       if (finish !== "") collector.message(finish);
-      else if (thought === "") collector.close();
+      else if (action?.kind !== "FinishAction") { collector.close(); collector.text(""); }
     } else if (event.kind === "AgentErrorEvent" || event.kind === "ConversationErrorEvent") {
       if (typeof event.error === "string") errorText = event.error;
       else if (

@@ -218,7 +218,7 @@ describe("pi --result-json: the --mode json wire", () => {
     );
     expect(result.success).toBe(false);
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toContain("reported a aborted stop (stop hit)");
+    expect(result.stderr).toContain("reported an aborted stop (stop hit)");
     expect(JSON.parse(result.stdout).codemux.failure_code).toBe("harness-error");
   });
 

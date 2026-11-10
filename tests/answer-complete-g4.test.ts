@@ -113,6 +113,18 @@ describe("openhands", () => {
     expect(envelope.codemux.final_message).toBe("Finding 20.");
   });
 
+  test("a run that ends on a tool call reports an empty final_message", () => {
+    const endsOnTool = lines([
+      thought("Findings 1 to 19.", "r1"),
+      { kind: "ObservationEvent", source: "environment", observation: { content: "ok" } },
+      thought("Finding 20.", "r2"),
+      { kind: "ObservationEvent", source: "environment", observation: { content: "ok" } },
+    ]);
+    const envelope = JSON.parse(openhandsResult(ok(endsOnTool), request).stdout);
+    expect(envelope.llm_message).toBe(FULL);
+    expect(envelope.codemux.final_message).toBe("");
+  });
+
   test("a plain run with no wire keeps the startup verdict", () => {
     const adapter = new OpenHandsAdapter({});
     const result = adapter.processRunResult(ok("plain text\n"), { agent: "openhands", prompt: "p" });

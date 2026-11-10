@@ -195,7 +195,7 @@ export function piResult(result: RunResult, request: RunRequest): RunResult {
   }
   const failure =
     parsed.stopReason === "error" || parsed.stopReason === "aborted"
-      ? `a ${parsed.stopReason} stop (${parsed.errorText ?? "no error message"})`
+      ? `an ${parsed.stopReason} stop (${parsed.errorText ?? "no error message"})`
       : parsed.answer === null || parsed.answer.trim() === ""
         ? "no assistant message"
         : null;
@@ -221,7 +221,7 @@ export function piResult(result: RunResult, request: RunRequest): RunResult {
         stderr: appendDiagnostic(
           result.stderr,
           `codemux: ${agent} reported ${failure}, ` +
-            `so this --result-json run fails even though the harness exited ${result.exitCode}`
+            `so this ${request.resultJson ? "--result-json run" : "run"} fails even though the harness exited ${result.exitCode}`
         ),
         exitCode: result.exitCode === 0 ? 1 : result.exitCode,
         success: false,

@@ -23,7 +23,8 @@ immutable notes and engineering evidence.
   that ended on a tool call printed an empty line. Plain runs print the
   complete answer; `--result-json` puts it in the answer field.
 - New `--result-json` block fields: `codemux.final_message` (the last
-  assistant message alone) and `codemux.truncated` (the harness reported a
+  assistant message alone, or an empty string when the run ended on a tool
+  call) and `codemux.truncated` (the harness reported a
   max-tokens or length stop on the last message; stderr then carries one
   line). Agy's stream-json carries no intermediate text, so its answer stays
   the result response (a declared limitation).

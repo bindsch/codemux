@@ -37,8 +37,20 @@ export class AnswerStreamFold implements StdoutSink {
 
   /** `classify` reads a line's opening (at least HEAD_CHARS characters,
    * or the whole line when it is shorter) and decides its fate; a line it
-   * cannot place is kept. */
-  constructor(private readonly classify: (head: string, complete: boolean) => LineFate) {}
+   * cannot place is kept. `stub`, when given, maps a shed line's opening
+   * to a short line kept in its place (or null for none): the parser still
+   * sees that the event happened, in order, without its payload. */
+  constructor(
+    private readonly classify: (head: string, complete: boolean) => LineFate,
+    private readonly stub?: (head: string) => string | null,
+  ) {}
+
+  private keepStub(head: string): void {
+    const line = this.stub?.(head);
+    if (line === undefined || line === null) return;
+    this.kept += `${line}\n`;
+    this.keptByteCount += byteLength(line) + 1;
+  }
 
   push(chunk: string): void {
     if (this.closed) return;
@@ -53,6 +65,7 @@ export class AnswerStreamFold implements StdoutSink {
         this.bufferBytes += byteLength(piece);
         if (newline === -1 && this.buffer.length >= HEAD_CHARS &&
             this.classify(this.buffer.slice(0, HEAD_CHARS), false) === "drop") {
+          this.keepStub(this.buffer.slice(0, HEAD_CHARS));
           this.shedding = true;
           this.scan(this.buffer);
           this.buffer = "";
@@ -76,6 +89,7 @@ export class AnswerStreamFold implements StdoutSink {
     this.bufferBytes = 0;
     if (line === "" && !terminated) return;
     if (this.classify(line.slice(0, HEAD_CHARS), true) === "drop") {
+      this.keepStub(line.slice(0, HEAD_CHARS));
       this.carry = "";
       this.scan(line);
       this.carry = "";
@@ -88,8 +102,13 @@ export class AnswerStreamFold implements StdoutSink {
 
   private scan(fragment: string): void {
     const text = this.carry + fragment;
-    const match = CANARY_MARKER_PATTERN.exec(text);
-    if (match !== null && this.evidenceBytes < EVIDENCE_CAP_BYTES) {
+    // Every match, as StreamMarkerScan keeps: a fragment can carry several
+    // distinct markers, and keeping only the first would hide the others.
+    const pattern = new RegExp(CANARY_MARKER_PATTERN.source, "g");
+    for (let match = pattern.exec(text); match !== null; match = pattern.exec(text)) {
+      // A match that ends inside the carry was recorded on the last scan.
+      if (match.index + match[0].length <= this.carry.length) continue;
+      if (this.evidenceBytes >= EVIDENCE_CAP_BYTES) break;
       const evidence = text.slice(Math.max(0, match.index - 64), match.index + match[0].length + 64);
       this.evidence.push(evidence);
       this.evidenceBytes += byteLength(evidence);
