@@ -15,8 +15,11 @@ import { Command } from "commander";
 import * as cliRuntime from "../src/cli-runtime.js";
 import { getDefaultConfig } from "../src/config.js";
 import { registerCheckCommand } from "../src/check-command.js";
-import { sessionCanary } from "../src/hermetic-session-canary.js";
-import { sessionCanaryLaunchCount } from "../src/hermetic-session-canary-home.js";
+import {
+  SESSION_CANARY_PLANTED_ENV, assertSessionCanaryRequest, plantSessionCanary, sessionCanary, sessionCanaryOwnedEnv,
+} from "../src/hermetic-session-canary.js";
+import { HARNESS_HOME_CANARY_CLEARED_ENV, sessionCanaryLaunchCount } from "../src/hermetic-session-canary-home.js";
+import { UsageRefusalError } from "../src/validation.js";
 import { SESSION_AGENTS } from "../src/session/cli-agents.js";
 import { AGENT_IDS } from "../src/types.js";
 import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
@@ -57,6 +60,26 @@ const refusals: { label: string; argv: string[]; message: string }[] = [
     label: "print-sandbox",
     argv: ["check", "-a", "claude", "--hermetic", "--session", "--print-sandbox"],
     message: "--print-sandbox supports the plain probe only",
+  },
+  {
+    // The claude-family plant points CLAUDE_CONFIG_DIR at its scratch
+    // operator config directory; a caller's own profile would be replaced
+    // without notice (review of 05ecf26, finding 3).
+    label: "claude's pass-env CLAUDE_CONFIG_DIR",
+    argv: ["check", "-a", "claude", "--hermetic", "--session", "--pass-env", "PATH,CLAUDE_CONFIG_DIR"],
+    message: "--session cannot carry --pass-env CLAUDE_CONFIG_DIR for claude: the canary sets or clears CLAUDE_CONFIG_DIR itself in its sessions",
+  },
+  {
+    label: "zai's pass-env CLAUDE_CONFIG_DIR",
+    argv: ["check", "-a", "zai", "--hermetic", "--session", "--pass-env", "CLAUDE_CONFIG_DIR"],
+    message: "--session cannot carry --pass-env CLAUDE_CONFIG_DIR for zai",
+  },
+  {
+    // The caller-home arm sets HOME to a scratch operator home for every
+    // agent, codex included (review of the REL1 change, finding 1).
+    label: "codex's pass-env HOME",
+    argv: ["check", "-a", "codex", "--hermetic", "--session", "--pass-env", "HOME"],
+    message: "--session cannot carry --pass-env HOME for codex",
   },
 ];
 
@@ -128,5 +151,52 @@ test("check --hermetic --session runs the canary and prints its OK line", async 
     }
     rmSync(homeRoot, { recursive: true, force: true });
     fake.cleanup();
+  }
+});
+
+test("the session guard refuses a --pass-env name the agent's plant sets, and only that", () => {
+  const guards = {
+    wanted: true, agent: "kimi" as const, hermetic: true, supportsHermetic: true, sandbox: true,
+    tools: undefined, experimentMcp: false, agyProbe: false, printSandbox: false, sandboxOverrides: undefined,
+    passthroughEnv: ["KIMI_CODE_HOME"],
+  };
+  expect(() => assertSessionCanaryRequest(guards)).toThrow(/--pass-env KIMI_CODE_HOME for kimi/);
+  expect(() => assertSessionCanaryRequest({ ...guards, agent: "cline", passthroughEnv: ["HOME"] }))
+    .toThrow(/--pass-env HOME for cline/);
+  // The caller-home arm clears every redirect name and sets HOME, for every
+  // session agent; a name neither arm touches passes.
+  expect(() => assertSessionCanaryRequest({ ...guards, agent: "codex", passthroughEnv: ["CODEX_HOME"] }))
+    .toThrow(/--pass-env CODEX_HOME for codex/);
+  for (const name of HARNESS_HOME_CANARY_CLEARED_ENV) {
+    expect(() => assertSessionCanaryRequest({ ...guards, agent: "gemini", passthroughEnv: [name] })).toThrow(UsageRefusalError);
+  }
+  // zai's caller-home arm rewrites its gateway key (review round 2 of REL1).
+  expect(() => assertSessionCanaryRequest({ ...guards, agent: "zai", passthroughEnv: ["ZAI_API_KEY"] }))
+    .toThrow(/--pass-env ZAI_API_KEY for zai/);
+  expect(() => assertSessionCanaryRequest({ ...guards, passthroughEnv: ["PATH", "ANTHROPIC_BASE_URL"] })).not.toThrow();
+  for (const agent of AGENT_IDS.filter((id) => SESSION_AGENTS[id]?.hermetic === true)) {
+    expect({ agent, home: sessionCanaryOwnedEnv(agent).includes("HOME") }).toEqual({ agent, home: true });
+  }
+});
+
+test("the guard's planted-name table lists exactly the names each plant sets", () => {
+  const parent = mkdtempSync(join(tmpdir(), "codemux-planted-env-"));
+  const credentials = join(parent, "credentials.json");
+  const originalHome = process.env.HOME;
+  // kimi's plant reads the operator HOME; keep it inside scratch.
+  process.env.HOME = parent;
+  try {
+    for (const agent of AGENT_IDS.filter((id) => SESSION_AGENTS[id]?.hermetic === true)) {
+      const planted = plantSessionCanary(agent, parent, credentials);
+      try {
+        expect({ agent, names: Object.keys(planted.env).sort() })
+          .toEqual({ agent, names: [...(SESSION_CANARY_PLANTED_ENV[agent] ?? [])].sort() });
+      } finally {
+        planted.cleanup();
+      }
+    }
+  } finally {
+    process.env.HOME = originalHome;
+    rmSync(parent, { recursive: true, force: true });
   }
 });

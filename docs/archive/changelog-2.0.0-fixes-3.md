@@ -3,7 +3,7 @@ read_when: "Reviewing earlier fixes included in codemux 2.0.0."
 ---
 # 2.0.0 fixes, part 3
 
-Preserved from the [2.0.0 changelog](https://github.com/bindsch/codemux/blob/main/CHANGELOG.md#200---2026-10-31).
+Preserved from the [2.0.0 changelog](https://github.com/bindsch/codemux/blob/main/CHANGELOG.md#200---2026-11-10).
 
 - Hermetic claude runs build the private credentials copy from the mirror's
   `claudeAiOauth` object alone; co-stored `mcpOAuth` refresh tokens never

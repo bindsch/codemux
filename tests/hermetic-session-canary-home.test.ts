@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  HARNESS_HOME_CANARY_PROMPT, plantHarnessHomeCanary, runHarnessHomeSessionCanary,
+  HARNESS_HOME_CANARY_PROMPT, harnessHomeCanaryOwnedEnv, plantHarnessHomeCanary, runHarnessHomeSessionCanary,
   runCallerHarnessHomeCanary, sessionCanaryLaunchCount, supportsHarnessHomeCanary,
 } from "../src/hermetic-session-canary-home.js";
 import { canarySessionProtocolProblem, sessionCanary, type SessionRun } from "../src/hermetic-session-canary-driver.js";
@@ -19,6 +19,28 @@ test("the caller-home arm covers every session agent, cline included", () => {
     expect(sessionCanaryLaunchCount(agent)).toBe(5);
   }
   expect(callerAgents).toContain("cline");
+});
+
+// The check's --pass-env guard refuses harnessHomeCanaryOwnedEnv(agent); a
+// name the plant changes outside that list would be replaced without notice.
+test("every name the caller-home plant sets, changes, or clears is in its owned list", () => {
+  for (const agent of callerAgents) {
+    const root = scratch();
+    const environment: NodeJS.ProcessEnv = { ZAI_API_KEY: "synthetic-zai-key", ANTHROPIC_AUTH_TOKEN: "synthetic-zai-key" };
+    for (const name of harnessHomeCanaryOwnedEnv("zai")) environment[name] ??= `/fixture/ambient-${name}`;
+    const plant = plantHarnessHomeCanary(agent, undefined, environment, root);
+    try {
+      const names = new Set([...Object.keys(environment), ...Object.keys(plant.env)]);
+      const changed = [...names].filter((name) => plant.env[name] !== environment[name]);
+      expect({ agent, outside: changed.filter((name) => !harnessHomeCanaryOwnedEnv(agent).includes(name)) })
+        .toEqual({ agent, outside: [] });
+    } finally {
+      plant.cleanup();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+  expect(harnessHomeCanaryOwnedEnv("zai")).toContain("ZAI_API_KEY");
+  expect(harnessHomeCanaryOwnedEnv("codex")).not.toContain("ZAI_API_KEY");
 });
 
 for (const agent of ["claude", "codex", "zai"] as const) {

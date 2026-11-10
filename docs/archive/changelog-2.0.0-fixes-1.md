@@ -3,7 +3,7 @@ read_when: "Reviewing earlier fixes included in codemux 2.0.0."
 ---
 # 2.0.0 fixes, part 1
 
-Preserved from the [2.0.0 changelog](https://github.com/bindsch/codemux/blob/main/CHANGELOG.md#200---2026-10-31).
+Preserved from the [2.0.0 changelog](https://github.com/bindsch/codemux/blob/main/CHANGELOG.md#200---2026-11-10).
 
 - `check --hermetic` plants each harness's own instruction channel: project
   instruction files or scratch home files, with the same cwd and tools in both

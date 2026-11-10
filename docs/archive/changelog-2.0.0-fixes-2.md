@@ -3,7 +3,7 @@ read_when: "Reviewing earlier fixes included in codemux 2.0.0."
 ---
 # 2.0.0 fixes, part 2
 
-Preserved from the [2.0.0 changelog](https://github.com/bindsch/codemux/blob/main/CHANGELOG.md#200---2026-10-31).
+Preserved from the [2.0.0 changelog](https://github.com/bindsch/codemux/blob/main/CHANGELOG.md#200---2026-11-10).
 
 - Review round 80, whole tree: `calls --since` no longer treats an empty session id as a session key, so a recent
   empty-id turn cannot pull old empty-id closing records past the cutoff; session usage (codex, opencode, and the

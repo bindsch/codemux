@@ -42,7 +42,7 @@
  * driver's SIGKILL timer can end the child.
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { harnessHomeCanarySkillPath } from "../../../src/hermetic-session-canary-home.js";
 import type { AgentId } from "../../../src/types.js";
@@ -104,13 +104,14 @@ const leakedMarker = (scenario === "config-leak"
   : findMarker([join(cwd, "AGENTS.md"), join(cwd, "CLAUDE.md")])) ?? marker;
 
 let skillMarker = "NO-SKILL";
-// The caller-home arm plants a private skill; the Claude family's control
-// home carries only CLAUDE.md and answers as a control.
-let callerArm = false;
+// Only the caller-home arm passes --harness-home
+// (src/hermetic-session-canary-home.ts), and it always plants a private
+// skill there first. The read is unconditional so a canary that forgot to
+// plant it fails here with ENOENT, naming the real cause.
+const callerArm = harnessHome !== undefined;
 if (harnessHome !== undefined) {
   const skill = harnessHomeCanarySkillPath(value("-a") as Exclude<AgentId, "cline">, harnessHome);
-  callerArm = existsSync(skill);
-  if (callerArm) skillMarker = /CODEMUX-CANARY-[0-9A-F]{8}/.exec(readFileSync(skill, "utf8"))?.[0] ?? "NO-SKILL";
+  skillMarker = /CODEMUX-CANARY-[0-9A-F]{8}/.exec(readFileSync(skill, "utf8"))?.[0] ?? "NO-SKILL";
 }
 
 if (stateFile !== undefined) {

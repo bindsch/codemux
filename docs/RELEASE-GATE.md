@@ -205,7 +205,11 @@ bun run scripts/live-gate.ts --skip-probe F,G
 A terminal `SIGHUP` stops active probe process groups and makes the gate
 exit 129. Use `--pass-env <names>` to forward a comma-separated environment
 list verbatim as `--pass-env <names>` to every probe. The operator must name
-each pass-through explicitly. An ambient `CODEMUX_CURSOR_ENTRY` never adds
+each pass-through explicitly. Probe K refuses, with exit 64 and a K failure,
+any name the session canary sets or clears itself: `HOME`, the
+config-directory redirects such as `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, and
+`ZAI_API_KEY` for zai (see [check](cli.md#check)). Run K without those names,
+for example with `--skip-probe K` on the run that needs them. An ambient `CODEMUX_CURSOR_ENTRY` never adds
 one automatically. To select Cursor's alternate entry, set
 `CODEMUX_CURSOR_ENTRY=cursor` in the environment and run:
 

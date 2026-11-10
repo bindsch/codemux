@@ -35,7 +35,7 @@ from those links.
 | 2026-10-13 / 0.12.0 | [Alignment](align-0.12-report.md) | Final al41 raw-exit rule supersedes earlier signal attribution |
 | 2026-10-13 / 0.13.0–0.13.3 | [Experiment MCP and Antigravity isolation](experiment-mcp-report.md) | Shipped; dated live evidence separate from later regression gates |
 | 2026-10-29 evidence, moved 2026-10-31 | [Experiment evidence](experiment-evidence.md) | Renderer internals and rollout evidence behind the current operator contract |
-| 2026-10-31 / 2.0.0 | [2.0.0 detail notes](changelog-2.0.0-details.md) | Full implementation narrative behind the curated 2.0.0 changelog |
+| 2026-11-10 / 2.0.0 | [2.0.0 detail notes](changelog-2.0.0-details.md) | Full implementation narrative behind the curated 2.0.0 changelog |
 
 For fixture provenance, see [live recordings](../../tests/fixtures/live/README.md).
 Executable fake peers and synthetic schema cases are labeled separately

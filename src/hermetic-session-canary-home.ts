@@ -9,6 +9,23 @@ import type { AgentId } from "./types.js";
 
 type HarnessHomeCanaryAgent = AgentId;
 
+/** The redirect names the caller-home arm deletes from its sessions'
+ * environment; with HOME, which it sets to a scratch operator home, these
+ * are the names a caller's --pass-env cannot carry into that arm. */
+export const HARNESS_HOME_CANARY_CLEARED_ENV: readonly string[] = [
+  "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME",
+  "KIMI_CODE_HOME", "GEMINI_CLI_HOME", "COPILOT_HOME", "CURSOR_CONFIG_DIR", "FACTORY_HOME_OVERRIDE", "PI_CODING_AGENT_DIR", "GOOSE_PATH_ROOT",
+  "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENHANDS_PERSISTENCE_DIR", "OPENHANDS_CONVERSATIONS_DIR", "PERSISTENCE_DIR", "QWEN_HOME", "QWEN_RUNTIME_DIR",
+  "CLINE_DIR", "CLINE_DATA_DIR", "CLINE_SESSION_DATA_DIR", "CLINE_PROVIDER_SETTINGS_PATH", "CLINE_GLOBAL_SETTINGS_PATH", "CLINE_MCP_SETTINGS_PATH",
+];
+
+/** Every name the caller-home arm sets or clears in its sessions'
+ * environment: HOME, the cleared redirects, and zai's gateway key, which the
+ * arm rewrites from the adapter's token. */
+export function harnessHomeCanaryOwnedEnv(agent: AgentId): readonly string[] {
+  return ["HOME", ...HARNESS_HOME_CANARY_CLEARED_ENV, ...(agent === "zai" ? ["ZAI_API_KEY"] : [])];
+}
+
 /** Every session agent has a caller-home recipe (session/harness-home.ts), so
  * every one runs the caller-home arm. Kept as a predicate so a future agent
  * without a recipe fails closed here instead of at launch. */
@@ -106,10 +123,7 @@ export function plantHarnessHomeCanary(
     const env: NodeJS.ProcessEnv = { ...environment, HOME: operatorHome };
     // Ambient redirects must not point this arm back at the original
     // operator's configuration. --harness-home chooses the child root.
-    for (const name of ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR", "CODEX_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME",
-      "KIMI_CODE_HOME", "GEMINI_CLI_HOME", "COPILOT_HOME", "CURSOR_CONFIG_DIR", "FACTORY_HOME_OVERRIDE", "PI_CODING_AGENT_DIR", "GOOSE_PATH_ROOT",
-      "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENHANDS_PERSISTENCE_DIR", "OPENHANDS_CONVERSATIONS_DIR", "PERSISTENCE_DIR", "QWEN_HOME", "QWEN_RUNTIME_DIR",
-      "CLINE_DIR", "CLINE_DATA_DIR", "CLINE_SESSION_DATA_DIR", "CLINE_PROVIDER_SETTINGS_PATH", "CLINE_GLOBAL_SETTINGS_PATH", "CLINE_MCP_SETTINGS_PATH"]) {
+    for (const name of HARNESS_HOME_CANARY_CLEARED_ENV) {
       delete env[name];
     }
     if (agent === "zai") {

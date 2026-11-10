@@ -219,6 +219,7 @@ export function registerCheckCommand(
           agyProbe: options.agyIsolationProbe !== undefined,
           printSandbox: Boolean(options.printSandbox),
           sandboxOverrides: sandboxPolicyOverrides,
+          passthroughEnv,
         });
 
         const autonomy = resolveAutonomyForAdapter(agentId, caps, requestedAutonomy);

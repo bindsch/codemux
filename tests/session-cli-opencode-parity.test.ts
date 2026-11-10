@@ -192,9 +192,14 @@ test("OpenCode launcher rejects a replaced Playwright executable after asynchron
 test("OpenCode launcher turn timeout interrupts the native child", async () => {
   const s = opencodeLaunchFixture();
   try {
-    const outcome = await s.run(["--hermetic", "--turn-timeout", "0.1"], async ({ chunks, stdin }) => {
+    // The deadline must outlast the fake's start-up: a kill before its
+    // step_start (the line that names the session) fails the first turn
+    // instead of interrupting it. 0.1 s lost that race under a loaded gate.
+    const outcome = await s.run(["--hermetic", "--turn-timeout", "2"], async ({ chunks, stdin }) => {
       stdin.write('{"type":"user","text":"scenario:wait timeout"}\n');
-      await waitForEvent(chunks, "deadline completion", (event) => event.type === "turn_completed", 3_000);
+      // Under the suite's 10 s per-test timeout (package.json), so this
+      // wait's own message is the one a missed deadline reports.
+      await waitForEvent(chunks, "deadline completion", (event) => event.type === "turn_completed", 7_000);
     });
     expect(outcome.exitCode, outcome.stderr).toBe(0);
     expect(outcome.driveError).toBeUndefined();

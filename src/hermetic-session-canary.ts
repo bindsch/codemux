@@ -45,7 +45,7 @@ import { UsageRefusalError } from "./validation.js";
 import { copyClaudeCredentialMirror } from "./claude-credential-mirror.js";
 import { canarySessionProtocolProblem, SESSION_KILL_GRACE_MS, runCanarySession, sessionCanary, type SessionRun } from "./hermetic-session-canary-driver.js";
 import {
-  plantHarnessHomeCanary, runHarnessHomeSessionCanary, supportsHarnessHomeCanary,
+  harnessHomeCanaryOwnedEnv, plantHarnessHomeCanary, runHarnessHomeSessionCanary, supportsHarnessHomeCanary,
   type PlantedHarnessHomeCanary,
 } from "./hermetic-session-canary-home.js";
 import { SESSION_AGENTS } from "./session/cli-agents.js";
@@ -71,6 +71,32 @@ export interface SessionCanaryGuards {
   /** The parsed sandbox policy, whose shape is always built for a
    * sandboxed probe; the guard judges whether any override is set. */
   sandboxOverrides: SandboxPolicyOverrides | undefined;
+  /** The caller's --pass-env names. */
+  passthroughEnv: readonly string[];
+}
+
+/** The environment names each agent's session plant sets for the hermetic,
+ * control, and resumed sessions (plantSessionCanary's `env`). With the
+ * caller-home arm's names (harnessHomeCanaryOwnedEnv), these are the names
+ * a caller's --pass-env would see replaced without notice, so the guard
+ * refuses them. The `--harness-home` recipe's own per-agent variables
+ * (src/session/harness-home.ts) apply in the caller-home sessions as in
+ * any `session --harness-home`; they are that command's contract. */
+export const SESSION_CANARY_PLANTED_ENV: Partial<Record<AgentId, readonly string[]>> = {
+  claude: ["CLAUDE_CONFIG_DIR"],
+  zai: ["CLAUDE_CONFIG_DIR"],
+  kimi: ["HOME", "KIMI_CODE_HOME"],
+  agy: ["HOME"],
+  cline: ["HOME"],
+};
+
+/** Every name the session canary itself sets or clears for at least one of
+ * the agent's sessions. */
+export function sessionCanaryOwnedEnv(agent: AgentId): readonly string[] {
+  return [
+    ...(SESSION_CANARY_PLANTED_ENV[agent] ?? []),
+    ...(supportsHarnessHomeCanary(agent) ? harnessHomeCanaryOwnedEnv(agent) : []),
+  ];
 }
 
 export function assertSessionCanaryRequest(guards: SessionCanaryGuards): void {
@@ -111,6 +137,12 @@ export function assertSessionCanaryRequest(guards: SessionCanaryGuards): void {
   );
   if (overrideGiven) {
     throw new UsageRefusalError("--session cannot carry the sandbox policy overrides: the canary's sessions run the default scode policy");
+  }
+  const conflict = guards.passthroughEnv.find((name) => sessionCanaryOwnedEnv(guards.agent).includes(name));
+  if (conflict !== undefined) {
+    throw new UsageRefusalError(
+      `--session cannot carry --pass-env ${conflict} for ${guards.agent}: the canary sets or clears ${conflict} itself in its sessions`
+    );
   }
 }
 

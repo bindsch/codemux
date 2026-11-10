@@ -346,6 +346,7 @@ const guards: SessionCanaryGuards = {
   agyProbe: false,
   printSandbox: false,
   sandboxOverrides: undefined,
+  passthroughEnv: [],
 };
 
 test("assertSessionCanaryRequest passes a valid session check request", () => {

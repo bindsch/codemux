@@ -78,7 +78,7 @@ const combinationRefusals = [
   "--agy-isolation-probe requires -a agy", "agy canary checks require default read-only scode",
   "--enable-playwright-mcp requires --auto low for sessions",
   "--enable-playwright-mcp for copilot sessions requires --auto medium or high",
-  "experiment MCP prompt exceeds the",
+  "experiment MCP prompt exceeds the", "--session cannot carry --pass-env",
 ];
 
 describe("capability refusal inventory", () => {

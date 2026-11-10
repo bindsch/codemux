@@ -13,56 +13,7 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
-### Changed
-
-- A run's answer is now every assistant message the agent wrote after the
-  prompt, in order, with a blank line between messages, on every harness
-  (parity feature `run.answer-complete`). It used to be the final message
-  only on most harnesses, so findings written before a later tool call were
-  lost: a zai run returned only the tail of its answer, and a cursor run
-  that ended on a tool call printed an empty line. Plain runs print the
-  complete answer; `--result-json` puts it in the answer field.
-- New `--result-json` block fields: `codemux.final_message` (the last
-  assistant message alone, or an empty string when the run ended on a tool
-  call) and `codemux.truncated` (the harness reported a
-  max-tokens or length stop on the last message; stderr then carries one
-  line). Agy's stream-json carries no intermediate text, so its answer stays
-  the result response (a declared limitation).
-- Plain runs of Gemini, Qwen, Copilot, Droid, Goose, Pi, and OpenHands now
-  launch on the harness's structured stream and print the assembled answer
-  instead of the harness's text output (OpenHands: its terminal UI, tool
-  output included). Plain runs still print once, when the run ends. Plain runs of
-  Claude and Z.AI move from `--output-format json` to
-  `--output-format stream-json --verbose`; they printed at the end before
-  and still do.
-- Session turns carry every message of the turn: the Cline and Gemini ACP
-  drivers split text at tool calls, the Codex driver keeps commentary
-  messages, the Aider driver keeps reflected replies, and Droid turns read
-  `stream-json`.
-
-### Fixed
-
-- `codemux check --hermetic --session` on claude and zai: the code word now
-  also sits in a scratch operator `CLAUDE_CONFIG_DIR` that the hermetic,
-  control, and resumed sessions all pass through. Claude Code sessions load
-  the user setting source only, so the planted cwd files never reached the
-  control, which answered from the operator's own instructions and failed
-  the check as proving nothing. The hermetic sessions must swap the passed
-  directory for their private home and keep the code word out.
-- Test helpers read a fake harness's record file only once it is complete,
-  fixing a Linux CI race that read it mid-write.
-- Live gate probe B passes when the shell output is the answer's last line.
-  Since runs print every assistant message, a model's sentence before the
-  tool call failed the exact-output compare even though the shell ran.
-- `codemux check --hermetic` scans every event of a structured stream for
-  the planted marker, tool results and tool inputs included, on every
-  harness whose plain run prints an answer assembled from that stream
-  (Claude, Z.AI, Codex, Cursor, Gemini, Qwen, Copilot, OpenCode, Cline, and
-  OpenHands, as Droid, Goose, Pi, and Kimi already did). A marker that
-  reached the model only through a tool result used to vanish with the
-  shed event, and the check could certify a leaking run clean.
-
-## [2.0.0] - 2026-10-31
+## [2.0.0] - 2026-11-10
 
 The curated list below names every user-visible change. The long
 implementation narrative behind it is preserved in the
@@ -297,11 +248,59 @@ implementation narrative behind it is preserved in the
   config override instead of `-a never|untrusted`, because codex's root
   parser drops `-a` before `exec` and `untrusted` was never a valid `-a`
   value. The sandbox mode flags (`-s read-only` and friends) are unchanged.
+- A run's answer is now every assistant message the agent wrote after the
+  prompt, in order, with a blank line between messages, on every harness
+  (parity feature `run.answer-complete`). It used to be the final message
+  only on most harnesses, so findings written before a later tool call were
+  lost: a zai run returned only the tail of its answer, and a cursor run
+  that ended on a tool call printed an empty line. Plain runs print the
+  complete answer; `--result-json` puts it in the answer field.
+- New `--result-json` block fields: `codemux.final_message` (the last
+  assistant message alone, or an empty string when the run ended on a tool
+  call) and `codemux.truncated` (the harness reported a
+  max-tokens or length stop on the last message; stderr then carries one
+  line). Agy's stream-json carries no intermediate text, so its answer stays
+  the result response (a declared limitation).
+- Plain runs of Gemini, Qwen, Copilot, Droid, Goose, Pi, and OpenHands now
+  launch on the harness's structured stream and print the assembled answer
+  instead of the harness's text output (OpenHands: its terminal UI, tool
+  output included). Plain runs still print once, when the run ends. Plain runs of
+  Claude and Z.AI move from `--output-format json` to
+  `--output-format stream-json --verbose`; they printed at the end before
+  and still do.
+- Session turns carry every message of the turn: the Cline and Gemini ACP
+  drivers split text at tool calls, the Codex driver keeps commentary
+  messages, the Aider driver keeps reflected replies, and Droid turns read
+  `stream-json`.
 
 ### Fixed
 
 - Empty or whitespace-only answers fail on every agent: zero-exit runs become exit 1, report `Error: <agent> exited 0 with an empty answer`, mark JSON envelopes with `codemux.empty_answer: true` and `codemux.finish: "empty-answer"`, and record `finish: "empty-answer"` in the call ledger. Successful session turns without assistant text complete as `failed` with reason `empty answer`. There is no opt-out.
 - The launcher starts on Ubuntu 26.04, whose `/usr/bin/stat` is uutils coreutils: its `--version` names "uutils coreutils", which the dialect check read as BSD, so every `stat` candidate was refused with `no trusted stat found`.
+- `codemux check --hermetic --session` on claude and zai: the code word now
+  also sits in a scratch operator `CLAUDE_CONFIG_DIR` that the hermetic,
+  control, and resumed sessions all pass through. Claude Code sessions load
+  the user setting source only, so the planted cwd files never reached the
+  control, which answered from the operator's own instructions and failed
+  the check as proving nothing. The hermetic sessions must swap the passed
+  directory for their private home and keep the code word out.
+- `codemux check --hermetic --session` on every agent refuses with exit 64
+  a `--pass-env` name the canary itself sets or clears in any of its
+  sessions (`HOME`, every config-directory redirect such as
+  `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, and zai's `ZAI_API_KEY`). It used to
+  replace the caller's value without notice.
+- Test helpers read a fake harness's record file only once it is complete,
+  fixing a Linux CI race that read it mid-write.
+- Live gate probe B passes when the shell output is the answer's last line.
+  Since runs print every assistant message, a model's sentence before the
+  tool call failed the exact-output compare even though the shell ran.
+- `codemux check --hermetic` scans every event of a structured stream for
+  the planted marker, tool results and tool inputs included, on every
+  harness whose plain run prints an answer assembled from that stream
+  (Claude, Z.AI, Codex, Cursor, Gemini, Qwen, Copilot, OpenCode, Cline, and
+  OpenHands, as Droid, Goose, Pi, and Kimi already did). A marker that
+  reached the model only through a tool result used to vanish with the
+  shed event, and the check could certify a leaking run clean.
 
 Earlier 2.0.0 fixes are preserved in [part 1](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-2.0.0-fixes-1.md), [part 2](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-2.0.0-fixes-2.md), [part 3](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-2.0.0-fixes-3.md).
 
