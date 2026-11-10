@@ -1,9 +1,10 @@
-import { existsSync, mkdtempSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ClaudeSessionDriver, type SessionDriverOptions } from "../../src/session/driver.js";
 import { SessionProcess } from "../../src/session/process.js";
+import { readFakeRecords } from "./fake-records.js";
 
 export const FAKE = fileURLToPath(new URL("../fixtures/live/fake-claude-session.ts", import.meta.url));
 
@@ -98,12 +99,7 @@ export async function startSession(
 
 /** What the fake harness recorded, re-read so late appends are visible. */
 export function fakeRecord(session: Session, name: string): unknown[] {
-  const path = join(session.stateDir, name);
-  if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8")
-    .split("\n")
-    .filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line) as unknown);
+  return readFakeRecords<unknown>(join(session.stateDir, name));
 }
 
 /** Wait until the fake recorded `count` entries in `name`, re-reading so

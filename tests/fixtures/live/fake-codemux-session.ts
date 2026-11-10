@@ -6,7 +6,10 @@
  * session id (created at session_started, removed by --final), and reads
  * the planted code word from whichever instruction file the canary
  * planted: the --cwd's AGENTS.md or CLAUDE.md, $KIMI_CODE_HOME/AGENTS.md,
- * or $HOME/.gemini/GEMINI.md. It models a harness that loads the
+ * $HOME/.gemini/GEMINI.md, $HOME/.claude/CLAUDE.md, or $HOME/.codex/AGENTS.md.
+ * A claude or zai session never reads the cwd files (Claude Code sessions
+ * load the user setting source only); its plain mode reads the CLAUDE.md of
+ * a CLAUDE_CONFIG_DIR passed through with --pass-env instead. It models a harness that loads the
  * planted file in its plain mode (real codex loads project documents
  * from the cwd by default; round 413, item 1 — a plain session sends no
  * thread config, so the control's marker must reach it) and skips it in
@@ -18,6 +21,8 @@
  *   clean (default) — hermetic sessions answer OK, the control reveals
  *                     the planted code word, --final removes the home
  *   leak            — the first hermetic session answers the code word
+ *   config-leak     — the first hermetic session keeps the passed-through
+ *                     CLAUDE_CONFIG_DIR and answers its code word
  *   clean-control   — the control answers OK too, so the canary proves
  *                     nothing
  *   resume-leak     — the resumed hermetic session answers the code word
@@ -37,7 +42,7 @@
  * driver's SIGKILL timer can end the child.
  */
 
-import { appendFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { harnessHomeCanarySkillPath } from "../../../src/hermetic-session-canary-home.js";
 import type { AgentId } from "../../../src/types.js";
@@ -62,30 +67,50 @@ const stateFile = process.env.FAKE_CODEMUX_STATE;
 const privateHome = harnessHome ?? (homeRoot === "" ? "" : join(homeRoot, sessionId));
 
 let marker = "NO-MARKER";
+// Claude Code sessions pass `--setting-sources user`, which never loads the
+// cwd's instruction files; only the config directory's CLAUDE.md (a caller
+// home, or the operator's ~/.claude) reaches the model. The fake models
+// that, so a canary whose control relies on the cwd files fails here too.
+const claudeFamily = value("-a") === "claude" || value("-a") === "zai";
+// A passed-through CLAUDE_CONFIG_DIR is the plain session's config directory.
+const passedConfigDir = (value("--pass-env") ?? "").split(",").includes("CLAUDE_CONFIG_DIR")
+  ? process.env.CLAUDE_CONFIG_DIR : undefined;
 const plantedPaths = [
-  join(cwd, "AGENTS.md"),
-  join(cwd, "CLAUDE.md"),
+  ...(claudeFamily ? [] : [join(cwd, "AGENTS.md"), join(cwd, "CLAUDE.md")]),
+  ...(claudeFamily && passedConfigDir !== undefined && harnessHome === undefined ? [join(passedConfigDir, "CLAUDE.md")] : []),
   join(process.env.KIMI_CODE_HOME ?? "", "AGENTS.md"),
   join(process.env.HOME ?? "", ".gemini", "GEMINI.md"),
   join(process.env.HOME ?? "", ".claude", "CLAUDE.md"),
   join(process.env.HOME ?? "", ".codex", "AGENTS.md"),
 ];
-for (const path of plantedPaths) {
-  try {
-    const found = /CODEMUX-(?:AGY-)?CANARY-[0-9A-Za-z-]+/.exec(readFileSync(path, "utf8"));
-    if (found !== null) {
-      marker = found[0];
-      break;
+const findMarker = (paths: readonly string[]): string | undefined => {
+  for (const path of paths) {
+    try {
+      const found = /CODEMUX-(?:AGY-)?CANARY-[0-9A-Za-z-]+/.exec(readFileSync(path, "utf8"));
+      if (found !== null) return found[0];
+    } catch {
+      // Not planted here; the next path may carry the code word.
     }
-  } catch {
-    // Not planted here; the next path may carry the code word.
   }
-}
+  return undefined;
+};
+marker = findMarker(plantedPaths) ?? marker;
+// A leaking hermetic session (the leak scenarios) is a broken harness that
+// loads the planted cwd files whatever its setting sources say; under
+// config-leak it keeps the passed-through operator config directory instead
+// of swapping in its private one, and reads only that.
+const leakedMarker = (scenario === "config-leak"
+  ? findMarker(passedConfigDir === undefined ? [] : [join(passedConfigDir, "CLAUDE.md")])
+  : findMarker([join(cwd, "AGENTS.md"), join(cwd, "CLAUDE.md")])) ?? marker;
 
 let skillMarker = "NO-SKILL";
+// The caller-home arm plants a private skill; the Claude family's control
+// home carries only CLAUDE.md and answers as a control.
+let callerArm = false;
 if (harnessHome !== undefined) {
   const skill = harnessHomeCanarySkillPath(value("-a") as Exclude<AgentId, "cline">, harnessHome);
-  skillMarker = /CODEMUX-CANARY-[0-9A-F]{8}/.exec(readFileSync(skill, "utf8"))?.[0] ?? "NO-SKILL";
+  callerArm = existsSync(skill);
+  if (callerArm) skillMarker = /CODEMUX-CANARY-[0-9A-F]{8}/.exec(readFileSync(skill, "utf8"))?.[0] ?? "NO-SKILL";
 }
 
 if (stateFile !== undefined) {
@@ -116,6 +141,7 @@ switch (scenario) {
   case "clean":
     break;
   case "leak":
+  case "config-leak":
     firstHermeticAnswer = "marker";
     break;
   case "clean-control":
@@ -164,8 +190,8 @@ const emit = (fields: Record<string, unknown>): void => {
 emit(
   (hermetic || harnessHome !== undefined) && privateHome !== ""
     ? { type: "session_started", private_home:
-      (scenario === "caller-first-wrong-home" && harnessHome !== undefined) ||
-      (scenario === "caller-resume-different-home" && harnessHome !== undefined && resume !== undefined) ||
+      (scenario === "caller-first-wrong-home" && callerArm) ||
+      (scenario === "caller-resume-different-home" && callerArm && resume !== undefined) ||
       (scenario === "resume-home-swap" && hermetic && resume !== undefined)
         ? `${privateHome}-other` : privateHome }
     : { type: "session_started" }
@@ -213,12 +239,12 @@ process.stdin.on("data", (chunk: string) => {
       process.stderr.write("Error: the harness child died mid-turn\n");
       process.exit(1);
     }
-    if (harnessHome !== undefined && scenario === "caller-crash") {
+    if (callerArm && scenario === "caller-crash") {
       process.stderr.write("synthetic caller child failed\n");
       process.exit(1);
     }
     let wanted = hermetic ? (resume === undefined ? firstHermeticAnswer : resumedAnswer) : controlAnswer;
-    if (harnessHome !== undefined) {
+    if (callerArm) {
       wanted = scenario === "caller-missing-skill" ? "NONE" : skillMarker;
       if (scenario === "caller-first-leak" || (scenario === "caller-resume-leak" && resume !== undefined)) wanted = "marker";
       if (scenario === "caller-skill-banner-only") {
@@ -226,7 +252,7 @@ process.stdin.on("data", (chunk: string) => {
         wanted = "NONE";
       }
     }
-    emit({ type: "assistant_message", text: wanted === "marker" ? marker : wanted });
+    emit({ type: "assistant_message", text: wanted !== "marker" ? wanted : hermetic ? leakedMarker : marker });
     emit({ type: "turn_completed", finish: "end" });
   }
 });

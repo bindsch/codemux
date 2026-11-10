@@ -10,13 +10,14 @@
  * files' teardowns — dispose and requestStop are idempotent). */
 
 import { expect } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AiderSessionDriver, type AiderDriverOptions } from "../../src/session/aider-driver.js";
 import { aiderSessionHistoryPath } from "../../src/session/aider-session.js";
 import { SessionProcess } from "../../src/session/process.js";
+import { readFakeRecords } from "./fake-records.js";
 
 const FAKE = fileURLToPath(new URL("../fixtures/live/fake-aider-run.ts", import.meta.url));
 
@@ -140,12 +141,7 @@ export async function startSession(
 
 /** What the fake recorded, re-read so late appends are visible. */
 export function fakeRecord(session: Session, name: string): Record<string, any>[] {
-  const path = join(session.stateDir, name);
-  if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8")
-    .split("\n")
-    .filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line) as Record<string, any>);
+  return readFakeRecords<Record<string, any>>(join(session.stateDir, name));
 }
 
 /** Wait until the event stream satisfies `want`, or fail with what came. */

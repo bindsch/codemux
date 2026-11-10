@@ -4,7 +4,7 @@
  * read its records, and wait for observable session state.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,7 @@ import {
   type CodexDriverOptions,
 } from "../src/session/codex-driver.js";
 import { SessionProcess } from "../src/session/process.js";
+import { readFakeRecords } from "./helpers/fake-records.js";
 
 export const FAKE = fileURLToPath(new URL("./fixtures/live/fake-codex-app-server.ts", import.meta.url));
 /** A session child that survives its stop request for a moment: the
@@ -122,12 +123,7 @@ export async function startSession(
 
 /** What the fake app-server recorded, re-read so late appends are visible. */
 export function fakeRecord(session: Session, name: string): Record<string, any>[] {
-  const path = join(session.stateDir, name);
-  if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8")
-    .split("\n")
-    .filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line) as Record<string, any>);
+  return readFakeRecords<Record<string, any>>(join(session.stateDir, name));
 }
 
 /** Wait until the event stream satisfies `want`, or fail with what came. */

@@ -42,6 +42,18 @@ immutable notes and engineering evidence.
 
 ### Fixed
 
+- `codemux check --hermetic --session` on claude and zai: the code word now
+  also sits in a scratch operator `CLAUDE_CONFIG_DIR` that the hermetic,
+  control, and resumed sessions all pass through. Claude Code sessions load
+  the user setting source only, so the planted cwd files never reached the
+  control, which answered from the operator's own instructions and failed
+  the check as proving nothing. The hermetic sessions must swap the passed
+  directory for their private home and keep the code word out.
+- Test helpers read a fake harness's record file only once it is complete,
+  fixing a Linux CI race that read it mid-write.
+- Live gate probe B passes when the shell output is the answer's last line.
+  Since runs print every assistant message, a model's sentence before the
+  tool call failed the exact-output compare even though the shell ran.
 - `codemux check --hermetic` scans every event of a structured stream for
   the planted marker, tool results and tool inputs included, on every
   harness whose plain run prints an answer assembled from that stream

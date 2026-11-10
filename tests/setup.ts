@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import "./fixtures/agy-host.js";
 import { agyKeychainHost } from "../src/agy-keychain.js";
+import { sessionCanary } from "../src/hermetic-session-canary-driver.js";
 import { sweepLeakedFixtures, type TrackedFixture } from "./helpers/fixture-leak.js";
 
 const dir = mkdtempSync(join(tmpdir(), "codemux-test-ledger-"));
@@ -23,6 +24,8 @@ const dir = mkdtempSync(join(tmpdir(), "codemux-test-ledger-"));
 mkdirSync(join(import.meta.dir, "../scratch/fix"), { recursive: true });
 // No in-process test may read file-fallback credentials from the real home.
 agyKeychainHost.home = () => dir;
+// Nor may the claude session canary's control copy the operator's mirror.
+sessionCanary.credentialSource = () => join(dir, "no-claude-credential.json");
 process.env.CODEMUX_TEST_LEDGER ??= join(dir, "calls.jsonl");
 // In-process launch-command tests must not consult the operator's real
 // usagemux through the quota gate (an expired host credential would fail

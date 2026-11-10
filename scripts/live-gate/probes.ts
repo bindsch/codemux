@@ -175,7 +175,7 @@ export interface MediumProbe {
 }
 
 /** Writes the private nonce and script Probe B's prompt names, and returns
- * the exact stdout the harness must reply with. The expected hash never
+ * the hash the answer's last line must carry (verifyMediumAnswer). The expected hash never
  * appears in any file the harness reads. */
 export function prepareMediumProbe(directory: string): MediumProbe {
   const nonce = randomBytes(6).toString("hex");
@@ -192,6 +192,21 @@ export function prepareMediumProbe(directory: string): MediumProbe {
     expected,
     prompt: "Run the shell command: sh probe.sh and reply with exactly its output, nothing else.",
   };
+}
+
+/** Probe B's verdict. A run prints the agent's whole answer: every
+ * assistant message, not only the last (lane AN1, d530fb5). A model that
+ * says what it is about to run before running it ("The script just hashes
+ * nonce.txt ... I'll run it.", claude 2.1.317, 2026-11-10 live gate) still
+ * ran the shell, so the hash must be the answer's last line, alone. The
+ * hash of a random nonce the prompt never names cannot be produced without
+ * executing probe.sh, so a preamble weakens nothing. */
+export function verifyMediumAnswer(stdout: string, expected: string): string | null {
+  const lines = stdout.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+  const last = lines.at(-1);
+  if (last === expected) return null;
+  const preview = stdout.trim().slice(0, 160).replace(/\s+/g, " ");
+  return `the answer's last line is not the nonce hash ${expected}; stdout: ${preview === "" ? "(empty)" : preview}`;
 }
 
 export interface ExperimentProbeSpec {

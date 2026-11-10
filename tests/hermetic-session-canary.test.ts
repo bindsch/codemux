@@ -18,7 +18,7 @@ import {
   sessionCanary,
   type SessionCanaryGuards,
 } from "../src/hermetic-session-canary.js";
-import { runCanarySession } from "../src/hermetic-session-canary-driver.js";
+import { runCanarySession, sessionCanaryCredentialSource } from "../src/hermetic-session-canary-driver.js";
 
 const FAKE = fileURLToPath(new URL("./fixtures/live/fake-codemux-session.ts", import.meta.url));
 
@@ -31,6 +31,18 @@ interface FakeSpawn {
   sessionId: string;
   marker: string;
 }
+
+/** The tests never copy the operator's real credential mirror. */
+const NO_CREDENTIAL = join(tmpdir(), "codemux-canary-test-no-credential.json");
+
+test("the test preload keeps the canary off the operator's credential mirror", () => {
+  // Review finding: check-session.test.ts drives the real check command,
+  // whose claude control copied ~/.claude/.credentials.json.
+  expect(sessionCanary.credentialSource()).not.toBe(join(process.env.HOME ?? "", ".claude", ".credentials.json"));
+  expect(existsSync(sessionCanary.credentialSource())).toBe(false);
+  // The unpinned default is the operator's mirror, read only by real checks.
+  expect(sessionCanaryCredentialSource()).toBe(join(process.env.HOME ?? "", ".claude", ".credentials.json"));
+});
 
 const scratch = (): string => mkdtempSync(join(tmpdir(), "hermetic-session-canary-test-"));
 
@@ -366,7 +378,7 @@ test("assertSessionCanaryRequest refuses every shape the session canary cannot c
 
 test("plantSessionCanary plants the run canary's files for plain agents", () => {
   const parent = scratch();
-  const planted = plantSessionCanary("claude", parent);
+  const planted = plantSessionCanary("codex", parent);
   try {
     expect(existsSync(join(planted.cwd, "AGENTS.md"))).toBe(true);
     expect(existsSync(join(planted.cwd, "CLAUDE.md"))).toBe(true);
@@ -415,4 +427,66 @@ test("plantSessionCanary carries agy's planted server name as a secret", () => {
     planted.cleanup();
   }
   expect(existsSync(plantedHome)).toBe(false);
+});
+
+test("claude sessions all see the planted operator config dir; only the plain control reads it", async () => {
+  // 2026-11-10 live gate: Claude Code sessions pass --setting-sources user,
+  // which never loads the cwd's CLAUDE.md, so a control on the cwd files
+  // answered the operator's name and the check proved nothing. The code
+  // word now sits in a scratch CLAUDE_CONFIG_DIR that every session passes
+  // through; the hermetic sessions must swap it for their private home.
+  const run = await runCanary("clean");
+  try {
+    expect(run.code).toBe(0);
+    const runs = spawns(run.stateFile);
+    for (const index of [0, 1, 2]) {
+      const argv = runs[index]!.argv;
+      expect(argv[argv.indexOf("--pass-env") + 1]!.split(",")).toContain("CLAUDE_CONFIG_DIR");
+      expect(argv).not.toContain("--harness-home");
+    }
+    expect(runs[1]!.hermetic).toBe(false);
+    expect(runs[1]!.marker).toMatch(/^CODEMUX-CANARY-/);
+  } finally {
+    rmSync(run.homeRoot, { recursive: true, force: true });
+  }
+});
+
+test("a hermetic claude session that keeps the operator config dir fails the check", async () => {
+  // The synthetic non-isolating harness: its hermetic session reads the
+  // passed-through operator CLAUDE_CONFIG_DIR instead of its private home.
+  const run = await runCanary("config-leak");
+  try {
+    expect(run.code).toBe(1);
+    expect(run.errors).toContain(
+      "Error: the hermetic claude session is NOT hermetic: the planted code word reached the model"
+    );
+    expect(run.out).not.toContain("HERMETIC SESSION claude: OK");
+  } finally {
+    rmSync(run.homeRoot, { recursive: true, force: true });
+  }
+});
+
+test("the claude family plants its operator config dir with the marker and removes it on cleanup", () => {
+  for (const agent of ["claude", "zai"] as const) {
+    const plant = plantSessionCanary(agent, undefined, NO_CREDENTIAL);
+    try {
+      expect(plant.passEnv).toEqual(["CLAUDE_CONFIG_DIR"]);
+      const dir = plant.env.CLAUDE_CONFIG_DIR!;
+      expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toContain(plant.marker);
+      expect(readFileSync(join(plant.cwd, "CLAUDE.md"), "utf8")).toContain(plant.marker);
+      plant.cleanup();
+      expect(existsSync(dir)).toBe(false);
+      expect(existsSync(plant.cwd)).toBe(false);
+    } finally {
+      plant.cleanup();
+    }
+  }
+  for (const agent of ["codex", "kimi", "cline"] as const) {
+    const plant = plantSessionCanary(agent);
+    try {
+      expect(plant.passEnv).toEqual([]);
+    } finally {
+      plant.cleanup();
+    }
+  }
 });

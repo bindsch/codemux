@@ -10,6 +10,7 @@
  * session verdicts and cleanup live there and in hermetic-session-canary-home.ts.
  */
 
+import { claudeCredentialTarget } from "./credentials.js";
 import { join } from "node:path";
 import { FORCE_KILL_DELAY_MS, signalProcess } from "./process-runner.js";
 import { createTerminationTarget } from "./process-tree.js";
@@ -28,7 +29,15 @@ export const sessionCanaryCommand = (): string[] => [
   `--config=${join(ROOT, "bunfig.runtime.toml")}`,
   join(ROOT, "src", "index.ts"),
 ];
-export const sessionCanary = { command: sessionCanaryCommand };
+/** The seams the tests point elsewhere: the codemux command the canary
+ * drives, and the Claude credential mirror the claude control copies
+ * (src/hermetic-session-canary.ts). The test preload points the mirror at
+ * a scratch path, so no in-process test reads the operator's real login. */
+export const sessionCanaryCredentialSource = (): string => claudeCredentialTarget(process.env.HOME);
+export const sessionCanary = {
+  command: sessionCanaryCommand,
+  credentialSource: sessionCanaryCredentialSource,
+};
 
 export interface SessionRun {
   exitCode: number | null;

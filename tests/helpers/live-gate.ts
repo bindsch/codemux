@@ -3,7 +3,8 @@
 // fixture environment every runProbes call site passes. The gate under
 // test lives in scripts/live-gate.ts; tests/live-gate.test.ts owns the
 // option and probe-matrix tests.
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { AGENT_IDS } from "../../src/types.js";
@@ -14,6 +15,14 @@ import type { GateRow, HarnessFacts, ProbeLetter } from "../../scripts/live-gate
 import type { ReportInput } from "../../scripts/live-gate/report.js";
 
 export const ROOT = resolve(import.meta.dir, "../..");
+
+/** Probe B is judged by the answer's last line (verifyMediumAnswer), so it
+ * reaches the runner's capture; test fakes recompute the expected hash from
+ * the nonce file the gate planted in the probe's cwd. */
+export function mediumHash(command: string[]): string {
+  const nonce = readFileSync(join(command[command.indexOf("--cwd") + 1]!, "nonce.txt"), "utf8");
+  return createHash("sha256").update(nonce).digest("hex").slice(0, 16);
+}
 
 export function fixtureDirectory(): string {
   const scratch = join(ROOT, "scratch");

@@ -19,6 +19,7 @@ import {
   PROVIDER_OVERRIDE_OPT_IN,
   prepareExperimentProbe,
   prepareMediumProbe,
+  verifyMediumAnswer,
   prepareSessionProbe,
   probeApplies,
   sessionStartedId,
@@ -160,7 +161,8 @@ export async function runProbes(
             row.results.A = await runner.run(base("read-only", "Reply with exactly: OK"), "OK", outer, prefix);
           } else if (letter === "B") {
             const medium = prepareMediumProbe(directory);
-            row.results.B = await runner.run(base("medium", medium.prompt), medium.expected, outer, prefix);
+            row.results.B = await runner.capture(base("medium", medium.prompt),
+              (captured) => verifyMediumAnswer(captured.stdout, medium.expected), outer, prefix);
           } else if (letter === "C") {
             row.results.C = await runner.capture(base("read-only", "Reply with exactly: OK", ["--result-json"]),
               (captured) => verifyResultEnvelope(captured.stdout, fact.id), outer, prefix);

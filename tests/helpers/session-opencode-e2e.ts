@@ -9,7 +9,7 @@
  * this module across files, so a later file's afterAll re-runs the
  * earlier files' teardowns — dispose and requestStop are idempotent). */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +18,7 @@ import {
   type OpenCodeDriverOptions,
 } from "../../src/session/opencode-driver.js";
 import { SessionProcess } from "../../src/session/process.js";
+import { readFakeRecords } from "./fake-records.js";
 
 const FAKE = fileURLToPath(
   new URL("../fixtures/live/fake-opencode-run.ts", import.meta.url)
@@ -127,12 +128,7 @@ export async function startSession(
 
 /** What the fake recorded, re-read so late appends are visible. */
 export function fakeRecord(session: Session, name: string): Record<string, any>[] {
-  const path = join(session.stateDir, name);
-  if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8")
-    .split("\n")
-    .filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line) as Record<string, any>);
+  return readFakeRecords<Record<string, any>>(join(session.stateDir, name));
 }
 
 /** Wait until the event stream satisfies `want`, or fail with what came. */

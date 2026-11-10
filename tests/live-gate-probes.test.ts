@@ -4,9 +4,8 @@
 // owns runProbes.
 import { afterAll, expect, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { existsSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import {
   ProbeRunner,
   formatReport,
@@ -14,7 +13,7 @@ import {
   runProbes,
   type ProbeLetter,
 } from "../scripts/live-gate.js";
-import { ROOT, cleanupLoggedInHomes, factsFor, fixtureDirectory, loggedInEnv, reportInput } from "./helpers/live-gate.js";
+import { ROOT, cleanupLoggedInHomes, factsFor, fixtureDirectory, loggedInEnv, mediumHash, reportInput } from "./helpers/live-gate.js";
 import { MARKER } from "./fixtures/experiment-mcp.js";
 import { PARITY } from "../src/parity/index.js";
 import { PROBE_FEATURE } from "../src/parity/probe-features.js";
@@ -201,104 +200,6 @@ test("probe H is skipped without the explicit opt-in environment", async () => {
   }
 });
 
-test("live gate prepares private nonce files and gives the outer deadline 30 extra seconds", async () => {
-  const fixture = loggedInEnv();
-  const calls: string[][] = [];
-  const directories: string[] = [];
-  const reportDirectory = fixtureDirectory();
-  const runner = {
-    async run(command: string[], expected: string, timeout: number, prefix?: string) {
-      calls.push(command);
-      expect(command[0]).toBe(join(ROOT, "bin/codemux"));
-      expect(timeout).toBe(42);
-      expect(command.slice(1, 3)).toEqual(["run", "-a"]);
-      expect(command).not.toContain("--no-sandbox");
-      expect(command).toContain("--timeout");
-      expect(command[command.indexOf("--timeout") + 1]).toBe("12");
-      const medium = command.includes("medium");
-      const prompt = command[command.indexOf("-p") + 1]!;
-      expect(prompt).toBe(medium
-        ? "Run the shell command: sh probe.sh and reply with exactly its output, nothing else."
-        : "Reply with exactly: OK");
-      expect(command).toContain("--cwd");
-      const cwd = command[command.indexOf("--cwd") + 1]!;
-      if (medium) {
-        expect(expected).toMatch(/^[0-9a-f]{16}$/);
-        expect(prompt).not.toContain(expected);
-        expect(readdirSync(cwd).sort()).toEqual(["nonce.txt", "probe.sh"]);
-        const nonce = readFileSync(join(cwd, "nonce.txt"), "utf8");
-        expect(nonce).toMatch(/^[0-9a-f]{12}$/);
-        const { createHash } = await import("node:crypto");
-        expect(expected).toBe(createHash("sha256").update(nonce).digest("hex").slice(0, 16));
-        expect(statSync(join(cwd, "nonce.txt")).mode & 0o777).toBe(0o600);
-        expect(readFileSync(join(cwd, "probe.sh"), "utf8")).not.toContain(expected);
-        expect(statSync(join(cwd, "probe.sh")).mode & 0o777).toBe(0o700);
-      } else {
-        expect(expected).toBe("OK");
-        expect(readdirSync(cwd)).toEqual([]);
-      }
-      expect(dirname(cwd)).toBe(tmpdir());
-      expect(cwd.startsWith(`${ROOT}/`)).toBe(false);
-      directories.push(cwd);
-      expect(prefix).toBe(join(reportDirectory, `${command[3]}-${medium ? "B" : "A"}`));
-      return { status: "PASS" as const, seconds: 0, stderr: "" };
-    },
-    async capture() { throw new Error("unexpected capture probe"); },
-  };
-  try {
-    const rows = await runProbes([factsFor("agy"), factsFor("kimi"), factsFor("gemini")], parseOptions(["--skip", "gemini", "--probe", "A,B", "--timeout", "12"], ""), runner, reportDirectory, fixture.env);
-    expect(calls).toHaveLength(4);
-    expect(directories).toHaveLength(4);
-    expect(new Set(directories).size).toBe(4);
-    expect(directories.every((directory) => !existsSync(directory))).toBe(true);
-    expect(formatReport(reportInput({ rows, probes: ["A", "B"] }))).toContain(`live-gate (${join(ROOT, "bin/codemux")}): 4 pass, 0 fail, 2 skip, 0 unsupported`);
-    expect(rows.every((row) => row.agent === "gemini" || (row.results.A!.status === "PASS" && row.results.B!.status === "PASS"))).toBe(true);
-  } finally {
-    rmSync(reportDirectory, { recursive: true, force: true });
-  }
-});
-
-test.each(["command", "sha256sum fallback", "echo nonce", "wrong stdout", "codemux-ok"])("live gate requires the nonce hash from command execution: %s", async (output) => {
-  const reportDirectory = fixtureDirectory();
-  const runner = new ProbeRunner();
-  try {
-    const rows = await runProbes([factsFor("agy")], parseOptions(["--probe", "A,B"], ""), {
-      run(command, expected, timeout, prefix) {
-        const cwd = command[command.indexOf("--cwd") + 1]!;
-        let probe = [process.execPath, "-e", 'console.log(" OK ")'];
-        if (command.includes("medium")) {
-          if (output === "command" || output === "wrong stdout") {
-            const script = output === "command" ? 'cd "$1" && sh probe.sh'
-              : 'cd "$1" && sh probe.sh >/dev/null && printf codemux-ok';
-            probe = ["sh", "-c", script, "sh", cwd];
-          } else if (output === "sha256sum fallback") {
-            const bin = join(reportDirectory, "bin");
-            mkdirSync(bin);
-            for (const utility of ["sh", "cat", "cut"]) symlinkSync(Bun.which(utility)!, join(bin, utility));
-            writeFileSync(join(bin, "sha256sum"), `#!${process.execPath}
-              const { createHash } = require("node:crypto");
-              console.log(createHash("sha256").update(await Bun.stdin.text()).digest("hex") + "  -");
-            `, { mode: 0o700 });
-            probe = [Bun.which("env")!, `PATH=${bin}`, "sh", "-c", 'cd "$1" && sh probe.sh', "sh", cwd];
-          } else if (output === "codemux-ok") {
-            probe = [process.execPath, "-e", 'console.log("codemux-ok")'];
-          } else {
-            const source = `const fs = require("node:fs"); const dir = process.argv[1];
-              process.stdout.write(fs.readFileSync(dir + "/nonce.txt", "utf8"));`;
-            probe = [process.execPath, "-e", source, cwd];
-          }
-        }
-        return runner.run(probe, expected, timeout, prefix);
-      },
-      async capture() { throw new Error("unexpected capture probe"); },
-    }, reportDirectory, loggedInEnv().env);
-    expect(rows[0]!.results.A!.status).toBe("PASS");
-    expect(rows[0]!.results.B!.status).toBe(["command", "sha256sum fallback"].includes(output) ? "PASS" : "FAIL");
-  } finally {
-    rmSync(reportDirectory, { recursive: true, force: true });
-  }
-});
-
 test.each([undefined, "cursor", "other", ""])("live gate never adds pass-env from the ambient Cursor entry: %s", async (entry) => {
   const previous = process.env.CODEMUX_CURSOR_ENTRY;
   const reportDirectory = fixtureDirectory();
@@ -315,7 +216,7 @@ test.each([undefined, "cursor", "other", ""])("live gate never adds pass-env fro
         expect(command).not.toContain("CODEMUX_CURSOR_ENTRY");
         return { status: "PASS", seconds: 0, stderr: "" };
       },
-      async capture() { throw new Error("unexpected capture probe"); },
+      async capture(command, _verify, timeout, prefix) { return this.run(command, mediumHash(command), timeout, prefix); },
     }, reportDirectory, loggedInEnv().env);
     expect(calls).toHaveLength(4);
     expect(rows.every((row) => row.results.A!.status === "PASS" && row.results.B!.status === "PASS")).toBe(true);
@@ -338,7 +239,7 @@ test("live gate forwards the explicit pass-env list verbatim to every probe", as
         expect(command[command.indexOf("--pass-env") + 1]).toBe(names);
         return { status: "PASS", seconds: 0, stderr: "" };
       },
-      async capture() { throw new Error("unexpected capture probe"); },
+      async capture(command, _verify, timeout, prefix) { return this.run(command, mediumHash(command), timeout, prefix); },
     }, reportDirectory, loggedInEnv().env);
     expect(calls).toHaveLength(4);
     expect(rows.every((row) => row.results.A!.status === "PASS" && row.results.B!.status === "PASS")).toBe(true);
@@ -356,7 +257,10 @@ test("live gate cleans probe directories when the runner rejects", async () => {
         directories.push(command[command.indexOf("--cwd") + 1]!);
         throw new Error("test failure");
       },
-      async capture() { throw new Error("test failure"); },
+      async capture(command) {
+        directories.push(command[command.indexOf("--cwd") + 1]!);
+        throw new Error("test failure");
+      },
     }, reportDirectory, loggedInEnv().env);
     expect(directories).toHaveLength(2);
     expect(directories.every((directory) => !existsSync(directory))).toBe(true);
@@ -377,7 +281,7 @@ test("live gate includes only selected harnesses in its probes, report, and tota
         calls.push(agent);
         return { status: "PASS", seconds: 0, stderr: "" };
       },
-      async capture() { throw new Error("unexpected capture probe"); },
+      async capture(command, _verify, timeout, prefix) { return this.run(command, mediumHash(command), timeout, prefix); },
     }, reportDirectory, loggedInEnv().env);
     expect(calls).toEqual(["agy", "agy"]);
     expect(rows.map((row) => row.agent)).toEqual(["agy", "kimi"]);

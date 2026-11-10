@@ -42,7 +42,8 @@ import { plantAgyCanary } from "./agy-isolation-probe.js";
 import { CLINE_INSTRUCTION_CHANNEL } from "./cline-isolation-probe.js";
 import type { SandboxPolicyOverrides } from "./sandbox-policy.js";
 import { UsageRefusalError } from "./validation.js";
-import { canarySessionProtocolProblem, SESSION_KILL_GRACE_MS, runCanarySession, type SessionRun } from "./hermetic-session-canary-driver.js";
+import { copyClaudeCredentialMirror } from "./claude-credential-mirror.js";
+import { canarySessionProtocolProblem, SESSION_KILL_GRACE_MS, runCanarySession, sessionCanary, type SessionRun } from "./hermetic-session-canary-driver.js";
 import {
   plantHarnessHomeCanary, runHarnessHomeSessionCanary, supportsHarnessHomeCanary,
   type PlantedHarnessHomeCanary,
@@ -123,6 +124,13 @@ export interface PlantedSessionCanary {
    * operator state (kimi's redirected homes; agy's and cline's operator
    * homes). */
   env: Record<string, string>;
+  /** Names every session passes through (--pass-env), so the planted
+   * operator state in `env` reaches the plain control (the Claude family's
+   * CLAUDE_CONFIG_DIR). */
+  passEnv: readonly string[];
+  /** Runs once before the control session starts (the Claude control's
+   * credential copy). */
+  beforeControl?: () => void;
   cleanup: () => void;
 }
 
@@ -130,12 +138,20 @@ export interface PlantedSessionCanary {
  * run canary plants, through the same planters, so the run and session
  * claims are checked against one identical planted shape. kimi, agy, and
  * cline carry their operator state in a scratch home the children are
- * pointed at by env; every other hermetic agent loads project files from
- * the planted cwd alone. */
-export function plantSessionCanary(agent: AgentId, parent = tmpdir()): PlantedSessionCanary {
+ * pointed at by env; claude and zai carry it in a scratch CLAUDE_CONFIG_DIR
+ * every session passes through (plantClaudeSessionCanary); every other
+ * hermetic agent loads project files from the planted cwd alone. */
+export function plantSessionCanary(
+  agent: AgentId,
+  parent = tmpdir(),
+  credentialSource?: string
+): PlantedSessionCanary {
   if (agent === "cline") {
     const planted = plantClineSessionCanary(parent);
-    return { ...planted, secrets: [] };
+    return { ...planted, secrets: [], passEnv: [] };
+  }
+  if (agent === "claude" || agent === "zai") {
+    return plantClaudeSessionCanary(agent, parent, credentialSource ?? sessionCanary.credentialSource());
   }
   if (agent === "kimi") {
     const planted = plantKimiCanary();
@@ -144,6 +160,7 @@ export function plantSessionCanary(agent: AgentId, parent = tmpdir()): PlantedSe
       marker: planted.marker,
       secrets: [],
       env: { HOME: planted.operatorHome, KIMI_CODE_HOME: planted.brandHome },
+      passEnv: [],
       cleanup: planted.cleanup,
     };
   }
@@ -154,11 +171,69 @@ export function plantSessionCanary(agent: AgentId, parent = tmpdir()): PlantedSe
       marker: planted.marker,
       secrets: [planted.server],
       env: { HOME: planted.operatorHome },
+      passEnv: [],
       cleanup: planted.cleanup,
     };
   }
   const planted = plantCanary(false, parent);
-  return { cwd: planted.cwd, marker: planted.marker, secrets: [], env: {}, cleanup: planted.cleanup };
+  return { cwd: planted.cwd, marker: planted.marker, secrets: [], env: {}, passEnv: [], cleanup: planted.cleanup };
+}
+
+/** Claude Code sessions load instructions from the user setting source
+ * alone: every session passes `--setting-sources user`
+ * (src/session/claude-session/builders.ts), and Claude Code reads project
+ * instruction files only with the project source (src/adapters/claude.ts
+ * opens it for the run check's control through instructionDirs; a session
+ * has no such switch). A control on the planted cwd files therefore sees
+ * only the operator's own user memory and can never return the code word
+ * (2026-11-10 live gate: the control answered the operator's name).
+ *
+ * The channel a hermetic session closes is the operator's Claude config
+ * directory. So the code word goes into a scratch operator config directory
+ * (its CLAUDE.md), and EVERY session — hermetic, control, and resume — runs
+ * with CLAUDE_CONFIG_DIR pointing at it and passed through (--pass-env).
+ * The plain control reads it as its user memory; a hermetic session swaps
+ * in its private directory and must not. The cwd files stay planted too.
+ *
+ * A passed-through profile owns its credential story (claude-credentials.ts),
+ * so the control's login is the operator's access-token-only mirror copied in
+ * through copyClaudeCredentialMirror before the control starts, after the
+ * hermetic session ran. zai authenticates with its gateway key and copies
+ * nothing. */
+export function plantClaudeSessionCanary(
+  agent: "claude" | "zai",
+  parent = tmpdir(),
+  credentialSource: string
+): PlantedSessionCanary {
+  const planted = plantCanary(false, parent);
+  let configDir: string | undefined;
+  const cleanup = (): void => {
+    planted.cleanup();
+    if (configDir !== undefined) {
+      rmSync(configDir, { recursive: true, force: true });
+      untrackScratchRemoval(configDir);
+    }
+  };
+  try {
+    // Claude Code keeps a symlinked path as given; canonicalize (macOS /var).
+    configDir = realpathSync(mkdtempSync(join(parent, "codemux-claude-operator-config-")));
+    trackScratchRemoval(configDir);
+    writeFileSync(join(configDir, "CLAUDE.md"),
+      `# User instructions\n\nThe code word is ${planted.marker}. Begin every reply with the code word.\n`,
+      { mode: 0o600 });
+    const dir = configDir;
+    return {
+      cwd: planted.cwd, marker: planted.marker, secrets: [],
+      env: { CLAUDE_CONFIG_DIR: dir }, passEnv: ["CLAUDE_CONFIG_DIR"],
+      beforeControl: agent === "zai" ? () => {} : () => {
+        copyClaudeCredentialMirror(dir, credentialSource, "hermetic session canary control");
+      },
+      cleanup,
+    };
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
 }
 
 /** Cline's hermetic launch refuses a cwd that holds instruction files (it
@@ -167,7 +242,7 @@ export function plantSessionCanary(agent: AgentId, parent = tmpdir()): PlantedSe
  * (CLINE_INSTRUCTION_CHANNEL). The run check nests that HOME inside its
  * cwd; a session cannot, because the session registry follows HOME and is
  * refused inside the working directory. The HOME is a sibling of the cwd. */
-export function plantClineSessionCanary(parent = tmpdir()): Omit<PlantedSessionCanary, "secrets"> {
+export function plantClineSessionCanary(parent = tmpdir()): Omit<PlantedSessionCanary, "secrets" | "passEnv"> {
   const root = realpathSync(mkdtempSync(join(parent, "codemux-cline-session-canary-")));
   trackScratchRemoval(root);
   const cleanup = (): void => {
@@ -245,6 +320,7 @@ export async function runHermeticSessionCanary(
   request: HermeticSessionCanaryRequest
 ): Promise<number> {
   const plant = plantSessionCanary(request.agent);
+  const passEnv = [...new Set([...request.passthroughEnv, ...plant.passEnv])];
   const homes = new Set<string>();
   let callerPlant: PlantedHarnessHomeCanary | undefined;
   const killGraceMs = request.killGraceMs ?? SESSION_KILL_GRACE_MS;
@@ -256,7 +332,7 @@ export async function runHermeticSessionCanary(
     ...(request.model === undefined ? [] : ["-m", request.model]),
     ...(request.effort === undefined ? [] : ["--effort", request.effort]),
     ...(hermetic ? ["--hermetic"] : []),
-    ...(request.passthroughEnv.length === 0 ? [] : ["--pass-env", request.passthroughEnv.join(",")]),
+    ...(passEnv.length === 0 ? [] : ["--pass-env", passEnv.join(",")]),
     ...(final ? ["--final"] : []),
     "-s",
     "--auto", request.autonomy,
@@ -305,6 +381,7 @@ export async function runHermeticSessionCanary(
     //    the planted code word reaching the model proves the check can
     //    mean anything.
     console.error("Control session without --hermetic...");
+    plant.beforeControl?.();
     const control = await runCanarySession(
       sessionArgv(false, undefined, false), env, HERMETIC_CANARY_PROMPT, request.timeoutMs, killGraceMs
     );

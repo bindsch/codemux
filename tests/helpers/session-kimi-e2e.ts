@@ -17,6 +17,7 @@ import {
   type KimiDriverOptions,
 } from "../../src/session/kimi-driver.js";
 import { SessionProcess } from "../../src/session/process.js";
+import { readFakeRecords } from "./fake-records.js";
 
 const FAKE = fileURLToPath(new URL("../fixtures/live/fake-kimi-run.ts", import.meta.url));
 
@@ -177,12 +178,7 @@ export async function startSession(
 
 /** What the fake recorded, re-read so late appends are visible. */
 export function fakeRecord(session: Session, name: string): Record<string, any>[] {
-  const path = join(session.stateDir, name);
-  if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8")
-    .split("\n")
-    .filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line) as Record<string, any>);
+  return readFakeRecords<Record<string, any>>(join(session.stateDir, name));
 }
 
 /** Wait until the event stream satisfies `want`, or fail with what came. */
