@@ -281,6 +281,28 @@ function homeRecipe(agent: HomeAgent, dir: string, source: string, env: HomeEnvi
   }
 }
 
+/** Roots every caller home sets, whatever the agent. */
+const CALLER_HOME_ROOTS = ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"];
+
+/** Every name a caller home sets or clears in the child's environment:
+ * the shared roots, the agent's own redirects, its cleared redirects,
+ * and its flags. Paths are placeholders; no file is read or created. */
+export function callerHarnessHomeEnvNames(agent: AgentId): readonly string[] {
+  const recipe = homeRecipe(agent, "/", "/", {}, "/", false);
+  return [...new Set([...CALLER_HOME_ROOTS, ...Object.keys(recipe.environment), ...(recipe.omissions ?? []),
+    ...Object.keys(recipe.flags ?? {})])];
+}
+
+/** A --pass-env name the caller home sets or clears would be replaced
+ * without notice, so it is refused, as `check --session` refuses its own. */
+export function assertHarnessHomePassEnv(agent: AgentId, passthroughEnv: readonly string[]): void {
+  const owned = callerHarnessHomeEnvNames(agent);
+  const conflicts = passthroughEnv.filter((name) => owned.includes(name));
+  if (conflicts.length > 0) {
+    refuse(`sets or clears ${conflicts.join(", ")} for '${agent}'; remove ${conflicts.length === 1 ? "it" : "them"} from --pass-env`);
+  }
+}
+
 /** Directories a caller home shares by symlink, which the sandbox must grant by name. */
 export function callerHarnessHomeSharedLogins(agent: AgentId, sourceHome: string, env: HomeEnvironment,
   cwd: string, apiKeyAuth: boolean): string[] {

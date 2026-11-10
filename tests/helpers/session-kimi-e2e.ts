@@ -8,7 +8,7 @@
  * shares this module across files, so a later file's afterAll re-runs the
  * earlier files' teardowns — dispose and requestStop are idempotent). */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -150,11 +150,9 @@ export async function startSession(
         // Start the drain only after the fake has installed its EOF handler.
         // Interpreter startup must not consume the drain's 500 ms budget.
         const readyPath = join(stateDir, "drain-ready.jsonl");
-        await waitFor(events, () => {
-          if (!existsSync(readyPath)) return undefined;
-          const ready = readFileSync(readyPath, "utf8").trim().split("\n");
-          return ready.some((line) => JSON.parse(line).turn === String(turnCount)) ? true : undefined;
-        }, "the fake's drain handler");
+        // Only complete records count: a poll can land mid-write (readFakeRecords).
+        await waitFor(events, () => readFakeRecords<{ turn?: string }>(readyPath)
+          .some((record) => record.turn === String(turnCount)) ? true : undefined, "the fake's drain handler");
       }
       return proc;
     },
@@ -176,7 +174,8 @@ export async function startSession(
   return { driver, events, code, options, stateDir, workDir, order, argvs };
 }
 
-/** What the fake recorded, re-read so late appends are visible. */
+/** What the fake recorded so far: re-read so late appends are visible,
+ * and a record still being written waits for the next read (readFakeRecords). */
 export function fakeRecord(session: Session, name: string): Record<string, any>[] {
   return readFakeRecords<Record<string, any>>(join(session.stateDir, name));
 }

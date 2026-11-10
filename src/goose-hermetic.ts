@@ -7,15 +7,16 @@
  * ledger), `~/.cache/goose` — and its working-directory context file
  * `.goosehints` ("Project Hints: These are hints for working on the
  * project in this directory", CONTEXT_FILE_NAMES, both read from the
- * installed 1.50.1 binary, 2026-11-09). Redirecting the three XDG
- * variables to a fresh directory closes every config-channel file at
- * once; the `.goosehints` channel is closed by the clean-working-directory
- * rule (src/clean-cwd.ts), which refuses a tree that carries one.
+ * installed 1.50.1 binary, 2026-11-09). Redirecting GOOSE_PATH_ROOT and
+ * the three XDG variables to a fresh directory closes every config-channel
+ * file at once, the session ledger included; the `.goosehints` channel is
+ * closed by the clean-working-directory rule (src/clean-cwd.ts), which
+ * refuses a tree that carries one.
  *
  * The private directories live under the real goose config directory
  * (`.codemux-hermetic/`), the codex/kimi placement: scode's write policy
- * for the harness's own state covers the private home too. The XDG
- * variables are assigned inside the sandbox command (`env XDG_...= goose`),
+ * for the harness's own state covers the private home too. The redirects
+ * are assigned inside the sandbox command (`env GOOSE_PATH_ROOT=... XDG_...= goose`),
  * never through the run environment: scode itself resolves ITS config
  * through XDG, so the wrapper must keep the operator's real values —
  * the kimi/agy HOME-prefix rule.

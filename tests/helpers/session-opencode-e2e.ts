@@ -126,7 +126,8 @@ export async function startSession(
   return { driver, events, code, options, stateDir, workDir, order };
 }
 
-/** What the fake recorded, re-read so late appends are visible. */
+/** What the fake recorded so far: re-read so late appends are visible,
+ * and a record still being written waits for the next read (readFakeRecords). */
 export function fakeRecord(session: Session, name: string): Record<string, any>[] {
   return readFakeRecords<Record<string, any>>(join(session.stateDir, name));
 }

@@ -23,11 +23,18 @@ test("the caller-home arm covers every session agent, cline included", () => {
 
 // The check's --pass-env guard refuses harnessHomeCanaryOwnedEnv(agent); a
 // name the plant changes outside that list would be replaced without notice.
+// The seed holds unrelated names and every agent's owned names, so a deletion
+// outside the list is visible; the padded zai key differs from the token the
+// zai rewrite derives from it, so that rewrite is visible on every agent.
+const UNRELATED = ["CODEMUX_CANARY_UNRELATED", "LANG", "TERM", "ANTHROPIC_AUTH_TOKEN"];
 test("every name the caller-home plant sets, changes, or clears is in its owned list", () => {
   for (const agent of callerAgents) {
     const root = scratch();
-    const environment: NodeJS.ProcessEnv = { ZAI_API_KEY: "synthetic-zai-key", ANTHROPIC_AUTH_TOKEN: "synthetic-zai-key" };
-    for (const name of harnessHomeCanaryOwnedEnv("zai")) environment[name] ??= `/fixture/ambient-${name}`;
+    const environment: NodeJS.ProcessEnv = { ZAI_API_KEY: "  synthetic-zai-key  " };
+    for (const name of UNRELATED) environment[name] = `synthetic-unrelated-${name}`;
+    for (const owner of callerAgents) {
+      for (const name of harnessHomeCanaryOwnedEnv(owner)) environment[name] ??= `/fixture/ambient-${name}`;
+    }
     const plant = plantHarnessHomeCanary(agent, undefined, environment, root);
     try {
       const names = new Set([...Object.keys(environment), ...Object.keys(plant.env)]);
@@ -41,6 +48,20 @@ test("every name the caller-home plant sets, changes, or clears is in its owned 
   }
   expect(harnessHomeCanaryOwnedEnv("zai")).toContain("ZAI_API_KEY");
   expect(harnessHomeCanaryOwnedEnv("codex")).not.toContain("ZAI_API_KEY");
+  expect(harnessHomeCanaryOwnedEnv("goose")).toContain("GOOSE_DISABLE_KEYRING");
+});
+
+test("the drift seed detects the zai rewrite and a deletion outside the owned list", () => {
+  const root = scratch();
+  const environment: NodeJS.ProcessEnv = { ZAI_API_KEY: "  synthetic-zai-key  ", CODEMUX_CANARY_UNRELATED: "kept" };
+  const plant = plantHarnessHomeCanary("zai", undefined, environment, root);
+  try {
+    expect(plant.env.ZAI_API_KEY).toBe("synthetic-zai-key");
+    expect(plant.env.CODEMUX_CANARY_UNRELATED).toBe("kept");
+  } finally {
+    plant.cleanup();
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 for (const agent of ["claude", "codex", "zai"] as const) {

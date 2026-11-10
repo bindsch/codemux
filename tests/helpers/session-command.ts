@@ -182,13 +182,23 @@ export async function runSessionCommand(
   }
 }
 
-/** Parsed JSONL events from the captured stdout (drive tests poll this). */
+/** Parsed JSONL events from a finished session's stdout. Strict: a
+ * malformed or truncated line throws, so corrupted output fails the test. */
 export const outcomeEvents = (chunks: string[]): Record<string, unknown>[] =>
   chunks
     .join("")
     .split("\n")
     .filter((line) => line.trim() !== "")
     .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+/** The events a live session has printed so far, for drive polls. A poll can
+ * land between two chunks of one event, so only newline-terminated lines
+ * count; the unterminated tail is the write in flight and is read on the
+ * next poll. Parse the finished stdout with outcomeEvents. */
+export const polledEvents = (chunks: string[]): Record<string, unknown>[] => {
+  const text = chunks.join("");
+  return outcomeEvents([text.slice(0, text.lastIndexOf("\n") + 1)]);
+};
 
 export async function waitForEvent(
   chunks: string[],
@@ -198,11 +208,11 @@ export async function waitForEvent(
 ): Promise<Record<string, unknown>> {
   const deadline = Date.now() + deadlineMs;
   for (;;) {
-    const found = outcomeEvents(chunks).find(predicate);
+    const found = polledEvents(chunks).find(predicate);
     if (found !== undefined) return found;
     if (Date.now() > deadline) {
       throw new Error(
-        `timed out waiting for ${label}; saw: ${outcomeEvents(chunks).map((event) => event.type).join(",")}`
+        `timed out waiting for ${label}; saw: ${polledEvents(chunks).map((event) => event.type).join(",")}`
       );
     }
     await Bun.sleep(10);

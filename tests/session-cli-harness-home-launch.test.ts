@@ -9,7 +9,7 @@ import * as registry from "../src/session/registry.js";
 import * as runtime from "../src/cli-runtime.js";
 import { ClaudeCredentialAdapter } from "../src/adapters/claude-credentials.js";
 import { ZaiAdapter } from "../src/adapters/zai.js";
-import { outcomeEvents, removeDir, runSessionCommand, tempWorkdir, waitForEvent } from "./helpers/session-command.js";
+import { outcomeEvents, polledEvents, removeDir, runSessionCommand, tempWorkdir, waitForEvent } from "./helpers/session-command.js";
 import { type HomeObservation } from "./helpers/session-cli-hermetic.js";
 import { registerNoLeakedSignals } from "./helpers/signal-listeners.js";
 
@@ -100,7 +100,7 @@ function fixture(agent: Agent) {
             stdin.write(`${JSON.stringify({ type: "user", text: `scenario:basic synthetic turn ${index + 1}` })}\n`);
             await waitForEvent(chunks, `turn ${index + 1}`, (event) =>
               event.type === "session_ended" ||
-              outcomeEvents(chunks).filter((entry) => entry.type === "turn_completed").length > index, 3_000);
+              polledEvents(chunks).filter((entry) => entry.type === "turn_completed").length > index, 3_000);
           }
         } catch (error) { driveError = error; }
         finally { stdin.end(`${JSON.stringify({ type: "shutdown" })}\n`); }
@@ -230,7 +230,11 @@ test.each(["claude", "zai"] as Agent[])("%s cannot drop caller isolation through
     mkdirSync(s.env.CLAUDE_CONFIG_DIR, { recursive: true });
     if (agent === "claude") writeFileSync(join(s.env.CLAUDE_CONFIG_DIR, ".credentials.json"), claudeLogin("alternate-access"), { mode: 0o600 });
     const pass = ["--pass-env", [...PASS_ENV, "CLAUDE_CONFIG_DIR"].join(",")];
-    const id = started(await s.run([...s.flags, ...pass]));
+    const refused = await s.invoke([...s.flags, ...pass]);
+    expect(refused.exitCode).toBe(64);
+    expect(refused.stderr).toContain(`--harness-home sets or clears CLAUDE_CONFIG_DIR for '${agent}'`);
+    expect(s.observations()).toHaveLength(0);
+    const id = started(await s.run(s.flags));
     s.env.CLAUDE_CONFIG_DIR = s.caller;
     const outcome = await s.invoke(["--resume", id, ...pass]);
     expect(outcome.exitCalls[0]).toBe(78);
@@ -244,9 +248,7 @@ test("Claude secure storage stays inside the caller home", async () => {
   try {
     const secure = join(s.root, "alternate-secure-storage");
     s.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = secure;
-    const outcome = await s.invoke([
-      ...s.flags, "--print-sandbox", "--pass-env", [...PASS_ENV, "CLAUDE_SECURESTORAGE_CONFIG_DIR"].join(","),
-    ]);
+    const outcome = await s.invoke([...s.flags, "--print-sandbox"]);
     expect(outcome.exitCode, outcome.stderr).toBe(0);
     const argv = outcome.stdout.trim().split("\n");
     expect(argv).toContain(`CLAUDE_SECURESTORAGE_CONFIG_DIR=${s.caller}`);

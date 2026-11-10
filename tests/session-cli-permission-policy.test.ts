@@ -7,7 +7,7 @@ import { SESSION_AGENTS } from "../src/session/cli-agents.js";
 import { resolveSessionRequest } from "../src/session/cli-request.js";
 import { KIMI_SESSION_DENY_RULE } from "../src/kimi-hermetic.js";
 import { hermeticFixture, refusingCall } from "./helpers/session-cli-hermetic.js";
-import { outcomeEvents, runSessionCommand, waitForEvent } from "./helpers/session-command.js";
+import { outcomeEvents, polledEvents, runSessionCommand, waitForEvent } from "./helpers/session-command.js";
 
 function records<T>(state: string, file: string): T[] {
   return readFileSync(join(state, file), "utf8").trim().split("\n").map((line) => JSON.parse(line) as T);
@@ -166,7 +166,7 @@ describe("session deny policy through the CLI", () => {
             for (const turn of [1, 2]) {
               stdin.write(`${JSON.stringify({ type: "user", text: `scenario:basic turn ${turn}` })}\n`);
               await waitForEvent(chunks, `turn ${turn}`, (event) => event.type === "turn_completed" &&
-                outcomeEvents(chunks).filter((entry) => entry.type === "turn_completed").length === turn, 3_000);
+                polledEvents(chunks).filter((entry) => entry.type === "turn_completed").length === turn, 3_000);
             }
           } catch (error) { driveError = error; }
           finally { stdin.end(`${JSON.stringify({ type: "shutdown" })}\n`); }

@@ -13,6 +13,23 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
+### Changed
+
+- `codemux session --harness-home` refuses with exit 64 a `--pass-env` name
+  the caller home sets or clears: `HOME`, `USERPROFILE`, the XDG roots, and
+  the agent's own redirects and flags, such as `CLAUDE_CONFIG_DIR`,
+  `CODEX_HOME`, and Goose's `GOOSE_DISABLE_KEYRING`. It used to replace the
+  caller's value without notice. `codemux check --hermetic --session`
+  refuses the same names before its first session.
+
+### Fixed
+
+- CI builds scode v0.6.5 (commit `f191891`) instead of v0.6.4.
+- **Correction**: the 2.0.0 notes and the `check --session` reference called
+  the refused `--pass-env` set "config-directory redirects". It also covers
+  single-file and inline config variables such as `OPENCODE_CONFIG`,
+  `OPENCODE_CONFIG_CONTENT`, and `CLINE_*_SETTINGS_PATH`.
+
 ## [2.0.0] - 2026-11-10
 
 The curated list below names every user-visible change. The long
@@ -286,9 +303,10 @@ implementation narrative behind it is preserved in the
   directory for their private home and keep the code word out.
 - `codemux check --hermetic --session` on every agent refuses with exit 64
   a `--pass-env` name the canary itself sets or clears in any of its
-  sessions (`HOME`, every config-directory redirect such as
-  `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, and zai's `ZAI_API_KEY`). It used to
-  replace the caller's value without notice.
+  sessions (`HOME`, every config redirect and inline config variable it
+  clears, such as `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `OPENCODE_CONFIG`,
+  `OPENCODE_CONFIG_CONTENT`, and `CLINE_*_SETTINGS_PATH`, and zai's
+  `ZAI_API_KEY`). It used to replace the caller's value without notice.
 - Test helpers read a fake harness's record file only once it is complete,
   fixing a Linux CI race that read it mid-write.
 - Live gate probe B passes when the shell output is the answer's last line.

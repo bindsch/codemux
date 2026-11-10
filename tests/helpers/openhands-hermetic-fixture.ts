@@ -8,7 +8,7 @@ import { PassThrough } from "node:stream";
 import { spyOn } from "bun:test";
 import * as processTable from "../../src/process-table.js";
 import { providerOverrideEnvNames } from "../../src/provider-override.js";
-import { outcomeEvents, runSessionCommand, tempWorkdir, waitForEvent } from "./session-command.js";
+import { outcomeEvents, polledEvents, runSessionCommand, tempWorkdir, waitForEvent } from "./session-command.js";
 
 const quote = (text: string) => "'" + text.replaceAll("'", "'\\''") + "'";
 
@@ -58,7 +58,7 @@ export function openhandsHermeticFixture(label: string) {
           for (let turn = 0; turn < turns; turn++) {
             stdin.write(JSON.stringify({ type: "user", text: "synthetic " + turn }) + "\n");
             await waitForEvent(chunks, "OpenHands turn", (event) => event.type === "session_ended" ||
-              outcomeEvents(chunks).filter((value) => value.type === "turn_completed").length > turn, 3_000);
+              polledEvents(chunks).filter((value) => value.type === "turn_completed").length > turn, 3_000);
           }
         } catch (error) { driveError = error; }
         finally { stdin.end('{"type":"shutdown"}\n'); }

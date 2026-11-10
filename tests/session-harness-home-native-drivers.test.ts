@@ -7,7 +7,7 @@ import * as runtime from "../src/cli-runtime.js";
 import * as cliHomes from "../src/session/cli-homes.js";
 import { readRegistry } from "../src/session/registry.js";
 import { providerOverrideEnvNames } from "../src/provider-override.js";
-import { outcomeEvents, runSessionCommand, waitForEvent } from "./helpers/session-command.js";
+import { outcomeEvents, polledEvents, runSessionCommand, waitForEvent } from "./helpers/session-command.js";
 import { registerNoLeakedSignals } from "./helpers/signal-listeners.js";
 
 registerNoLeakedSignals();
@@ -74,7 +74,7 @@ function fixture(agent: Agent) {
           for (let index = 0; index < turns; index++) {
             stdin.write(JSON.stringify({ type: "user", text: `scenario:basic turn ${index + 1}` }) + "\n");
             await waitForEvent(chunks, "turn completion", (event) => event.type === "session_ended" ||
-              outcomeEvents(chunks).filter((entry) => entry.type === "turn_completed").length > index, 3000);
+              polledEvents(chunks).filter((entry) => entry.type === "turn_completed").length > index, 3000);
           }
         } catch (error) { driveError = error; }
         finally { stdin.end('{"type":"shutdown"}\n'); }

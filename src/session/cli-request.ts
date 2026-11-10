@@ -26,7 +26,7 @@ import { validateWorkingDirectory } from "../validation.js";
 import { canonicalSandboxBlockPaths } from "./registry/format.js";
 import { parseQuotaCeilingOption } from "../quota-gate.js";
 import { SESSION_AGENTS } from "./cli-agents.js";
-import { validateHarnessHome } from "./harness-home.js";
+import { assertHarnessHomePassEnv, validateHarnessHome } from "./harness-home.js";
 import { harnessHomeBlockedPaths } from "../launch/harness-home-sandbox.js";
 import { asUsage, assertResumeIdShape, parseOptionalTimeout, usageError } from "./cli-usage.js";
 
@@ -321,6 +321,7 @@ export function resolveSessionRequest(
     options.harnessHome = asUsage(() => validateHarnessHome(
       options.harnessHome!, workdir, harnessHomeBlockedPaths(process.env),
     ));
+    asUsage(() => assertHarnessHomePassEnv(agentId, passthroughEnv));
   }
   // The run path's own request validator, in its session spelling:
   // the same refusals (scode required, no --pass-env

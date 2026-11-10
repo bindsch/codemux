@@ -5,6 +5,7 @@ import { ZaiAdapter } from "./adapters/zai.js";
 import { mintCanaryMarker, trackScratchRemoval, untrackScratchRemoval } from "./hermetic-canary.js";
 import { canarySessionProtocolProblem, runCanarySession, SESSION_KILL_GRACE_MS } from "./hermetic-session-canary-driver.js";
 import type { HermeticSessionCanaryRequest } from "./hermetic-session-canary.js";
+import { callerHarnessHomeEnvNames } from "./session/harness-home.js";
 import type { AgentId } from "./types.js";
 
 type HarnessHomeCanaryAgent = AgentId;
@@ -20,10 +21,12 @@ export const HARNESS_HOME_CANARY_CLEARED_ENV: readonly string[] = [
 ];
 
 /** Every name the caller-home arm sets or clears in its sessions'
- * environment: HOME, the cleared redirects, and zai's gateway key, which the
- * arm rewrites from the adapter's token. */
+ * environment: HOME, the cleared redirects, zai's gateway key, which the
+ * arm rewrites from the adapter's token, and the names the `--harness-home`
+ * session itself sets or clears, which it refuses in --pass-env. */
 export function harnessHomeCanaryOwnedEnv(agent: AgentId): readonly string[] {
-  return ["HOME", ...HARNESS_HOME_CANARY_CLEARED_ENV, ...(agent === "zai" ? ["ZAI_API_KEY"] : [])];
+  return [...new Set(["HOME", ...HARNESS_HOME_CANARY_CLEARED_ENV, ...(agent === "zai" ? ["ZAI_API_KEY"] : []),
+    ...callerHarnessHomeEnvNames(agent)])];
 }
 
 /** Every session agent has a caller-home recipe (session/harness-home.ts), so

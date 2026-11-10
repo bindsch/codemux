@@ -79,9 +79,9 @@ export interface SessionCanaryGuards {
  * control, and resumed sessions (plantSessionCanary's `env`). With the
  * caller-home arm's names (harnessHomeCanaryOwnedEnv), these are the names
  * a caller's --pass-env would see replaced without notice, so the guard
- * refuses them. The `--harness-home` recipe's own per-agent variables
- * (src/session/harness-home.ts) apply in the caller-home sessions as in
- * any `session --harness-home`; they are that command's contract. */
+ * refuses them. The caller-home names include the `--harness-home`
+ * recipe's own variables (src/session/harness-home.ts), which
+ * `session --harness-home` refuses in --pass-env too. */
 export const SESSION_CANARY_PLANTED_ENV: Partial<Record<AgentId, readonly string[]>> = {
   claude: ["CLAUDE_CONFIG_DIR"],
   zai: ["CLAUDE_CONFIG_DIR"],

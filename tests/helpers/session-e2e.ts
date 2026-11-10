@@ -97,7 +97,8 @@ export async function startSession(
   return { driver, proc, events, rawLines, code, options, stateDir };
 }
 
-/** What the fake harness recorded, re-read so late appends are visible. */
+/** What the fake harness recorded so far: re-read so late appends are visible,
+ * and a record still being written waits for the next read (readFakeRecords). */
 export function fakeRecord(session: Session, name: string): unknown[] {
   return readFakeRecords<unknown>(join(session.stateDir, name));
 }

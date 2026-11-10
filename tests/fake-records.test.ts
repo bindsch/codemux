@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFakeRecords } from "./helpers/fake-records.js";
+import { outcomeEvents, polledEvents } from "./helpers/session-command.js";
 
 test("an unterminated tail is a write in flight, not a record", () => {
   const dir = mkdtempSync(join(tmpdir(), "fake-records-"));
@@ -18,4 +19,12 @@ test("an unterminated tail is a write in flight, not a record", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("polled stdout skips an event cut between chunks; finished stdout rejects a truncated tail", () => {
+  const whole = JSON.stringify({ type: "session_started" });
+  expect(polledEvents([`${whole}\n{"type":"turn_`])).toEqual([{ type: "session_started" }]);
+  expect(polledEvents([`${whole}\n{"type":"turn_`, `completed"}\n`])).toEqual([{ type: "session_started" }, { type: "turn_completed" }]);
+  expect(() => outcomeEvents([`${whole}\n{"type":"error"`])).toThrow();
+  expect(outcomeEvents([`${whole}\n`, "\n"])).toEqual([{ type: "session_started" }]);
 });

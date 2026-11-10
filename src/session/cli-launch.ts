@@ -208,10 +208,10 @@ export async function prepareSessionLaunch({
     // the claude family's implementation refreshes or scrubs the
     // operator's default credential mirror, and a print must not mutate
     // authentication state. --harness-home runs it too (review R420 B1):
-    // it guards the mirror the caller home's access-only copy comes from,
-    // and the caller home replaces every Claude profile redirect in the child.
-    adapter.prepareSandbox({ sandboxTrust, passthroughEnv: options.harnessHome === undefined ? passthroughEnv
-      : passthroughEnv.filter((name) => name !== "CLAUDE_CONFIG_DIR" && name !== "CLAUDE_SECURESTORAGE_CONFIG_DIR") });
+    // it guards the mirror the caller home's access-only copy comes from.
+    // A caller home refuses --pass-env of the Claude profile redirects it
+    // sets (assertHarnessHomePassEnv), so none reaches this guard.
+    adapter.prepareSandbox({ sandboxTrust, passthroughEnv });
   }
   // A codex override session's CODEX_HOME (review D1): created only
   // after every refusing step, and its config.toml written only

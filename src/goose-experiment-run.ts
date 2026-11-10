@@ -27,8 +27,8 @@
  * bytes the model received. The ledger's write ordering relative to
  * tool dispatch is not spelled in the binary: if goose writes a call only
  * after its result, resolution fails closed with CallIdUnresolved and the
- * run never silently misrecords. The live gate must confirm this ordering
- * before the shared activation lands (scratch/fix/w4-shared.patch).
+ * run never silently misrecords. No live gate has confirmed this ordering
+ * yet: 2.0.0 had no credentialed goose machine (docs/harnesses.md).
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
