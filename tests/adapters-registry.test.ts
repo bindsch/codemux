@@ -73,7 +73,7 @@ describe("Adapter Registry", () => {
       const adapter = getAdapter("droid", {});
       expect(adapter.getRunEnv({ agent: "droid", prompt: "p" })).toEqual({});
       expect(adapter.buildRunCommand({ agent: "droid", prompt: "p" }))
-        .toEqual(["droid", "exec"]);
+        .toEqual(["droid", "exec", "--output-format", "stream-json"]);
       // The launch path (no view) still sees the override and keeps failing
       // closed without prepared per-run settings.
       expect(() => getAdapter("droid").getRunEnv({ agent: "droid", prompt: "p" }))
@@ -128,7 +128,7 @@ describe("Adapter Registry", () => {
       expect(getAdapter("openhands", {}).getRunEnv({ agent: "openhands", prompt: "p" }))
         .toEqual({});
       expect(getAdapter("openhands", {}).buildRunCommand({ agent: "openhands", prompt: "p" }))
-        .toEqual(["openhands", "--headless", "--task", "p"]);
+        .toEqual(["openhands", "--headless", "--json", "--task", "p"]);
       // The launch view (no explicit view) still sees them.
       expect(getAdapter("claude").getEnv().ANTHROPIC_BASE_URL)
         .toBe("https://override.example");

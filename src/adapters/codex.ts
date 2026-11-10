@@ -31,6 +31,7 @@ import type { ExecutableCheck } from "../executable-security.js";
 import { UsageRefusalError } from "../validation.js";
 import { ExperimentCodexRun } from "../experiment-codex-run.js";
 import { CodexCostFold, withCodexNativeCost } from "../codex-native-cost.js";
+import { withStreamScanSurface } from "../stream-marker-scan.js";
 import type { SandboxOptions, ScodeTrustLevel } from "../sandbox.js";
 import type { AutonomyLevel, ReasoningEffort, RunRequest, RunResult , LaunchIntent } from "../types.js";
 import { codexLoginState, loginHome, type LoginState } from "../harness-health.js";
@@ -442,11 +443,13 @@ export class CodexAdapter extends CodexPolicy {
     request: RunRequest,
     context?: RunContext
   ): RunResult {
-    return withCodexNativeCost(processCodexRunResult(result, request, context, () =>
+    // The fold dropped every item event (tool output); the hermetic check
+    // scans its marker evidence beside the answer (stream-marker-scan.ts).
+    return withStreamScanSurface(withCodexNativeCost(processCodexRunResult(result, request, context, () =>
       this.validatedProvider() === null
         ? request
         : { ...request, model: this.modelFor(request.model) }
-    ), request, context);
+    ), request, context), result.stdout, context?.experimentCodex?.fold ?? context?.stdoutSink);
   }
 
   buildTuiCommand(

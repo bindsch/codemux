@@ -14,7 +14,9 @@ import {
 } from "../qwen-effort.js";
 import { qwenNoToolsArgs, qwenNoWebArgs } from "../qwen-tools.js";
 import { buildPlaywrightSandboxMcp } from "../mcp.js";
-import { qwenResult } from "../result-envelope/qwen.js";
+import { qwenPlainResult, qwenResult } from "../result-envelope/qwen.js";
+import { qwenStreamFold } from "../qwen-stream-answer.js";
+import { withStreamScanSurface } from "../stream-marker-scan.js";
 import { readExperimentRunSpec } from "../experiment-mcp.js";
 import { QwenExperimentRun, qwenExperimentResult, assertQwenExperimentCwd } from "../qwen-experiment-run.js";
 import { assertNoCallerBlockOverStateDirs, type SandboxOptions, type ScodeTrustLevel } from "../sandbox.js";
@@ -189,10 +191,12 @@ export class QwenAdapter extends BaseAdapter {
     // cap (src/qwen-effort.ts) — either alone is enough to need a file.
     if (this.isLegacyBinary) return {};
     const override = this.validatedProvider();
+    // The fold sheds tool payloads from the stream-json capture.
     if (request.effort === undefined && override?.maxContextTokens === undefined) {
-      return {};
+      return { stdoutSink: qwenStreamFold() };
     }
     return {
+      stdoutSink: qwenStreamFold(),
       qwenEffortSettings: writeQwenRunSettings(qwenBrandHome(this.environment), {
         ...(request.effort === undefined ? {} : { effort: request.effort }),
         ...(override?.maxContextTokens === undefined
@@ -259,13 +263,10 @@ export class QwenAdapter extends BaseAdapter {
     } else if (request.web === false) {
       cmd.push(...qwenNoWebArgs());
     }
-    // A --result-json run switches to the json wire: one line carrying the
-    // message array, the result message last
-    // (src/result-envelope/qwen.ts). A plain run keeps qwen's default
-    // text output.
-    if (experiment || request.resultJson) {
-      cmd.push("--output-format", experiment ? "stream-json" : "json");
-    }
+    // Every run reads the stream-json wire: the result message carries
+    // only the last assistant message, so the complete answer is rebuilt
+    // from the assistant messages (src/qwen-stream-answer.ts, lane AN1).
+    cmd.push("--output-format", "stream-json");
     if (request.autonomy) {
       cmd.push(...this.mapAutonomy(request.autonomy));
     }
@@ -298,10 +299,12 @@ export class QwenAdapter extends BaseAdapter {
   override processRunResult(result: RunResult, request: RunRequest, context?: RunContext): RunResult {
     if (context?.experimentQwen) return { ...qwenExperimentResult(result, request, context.experimentQwen.recordingPath),
       scanSurface: context.experimentQwen.scanSurface };
-    if (!request.resultJson) return result;
-    // The run launched with --output-format json, so stdout is the message
-    // array; qwenResult re-emits the answer with the codemux block.
-    return qwenResult(result, request);
+    // The run launched with --output-format stream-json; qwenResult
+    // re-emits the complete answer with the codemux block, and a plain run
+    // prints it.
+    // The fold shed tool payloads; the scan covers them (stream-marker-scan.ts).
+    return withStreamScanSurface(request.resultJson ? qwenResult(result, request) : qwenPlainResult(result),
+      result.stdout, context?.stdoutSink);
   }
 
   override prepareTuiEnvironment(model?: string, _autonomy?: AutonomyLevel, effort?: ReasoningEffort,

@@ -1,5 +1,7 @@
 import type { CodemuxResultBlock, ResultUsageBlock, RunRequest, RunResult } from "../types.js";
 import { geminiTelemetryServedModel } from "../gemini-telemetry.js";
+import { answerBlockFields, withTruncationNotice, type AnswerTranscript } from "../answer-complete.js";
+import { parseGeminiStream } from "../gemini-stream-answer.js";
 import {
   appendDiagnostic,
   boundResultEnvelope,
@@ -32,26 +34,41 @@ import {
  * so the parser and the gate share one name (review round 16, edges 3). */
 export const GEMINI_ANSWER_FIELD = "response";
 
-/** Experiments need stream-json identities while ordinary runs use json.
- * Verification precedes this conversion; never infer a served model from
- * init.model, which is only the configured model. */
-export function geminiExperimentResult(result: RunResult, request: RunRequest, recording?: string, telemetryPath?: string): RunResult {
+/** Every run launches with stream-json (src/gemini-stream-answer.ts): the
+ * stream is rebuilt into the json-format envelope, its `response` the
+ * complete answer, and finished by geminiResult. A plain run prints that
+ * answer. Stdout with no JSON line at all (a binary that ignored the
+ * format) passes through a plain run verbatim and fails a --result-json
+ * run. Never infer a served model from init.model, which is only the
+ * configured model. */
+export function geminiStreamResult(result: RunResult, request: RunRequest, recording?: string, telemetryPath?: string): RunResult {
+  // A single json-format envelope (no `type`; a binary or fixture that
+  // printed the --output-format json object) is still read as one.
+  const legacy = parseGeminiResultEnvelope(result.stdout);
+  if (legacy !== null && legacy.envelope.type === undefined) {
+    const converted = geminiResult(result, request, telemetryPath);
+    if (request.resultJson || !converted.success) return converted;
+    const text = legacy.envelope[GEMINI_ANSWER_FIELD];
+    return { ...converted, stdout: typeof text === "string" && text !== "" && !text.endsWith("\n") ? `${text}\n` : String(text ?? "") };
+  }
+  const stream = parseGeminiStream(result.stdout);
+  if (stream === null) {
+    if (!request.resultJson && recording === undefined) return result;
+    return { ...result, success: false, exitCode: result.exitCode || 1,
+      stderr: appendDiagnostic(result.stderr, "codemux: gemini stream-json stdout is malformed") };
+  }
+  const converted = geminiResult({ ...result, stdout: JSON.stringify(stream.envelope) }, request, telemetryPath, stream.transcript);
+  if (!request.resultJson) {
+    const response = stream.envelope.response as string;
+    return { ...converted, stdout: response === "" || response.endsWith("\n") ? response : `${response}\n` };
+  }
+  if (recording === undefined) return converted;
   try {
-    const events = result.stdout.split("\n").filter((line) => line.trim()).map((line) => JSON.parse(line));
-    const initial = events.find((event) => event.type === "init");
-    const final = events.findLast((event) => event.type === "result");
-    const response = events.filter((event) => event.type === "message" && event.role === "assistant" && typeof event.content === "string")
-      .map((event) => event.content).join("");
-    const envelope = { session_id: initial?.session_id, response, stats: final?.stats,
-      ...(final?.status !== "success" ? { error: final?.error ?? "Gemini experiment has no successful terminal result" } : {}) };
-    const converted = geminiResult({ ...result, stdout: JSON.stringify(envelope) }, request, telemetryPath);
-    if (!request.resultJson) return { ...converted, stdout: response };
     const output = JSON.parse(converted.stdout);
-    output.codemux.recording = recording ?? null;
+    output.codemux.recording = recording;
     return { ...converted, stdout: `${JSON.stringify(output)}\n` };
   } catch {
-    return { ...result, success: false, exitCode: result.exitCode || 1,
-      stderr: appendDiagnostic(result.stderr, "codemux: Gemini experiment stdout is malformed") };
+    return converted;
   }
 }
 
@@ -141,7 +158,13 @@ export function geminiUsageFromStats(stats: Record<string, unknown>): ResultUsag
  * codemux block when the envelope carries one: gemini's `--resume` accepts
  * exactly that id, so a caller can hand it back.
  */
-export function geminiResult(result: RunResult, request: RunRequest, telemetryPath?: string): RunResult {
+export function geminiResult(result: RunResult, request: RunRequest, telemetryPath?: string,
+  transcript: AnswerTranscript | null = null): RunResult {
+  return withTruncationNotice(geminiEnvelopeResult(result, request, telemetryPath, transcript), "gemini", transcript);
+}
+
+function geminiEnvelopeResult(result: RunResult, request: RunRequest, telemetryPath: string | undefined,
+  transcript: AnswerTranscript | null): RunResult {
   const agent = "gemini" as const;
   const parsed = parseGeminiResultEnvelope(result.stdout);
   if (parsed === null) {
@@ -169,6 +192,8 @@ export function geminiResult(result: RunResult, request: RunRequest, telemetryPa
     session_id: parsed.sessionId,
     recording: null,
     failure_code: null,
+    ...answerBlockFields(transcript, typeof parsed.envelope[GEMINI_ANSWER_FIELD] === "string"
+      ? parsed.envelope[GEMINI_ANSWER_FIELD] as string : null),
   });
   const serialized = `${JSON.stringify({ ...parsed.envelope, codemux: block() })}\n`;
   if (parsed.errorText !== null) {

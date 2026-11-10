@@ -16,12 +16,12 @@ import { AGENT_IDS, type RunRequest } from "../src/types.js";
 // through a provider override — are in the hermetic-harness-mappings-*.test.ts
 // files; the per-harness provider-override suites in their own files.
 
-// --output-format json rides on every run: the envelope is what the
-// plain-run unwrap consumes, hermetic or not.
-const PLAIN_CLAUDE = ["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json"];
+// --output-format stream-json --verbose rides on every run: the stream is
+// what the plain-run unwrap consumes, hermetic or not.
+const PLAIN_CLAUDE = ["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "stream-json", "--verbose"];
 
 describe("hermetic runs: claude and zai", () => {
-  const HERMETIC_CLAUDE = ["claude", "-p", "--safe-mode", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json"];
+  const HERMETIC_CLAUDE = ["claude", "-p", "--safe-mode", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "stream-json", "--verbose"];
 
   test("--hermetic adds --safe-mode, keeps the user setting source and the tools", () => {
     const cmd = new ClaudeAdapter().buildRunCommand({ agent: "claude", prompt: "p", model: "haiku", hermetic: true });
@@ -48,9 +48,9 @@ describe("hermetic runs: claude and zai", () => {
 
   test("instruction directories become --add-dir; the project source turns on only for the working directory itself", () => {
     expect(new ClaudeAdapter().buildRunCommand({ agent: "claude", prompt: "p", cwd: "/tmp/a", instructionDirs: ["/tmp/a", "/tmp/b"] }))
-      .toEqual(["claude", "-p", "--setting-sources", "user,project", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--add-dir", "/tmp/a", "--add-dir", "/tmp/b"]);
+      .toEqual(["claude", "-p", "--setting-sources", "user,project", "--strict-mcp-config", "--no-session-persistence", "--output-format", "stream-json", "--verbose", "--add-dir", "/tmp/a", "--add-dir", "/tmp/b"]);
     expect(new ClaudeAdapter().buildRunCommand({ agent: "claude", prompt: "p", cwd: "/tmp/a", hermetic: true, instructionDirs: ["/tmp/a"] }))
-      .toEqual(["claude", "-p", "--safe-mode", "--setting-sources", "user,project", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--add-dir", "/tmp/a"]);
+      .toEqual(["claude", "-p", "--safe-mode", "--setting-sources", "user,project", "--strict-mcp-config", "--no-session-persistence", "--output-format", "stream-json", "--verbose", "--add-dir", "/tmp/a"]);
     // An instruction directory elsewhere never enables the working
     // directory's own settings file.
     expect(new ClaudeAdapter().buildRunCommand({ agent: "claude", prompt: "p", cwd: "/tmp/repo", instructionDirs: ["/tmp/a"] }))

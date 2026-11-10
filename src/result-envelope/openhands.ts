@@ -1,5 +1,8 @@
 import type { CodemuxResultBlock, ResultUsageBlock, RunRequest, RunResult } from "../types.js";
 import { appendDiagnostic, boundResultEnvelope, emptyUsage } from "./common.js";
+import {
+  AnswerCollector, answerBlockFields, completeAnswer, withTruncationNotice, type AnswerTranscript,
+} from "../answer-complete.js";
 
 /**
  * Parses the JSONL stream openhands prints for a headless run launched
@@ -9,7 +12,15 @@ import { appendDiagnostic, boundResultEnvelope, emptyUsage } from "./common.js";
  * event, SystemPromptEvent excepted; read 2026-11-09). The answer text is
  * the LAST MessageEvent with `source == "agent"`: its `llm_message.content`
  * is a list of content blocks whose text parts join into the reply
- * (openhands/sdk/event/llm_convertible/message.py at 1.21.0). Failure is
+ * (openhands/sdk/event/llm_convertible/message.py at 1.21.0). The text
+ * the agent writes before a tool call rides the ActionEvent instead, as
+ * its `thought` blocks (set on the first action of one LLM response,
+ * response_dispatch.py: `thought=thought_content if i == 0 else []`),
+ * and a run that ends through the finish tool carries its closing text
+ * as the FinishAction's `message` (sdk/tool/builtins/finish.py). The
+ * answer is every one of those texts after the last user MessageEvent,
+ * in order (lane AN1). No event carries a finish reason, so `truncated`
+ * stays false. Failure is
  * an AgentErrorEvent or ConversationErrorEvent. NO event carries token
  * usage: the TokenUsage metrics live in the conversation state, not the
  * event stream, and the CLI prints no metrics line in json mode — so the
@@ -23,8 +34,18 @@ import { appendDiagnostic, boundResultEnvelope, emptyUsage } from "./common.js";
 export const OPENHANDS_ANSWER_FIELD = "llm_message";
 
 export interface OpenhandsEnvelopeInfo {
+  /** The complete answer (every assistant text), null when none. */
   answer: string | null;
+  transcript: AnswerTranscript;
   errorText: string | null;
+}
+
+function textBlocks(blocks: unknown): string {
+  if (!Array.isArray(blocks)) return "";
+  return blocks
+    .filter((block): block is Record<string, unknown> => typeof block === "object" && block !== null)
+    .map((block) => block.type === "text" && typeof block.text === "string" ? block.text : "")
+    .join("");
 }
 
 function messageText(llmMessage: unknown): string | null {
@@ -46,7 +67,7 @@ function messageText(llmMessage: unknown): string | null {
 
 export function parseOpenhandsResultEnvelope(stdout: string): OpenhandsEnvelopeInfo | null {
   let sawWire = false;
-  let answer: string | null = null;
+  const collector = new AnswerCollector();
   let errorText: string | null = null;
   for (const line of stdout.split("\n")) {
     const trimmed = line.trim();
@@ -62,9 +83,19 @@ export function parseOpenhandsResultEnvelope(stdout: string): OpenhandsEnvelopeI
     sawWire = true;
     // The event class name rides pydantic's DiscriminatedUnionMixin `kind`
     // field; the serialized line carries it as `kind`.
-    if (event.kind === "MessageEvent" && event.source === "agent") {
-      const text = messageText(event.llm_message);
-      if (text !== null) answer = text;
+    if (event.kind === "MessageEvent" && event.source === "user") {
+      collector.userTurn();
+    } else if (event.kind === "MessageEvent" && event.source === "agent") {
+      collector.message(messageText(event.llm_message) ?? "");
+    } else if (event.kind === "ActionEvent") {
+      const thought = textBlocks(event.thought);
+      const action = event.action as Record<string, unknown> | null | undefined;
+      const finish = action?.kind === "FinishAction" && typeof action.message === "string" ? action.message : "";
+      // One LLM response's actions share its thought: a response with no
+      // thought adds nothing, and the finish message is its own message.
+      if (thought !== "") collector.message(thought);
+      if (finish !== "") collector.message(finish);
+      else if (thought === "") collector.close();
     } else if (event.kind === "AgentErrorEvent" || event.kind === "ConversationErrorEvent") {
       if (typeof event.error === "string") errorText = event.error;
       else if (
@@ -76,7 +107,8 @@ export function parseOpenhandsResultEnvelope(stdout: string): OpenhandsEnvelopeI
     }
   }
   if (!sawWire) return null;
-  return { answer, errorText };
+  const transcript = collector.transcript();
+  return { answer: completeAnswer(transcript, null), transcript, errorText };
 }
 
 /**
@@ -128,6 +160,7 @@ export function openhandsResult(result: RunResult, request: RunRequest): RunResu
     session_id: null,
     recording: null,
     failure_code: failure !== null ? "harness-error" : null,
+    ...answerBlockFields(parsed.transcript),
   };
   const envelope = `${JSON.stringify({ [OPENHANDS_ANSWER_FIELD]: parsed.answer ?? "", usage, codemux: block })}\n`;
   if (failure !== null) {
@@ -161,4 +194,25 @@ export function openhandsResult(result: RunResult, request: RunRequest): RunResu
     usage,
     null
   );
+}
+
+/** A plain run: the same `--json` wire (every launch asks for it, lane
+ * AN1), printed as the complete answer. Stdout with no JSON line is not
+ * the wire (the startup text of a run that never started, an older
+ * binary) and comes back null so the adapter keeps its own verdict. An
+ * error event fails the run with the answer so far on stdout. */
+export function openhandsPlainResult(result: RunResult): RunResult | null {
+  const parsed = parseOpenhandsResultEnvelope(result.stdout);
+  if (parsed === null) return null;
+  const answer = parsed.answer ?? "";
+  const stdout = answer === "" || answer.endsWith("\n") ? answer : `${answer}\n`;
+  const base: RunResult = { ...result, stdout, usage: emptyUsage(), servedModel: null };
+  if (parsed.errorText === null) return withTruncationNotice(base, "openhands", parsed.transcript);
+  return {
+    ...base,
+    stderr: appendDiagnostic(result.stderr,
+      `codemux: openhands reported error event (${parsed.errorText}), so this run fails even though the harness exited ${result.exitCode}`),
+    exitCode: result.exitCode === 0 ? 1 : result.exitCode,
+    success: false,
+  };
 }

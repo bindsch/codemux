@@ -27,12 +27,12 @@
  *   carries `-s <id>`; the turn that STARTS one carries nothing —
  *   droid mints the id itself, so codemux uses the deferred-identity
  *   model (the goose/opencode one): the id is adopted from the first
- *   turn's result object.
+ *   turn's completion event.
  * - The one-shot body proves the resumed id is the id the turn runs
  *   under (offset 153836971): `let u=s.fork?...:s.sessionId` then
  *   `if(u){...ensureSessionLoaded(u,...);...v=u}else{...v=...
  *   createSession({sessionId:s.initSessionId??k,...})}` — `v` feeds the
- *   turn and the result object, so a resumed turn's result object names
+ *   turn and its closing event, so a resumed turn's completion event names
  *   the resumed id (the wrongSession rule) and a fresh turn's names the
  *   mint.
  * - The mint (offset 144558807): `async createNewSession(t){let r=Ee();
@@ -44,8 +44,14 @@
  *   error "Invalid sessionId: received empty or whitespace-only
  *   sessionId" — no shape check anywhere, so the pattern below is
  *   permissive but anchored: nonempty, no whitespace.
- * - `--output-format json` prints exactly one result object on stdout
- *   (offset 153812787): `function ae(t,r,s){return{type:"result",
+ * - Turns launch with `--output-format stream-json` (lane AN1): the
+ *   stream's assistant message events carry every message of the turn,
+ *   and its closing `{type:"completion",finalText,numTurns,durationMs,
+ *   session_id,usage}` event carries the session id and usage
+ *   (src/result-envelope/droid.ts names the stream evidence). The
+ *   `--output-format json` result object the turns used before is still
+ *   parsed, for older captures. That format prints exactly one result
+ *   object on stdout (offset 153812787): `function ae(t,r,s){return{type:"result",
  *   subtype:t.isError?"failure":"success",is_error:t.isError,
  *   duration_ms:r,num_turns:t.numTurns,result:t.finalText,
  *   session_id:t.sessionId,usage:s}}`, handed to
@@ -73,7 +79,7 @@ import type { AutonomyLevel, ReasoningEffort, ResultUsageBlock, ToolSelection } 
 import type { SessionCapabilities } from "./protocol.js";
 
 /** The session-only version floor (§4.3): 0.221.0, the installed binary
- * whose -s contract, id mint, and JSON result object this command and
+ * whose -s contract, id mint, and exec wire this command and
  * parse are pinned against. The FEATURE_FLOORS entry lands with the
  * lane's SESSION_AGENTS wiring; the value there must be this one. */
 export const DROID_SESSION_FLOOR = featureFloor("droid", "sessions");
@@ -89,12 +95,12 @@ export const DROID_SESSION_ID_PATTERN = /^\S+$/;
 /**
  * Capability flags for droid sessions (§3.4): live input yes (one caller
  * input, one droid exec process), resume yes through droid's own session
- * ledger keyed by the id the first turn's result object reported.
+ * ledger keyed by the id the first turn's completion event reported.
  * Everything else honestly no — there is no steering or interrupt
  * channel into a one-shot process, no permission round-trip (the
- * --auto boundary is set at spawn), no deltas (the JSON object is the
- * turn's one complete report), no file-change frames, and usage arrives
- * only on the turn's final object, so it rides the per-turn completion
+ * --auto boundary is set at spawn), no deltas (codemux reports the turn
+ * once its stream ends), no file-change frames, and usage arrives only
+ * on the turn's closing completion event, so it rides the per-turn completion
  * (the agy/claude contract), not a stream.
  */
 export function droidSessionCapabilities(): SessionCapabilities {
@@ -129,7 +135,7 @@ export function droidSessionEffortValue(level: ReasoningEffort, model?: string):
 export interface DroidSessionCommand {
   /** The droid-minted session id to resume (`-s`), or undefined to
    * start fresh (droid mints the id; the driver adopts it from the
-   * first turn's result object). */
+   * first turn's completion event). */
   resumeSessionId?: string;
   /** The turn's model in its RAW request spelling — the resolved
    * `--model` or the override's env model, exactly what the run path's
@@ -183,7 +189,9 @@ export function buildDroidSessionCommand(command: DroidSessionCommand): string[]
   if (modelId !== undefined) {
     argv.push("-m", modelId);
   }
-  argv.push("--output-format", "json");
+  // The stream, as the run uses (lane AN1): the json format's result is
+  // the last text block alone, and a turn's answer is every message.
+  argv.push("--output-format", "stream-json");
   if (command.autonomy !== undefined && command.autonomy !== "read-only") {
     argv.push("--auto", command.autonomy);
   }
@@ -203,29 +211,30 @@ export function buildDroidSessionCommand(command: DroidSessionCommand): string[]
 }
 
 /** What one turn's whole stdout resolves to: the run path's parser (the
- * one result object — answer text, usage, session id) plus the identity
- * check a session adds. */
+ * stream's assistant messages for the answer text, the completion event
+ * for usage and session id) plus the identity check a session adds. */
 export interface DroidSessionTurnParse {
   answer: string | null;
   usage: ResultUsageBlock;
-  /** The result object's session_id, when it carried a usable one. */
+  /** The completion event's session_id, when it carried a usable one. */
   sessionId: string | null;
-  /** True when the object named no session id at all: a fresh session's
+  /** True when the completion event named no session id at all: a fresh session's
    * first turn owes one (without it the session is untrackable — the
    * opencode rule), and a resumed turn breaks the pin. */
   noSessionId: boolean;
-  /** True when the object named a session other than the one this turn
+  /** True when the completion event named a session other than the one this turn
    * resumed — the driver fails the turn's identity, not just its
    * shape. */
   wrongSession: boolean;
-  /** True when stdout carried no result object at all (the driver's
-   * tier-3 fatal: the launch ran with --output-format json). */
+  /** True when stdout carried no wire event at all (the driver's
+   * tier-3 fatal: the launch ran with --output-format stream-json). */
   noWire: boolean;
 }
 
 /**
- * Parse one turn's stdout: the run envelope parser folds the one result
- * object, and this adds the session's two rules — the object must name
+ * Parse one turn's stdout: the run envelope parser folds the stream (or
+ * a json-format result object), and this adds the session's two rules —
+ * the closing event must name
  * a session id (the deferred identity arrives here; a blank id is no
  * id, the binary's own isValidSessionId rule, because the early-failure
  * builder can print session_id:""), and on a resumed turn it must name

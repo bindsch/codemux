@@ -13,7 +13,9 @@ import type {
 } from "../types.js";
 import { copilotLoginState, loginHome, type LoginState } from "../harness-health.js";
 import { createCopilotHermeticHome } from "../copilot-hermetic.js";
-import { copilotResult } from "../result-envelope/copilot.js";
+import { copilotPlainResult, copilotResult } from "../result-envelope/copilot.js";
+import { StreamDropFold } from "../stream-drop-fold.js";
+import { withStreamScanSurface } from "../stream-marker-scan.js";
 import type { SandboxOptions, ScodeTrustLevel } from "../sandbox.js";
 import { copilotProvider, copilotProviderEnv, copilotProviderOmissions, createCopilotProviderFile, type CopilotProviderFile } from "../copilot-provider.js";
 import { createCopilotUsageFile, readCopilotUsageFile, type CopilotRunContext } from "../copilot-usage.js";
@@ -158,6 +160,9 @@ export class CopilotAdapter extends BaseAdapter {
       if (experiment && !launch.printOnly) {
         this.prepareCopilotExperiment(request, context, experiment);
       }
+      // A plain run's JSONL sheds the tool.* events (tool output) as they
+      // stream; the answer reads only message, error, and result events.
+      if (!request.resultJson && !experiment) context.stdoutSink = new StreamDropFold([{ opening: '{"type":"tool.', marker: null }]);
       return context;
     } catch (error) {
       this.cleanupRunSync(context);
@@ -318,8 +323,11 @@ export class CopilotAdapter extends BaseAdapter {
     });
     cmd.push(...playwright.args);
     if (context !== undefined) context.playwrightMcpCheck = playwright.check;
+    // Every run reads the JSONL wire: the complete answer is every
+    // assistant.message's content (src/result-envelope/copilot.ts, lane
+    // AN1); the text format is not a structured record of the messages.
+    cmd.push("--output-format", "json");
     if (request.resultJson) {
-      cmd.push("--output-format", "json");
       const usagePath = (context as CopilotRunContext | undefined)?.copilotUsageFile?.path;
       if (usagePath !== undefined) cmd.push("--usage-output-file", usagePath);
     }
@@ -346,7 +354,8 @@ export class CopilotAdapter extends BaseAdapter {
       if (envelope.codemux) envelope.codemux.recording = experiment.recordingPath;
       return { ...processed, stdout: JSON.stringify(envelope) + "\n", scanSurface: experiment.capturedOutput };
     }
-    if (!request.resultJson) return result;
+    // The fold shed the tool.* events; the scan covers them (stream-marker-scan.ts).
+    if (!request.resultJson) return withStreamScanSurface(copilotPlainResult(result), result.stdout, context?.stdoutSink);
     const usageFile = (context as CopilotRunContext | undefined)?.copilotUsageFile;
     if (usageFile === undefined) return copilotResult(result, request);
     try {

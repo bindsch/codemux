@@ -219,6 +219,10 @@ describe("agyResult", () => {
       model_alias: null,
       failure_code: null,
       labels: null,
+      // Lane AN1: agy pins no intermediate text, so the response is also
+      // the final message.
+      final_message: envelope.response,
+      truncated: false,
     });
   });
 

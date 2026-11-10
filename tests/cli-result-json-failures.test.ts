@@ -150,7 +150,7 @@ describe("CLI - result envelope failures", () => {
   });
 
   test("claude plain-text stdout under --result-json fails loudly", async () => {
-    // Exit 0 with non-JSON stdout violates the --output-format json
+    // Exit 0 with non-JSON stdout violates the --output-format stream-json
     // contract the launch made; automation must not read exit 0 as success.
     const fake = createFakeBinaryEnv({
       claude: `${claudeVersionPreamble}cat >/dev/null; printf 'just text\\n'`,

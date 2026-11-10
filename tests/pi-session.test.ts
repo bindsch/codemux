@@ -170,9 +170,10 @@ describe("pi session wiring", () => {
     expect(parsed.noSessionId).toBe(false);
     expect(parsed.sessionId).toBe(ID);
     expect(parsed.wrongSession).toBe(false);
-    // The LAST assistant message is the answer (the run parser's rule);
-    // usage sums over every assistant message_end.
-    expect(parsed.answer).toBe("the reply");
+    // Every assistant message of the turn is the answer, a blank line
+    // between two (the run parser's rule, lane AN1); usage sums over every
+    // assistant message_end.
+    expect(parsed.answer).toBe("part one\n\nthe reply");
     expect(parsed.usage).toEqual({
       input_tokens: 150,
       output_tokens: 15,

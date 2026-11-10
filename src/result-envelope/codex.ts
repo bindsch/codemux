@@ -1,7 +1,8 @@
 import type { CodemuxResultBlock, RunRequest, RunResult } from "../types.js";
-import { appendDiagnostic, boundResultEnvelope, emptyUsage } from "./common.js";
+import { appendDiagnostic, boundResultEnvelope, emptyUsage, envelopePastCaptureBound } from "./common.js";
 import { CODEX_TRUNCATED_LINE, boundedCodexEnvelope } from "./codex-bound.js";
-import { parseCodexEventStream, type CodexEventStream } from "./codex-stream.js";
+import { answerBlockFields, withTruncationNotice } from "../answer-complete.js";
+import { codexStreamAnswer, codexTranscript, parseCodexEventStream, type CodexEventStream } from "./codex-stream.js";
 
 /**
  * The stderr line that says where a fallback result came from. Codex ends
@@ -84,9 +85,12 @@ export function codexStreamVerdict(
     // codemux line is added, but the verdict still fails the run.
     return { failed: true, diagnostic: null };
   }
+  // The answer is every message of the turn (lane AN1), so an empty
+  // closing message after earlier text is still an answer.
+  const answer = codexStreamAnswer(stream);
   if (
     !options.messagelessCompletedTurnSucceeds &&
-    (stream.finalMessage === null || stream.finalMessage.trim() === "")
+    (answer === null || answer.trim() === "")
   ) {
     // An empty or whitespace-only final message is no message (round10 for
     // "", round17 for whitespace-only): a completed codex turn whose one
@@ -206,6 +210,9 @@ export function codexResult(
     session_id: null,
     recording,
     failure_code: null,
+    // Lane AN1: `result` carries every agent_message of the turn; the
+    // closing one alone rides here.
+    ...answerBlockFields(codexTranscript(stream)),
   };
   const notes: string[] = stream.warnings.map((message) => `codemux: codex warning: ${message}`);
   // Round al29 (contracts minor): a named fallback file that is missing,
@@ -257,8 +264,8 @@ export function codexResult(
           : "")
     );
   }
-  const envelope = { [CODEX_ANSWER_FIELD]: verdict.failed ? null : stream.finalMessage, codemux: block };
-  const settled: RunResult = {
+  const envelope = { [CODEX_ANSWER_FIELD]: verdict.failed ? null : codexStreamAnswer(stream), codemux: block };
+  const settled: RunResult = withTruncationNotice({
     ...result,
     stdout: `${JSON.stringify(envelope)}\n`,
     stderr:
@@ -269,7 +276,7 @@ export function codexResult(
     success: !verdict.failed,
     usage: block.usage,
     servedModel: stream.servedModel,
-  };
+  }, "codex", codexTranscript(stream));
   // The final serialization is bounded like every other envelope's
   // (review round 127): the reply fit the capture bound, but JSON escaping
   // and the codemux block can carry the envelope past it. A plain run
@@ -277,7 +284,15 @@ export function codexResult(
   // experiment run truncates toward the bound instead, the rule its
   // failure envelopes already follow, so the recorded run keeps a reply.
   if (pastBound === "leave") return settled;
-  if (pastBound === "refuse") return boundResultEnvelope("codex", settled, block.usage, stream.servedModel);
+  if (pastBound === "refuse") {
+    // The closing message repeats the tail of `result` (lane AN1): an
+    // envelope past the bound drops that copy before the bound refuses it.
+    if (envelopePastCaptureBound(settled.stdout) && block.final_message !== null) {
+      block.final_message = null;
+      settled.stdout = `${JSON.stringify(envelope)}\n`;
+    }
+    return boundResultEnvelope("codex", settled, block.usage, stream.servedModel);
+  }
   const bounded = boundedCodexEnvelope(envelope);
   if (!bounded.truncated) return settled;
   // The truncation can drop an oversized reroute name from the block; the

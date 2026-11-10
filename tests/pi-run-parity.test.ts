@@ -38,7 +38,7 @@ describe("pi --no-approve: project trust at every level", () => {
 
   test("run path keeps --no-approve unconditionally", () => {
     expect(adapter.buildRunCommand({ agent: "pi", prompt: "p" }))
-      .toEqual(["pi", "--print", "--no-session", "--no-approve"]);
+      .toEqual(["pi", "--print", "--no-session", "--no-approve", "--mode", "json"]);
   });
 });
 
@@ -134,9 +134,9 @@ describe("pi --hermetic: private agent directory", () => {
   test("buildRunCommand adds --no-context-files only under --hermetic", () => {
     const adapter = new PiAdapter();
     expect(adapter.buildRunCommand({ agent: "pi", prompt: "p", hermetic: true }))
-      .toEqual(["pi", "--print", "--no-session", "--no-approve", "--no-context-files"]);
+      .toEqual(["pi", "--print", "--no-session", "--no-approve", "--mode", "json", "--no-context-files"]);
     expect(adapter.buildRunCommand({ agent: "pi", prompt: "p" }))
-      .toEqual(["pi", "--print", "--no-session", "--no-approve"]);
+      .toEqual(["pi", "--print", "--no-session", "--no-approve", "--mode", "json"]);
   });
 
   test("a passed-through agent directory cannot combine with --hermetic", () => {
@@ -267,6 +267,8 @@ describe("pi --result-json: the --mode json wire", () => {
       session_id: null,
       recording: null,
       failure_code: null,
+      final_message: "done",
+      truncated: false,
     });
     expect(result.stdout.endsWith("\n")).toBe(true);
   });

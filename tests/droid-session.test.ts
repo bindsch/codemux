@@ -56,7 +56,7 @@ describe("droid session wiring", () => {
       "droid",
       "exec",
       "--output-format",
-      "json",
+      "stream-json",
     ]);
     expect(
       buildDroidSessionCommand({ resumeSessionId: "0b56b1c8-6c9f-4b1f-9f5d-9a89c0d10724" })
@@ -64,7 +64,7 @@ describe("droid session wiring", () => {
       "droid",
       "exec",
       "--output-format",
-      "json",
+      "stream-json",
       "-s",
       "0b56b1c8-6c9f-4b1f-9f5d-9a89c0d10724",
     ]);
@@ -77,7 +77,7 @@ describe("droid session wiring", () => {
       "droid",
       "exec",
       "--output-format",
-      "json",
+      "stream-json",
       "--only-tools",
       "ToolSearch",
     ]);
@@ -87,7 +87,7 @@ describe("droid session wiring", () => {
       "droid",
       "exec",
       "--output-format",
-      "json",
+      "stream-json",
       "--only-tools",
       "ToolSearch",
       "-s",
@@ -102,31 +102,31 @@ describe("droid session wiring", () => {
       "-m",
       "gpt-5.6",
       "--output-format",
-      "json",
+      "stream-json",
     ]);
     // Read-only autonomy maps to no flag (the run adapter's mapAutonomy).
     expect(buildDroidSessionCommand({ autonomy: "read-only" })).toEqual([
       "droid",
       "exec",
       "--output-format",
-      "json",
+      "stream-json",
     ]);
     expect(buildDroidSessionCommand({ autonomy: "low" })).toEqual([
       "droid",
       "exec",
       "--output-format",
-      "json",
+      "stream-json",
       "--auto",
       "low",
     ]);
     expect(
       buildDroidSessionCommand({ autonomy: "high", resumeSessionId: "s1" })
-    ).toEqual(["droid", "exec", "--output-format", "json", "--auto", "high", "-s", "s1"]);
+    ).toEqual(["droid", "exec", "--output-format", "stream-json", "--auto", "high", "-s", "s1"]);
     expect(buildDroidSessionCommand({ effort: "medium" })).toEqual([
       "droid",
       "exec",
       "--output-format",
-      "json",
+      "stream-json",
       "--reasoning-effort",
       "medium",
     ]);
@@ -151,7 +151,7 @@ describe("droid session wiring", () => {
       "-m",
       "codemux-override-gateway",
       "--output-format",
-      "json",
+      "stream-json",
       "--reasoning-effort",
       // The RAW spelling decides: gpt-5.6 keeps the literal none.
       "none",
@@ -166,7 +166,7 @@ describe("droid session wiring", () => {
       "-m",
       "gpt-5.6",
       "--output-format",
-      "json",
+      "stream-json",
       "--reasoning-effort",
       "none",
     ]);
@@ -189,7 +189,7 @@ describe("droid session wiring", () => {
       "droid",
       "exec",
       "--output-format",
-      "json",
+      "stream-json",
     ]);
   });
 
@@ -215,11 +215,17 @@ describe("droid session wiring", () => {
         effort,
         resultJson: true,
       });
-      expect(run).toEqual(
-        buildDroidSessionCommand({
+      // The output format is each surface's own wire choice (runs read
+      // the stream-json transcript, lane AN1); every other token agrees.
+      const withoutFormat = (argv: string[]): string[] => {
+        const at = argv.indexOf("--output-format");
+        return at === -1 ? argv : [...argv.slice(0, at), ...argv.slice(at + 2)];
+      };
+      expect(withoutFormat(run)).toEqual(
+        withoutFormat(buildDroidSessionCommand({
           ...(model !== undefined ? { model } : {}),
           effort,
-        })
+        }))
       );
     }
   });

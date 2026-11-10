@@ -27,7 +27,7 @@ import type { RunRequest, RunResult } from "../src/types.js";
 
 // Lane R-a: droid's run-surface parity — the hermetic private HOME (the
 // env argv prefix that redirects droid's home resolution) and the
-// --result-json envelope over `exec --output-format json`.
+// --result-json envelope over `exec --output-format stream-json`.
 
 function scratchBrandHome(): string {
   const home = mkdtempSync(join(tmpdir(), "codemux-droid-home-"));
@@ -129,6 +129,8 @@ describe("droid --hermetic", () => {
         `HOME=${context.droidHermeticHome!.home}`,
         "droid",
         "exec",
+        "--output-format",
+        "stream-json",
       ];
       expect(a.buildRunCommand({ agent: "droid", prompt: "p", hermetic: true }, context)).toEqual(expected);
       a.cleanupRunSync(context);
@@ -197,16 +199,16 @@ describe("droid --hermetic", () => {
 });
 
 describe("droid --result-json", () => {
-  test("a result-json run switches the output format; a plain run keeps the default", () => {
+  test("every run launches on the stream-json wire, plain and result-json alike (lane AN1)", () => {
     const home = scratchBrandHome();
     try {
       const a = adapter(home);
       expect(a.buildRunCommand({ agent: "droid", prompt: "p", resultJson: true }))
-        .toEqual(["droid", "exec", "--output-format", "json"]);
+        .toEqual(["droid", "exec", "--output-format", "stream-json"]);
       expect(a.buildRunCommand({ agent: "droid", prompt: "p" }))
-        .toEqual(["droid", "exec"]);
+        .toEqual(["droid", "exec", "--output-format", "stream-json"]);
       expect(a.buildRunCommand({ agent: "droid", prompt: "p", autonomy: "high", resultJson: true }))
-        .toEqual(["droid", "exec", "--output-format", "json", "--auto", "high"]);
+        .toEqual(["droid", "exec", "--output-format", "stream-json", "--auto", "high"]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -259,6 +261,8 @@ describe("droid --result-json", () => {
       session_id: "sess-9",
       recording: null,
       failure_code: null,
+      final_message: "the answer",
+      truncated: false,
     });
   });
 
@@ -309,12 +313,13 @@ describe("droid --result-json", () => {
     ).stderr).toContain("no result text");
   });
 
-  test("processRunResult folds only a result-json run", () => {
+  test("a plain run whose stdout carries no droid event passes through unchanged", () => {
     const home = scratchBrandHome();
     try {
       const a = adapter(home);
       const plain = { stdout: "text answer", stderr: "", exitCode: 0, success: true } as RunResult;
-      expect(a.processRunResult(plain, { agent: "droid", prompt: "p" })).toBe(plain);
+      expect(a.processRunResult(plain, { agent: "droid", prompt: "p" }))
+        .toEqual({ ...plain, scanSurface: "text answer\n" });
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

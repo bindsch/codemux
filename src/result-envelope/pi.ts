@@ -8,6 +8,8 @@ import {
   safeTokenSum,
 } from "./common.js";
 import { markOverflowed } from "../usage-overflow.js";
+import { AnswerCollector, answerBlockFields, completeAnswer, withTruncationNotice, type AnswerTranscript } from "../answer-complete.js";
+import { AnswerStreamFold, opensWith } from "../answer-stream-fold.js";
 
 /**
  * Parses the newline-separated event wire pi prints for a run launched
@@ -20,10 +22,13 @@ import { markOverflowed } from "../usage-overflow.js";
  * `writeRawStdout(JSON.stringify(toJsonEvent(event)) + "\n")` per event
  * and `getHeader()` first; read 2026-11-09.
  *
- * The reply is the LAST assistant message_end's text content blocks,
- * concatenated in order — the same message text mode prints (its tail
- * walks `state.messages` for the last assistant message and writes each
- * `content.type === "text"` block). An assistant message whose
+ * The reply is every assistant message_end's text after the last user
+ * message_end, in order (lane AN1): text mode prints only the LAST
+ * assistant message's text blocks (print-mode.js walks `state.messages`
+ * for the last message), so a reply written before a tool call was lost,
+ * and every codemux run now launches on the json wire. The last message's
+ * text stays available as `finalText`; a `stopReason` of "length" on it
+ * marks the answer truncated (pi-ai StopReason). An assistant message whose
  * `stopReason` is "error" or "aborted" failed: text mode prints
  * `errorMessage` to stderr and exits 1, and the envelope fails the same
  * way. Usage is summed over every assistant message_end — each assistant
@@ -46,6 +51,10 @@ export interface PiEnvelopeInfo {
   /** The last assistant message's stopReason, when it names a failure. */
   stopReason: string | null;
   errorText: string | null;
+  /** Every assistant message after the last user message. */
+  transcript: AnswerTranscript;
+  /** The last assistant message's text alone. */
+  finalText: string | null;
 }
 
 interface UsageSum {
@@ -116,6 +125,7 @@ export function parsePiResultEnvelope(stdout: string): PiEnvelopeInfo | null {
   let errorText: string | null = null;
   const models = new Set<string>();
   const sums: UsageSum = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: null, complete: true };
+  const collector = new AnswerCollector();
   for (const line of stdout.split("\n")) {
     const trimmed = line.trim();
     if (trimmed === "") continue;
@@ -132,18 +142,23 @@ export function parsePiResultEnvelope(stdout: string): PiEnvelopeInfo | null {
     const message = event.message;
     if (typeof message !== "object" || message === null) continue;
     const typed = message as Record<string, unknown>;
+    if (typed.role === "user") collector.userTurn();
     if (typed.role !== "assistant") continue;
-    // Only the LAST assistant message becomes the reply; earlier ones
-    // (tool-use rounds) still contribute their usage and model.
+    // Every assistant message joins the answer; the last one's text stays
+    // the final message, and every one contributes usage and model.
     answer = assistantText(typed);
+    collector.message(answer ?? "", typed.stopReason);
     stopReason = typeof typed.stopReason === "string" ? typed.stopReason : null;
     errorText = typeof typed.errorMessage === "string" ? typed.errorMessage : null;
     if (typeof typed.model === "string") models.add(typed.model);
     recordUsage(sums, typed.usage);
   }
   if (!sawWire) return null;
+  const transcript = collector.transcript();
   return {
-    answer,
+    answer: completeAnswer(transcript, answer),
+    transcript,
+    finalText: answer,
     usage: summedUsage(sums),
     servedModel: models.size === 1 ? [...models][0]! : null,
     stopReason,
@@ -194,6 +209,7 @@ export function piResult(result: RunResult, request: RunRequest): RunResult {
     session_id: null,
     recording: null,
     failure_code: failure !== null ? "harness-error" : null,
+    ...answerBlockFields(parsed.transcript, parsed.finalText),
   };
   const envelope = `${JSON.stringify({ [PI_ANSWER_FIELD]: parsed.answer ?? "", usage: parsed.usage, codemux: block })}\n`;
   if (failure !== null) {
@@ -218,13 +234,44 @@ export function piResult(result: RunResult, request: RunRequest): RunResult {
   }
   return boundResultEnvelope(
     agent,
-    {
+    withTruncationNotice({
       ...result,
       stdout: envelope,
       usage: parsed.usage,
       servedModel: parsed.servedModel,
-    },
+    }, agent, parsed.transcript),
     parsed.usage,
     parsed.servedModel
   );
+}
+
+/** Pi's json lines the answer and the budget check never read: streaming
+ * deltas, tool execution, the turn and agent summaries that repeat every
+ * message, and a tool result's message_end (JSON.stringify writes `type`
+ * first, and pi-agent-core builds a tool result message with `role`
+ * first: agent-loop.js `role: "toolResult"`). Every other line is kept,
+ * so a message object spelled in another order is read, never lost. */
+const PI_SHED_PREFIXES = [
+  '{"type":"message_update"', '{"type":"tool_execution_', '{"type":"turn_end"', '{"type":"agent_end"',
+  '{"type":"message_start"', '{"type":"message_end","message":{"role":"toolResult"',
+] as const;
+
+/** The streaming fold a pi json run's stdout passes through. */
+export function piStreamFold(): AnswerStreamFold {
+  return new AnswerStreamFold((head) => opensWith(head, PI_SHED_PREFIXES) ? "drop" : "keep");
+}
+
+/** A plain pi run on the json wire: the complete answer on stdout. Stdout
+ * with no JSON line passes through unchanged (the escape hatch); the
+ * failure rules are the envelope's. */
+export function piPlainResult(result: RunResult, request: RunRequest): RunResult {
+  if (parsePiResultEnvelope(result.stdout) === null) return result;
+  const processed = piResult(result, request);
+  try {
+    const envelope = JSON.parse(processed.stdout) as Record<string, unknown>;
+    const reply = typeof envelope[PI_ANSWER_FIELD] === "string" ? envelope[PI_ANSWER_FIELD] as string : "";
+    return { ...processed, stdout: reply === "" || reply.endsWith("\n") ? reply : `${reply}\n` };
+  } catch {
+    return { ...processed, stdout: "" };
+  }
 }

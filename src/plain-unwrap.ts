@@ -1,12 +1,13 @@
 /**
  * The plain-run unwrap: adapters that can report usage launch their harness
  * in its structured mode even without `--result-json` (claude/zai's
- * `--output-format json`, agy's `--output-format=json`, opencode's
- * `--format json`, codex's `--json`), and these functions turn the
- * structured stdout back into the plain reply so `codemux run` stdout keeps
- * its contract — the model's final message and nothing else — while the
- * run's usage and served model are recorded on the RunResult for the call
- * ledger. opencode's `--format json`, codex's `--json`, and kimi's
+ * `--output-format stream-json --verbose`, agy's `--output-format=json`,
+ * opencode's `--format json`, codex's `--json`), and these functions turn
+ * the structured stdout back into the plain reply so `codemux run` stdout
+ * keeps its contract — the run's complete answer (every assistant message
+ * after the last user turn, a blank line between two; lane AN1,
+ * src/answer-complete.ts) and nothing else — while the run's usage and
+ * served model are recorded on the RunResult for the call ledger. opencode's `--format json`, codex's `--json`, and kimi's
  * stream-json streams carry the same volume (every tool's output rides the
  * event lines), so their plain runs stream instead of buffering: the
  * launcher feeds each chunk to a fold (OpenCodePlainFold, CodexPlainFold,
@@ -14,18 +15,21 @@
  * break notes — tool output is dropped as it arrives — and the capture
  * bound measures that residue, never the raw stream (review ul4).
  *
- * The unwrap reproduces plain-text mode byte for byte: the result text
- * verbatim, plus one trailing newline when the text is non-empty and lacks
- * one — codex excepted below, whose pinned printer appends its newline
- * unconditionally. opencode's reply is spelled the way its run command's
- * plain mode
- * prints it (verified against upstream v1.18.18, scratch/upstream-run.ts):
- * each completed text part trimmed, empty parts skipped, one newline after
- * every part — the banner, tool lines, and errors all go to stderr there,
- * so stdout is the parts and nothing else. codex's is the final assistant
- * message its human mode prints (`final_message_from_turn_items` picks the
- * last AgentMessage, and a failed turn's is discarded — the stream
- * reduction in result-envelope.ts applies the same rules): the message of
+ * The unwrap prints the answer verbatim, plus one trailing newline when
+ * it is non-empty and lacks one — codex excepted below, whose pinned
+ * printer appends its newline unconditionally. Where a harness's own plain
+ * mode printed only the final message, this is no longer its plain mode
+ * byte for byte: the earlier messages come first. opencode's parts are
+ * spelled the way its run command's plain mode prints them (verified
+ * against upstream v1.18.18, scratch/upstream-run.ts): each completed text
+ * part trimmed, empty parts skipped, one newline after every part — the
+ * banner, tool lines, and errors all go to stderr there. Between two steps
+ * codemux adds one blank line, the answer rule's message separator; that
+ * line is codemux's, not upstream's. codex's answer is every agent_message
+ * of the turn joined with a blank line (human mode's
+ * `final_message_from_turn_items` prints only the last AgentMessage), and
+ * a failed turn's is discarded — the stream reduction in
+ * result-envelope.ts applies the same rules: the answer of
  * a completed turn stays on stdout even when codex itself exits nonzero,
  * and a turn that never completed prints nothing (round al5). The message
  * prints verbatim plus exactly one trailing newline, always — the pinned

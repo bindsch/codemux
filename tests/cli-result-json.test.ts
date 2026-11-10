@@ -49,6 +49,8 @@ describe("CLI - result envelopes", () => {
         session_id: null,
         recording: null,
         failure_code: null,
+        final_message: "OK",
+        truncated: false,
         labels: null,
       });
     } finally {
@@ -90,6 +92,8 @@ describe("CLI - result envelopes", () => {
         recording: null,
         failure_code: null,
         labels: null,
+        final_message: "the reply",
+        truncated: false,
       });
     } finally {
       fake.cleanup();

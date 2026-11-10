@@ -36,7 +36,7 @@ describe("openhands provider override", () => {
     const adapter = adapterOf();
     expect(adapter.getRunEnv({ agent: "openhands", prompt: "p" } as RunRequest)).toEqual({});
     expect(adapter.buildRunCommand({ agent: "openhands", prompt: "p" } as RunRequest))
-      .toEqual(["openhands", "--headless", "--task", "p"]);
+      .toEqual(["openhands", "--headless", "--json", "--task", "p"]);
   });
 
   test("ambient LLM_* variables stay in a no-override launch environment (round 153)", () => {
@@ -70,6 +70,7 @@ describe("openhands provider override", () => {
       "openhands",
       "--headless",
       "--override-with-envs",
+      "--json",
       "--task",
       "p",
     ]);

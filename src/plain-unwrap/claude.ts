@@ -1,13 +1,17 @@
-/** The claude/zai plain-run unwrap: the `--output-format json` result
- * envelope turned back into the plain reply. src/plain-unwrap.ts owns the
- * public surface and the module overview. */
+/** The claude/zai plain-run unwrap: the result object turned back into
+ * the plain reply. Runs launch with `--output-format stream-json
+ * --verbose`; src/claude-family-run.ts hands this unwrap the stream's
+ * closing `result` event with its `result` field replaced by the complete
+ * answer. src/plain-unwrap.ts owns the public surface and the module
+ * overview. */
 import { parseClaudeResultEnvelope } from "../result-envelope.js";
 import type { AgentId, RunResult } from "../types.js";
 import { diagnosticExcerpt, failed, jsonShapedStdout, plainText } from "./common.js";
 
 /**
- * claude/zai: stdout should be the single JSON result envelope
- * `--output-format json` prints. Stdout no binary asked for that format
+ * claude/zai: stdout should be the single JSON result object (the stream's
+ * `result` event, or the envelope `--output-format json` prints). Stdout
+ * no binary asked for a structured format
  * would print — plain text that is not JSON — passes through verbatim,
  * except empty stdout: a zero-exit run that printed nothing produced
  * neither the envelope nor a reply, and an empty success is a failed run
@@ -24,8 +28,8 @@ export function claudeFamilyPlainResult(result: RunResult, agent: AgentId): RunR
     if (result.success && result.stdout.trim() === "") {
       return failed(
         result,
-        `codemux: ${agent} produced no output: a --output-format json run ` +
-          "prints its result envelope, so an empty success is not a plain reply",
+        `codemux: ${agent} produced no output: a --output-format stream-json run ` +
+          "prints its result event, so an empty success is not a plain reply",
         ""
       );
     }

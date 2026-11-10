@@ -177,6 +177,8 @@ describe("claudeFamilyResult", () => {
       served_model: "claude-opus-5",
       model_alias: null,
       failure_code: null,
+      final_message: "OK",
+      truncated: false,
       labels: null,
     });
   });

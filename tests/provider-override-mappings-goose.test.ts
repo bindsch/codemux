@@ -43,7 +43,7 @@ describe("goose provider override", () => {
     const adapter = new GooseAdapter({});
     expect(adapter.getRunEnv({ agent: "goose", prompt: "p", autonomy: "high" } as RunRequest))
       .toEqual({ GOOSE_MODE: "auto" });
-    expect(run({})).toEqual(["goose", "run", "-i", "-"]);
+    expect(run({})).toEqual(["goose", "run", "--output-format", "stream-json", "-i", "-"]);
     // An operator model still rides GOOSE_MODEL.
     expect(adapter.getRunEnv({ agent: "goose", prompt: "p", model: "gpt-5.3" } as RunRequest))
       .toEqual({ GOOSE_MODE: "chat", GOOSE_MODEL: "gpt-5.3" });
@@ -61,7 +61,7 @@ describe("goose provider override", () => {
         GOOSE_MODEL: "glm-5.3",
       });
     const cmd = run(ZAI_GOOSE);
-    expect(cmd).toEqual(["goose", "run", "-i", "-"]);
+    expect(cmd).toEqual(["goose", "run", "--output-format", "stream-json", "-i", "-"]);
     expect(cmd.join(" ")).not.toContain(ZAI_GOOSE.CODEMUX_GOOSE_PROVIDER_API_KEY);
   });
 
@@ -142,7 +142,7 @@ describe("goose provider override", () => {
     const adapter = new GooseAdapter(ZAI_GOOSE);
     const request = { agent: "goose" as const, prompt: "p", cwd: cwdOf(), tools: "none" as const };
     expect(adapter.buildRunCommand(request as RunRequest))
-      .toEqual(["goose", "run", "--no-profile", "-i", "-"]);
+      .toEqual(["goose", "run", "--no-profile", "--output-format", "stream-json", "-i", "-"]);
     expect(adapter.getRunEnv(request as RunRequest)).toMatchObject({
       OPENAI_API_KEY: ZAI_GOOSE.CODEMUX_GOOSE_PROVIDER_API_KEY,
       GOOSE_MODEL: "glm-5.3",

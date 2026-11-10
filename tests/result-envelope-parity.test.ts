@@ -159,14 +159,15 @@ describe("goose --result-json", () => {
 });
 
 describe("openhands --result-json", () => {
-  test("the last agent message's text parts are the answer; user messages are not", () => {
+  test("every agent message after the user turn is the answer; user messages are not (lane AN1)", () => {
     const wire = [
       JSON.stringify({ kind: "MessageEvent", source: "user", llm_message: { content: [{ type: "text", text: "the prompt" }] } }),
       JSON.stringify({ kind: "MessageEvent", source: "agent", llm_message: { content: [{ type: "text", text: "first" }] } }),
       JSON.stringify({ kind: "MessageEvent", source: "agent", llm_message: { content: [{ type: "text", text: "final " }, { type: "text", text: "answer" }] } }),
     ].join("\n");
     const parsed = parseOpenhandsResultEnvelope(wire);
-    expect(parsed!.answer).toBe("final answer");
+    expect(parsed!.answer).toBe("first\n\nfinal answer");
+    expect(parsed!.transcript.messages.at(-1)).toBe("final answer");
     expect(parsed!.errorText).toBeNull();
   });
 
@@ -205,14 +206,15 @@ describe("openhands --result-json", () => {
 });
 
 describe("copilot --result-json", () => {
-  test("the last assistant message is the answer; the result line carries the session and exit", () => {
+  test("every assistant message is the answer, the last one the final message; the result line carries the session and exit", () => {
     const wire = [
       JSON.stringify({ type: "assistant.message", data: { content: "draft" } }),
       JSON.stringify({ type: "assistant.message", data: { content: "final answer" } }),
       JSON.stringify({ type: "result", sessionId: "abc-123", exitCode: 0, usage: { premiumRequests: 1 } }),
     ].join("\n");
     const parsed = parseCopilotResultEnvelope(wire);
-    expect(parsed!.answer).toBe("final answer");
+    expect(parsed!.answer).toBe("draft\n\nfinal answer");
+    expect(parsed!.finalMessage).toBe("final answer");
     expect(parsed!.sessionId).toBe("abc-123");
     expect(parsed!.reportedExitCode).toBe(0);
     // The writer suppresses assistant.usage and the result line carries

@@ -154,8 +154,9 @@ describe("OpenHandsAdapter run parity", () => {
       // prepareRun wrote the prompt's task file, so the launch carries
       // --file (openhands has no stdin transport), never --task argv.
       expect(cmd.slice(4, 7)).toEqual(["openhands", "--headless", "--override-with-envs"]);
-      expect(cmd[7]).toBe("--file");
-      expect(cmd[8]!.startsWith(join(home, ".openhands", ".codemux", `task-${process.pid}-`))).toBe(true);
+      expect(cmd[7]).toBe("--json");
+      expect(cmd[8]).toBe("--file");
+      expect(cmd[9]!.startsWith(join(home, ".openhands", ".codemux", `task-${process.pid}-`))).toBe(true);
       privateAdapter.cleanupRunSync(context);
       const preview = privateAdapter.buildRunCommand({ agent: "openhands", prompt: "t", hermetic: true, cwd: work });
       expect(preview[1]).toBe(`HOME=${join(home, ".openhands", ".codemux-hermetic", "unprepared")}`);

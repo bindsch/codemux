@@ -69,6 +69,10 @@ export function opencodeResult(
     session_id: null,
     recording,
     failure_code: null,
+    // The reply already joins every step's text (lane AN1); the last
+    // step's text alone is the final message.
+    final_message: data.finalMessage,
+    truncated: data.truncated,
   };
   const envelope = `${JSON.stringify({ [OPENCODE_ANSWER_FIELD]: verdict.stdout, usage, codemux: block })}\n`;
   // The fold bounds the reply's raw bytes; the JSON escaping of many

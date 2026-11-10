@@ -1,4 +1,6 @@
 import type { CodemuxResultBlock, RunRequest, RunResult } from "../types.js";
+import { answerBlockFields, completeAnswer, type AnswerTranscript } from "../answer-complete.js";
+import { qwenMessages, qwenTranscript } from "../qwen-stream-answer.js";
 import {
   appendDiagnostic,
   boundResultEnvelope,
@@ -33,7 +35,12 @@ import {
 export const QWEN_ANSWER_FIELD = "result";
 
 export interface QwenEnvelopeInfo {
+  /** The complete answer (src/qwen-stream-answer.ts), else the result
+   * message's own text. */
   answer: string | null;
+  /** The result message's own `result`: the last assistant message. */
+  harnessAnswer: string | null;
+  transcript: AnswerTranscript;
   usage: ReturnType<typeof normalizeClaudeUsage>;
   sessionId: string | null;
   /** The result message's subtype, when one arrived. */
@@ -46,25 +53,10 @@ export interface QwenEnvelopeInfo {
 }
 
 export function parseQwenResultEnvelope(stdout: string): QwenEnvelopeInfo | null {
-  // The array is one line, but the contract is "the last thing printed";
-  // a warning line an earlier build let through must not hide it.
-  let last: unknown = null;
-  for (const line of stdout.split("\n").reverse()) {
-    const trimmed = line.trim();
-    if (trimmed === "") continue;
-    try {
-      last = JSON.parse(trimmed);
-    } catch {
-      last = null;
-    }
-    break;
-  }
-  if (!Array.isArray(last)) return null;
-  const resultMessage = [...last].reverse().find(
-    (message): message is Record<string, unknown> =>
-      typeof message === "object" && message !== null &&
-      (message as Record<string, unknown>).type === "result"
-  );
+  // The stream-json wire (one message per line) or the json format's one
+  // array line: either way the result message is the last one printed.
+  const last = qwenMessages(stdout);
+  const resultMessage = [...last].reverse().find((message) => message.type === "result");
   if (resultMessage === undefined) return null;
   const error = resultMessage.error as Record<string, unknown> | undefined;
   const assistantMessage = [...last].reverse().find(
@@ -72,8 +64,12 @@ export function parseQwenResultEnvelope(stdout: string): QwenEnvelopeInfo | null
       typeof message === "object" && message !== null &&
       (message as Record<string, unknown>).type === "assistant"
   );
+  const harnessAnswer = typeof resultMessage.result === "string" ? resultMessage.result : null;
+  const transcript = qwenTranscript(last);
   return {
-    answer: typeof resultMessage.result === "string" ? resultMessage.result : null,
+    answer: completeAnswer(transcript, harnessAnswer),
+    harnessAnswer,
+    transcript,
     usage: normalizeClaudeUsage(resultMessage.usage, undefined),
     sessionId: typeof resultMessage.session_id === "string" ? resultMessage.session_id : null,
     subtype: typeof resultMessage.subtype === "string" ? resultMessage.subtype : null,
@@ -134,6 +130,7 @@ export function qwenResult(result: RunResult, request: RunRequest): RunResult {
     session_id: parsed.sessionId,
     recording: null,
     failure_code: failure !== null ? "harness-error" : null,
+    ...answerBlockFields(parsed.transcript, parsed.harnessAnswer),
   };
   const envelope = `${JSON.stringify({
     [QWEN_ANSWER_FIELD]: parsed.answer ?? "",
@@ -171,4 +168,27 @@ export function qwenResult(result: RunResult, request: RunRequest): RunResult {
     parsed.usage,
     parsed.servedModel
   );
+}
+
+/** A plain qwen run: the same stream, printed as the complete answer with
+ * the usage recorded. Stdout with no result message passes through with
+ * its exit status (the run path judges an empty one); a result message
+ * that reports a failure fails the run with qwen's own error text. */
+export function qwenPlainResult(result: RunResult): RunResult {
+  const parsed = parseQwenResultEnvelope(result.stdout);
+  if (parsed === null) return result;
+  const base = { usage: parsed.usage, servedModel: parsed.servedModel };
+  if (parsed.isError || (parsed.subtype !== null && parsed.subtype !== "success")) {
+    return {
+      ...result, ...base,
+      stdout: "",
+      stderr: appendDiagnostic(result.stderr,
+        `codemux: qwen reported ${parsed.errorMessage ?? parsed.subtype ?? "an error result"}, ` +
+          `so this run fails even though the harness exited ${result.exitCode}`),
+      exitCode: result.exitCode === 0 ? 1 : result.exitCode,
+      success: false,
+    };
+  }
+  const answer = parsed.answer ?? "";
+  return { ...result, ...base, stdout: answer === "" || answer.endsWith("\n") ? answer : `${answer}\n` };
 }

@@ -202,7 +202,7 @@ result.
   bundle source.
 - `fake-droid-session.ts` — not a recording but a fake harness
   (2026-11-09, the droid result-JSON item): a scenario-driven fake of
-  `droid exec --output-format json`, the per-turn process behind the
+  `droid exec --output-format stream-json`, the per-turn process behind the
   droid session driver. `tests/helpers/session-turn-launch.ts` puts it on
   the fake PATH; `tests/session-cli-turn-launch.test.ts` (fresh, resume,
   and final in one private home), `tests/session-harness-home-cli-turns.test.ts`,

@@ -97,19 +97,19 @@ describe("GeminiAdapter", () => {
   test("buildRunCommand with model", () => {
     const request: RunRequest = { agent: "gemini", prompt: "test", model: "gemini-pro" };
     const cmd = adapter.buildRunCommand(request);
-    expect(cmd).toEqual(["gemini", "--sandbox=false", "-m", "gemini-pro", "-p", ""]);
+    expect(cmd).toEqual(["gemini", "--sandbox=false", "-m", "gemini-pro", "--output-format", "stream-json", "-p", ""]);
     expect(adapter.getStdinInput(request)).toBe("test");
   });
 
   test("buildRunCommand with autonomy levels", () => {
     expect(adapter.buildRunCommand({ agent: "gemini", prompt: "t", autonomy: "read-only" }))
-      .toEqual(["gemini", "--sandbox=false", "--approval-mode", "plan", "-p", ""]);
+      .toEqual(["gemini", "--sandbox=false", "--approval-mode", "plan", "--output-format", "stream-json", "-p", ""]);
     expect(adapter.buildRunCommand({ agent: "gemini", prompt: "t", autonomy: "low" }))
-      .toEqual(["gemini", "--sandbox=false", "--approval-mode", "default", "-p", ""]);
+      .toEqual(["gemini", "--sandbox=false", "--approval-mode", "default", "--output-format", "stream-json", "-p", ""]);
     expect(adapter.buildRunCommand({ agent: "gemini", prompt: "t", autonomy: "medium" }))
-      .toEqual(["gemini", "--sandbox=false", "--approval-mode", "yolo", "-p", ""]);
+      .toEqual(["gemini", "--sandbox=false", "--approval-mode", "yolo", "--output-format", "stream-json", "-p", ""]);
     expect(adapter.buildRunCommand({ agent: "gemini", prompt: "t", autonomy: "high" }))
-      .toEqual(["gemini", "--sandbox=false", "--approval-mode", "yolo", "-p", ""]);
+      .toEqual(["gemini", "--sandbox=false", "--approval-mode", "yolo", "--output-format", "stream-json", "-p", ""]);
   });
 
   test("buildTuiCommand with model", () => {
@@ -152,7 +152,7 @@ describe("GeminiAdapter run parity", () => {
       expect(cmd[1]!.startsWith(`GEMINI_CLI_HOME=${join(home, ".gemini", ".codemux-hermetic", "run-")}`))
         .toBe(true);
       expect(cmd[2]).toBe("gemini");
-      expect(cmd.slice(3)).toEqual(["--sandbox=false", "-p", ""]);
+      expect(cmd.slice(3)).toEqual(["--sandbox=false", "--output-format", "stream-json", "-p", ""]);
       adapter.cleanupRunSync(context);
       // The static preview (verify, no launch context) still names a path
       // inside the trusted parent: never the operator's real home.
@@ -256,6 +256,8 @@ describe("GeminiAdapter run parity", () => {
         "--sandbox=false",
         "-m",
         "gemini-2.5-pro",
+        "--output-format",
+        "stream-json",
         "-p",
         "",
       ]);
@@ -264,7 +266,7 @@ describe("GeminiAdapter run parity", () => {
     }
   });
 
-  test("--result-json adds the json output flag and the envelope rewrite", () => {
+  test("--result-json reads the stream-json wire and rewrites the envelope", () => {
     const home = mkdtempSync(join(tmpdir(), "gemini-parity-"));
     try {
       const adapter = makeAdapter(home);
@@ -274,7 +276,7 @@ describe("GeminiAdapter run parity", () => {
         "gemini",
         "--sandbox=false",
         "--output-format",
-        "json",
+        "stream-json",
         "-p",
         "",
       ]);

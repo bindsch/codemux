@@ -72,6 +72,7 @@ describe("OpenCode result-json", () => {
           agent: "opencode", model: "test-model", labels: { wf: "synthetic" },
           served_model: null, model_alias: null,
           usage: foldedUsage, session_id: null, recording: null, failure_code: null,
+          final_message: "Working\nA\nB", truncated: false,
         },
       });
       expect(result.usage).toEqual(foldedUsage);
@@ -273,13 +274,13 @@ describe("the envelope's own size", () => {
     // cannot hold.
     const text = '"'.repeat(9 * 1024 * 1024);
     const request: RunRequest = { agent: "opencode", prompt: "hello", resultJson: true };
-    const result = opencodeResult(success, request, { sawWire: true, text, usage: null, errorMessage: null, broken: [], brokenCount: 0 });
+    const result = opencodeResult(success, request, { sawWire: true, text, usage: null, errorMessage: null, broken: [], brokenCount: 0, finalMessage: null, truncated: false });
     expect(result.success).toBe(false);
     expect(result.exitCode).toBe(125);
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain("exceeds the");
     expect(Buffer.byteLength(text)).toBeLessThan(MAX_CAPTURE_BYTES);
-    const small = opencodeResult(success, request, { sawWire: true, text: "OK", usage: null, errorMessage: null, broken: [], brokenCount: 0 });
+    const small = opencodeResult(success, request, { sawWire: true, text: "OK", usage: null, errorMessage: null, broken: [], brokenCount: 0, finalMessage: null, truncated: false });
     expect(small.success).toBe(true);
   });
 });

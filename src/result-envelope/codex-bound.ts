@@ -17,9 +17,16 @@ export function boundedCodexEnvelope(envelope: Record<string, unknown>): { stdou
   delete envelope.events;
   stdout = serialize();
   if (Buffer.byteLength(stdout) <= MAX_CAPTURE_BYTES) return { stdout, truncated: true };
+  const block = envelope.codemux as CodemuxResultBlock;
+  // The closing message repeats the tail of `result` (lane AN1), so it is
+  // the next copy to go: null, never a cut message posing as the whole.
+  if (block !== undefined && block !== null && block.final_message !== null) {
+    block.final_message = null;
+    stdout = serialize();
+    if (Buffer.byteLength(stdout) <= MAX_CAPTURE_BYTES) return { stdout, truncated: true };
+  }
   const originalResult = envelope.result;
   envelope.result = typeof originalResult === "string" ? TRUNCATION_NOTE : originalResult;
-  const block = envelope.codemux as CodemuxResultBlock;
   // A reroute event can put nearly the entire captured prefix in model
   // metadata, and served_model carries the same reroute string, so both
   // are dropped together (review round 14, edges 7 symmetric case).
@@ -49,6 +56,7 @@ export function boundedCodexEnvelope(envelope: Record<string, unknown>): { stdou
   // it was promised, with nulls where the oversized metadata is dropped.
   if (Buffer.byteLength(stdout) > MAX_CAPTURE_BYTES) stdout = JSON.stringify({ result: null,
     codemux: { agent: "codex", model: null, served_model: null, labels: null, usage: emptyUsage(),
-      session_id: null, recording: null, failure_code: block.failure_code } }) + "\n";
+      session_id: null, recording: null, failure_code: block.failure_code,
+      final_message: null, truncated: block.truncated } }) + "\n";
   return { stdout, truncated: true };
 }

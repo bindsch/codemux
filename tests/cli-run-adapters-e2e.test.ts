@@ -153,6 +153,8 @@ describe("run e2e - gemini", () => {
       "gemini-3-pro-preview",
       "--approval-mode",
       "yolo",
+      "--output-format",
+      "stream-json",
       "-p",
       "",
     ]);
@@ -185,6 +187,8 @@ describe("run e2e - gemini", () => {
       "gemini-3-pro-preview",
       "--approval-mode",
       "plan",
+      "--output-format",
+      "stream-json",
       "-p",
       "",
     ]);
@@ -236,6 +240,8 @@ describe("run e2e - pi", () => {
       "--print",
       "--no-session",
       "--no-approve",
+      "--mode",
+      "json",
       "--model",
       "grok-code-1",
     ]);
@@ -261,6 +267,8 @@ describe("run e2e - qwen", () => {
       "--safe-mode",
       "--model",
       "qwen3-coder-plus",
+      "--output-format",
+      "stream-json",
       "--approval-mode",
       "yolo",
     ]);
@@ -332,6 +340,8 @@ describe("run e2e - droid", () => {
       "exec",
       "-m",
       "claude-sonnet-4-6",
+      "--output-format",
+      "stream-json",
       "--auto",
       "high",
     ]);
@@ -364,6 +374,8 @@ describe("run e2e - copilot", () => {
       "--model",
       "gpt-5.2",
       "--allow-all",
+      "--output-format",
+      "json",
       "--silent",
     ]);
     // --disable-builtin-mcps rides every level below high; at high it is

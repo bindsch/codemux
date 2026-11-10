@@ -1,4 +1,5 @@
 import type { AgentId, CodemuxResultBlock, ResultUsageBlock, RunRequest, RunResult } from "../types.js";
+import type { AnswerBlockFields } from "../answer-complete.js";
 import { appendDiagnostic, boundResultEnvelope, normalizeClaudeUsage } from "./common.js";
 
 export interface ClaudeEnvelopeInfo {
@@ -129,7 +130,8 @@ export function claudeFamilyResult(
   result: RunResult,
   request: RunRequest,
   agent: AgentId,
-  recording: string | null = null
+  recording: string | null = null,
+  answer: AnswerBlockFields | null = null
 ): RunResult {
   const parsed = parseClaudeResultEnvelope(result.stdout);
   if (parsed === null) {
@@ -177,6 +179,13 @@ export function claudeFamilyResult(
     // caller can find the recording without scraping stderr; null otherwise.
     recording,
     failure_code: null,
+    // The answer field carries every assistant message (lane AN1); the
+    // last one alone rides here. Without a stream transcript the
+    // envelope's own result is that message.
+    final_message: answer?.final_message ??
+      (typeof parsed.envelope[CLAUDE_FAMILY_ANSWER_FIELD] === "string"
+        ? parsed.envelope[CLAUDE_FAMILY_ANSWER_FIELD] as string : null),
+    truncated: answer?.truncated ?? false,
   });
   // The served model this path reports on every arm below; the bound check
   // re-reports it on its refusal arm.

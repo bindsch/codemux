@@ -5,7 +5,7 @@ read_when: "Checking run envelopes, quotas, the ledger, or usage reporting."
 
 ## Run results
 
-`run` normally prints the reply on stdout and diagnostics on stderr. `--result-json` requests a structured result with harness-specific normalization. Claude/Z.AI retain their JSON envelope. Agy normally uses `--output-format=json`; its isolation/probe paths use `--output-format=stream-json` and normalize the terminal result. Codex JSONL is reduced into a codemux-built envelope. Kimi selects `--output-format stream-json` on every run and builds an envelope from the parsed events and session wire log; plain runs unwrap the reply and wire-log usage off the same stream. OpenCode's `--format json` event stream — the same wire every plain run folds — becomes a codemux-built envelope carrying the folded reply and step usage; the raw event lines are never re-emitted, and stdout that never used the wire fails the run.
+`run` normally prints the reply on stdout and diagnostics on stderr. `--result-json` requests a structured result with harness-specific normalization. Claude/Z.AI re-emit the stream-json result object with every original field, `result` replaced by the [complete answer](#complete-answer). Agy normally uses `--output-format=json`; its isolation/probe paths use `--output-format=stream-json` and normalize the terminal result. Codex JSONL is reduced into a codemux-built envelope. Kimi selects `--output-format stream-json` on every run and builds an envelope from the parsed events and session wire log; plain runs unwrap the reply and wire-log usage off the same stream. OpenCode's `--format json` event stream — the same wire every plain run folds — becomes a codemux-built envelope carrying the folded reply and step usage; the raw event lines are never re-emitted, and stdout that never used the wire fails the run.
 
 The codemux-owned block contains:
 
@@ -28,7 +28,9 @@ The codemux-owned block contains:
   },
   "session_id": null,
   "recording": null,
-  "failure_code": null
+  "failure_code": null,
+  "final_message": "Done.",
+  "truncated": false
 }
 ```
 
@@ -103,7 +105,33 @@ Every Codex experiment `run_start` records a `catalog_override` boolean. Codex o
 
 Kimi's envelope has `reply`, `events`, `session_id`, and `codemux` fields. `reply` is the assistant text with the same block spacing and final newline as the normalized plain reply. `events` retains each parsed assistant, tool, meta, or error line. The top-level `session_id` comes from the `session.resume_hint` meta event and identifies Kimi's native session; `codemux.session_id` stays null because the run is not registered for resume. The hint ends an experiment stream. A second hint or any later frame fails with `protocol`. Usage sums `usage.record` entries in `<brand home>/sessions/*/session_<id>/agents/main/wire.jsonl`: `inputOther` becomes uncached input, `inputCacheRead + inputCacheCreation` becomes cached input, and `output` becomes output tokens. Their sum is the total; cost is null. Missing counts remain null, with one exception: Kimi Code 2.5.0 leaves `inputCacheRead` out of a record that read nothing from cache, and that absent field counts as zero, as it does in Kimi's own total. The wire log is read before hermetic home cleanup, with a 16 MiB limit. A missing session ID, missing log, malformed stream/log, or error event fails the run and reports a diagnostic; when an error event is present it is the diagnostic, and a resume hint that never arrived after it is that failure's consequence, not the report. An experiment provider attempt that fails without usage and without tool calls emits `harness_retry` with its step UUID and no `turn`, including attempts with partial content. An error step with tool calls emits a `turn` and fails later with `harness_log_missing` if usage is absent. Content-first turns wait for a call or successful end and retain their first-content timestamp. Inventory evidence checks descriptions and the unchanged `inputSchema` to `parameters` mapping as well as qualified names.
 
-Plain launches also select structured output for Claude/Z.AI, Agy, OpenCode, Codex, and Kimi, then unwrap the reply. OpenCode trims each text part onto its own line. Codex preserves the final assistant message and appends one newline, as its human-mode printer does. Other adapters currently collect plain text or their adapter-specific transcript without extracting structured usage; this describes codemux's selected path, not all upstream CLI capabilities.
+Plain launches select structured output on every adapter that has it, then print the [complete answer](#complete-answer): Claude/Z.AI (`--output-format stream-json --verbose`), Codex (`exec --json`), Cursor, Gemini, Qwen, Droid, and Goose (`stream-json`), Copilot (`--output-format json` JSONL), Pi (`--mode json`), OpenHands (`--json`), Cline (`--json`), OpenCode (`--format json`), Kimi (`stream-json`), and Agy. OpenCode trims each text part onto its own line and puts a blank line between steps. Codex appends one newline, as its human-mode printer does. Aider has no structured stream; its plain stdout is already the whole transcript. Folds shed tool results and tool inputs as the stream arrives, so a long run stays inside the capture bound. Each fold first scans every byte for the hermetic check's planted marker and keeps the matches, and the run's scan surface joins them to the capture; Cursor, Cline, and OpenHands run no fold, so their scan surface is the whole stream. A marker that rode only a tool result the answer omits still fails `codemux check --hermetic` as a leak.
+
+### Complete answer
+
+The answer of a run is all assistant text the agent produced after the last
+user turn, in order, with one blank line between messages. It is not only
+the final message: an agent that writes its findings, calls a tool, and
+closes with one sentence (or with nothing) answers with the findings too.
+Plain runs print that text; `--result-json` puts it in the harness's answer
+field. `codemux.final_message` keeps the last assistant message alone (an
+empty string when the agent ended on a tool call; the harness's own answer
+field, such as Cline's `run_result.text`, when the stream named no message;
+null when neither exists), for consumers that want the old field.
+`codemux.truncated` is true when the harness reported a max-tokens or length
+stop on the last message; stderr then carries one line,
+`codemux: <agent> reported a max-tokens or length stop on its last message; the answer is likely truncated`.
+The rule is the parity feature `run.answer-complete`; see
+[harness limitations](harnesses.md#harness-limitations) for agents whose
+wire cannot carry it.
+
+To collect every message, adapters read the harness's structured stream
+on plain runs too (see the list below). Plain runs therefore print the
+answer when the run ends rather than as the harness writes it. This is new
+for Gemini, Qwen, Copilot, Droid, Goose, Pi, and OpenHands, whose plain
+runs used to print the harness's text output live (OpenHands printed its
+terminal UI, tool output included). Claude, Z.AI, Codex, Cursor, Kimi,
+OpenCode, and Cline already printed at the end.
 
 ## Failure and output limits
 

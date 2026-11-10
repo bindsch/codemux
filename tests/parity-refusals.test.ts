@@ -23,6 +23,7 @@ import { REFUSAL_FEATURE } from "../src/parity/probe-features.js";
 import { providerOverrideEnvNames } from "../src/provider-override.js";
 import { SERVED_MODEL_EVIDENCE_HARNESSES } from "../src/result-envelope/index.js";
 import { parseClaudeResultEnvelope } from "../src/result-envelope.js";
+import { answerCompleteOutcome } from "./helpers/parity-answer-complete.js";
 import { codexReporting } from "./helpers/parity-codex-reporting.js";
 import { parseCursorResultEnvelope } from "../src/result-envelope/cursor.js";
 import { parseAiderAnalytics } from "../src/result-envelope/aider.js";
@@ -329,6 +330,7 @@ async function exercise(agent: AgentId, feature: ParityFeature): Promise<Outcome
     expect(emptyAnswerFinish(result)).toBe("empty-answer");
     return accepted;
   }
+  if (feature === "run.answer-complete") return answerCompleteOutcome(agent);
   if (feature === "session.empty-answer-fails") {
     const events: Record<string, unknown>[] = [];
     const queue = new SessionOutputQueue((line) => { events.push(JSON.parse(line)); },

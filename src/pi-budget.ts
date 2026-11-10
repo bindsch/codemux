@@ -1,5 +1,6 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { sinkMarkerEvidence } from "./stream-marker-scan.js";
 import type { RunRequest, RunResult } from "./types.js";
 import type { PiMcpRunContext } from "./pi-mcp-launch.js";
 import { createPiHermeticAgentDir, type PiProviderAgentDir } from "./pi-provider.js";
@@ -103,7 +104,9 @@ export function piBudgetResult(result: RunResult, request: RunRequest, context?:
     if (verdict) { envelope.usage.cost_usd = verdict.total; envelope.codemux.usage.cost_usd = verdict.total; }
     envelope.codemux.recording = context?.experimentRecording ?? null;
     if (diagnostic) envelope.codemux.failure_code = verdict?.exhausted ? "budget-limit" : "budget-evidence-invalid";
-    return { ...parsed, usage: envelope.usage, scanSurface: result.stdout,
+    // The run's fold shed tool lines; its marker evidence joins the scan
+    // surface, as on every other pi run (src/stream-marker-scan.ts).
+    return { ...parsed, usage: envelope.usage, scanSurface: `${result.stdout}\n${sinkMarkerEvidence(context?.stdoutSink)}`,
       stdout: request.resultJson ? `${JSON.stringify(envelope)}\n` : envelope.reply };
   } catch { return parsed; }
 }

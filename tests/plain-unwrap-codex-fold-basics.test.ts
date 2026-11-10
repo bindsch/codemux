@@ -206,16 +206,13 @@ describe("CodexPlainFold", () => {
     expect(out.stderr.length).toBeGreaterThan(2 * 9 * 1024 * 1024);
   });
 
-  test("a superseded message gives its bytes back: three 6 MiB replies stay under the bound (al29)", () => {
-    // The correctness major's shape: the al28 rule added every retained
-    // line's whole bytes and never subtracted the value a later line
-    // replaced, so three distinct 6 MiB agent messages — only the last
-    // retained — booked ~18 MiB and tripped the 16 MiB bound the process
-    // runner kills on, losing a stream whose actual residue was one 6 MiB
-    // reply. The value delta subtracts the superseded message's bytes
-    // when the replacement sets its own, so retainedBytes reads what the
-    // reduction holds NOW.
-    const big = (tag: string): string => agentMessage(tag.repeat(6 * 1024 * 1024));
+  test("every message of the turn is retained and printed: three 4 MiB replies (AN1)", () => {
+    // Lane AN1 replaced the al29 shape (a later message superseding an
+    // earlier one): the answer is every agent_message of the turn, so
+    // each one stays retained and the residue books their sum. The value
+    // accounting still measures what the reduction holds NOW, so the
+    // booked total is the three messages, not every line ever seen.
+    const big = (tag: string): string => agentMessage(tag.repeat(4 * 1024 * 1024));
     const stream =
       [THREAD, turnStarted(), big("a"), big("b"), big("c"), turnCompleted(USAGE_FULL)].join("\n") +
       "\n";
@@ -230,49 +227,32 @@ describe("CodexPlainFold", () => {
         if (fold.keptBytes() > MAX_CAPTURE_BYTES) over = true; // the runner's poll
       }
       expect(over, label).toBe(false);
-      expect(fold.keptBytes(), label).toBeLessThan(MAX_CAPTURE_BYTES);
+      expect(fold.keptBytes(), label).toBeGreaterThanOrEqual(12 * 1024 * 1024);
       const out = fold.verdict(finished(""));
       expect(out.success, label).toBe(true);
-      expect(out.stdout, label).toBe("c".repeat(6 * 1024 * 1024) + "\n");
+      expect(out.stdout, label).toBe(
+        ["a", "b", "c"].map((tag) => tag.repeat(4 * 1024 * 1024)).join("\n\n") + "\n");
       expect(out.usage, label).toEqual(FULL_BLOCK);
     }
-    // The whole-capture replay answers the same success.
     expect(codexPlainStreamResult(finished(stream)).success).toBe(true);
   });
 
-  test("32 progressively larger replies that each fit keep the residue under the bound (al29)", () => {
-    // The property the value accounting buys: a stream may replace its
-    // retained message any number of times — here one turn whose reply
-    // candidate grows message by message, every message superseding the
-    // last — and the residue tracks the values held NOW, never the sum
-    // of every line that ever set one. 32 messages, each 320 KiB larger
-    // than the last (the largest 10 MiB, every line under the per-line
-    // bound), total ~165 MiB on the wire: the al28 line accounting had
-    // booked all of it and died at exit 125, while the largest single
-    // value stays under the bound by 6 MiB. The chunking-invariance
-    // property (al28's test above) holds with it: the verdict is a
-    // function of the completed lines alone.
-    const lines: string[] = [THREAD, turnStarted()];
-    for (let i = 1; i <= 32; i++) {
-      lines.push(agentMessage("r".repeat(i * 320 * 1024)));
-    }
-    lines.push(turnCompleted(USAGE_FULL));
-    const stream = lines.join("\n") + "\n";
-    let over = false;
+  test("messages that together pass the bound trip it, though each fits (AN1)", () => {
+    // Three 6 MiB messages: the al29 rule kept only the last, but the
+    // complete answer is all three (18 MiB), which the 16 MiB capture
+    // bound cannot hold, so the runner's poll sees the residue past it.
+    const big = (tag: string): string => agentMessage(tag.repeat(6 * 1024 * 1024));
+    const stream =
+      [THREAD, turnStarted(), big("a"), big("b"), big("c"), turnCompleted(USAGE_FULL)].join("\n") +
+      "\n";
     const fold = new CodexPlainFold();
+    let over = false;
     for (let at = 0; at < stream.length; at += 64 * 1024) {
       fold.push(stream.slice(at, at + 64 * 1024));
-      if (fold.keptBytes() > MAX_CAPTURE_BYTES) over = true; // the runner's poll
+      if (fold.keptBytes() > MAX_CAPTURE_BYTES) over = true;
     }
-    expect(over).toBe(false);
-    expect(fold.keptBytes()).toBeLessThan(MAX_CAPTURE_BYTES);
-    const out = fold.verdict(finished(""));
-    expect(out.success).toBe(true);
-    expect(out.stdout).toBe("r".repeat(32 * 320 * 1024) + "\n");
-    expect(out.usage).toEqual(FULL_BLOCK);
-    // And the whole-capture replay — one push — answers identically.
-    expect(codexPlainStreamResult(finished(stream))).toEqual(out);
-  }, 60_000);
+    expect(over).toBe(true);
+  });
 
   test("a turn.failed releases the reply it discards: a 9 MiB message before an 8 MiB failure stays under the bound (al31)", () => {
     // The correctness major: a failed turn's clearing of its assistant

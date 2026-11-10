@@ -41,7 +41,10 @@ if (agent === "copilot") {
   console.log(JSON.stringify({ type: "assistant.message", data: { content: "OK", model: "served" } }));
   console.log(JSON.stringify({ type: "result", exitCode: 0, sessionId: "synthetic-session" }));
 } else if (agent === "gemini") {
-  console.log(JSON.stringify({ response: "OK", stats: {
+  // The stream-json wire every gemini run launches with.
+  console.log(JSON.stringify({ type: "init", session_id: "synthetic-session", model: "m" }));
+  console.log(JSON.stringify({ type: "message", role: "assistant", content: "OK", delta: true }));
+  console.log(JSON.stringify({ type: "result", status: "success", stats: {
     input_tokens: 13, output_tokens: 2, cached: 3, total_tokens: 15,
   } }));
 } else if (agent === "pi") {

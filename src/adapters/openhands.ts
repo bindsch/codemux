@@ -9,7 +9,8 @@ import { plantOpenhandsPlaywrightMcp } from "../openhands-mcp.js";
 import { writeOpenhandsTaskFile } from "../openhands-task-file.js";
 import { validateOpenhandsProjectSettings } from "../openhands-project-settings.js";
 import { refuseOpenhandsExperiment } from "../openhands-experiment-run.js";
-import { openhandsResult } from "../result-envelope/openhands.js";
+import { openhandsPlainResult, openhandsResult } from "../result-envelope/openhands.js";
+import { withStreamScanSurface } from "../stream-marker-scan.js";
 import {
   assertProviderCap,
   readProviderOverride,
@@ -260,11 +261,11 @@ export class OpenHandsAdapter extends BaseAdapter {
       cmd.push("--override-with-envs");
     }
 
-    if (request.resultJson) {
-      // 1.16.0 entrypoint.py: json_mode = args.json and args.headless; the
-      // JSONL event stream replaces the rich UI output.
-      cmd.push("--json");
-    }
+    // 1.16.0 entrypoint.py: json_mode = args.json and args.headless; the
+    // JSONL event stream replaces the rich UI output. Plain runs ride it
+    // too (lane AN1): the answer is assembled from every agent text event
+    // and printed at the end instead of the rich UI streaming live.
+    cmd.push("--json");
 
     // 1.16.0 has no stdin transport; the task is a file via -f on every
     // launch (prepareRun wrote it), with the argv `--task` spelling as
@@ -360,8 +361,13 @@ export class OpenHandsAdapter extends BaseAdapter {
    * exit is already a failure, and a reply quoting the phrase is a reply.
    */
   override processRunResult(result: RunResult, request: RunRequest, _context?: RunContext): RunResult {
-    if (request.resultJson) return openhandsResult(result, request);
-    if (result.exitCode !== 0 || !openHandsRanNoTask(result.stdout)) return result;
+    // Both result paths replace the --json event stream with the answer,
+    // and the parser reads agent text alone; the hermetic check scans the
+    // whole stream, tool observations included (stream-marker-scan.ts).
+    if (request.resultJson) return withStreamScanSurface(openhandsResult(result, request), result.stdout, undefined);
+    if (result.exitCode !== 0 || !openHandsRanNoTask(result.stdout)) {
+      return withStreamScanSurface(openhandsPlainResult(result) ?? result, result.stdout, undefined);
+    }
     return {
       ...result,
       success: false,

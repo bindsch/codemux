@@ -47,24 +47,24 @@ describe("DroidAdapter", () => {
   test("buildRunCommand with prompt only", () => {
     const request: RunRequest = { agent: "droid", prompt: "test prompt" };
     const cmd = adapter.buildRunCommand(request);
-    expect(cmd).toEqual(["droid", "exec"]);
+    expect(cmd).toEqual(["droid", "exec", "--output-format", "stream-json"]);
   });
 
   test("buildRunCommand with model", () => {
     const request: RunRequest = { agent: "droid", prompt: "test", model: "gpt-5.1" };
     const cmd = adapter.buildRunCommand(request);
-    expect(cmd).toEqual(["droid", "exec", "-m", "gpt-5.1"]);
+    expect(cmd).toEqual(["droid", "exec", "-m", "gpt-5.1", "--output-format", "stream-json"]);
   });
 
   test("buildRunCommand with autonomy levels", () => {
     expect(adapter.buildRunCommand({ agent: "droid", prompt: "t", autonomy: "read-only" }))
-      .toEqual(["droid", "exec"]);
+      .toEqual(["droid", "exec", "--output-format", "stream-json"]);
     expect(adapter.buildRunCommand({ agent: "droid", prompt: "t", autonomy: "low" }))
-      .toEqual(["droid", "exec", "--auto", "low"]);
+      .toEqual(["droid", "exec", "--output-format", "stream-json", "--auto", "low"]);
     expect(adapter.buildRunCommand({ agent: "droid", prompt: "t", autonomy: "medium" }))
-      .toEqual(["droid", "exec", "--auto", "medium"]);
+      .toEqual(["droid", "exec", "--output-format", "stream-json", "--auto", "medium"]);
     expect(adapter.buildRunCommand({ agent: "droid", prompt: "t", autonomy: "high" }))
-      .toEqual(["droid", "exec", "--auto", "high"]);
+      .toEqual(["droid", "exec", "--output-format", "stream-json", "--auto", "high"]);
     // The read-only argv is empty because the default state IS read-only
     // ("DEFAULT (no flags)  Read-only mode", droid 0.221.0), so the
     // equivalence cell must say so rather than naming a flag.
@@ -73,13 +73,13 @@ describe("DroidAdapter", () => {
 
   test("buildRunCommand with effort levels", () => {
     expect(adapter.buildRunCommand({ agent: "droid", prompt: "t", effort: "none" }))
-      .toEqual(["droid", "exec", "--reasoning-effort", "off"]);
+      .toEqual(["droid", "exec", "--output-format", "stream-json", "--reasoning-effort", "off"]);
     expect(adapter.buildRunCommand({ agent: "droid", prompt: "t", effort: "low" }))
-      .toEqual(["droid", "exec", "--reasoning-effort", "low"]);
+      .toEqual(["droid", "exec", "--output-format", "stream-json", "--reasoning-effort", "low"]);
     expect(adapter.buildRunCommand({ agent: "droid", prompt: "t", effort: "medium" }))
-      .toEqual(["droid", "exec", "--reasoning-effort", "medium"]);
+      .toEqual(["droid", "exec", "--output-format", "stream-json", "--reasoning-effort", "medium"]);
     expect(adapter.buildRunCommand({ agent: "droid", prompt: "t", effort: "high" }))
-      .toEqual(["droid", "exec", "--reasoning-effort", "high"]);
+      .toEqual(["droid", "exec", "--output-format", "stream-json", "--reasoning-effort", "high"]);
   });
 
   test("uses the model-specific no-reasoning value", () => {
@@ -106,7 +106,7 @@ describe("DroidAdapter", () => {
       model: "gpt-5.6",
       effort: "none",
     });
-    expect(cmd).toEqual(["droid", "exec", "-m", "gpt-5.6", "--reasoning-effort", "none"]);
+    expect(cmd).toEqual(["droid", "exec", "-m", "gpt-5.6", "--output-format", "stream-json", "--reasoning-effort", "none"]);
   });
 
   test("buildRunCommand with all options", () => {
@@ -118,7 +118,7 @@ describe("DroidAdapter", () => {
       effort: "high",
     };
     const cmd = adapter.buildRunCommand(request);
-    expect(cmd).toEqual(["droid", "exec", "-m", "gpt-5.1", "--auto", "medium", "--reasoning-effort", "high"]);
+    expect(cmd).toEqual(["droid", "exec", "-m", "gpt-5.1", "--output-format", "stream-json", "--auto", "medium", "--reasoning-effort", "high"]);
   });
 
   test("getStdinInput returns prompt", () => {
@@ -128,9 +128,9 @@ describe("DroidAdapter", () => {
 
   test("--no-web removes exactly the two web tools", () => {
     expect(adapter.buildRunCommand({ agent: "droid", prompt: "t", web: false }))
-      .toEqual(["droid", "exec", "--remove-tools", "WebSearch,FetchUrl"]);
+      .toEqual(["droid", "exec", "--output-format", "stream-json", "--remove-tools", "WebSearch,FetchUrl"]);
     expect(adapter.buildRunCommand({ agent: "droid", prompt: "t", web: true }))
-      .toEqual(["droid", "exec"]);
+      .toEqual(["droid", "exec", "--output-format", "stream-json"]);
   });
 
   test("buildTuiCommand basic", () => {

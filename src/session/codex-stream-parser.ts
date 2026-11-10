@@ -330,10 +330,12 @@ export class CodexStreamParser {
           }
         }
         if (type === "agentMessage" && method === "item/completed") {
-          // Commentary is mid-turn chatter, not the final answer.
-          const phase = item["phase"];
+          // Every completed agentMessage is the turn's text, commentary
+          // included (lane AN1): an agent that writes its findings as
+          // commentary before a tool call answered with them, and the
+          // deltas already streamed that text for every phase.
           const text = item["text"];
-          if (phase !== "commentary" && typeof text === "string") {
+          if (typeof text === "string") {
             return [
               { kind: "assistant_text", threadId: scoped.threadId, turnId: scoped.turnId as string, text },
             ];

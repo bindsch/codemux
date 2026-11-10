@@ -19,8 +19,12 @@ describe("codexResult", () => {
     const out = codexResult(finished(CODEX_EVENTS), request);
     const envelope = JSON.parse(out.stdout);
     expect(Object.keys(envelope).sort()).toEqual(["codemux", "result"]);
-    expect(envelope.result).toBe("final message");
+    // Every agent_message of the turn, in order (lane AN1); the closing
+    // one alone rides codemux.final_message.
+    expect(envelope.result).toBe("first message\n\nfinal message");
     expect(envelope.codemux).toEqual({
+      final_message: "final message",
+      truncated: false,
       agent: "codex",
       model: null,
       model_alias: null,
@@ -322,7 +326,7 @@ describe("codexResult", () => {
     // mapper drops, so a stream that carries its own agent_message stands
     // and no note is added.
     const out = codexResult(finished(CODEX_EVENTS), request, "recorded but unused");
-    expect(JSON.parse(out.stdout).result).toBe("final message");
+    expect(JSON.parse(out.stdout).result).toBe("first message\n\nfinal message");
     expect(out.exitCode).toBe(0);
     expect(out.stderr).not.toContain(CODEX_FINAL_MESSAGE_FALLBACK_NOTE);
   });

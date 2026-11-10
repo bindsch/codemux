@@ -24,7 +24,8 @@ import type {
   AdapterCapabilities,
 } from "../types.js";
 import { piLoginState, loginHome, type LoginState } from "../harness-health.js";
-import { piResult } from "../result-envelope/pi.js";
+import { piPlainResult, piResult, piStreamFold } from "../result-envelope/pi.js";
+import { answerFoldScanEvidence } from "../answer-stream-fold.js";
 import { preparePiPlaywright, type PiMcpRunContext } from "../pi-mcp-launch.js";
 import { piNativeSessionDir, preparePiTuiProviderEnvironment } from "../pi-launch.js";
 import { readExperimentRunSpec } from "../experiment-mcp.js";
@@ -150,6 +151,9 @@ export class PiAdapter extends BaseAdapter {
   override prepareRun(request: RunRequest): PiBudgetRunContext {
     this.validateBudgetPricing(request);
     const context = this.prepareNativeRun(request);
+    // The json wire repeats tool output several times over; the fold
+    // sheds it as it arrives (an experiment run keeps its own sink).
+    context.stdoutSink ??= piStreamFold();
     try { return preparePiBudget(request, context, this.realAgentDir(request)); }
     catch (error) { this.cleanupRunSync(context); throw error; }
   }
@@ -323,15 +327,12 @@ export class PiAdapter extends BaseAdapter {
       cmd.push("--extension", context.piMcpExtension.path);
     }
 
-    // A --result-json run switches the print mode to pi's json wire: a
-    // `{type:"session"}` header line (absent under --no-session) and one
-    // JSON line per session event, the reply and usage read off
-    // message_end events (0.85.1 runPrintMode, chunk-JVUZSMYM.js). A
-    // plain run keeps the text mode: the last assistant message's text
-    // blocks on stdout.
-    if (request.resultJson || request.experimentMcp || request.maxBudgetUsd !== undefined) {
-      cmd.push("--mode", "json");
-    }
+    // Every run uses pi's json wire: a `{type:"session"}` header line
+    // (absent under --no-session) and one JSON line per session event, the
+    // reply and usage read off message_end events (0.85.1 runPrintMode).
+    // Text mode prints only the last assistant message, so plain runs use
+    // the wire too and print the complete answer at the end (lane AN1).
+    cmd.push("--mode", "json");
 
     // With an override the private agent directory's models.json supplies
     // the provider, so the model flag is provider-qualified and always
@@ -375,9 +376,9 @@ export class PiAdapter extends BaseAdapter {
     _context?: RunContext
   ): RunResult {
     if (request.maxBudgetUsd !== undefined) return piBudgetResult(result, request, _context as PiBudgetRunContext);
-    // A --result-json run launched with `--mode json`, so stdout is the
-    // newline-separated event wire; piResult folds it into the envelope.
-    // A plain run keeps pi's text stdout unchanged.
+    // Every run launched with `--mode json`, so stdout is the (folded)
+    // event wire: piResult builds the envelope, piPlainResult prints the
+    // complete answer.
     if (request.experimentMcp) {
       const parsed = piResult(result, request);
       try {
@@ -387,8 +388,8 @@ export class PiAdapter extends BaseAdapter {
           stdout: request.resultJson ? `${JSON.stringify(envelope)}\n` : envelope.reply };
       } catch { return parsed; }
     }
-    if (!request.resultJson) return result;
-    return piResult(result, request);
+    const scanSurface = `${result.stdout}\n${answerFoldScanEvidence(_context?.stdoutSink)}`;
+    return { ...(request.resultJson ? piResult(result, request) : piPlainResult(result, request)), scanSurface };
   }
 
   override validateRunRequest(request: RunRequest): void {

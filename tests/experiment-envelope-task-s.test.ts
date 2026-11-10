@@ -28,7 +28,9 @@ test.each(captures)("Codex failure recovery preserves earlier identical messages
   const final = message("item.completed", "final");
   const result = recover([...head, earlier, final], exitCode, suffix);
   const envelope = JSON.parse(result.stdout);
-  expect(envelope.result).toBe("same reply");
+  // The complete answer (lane AN1): both messages, the last alone apart.
+  expect(envelope.result).toBe("same reply\n\nsame reply");
+  expect(envelope.codemux.final_message).toBe("same reply");
   expect(envelope.events).toEqual([...head, earlier]);
   expect(envelope.codemux.failure_code).toBe("protocol");
   expect(result.exitCode).toBe(exitCode);

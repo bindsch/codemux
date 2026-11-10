@@ -139,6 +139,10 @@ Fractional seconds are accepted and rounded up to milliseconds. The timeout
 is not an end-to-end wall-clock cap: input collection, execution, setup, and
 shutdown are distinct phases.
 
+The answer is every assistant message after the prompt, in order, not only
+the final one; `--result-json` adds `codemux.final_message` and
+`codemux.truncated` (see [complete answer](results-and-usage.md#complete-answer)).
+
 Every agent must return a non-whitespace answer. A zero-exit run with an
 empty or whitespace-only normalized answer exits 1 and reports
 `Error: <agent> exited 0 with an empty answer` on stderr. With

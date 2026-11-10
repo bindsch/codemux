@@ -40,3 +40,13 @@ export function parseAiderAnalytics(text: string): {
   if (sawMessage) usage.output_tokens = output;
   return { usage, servedModel: null };
 }
+
+/** Whether aider reported an output-length stop (lane AN1). Aider 0.86.2
+ * has no structured stream: its plain stdout is the whole transcript, every
+ * assistant response in order, which already is the complete answer. A
+ * length stop raises FinishReasonLength (base_coder.py:1898, 1911); without
+ * prefill support the run ends in show_exhausted_error, whose report line
+ * is `Model <name> has hit a token limit!` (base_coder.py:1654). */
+export function aiderReportedLengthStop(text: string): boolean {
+  return /^Model .+ has hit a token limit!$/mu.test(text);
+}

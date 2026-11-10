@@ -284,8 +284,8 @@ test("a processed Codex envelope survives a later experiment cleanup failure", (
   const processed = codexResult(finished(CODEX_EVENTS), request);
   const result = experimentFailedResult(processed, request, "/synthetic/recording.jsonl",
     new records.ExperimentFailure(records.ExperimentFailureCode.ServerError, "server exited"));
-  expect(JSON.parse(result.stdout)).toMatchObject({ result: "final message", codemux: {
-    failure_code: "server_error", usage: { input_tokens: 200 } } });
+  expect(JSON.parse(result.stdout)).toMatchObject({ result: "first message\n\nfinal message", codemux: {
+    failure_code: "server_error", usage: { input_tokens: 200 }, final_message: "final message" } });
 });
 
 test("the failure result keeps the prefix's deliberate null served model over a stale raw value (round 361, item 15)", () => {

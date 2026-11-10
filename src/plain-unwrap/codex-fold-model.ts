@@ -11,6 +11,8 @@ import {
   codexWarningNoteBytes,
 } from "../result-envelope.js";
 import type { ResultUsageBlock, RunResult } from "../types.js";
+import { withTruncationNotice } from "../answer-complete.js";
+import { codexStreamAnswer, codexTranscript } from "../result-envelope/codex-stream.js";
 import {
   byteLength,
   codexPlainReply,
@@ -136,6 +138,10 @@ export function foldCodexWireLine(line: string, state: CodexFoldState): void {
 export interface CodexRetainedSnapshot {
   threadId: string;
   finalMessage: string | null;
+  /** The turn's message array and its length at the snapshot: the reducer
+   * appends in place and replaces the array at a turn boundary (lane AN1). */
+  messages: string[];
+  messageCount: number;
   servedModel: string | null;
   failure: string | null;
   warnings: number;
@@ -146,6 +152,8 @@ export interface CodexRetainedSnapshot {
 export const codexRetainedOf = (reducer: CodexEventReducer): CodexRetainedSnapshot => ({
   threadId: reducer.threadId,
   finalMessage: reducer.finalMessage,
+  messages: reducer.messages,
+  messageCount: reducer.messages.length,
   servedModel: reducer.servedModel,
   failure: reducer.failureText(),
   warnings: reducer.warnings.length,
@@ -171,8 +179,16 @@ export const codexRetainedDelta = (
   if (before.threadId !== reducer.threadId) {
     delta += byteLength(reducer.threadId) - byteLength(before.threadId);
   }
-  if (before.finalMessage !== reducer.finalMessage) {
-    delta += codexValueBytes(reducer.finalMessage) - codexValueBytes(before.finalMessage);
+  // The final message is the last entry of `messages`, booked there once
+  // (lane AN1: every message of the turn is retained for the answer); a
+  // fallback-set final message never passes through the fold.
+  if (before.messages === reducer.messages) {
+    for (let i = before.messageCount; i < reducer.messages.length; i++) {
+      delta += byteLength(reducer.messages[i]!);
+    }
+  } else {
+    for (let i = 0; i < before.messageCount; i++) delta -= byteLength(before.messages[i]!);
+    for (const message of reducer.messages) delta += byteLength(message);
   }
   if (before.servedModel !== reducer.servedModel) {
     delta += codexValueBytes(reducer.servedModel) - codexValueBytes(before.servedModel);
@@ -203,7 +219,7 @@ export const codexRetainedDelta = (
  * hatch fed survive the flip and stay retained. */
 export const codexRetainedTotal = (reducer: CodexEventReducer): number => {
   let total = byteLength(reducer.threadId);
-  total += codexValueBytes(reducer.finalMessage);
+  for (const message of reducer.messages) total += byteLength(message);
   total += codexValueBytes(reducer.servedModel);
   total += codexValueBytes(reducer.failureText());
   total += codexValueBytes(reducer.drift);
@@ -348,9 +364,11 @@ export function codexFoldVerdict(
   // above): stdout's emptiness is the run succeeding the way human mode
   // did — `final_message` was `None`, and no line was written — not a
   // failed result.
+  // Lane AN1: the reply is every agent_message of the turn, joined.
+  const answer = codexStreamAnswer(stream);
   let reply =
-    stream.turnCompleted && stream.finalMessage !== null
-      ? codexPlainReply(stream.finalMessage)
+    stream.turnCompleted && answer !== null
+      ? codexPlainReply(answer)
       : "";
   // The ONE bounded fallback (round al29): a completed messageless turn —
   // the Plan-only shape, the one item the JSONL wire cannot carry — and
@@ -403,7 +421,7 @@ export function codexFoldVerdict(
       };
     }
   }
-  return {
+  return withTruncationNotice({
     ...result,
     stdout: reply,
     stderr: withBreakNote(
@@ -416,5 +434,5 @@ export function codexFoldVerdict(
     // incomplete.
     usage: verdict.failed ? emptyUsage() : stream.usage,
     servedModel: stream.servedModel,
-  };
+  }, "codex", codexTranscript(stream));
 }

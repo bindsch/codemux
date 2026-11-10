@@ -13,7 +13,40 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- A run's answer is now every assistant message the agent wrote after the
+  prompt, in order, with a blank line between messages, on every harness
+  (parity feature `run.answer-complete`). It used to be the final message
+  only on most harnesses, so findings written before a later tool call were
+  lost: a zai run returned only the tail of its answer, and a cursor run
+  that ended on a tool call printed an empty line. Plain runs print the
+  complete answer; `--result-json` puts it in the answer field.
+- New `--result-json` block fields: `codemux.final_message` (the last
+  assistant message alone) and `codemux.truncated` (the harness reported a
+  max-tokens or length stop on the last message; stderr then carries one
+  line). Agy's stream-json carries no intermediate text, so its answer stays
+  the result response (a declared limitation).
+- Plain runs of Gemini, Qwen, Copilot, Droid, Goose, Pi, and OpenHands now
+  launch on the harness's structured stream and print the answer when the
+  run ends instead of streaming the harness's text output. Plain runs of
+  Claude and Z.AI move from `--output-format json` to
+  `--output-format stream-json --verbose`; they printed at the end before
+  and still do.
+- Session turns carry every message of the turn: the Cline and Gemini ACP
+  drivers split text at tool calls, the Codex driver keeps commentary
+  messages, the Aider driver keeps reflected replies, and Droid turns read
+  `stream-json`.
+
+### Fixed
+
+- `codemux check --hermetic` scans every event of a structured stream for
+  the planted marker, tool results and tool inputs included, on every
+  harness whose plain run prints an answer assembled from that stream
+  (Claude, Z.AI, Codex, Cursor, Gemini, Qwen, Copilot, OpenCode, Cline, and
+  OpenHands, as Droid, Goose, Pi, and Kimi already did). A marker that
+  reached the model only through a tool result used to vanish with the
+  shed event, and the check could certify a leaking run clean.
 
 ## [2.0.0] - 2026-10-31
 

@@ -1,3 +1,4 @@
+import { assembleAnswer } from "../answer-complete.js";
 import type { ExperimentFailure } from "../experiment-records.js";
 import type { CodemuxResultBlock, ResultUsageBlock, RunRequest, RunResult } from "../types.js";
 import { claudeFamilyResult } from "./claude.js";
@@ -106,9 +107,13 @@ export function experimentFailedResult(
       : { agent: request.agent, model: servedModel ?? request.model ?? null, served_model: servedModel ?? null,
           model_alias: request.modelAlias ?? null,
           labels: request.labels ?? null,
-          usage, session_id: null, recording, failure_code: failure.code };
+          usage, session_id: null, recording, failure_code: failure.code,
+          final_message: partial?.sawThreadStarted ? partial.finalMessage : null, truncated: false };
     const output = { ...(existing ? envelope : { result: null }),
-      ...(partial?.sawThreadStarted ? { result: partial.finalMessage, events: prefix!.events } : {}), codemux: block };
+      // The complete answer of the valid prefix (lane AN1): every message,
+      // not only the last one, which rides codemux.final_message.
+      ...(partial?.sawThreadStarted ? { result: partial.messages.length > 0 ? assembleAnswer(partial.messages) : partial.finalMessage,
+        events: prefix!.events } : {}), codemux: block };
     if (request.agent === "codex") {
       ({ stdout, truncated } = boundedCodexEnvelope(output));
     } else {
