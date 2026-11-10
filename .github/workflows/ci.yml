@@ -61,9 +61,9 @@ jobs:
         # only and echoed as a visible warning there (the summary steps grep
         # for it on both platforms); any other probe failure fails the gate.
         env:
-          SCODE_TAG: v0.6.2
+          SCODE_TAG: v0.6.4
           # The commit refs/tags/v0.6.2 named when this pin was set.
-          SCODE_SHA: e07ba1da079e419f2c35704dca4420440af6f5aa
+          SCODE_SHA: 2876584e05dce5be1f496684c70869ed864f011a
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap
           dir="$(mktemp -d)"
