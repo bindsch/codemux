@@ -16,7 +16,8 @@ Run `codemux --version` to identify an installed release.
 - [Isolation](isolation.md): hermetic guarantees, tools, exceptions, persistence.
 - [Authentication](authentication.md): credentials, mirrors, Keychain recovery.
 - [Provider overrides](provider-overrides.md): routing and token caps.
-- [Results and usage](results-and-usage.md): envelopes, limits, ledger, subscription reporting.
+- [Results and usage](results-and-usage.md): envelopes, limits, the call ledger.
+- [Quota and subscription usage](quota.md): `codemux usage` and the launch-time quota gate.
 - [Sessions](sessions.md): fresh sessions, shutdown, resume.
 - [Session protocol](session-protocol.md): input and event schemas.
 - [Experiment MCP](experiment-mcp.md): server specification, recordings, verification.

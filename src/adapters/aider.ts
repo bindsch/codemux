@@ -10,7 +10,8 @@ import {
   readAiderHistory,
 } from "../aider-history.js";
 import { createAiderRunFiles, type AiderRunContext } from "../aider-run-files.js";
-import { parseAiderAnalytics } from "../result-envelope/aider.js";
+import { aiderReportedLengthStop, parseAiderAnalytics } from "../result-envelope/aider.js";
+import { withTruncationNotice } from "../answer-complete.js";
 import { extractAiderReply } from "../aider-history-text.js";
 import { assertCleanInstructionFiles } from "../clean-cwd.js";
 import {
@@ -187,6 +188,8 @@ export class AiderAdapter extends BaseAdapter {
         result = { ...result, ...parseAiderAnalytics(analytics) };
       }
     }
+    result = withTruncationNotice(result, "aider", { messages: [],
+      truncated: aiderReportedLengthStop(`${result.stdout}\n${result.stderr}`) });
     const history = context?.aiderHistoryFile;
     if (history === undefined) return result;
     // The read itself trusts nothing about the file (readAiderHistory:

@@ -69,7 +69,8 @@ describe("opencodePlainResult", () => {
       `{"type":"step_finish","timestamp":1791489571351,"sessionID":"ses_01234567`,
     ].join("\n"); // no trailing newline: the write was cut
     const out = opencodePlainResult({ stdout: cut, stderr: "", exitCode: 124, success: false });
-    expect(out.stdout).toBe("the reply so far\nmore of the reply\n");
+    // The text before and after the step_finish belongs to two steps (lane AN1).
+    expect(out.stdout).toBe("the reply so far\n\nmore of the reply\n");
     expect(out.stdout).not.toContain('"type"');
     expect(out.usage!.total_tokens).toBe(11);
     expect(out.stderr).toContain("were not the wire");

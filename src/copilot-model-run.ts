@@ -47,6 +47,9 @@ export class CopilotModelRun implements StdoutSink {
   }
 
   private event(event: JsonObject, end: () => void, fail: (error: Error) => void): void {
+    // Tool events carry tool output the result never reads (lane AN1):
+    // kept, a long tool-using run would reach the capture bound.
+    if (typeof event.type === "string" && event.type.startsWith("tool.")) return;
     const line = JSON.stringify(event) + "\n"; this.bytes += Buffer.byteLength(line);
     if (this.bytes > MAX_CAPTURE_BYTES) throw new Error("Copilot model run exceeded its capture limit");
     this.output += line;

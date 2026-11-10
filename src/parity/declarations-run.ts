@@ -1,6 +1,7 @@
 import type { AgentId } from "../types.js";
 import { supported, type FeatureState, type RunFeature } from "./features.js";
 import { RUN_REASONS } from "./reasons-run.js";
+import { ANSWER_COMPLETE } from "./reasons-run-answer.js";
 import { RUN_CARRIERS } from "./reasons-run-carriers.js";
 import { W2_RUN_LIMITATIONS } from "./reasons-run-w2.js";
 import { AIDER_RUN_LIMITATIONS } from "./reasons-run-aider.js";
@@ -11,6 +12,7 @@ import { clineAnyCwd, clineBudget, clineServed } from "./reasons-cline.js";
 const RUN_BASE = {
   agy: {
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
+    "run.answer-complete": ANSWER_COMPLETE.agy,
     "run.model": supported("tests/new-adapters.test.ts"),
     "run.autonomy.all-four": supported("tests/autonomy.test.ts"),
     "run.effort": supported("tests/new-adapters.test.ts"),
@@ -38,6 +40,7 @@ const RUN_BASE = {
   },
   aider: {
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
+    "run.answer-complete": ANSWER_COMPLETE.aider,
     "run.model": supported("tests/new-adapters-aider.test.ts"),
     "run.autonomy.all-four": supported("tests/autonomy.test.ts"),
     "run.effort": supported("tests/new-adapters-aider.test.ts"),
@@ -65,6 +68,7 @@ const RUN_BASE = {
   },
   claude: {
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
+    "run.answer-complete": ANSWER_COMPLETE.claude,
     "run.model": supported("tests/adapters-claude.test.ts"),
     "run.autonomy.all-four": supported("tests/autonomy.test.ts"),
     "run.effort": supported("tests/adapters-claude.test.ts"),
@@ -92,6 +96,7 @@ const RUN_BASE = {
   },
   cline: {
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
+    "run.answer-complete": ANSWER_COMPLETE.cline,
     "run.model": supported("tests/new-adapters-cline.test.ts"),
     "run.autonomy.all-four": supported("tests/autonomy.test.ts"),
     "run.effort": supported("tests/new-adapters-cline.test.ts"),
@@ -119,6 +124,7 @@ const RUN_BASE = {
   },
   codex: {
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
+    "run.answer-complete": ANSWER_COMPLETE.codex,
     "run.model": supported("tests/adapters-codex-argv.test.ts"),
     "run.autonomy.all-four": supported("tests/autonomy.test.ts"),
     "run.effort": supported("tests/adapters-codex-argv.test.ts"),
@@ -147,6 +153,7 @@ const RUN_BASE = {
   },
   copilot: {
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
+    "run.answer-complete": ANSWER_COMPLETE.copilot,
     "run.model": supported("tests/new-adapters-copilot.test.ts"),
     "run.autonomy.all-four": supported("tests/autonomy.test.ts"),
     "run.effort": supported("tests/new-adapters-copilot.test.ts"),
@@ -174,6 +181,7 @@ const RUN_BASE = {
   },
   cursor: {
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
+    "run.answer-complete": ANSWER_COMPLETE.cursor,
     "run.model": supported("tests/new-adapters-cursor.test.ts"),
     "run.autonomy.all-four": supported("tests/autonomy.test.ts"),
     "run.effort": RUN_REASONS.cursorEffort,
@@ -201,6 +209,7 @@ const RUN_BASE = {
   },
   droid: {
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
+    "run.answer-complete": ANSWER_COMPLETE.droid,
     "run.model": supported("tests/adapters-droid.test.ts"),
     "run.autonomy.all-four": supported("tests/autonomy.test.ts"),
     "run.effort": supported("tests/adapters-droid.test.ts"),
@@ -228,6 +237,7 @@ const RUN_BASE = {
   },
   goose: {
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
+    "run.answer-complete": ANSWER_COMPLETE.goose,
     "run.model": supported("tests/adapters-goose.test.ts"),
     "run.autonomy.all-four": supported("tests/autonomy.test.ts"),
     "run.effort": supported("tests/adapters-goose.test.ts"),
@@ -255,6 +265,7 @@ const RUN_BASE = {
   },
   gemini: {
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
+    "run.answer-complete": ANSWER_COMPLETE.gemini,
     "run.model": supported("tests/adapters-gemini.test.ts"),
     "run.autonomy.all-four": supported("tests/autonomy.test.ts"),
     "run.effort": RUN_REASONS.geminiEffort,
@@ -282,6 +293,7 @@ const RUN_BASE = {
   },
   kimi: {
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
+    "run.answer-complete": ANSWER_COMPLETE.kimi,
     "run.model": supported("tests/kimi.test.ts"),
     "run.autonomy.all-four": supported("tests/autonomy.test.ts"),
     "run.effort": supported("tests/kimi.test.ts", "Effort rides KIMI_MODEL_THINKING_EFFORT, the config layer's env alias for [thinking] forcedEffort (kimi 2.5.2)."),
@@ -309,6 +321,7 @@ const RUN_BASE = {
   },
   opencode: {
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
+    "run.answer-complete": ANSWER_COMPLETE.opencode,
     "run.model": supported("tests/adapters-extended.test.ts"),
     "run.autonomy.all-four": supported("tests/autonomy.test.ts"),
     "run.effort": supported("tests/adapters-extended.test.ts"),
@@ -336,6 +349,7 @@ const RUN_BASE = {
   },
   openhands: {
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
+    "run.answer-complete": ANSWER_COMPLETE.openhands,
     "run.model": supported("tests/openhands.test.ts"),
     "run.autonomy.all-four": supported("tests/autonomy.test.ts"),
     "run.effort": RUN_REASONS.openhandsEffort,
@@ -363,6 +377,7 @@ const RUN_BASE = {
   },
   pi: {
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
+    "run.answer-complete": ANSWER_COMPLETE.pi,
     "run.model": supported("tests/adapters-extended.test.ts"),
     "run.autonomy.all-four": supported("tests/autonomy.test.ts"),
     "run.effort": supported("tests/adapters-extended.test.ts"),
@@ -390,6 +405,7 @@ const RUN_BASE = {
   },
   qwen: {
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
+    "run.answer-complete": ANSWER_COMPLETE.qwen,
     "run.model": supported("tests/qwen-run-parity.test.ts", "Current qwen binary; legacy qwen-coder refuses model selection."),
     "run.autonomy.all-four": supported("tests/autonomy.test.ts"),
     "run.effort": supported("tests/qwen-run-parity.test.ts", "Current qwen binary; legacy qwen-coder refuses effort."),
@@ -417,6 +433,7 @@ const RUN_BASE = {
   },
   zai: {
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
+    "run.answer-complete": ANSWER_COMPLETE.zai,
     "run.model": supported("tests/adapters-zai.test.ts"),
     "run.autonomy.all-four": supported("tests/autonomy.test.ts"),
     "run.effort": supported("tests/adapters-zai.test.ts"),

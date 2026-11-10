@@ -3,10 +3,12 @@
  * src/plain-unwrap.ts owns the public surface and the module overview. */
 import { appendDiagnostic, emptyUsage } from "../result-envelope.js";
 import { MAX_CAPTURE_BYTES, type StdoutSink } from "../process-runner.js";
+import { StreamMarkerScan } from "../stream-marker-scan.js";
 import { parseOpenCodeRunLine } from "../session/opencode-session.js";
 import { accumulateUsage } from "../session/usage.js";
 import type { ResultUsageBlock, RunResult } from "../types.js";
 import { byteLength, failed } from "./common.js";
+import { isLengthStop, withTruncationNotice } from "../answer-complete.js";
 
 /** What the opencode wire fold keeps as the lines arrive: the reply spelled
  * as plain mode prints it, the folded `step_finish` usage, the first error,
@@ -28,6 +30,11 @@ export interface OpenCodeResultData {
   /** At most the first two notes; `brokenCount` carries the total. */
   broken: string[];
   brokenCount: number;
+  /** The last step's text alone (lane AN1's final message): "" when the
+   * last step carried no text, null before any step or text. */
+  finalMessage: string | null;
+  /** The last step finished with reason "length" (the output-token cap). */
+  truncated: boolean;
 }
 
 interface OpenCodeFoldState extends OpenCodeResultData {
@@ -40,6 +47,8 @@ interface OpenCodeFoldState extends OpenCodeResultData {
   /** UTF-8 bytes of the kept `broken` notes, maintained with them
    * (review ul7). */
   brokenBytes: number;
+  /** The text parts of the step in progress, a blank line between two. */
+  stepText: string;
 }
 
 /** Records one line that was not the wire: the verdict prints only the
@@ -82,16 +91,30 @@ function foldOpenCodeLine(line: string, state: OpenCodeFoldState): void {
       break;
     case "text": {
       state.sawWire = true;
+      // Every text part joins the answer (lane AN1). One step is one
+      // assistant message: its parts print trimmed on their own lines, as
+      // plain mode prints them, and a blank line separates two steps'
+      // text (assembleAnswer's spelling between messages).
       const printed = parse.text.trim();
       if (printed !== "") {
-        state.text += `${printed}\n`;
-        state.textBytes += byteLength(printed) + 1; // the newline is one byte
+        const separator = state.text !== "" && state.stepText === "" ? "\n" : "";
+        state.text += `${separator}${printed}\n`;
+        state.textBytes += byteLength(printed) + 1 + separator.length; // newlines are one byte
+        state.stepText = state.stepText === "" ? printed : `${state.stepText}\n${printed}`;
+        state.finalMessage = state.stepText;
       }
       break;
     }
     case "step_finish":
       state.sawWire = true;
       state.usage = accumulateUsage(state.usage, parse.usage);
+      // One step is one assistant message: its text (or "") is the final
+      // message so far, and its finish reason is the step's stop reason
+      // (AI SDK finishReason: "length" is the output-token cap; opencode
+      // session/processor.ts writes it as the step-finish part's reason).
+      state.finalMessage = state.stepText;
+      state.truncated = isLengthStop(stepFinishReason(line));
+      state.stepText = "";
       break;
     case "error":
       state.sawWire = true;
@@ -100,6 +123,17 @@ function foldOpenCodeLine(line: string, state: OpenCodeFoldState): void {
     default:
       state.sawWire = true; // tool_use/unknown events: the wire, no reply text
       break;
+  }
+}
+
+/** The step-finish part's `reason`, read off the raw line (the shared
+ * run-line parser reports only the usage). */
+function stepFinishReason(line: string): unknown {
+  try {
+    const event = JSON.parse(line) as { part?: { reason?: unknown } };
+    return event.part?.reason;
+  } catch {
+    return undefined;
   }
 }
 
@@ -131,6 +165,10 @@ export function opencodeVerdict(result: RunResult, data: OpenCodeResultData): Ru
     }
     return result;
   }
+  // A length stop prints its one stderr line on every arm, failed runs
+  // included: codemux.truncated says so in the block regardless.
+  const notice = (verdict: RunResult): RunResult =>
+    withTruncationNotice(verdict, "opencode", { messages: [], truncated: data.truncated });
   // A break beside wire evidence is a diagnostic, never a lost run: the
   // first two reasons name what broke, the count says if more did.
   const withBreakNote = (stderr: string): string =>
@@ -153,12 +191,12 @@ export function opencodeVerdict(result: RunResult, data: OpenCodeResultData): Ru
         `so this run fails even though the harness exited ${result.exitCode}`,
       text
     );
-    return {
+    return notice({
       ...errorResult,
       usage: usage ?? emptyUsage(),
       servedModel: null,
       stderr: withBreakNote(errorResult.stderr),
-    };
+    });
   }
   if (text.trim() === "") {
     const noReply = failed(
@@ -167,20 +205,20 @@ export function opencodeVerdict(result: RunResult, data: OpenCodeResultData): Ru
         "so this run reports no result",
       ""
     );
-    return {
+    return notice({
       ...noReply,
       usage: usage ?? emptyUsage(),
       servedModel: null,
       stderr: withBreakNote(noReply.stderr),
-    };
+    });
   }
-  return {
+  return notice({
     ...result,
     stdout: text,
     usage: usage ?? emptyUsage(),
     servedModel: null,
     stderr: withBreakNote(result.stderr),
-  };
+  });
 }
 
 /**
@@ -210,11 +248,14 @@ export function openCodeResultData(stdout: string): OpenCodeResultData {
     broken: [],
     brokenBytes: 0,
     brokenCount: 0,
+    finalMessage: null,
+    truncated: false,
+    stepText: "",
   };
   const lines = stdout.split("\n");
   if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
   for (const line of lines) foldOpenCodeLine(line, state);
-  const { knownSessionId: _knownSessionId, textBytes: _textBytes, brokenBytes: _brokenBytes, ...data } = state;
+  const { knownSessionId: _knownSessionId, textBytes: _textBytes, brokenBytes: _brokenBytes, stepText: _stepText, ...data } = state;
   return data;
 }
 
@@ -275,6 +316,9 @@ export class OpenCodePlainFold implements StdoutSink {
     broken: [],
     brokenBytes: 0,
     brokenCount: 0,
+    finalMessage: null,
+    truncated: false,
+    stepText: "",
   };
   /** The partial line the chunks have not terminated yet. */
   private buffer = "";
@@ -293,8 +337,13 @@ export class OpenCodePlainFold implements StdoutSink {
    * (round al37's one rule). */
   private overflowed = false;
   private closed = false;
+  /** Sees every chunk before an item event is dropped, so a canary
+   * marker in tool output still reaches the hermetic check
+   * (src/stream-marker-scan.ts). */
+  private readonly markers = new StreamMarkerScan();
 
   push(chunk: string): void {
+    if (!this.closed) this.markers.push(chunk);
     if (this.closed || this.overflowed) return;
     this.bufferBytes += byteLength(chunk);
     // The buffered partial line carries no newline — every exit below
@@ -351,6 +400,11 @@ export class OpenCodePlainFold implements StdoutSink {
     this.overflowed = true;
   }
 
+  /** Canary marker matches anywhere in the stream, dropped events included. */
+  droppedMarkerEvidence(): string {
+    return this.markers.evidence();
+  }
+
   keptBytes(): number {
     if (this.overflowed) return MAX_CAPTURE_BYTES + 1;
     // What the fold can still return: the reply text once the wire was
@@ -396,7 +450,7 @@ export class OpenCodePlainFold implements StdoutSink {
    * read off one and the same folded state. */
   resultData(): OpenCodeResultData {
     this.close();
-    const { knownSessionId: _knownSessionId, textBytes: _textBytes, brokenBytes: _brokenBytes, ...data } = this.state;
+    const { knownSessionId: _knownSessionId, textBytes: _textBytes, brokenBytes: _brokenBytes, stepText: _stepText, ...data } = this.state;
     return data;
   }
 

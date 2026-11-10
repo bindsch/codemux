@@ -84,7 +84,8 @@ describe("OpenCode run session consistency", () => {
       expect(result.success).toBe(false);
       expect(result.exitCode).toBe(1);
       expect(result.stderr).toContain(`names session ${OTHER_SESSION_ID}, not ${SESSION_ID}`);
-      expect(result.stdout).toBe("first reply\nlast reply\n");
+      // Two steps are two assistant messages: a blank line between them (lane AN1).
+      expect(result.stdout).toBe("first reply\n\nlast reply\n");
       expect(result.usage?.total_tokens).toBe(11);
     });
 
@@ -102,7 +103,8 @@ describe("OpenCode run session consistency", () => {
       expect(result.success).toBe(true);
       expect(result.exitCode).toBe(0);
       expect(result.stderr).toBe("");
-      expect(result.stdout).toBe("first reply\nlast reply\n");
+      // Two steps are two assistant messages: a blank line between them (lane AN1).
+      expect(result.stdout).toBe("first reply\n\nlast reply\n");
       expect(result.usage?.total_tokens).toBe(11);
     });
   }

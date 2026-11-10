@@ -78,6 +78,9 @@ export function preparePiTuiLaunch(
   try {
     const command = adapter.buildRunCommand(request, context);
     command.splice(1, 2); // Remove the fixed --print/--no-session prefix only.
+    // Print runs read the json wire (lane AN1); the TUI keeps its own screen.
+    const mode = command.findIndex((arg, index) => arg === "--mode" && command[index + 1] === "json");
+    if (mode !== -1) command.splice(mode, 2);
     if (adapter.providerOverrideActive()) {
       command.push("--session-dir", adapter.nativeSessionDirectory(input.cwd, input.passthroughEnv));
     }

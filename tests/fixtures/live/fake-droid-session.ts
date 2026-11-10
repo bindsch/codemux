@@ -2,15 +2,16 @@
  * A scenario-driven fake of headless droid (the per-turn process behind
  * a droid session driver), built from the wire the session module pins
  * (src/session/droid-session.ts, droid 0.221.0): the turn is `droid
- * exec --output-format json [-m <id>] [--auto <level>]
+ * exec --output-format stream-json [-m <id>] [--auto <level>]
  * [--reasoning-effort <v>] [-s <id>]` with the prompt on STDIN (the run
- * adapter's carrier, never argv), and stdout is exactly one result
- * object — the exec output writer builds
- * `{type:"result",subtype:isError?"failure":"success",is_error,
- * duration_ms,num_turns,result,session_id,usage}` and hands it to
- * process.stdout.write(JSON.stringify(e)+"\n") and nothing else (the
- * binary's ae builder at byte offset 153812787, the de early-failure
- * builder at 153812970, read 2026-11-09). The usage object is the
+ * adapter's carrier, never argv), and stdout is the exec stream (lane
+ * AN1: the json format's result is the last text block alone). The
+ * stream-json writer prints `{type:"system",subtype:"init",session_id,…}`,
+ * one `{type:"message",role,id,text,…}` per text block, and on success
+ * `{type:"completion",finalText,numTurns,durationMs,session_id,usage}`; a
+ * failed turn prints `{type:"error",source,message,…}` and exits nonzero
+ * (the exec dispatcher and error writer of droid 0.221.0, read
+ * 2026-11-10; src/result-envelope/droid.ts). The usage object is the
  * claude-family shape with droid-only extras (factory_credits,
  * thinking_tokens, ttft_ms). This fixture renders the wire itself and
  * imports nothing from src/ — the fixture models the harness, so the
@@ -18,25 +19,26 @@
  * same pinned source.
  *
  * The session identity: a resumed turn's argv carries `-s <id>` and its
- * result object must name that same id (the binary runs the turn under
- * exactly the resumed id); a fresh turn's argv carries no session flag
- * and the result object names the id the harness minted.
+ * stream must name that same id (the binary runs the turn under exactly
+ * the resumed id); a fresh turn's argv carries no session flag and the
+ * stream names the id the harness minted.
  *
  * The scenario is the prompt's `scenario:<name>` prefix. Everything
  * received (argv, stdin bytes) is recorded as JSONL under
  * $FAKE_STATE_DIR. An argv that breaks the launch contract (no exec
- * subcommand, or no --output-format json) prints nothing and exits 2 —
- * the fake fails closed rather than imitating a wire it was not given.
+ * subcommand, or no --output-format stream-json) prints nothing and
+ * exits 2 — the fake fails closed rather than imitating a wire it was not
+ * given.
  *
- *   basic (default) — a success result object naming the resumed id
- *                     (or the minted id on a fresh turn), exit 0
- *   errorturn       — a failure result object (subtype "failure",
- *                     is_error true) naming the session id, exit 1
- *   nowire          — no result object at all, one stderr line,
- *                     exit 1: the driver's tier-3 fatal
- *   newid           — a success result object naming an id OTHER than
- *                     the resumed one (the wrong-session rule; on a
- *                     fresh turn it just names the other id), exit 0
+ *   basic (default) — a success stream naming the resumed id (or the
+ *                     minted id on a fresh turn), exit 0
+ *   errorturn       — an init line naming the session id, then an error
+ *                     event, exit 1
+ *   nowire          — no stream at all, one stderr line, exit 1: the
+ *                     driver's tier-3 fatal
+ *   newid           — a success stream naming an id OTHER than the
+ *                     resumed one (the wrong-session rule; on a fresh
+ *                     turn it just names the other id), exit 0
  */
 
 import { appendFileSync, mkdirSync } from "node:fs";
@@ -90,23 +92,18 @@ const usage = () => ({
   ttft_ms: 250,
 });
 
-const resultObject = (
-  isError: boolean,
-  sessionId: string,
-  text: string
-): string =>
-  `${JSON.stringify({
-    type: "result",
-    subtype: isError ? "failure" : "success",
-    is_error: isError,
-    duration_ms: 1200,
-    num_turns: 1,
-    result: text,
-    session_id: sessionId,
-    usage: usage(),
-  })}\n`;
+const line = (event: Record<string, unknown>): string => `${JSON.stringify(event)}\n`;
+const init = (sessionId: string): string =>
+  line({ type: "system", subtype: "init", cwd: process.cwd(), session_id: sessionId, tools: [], model: "fake" });
+const successStream = (sessionId: string, text: string): string =>
+  init(sessionId) +
+  line({ type: "message", role: "user", id: "u1", text: prompt, timestamp: 1, session_id: sessionId }) +
+  line({ type: "message", role: "assistant", id: "a1", text, timestamp: 2, session_id: sessionId }) +
+  line({ type: "completion", finalText: text, numTurns: 1, durationMs: 1200, session_id: sessionId, usage: usage() });
+const errorStream = (sessionId: string, message: string): string =>
+  init(sessionId) + line({ type: "error", source: "cli", message, timestamp: 3, session_id: sessionId });
 
-const contractHolds = args.includes("exec") && args.includes("json");
+const contractHolds = args.includes("exec") && args.includes("stream-json");
 const scenario = /^scenario:([a-z0-9-]+)/.exec(prompt)?.[1] ?? "basic";
 const resumedId = flagValue(args, ["-s", "--session-id"]);
 const sessionId = () => {
@@ -117,13 +114,13 @@ const sessionId = () => {
 if (!contractHolds) {
   // The launch broke the wire contract this fake exists to check: no
   // output that could be mistaken for a result object.
-  process.stderr.write("fake droid: no exec subcommand or no --output-format json\n");
+  process.stderr.write("fake droid: no exec subcommand or no --output-format stream-json\n");
   process.exit(2);
 }
 
 switch (scenario) {
   case "errorturn":
-    process.stdout.write(resultObject(true, sessionId(), "the model refused the turn"));
+    process.stdout.write(errorStream(sessionId(), "the model refused the turn"));
     process.exit(1);
   case "nowire":
     process.stderr.write("fake droid: dying before the result writer ran\n");
@@ -131,6 +128,6 @@ switch (scenario) {
   case "newid":
   case "basic":
   default:
-    process.stdout.write(resultObject(false, sessionId(), `Done: ${prompt}`));
+    process.stdout.write(successStream(sessionId(), `Done: ${prompt}`));
     process.exit(0);
   }

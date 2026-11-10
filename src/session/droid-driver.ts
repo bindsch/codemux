@@ -1,8 +1,8 @@
 /**
  * The droid agent's turn-per-process profile (turn-driver-core.ts): the
- * identity deferred to the first turn's result object (the opencode
+ * identity deferred to the first turn's completion event (the opencode
  * model — droid mints the id, codemux adopts it), the prompt on stdin,
- * `droid exec --output-format json` per turn with `-s <id>` on every
+ * `droid exec --output-format stream-json` per turn with `-s <id>` on every
  * resumed one (src/session/droid-session.ts). A hermetic session runs
  * every turn under the run path's env(1) HOME redirect
  * (turn-driver-homes.ts), and an override session rides the per-turn
@@ -50,9 +50,9 @@ export const DROID_DRIVER_PROFILE: TurnAgentProfile = {
       noSessionId: parsed.noSessionId,
       wrongSession: parsed.wrongSession,
       noWire: parsed.noWire,
-      // The wire has no structured failure field: a failed droid turn
-      // fails on the exit code alone (a launch failure prints no result
-      // object, which is the noWire fatal).
+      // A failed droid turn fails on the exit code: under stream-json a
+      // failure also prints an error event (parsed into errorMessage), and
+      // a launch that printed no event at all is the noWire fatal.
       failed: false,
       failureReason: null,
     };

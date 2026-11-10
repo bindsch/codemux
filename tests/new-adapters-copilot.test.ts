@@ -49,6 +49,8 @@ describe("CopilotAdapter", () => {
       "--allow-all",
       "--reasoning-effort",
       "high",
+      "--output-format",
+      "json",
       "--silent",
     ]);
     expect(adapter.getStdinInput({ agent: "copilot", prompt: "fix the tests" }))

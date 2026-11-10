@@ -1,5 +1,6 @@
 import type { CodemuxResultBlock, ResultUsageBlock, RunRequest, RunResult } from "../types.js";
 import { appendDiagnostic, boundResultEnvelope, emptyUsage } from "./common.js";
+import { AnswerCollector, answerBlockFields, completeAnswer, type AnswerTranscript } from "../answer-complete.js";
 
 /**
  * Parses the JSONL stream copilot prints for a run launched with
@@ -13,8 +14,15 @@ import { appendDiagnostic, boundResultEnvelope, emptyUsage } from "./common.js";
  *   `usage` object holds premiumRequests, totalApiDurationMs,
  *   sessionDurationMs, and codeChanges, with no token counts. The adapter
  *   reads token counts from --usage-output-file after process exit.
- * - The answer text is the last `assistant.message` event's `data.content`
- *   and data.model is preserved as native metadata. The generated schema
+ * - Every model call ends in one `assistant.message` event: `data.content`
+ *   (empty on a tool-call-only message) beside `data.toolRequests`. The
+ *   answer is every main-agent message's content after the last
+ *   `user.message`, a blank line between two (lane AN1,
+ *   src/answer-complete.ts); the last message alone is `final_message`.
+ *   The event names no stop or finish reason (a recorded 1.0.85 session,
+ *   ~/.copilot/session-state/<id>/events.jsonl, read 2026-11-10), so
+ *   `truncated` stays false. The last message's data.model is preserved
+ *   as native metadata. The generated schema
  *   calls it produced-model data, but installed JS delegates normal event
  *   creation to runtime.node; its response-versus-request assignment is
  *   unavailable here. Transcript import uses `...a.model?{model:a.model}:{}`
@@ -30,7 +38,11 @@ import { appendDiagnostic, boundResultEnvelope, emptyUsage } from "./common.js";
 export const COPILOT_ANSWER_FIELD = "content";
 
 export interface CopilotEnvelopeInfo {
+  /** The complete answer, or null when no main-agent message arrived. */
   answer: string | null;
+  /** The last main-agent message's content. */
+  finalMessage: string | null;
+  transcript: AnswerTranscript;
   usage: ResultUsageBlock;
   nativeModel: string | null;
   sessionId: string | null;
@@ -46,6 +58,7 @@ export function parseCopilotResultEnvelope(stdout: string): CopilotEnvelopeInfo 
   let reportedExitCode: number | null = null;
   let errorText: string | null = null;
   let nativeModel: string | null = null;
+  const collector = new AnswerCollector();
   for (const line of stdout.split("\n")) {
     const trimmed = line.trim();
     if (trimmed === "") continue;
@@ -66,9 +79,12 @@ export function parseCopilotResultEnvelope(stdout: string): CopilotEnvelopeInfo 
       if (event.agentId !== undefined && event.agentId !== "main") continue;
       if (typeof data.content === "string") {
         answer = data.content;
+        collector.message(data.content);
         nativeModel = typeof data.model === "string" && data.model.trim() !== ""
           ? data.model : null;
       }
+    } else if (event.type === "user.message") {
+      if (event.agentId === undefined || event.agentId === "main") collector.userTurn();
     } else if (event.type === "result") {
       if (typeof event.sessionId === "string") sessionId = event.sessionId;
       if (typeof event.exitCode === "number" && Number.isSafeInteger(event.exitCode)) {
@@ -83,7 +99,9 @@ export function parseCopilotResultEnvelope(stdout: string): CopilotEnvelopeInfo 
     }
   }
   if (!sawWire) return null;
-  return { answer, usage: emptyUsage(), nativeModel, sessionId, reportedExitCode, errorText };
+  const transcript = collector.transcript();
+  return { answer: answer === null ? null : completeAnswer(transcript, answer), finalMessage: answer, transcript,
+    usage: emptyUsage(), nativeModel, sessionId, reportedExitCode, errorText };
 }
 
 /**
@@ -138,6 +156,7 @@ export function copilotResult(
     session_id: parsed.sessionId,
     recording: null,
     failure_code: failure !== null ? "harness-error" : null,
+    ...answerBlockFields(parsed.transcript, parsed.finalMessage),
   };
   const envelope = `${JSON.stringify({ [COPILOT_ANSWER_FIELD]: parsed.answer ?? "", model: parsed.nativeModel, usage: parsed.usage, codemux: block })}\n`;
   if (failure !== null) {
@@ -171,4 +190,21 @@ export function copilotResult(
     parsed.usage,
     servedModel
   );
+}
+
+/** A plain copilot run: the same JSONL wire, printed as the complete
+ * answer. Stdout with no wire events (a binary that ignored the format)
+ * passes through with its exit status; a session error or a nonzero
+ * result exitCode fails the run with nothing on stdout. */
+export function copilotPlainResult(result: RunResult): RunResult {
+  const parsed = parseCopilotResultEnvelope(result.stdout);
+  if (parsed === null) return result;
+  const failure = parsed.errorText !== null ? `session error (${parsed.errorText})`
+    : parsed.reportedExitCode !== null && parsed.reportedExitCode !== 0 ? `result exitCode ${parsed.reportedExitCode}` : null;
+  if (failure !== null) {
+    return { ...result, stdout: "", exitCode: result.exitCode === 0 ? 1 : result.exitCode, success: false,
+      stderr: appendDiagnostic(result.stderr, `codemux: copilot reported ${failure}, so this run fails even though the harness exited ${result.exitCode}`) };
+  }
+  const answer = parsed.answer ?? "";
+  return { ...result, stdout: answer === "" || answer.endsWith("\n") ? answer : `${answer}\n` };
 }

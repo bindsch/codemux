@@ -1,3 +1,4 @@
+import { answerBlockFields } from "../answer-complete.js";
 import type { CodemuxResultBlock, ResultUsageBlock, RunRequest, RunResult } from "../types.js";
 import {
   appendDiagnostic,
@@ -167,6 +168,11 @@ export function agyResult(result: RunResult, request: RunRequest): RunResult {
     session_id: null,
     recording: null,
     failure_code: null,
+    // Lane AN1: agy's stream pins no text field for intermediate
+    // agent_response steps (docs/harnesses.md, run.answer-complete), so
+    // the answer is the result's response and it is also the final message.
+    ...answerBlockFields(null, typeof parsed.envelope[AGY_ANSWER_FIELD] === "string"
+      ? parsed.envelope[AGY_ANSWER_FIELD] as string : null),
   });
   // The envelope this path re-emits: every original field plus the codemux
   // block, serialized once with its newline — the exact stdout a caller

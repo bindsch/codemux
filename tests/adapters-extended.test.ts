@@ -170,24 +170,24 @@ describe("PiAdapter", () => {
   test("buildRunCommand with prompt only", () => {
     const request: RunRequest = { agent: "pi", prompt: "test prompt" };
     const cmd = adapter.buildRunCommand(request);
-    expect(cmd).toEqual(["pi", "--print", "--no-session", "--no-approve"]);
+    expect(cmd).toEqual(["pi", "--print", "--no-session", "--no-approve", "--mode", "json"]);
   });
 
   test("buildRunCommand with model", () => {
     const request: RunRequest = { agent: "pi", prompt: "test", model: "pi-pro" };
     const cmd = adapter.buildRunCommand(request);
-    expect(cmd).toEqual(["pi", "--print", "--no-session", "--no-approve", "--model", "pi-pro"]);
+    expect(cmd).toEqual(["pi", "--print", "--no-session", "--no-approve", "--mode", "json", "--model", "pi-pro"]);
   });
 
   test("buildRunCommand with autonomy levels", () => {
     expect(adapter.buildRunCommand({ agent: "pi", prompt: "t", autonomy: "read-only" }))
-      .toEqual(["pi", "--print", "--no-session", "--no-approve", "--no-extensions", "--tools", "read,grep,find,ls"]);
+      .toEqual(["pi", "--print", "--no-session", "--no-approve", "--mode", "json", "--no-extensions", "--tools", "read,grep,find,ls"]);
     expect(adapter.buildRunCommand({ agent: "pi", prompt: "t", autonomy: "low" }))
-      .toEqual(["pi", "--print", "--no-session", "--no-approve", "--no-extensions", "--tools", "read,grep,find,ls,edit,write"]);
+      .toEqual(["pi", "--print", "--no-session", "--no-approve", "--mode", "json", "--no-extensions", "--tools", "read,grep,find,ls,edit,write"]);
     expect(adapter.buildRunCommand({ agent: "pi", prompt: "t", autonomy: "medium" }))
-      .toEqual(["pi", "--print", "--no-session", "--no-approve"]);
+      .toEqual(["pi", "--print", "--no-session", "--no-approve", "--mode", "json"]);
     expect(adapter.buildRunCommand({ agent: "pi", prompt: "t", autonomy: "high" }))
-      .toEqual(["pi", "--print", "--no-session", "--no-approve"]);
+      .toEqual(["pi", "--print", "--no-session", "--no-approve", "--mode", "json"]);
   });
 
   test("autonomy mapping is silent at medium and high (audit round 2, A12)", () => {
@@ -242,7 +242,7 @@ describe("PiAdapter", () => {
   test("maps normalized effort to Pi thinking levels", () => {
     expect(adapter.mapEffort("none")).toEqual(["--thinking", "off"]);
     expect(adapter.buildRunCommand({ agent: "pi", prompt: "t", effort: "high" }))
-      .toEqual(["pi", "--print", "--no-session", "--no-approve", "--thinking", "high"]);
+      .toEqual(["pi", "--print", "--no-session", "--no-approve", "--mode", "json", "--thinking", "high"]);
   });
 });
 
@@ -273,7 +273,7 @@ describe("QwenAdapter", () => {
 
   test("buildRunCommand with prompt", () => {
     const cmd = adapter.buildRunCommand({ agent: "qwen", prompt: "test prompt" });
-    expect(cmd).toEqual(["/fake/qwen", "--safe-mode"]);
+    expect(cmd).toEqual(["/fake/qwen", "--safe-mode", "--output-format", "stream-json"]);
     expect(adapter.getStdinInput({ agent: "qwen", prompt: "test prompt" })).toBe("test prompt");
   });
 
@@ -289,6 +289,8 @@ describe("QwenAdapter", () => {
       "--safe-mode",
       "--model",
       "qwen3-coder-plus",
+      "--output-format",
+      "stream-json",
       "--approval-mode",
       "auto",
     ]);

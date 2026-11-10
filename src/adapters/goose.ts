@@ -12,7 +12,9 @@ import { assertCleanInstructionFiles } from "../clean-cwd.js";
 import { createGooseHermeticHome } from "../goose-hermetic.js";
 import { GooseExperimentRun } from "../goose-experiment-run.js";
 import { readExperimentRunSpec } from "../experiment-mcp.js";
-import { gooseResult } from "../result-envelope/goose.js";
+import { goosePlainResult, gooseResult } from "../result-envelope/goose.js";
+import { answerFoldScanEvidence } from "../answer-stream-fold.js";
+import { gooseStreamFold } from "../goose-answer.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -213,11 +215,11 @@ export class GooseAdapter extends BaseAdapter {
       // through an extension.
       cmd.push("--no-profile");
     }
-    if (request.resultJson) {
-      // 1.50.1 `run --output-format <text|json|stream-json>`: json prints
-      // the final serialized agent message as one JSON object on stdout.
-      cmd.push("--output-format", "json");
-    }
+    // 1.50.1 `run --output-format <text|json|stream-json>`: every run uses
+    // stream-json (lane AN1), one event per agent message, so the answer
+    // carries every assistant message (src/goose-answer.ts); a plain run
+    // prints it at the end instead of streaming text.
+    cmd.push("--output-format", "stream-json");
     // The prompt never rides argv: "-i -" reads it from stdin ("Use -i -
     // for stdin.", 1.50.1 `run --help`), and the driver feeds it through
     // getStdinInput — argv stays visible to process inspection without
@@ -255,7 +257,8 @@ export class GooseAdapter extends BaseAdapter {
     if (experimentSpec !== undefined && !request.hermetic) {
       throw new UsageRefusalError("goose experiments require the private hermetic home: the probe rides its configuration root");
     }
-    if (!request.hermetic) return {};
+    // The stream fold sheds extension notifications and tool responses.
+    if (!request.hermetic) return { stdoutSink: gooseStreamFold() };
     // No provider override, no hermetic run: nothing can be carried into
     // the private home (config.yaml holds the operator's system prompt
     // alongside any keys), so the run would have no provider at all.
@@ -271,6 +274,7 @@ export class GooseAdapter extends BaseAdapter {
     }
     const context: RunContext = {
       gooseHermeticHome: createGooseHermeticHome(this.realGooseConfigDir()),
+      stdoutSink: gooseStreamFold(),
     };
     if (experimentSpec !== undefined) {
       try {
@@ -300,8 +304,11 @@ export class GooseAdapter extends BaseAdapter {
   }
 
   override processRunResult(result: RunResult, request: RunRequest, context?: RunContext): RunResult {
-    if (!request.resultJson) return result;
-    return gooseResult(result, request, context?.experimentRecording ?? null);
+    const scanSurface = `${result.stdout}\n${answerFoldScanEvidence(context?.stdoutSink)}`;
+    const processed = request.resultJson
+      ? gooseResult(result, request, context?.experimentRecording ?? null)
+      : goosePlainResult(result);
+    return { ...processed, scanSurface: processed.scanSurface ?? scanSurface };
   }
 
   override getStdinInput(request: RunRequest): string | null {

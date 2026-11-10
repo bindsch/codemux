@@ -148,14 +148,14 @@ describe("codex session - stream parser", () => {
     ).toEqual([{ kind: "unknown" }]);
   });
 
-  test("a completed final agentMessage is assistant text; commentary is not", () => {
+  test("every completed agentMessage is assistant text, commentary included (lane AN1)", () => {
     const { parser: p, ctx } = parser();
     expect(
       feed({ method: "item/completed", params: { threadId: THREAD, turnId: TURN, item: { type: "agentMessage", id: "m1", text: "one", phase: "final_answer" } } }, ctx, p)
     ).toEqual([{ kind: "assistant_text", threadId: THREAD, turnId: TURN, text: "one" }]);
     expect(
       feed({ method: "item/completed", params: { threadId: THREAD, turnId: TURN, item: { type: "agentMessage", id: "m2", text: "thinking", phase: "commentary" } } }, ctx, p)
-    ).toEqual([{ kind: "unknown" }]);
+    ).toEqual([{ kind: "assistant_text", threadId: THREAD, turnId: TURN, text: "thinking" }]);
   });
 
   test("userMessage echoes and mcpToolCall-like items pass through as unknown", () => {

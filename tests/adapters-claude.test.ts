@@ -44,7 +44,8 @@ describe("ClaudeAdapter", () => {
       "--strict-mcp-config",
       "--no-session-persistence",
       "--output-format",
-      "json",
+      "stream-json",
+      "--verbose",
     ]);
   });
 
@@ -249,7 +250,8 @@ describe("ClaudeAdapter", () => {
       "--strict-mcp-config",
       "--no-session-persistence",
       "--output-format",
-      "json",
+      "stream-json",
+      "--verbose",
       "--model",
       "opus",
     ]);
@@ -257,20 +259,20 @@ describe("ClaudeAdapter", () => {
 
   test("buildRunCommand with autonomy levels", () => {
     expect(adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: "read-only" }))
-      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--permission-mode", "plan", "--allowedTools", "WebSearch", "WebFetch"]);
+      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "stream-json", "--verbose", "--permission-mode", "plan", "--allowedTools", "WebSearch", "WebFetch"]);
     expect(adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: "low" }))
-      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--permission-mode", "manual", "--allowedTools", "WebSearch", "WebFetch"]);
+      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "stream-json", "--verbose", "--permission-mode", "manual", "--allowedTools", "WebSearch", "WebFetch"]);
     // A real directory, so the grant's canonicalization is exercised and
     // the expectation stays stable regardless of /tmp symlinking.
     const grantWksp = realpathSync(mkdtempSync(join(tmpdir(), "codemux-grant-")));
     try {
       expect(adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: "medium", cwd: grantWksp }))
-        .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--permission-mode", "acceptEdits", "--allowedTools", `Edit(//${grantWksp.replace(/^\/+/, "")}/**)`, "Bash", "WebSearch", "WebFetch"]);
+        .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools", `Edit(//${grantWksp.replace(/^\/+/, "")}/**)`, "Bash", "WebSearch", "WebFetch"]);
     } finally {
       rmSync(grantWksp, { recursive: true, force: true });
     }
     expect(adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: "high" }))
-      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json", "--dangerously-skip-permissions", "--allowedTools", "Edit", "Write", "NotebookEdit", "Bash", "WebSearch", "WebFetch"]);
+      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--allowedTools", "Edit", "Write", "NotebookEdit", "Bash", "WebSearch", "WebFetch"]);
   });
 
   test("buildRunCommand does not inject an MCP server by default", () => {
@@ -283,7 +285,8 @@ describe("ClaudeAdapter", () => {
       "--strict-mcp-config",
       "--no-session-persistence",
       "--output-format",
-      "json",
+      "stream-json",
+      "--verbose",
     ]);
   });
 
@@ -319,7 +322,8 @@ describe("ClaudeAdapter", () => {
       "--safe-mode",
       "--no-session-persistence",
       "--output-format",
-      "json",
+      "stream-json",
+      "--verbose",
     ]);
   });
 
@@ -458,7 +462,7 @@ describe("ClaudeAdapter", () => {
 
   test("--no-web denies the web tools at every level, which holds under bypass and over saved approvals", () => {
     expect(adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: "read-only", web: false }))
-      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "json",
+      .toEqual(["claude", "-p", "--setting-sources", "user", "--strict-mcp-config", "--no-session-persistence", "--output-format", "stream-json", "--verbose",
         "--permission-mode", "plan", "--disallowedTools", "WebSearch", "WebFetch"]);
     const high = adapter.buildRunCommand({ agent: "claude", prompt: "t", autonomy: "high", web: false });
     expect(high.slice(high.indexOf("--allowedTools") + 1)).toEqual(["Edit", "Write", "NotebookEdit", "Bash", "--disallowedTools", "WebSearch", "WebFetch"]);

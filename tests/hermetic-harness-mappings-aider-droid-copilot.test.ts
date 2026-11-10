@@ -112,7 +112,7 @@ describe("hermetic runs: droid", () => {
     const none = adapter.buildRunCommand({ agent: "droid", prompt: "p", autonomy: "low", tools: "none" });
     expect(none).toEqual([...plain, "--only-tools", "ToolSearch"]);
     expect(adapter.buildRunCommand({ agent: "droid", prompt: "p", tools: "default" }))
-      .toEqual(["droid", "exec"]);
+      .toEqual(["droid", "exec", "--output-format", "stream-json"]);
   });
 
   test("droid claims --tools none (verified live) and --hermetic (home redirect)", () => {

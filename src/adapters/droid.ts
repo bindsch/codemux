@@ -21,7 +21,8 @@ import {
   requireProviderOverride,
   type ProviderOverride,
 } from "../provider-override.js";
-import { droidResult } from "../result-envelope/droid.js";
+import { droidPlainResult, droidResult, droidStreamFold } from "../result-envelope/droid.js";
+import { answerFoldScanEvidence } from "../answer-stream-fold.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -191,7 +192,7 @@ export class DroidAdapter extends BaseAdapter {
   override prepareRun(request: RunRequest): RunContext {
     // The hermetic home first, so a settings-file failure after it leaves
     // nothing private behind (cleanupRun finalizes what this returned).
-    const context: RunContext = {};
+    const context: RunContext = { stdoutSink: droidStreamFold() };
     if (request.hermetic) {
       context.droidHermeticHome = createDroidHermeticHome(this.realBrandHome());
     }
@@ -271,12 +272,11 @@ export class DroidAdapter extends BaseAdapter {
       }
     }
 
-    // A --result-json run switches to the json wire: one result object on
-    // stdout (src/result-envelope/droid.ts). A plain run keeps droid's
-    // default text output.
-    if (request.resultJson) {
-      cmd.push("--output-format", "json");
-    }
+    // Every run launches on the stream-json wire (lane AN1): text and
+    // json print only the last assistant text block, so a reply written
+    // before a tool call was lost. The adapter assembles every assistant
+    // message (src/result-envelope/droid.ts); plain runs print it at the end.
+    cmd.push("--output-format", "stream-json");
 
     if (request.autonomy) {
       cmd.push(...this.mapAutonomy(request.autonomy));
@@ -308,11 +308,11 @@ export class DroidAdapter extends BaseAdapter {
     return cmd;
   }
 
-  override processRunResult(result: RunResult, request: RunRequest, _context?: RunContext): RunResult {
-    if (!request.resultJson) return result;
-    // The run launched with --output-format json, so stdout is the result
-    // object; droidResult re-emits it with the codemux block.
-    return droidResult(result, request);
+  override processRunResult(result: RunResult, request: RunRequest, context?: RunContext): RunResult {
+    // The stream fold shed tool payloads; their canary matches still reach
+    // the leak scan (src/answer-stream-fold.ts).
+    const scanSurface = `${result.stdout}\n${answerFoldScanEvidence(context?.stdoutSink)}`;
+    return { ...(request.resultJson ? droidResult(result, request) : droidPlainResult(result)), scanSurface };
   }
 
   override getStdinInput(request: RunRequest): string | null {

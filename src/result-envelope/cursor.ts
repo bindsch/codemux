@@ -1,3 +1,4 @@
+import { AnswerCollector, answerBlockFields, completeAnswer, type AnswerTranscript } from "../answer-complete.js";
 import type { CodemuxResultBlock, ResultUsageBlock, RunRequest, RunResult } from "../types.js";
 import {
   appendDiagnostic,
@@ -35,10 +36,16 @@ import {
  *   — an overwrite, not a sum), so a multi-call run under-reports through
  *   the result line alone; the honest ledger sums the model_call events
  *   and falls back to the result line only when the stream carried none.
- * - Assistant text arrives as delta events
- *   `{type:"assistant",message:{role:"assistant",content:[{type:"text",
- *   text:<delta>}]},session_id}`; the result line's `result` already folds
- *   them, so the parser reads it instead of re-joining deltas.
+ * - Assistant text arrives as `{type:"assistant",message:{role:"assistant",
+ *   content:[{type:"text",text:<text>}]},session_id}` events: one per
+ *   segment, flushed (`fe`) when a tool call starts, or one per delta
+ *   under partial output. The result line's `result` (K) glues every
+ *   segment with no separator, so the parser rebuilds the answer itself
+ *   (lane AN1, src/answer-complete.ts): text events append to the open
+ *   message, a `tool_call` event closes it, and a `user` event (the
+ *   prompt echo, `{type:"user",message:{role:"user",...}}`) restarts the
+ *   transcript. The wire names no stop reason, so `truncated` stays
+ *   false.
  * - No event carries a model name (the model_call usage event and the
  *   result line both omit it), so served_model stays null.
  */
@@ -47,7 +54,12 @@ import {
 export const CURSOR_ANSWER_FIELD = "result";
 
 export interface CursorEnvelopeInfo {
+  /** The complete answer: every assistant segment, a blank line between
+   * two (the result line's own text when the stream carried none). */
   answer: string | null;
+  /** The result line's own `result`: cursor's glued text. */
+  harnessAnswer: string | null;
+  transcript: AnswerTranscript;
   usage: ResultUsageBlock;
   sessionId: string | null;
   /** The result line's subtype, when a line arrived. */
@@ -109,6 +121,7 @@ export function parseCursorResultEnvelope(stdout: string): CursorEnvelopeInfo | 
   let last: Record<string, unknown> | null = null;
   let sessionId: string | null = null;
   const usageEvents: ResultUsageBlock[] = [];
+  const collector = new AnswerCollector();
   for (const line of stdout.split("\n")) {
     const trimmed = line.trim();
     if (trimmed === "") continue;
@@ -122,6 +135,21 @@ export function parseCursorResultEnvelope(stdout: string): CursorEnvelopeInfo | 
     const event = parsed as Record<string, unknown>;
     if (sessionId === null && typeof event.session_id === "string") {
       sessionId = event.session_id;
+    }
+    if (event.type === "user") collector.userTurn();
+    // A tool call ends the open message; the text after it (none, when the
+    // run ended on the call) is the next message.
+    else if (event.type === "tool_call") { collector.close(); collector.text(""); }
+    else if (event.type === "assistant") {
+      const content = (event.message as { content?: unknown } | undefined)?.content;
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block !== null && typeof block === "object" && (block as { type?: unknown }).type === "text" &&
+              typeof (block as { text?: unknown }).text === "string") {
+            collector.text((block as { text: string }).text);
+          }
+        }
+      }
     }
     if (event.type === "usage" && event.subtype === "model_call") {
       const mapped = cursorUsageEvent(event.usage);
@@ -138,8 +166,12 @@ export function parseCursorResultEnvelope(stdout: string): CursorEnvelopeInfo | 
     : typeof last.usage === "object" && last.usage !== null
       ? normalizeCursorUsage(last.usage as Record<string, unknown>)
       : emptyUsage();
+  const harnessAnswer = typeof last.result === "string" ? last.result : null;
+  const transcript = collector.transcript();
   return {
-    answer: typeof last.result === "string" ? last.result : null,
+    answer: completeAnswer(transcript, harnessAnswer),
+    harnessAnswer,
+    transcript,
     usage,
     sessionId,
     subtype: typeof last.subtype === "string" ? last.subtype : null,
@@ -191,6 +223,7 @@ export function cursorResult(result: RunResult, request: RunRequest): RunResult 
     session_id: parsed.sessionId,
     recording: null,
     failure_code: failure !== null ? "harness-error" : null,
+    ...answerBlockFields(parsed.transcript, parsed.harnessAnswer),
   };
   const envelope = `${JSON.stringify({
     [CURSOR_ANSWER_FIELD]: parsed.answer ?? "",

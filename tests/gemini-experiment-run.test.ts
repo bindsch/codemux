@@ -103,7 +103,7 @@ describe("Gemini experiment launch ownership", () => {
     const raw = { stdout: geminiStdout(), stderr: "", exitCode: 0, success: true };
     const result = adapter.processRunResult(raw, { ...request, resultJson: true }, context);
     expect(JSON.parse(result.stdout)).toMatchObject({ response: "done", codemux: { recording: h.experiment.recordingPath, served_model: null, usage: { input_tokens: 90, cached_input_tokens: 10, output_tokens: 20, total_tokens: 120 } } });
-    expect(adapter.processRunResult(raw, request, context).stdout).toBe("done");
+    expect(adapter.processRunResult(raw, request, context).stdout).toBe("done\n");
     expect(adapter.processRunResult({ ...raw, stdout: "bad" }, request, context).success).toBe(false);
     expect(adapter.processRunResult({ ...raw, stdout: geminiStdout(geminiEvents().slice(0, -1)) }, request, context).success).toBe(false);
     await adapter.cleanupRun(context);

@@ -42,7 +42,7 @@ see [harnesses](harnesses.md) and [session capabilities](sessions.md).
 | `--no-quota-gate` | Skip the pre-launch usagemux quota check for this invocation |
 
 Before anything spawns, `run`, `tui`, `check`, and `session` pass the
-[quota gate](results-and-usage.md#quota-gate): one usagemux query about the
+[quota gate](quota.md#quota-gate): one usagemux query about the
 client the selected agent spends from (its own account, or the client named
 by `quota.spendsFrom`), refusing at exit 64 when the primary usage window —
 or a week-long tier window — is below the ceiling. An absent, untrusted,
@@ -138,6 +138,10 @@ Timeouts must be finite and greater than zero, at most 86400 seconds.
 Fractional seconds are accepted and rounded up to milliseconds. The timeout
 is not an end-to-end wall-clock cap: input collection, execution, setup, and
 shutdown are distinct phases.
+
+The answer is every assistant message after the prompt, in order, not only
+the final one; `--result-json` adds `codemux.final_message` and
+`codemux.truncated` (see [complete answer](results-and-usage.md#complete-answer)).
 
 Every agent must return a non-whitespace answer. A zero-exit run with an
 empty or whitespace-only normalized answer exits 1 and reports
@@ -341,7 +345,7 @@ The process deadline adds five seconds of shutdown grace. A parsed snapshot
 exits 0; a usagemux that exits nonzero is an unreadable query and exits 1
 whatever its stdout held; 69 is reserved for usagemux being
 absent or untrusted. See
-[subscription usage](results-and-usage.md#subscription-usage) for installation,
+[subscription usage](quota.md#subscription-usage) for installation,
 protocol compatibility, and unavailable results.
 
 ## Static information and diagnostics

@@ -453,7 +453,7 @@ describe("current documentation set", () => {
     }
 
     const config = read("docs/configuration.md");
-    const usage = read("docs/results-and-usage.md");
+    const usage = read("docs/quota.md");
     for (const key of ["minRemainingPercent", "weeklyWarnUsedPercent", "timeoutSeconds"] as const) {
       expect(config).toMatch(new RegExp("^  " + key + ": " + DEFAULT_QUOTA_POLICY[key] + "$", "m"));
       expect(usage).toMatch(new RegExp("^\\| `" + key + "` \\| " + DEFAULT_QUOTA_POLICY[key] + " \\|", "m"));

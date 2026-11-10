@@ -211,6 +211,15 @@ export interface CodemuxResultBlock {
   session_id: string | null;
   recording: string | null;
   failure_code: string | null;
+  /** The last assistant message alone (lane AN1): the answer field carries
+   * every assistant message after the last user turn, so a consumer that
+   * wants only the closing message reads it here. An empty string when
+   * the agent ended on a tool call; the harness's own answer field when
+   * the stream named no assistant message; null when neither exists. */
+  final_message: string | null;
+  /** True when the harness reported a max-tokens or length stop on the
+   * last message: the answer is likely truncated (stderr says so too). */
+  truncated: boolean;
 }
 
 export interface AdapterCapabilities {

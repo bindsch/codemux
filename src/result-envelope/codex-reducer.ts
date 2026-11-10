@@ -56,6 +56,11 @@ export class CodexEventReducer {
   threadId = "";
   sawThreadStarted = false;
   finalMessage: string | null = null;
+  /** Every agent_message text of the current turn, in order (lane AN1:
+   * the answer is all of them, not only the last). Replaced, never
+   * cleared in place, when a turn starts or fails, so a retained-bytes
+   * snapshot holding the old array still measures what it gave back. */
+  messages: string[] = [];
   servedModel: string | null = null;
   usage: ResultUsageBlock = emptyUsage();
   usageReported = false;
@@ -177,6 +182,7 @@ export class CodexEventReducer {
         // turn's may be the result, so an earlier turn's reply must not
         // survive into a turn that ends without one and pose as its result.
         this.setFinalMessage(null);
+        this.messages = [];
         break;
       case "item.started":
       case "item.updated":
@@ -260,6 +266,7 @@ export class CodexEventReducer {
             return;
           }
           this.setFinalMessage(text);
+          this.messages.push(text);
         } else if (
           typeof item === "object" && item !== null &&
           (item as Record<string, unknown>).type === "error"
@@ -426,6 +433,7 @@ export class CodexEventReducer {
         // whose recovery window keeps the message alive until the stream
         // ends.
         this.setFinalMessage(null);
+        this.messages = [];
         break;
       }
       case "error": {
@@ -449,6 +457,7 @@ export class CodexEventReducer {
     const failure = this.failureText();
     if (failure !== null) {
       this.setFinalMessage(null);
+      this.messages = [];
       // A failed run reports no usage totals either (round17): the last
       // snapshot is an earlier turn's (a failed turn closes with no usage
       // event), so the run's true total is that figure or more -- an
@@ -460,6 +469,7 @@ export class CodexEventReducer {
     return {
       threadId: this.threadId,
       finalMessage: this.finalMessage,
+      messages: [...this.messages],
       servedModel: this.servedModel,
       usage: this.usage,
       usageReported: this.usageReported,

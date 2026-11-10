@@ -16,7 +16,7 @@ import { PiAdapter } from "../src/adapters/pi.js";
 describe("tools none: pi", () => {
   const adapter = new PiAdapter();
   const noTools = { agent: "pi" as const, prompt: "p", tools: "none" as const };
-  const head = ["pi", "--print", "--no-session", "--no-approve"];
+  const head = ["pi", "--print", "--no-session", "--no-approve", "--mode", "json"];
 
   test("--hermetic is claimed; --tools none is claimed (verified live)", () => {
     const cwd = mkdtempSync(join(tmpdir(), "codemux-pi-refuse-"));

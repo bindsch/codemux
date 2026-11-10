@@ -27,20 +27,20 @@ describe("GooseAdapter", () => {
   test("buildRunCommand", () => {
     const request: RunRequest = { agent: "goose", prompt: "test prompt" };
     const cmd = adapter.buildRunCommand(request);
-    expect(cmd).toEqual(["goose", "run", "-i", "-"]);
+    expect(cmd).toEqual(["goose", "run", "--output-format", "stream-json", "-i", "-"]);
     // The prompt rides stdin through the -i - carrier, never argv.
     expect(adapter.getStdinInput(request)).toBe("test prompt");
   });
 
   test("buildRunCommand with autonomy", () => {
     expect(adapter.buildRunCommand({ agent: "goose", prompt: "t", autonomy: "read-only" }))
-      .toEqual(["goose", "run", "-i", "-"]);
+      .toEqual(["goose", "run", "--output-format", "stream-json", "-i", "-"]);
     expect(adapter.buildRunCommand({ agent: "goose", prompt: "t", autonomy: "low" }))
-      .toEqual(["goose", "run", "-i", "-"]);
+      .toEqual(["goose", "run", "--output-format", "stream-json", "-i", "-"]);
     expect(adapter.buildRunCommand({ agent: "goose", prompt: "t", autonomy: "medium" }))
-      .toEqual(["goose", "run", "-i", "-"]);
+      .toEqual(["goose", "run", "--output-format", "stream-json", "-i", "-"]);
     expect(adapter.buildRunCommand({ agent: "goose", prompt: "t", autonomy: "high" }))
-      .toEqual(["goose", "run", "-i", "-"]);
+      .toEqual(["goose", "run", "--output-format", "stream-json", "-i", "-"]);
   });
 
   test("buildTuiCommand", () => {
@@ -86,17 +86,19 @@ describe("GooseAdapter run parity", () => {
     });
   });
 
-  test("tools none rides --no-profile and result json rides --output-format json", () => {
+  test("tools none rides --no-profile and every run rides --output-format stream-json", () => {
     const adapter = new GooseAdapter();
     expect(adapter.buildRunCommand({ agent: "goose", prompt: "t", tools: "none" })).toEqual([
       "goose",
       "run",
       "--no-profile",
+      "--output-format",
+      "stream-json",
       "-i",
       "-",
     ]);
     const json = adapter.buildRunCommand({ agent: "goose", prompt: "t", resultJson: true });
-    expect(json).toEqual(["goose", "run", "--output-format", "json", "-i", "-"]);
+    expect(json).toEqual(["goose", "run", "--output-format", "stream-json", "-i", "-"]);
     const out = adapter.processRunResult(
       {
         stdout: JSON.stringify({ session_id: "20250921_143022", content: "done", usage: {} }),

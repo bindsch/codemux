@@ -1,6 +1,7 @@
 /** Gemini ACP turns reuse the shared process, registry, home, and end path.
  * Native newSession mints the identity; later turns load it. EOF after the
  * prompt response closes ACP (gemini-LUNNHKPJ.js:16415, 0.60.0, 2026-11-09). */
+import { AnswerCollector, assembleAnswer } from "../answer-complete.js";
 import { appendSessionTurnCallRecord } from "../call-log.js";
 import { emptyUsage } from "../result-envelope.js";
 import { reportedTokenCount, safeTokenSum } from "../result-envelope/common.js";
@@ -44,7 +45,10 @@ export class GeminiAcpSessionDriver extends TurnAgentSessionDriver {
   private acp: GeminiAcpTransport | null = null;
   private transcriptHome: string | null = null;
   private promptStarted = false;
-  private turnChunks: string[] = [];
+  /** The turn's assistant text: chunks join into one message until a tool
+   * call closes it (lane AN1: every message of the turn, a blank line
+   * between two). */
+  private turnAnswer = new AnswerCollector();
   private stopReason: string | null = null;
   private interruptRequested = false;
   private inputEnded = false;
@@ -82,7 +86,7 @@ export class GeminiAcpSessionDriver extends TurnAgentSessionDriver {
   protected override async startTurn(text: string): Promise<void> {
     this.acp = null;
     this.promptStarted = false;
-    this.turnChunks = [];
+    this.turnAnswer = new AnswerCollector();
     this.stopReason = null;
     this.interruptRequested = false;
     this.clearTurnTimer();
@@ -139,12 +143,12 @@ export class GeminiAcpSessionDriver extends TurnAgentSessionDriver {
           !(this.stopReason === "cancelled" && this.interruptRequested)) { // allow-british: native ACP enum
         this.turnError = `Gemini ACP stopped with ${this.stopReason}`;
       }
-      if (this.turnError === null && this.stopReason !== "cancelled" && this.turnChunks.length > 0) { // allow-british: native ACP enum
+      if (this.turnError === null && this.stopReason !== "cancelled" && this.turnAnswer.size > 0) { // allow-british: native ACP enum
         // Native ACP reports assistant text only as chunks; the terminal
         // assistant_message is codemux's assembly of this turn's own
         // chunks, raw null like the whole-stdout drivers' verdict answer.
         this.emit(buildEvent(++this.seq, this.sessionIdOrEmpty(), "assistant_message", null,
-          { text: this.turnChunks.join(""), turn_id: this.fsm.activeTurn }));
+          { text: assembleAnswer(this.turnAnswer.transcript().messages), turn_id: this.fsm.activeTurn }));
       }
       child.endInput();
     } catch (error) {
@@ -162,10 +166,11 @@ export class GeminiAcpSessionDriver extends TurnAgentSessionDriver {
     const raw = JSON.stringify(update);
     const content = update.content as { type?: string; text?: unknown } | undefined;
     if (update.sessionUpdate === "agent_message_chunk" && content?.type === "text" && typeof content.text === "string") {
-      this.turnChunks.push(content.text);
+      this.turnAnswer.text(content.text);
       this.emit(buildEvent(++this.seq, this.sessionIdOrEmpty(), "assistant_delta", raw,
         { delta: content.text, turn_id: this.fsm.activeTurn }));
     } else if (update.sessionUpdate === "tool_call" && typeof update.toolCallId === "string") {
+      this.turnAnswer.close();
       this.emit(buildEvent(++this.seq, this.sessionIdOrEmpty(), "tool_call", raw,
         { call_id: update.toolCallId, name: String(update.title ?? update.kind ?? "tool"), input: update.rawInput ?? null }));
     } else if (update.sessionUpdate === "tool_call_update" && typeof update.toolCallId === "string" &&

@@ -34,18 +34,23 @@ describe("the envelope's own size (review round 127)", () => {
 
   test("claude: exactly at the bound passes; one byte over drops the envelope and fails the run", () => {
     const request: RunRequest = { agent: "claude", prompt: "p", resultJson: true };
-    const probe = claudeFamilyResult(finished(claudeWith("OK")), request, "claude");
+    // A fixed final message (lane AN1's codemux.final_message), so one
+    // answer character still adds exactly one serialized byte.
+    const fields = { final_message: "OK", truncated: false };
+    const probe = claudeFamilyResult(finished(claudeWith("OK")), request, "claude", null, fields);
     const replyLength = MAX_CAPTURE_BYTES - Buffer.byteLength(probe.stdout) + "OK".length;
     const oversized = "a".repeat(replyLength + 1);
     const atBound = claudeFamilyResult(
       finished(claudeWith(oversized.slice(0, -1))),
       request,
-      "claude"
+      "claude",
+      null,
+      fields
     );
     expect(Buffer.byteLength(atBound.stdout)).toBe(MAX_CAPTURE_BYTES);
     expect(atBound.success).toBe(true);
     expect(atBound.exitCode).toBe(0);
-    const past = claudeFamilyResult(finished(claudeWith(oversized)), request, "claude");
+    const past = claudeFamilyResult(finished(claudeWith(oversized)), request, "claude", null, fields);
     expect(past.stdout).toBe("");
     expect(past.success).toBe(false);
     expect(past.exitCode).toBe(125);
@@ -67,10 +72,14 @@ describe("the envelope's own size (review round 127)", () => {
   test("agy: exactly at the bound passes; one byte over drops the envelope and fails the run", () => {
     const request: RunRequest = { agent: "agy", prompt: "p", resultJson: true };
     const probe = agyResult(finished(agyWith("OK")), request);
-    const replyLength = MAX_CAPTURE_BYTES - Buffer.byteLength(probe.stdout) + "OK".length;
+    // Agy's response is also codemux.final_message (lane AN1: its wire has
+    // no other message), so one response character adds two serialized
+    // bytes: the largest fitting reply lands at the bound or one byte short.
+    const replyLength = Math.floor((MAX_CAPTURE_BYTES - Buffer.byteLength(probe.stdout)) / 2) + "OK".length;
     const oversized = "a".repeat(replyLength + 1);
     const atBound = agyResult(finished(agyWith(oversized.slice(0, -1))), request);
-    expect(Buffer.byteLength(atBound.stdout)).toBe(MAX_CAPTURE_BYTES);
+    expect(Buffer.byteLength(atBound.stdout)).toBeLessThanOrEqual(MAX_CAPTURE_BYTES);
+    expect(Buffer.byteLength(atBound.stdout)).toBeGreaterThan(MAX_CAPTURE_BYTES - 2);
     expect(atBound.success).toBe(true);
     expect(atBound.exitCode).toBe(0);
     const past = agyResult(finished(agyWith(oversized)), request);

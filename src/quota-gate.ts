@@ -18,7 +18,7 @@
  * strict fail-closed behavior from cmx (codemux-workflows), which keeps
  * its own policy; this gate never spends on a refused launch, and the
  * ledger records nothing for one (nothing ran). See
- * docs/results-and-usage.md#quota-gate for the decision table.
+ * docs/quota.md#quota-gate for the decision table.
  */
 
 import { readProviderOverride } from "./provider-override.js";

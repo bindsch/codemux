@@ -29,7 +29,7 @@ describe("the launched call ledger", () => {
         ...fake.env,
         [CALL_LOG_ENV]: ledger.path,
       });
-      // The stdout contract: the final message and nothing else — the
+      // The stdout contract: the complete answer and nothing else — the
       // envelope never leaks and no ledger chatter rides along. (The
       // launcher's own "Running with claude..." notes go to stderr.)
       expect(exitCode).toBe(0);

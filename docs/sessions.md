@@ -171,7 +171,7 @@ omit an optional timeout to have no cap. A turn timeout that successfully
 interrupts leaves the session available for another turn.
 
 The first command of a session and every resume pass the
-[quota gate](results-and-usage.md#quota-gate) — after every request check and
+[quota gate](quota.md#quota-gate) — after every request check and
 resume guard, before anything spawns, records a fresh session, or creates a
 home — so a refused session (exit 64) spends nothing. A refused fresh session
 records nothing; a refused resume has already written its ownership claim to

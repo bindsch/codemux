@@ -1,4 +1,5 @@
 import type { ResultUsageBlock } from "../types.js";
+import { assembleAnswer, type AnswerTranscript } from "../answer-complete.js";
 import { CodexEventReducer } from "./codex-reducer.js";
 
 export interface CodexEventStream {
@@ -17,6 +18,12 @@ export interface CodexEventStream {
    * `item.completed` events stay in the stream.
    */
   finalMessage: string | null;
+  /**
+   * Every agent_message text of the last turn, in order (lane AN1): the
+   * answer is all of them joined (codexStreamAnswer), the last one is
+   * `finalMessage`. Empty when the turn carried none or the stream failed.
+   */
+  messages: string[];
   /**
    * The model that served the run when codex rerouted it: a reroute is
    * reported as a completed `error` item whose `message` reads
@@ -142,4 +149,30 @@ export function parseCodexEventStream(stdout: string): CodexEventStream | null {
   }
   if (reducer.drift !== null || reducer.sawThreadStarted === false) return null;
   return reducer.toStream();
+}
+
+/** The run's answer (lane AN1): every agent_message of the last turn,
+ * joined by assembleAnswer, when any carries text; else the final message
+ * as reduced (an empty message, or the Plan fallback the caller applied),
+ * null when there is none. */
+export function codexStreamAnswer(stream: CodexEventStream): string | null {
+  const assembled = assembleAnswer(stream.messages);
+  return assembled.trim() !== "" ? assembled : stream.finalMessage;
+}
+
+/** Codex 0.166.0's exec JSONL wire has no stop reason on an agent_message:
+ * a Responses `response.incomplete` becomes the stream error
+ * "Incomplete response returned, reason: <reason>" (codex-api
+ * sse/responses.rs), which fails or retries the turn. The length stop is
+ * that error with reason max_output_tokens, read from the run's failure (a
+ * retry that recovered produced a later, complete message). */
+const CODEX_LENGTH_STOP = /Incomplete response returned, reason: max_output_tokens/u;
+
+/** The transcript the codemux block and the truncation notice read. */
+export function codexTranscript(stream: CodexEventStream): AnswerTranscript {
+  const messages = stream.messages.length > 0 || stream.finalMessage === null
+    ? stream.messages
+    : [stream.finalMessage];
+  const truncated = stream.failure !== null && CODEX_LENGTH_STOP.test(stream.failure);
+  return { messages, truncated };
 }

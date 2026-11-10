@@ -38,12 +38,12 @@ describe("tools none: goose", () => {
   });
 
   test("every run carries --no-profile before the prompt", () => {
-    expect(adapter.buildRunCommand(noTools)).toEqual([...head, "--no-profile", "-i", "-"]);
+    expect(adapter.buildRunCommand(noTools)).toEqual([...head, "--no-profile", "--output-format", "stream-json", "-i", "-"]);
     // The prompt rides stdin (goose run -i -), never argv.
     expect(adapter.getStdinInput(noTools)).toBe("p");
     for (const autonomy of ["read-only", "low", "medium", "high"] as const) {
       expect(adapter.buildRunCommand({ ...noTools, autonomy }))
-        .toEqual([...head, "--no-profile", "-i", "-"]);
+        .toEqual([...head, "--no-profile", "--output-format", "stream-json", "-i", "-"]);
     }
   });
 
@@ -55,12 +55,12 @@ describe("tools none: goose", () => {
 
   test("plain runs keep the bare command", () => {
     expect(adapter.buildRunCommand({ agent: "goose", prompt: "p" }))
-      .toEqual([...head, "-i", "-"]);
+      .toEqual([...head, "--output-format", "stream-json", "-i", "-"]);
     expect(adapter.buildRunCommand({
       agent: "goose",
       prompt: "p",
       tools: "default",
       autonomy: "high",
-    })).toEqual([...head, "-i", "-"]);
+    })).toEqual([...head, "--output-format", "stream-json", "-i", "-"]);
   });
 });

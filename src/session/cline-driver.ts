@@ -1,3 +1,4 @@
+import { AnswerCollector, assembleAnswer } from "../answer-complete.js";
 import { appendSessionTurnCallRecord } from "../call-log.js";
 import { emptyUsage } from "../result-envelope.js";
 import { applyAuthorPrefix, buildEvent, buildInputAck, MAX_ID_CHARS, parseInputLine } from "./protocol.js";
@@ -23,7 +24,10 @@ export interface ClineDriverOptions extends TurnAgentDriverOptions {
 export class ClineSessionDriver extends TurnAgentSessionDriver {
   private acp: ClineAcpTransport | null = null;
   private promptStarted = false;
-  private chunks: string[] = [];
+  /** The turn's assistant text: chunks join into one message until a tool
+   * call closes it (lane AN1: every message of the turn, a blank line
+   * between two, never the chunks glued across a tool call). */
+  private answer = new AnswerCollector();
   private stopReason: string | null = null;
   private interrupted = false;
   private inputEnded = false;
@@ -67,7 +71,7 @@ export class ClineSessionDriver extends TurnAgentSessionDriver {
   protected override async startTurn(text: string): Promise<void> {
     this.acp = null;
     this.promptStarted = false;
-    this.chunks = [];
+    this.answer = new AnswerCollector();
     this.stopReason = null;
     this.interrupted = false;
     this.clearTurnTimer();
@@ -126,9 +130,9 @@ export class ClineSessionDriver extends TurnAgentSessionDriver {
           !(this.stopReason === "cancelled" && this.interrupted)) { // allow-british: native ACP enum
         this.turnError = `Cline ACP stopped with ${this.stopReason}`;
       }
-      if (this.turnError === null && this.stopReason !== "cancelled" && this.chunks.length > 0) { // allow-british: native ACP enum
+      if (this.turnError === null && this.stopReason !== "cancelled" && this.answer.size > 0) { // allow-british: native ACP enum
         this.emit(buildEvent(++this.seq, this.sessionIdOrEmpty(), "assistant_message", null,
-          { text: this.chunks.join(""), turn_id: this.fsm.activeTurn }));
+          { text: assembleAnswer(this.answer.transcript().messages), turn_id: this.fsm.activeTurn }));
       }
       child.endInput();
     } catch (error) {
@@ -150,7 +154,7 @@ export class ClineSessionDriver extends TurnAgentSessionDriver {
     const raw = JSON.stringify(update);
     const content = update.content as { type?: string; text?: unknown } | undefined;
     if (update.sessionUpdate === "agent_message_chunk" && content?.type === "text" && typeof content.text === "string") {
-      this.chunks.push(content.text);
+      this.answer.text(content.text);
       this.emit(buildEvent(++this.seq, this.sessionIdOrEmpty(), "assistant_delta", raw,
         { delta: content.text, turn_id: this.fsm.activeTurn }));
     } else if (update.sessionUpdate === "tool_call" && typeof update.toolCallId === "string") {
@@ -158,6 +162,7 @@ export class ClineSessionDriver extends TurnAgentSessionDriver {
         this.transportFailure(new Error("Cline emitted a tool call despite --tools none"));
         return;
       }
+      this.answer.close();
       this.emit(buildEvent(++this.seq, this.sessionIdOrEmpty(), "tool_call", raw,
         { call_id: update.toolCallId, name: String(update.title ?? update.kind ?? "tool"), input: update.rawInput ?? null }));
     } else if (update.sessionUpdate === "tool_call_update" && typeof update.toolCallId === "string" &&

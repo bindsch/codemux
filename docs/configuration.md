@@ -38,7 +38,7 @@ as a literal model name. `codemux doctor` lists effective alias names and agents
 ## Quota gate policy
 
 The `quota` key configures the pre-launch quota gate
-([results and usage](results-and-usage.md#quota-gate)) that `run`, `check`,
+([quota and subscription usage](quota.md#quota-gate)) that `run`, `check`,
 `tui`, and `session` apply. An absent key means the defaults below;
 `quota: false` disables the gate globally. Settings merge over the defaults
 per field. `minRemainingPercent` and `weeklyWarnUsedPercent` are numbers from

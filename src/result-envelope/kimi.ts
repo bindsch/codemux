@@ -6,6 +6,7 @@ import { appendDiagnostic, emptyUsage, envelopeBoundLine } from "./common.js";
 import { experimentFailure, type ExperimentFailure } from "../experiment-records.js";
 import { MAX_CAPTURE_BYTES, OUTPUT_LIMIT_EXIT_CODE } from "../process-runner.js";
 import { kimiWireShapedLine, parseKimiStreamLine } from "../session/kimi-session.js";
+import { AnswerCollector, answerBlockFields, assembleAnswer, type AnswerTranscript } from "../answer-complete.js";
 
 function parseEvents(stdout: string): { events: Record<string, unknown>[]; error?: string } {
   const events: Record<string, unknown>[] = [];
@@ -70,6 +71,11 @@ function boundedKimiEnvelope(envelope: Record<string, unknown>): {
   delete envelope.events;
   stdout = serialize();
   if (Buffer.byteLength(stdout) <= MAX_CAPTURE_BYTES) return { stdout, truncated: true };
+  // The final message duplicates the reply's tail: it goes before the
+  // reply is cut (lane AN1).
+  (envelope.codemux as CodemuxResultBlock).final_message = null;
+  stdout = serialize();
+  if (Buffer.byteLength(stdout) <= MAX_CAPTURE_BYTES) return { stdout, truncated: true };
   const original = envelope[KIMI_ANSWER_FIELD];
   const text = typeof original === "string" ? original : "";
   let low = 0;
@@ -92,12 +98,28 @@ function boundedKimiEnvelope(envelope: Record<string, unknown>): {
     const block = envelope.codemux as CodemuxResultBlock;
     stdout = JSON.stringify({ [KIMI_ANSWER_FIELD]: null, session_id: null,
       codemux: { agent: "kimi", model: null, served_model: null, labels: null, usage: emptyUsage(),
-        session_id: null, recording: null, failure_code: block.failure_code } }) + "\n";
+        session_id: null, recording: null, failure_code: block.failure_code,
+        final_message: null, truncated: block.truncated } }) + "\n";
   }
   return { stdout, truncated: true };
 }
 
-/** Stream text matches the plain printer after its bullet blocks are removed. */
+/** The assistant messages of a kimi stream (lane AN1). The pinned writer
+ * (PromptJsonWriter.flushAssistant, kimi 0.31.1) flushes one
+ * `{role:"assistant",content?,tool_calls?}` line per assistant message:
+ * the text before a tool call and the call ride the same line, and a
+ * tool-call-only message has no content. A single `-p` run has one user
+ * turn (the prompt, never echoed), so every assistant line belongs to the
+ * answer. The line carries no stop reason, so `truncated` stays false. */
+export function kimiTranscript(events: readonly Record<string, unknown>[]): AnswerTranscript {
+  const collector = new AnswerCollector();
+  for (const event of events) {
+    if (event.role !== "assistant") continue;
+    collector.message(typeof event.content === "string" ? event.content.replace(/\r\n/g, "\n") : "");
+  }
+  return collector.transcript();
+}
+
 /** The field kimi's --result-json envelope spells its answer text with.
  * The release gate's probe C verifies this exact field per agent, so the
  * builder and the gate share one name (review round 16, edges 3). */
@@ -112,9 +134,9 @@ export function kimiResult(result: RunResult, request: RunRequest, brandHome: st
   let usage = result.usage ?? context?.experimentKimi?.foldedUsage() ?? emptyUsage();
   let wireSurface = "";
   let outputFailure: string | null = captured.error ?? null;
-  const reply = events.filter((event) => event.role === "assistant" && typeof event.content === "string" && event.content.length)
-    .map((event) => (event.content as string).replace(/\r\n/g, "\n").replace(/\n+$/, ""))
-    .join("\n\n");
+  // Every assistant message, joined by the shared rule (lane AN1).
+  const transcript = kimiTranscript(events);
+  const reply = assembleAnswer(transcript.messages).replace(/\n+$/, "");
   text = reply ? `${reply}\n` : "";
   // The provider's own error event outranks every failure derived below,
   // and it must be read before the hint requirement throws (round 259): a
@@ -158,6 +180,7 @@ export function kimiResult(result: RunResult, request: RunRequest, brandHome: st
     served_model: null,
     usage, session_id: null, recording: context?.experimentRecording ?? null,
     failure_code: failure?.code ?? context?.experimentKimi?.relay.failureCode ?? null,
+    ...answerBlockFields(transcript),
   };
   const diagnostic = failure ? `experiment failure [${failure.code}]: ${outputFailure ?? failure.message}` : outputFailure;
   const envelope: Record<string, unknown> = { [KIMI_ANSWER_FIELD]: text, events, session_id: sessionId, codemux: block };

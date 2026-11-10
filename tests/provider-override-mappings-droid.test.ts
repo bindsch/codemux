@@ -56,9 +56,9 @@ describe("droid provider override", () => {
   test("without an override nothing changes", () => {
     const adapter = adapterOf();
     expect(adapter.getRunEnv({ agent: "droid", prompt: "p" } as RunRequest)).toEqual({});
-    expect(run({})).toEqual(["droid", "exec"]);
+    expect(run({})).toEqual(["droid", "exec", "--output-format", "stream-json"]);
     // An operator model still rides the native flag.
-    expect(run({}, { model: "claude-sonnet-5" })).toEqual(["droid", "exec", "-m", "claude-sonnet-5"]);
+    expect(run({}, { model: "claude-sonnet-5" })).toEqual(["droid", "exec", "-m", "claude-sonnet-5", "--output-format", "stream-json"]);
   });
 
   test("the override rides a per-run --settings file and the key environment", () => {
@@ -97,7 +97,7 @@ describe("droid provider override", () => {
     const request: RunRequest = { agent: "droid", prompt: "p", cwd: cwdOf() };
     const cmd = adapter.buildRunCommand(request, prepare(adapter, request));
     expect(cmd.slice(0, 3)).toEqual(["droid", "--settings", cmd[2]!]);
-    expect(cmd.slice(3)).toEqual(["exec", "-m", "custom:codemux:glm-5.3-0"]);
+    expect(cmd.slice(3)).toEqual(["exec", "-m", "custom:codemux:glm-5.3-0", "--output-format", "stream-json"]);
     expect(cmd.join(" ")).not.toContain(ZAI_DROID.CODEMUX_DROID_PROVIDER_API_KEY);
   });
 
@@ -109,7 +109,7 @@ describe("droid provider override", () => {
     const gpt = adapterOf({ ...ZAI_DROID, CODEMUX_DROID_PROVIDER_MODEL: "gpt-5.6-codex" });
     const request: RunRequest = { agent: "droid", prompt: "p", cwd: cwdOf(), effort: "none" };
     expect(gpt.buildRunCommand(request, prepare(gpt, request)).slice(3))
-      .toEqual(["exec", "-m", "custom:codemux:gpt-5.6-codex-0", "--reasoning-effort", "none"]);
+      .toEqual(["exec", "-m", "custom:codemux:gpt-5.6-codex-0", "--output-format", "stream-json", "--reasoning-effort", "none"]);
     // An explicit non-gpt-5.6 model wins the resolution and takes "off".
     const explicit: RunRequest = {
       agent: "droid",
@@ -119,7 +119,7 @@ describe("droid provider override", () => {
       effort: "none",
     };
     expect(gpt.buildRunCommand(explicit, prepare(gpt, explicit)).slice(3))
-      .toEqual(["exec", "-m", "custom:codemux:claude-opus-5-0", "--reasoning-effort", "off"]);
+      .toEqual(["exec", "-m", "custom:codemux:claude-opus-5-0", "--output-format", "stream-json", "--reasoning-effort", "off"]);
   });
 
   test("an explicit --model wins as the routed model id", () => {
@@ -129,7 +129,7 @@ describe("droid provider override", () => {
     const path = adapter.buildRunCommand(request, context)[2]!;
     expect(JSON.parse(readFileSync(path, "utf8")).customModels[0].model).toBe("glm-5.3-flash");
     expect(adapter.buildRunCommand(request, context).slice(3))
-      .toEqual(["exec", "-m", "custom:codemux:glm-5.3-flash-0"]);
+      .toEqual(["exec", "-m", "custom:codemux:glm-5.3-flash-0", "--output-format", "stream-json"]);
   });
 
   test("the override and --tools none coexist", () => {
@@ -137,7 +137,7 @@ describe("droid provider override", () => {
     const request: RunRequest = { agent: "droid", prompt: "p", cwd: cwdOf(), tools: "none", autonomy: "high" };
     const context = prepare(adapter, request);
     expect(adapter.buildRunCommand(request, context).slice(3))
-      .toEqual(["exec", "-m", "custom:codemux:glm-5.3-0", "--auto", "high", "--only-tools", "ToolSearch"]);
+      .toEqual(["exec", "-m", "custom:codemux:glm-5.3-0", "--output-format", "stream-json", "--auto", "high", "--only-tools", "ToolSearch"]);
     expect(adapter.getRunEnv(request, context)).toEqual({
       CODEMUX_DROID_PROVIDER_API_KEY: ZAI_DROID.CODEMUX_DROID_PROVIDER_API_KEY,
     });

@@ -5,7 +5,7 @@ export const PARITY_FEATURES = [
   "run.model", "run.autonomy.all-four", "run.effort", "run.effort.none-native",
   "run.hermetic", "run.hermetic.any-cwd",
   "run.tools-none", "run.tools-none.writable-autonomy", "run.tools-none.plain",
-  "run.result-json", "run.empty-answer-fails", "run.served-model-evidence", "run.max-budget-usd",
+  "run.result-json", "run.empty-answer-fails", "run.answer-complete", "run.served-model-evidence", "run.max-budget-usd",
   "run.provider-override", "run.provider-override.max-output-tokens",
   "run.provider-override.max-context-tokens", "run.no-web",
   "run.experiment-project-settings", "run.experiment-mcp", "run.playwright-mcp",

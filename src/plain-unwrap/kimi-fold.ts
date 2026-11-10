@@ -372,8 +372,17 @@ export class KimiPlainFold implements StdoutSink {
    * contracts-2 1: the adapter's scanSurface once missed it, and a
    * harness printing the planted marker was certified clean). */
   private scanDroppedPayload(text: string): void {
-    const match = CANARY_MARKER_PATTERN.exec(text);
-    if (match !== null) this.recordCanaryEvidence(text, match);
+    this.recordEveryMatch(text, 0);
+  }
+
+  /** Records every marker match in `text` (not only the first, as
+   * StreamMarkerScan keeps them), skipping matches that end inside the
+   * first `seen` characters: those were recorded on an earlier scan. */
+  private recordEveryMatch(text: string, seen: number): void {
+    const pattern = new RegExp(CANARY_MARKER_PATTERN.source, "g");
+    for (let match = pattern.exec(text); match !== null; match = pattern.exec(text)) {
+      if (match.index + match[0].length > seen) this.recordCanaryEvidence(text, match);
+    }
   }
 
   /** Feeds one fragment of a payload this fold sheds without holding:
@@ -383,8 +392,7 @@ export class KimiPlainFold implements StdoutSink {
    * now, so no whole text ever carries the boundary). */
   private feedDiscard(fragment: string): void {
     const text = this.discardCarry + fragment;
-    const match = CANARY_MARKER_PATTERN.exec(text);
-    if (match !== null) this.recordCanaryEvidence(text, match);
+    this.recordEveryMatch(text, this.discardCarry.length);
     this.discardCarry = text.length <= 64 ? text : text.slice(-64);
   }
 

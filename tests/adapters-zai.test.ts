@@ -19,7 +19,8 @@ describe("ZaiAdapter", () => {
     "--strict-mcp-config",
     "--no-session-persistence",
     "--output-format",
-    "json",
+    "stream-json",
+    "--verbose",
   ];
 
   test("has correct id and binary name", () => {
@@ -162,7 +163,8 @@ describe("ZaiAdapter", () => {
       "--safe-mode",
       "--no-session-persistence",
       "--output-format",
-      "json",
+      "stream-json",
+      "--verbose",
       "--model",
       "opus",
     ]);
@@ -213,7 +215,7 @@ describe("ZaiAdapter", () => {
   });
 
   test("zai declares it can return a result envelope", () => {
-    // Same binary as claude, so the same --output-format json envelope.
+    // Same binary as claude, so the same --output-format stream-json wire.
     expect(adapter.capabilities().supportsResultJson).toBe(true);
   });
 
@@ -257,6 +259,8 @@ describe("ZaiAdapter", () => {
       session_id: null,
       recording: null,
       failure_code: null,
+      final_message: "OK",
+      truncated: false,
       labels: null,
     });
   });

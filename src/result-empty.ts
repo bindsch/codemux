@@ -66,7 +66,7 @@ export function enforceNonEmptyResult(
     codemux: {
       agent: request.agent, model: request.model ?? null, served_model: result.servedModel ?? null,
       model_alias: request.modelAlias ?? null, labels: request.labels ?? null, usage,
-      session_id: null, recording: null, failure_code: null,
+      session_id: null, recording: null, failure_code: null, final_message: null, truncated: false,
       ...(block !== null && typeof block === "object" && !Array.isArray(block) ? block : {}),
       // An experiment's recording carries the same code in run_end (launch/experiment-arms.ts).
       ...(request.experimentMcp ? { failure_code: "empty_answer" } : {}),

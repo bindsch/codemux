@@ -64,7 +64,7 @@ describe("qwen --effort", () => {
         .toEqual({ [QWEN_EFFORT_SETTINGS_ENV]: settings.path });
       // The argv carries nothing: the tier is env-delivered.
       expect(a.buildRunCommand({ agent: "qwen", prompt: "p", effort: "high" }))
-        .toEqual(["/fake/qwen", "--safe-mode"]);
+        .toEqual(["/fake/qwen", "--safe-mode", "--output-format", "stream-json"]);
       a.cleanupRunSync(context);
       expect(existsSync(settings.path)).toBe(false);
     } finally {
@@ -213,9 +213,9 @@ describe("qwen provider override", () => {
       });
       // The --model flag follows the request, not the override.
       expect(adapter(home, overrideEnv).buildRunCommand({ ...request, model: "m1" }))
-        .toEqual(["/fake/qwen", "--safe-mode", "--model", "m1"]);
+        .toEqual(["/fake/qwen", "--safe-mode", "--model", "m1", "--output-format", "stream-json"]);
       expect(adapter(home, overrideEnv).buildRunCommand(request))
-        .toEqual(["/fake/qwen", "--safe-mode"]);
+        .toEqual(["/fake/qwen", "--safe-mode", "--output-format", "stream-json"]);
       expect(adapter(home).getRunEnv(request)).toEqual({});
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -281,19 +281,19 @@ describe("qwen provider override", () => {
 });
 
 describe("qwen --result-json", () => {
-  test("a result-json run switches the output format", () => {
+  test("every run reads the stream-json wire", () => {
     const home = scratchHome();
     try {
       const a = adapter(home);
       expect(a.buildRunCommand({ agent: "qwen", prompt: "p", resultJson: true }))
-        .toEqual(["/fake/qwen", "--safe-mode", "--output-format", "json"]);
+        .toEqual(["/fake/qwen", "--safe-mode", "--output-format", "stream-json"]);
       expect(a.buildRunCommand({ agent: "qwen", prompt: "p" }))
-        .toEqual(["/fake/qwen", "--safe-mode"]);
+        .toEqual(["/fake/qwen", "--safe-mode", "--output-format", "stream-json"]);
       expect(a.buildRunCommand({
         agent: "qwen", prompt: "p", model: "qwen3-coder", autonomy: "high", resultJson: true,
       })).toEqual([
         "/fake/qwen", "--safe-mode", "--model", "qwen3-coder",
-        "--output-format", "json", "--approval-mode", "yolo",
+        "--output-format", "stream-json", "--approval-mode", "yolo",
       ]);
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -303,7 +303,9 @@ describe("qwen --result-json", () => {
   function wire(resultMessage: Record<string, unknown>): string {
     return `${JSON.stringify([
       { type: "user", message: { role: "user", content: "p" } },
-      { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "partial" }] } },
+      // Qwen's result text is the last assistant message's text.
+      { type: "assistant", message: { role: "assistant", content: [{ type: "text",
+        text: typeof resultMessage.result === "string" ? resultMessage.result : "" }] } },
       resultMessage,
     ])}\n`;
   }
@@ -344,6 +346,8 @@ describe("qwen --result-json", () => {
       session_id: "sess-4",
       recording: null,
       failure_code: null,
+      final_message: "the answer",
+      truncated: false,
     });
   });
 
@@ -386,7 +390,7 @@ describe("qwen --result-json", () => {
     expect(result.stderr).toContain("qwen printed no result message");
   });
 
-  test("a success message with empty text fails too, and plain runs pass through", () => {
+  test("a success message with empty text fails too, and plain text passes through", () => {
     const stdout = wire({ type: "result", subtype: "success", is_error: false, result: " ", session_id: "s" });
     expect(qwenResult(
       { stdout, stderr: "", exitCode: 0, success: true },

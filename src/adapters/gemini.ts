@@ -11,7 +11,9 @@ import { createGeminiHermeticHome } from "../gemini-hermetic.js";
 import { GEMINI_POLICY_FILENAME, geminiToolPolicy, writeGeminiToolPolicy } from "../gemini-policy.js";
 import { validateGeminiProjectSettings } from "../gemini-project-settings.js";
 import { geminiPlaywrightSettings } from "../gemini-mcp.js";
-import { geminiExperimentResult, geminiResult } from "../result-envelope/gemini.js";
+import { geminiStreamResult } from "../result-envelope/gemini.js";
+import { geminiStreamFold } from "../gemini-stream-answer.js";
+import { withStreamScanSurface } from "../stream-marker-scan.js";
 import { readExperimentRunSpec } from "../experiment-mcp.js";
 import { GeminiExperimentRun, type GeminiExperimentContext } from "../gemini-experiment-run.js";
 import { geminiTelemetryEnvironment, prepareGeminiTelemetry } from "../gemini-telemetry.js";
@@ -105,9 +107,9 @@ export class GeminiAdapter extends BaseAdapter {
       supportsHermetic: true,
       supportsToolSelection: true,
       toolsNoneRequiresHermetic: false,
-      // `--output-format json` (0.60.0): the final JsonFormatter object on
-      // stdout with the streaming forced to stderr (src/result-envelope/
-      // gemini.ts holds the field evidence).
+      // The stream-json wire rebuilt into the JsonFormatter envelope shape
+      // (src/gemini-stream-answer.ts and src/result-envelope/gemini.ts hold
+      // the field evidence).
       supportsResultJson: true,
       // The GATEWAY auth route: GOOGLE_GEMINI_BASE_URL selects it
       // (chunk-M6NSK26M.js, getBaseUrl/getEnv) and GEMINI_API_KEY carries
@@ -190,8 +192,9 @@ export class GeminiAdapter extends BaseAdapter {
           context.experimentGemini = experiment;
           context.stdoutSink = experiment;
           context.experimentRecording = experiment.recordingPath;
-        } else if (request.resultJson) {
-          context.geminiTelemetryPath = prepareGeminiTelemetry(home.home);
+        } else {
+          context.stdoutSink = geminiStreamFold();
+          if (request.resultJson) context.geminiTelemetryPath = prepareGeminiTelemetry(home.home);
         }
         return context;
       } catch (error) {
@@ -199,7 +202,7 @@ export class GeminiAdapter extends BaseAdapter {
         throw error;
       }
     }
-    return {};
+    return { stdoutSink: geminiStreamFold() };
   }
 
   override cleanupRunSync(context?: GeminiExperimentContext): void {
@@ -258,13 +261,10 @@ export class GeminiAdapter extends BaseAdapter {
       cmd.push(...this.mapAutonomy(request.autonomy));
     }
 
-    if (request.experimentMcp) {
-      cmd.push("--output-format", "stream-json");
-    } else if (request.resultJson) {
-      // 0.60.0 prints the final JsonFormatter object on stdout and moves
-      // the stream to stderr under this flag (bundle gemini-LUNNHKPJ.js).
-      cmd.push("--output-format", "json");
-    }
+    // Every run reads the stream-json wire: the json format drops the text
+    // written before the last tool request, and the text format glues
+    // messages together (src/gemini-stream-answer.ts, lane AN1).
+    cmd.push("--output-format", "stream-json");
 
     // The empty flag selects headless mode; the exact prompt arrives on stdin.
     // Gemini 0.60.0 readStdin() uses piped input verbatim (2026-11-09).
@@ -301,9 +301,11 @@ export class GeminiAdapter extends BaseAdapter {
   }
 
   override processRunResult(result: RunResult, request: RunRequest, context?: GeminiExperimentContext): RunResult {
-    if (context?.experimentGemini) return geminiExperimentResult(result, { ...request, model: this.modelFor(request.model) }, context.experimentRecording, context.experimentGemini.evidencePath);
-    if (!request.resultJson) return result;
-    return geminiResult(result, { ...request, model: this.modelFor(request.model) }, context?.geminiTelemetryPath);
+    const model = { ...request, model: this.modelFor(request.model) };
+    if (context?.experimentGemini) return geminiStreamResult(result, model, context.experimentRecording ?? undefined, context.experimentGemini.evidencePath);
+    // The fold shed tool results; the scan covers them (stream-marker-scan.ts).
+    return withStreamScanSurface(geminiStreamResult(result, model, undefined, context?.geminiTelemetryPath),
+      result.stdout, context?.stdoutSink);
   }
 
   override validateRunRequest(request: RunRequest): void {

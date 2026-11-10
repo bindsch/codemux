@@ -53,7 +53,7 @@ describe("pi provider override", () => {
       cwd: cwdOf(),
       ...request,
     } as RunRequest);
-  const head = ["pi", "--print", "--no-session", "--no-approve"];
+  const head = ["pi", "--print", "--no-session", "--no-approve", "--mode", "json"];
 
   test("without an override nothing changes", () => {
     const adapter = adapterOf();

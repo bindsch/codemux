@@ -9,9 +9,8 @@ import { readAiderHistoryDelta } from "../aider-history.js";
 import {
   aiderDeltaRecordsUnansweredPrompt,
   aiderHistoryHeader,
-  aiderReplyAfterHeader,
-  extractAiderReply,
 } from "../aider-history-text.js";
+import { aiderTurnAnswer, aiderTurnAnswerLoose } from "./aider-turn-answer.js";
 import { appendSessionTurnCallRecord } from "../call-log.js";
 import { emptyUsage } from "../result-envelope.js";
 import {
@@ -168,8 +167,8 @@ export abstract class AiderTurns extends AiderDriverCore {
     const at = header !== null ? delta.indexOf(header) : -1;
     const reply =
       header !== null && at !== -1
-        ? aiderReplyAfterHeader(delta.slice(at + header.length))
-        : extractAiderReply(delta);
+        ? aiderTurnAnswer(delta.slice(at + header.length))
+        : aiderTurnAnswerLoose(delta);
     this.turnPrompt = null;
     if (reply !== "") {
       this.emit(

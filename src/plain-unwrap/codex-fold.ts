@@ -1,8 +1,10 @@
 /** The codex streaming fold and its whole-capture replay: chunk-by-chunk
  * wire folding under the capture bound. The event model and shared verdict
  * live in codex-fold-model.ts; src/plain-unwrap.ts owns the public surface. */
+import { assembleAnswer } from "../answer-complete.js";
 import { CodexEventReducer } from "../result-envelope.js";
 import { MAX_CAPTURE_BYTES } from "../process-runner.js";
+import { StreamMarkerScan } from "../stream-marker-scan.js";
 import type { ResultUsageBlock, RunResult } from "../types.js";
 import {
   byteLength,
@@ -124,8 +126,13 @@ export class CodexPlainFold implements UsageFoldingSink {
    * a later line cannot un-trip a bound the residue already crossed. */
   private overflowed = false;
   private closed = false;
+  /** Sees every chunk before an item event is dropped, so a canary
+   * marker in tool output still reaches the hermetic check
+   * (src/stream-marker-scan.ts). */
+  private readonly markers = new StreamMarkerScan();
 
   push(chunk: string): void {
+    if (!this.closed) this.markers.push(chunk);
     if (this.closed || this.overflowed) return;
     this.bufferBytes += byteLength(chunk);
     // The buffered partial line carries no newline — every exit below
@@ -195,6 +202,11 @@ export class CodexPlainFold implements UsageFoldingSink {
     this.bufferBytes = 0;
   }
 
+  /** Canary marker matches anywhere in the stream, dropped events included. */
+  droppedMarkerEvidence(): string {
+    return this.markers.evidence();
+  }
+
   keptBytes(): number {
     if (this.overflowed) return MAX_CAPTURE_BYTES + 1;
     // The two regimes' honest residues (round al29's one rule, the class
@@ -229,10 +241,12 @@ export class CodexPlainFold implements UsageFoldingSink {
     // A null message is the no-message turn's — nothing, never a bare
     // newline — and any real one carries its newline whatever it ends
     // with.
+    // Lane AN1: every message of the turn, joined, like the verdict.
+    const messages = this.state.reducer.messages;
     return this.state.mode === "wire"
       ? this.state.reducer.finalMessage === null
         ? ""
-        : codexPlainReply(this.state.reducer.finalMessage)
+        : codexPlainReply(messages.length > 0 ? assembleAnswer(messages) || this.state.reducer.finalMessage : this.state.reducer.finalMessage)
       : this.raw;
   }
 

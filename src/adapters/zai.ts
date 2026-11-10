@@ -15,8 +15,7 @@ import {
   WEB_TOOL_GRANTS,
 } from "../claude-autonomy.js";
 import { readUtf8FileBounded } from "../file-io.js";
-import { appendDiagnostic, claudeFamilyResult } from "../result-envelope.js";
-import { claudeFamilyPlainResult } from "../plain-unwrap.js";
+import { claudeFamilyRunResult, claudeFamilyStdoutSink } from "../claude-family-run.js";
 import {
   assertAbsoluteClaudeConfigDir,
   assertExperimentConfigRootSingleLine,
@@ -78,7 +77,7 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
       supportsHermetic: true,
       supportsToolSelection: true,
       supportsProviderOverride: true,
-      // Same binary as claude, so the same --output-format json envelope.
+      // Same binary as claude, so the same stream-json result object.
       supportsResultJson: true,
       // Same binary as claude, so the same --max-budget-usd spend cap
       // (Claude Code 2.1.317, a headless --print flag).
@@ -254,7 +253,10 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
         this.environment
       );
     }
-    if (!request.experimentMcp) return context;
+    if (!request.experimentMcp) {
+      context.stdoutSink = claudeFamilyStdoutSink();
+      return context;
+    }
     // A bridge that fails to build (a spec it refuses, a recording root it
     // cannot create) must not strand the private config directory created
     // above: cleanup first, then rethrow (review round 14, edges 12).
@@ -371,14 +373,12 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
     if (request.maxBudgetUsd !== undefined) {
       cmd.push("--max-budget-usd", String(request.maxBudgetUsd));
     }
-    // Always the single-result envelope, plain runs included (same binary
-    // and rule as claude): `--result-json` re-emits it with the codemux
-    // block appended; a plain run unwraps it back to the reply text
-    // (plain-unwrap.ts) so stdout keeps its contract while the call ledger
-    // gets the usage.
+    // The stream-json wire on every run, the same rule as claude's (lane
+    // AN1; src/claude-family-run.ts).
     // The experiment bridge drives the SDK control protocol over stream-json
     // and registers the one experiment server, exactly as claude's run does.
-    cmd.push("--output-format", request.experimentMcp ? "stream-json" : "json");
+    cmd.push("--output-format", "stream-json");
+    if (!request.experimentMcp) cmd.push("--verbose");
     if (request.experimentMcp) {
       const spec = context?.experimentBridge?.spec ?? readExperimentRunSpec(request);
       cmd.push("--input-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool", "stdio",
@@ -424,37 +424,11 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
   }
 
   override processRunResult(result: RunResult, request: RunRequest, context?: RunContext): RunResult {
-    if (context?.experimentBridge) {
-      if (result.exitCode === 0 && !result.stdout) throw new Error("Claude returned no experiment result envelope");
-      result = { ...result, scanSurface: context.experimentBridge.scanSurface() };
-    }
-    // Same envelope as claude (same binary): with --result-json the harness's
-    // envelope is re-emitted with the codemux block appended, and anything
-    // that is not the envelope fails loudly there, as in claude's adapter.
-    if (request.resultJson) {
-      // buildRunCommand ran --model opus when the request named none (or an
-      // empty string -- same `||` fallback), so the envelope's model fallback
-      // sees the model codemux actually selected.
-      return claudeFamilyResult(
-        result,
-        { ...request, model: this.resultModel(request) },
-        this.id,
-        context?.experimentRecording ?? null
-      );
-    }
-    // A plain run: the same envelope, unwrapped back to the reply text.
-    // Stdout that is not JSON passes through verbatim with the run
-    // unchanged — the escape hatch for binaries codemux did not structure
-    // the output for; JSON that is not the envelope (an array or scalar
-    // included, or an object cut mid-write) fails with nothing on stdout
-    // (plain-unwrap.ts).
-    const plain = claudeFamilyPlainResult(result, this.id);
-    // A plain run has no codemux block to carry the recording path, so the
-    // run's stderr summary names it instead.
-    return context?.experimentBridge
-      ? { ...plain, stderr: appendDiagnostic(plain.stderr,
-          `codemux: experiment MCP recording: ${context.experimentBridge.recordingPath}`) }
-      : plain;
+    // The stream is read back to the complete answer, then the plain unwrap
+    // or the --result-json envelope runs on it (src/claude-family-run.ts).
+    // An override run always launched with --model resolved, so the
+    // envelope's model fallback sees the model codemux actually selected.
+    return claudeFamilyRunResult(result, request, this.id, context, this.resultModel(request));
   }
 
   buildTuiCommand(

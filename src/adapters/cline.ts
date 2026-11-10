@@ -1,5 +1,6 @@
 import { BaseAdapter } from "./base.js";
 import { assertNoClineProjectExecutionConfig } from "../project-safety.js";
+import { withStreamScanSurface } from "../stream-marker-scan.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import { clineResult } from "../result-envelope/cline.js";
 import { CLINE_PROVIDER, clineProvider, createClineConfig, type ClineRunContext } from "../cline-config.js";
@@ -107,8 +108,10 @@ export class ClineAdapter extends BaseAdapter {
   override getStdinInput(request: RunRequest): string { return request.prompt; }
 
   override processRunResult(result: RunResult, request: RunRequest, context?: ClineRunContext): RunResult {
-    return clineResult(result, request, context?.experimentCline?.recordingPath ?? null,
-      context?.experimentCline?.scanSurface());
+    // The answer replaces the --json capture; the hermetic check scans the
+    // whole capture, tool results included (stream-marker-scan.ts).
+    return withStreamScanSurface(clineResult(result, request, context?.experimentCline?.recordingPath ?? null,
+      context?.experimentCline?.scanSurface()), result.stdout, context?.stdoutSink);
   }
 
   override validateRunRequest(request: RunRequest): void {

@@ -30,6 +30,7 @@ import type {
   AdapterCapabilities,
 } from "../types.js";
 import { OpenCodePlainFold, openCodeResultData, opencodePlainResult } from "../plain-unwrap.js";
+import { withStreamScanSurface } from "../stream-marker-scan.js";
 import { opencodeResult } from "../result-envelope/opencode.js";
 import { appendDiagnostic } from "../result-envelope/common.js";
 import {
@@ -242,11 +243,7 @@ export class OpencodeAdapter extends BaseAdapter {
     return request.prompt;
   }
 
-  override processRunResult(
-    result: RunResult,
-    request: RunRequest,
-    context?: RunContext
-  ): RunResult {
+  override processRunResult(result: RunResult, request: RunRequest, context?: RunContext): RunResult {
     if (context?.experimentOpencode) result = { ...result, scanSurface: context.experimentOpencode.scanSurface(),
       stderr: appendDiagnostic(result.stderr, `codemux: experiment MCP recording: ${context.experimentRecording}`) };
     const sink = context?.experimentOpencode?.fold ?? context?.stdoutSink;
@@ -263,8 +260,10 @@ export class OpencodeAdapter extends BaseAdapter {
         context?.experimentOpencode?.servedModel ?? null
       );
     }
-    if (sink instanceof OpenCodePlainFold) return { ...sink.verdict(result), servedModel: context?.experimentOpencode?.servedModel ?? null };
-    return opencodePlainResult(result);
+    // The fold dropped tool parts; the scan covers them (stream-marker-scan.ts).
+    return withStreamScanSurface(sink instanceof OpenCodePlainFold
+      ? { ...sink.verdict(result), servedModel: context?.experimentOpencode?.servedModel ?? null }
+      : opencodePlainResult(result), result.stdout, sink);
   }
 
   override prepareRun(request: RunRequest): RunContext {

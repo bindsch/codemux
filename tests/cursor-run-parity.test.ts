@@ -56,7 +56,7 @@ describe("cursor run argv", () => {
 describe("cursor stream envelope", () => {
   test("usage sums the model_call events, input net of both cache counters", () => {
     const parsed = parseCursorResultEnvelope(wire(
-      { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "seg" }] }, session_id: "sess-1" },
+      { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "the answer" }] }, session_id: "sess-1" },
       usageEvent(10, 2, 3),
       usageEvent(5, 3, 0),
       resultLine("the answer"),
@@ -106,6 +106,8 @@ describe("cursor stream envelope", () => {
       session_id: "sess-1",
       recording: null,
       failure_code: null,
+      final_message: "the answer",
+      truncated: false,
     });
   });
 
@@ -142,13 +144,15 @@ describe("cursor plain-run rewrite", () => {
     { agent: "cursor", prompt: "p" }
   );
 
-  test("a tool-using run's whole reply rides the result line, with usage recorded", () => {
+  test("a tool-using run's whole reply is every segment, with usage recorded", () => {
     const result = run(wire(
       { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "before tools " }] }, session_id: "sess-1" },
+      { type: "tool_call", subtype: "started", call_id: "c1", session_id: "sess-1" },
       usageEvent(10, 2, 3),
+      { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "after tools" }] }, session_id: "sess-1" },
       resultLine("before tools after tools"),
     ));
-    expect(result.stdout).toBe("before tools after tools\n");
+    expect(result.stdout).toBe("before tools\n\nafter tools\n");
     expect(result.usage).toEqual({
       input_tokens: 10, output_tokens: 2, cached_input_tokens: 3, total_tokens: 15, cost_usd: null,
     });

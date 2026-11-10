@@ -7,11 +7,15 @@ import {
   reportedTokenCount,
   safeTokenSum,
 } from "./common.js";
+import { answerBlockFields, withTruncationNotice, type AnswerTranscript } from "../answer-complete.js";
+import { parseGooseTranscript, type GooseTranscript } from "../goose-answer.js";
 
 /**
- * Parses the JSON object goose prints for a run launched with
- * `--output-format json` (1.50.1 `run --output-format <text|json|
- * stream-json>`): the final serialized agent message on stdout. The exact
+ * Parses goose's output. Every run launches with `--output-format
+ * stream-json` (1.50.1 `run --output-format <text|json|stream-json>`; lane
+ * AN1), read by src/goose-answer.ts; the single serialized agent message
+ * that `--output-format json` prints is still accepted, for sessions and
+ * older captures. For both, the exact
  * field order is not recoverable from the compiled binary, so the parser
  * reads the names the binary itself carries (read from `strings` on the
  * installed 1.50.1 binary, 2026-11-09): the MessageUsage struct's
@@ -55,6 +59,13 @@ export interface GooseEnvelopeInfo {
   /** metadata.inference.resolvedModel, when the message carried it. */
   servedModel: string | null;
   sessionId: string | null;
+  /** The assistant messages a stream or `{messages}` object carried; null
+   * for the single-message object. */
+  transcript: AnswerTranscript | null;
+  /** The last assistant message's text alone. */
+  finalText: string | null;
+  /** A stream `error` event's text. */
+  errorMessage: string | null;
 }
 
 /** Reads metadata.inference.resolvedModel — the InferenceMetadata field
@@ -128,7 +139,55 @@ function gooseAnswer(envelope: Record<string, unknown>): string | null {
  * around the final object in every mode, so the LAST parseable object
  * line is the result. Lines that do not parse are skipped, not fatal —
  * the binary prints human-readable status around the object. */
+/** The envelope info of a transcript: usage summed over the assistant
+ * messages (the last report per message id, since streamed chunks of one
+ * reply share it), the stream's `complete` total as a fallback, and the
+ * last message's resolved model. */
+function transcriptInfo(read: GooseTranscript): GooseEnvelopeInfo {
+  const perMessage = new Map<unknown, Record<string, unknown>>();
+  read.messages.forEach((message, index) => {
+    const metadata = typeof message.metadata === "object" && message.metadata !== null
+      ? message.metadata as Record<string, unknown> : null;
+    const reported = metadata?.usage ?? message.usage;
+    if (typeof reported === "object" && reported !== null) {
+      perMessage.set(typeof message.id === "string" ? message.id : index, reported as Record<string, unknown>);
+    }
+  });
+  let usage = emptyUsage();
+  for (const reported of perMessage.values()) {
+    const next = normalizeGooseUsage(reported);
+    usage = perMessage.size === 1 ? next : sumGooseUsage(usage, next);
+  }
+  if (perMessage.size === 0 && read.complete !== null) usage.total_tokens = reportedTokenCount(read.complete.total_tokens);
+  const last = read.messages[read.messages.length - 1];
+  return {
+    envelope: last ?? {},
+    answer: read.answer,
+    usage,
+    servedModel: last === undefined ? null : gooseServedModel(last),
+    sessionId: last !== undefined && typeof last.session_id === "string" ? last.session_id : null,
+    transcript: read.transcript,
+    finalText: read.finalText,
+    errorMessage: read.errorMessage,
+  };
+}
+
+function sumGooseUsage(a: ResultUsageBlock, b: ResultUsageBlock): ResultUsageBlock {
+  const add = (x: number | null, y: number | null): number | null => x === null || y === null ? null : safeTokenSum(x, y);
+  const started = a.input_tokens === null && a.output_tokens === null && a.total_tokens === null && a.cached_input_tokens === null;
+  if (started) return b;
+  return {
+    input_tokens: add(a.input_tokens, b.input_tokens),
+    output_tokens: add(a.output_tokens, b.output_tokens),
+    cached_input_tokens: add(a.cached_input_tokens, b.cached_input_tokens),
+    total_tokens: add(a.total_tokens, b.total_tokens),
+    cost_usd: a.cost_usd === null || b.cost_usd === null ? null : a.cost_usd + b.cost_usd,
+  };
+}
+
 export function parseGooseResultEnvelope(stdout: string): GooseEnvelopeInfo | null {
+  const read = parseGooseTranscript(stdout);
+  if (read !== null) return transcriptInfo(read);
   let envelope: Record<string, unknown> | null = null;
   for (const line of stdout.split("\n")) {
     const trimmed = line.trim();
@@ -148,22 +207,26 @@ export function parseGooseResultEnvelope(stdout: string): GooseEnvelopeInfo | nu
     typeof envelope.usage === "object" && envelope.usage !== null
       ? (envelope.usage as Record<string, unknown>)
       : envelope;
+  const answer = gooseAnswer(envelope);
   return {
     envelope,
-    answer: gooseAnswer(envelope),
+    answer,
     usage: normalizeGooseUsage(usageSource),
     servedModel: gooseServedModel(envelope),
     sessionId: typeof envelope.session_id === "string" ? envelope.session_id : null,
+    transcript: null,
+    finalText: answer,
+    errorMessage: null,
   };
 }
 
 /**
  * Finishes a `--result-json` run for goose: the envelope is codemux's own —
  * the folded answer text, the usage off the message's usage report, and
- * the codemux block (the raw object is not re-emitted; its field set is
- * not pinned by any live capture). Stdout with no JSON object line breaks
- * the contract the launch made (it ran with `--output-format json`), so
- * the run fails loudly. An object with no answer text fails too: the
+ * the codemux block (the raw lines are not re-emitted; their field set is
+ * not pinned by any live capture). Stdout with no stream event or message
+ * object breaks the contract the launch made (it ran with
+ * `--output-format stream-json`), so the run fails loudly. An object with no answer text fails too: the
  * harness exited without a reply.
  */
 /** `recording` is the experiment run's JSONL path (null outside an
@@ -183,7 +246,9 @@ export function gooseResult(result: RunResult, request: RunRequest, recording: s
       success: false,
     };
   }
-  const failure = parsed.answer === null || parsed.answer.trim() === "" ? "no message content" : null;
+  const failure = parsed.errorMessage !== null
+    ? `an error (${parsed.errorMessage})`
+    : parsed.answer === null || parsed.answer.trim() === "" ? "no message content" : null;
   // The message's metadata.inference.resolvedModel is the served-model
   // evidence; when the message carried none, the block reports the model
   // codemux selected and served_model stays null.
@@ -197,12 +262,14 @@ export function gooseResult(result: RunResult, request: RunRequest, recording: s
     session_id: parsed.sessionId,
     recording,
     failure_code: failure !== null ? "harness-error" : null,
+    ...answerBlockFields(parsed.transcript, parsed.finalText),
   };
   const envelope = `${JSON.stringify({ [GOOSE_ANSWER_FIELD]: parsed.answer ?? "", usage: parsed.usage, codemux: block })}\n`;
   if (failure !== null) {
+    // A failed run still prints the length-stop line the block reports.
     return boundResultEnvelope(
       agent,
-      {
+      withTruncationNotice({
         ...result,
         stdout: envelope,
         stderr: appendDiagnostic(
@@ -214,20 +281,45 @@ export function gooseResult(result: RunResult, request: RunRequest, recording: s
         success: false,
         usage: parsed.usage,
         servedModel: parsed.servedModel,
-      },
+      }, agent, parsed.transcript),
       parsed.usage,
       parsed.servedModel
     );
   }
   return boundResultEnvelope(
     agent,
-    {
+    withTruncationNotice({
       ...result,
       stdout: envelope,
       usage: parsed.usage,
       servedModel: parsed.servedModel,
-    },
+    }, agent, parsed.transcript),
     parsed.usage,
     parsed.servedModel
   );
+}
+
+/** A plain goose run on the stream-json wire: the complete answer on
+ * stdout, at the end. Stdout that carries no stream event or message
+ * object passes through unchanged (text from a binary that ignored the
+ * format flag); a stream error fails the run with its reason. */
+export function goosePlainResult(result: RunResult): RunResult {
+  const read = parseGooseTranscript(result.stdout);
+  if (read === null) return result;
+  const info = transcriptInfo(read);
+  const answer = info.answer ?? "";
+  const stdout = answer === "" || answer.endsWith("\n") ? answer : `${answer}\n`;
+  if (info.errorMessage !== null) {
+    return withTruncationNotice({
+      ...result,
+      stdout,
+      stderr: appendDiagnostic(result.stderr,
+        `codemux: goose reported an error (${info.errorMessage}), so this run fails even though the harness exited ${result.exitCode}`),
+      exitCode: result.exitCode === 0 ? 1 : result.exitCode,
+      success: false,
+      usage: info.usage,
+      servedModel: info.servedModel,
+    }, "goose", info.transcript);
+  }
+  return withTruncationNotice({ ...result, stdout, usage: info.usage, servedModel: info.servedModel }, "goose", info.transcript);
 }

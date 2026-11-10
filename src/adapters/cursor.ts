@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { withStreamScanSurface } from "../stream-marker-scan.js";
 import { BaseAdapter, type RunContext } from "./base.js";
 import { assertNoCursorProjectExecutionConfig } from "../project-safety.js";
 import { appendDiagnostic } from "../result-envelope.js";
@@ -373,7 +374,13 @@ export class CursorAdapter extends BaseAdapter {
     this.validatedProvider();
   }
 
-  override processRunResult(result: RunResult, request: RunRequest, _context?: RunContext): RunResult {
+  override processRunResult(result: RunResult, request: RunRequest, context?: RunContext): RunResult {
+    // Both paths replace the stream-json capture with the answer; the
+    // hermetic check scans the whole capture (stream-marker-scan.ts).
+    return withStreamScanSurface(this.processStreamResult(result, request), result.stdout, context?.stdoutSink);
+  }
+
+  private processStreamResult(result: RunResult, request: RunRequest): RunResult {
     if (request.resultJson) {
       // Every run launches with --output-format stream-json, so stdout
       // ends in the result object; cursorResult re-emits it with the
@@ -390,9 +397,10 @@ export class CursorAdapter extends BaseAdapter {
       };
     }
     // A plain run launched on the same stream-json wire, so its stdout
-    // also ends in the result line: rewrite it to the reply text the line
-    // carries — the whole reply, the segments before tool calls included,
-    // where the text format printed only the trailing buffer — and
+    // also ends in the result line: rewrite it to the complete answer —
+    // every assistant segment, the ones before tool calls included, a
+    // blank line between two (lane AN1), where the text format printed
+    // only the trailing buffer — and
     // record the usage so the ledger is never empty. No new failure rule
     // rides here: a run whose stdout carried no result line keeps its
     // stdout and its exit status as the run path judges them.
