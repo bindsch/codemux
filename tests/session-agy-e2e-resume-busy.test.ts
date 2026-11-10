@@ -90,6 +90,13 @@ test("a resumed agy session whose record budget exhausts mid-session emits the n
     session.driver.adoptResumeClaim();
     send(session.driver, { type: "user", text: "scenario:basic one" });
     await waitFor(session.events, of("turn_completed"), "turn_completed", 3_000);
+    // The exhaustion must land while the session is live (the premise
+    // above): it answers with the announcement, so wait for it before
+    // the shutdown. Sending the shutdown at turn_completed raced the
+    // 20 ms retry: an ended session drops its pending record retries,
+    // and no session_started was ever emitted (2 of 6 runs in an
+    // ubuntu:26.04 container).
+    await waitFor(session.events, of("session_started"), "session_started", 3_000);
     send(session.driver, { type: "shutdown" });
     const ended = await waitFor(session.events, of("session_ended"), "session_ended");
     expect(await session.code).toBe(0);

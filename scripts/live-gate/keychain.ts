@@ -15,13 +15,17 @@ import { resolveTrustedExecutable } from "../../src/executable-security.js";
 
 /** A snapshot is the two answers, or the reason the state could not be
  * observed (a failing `security` is a failure of the check, never a match:
- * review round 43). null: not macOS, or no `security` on PATH. */
+ * review round 43). null: not macOS, or no `security` on PATH. The
+ * platform is a parameter, like keychainCheckApplies's, so the macOS path
+ * runs against a fake `security` on any host (a Linux CI run skipped it and
+ * the file fell under the 80% coverage floor: CI run 42725301093). */
 export type KeychainSnapshot = { ok: true; text: string } | { ok: false; reason: string };
 
 export const keychainSnapshot = async (
-  environment: NodeJS.ProcessEnv = process.env
+  environment: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform
 ): Promise<KeychainSnapshot | null> => {
-  if (process.platform !== "darwin") return null;
+  if (platform !== "darwin") return null;
   const resolved = Bun.which("security", { PATH: environment.PATH ?? "" });
   if (resolved === null) return null;
   let security: string;

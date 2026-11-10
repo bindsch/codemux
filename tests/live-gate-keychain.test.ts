@@ -26,36 +26,37 @@ const fakeSecurity = (body: string): string => {
   return dir;
 };
 
-const darwinOnly = process.platform === "darwin" ? test : test.skip;
-
 describe("keychain snapshots", () => {
-  darwinOnly("a snapshot carries the search list and the default; a changed list is a drift", async () => {
+  test("a snapshot carries the search list and the default; a changed list is a drift", async () => {
     const stable = fakeSecurity(`case "$1" in list-keychains) printf '    "/u/login.keychain-db"\\n';; default-keychain) printf '    "/u/login.keychain-db"\\n';; esac`);
-    const before = await keychainSnapshot({ PATH: stable });
+    const before = await keychainSnapshot({ PATH: stable }, "darwin");
     expect(before?.ok).toBe(true);
     const text = before !== null && before.ok ? before.text : "";
     expect(text).toContain('list-keychains: "/u/login.keychain-db"');
     expect(text).toContain("default-keychain:");
-    expect(keychainDrift(before, await keychainSnapshot({ PATH: stable }))).toBeNull();
+    expect(keychainDrift(before, await keychainSnapshot({ PATH: stable }, "darwin"))).toBeNull();
     const changed = fakeSecurity(`case "$1" in list-keychains) printf '    "/u/mirror.keychain-db"\\n    "/u/login.keychain-db"\\n';; default-keychain) printf '    "/u/login.keychain-db"\\n';; esac`);
-    const drift = keychainDrift(before, await keychainSnapshot({ PATH: changed }));
+    const drift = keychainDrift(before, await keychainSnapshot({ PATH: changed }, "darwin"));
     expect(drift).toContain("changed during this probe");
     expect(drift).toContain("/u/mirror.keychain-db");
   });
 
-  darwinOnly("a failing security answer is an unobservable state, and two of them never match (review round 43)", async () => {
+  test("a failing security answer is an unobservable state, and two of them never match (review round 43)", async () => {
     const failing = fakeSecurity("exit 36");
-    const snapshot = await keychainSnapshot({ PATH: failing });
+    const snapshot = await keychainSnapshot({ PATH: failing }, "darwin");
     expect(snapshot).toEqual({ ok: false, reason: "security list-keychains exited 36" });
-    expect(keychainDrift(snapshot, await keychainSnapshot({ PATH: failing }))).toContain("could not be observed before the probe");
+    expect(keychainDrift(snapshot, await keychainSnapshot({ PATH: failing }, "darwin"))).toContain("could not be observed before the probe");
     const stable = fakeSecurity(`printf '    "/u/login.keychain-db"\n'`);
-    expect(keychainDrift(await keychainSnapshot({ PATH: stable }), snapshot)).toContain("could not be observed after the probe");
+    expect(keychainDrift(await keychainSnapshot({ PATH: stable }, "darwin"), snapshot)).toContain("could not be observed after the probe");
   });
 
   test("no security on PATH, or another platform, yields no snapshot; both missing is not a drift", async () => {
     const empty = mkdtempSync(join(tmpdir(), "codemux-gate-empty-"));
     scratch.push(empty);
-    expect(await keychainSnapshot({ PATH: empty })).toBeNull();
+    expect(await keychainSnapshot({ PATH: empty }, "darwin")).toBeNull();
+    // Another platform has no snapshot even with a security on PATH.
+    const present = fakeSecurity(`printf '    "/u/login.keychain-db"\\n'`);
+    expect(await keychainSnapshot({ PATH: present }, "linux")).toBeNull();
     // The one shape that says the check does not apply rather than went
     // missing: both observations absent on the same machine.
     expect(keychainDrift(null, null)).toBeNull();
