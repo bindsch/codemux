@@ -8,7 +8,7 @@ import * as cliRuntime from "../src/cli-runtime.js";
 import { getDefaultConfig } from "../src/config.js";
 import * as launcher from "../src/launch.js";
 import * as quotaGate from "../src/quota-gate.js";
-import { createFakeBinaryEnv } from "./helpers/cli.js";
+import { createRunFakeBinaryEnv as createFakeBinaryEnv } from "./helpers/cli.js";
 
 const cases = [
   ...AGY_PROBE_MODES.map((mode) => ({ flags: ["--agy-isolation-probe", mode], flag: "--agy-isolation-probe" })),

@@ -7,7 +7,7 @@ import { CALL_LOG_ENV, readCallLog } from "../src/call-log.js";
 import type { CallRecord } from "../src/call-log.js";
 import { launchRunRequest } from "../src/launch.js";
 import type { AdapterCapabilities, RunRequest, RunResult } from "../src/types.js";
-import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
+import { createFakeBinaryEnv, READS_PROMPT, runCli } from "./helpers/cli.js";
 import { ENVELOPE, RUN_ARGS, ledgerFile } from "./helpers/call-ledger.js";
 
 /**
@@ -19,14 +19,6 @@ import { ENVELOPE, RUN_ARGS, ledgerFile } from "./helpers/call-ledger.js";
  * process for the failure receipt's post-processing arm, where a spawned
  * CLI has no lever.
  */
-
-// Every fake reads its prompt the way a real harness does. codemux feeds
-// the prompt on stdin, and a write the child never took fails the run by
-// design (src/process-stdin.ts: the input never arrived). A fake that
-// exited without reading raced that write: under load the child was gone
-// first, the write hit EPIPE, and the run exited 1 (CI run 42706848920,
-// ubuntu-latest). The version probe is left alone.
-const READS_PROMPT = 'if [ "$1" != "--version" ]; then cat >/dev/null; fi\n';
 
 describe("the launched call ledger", () => {
   test("a plain run records its receipt while stdout stays the reply alone", async () => {

@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
+import { createRunFakeBinaryEnv as createFakeBinaryEnv, runCli } from "./helpers/cli.js";
 
 // End-to-end provider overrides: fake harness binaries that actually call the
 // override endpoint through a local Bun.serve recorder, driven through the

@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  createFakeBinaryEnv,
+  createRunFakeBinaryEnv as createFakeBinaryEnv,
   runCli,
 } from "./helpers/cli.js";
 

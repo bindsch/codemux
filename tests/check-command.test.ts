@@ -13,7 +13,7 @@ import { registerCheckCommand } from "../src/check-command.js";
 import { CANARY_MARKER_PATTERN } from "../src/hermetic-canary.js";
 import { getDefaultConfig } from "../src/config.js";
 import type { RunRequest } from "../src/types.js";
-import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
+import { createRunFakeBinaryEnv as createFakeBinaryEnv, runCli } from "./helpers/cli.js";
 import { spyOnInherited } from "./helpers/spy-inherited.js";
 
 test("Kimi experiment check marks its planted control without changing the spec or tools", async () => {

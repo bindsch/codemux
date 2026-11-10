@@ -7,7 +7,7 @@ import { PassThrough } from "node:stream";
 import { getDefaultConfig } from "../src/config.js";
 import { registerRunCommand } from "../src/run-command.js";
 import { agentsSupporting } from "../src/parity/index.js";
-import { createFakeBinaryEnv } from "./helpers/cli.js";
+import { createFakeBinaryEnv, READS_PROMPT } from "./helpers/cli.js";
 import { ENVELOPE } from "./helpers/call-ledger.js";
 
 /**
@@ -26,10 +26,10 @@ class ExitSentinel extends Error {
 }
 
 // --version answers inside the claude contract's range; any other
-// invocation is a run, answered with the ledger e2e fixture envelope
-// (unwrapped to "OK\n" on stdout).
+// invocation is a run that reads its prompt (READS_PROMPT) and answers
+// with the ledger e2e fixture envelope (unwrapped to "OK\n" on stdout).
 const FAKE_CLAUDE = `if [ "$1" = "--version" ]; then printf '2.1.220 (Claude Code)\\n'; exit 0; fi
-printf '%s\\n' '${ENVELOPE}'`;
+${READS_PROMPT}printf '%s\\n' '${ENVELOPE}'`;
 
 // A scode that runs what it wraps: after `--` it execs the command the
 // launcher built, so a sandboxed run reaches the fake claude for real.

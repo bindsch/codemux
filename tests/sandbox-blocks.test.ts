@@ -22,7 +22,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createFakeBinaryEnv, minimalPath, runCli } from "./helpers/cli.js";
+import { createRunFakeBinaryEnv as createFakeBinaryEnv, minimalPath, runCli } from "./helpers/cli.js";
 import {
   createProjectSettingsConfigDir,
   openProjectSettingsSessionConfigDir,

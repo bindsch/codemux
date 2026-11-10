@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { KimiAdapter } from "../src/adapters/kimi.js";
 import type { RunRequest, RunResult } from "../src/types.js";
-import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
+import { createRunFakeBinaryEnv as createFakeBinaryEnv, runCli } from "./helpers/cli.js";
 
 const adapter = new KimiAdapter({});
 const request: RunRequest = { agent: "kimi", prompt: "Reply with exactly: OK" };

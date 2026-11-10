@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexAdapter } from "../src/adapters/codex.js";
 import { KimiAdapter } from "../src/adapters/kimi.js";
-import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
+import { createRunFakeBinaryEnv as createFakeBinaryEnv, runCli } from "./helpers/cli.js";
 import { fakeUsagemux } from "./helpers/doctor.js";
 
 const homes: string[] = [];

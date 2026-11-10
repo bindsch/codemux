@@ -13,7 +13,7 @@ import { expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createFakeBinaryEnv } from "./helpers/cli.js";
+import { createRunFakeBinaryEnv as createFakeBinaryEnv } from "./helpers/cli.js";
 
 /** The redirect target: an audited-shape version BELOW opencode's floor
  * (1.18.10) on --version, a marker when run. */

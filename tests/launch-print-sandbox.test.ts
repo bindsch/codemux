@@ -18,7 +18,7 @@ import * as credentialsModule from "../src/credentials.js";
 import { launchRunRequest } from "../src/launch.js";
 import type { RunContext } from "../src/adapters/base.js";
 import type { RunRequest } from "../src/types.js";
-import { createFakeBinaryEnv } from "./helpers/cli.js";
+import { createFakeBinaryEnv, READS_PROMPT } from "./helpers/cli.js";
 
 test("a printSandbox launch without sandbox refuses before any spawn", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "codemux-print-sandbox-direct-"));
@@ -97,7 +97,10 @@ test("a print-only sandboxed launch never runs prepareSandbox (round 18, edges 2
   // the argv and run nothing must not touch authentication state, and the
   // printed argv loses nothing — prepareSandbox contributes no argv input.
   const cwd = mkdtempSync(join(tmpdir(), "codemux-print-sandbox-prep-"));
-  const ambient = createFakeBinaryEnv({ scode: "exit 9", claude: "printf '2.1.220\\n'" });
+  // The fake scode reads the prompt before it refuses (READS_PROMPT):
+  // one that exited unread raced codemux's stdin write into EPIPE under
+  // load (CI run 42713067223, ubuntu-latest).
+  const ambient = createFakeBinaryEnv({ scode: `${READS_PROMPT}exit 9`, claude: "printf '2.1.220\\n'" });
   const previousPath = process.env.PATH;
   // The credential sync is stubbed so the control launch below — which
   // DOES call prepareSandbox — never reads the operator's Keychain.
@@ -150,7 +153,10 @@ test("a print-only project-settings run never reads or copies the credential mir
     join(home, ".claude", ".credentials.json"),
     JSON.stringify({ claudeAiOauth: { refreshToken: "synthetic-refresh-token", accessToken: "sk-ant-syntax" } })
   );
-  const ambient = createFakeBinaryEnv({ scode: "exit 9", claude: "printf '2.1.220\\n'" });
+  // The fake scode reads the prompt before it refuses (READS_PROMPT):
+  // one that exited unread raced codemux's stdin write into EPIPE under
+  // load (CI run 42713067223, ubuntu-latest).
+  const ambient = createFakeBinaryEnv({ scode: `${READS_PROMPT}exit 9`, claude: "printf '2.1.220\\n'" });
   const previousPath = process.env.PATH;
   // The control launch below DOES call prepareSandbox; stub the sync so it
   // never consults the operator's real Keychain (the planted mirror is the

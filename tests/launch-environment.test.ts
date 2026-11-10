@@ -6,7 +6,7 @@ import { AgyAdapter } from "../src/adapters/agy.js";
 import { ClaudeAdapter } from "../src/adapters/claude.js";
 import { launchRunRequest } from "../src/launch.js";
 import type { RunRequest } from "../src/types.js";
-import { createFakeBinaryEnv } from "./helpers/cli.js";
+import { createRunFakeBinaryEnv as createFakeBinaryEnv } from "./helpers/cli.js";
 
 test.each(["agy", "claude"] as const)("%s version gates reject old binaries in the adapter's per-run PATH despite new ambient binaries", async (agent) => {
   const cwd = mkdtempSync(join(tmpdir(), "codemux-launch-env-"));

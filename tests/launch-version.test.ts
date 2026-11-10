@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { BaseAdapter, type RunContext } from "../src/adapters/base.js";
 import { launchRunRequest } from "../src/launch.js";
 import type { AdapterCapabilities, RunRequest, RunResult } from "../src/types.js";
-import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
+import { createRunFakeBinaryEnv as createFakeBinaryEnv, runCli } from "./helpers/cli.js";
 
 class VersionContextAdapter extends BaseAdapter {
   readonly id = "claude";

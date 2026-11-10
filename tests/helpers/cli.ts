@@ -179,6 +179,39 @@ if (args[0] === "-i") {
 `;
 }
 
+/**
+ * A fake run harness's first line: read the prompt the way a real harness
+ * does. codemux feeds a run's prompt on stdin and fails a run whose write
+ * the child never took (src/process-stdin.ts, review round 66). A fake
+ * that exited without reading raced that write: under load the child was
+ * gone first, the write hit EPIPE, and the run failed (CI runs
+ * 42706848920 and 42713067223, ubuntu-latest). For one-shot runs only:
+ * codemux ends stdin after the prompt there, so the read reaches EOF;
+ * session and repeating-stdin fakes keep stdin open and must not use it.
+ * The version probe is left alone.
+ */
+export const READS_PROMPT = 'if [ "$1" != "--version" ]; then cat >/dev/null; fi\n';
+
+/**
+ * createFakeBinaryEnv for one-shot run and check tests: every harness body
+ * that does not already read stdin starts with READS_PROMPT. Tools that are
+ * not harnesses (usagemux, security, git) and a scode that execs what it
+ * wraps are left alone, since the wrapped harness reads the prompt itself.
+ * Never for session fakes: their stdin stays open.
+ */
+export function createRunFakeBinaryEnv(
+  binaries: Record<string, string>,
+  scodeVersion?: string
+): { env: Record<string, string>; cleanup: () => void } {
+  const tools = new Set(["usagemux", "security", "git", "codexbar"]);
+  const readsStdin = (body: string): boolean => /\bcat\b|\bread\b|\bhead\b|\/dev\/stdin|\bdd\b/.test(body);
+  const prepared = Object.fromEntries(Object.entries(binaries).map(([name, body]) => [
+    name,
+    tools.has(name) || readsStdin(body) || (name === "scode" && /\bexec\b/.test(body)) ? body : READS_PROMPT + body,
+  ]));
+  return scodeVersion === undefined ? createFakeBinaryEnv(prepared) : createFakeBinaryEnv(prepared, scodeVersion);
+}
+
 export function createFakeBinaryEnv(
   binaries: Record<string, string>,
   scodeVersion = "0.6.0"

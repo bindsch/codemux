@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { createFakeBinaryEnv, minimalPath, runCli } from "./helpers/cli.js";
+import { createRunFakeBinaryEnv as createFakeBinaryEnv, minimalPath, runCli } from "./helpers/cli.js";
 
 describe("CLI run labels", () => {
   test("run help includes the repeatable label option", async () => {

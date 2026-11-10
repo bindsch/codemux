@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { CursorAdapter } from "../src/adapters/cursor.js";
 import { launchRunRequest } from "../src/launch.js";
 import type { RunRequest, RunResult } from "../src/types.js";
-import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
+import { createRunFakeBinaryEnv as createFakeBinaryEnv, runCli } from "./helpers/cli.js";
 
 const STORE_ENV = "AGENT_CLI_CREDENTIAL_STORE";
 const HINT = "codemux: cursor's default login lives in the macOS Keychain, which the sandbox blocks; " +

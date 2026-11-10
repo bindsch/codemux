@@ -9,6 +9,7 @@ import { runCapturedCommand } from "../src/process-runner.js";
 import { RESULT_ANSWER_FIELD } from "../src/result-envelope/index.js";
 import { AGENT_IDS, type AgentId, type RunRequest, type RunResult } from "../src/types.js";
 import { KIMI_STREAM_SESSION, kimiResumeHint } from "./fixtures/kimi-stream.js";
+import { READS_PROMPT } from "./helpers/cli.js";
 
 type Wire = (answer: string) => string;
 const lines = (...events: unknown[]) => events.map((event) => JSON.stringify(event)).join("\n") + "\n";
@@ -60,7 +61,16 @@ async function launchSynthetic(
   mkdirSync(cwd);
   const ledger = join(home, "calls.jsonl");
   const executable = join(home, "synthetic-harness");
-  writeFileSync(executable, `#!/bin/sh\nprintf '%s' ${quote(stdout)}\nexit ${childExit}\n`, { mode: 0o700 });
+  // The harness reads its prompt first (READS_PROMPT, tests/helpers/cli.ts):
+  // one that exited unread raced codemux's stdin write into EPIPE. Aider's
+  // stdin repeats and never closes (stdinRepeats), so a read to EOF would
+  // never return; one byte is enough there, because the first block is
+  // then already in the pipe and the repeats after it tolerate a gone
+  // reader (src/process-stdin-repeat.ts).
+  const reads = getAdapter(agent, { PATH: "" }).stdinRepeats({ agent, prompt: "" })
+    ? "dd bs=1 count=1 >/dev/null 2>&1\n"
+    : READS_PROMPT;
+  writeFileSync(executable, `#!/bin/sh\n${reads}printf '%s' ${quote(stdout)}\nexit ${childExit}\n`, { mode: 0o700 });
   const env = { HOME: home, PATH: "/usr/bin:/bin", CODEMUX_NO_KEYCHAIN_SYNC: "1" };
   const adapter = getAdapter(agent, env);
   const previousLedger = process.env.CODEMUX_CALL_LOG;

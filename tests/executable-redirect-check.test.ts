@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { assertHarnessSupported, launchRedirectCheck } from "../src/cli-runtime.js";
 import { launchRunRequest } from "../src/launch.js";
 import { ClaudeAdapter } from "../src/adapters/claude.js";
-import { createFakeBinaryEnv } from "./helpers/cli.js";
+import { createRunFakeBinaryEnv as createFakeBinaryEnv } from "./helpers/cli.js";
 import type { RunResult } from "../src/types.js";
 
 /** The redirect target's first body: an audited version for the gate's

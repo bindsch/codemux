@@ -1,8 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { CALL_LOG_ENV, readCallLog } from "../src/call-log.js";
 import type { CallRecord } from "../src/call-log.js";
-import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
+import { createFakeBinaryEnv as createRawFakeBinaryEnv, READS_PROMPT, runCli } from "./helpers/cli.js";
 import { RUN_ARGS, LARGE_STREAM_TEST_TIMEOUT_MS, ledgerFile } from "./helpers/call-ledger.js";
+
+// Every fake here is a one-shot run harness, so each reads its prompt
+// first (READS_PROMPT): one that exited unread raced codemux's stdin write
+// into EPIPE under load (an opencode case failed that way in an
+// ubuntu:26.04 container under CPU load).
+const createFakeBinaryEnv = (binaries: Record<string, string>) =>
+  createRawFakeBinaryEnv(Object.fromEntries(
+    Object.entries(binaries).map(([name, body]) => [name, READS_PROMPT + body])
+  ));
 
 describe("the launched call ledger capture paths", () => {
   test("a run whose stdout is not valid UTF-8 still writes its receipt (ul8)", async () => {

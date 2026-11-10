@@ -9,7 +9,7 @@ import { expect, spyOn, test } from "bun:test";
 import { Command } from "commander";
 import { registerCheckCommand } from "../src/check-command.js";
 import { getDefaultConfig } from "../src/config.js";
-import { createFakeBinaryEnv } from "./helpers/cli.js";
+import { createRunFakeBinaryEnv as createFakeBinaryEnv } from "./helpers/cli.js";
 
 test("a relative --sandbox-block path is a usage refusal after both values accumulate", async () => {
   const fake = createFakeBinaryEnv({ claude: "exit 0", scode: "exit 0" });
