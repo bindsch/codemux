@@ -324,8 +324,15 @@ describe("CLI - caller stdin framing", () => {
     const best = (chunkBytes: number): number =>
       Math.min(...Array.from({ length: 3 }, () => frameCpuMs(chunkBytes)));
     const whole = best(line.length);
-    const chunked = best(8 * 1024);
-    expect(chunked).toBeLessThan(4 * whole + 10);
+    const chunkBytes = 8 * 1024;
+    const chunked = best(chunkBytes);
+    // The bound allows the per-chunk constant: 2026-11-11 the macOS CI
+    // runner paid about 20 us per emitted chunk (32.3 ms chunked against
+    // 4.8 ms whole, 1536 chunks), which overran a flat 4x + 10 ms bound
+    // although the framer was linear. 50 us per chunk adds 77 ms; the
+    // quadratic restart costs 165 ms here and more on a slower runner.
+    const chunks = Math.ceil(line.length / chunkBytes);
+    expect(chunked).toBeLessThan(4 * whole + 10 + chunks * 0.05);
   }, 60_000);
 });
 
