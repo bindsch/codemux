@@ -264,7 +264,7 @@ are kept in memory and hold either way:
 | `provider` | The upstream host (`api.anthropic.com`) |
 | `usage` | Uncached input, cached input (reads plus writes), output, and total tokens, and the cost |
 | `cost_source` | `billed` for a provider-reported charge, `price-table` for codemux's estimate, null when no cost could be recorded. Errors and incomplete responses can still carry usage or partial charges. |
-| `finish` | The OpenAI finish reason (`stop`, `length`, `tool_calls`, `content_filter`); `refused:<code>` for a codemux refusal; `upstream_error:<status>`; `upstream_unreachable`, `upstream_malformed`, `untranslatable`, `stream_error:<code>`, `interrupted`, or `client_closed`; `unknown` for an OpenAI answer without a finish reason; `incomplete` for a stream that ended with neither a finish reason nor an error |
+| `finish` | The OpenAI finish reason (`stop`, `length`, `tool_calls`, `content_filter`, `function_call`); `refused:<code>` for a codemux refusal; `upstream_error:<status>`; `upstream_unreachable`, `upstream_malformed`, `untranslatable`, `stream_error:<code>`, `interrupted`, or `client_closed`; `unknown` for an OpenAI answer without a finish reason; `incomplete` for a stream that ended with neither a finish reason nor an error |
 | `duration_ms` | Wall time from admission to the settled answer |
 | `labels` | The `--label` pairs, or `CODEMUX_LABELS` |
 
