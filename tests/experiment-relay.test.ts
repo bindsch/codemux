@@ -69,7 +69,11 @@ test("catalog non-GET methods receive 405 with Allow GET and never mark delivery
   const relay = await setup(undefined, { catalog: { body: CATALOG_BODY } });
   expect(typeof relay.catalogUrl).toBe("string");
   for (const method of ["POST", "HEAD", "PUT", "DELETE"]) {
-    const response = await http(relay, "synthetic-discarded-body", { method, path: new URL(relay.catalogUrl!).pathname, token: null });
+    // No body: a 405 over an unread body closes the connection, and a
+    // client still uploading can then read ECONNRESET before the reply
+    // (macOS CI, 2026-11-11). The C30 test below covers the body case on
+    // a raw socket that keeps the bytes that arrived.
+    const response = await http(relay, "", { method, path: new URL(relay.catalogUrl!).pathname, token: null, headers: { "Content-Length": "0" } });
     expect(response).toMatchObject({ status: 405, body: "", allow: "GET" });
   }
   expect(relay.catalogServed).toBe(false);

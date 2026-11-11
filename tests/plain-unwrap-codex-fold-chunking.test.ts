@@ -395,6 +395,8 @@ describe("CodexPlainFold", () => {
         expect(answer.out, `${label} / ${chunkLabel}`).toEqual(reference.out);
       }
     }
-  }, 240_000);
+  // Measured: 126 s locally, 137 s to 260 s on the macOS CI runner
+  // (2026-11-11), which overran a 240 s timeout without a defect.
+  }, 600_000);
 
 });
