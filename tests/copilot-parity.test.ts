@@ -266,7 +266,11 @@ describe("copilot reporting", () => {
       expect(output.success).toBe(false);
       expect(output.stderr).toContain("usage output is missing or invalid");
       adapter.cleanupRunSync(context);
-      expect(adapter.prepareRun(request, undefined, undefined, { printOnly: true })).toEqual({});
+      const preview = adapter.prepareRun(request, undefined, undefined, { printOnly: true });
+      expect(preview.printOnly).toBe(true);
+      expect(adapter.buildRunCommand(request, preview)).toContain("--headless");
+      expect(existsSync(preview.copilotUsageFile!.path)).toBe(false);
+      adapter.cleanupRunSync(preview);
       expect(adapter.processRunResult(result("plain"), { ...request, resultJson: false }).stdout).toBe("plain");
     } finally { rmSync(home, { recursive: true, force: true }); }
   });

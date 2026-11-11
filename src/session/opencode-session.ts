@@ -1,3 +1,4 @@
+import { sessionIdPattern } from "./id-pattern.js";
 import { featureFloor } from "../harness-contracts.js";
 import { markOverflowed } from "./usage.js";
 /**
@@ -44,7 +45,7 @@ export const OPENCODE_SESSION_FLOOR = featureFloor("opencode", "sessions");
 /** The id shape `--session` accepts: `ses_` plus mixed-case alphanumerics
  * (the observed ids run ~24 characters; the bound is loose so a longer
  * release id still resumes while pastes refuse). */
-export const OPENCODE_SESSION_ID_PATTERN = /^ses_[A-Za-z0-9]{8,64}$/;
+export const OPENCODE_SESSION_ID_PATTERN = sessionIdPattern(/^ses_[A-Za-z0-9]{8,64}$/);
 
 /**
  * Capability flags for opencode sessions (§3.4): live input yes (one caller

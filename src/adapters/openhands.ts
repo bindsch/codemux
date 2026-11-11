@@ -320,7 +320,7 @@ export class OpenHandsAdapter extends BaseAdapter {
       try {
         context.playwrightMcpCheck = plantOpenhandsPlaywrightMcp(
           join(hermeticHome.home, ".openhands"),
-          { pathEnv: this.executionPathEnv(), forbiddenRoot: request.cwd, printOnly: launch.printOnly }
+          { pathEnv: this.executionPathEnv(), forbiddenRoot: this.executionWorkingDirectory(request), printOnly: launch.printOnly }
         ).check;
       } catch (error) {
         hermeticHome.finalize();
@@ -368,7 +368,7 @@ export class OpenHandsAdapter extends BaseAdapter {
     // whole stream, tool observations included (stream-marker-scan.ts).
     if (request.resultJson) return withStreamScanSurface(openhandsResult(result, request), result.stdout, undefined);
     if (result.exitCode !== 0 || !openHandsRanNoTask(result.stdout)) {
-      return withStreamScanSurface(openhandsPlainResult(result) ?? result, result.stdout, undefined);
+      return withStreamScanSurface(openhandsPlainResult(result) ?? { ...result, reply: "" }, result.stdout, undefined);
     }
     return {
       ...result,

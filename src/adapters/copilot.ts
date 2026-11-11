@@ -1,5 +1,7 @@
 import { dirname, join } from "node:path";
+import { previewCopilotRun } from "../run-preview.js";
 import { BaseAdapter, type RunContext } from "./base.js";
+import { boundResultEnvelope, emptyUsage } from "../result-envelope/common.js";
 import { assertNoCopilotProjectExecutionConfig } from "../project-safety.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import type {
@@ -137,13 +139,19 @@ export class CopilotAdapter extends BaseAdapter {
         throw new UsageRefusalError("copilot project settings require prepared sandbox options");
       }
     }
-    const context: CopilotRunContext = {};
+    const context: CopilotRunContext = launch.printOnly ? previewCopilotRun(request, this.realConfigDir(), copilotProvider(this.environment)) : {};
+    if (launch.printOnly) {
+      if (request.resultJson) this.prepareCopilotModelRun({ ...request, sandboxTrust: _sandboxTrust }, context, true);
+      if (request.experimentProjectSettings) applyCopilotProjectSandbox(sandboxOptions!, this.realConfigDir(), context.copilotHermeticHome!.home,
+        [context.copilotUsageFile?.path, context.copilotProviderFile?.path].filter((path): path is string => path !== undefined).map(dirname));
+      return context;
+    }
     try {
       const experiment = request.experimentMcp ? readExperimentRunSpec(request) : undefined;
       if (experiment && !request.hermetic && !experiment.control) throw new UsageRefusalError("Copilot experiment requires a private hermetic home");
       if (request.hermetic || experiment) {
         context.copilotHermeticHome = createCopilotHermeticHome(this.realConfigDir(), {
-          printOnly: launch.printOnly === true,
+          printOnly: false,
         });
       }
       if (request.resultJson && !experiment && !launch.printOnly) {
@@ -349,12 +357,16 @@ export class CopilotAdapter extends BaseAdapter {
       ? { usage: modelRun.usage, servedModel: modelRun.evidence.servedModel } : { error: "native usage is missing" });
     const experiment = (context as CopilotRunContext | undefined)?.experimentCopilot;
     if (experiment) {
-      const processed = copilotResult(result, request, experiment.usage ? { usage: experiment.usage } : { error: "experiment usage is missing" });
+      const processed = copilotResult(result, { ...request, resultJson: request.resultJson ?? false },
+        experiment.usage ? { usage: experiment.usage } : { error: "experiment usage is missing" });
+      if (!request.resultJson) return { ...processed, scanSurface: experiment.capturedOutput };
       let envelope;
       try { envelope = JSON.parse(processed.stdout); }
       catch { return { ...processed, scanSurface: experiment.capturedOutput }; }
       if (envelope.codemux) envelope.codemux.recording = experiment.recordingPath;
-      return { ...processed, stdout: JSON.stringify(envelope) + "\n", scanSurface: experiment.capturedOutput };
+      return boundResultEnvelope("copilot",
+        { ...processed, stdout: JSON.stringify(envelope) + "\n", scanSurface: experiment.capturedOutput },
+        processed.usage ?? emptyUsage(), processed.servedModel ?? null);
     }
     // The fold shed the tool.* events; the scan covers them (stream-marker-scan.ts).
     if (!request.resultJson) return withStreamScanSurface(copilotPlainResult(result), result.stdout, context?.stdoutSink);
@@ -423,8 +435,11 @@ export class CopilotAdapter extends BaseAdapter {
     enablePlaywrightMcp?: boolean,
     cwd?: string,
     nestedChecks?: ExecutableCheck[],
-    providerFile?: CopilotProviderFile
+    providerFile?: CopilotProviderFile | boolean
   ): string[] {
+    // The shared builder's eighth argument is printOnly; session callers
+    // may instead supply their already-owned provider file.
+    if (typeof providerFile === "boolean") providerFile = undefined;
     const contextCap = copilotProvider(this.environment)?.maxContextTokens !== undefined;
     const cmd = [
       ...(providerFile === undefined ? [] : ["env", `COPILOT_PROVIDERS_CONFIG=${providerFile.path}`]),

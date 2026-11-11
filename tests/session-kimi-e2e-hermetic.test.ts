@@ -324,9 +324,10 @@ describe("kimi session e2e - hermetic", () => {
       hermeticSourceHome: operator,
     });
     send(session.driver, { type: "user", text: "scenario:basic one" });
-    await waitFor(session.events, of("turn_completed"), "turn_completed");
+    const completed = await waitFor(session.events, of("turn_completed"), "turn_completed");
+    expect(completed.finish).toBe("failed");
     send(session.driver, { type: "shutdown" });
-    expect(await session.code).toBe(0);
+    expect(await session.code).toBe(1);
     const ended = session.events[session.events.length - 1] as Event;
     expect(ended.type).toBe("session_ended");
     // The registry's harness_home names the settled brand home, which

@@ -6,10 +6,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  createRunFakeBinaryEnv as createFakeBinaryEnv,
   minimalPath,
   runCli,
 } from "./helpers/cli.js";
+import { createAnswerFakeBinaryEnv as createFakeBinaryEnv } from "./helpers/native-answer-cli.js";
 
 describe("CLI - Run validation", () => {
   test("run without prompt shows error", async () => {
@@ -86,7 +86,7 @@ describe("CLI - Run validation", () => {
         fake.env
       );
       expect(exitCode).toBe(0);
-      expect(stdout).toBe("provider/model");
+      expect(stdout).toBe("provider/model\n");
       expect(stderr).not.toContain("does not support model selection");
     } finally {
       fake.cleanup();
@@ -108,7 +108,7 @@ describe("CLI - Run validation", () => {
         }
       );
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toBe("allowed|unset|unset");
+      expect(result.stdout).toBe("allowed|unset|unset\n");
     } finally {
       fake.cleanup();
     }
@@ -128,7 +128,7 @@ describe("CLI - Run validation", () => {
         }
       );
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toBe("unset");
+      expect(result.stdout).toBe("unset\n");
     } finally {
       fake.cleanup();
     }

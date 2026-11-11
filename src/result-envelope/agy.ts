@@ -155,7 +155,7 @@ export function agyResult(result: RunResult, request: RunRequest): RunResult {
   // The envelope carries no model field, so the codemux block reports the
   // model codemux selected, else null: the harness default, which nothing
   // reported. `conversation_id` is agy's own and no codemux run can resume
-  // it, so session_id stays null like every harness in this release.
+  // it, so this adapter's run envelope reports session_id as null.
   const block = (): CodemuxResultBlock => ({
     agent,
     labels: request.labels ?? null,

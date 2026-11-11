@@ -92,12 +92,14 @@ describe("openhands session wiring", () => {
     ).toThrow("names the conversation it resumes");
   });
 
-  test("the driver writes the prompt's task file and finalizes it at the parse", () => {
+  test("the driver writes the prompt's task file and registers turn-owned cleanup", () => {
     const home = scratch();
     const realHome = process.env.HOME;
     process.env.HOME = home;
     try {
+      const cleanups: (() => void)[] = [];
       const argv = OPENHANDS_DRIVER_PROFILE.buildTurnCommand({
+        onSettled: (cleanup) => { cleanups.push(cleanup); },
         text: "do the thing",
         sessionId: null,
         firstTurn: true,
@@ -110,8 +112,11 @@ describe("openhands session wiring", () => {
       const path = argv[fileFlag + 1] as string;
       expect(path.startsWith(join(home, ".openhands", ".codemux", `task-${process.pid}-`))).toBe(true);
       expect(readFileSync(path, "utf8")).toBe("do the thing");
-      // The parse finalizes the turn's file.
+      // Parsing another turn cannot remove this file; only its owner can.
       OPENHANDS_DRIVER_PROFILE.parseTurnOutput!(turn([agentEvent("done")]), null);
+      expect(existsSync(path)).toBe(true);
+      expect(cleanups).toHaveLength(1);
+      cleanups[0]!();
       expect(existsSync(path)).toBe(false);
     } finally {
       process.env.HOME = realHome;
@@ -140,7 +145,9 @@ describe("openhands session wiring", () => {
       const unrelated = join(parent, "notes.txt");
       writeFileSync(unrelated, "keep", { mode: 0o600 });
       // The next write sweeps: the stale file is gone, the rest remain.
+      const cleanups: (() => void)[] = [];
       const argv = OPENHANDS_DRIVER_PROFILE.buildTurnCommand({
+        onSettled: (cleanup) => { cleanups.push(cleanup); },
         text: "fresh turn", sessionId: null, firstTurn: true,
         hermeticHome: null, autonomy: "low",
       });
@@ -149,7 +156,7 @@ describe("openhands session wiring", () => {
       expect(existsSync(stale)).toBe(false);
       expect(existsSync(young)).toBe(true);
       expect(existsSync(unrelated)).toBe(true);
-      OPENHANDS_DRIVER_PROFILE.parseTurnOutput!(turn([agentEvent("done")]), null);
+      cleanups[0]!();
     } finally {
       process.env.HOME = realHome;
       rmSync(home, { recursive: true, force: true });
@@ -199,9 +206,9 @@ describe("openhands session wiring", () => {
 
   test("an error event fails the turn; no events is the no-wire fatal", () => {
     const errorEvent = JSON.stringify({
-      kind: "AgentErrorEvent",
-      source: "agent",
-      error: "the model call failed",
+      kind: "ConversationErrorEvent",
+      source: "environment",
+      code: "ModelError", detail: "the model call failed",
     });
     const failed = parseOpenhandsSessionTurn(turn([errorEvent]), {
       knownConversationId: ID,

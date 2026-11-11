@@ -51,6 +51,7 @@
  *   cap the driver enforces is the stdin frame's, not argv's.
  */
 
+import { sessionIdPattern } from "./id-pattern.js";
 import { featureFloor } from "../harness-contracts.js";
 import { parseCursorResultEnvelope } from "../result-envelope/cursor.js";
 import { emptyUsage } from "../result-envelope.js";
@@ -67,8 +68,7 @@ export const CURSOR_SESSION_FLOOR = featureFloor("cursor", "sessions");
  * mints the id (a lowercase UUIDv4), claims it on the fresh turn, and
  * refuses any other shape before a spawn — the binary's own rule, so a
  * corrupted session record can never reach argv. */
-export const CURSOR_SESSION_ID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+export const CURSOR_SESSION_ID_PATTERN = sessionIdPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
 
 /**
  * Capability flags for cursor sessions (§3.4): live input yes (one caller
@@ -139,7 +139,7 @@ export interface CursorSessionCommand {
 
 /**
  * The per-turn spawn command: the run adapter's headless shape
- * (`cursor-agent --print --output-format json --trust`) with the session
+ * (`cursor-agent --print --output-format stream-json --trust`) with the session
  * flag added — `--new-session-id <id>` on the fresh turn, `--resume <id>`
  * on every later one — then the adapter's own order (model, autonomy).
  * The prompt never rides argv; the driver feeds it on stdin. An id that
@@ -183,9 +183,11 @@ export interface CursorSessionTurnParse {
    * binds the fresh turn too, not only resumed ones. */
   wrongSession: boolean;
   /** True when stdout carried no result line at all (the driver's
-   * tier-3 fatal: the launch ran with --output-format json, and cursor
+   * tier-3 fatal: the launch ran with --output-format stream-json, and cursor
    * prints no result line exactly when the run failed). */
   noWire: boolean;
+  failed: boolean;
+  failureReason: string | null;
 }
 
 /**
@@ -207,6 +209,8 @@ export function parseCursorSessionTurn(
       noSessionId: false,
       wrongSession: false,
       noWire: true,
+      failed: true,
+      failureReason: null,
     };
   }
   const sessionId = parsed.sessionId;
@@ -217,5 +221,8 @@ export function parseCursorSessionTurn(
     noSessionId: sessionId === null,
     wrongSession: sessionId !== null && sessionId !== context.sessionId,
     noWire: false,
+    failed: parsed.isError || (parsed.subtype !== null && parsed.subtype !== "success"),
+    failureReason: parsed.isError ? "Cursor reported is_error" : parsed.subtype !== null && parsed.subtype !== "success"
+      ? `Cursor reported ${parsed.subtype}` : null,
   };
 }

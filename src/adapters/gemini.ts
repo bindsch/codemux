@@ -1,4 +1,5 @@
 import { BaseAdapter } from "./base.js";
+import { previewHome, previewFinalize } from "../run-preview.js";
 import { assertNoGeminiProjectExecutionConfig, assertNoGeminiRepositoryEnv } from "../project-safety.js";
 import { validateWorkingDirectory, UsageRefusalError } from "../validation.js";
 import { statSync } from "node:fs";
@@ -179,7 +180,7 @@ export class GeminiAdapter extends BaseAdapter {
     if (request.hermetic || request.resultJson || experimentSpec || geminiToolPolicy(request) !== null || tokens !== undefined || mcp.check !== null) {
       const home = createGeminiHermeticHome(this.realGeminiDir(), {
           toolsNone: request.tools === "none" || experimentSpec !== undefined,
-          apiKeyAuth: override !== null || (!request.hermetic && !request.resultJson && request.tools !== "none" && tokens === undefined && mcp.check === null),
+          apiKeyAuth: override !== null || (!experimentSpec && !request.hermetic && !request.resultJson && request.tools !== "none" && tokens === undefined && mcp.check === null),
           printOnly,
           preserveCustomization: !request.hermetic && !experimentSpec && (request.resultJson || request.tools === "none" || tokens !== undefined || mcp.check !== null),
           outputLimit: tokens === undefined ? undefined : { model: this.modelFor(request.model)!, tokens },
@@ -217,7 +218,7 @@ export class GeminiAdapter extends BaseAdapter {
   }
 
   override getRunEnv(request: RunRequest, context?: GeminiExperimentContext): Record<string, string> {
-    if ((request.hermetic || request.resultJson || request.enablePlaywrightMcp || geminiToolPolicy(request) !== null || this.validatedProvider()?.maxOutputTokens !== undefined) && context?.geminiHermeticHome === undefined) {
+    if ((request.hermetic || request.resultJson || request.tools === "none" || request.experimentMcp || request.enablePlaywrightMcp || geminiToolPolicy(request) !== null || this.validatedProvider()?.maxOutputTokens !== undefined) && context?.geminiHermeticHome === undefined) {
       throw new Error("gemini hermetic home was not prepared before launch");
     }
     return { ...this.providerEnv(request.model), ...(context?.geminiTelemetryPath ? geminiTelemetryEnvironment(context.geminiTelemetryPath) : {}),
@@ -294,6 +295,7 @@ export class GeminiAdapter extends BaseAdapter {
     const env = this.providerEnv(model);
     const override = this.validatedProvider();
     if (override?.maxOutputTokens === undefined) return { env, finalize: () => {} };
+    if (printOnly) return { env: { ...env, GEMINI_CLI_HOME: previewHome(this.realGeminiDir()) }, finalize: previewFinalize };
     const home = createGeminiHermeticHome(this.realGeminiDir(), {
       apiKeyAuth: true, preserveCustomization: true, printOnly,
       outputLimit: { model: this.modelFor(model)!, tokens: override.maxOutputTokens },

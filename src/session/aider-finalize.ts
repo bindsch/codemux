@@ -7,6 +7,7 @@
  * itself fill in the machinery.
  */
 import { strictLaunchFailureExitCode } from "../sandbox-command.js";
+import { removeFinalPrivateHome } from "./final-private-home.js";
 import type { ResultUsageBlock } from "../types.js";
 import {
   appendSessionCallRecord,
@@ -412,27 +413,22 @@ export abstract class AiderDriverCore {
     this.fsm.transition({ kind: "shutdown_started" });
     this.fsm.transition({ kind: "ended" });
     const ownsRecord = this.registryRecorded || this.resumeClaimed;
-    if (ownsRecord && this.options.registryPath !== null) {
-      releaseSessionRecord(this.options.registryPath, this.options.sessionId);
-    }
-    // Resumable requires an orderly end: the history file is the
-    // resumable state, and a session that ended on a failure may have
-    // left it mid-exchange (a resume would replay a half-written turn).
-    // An open turn answered by synthesis is exactly that mid-exchange
-    // state — aider writes the `#### ` user block when the turn starts
-    // and the reply only at its end, so a killed turn leaves an
-    // unanswered prompt that `--restore-chat-history` would replay —
-    // even when termination is requested during normal shutdown. A
-    // turn that COMPLETED with its prompt unanswered is the same state
-    // whatever its exit code was, including the exit-0 process whose
-    // drained completion ran inside this end path (review round 162).
-    // A nonzero or signal exit still fails the session.
+    // Only an orderly end with no unanswered history prompt is resumable.
+    // A killed or incomplete turn would replay a half-written exchange.
     const resumable =
       this.capabilities.resume &&
       ownsRecord &&
       this.endExitCode === 0 &&
       !this.unansweredPromptRecorded &&
       !openTurnInterrupted && (this.turnInterrupted || !harnessFailed(drainOutcome));
+    if (this.options.final && this.options.privateHome && this.turnSpawnAbandoned) await this.abandonedSpawnHold;
+    const finalRemoved = this.options.final && this.options.privateHome != null
+      ? removeFinalPrivateHome(this.options.privateHome) : false;
+    if (this.options.final && this.options.privateHome && !finalRemoved) this.endExitCode = Math.max(this.endExitCode, 1);
+    if (ownsRecord && this.options.registryPath !== null) {
+      const stamped = releaseSessionRecord(this.options.registryPath, this.options.sessionId, finalRemoved);
+      if (!stamped && finalRemoved) this.endExitCode = Math.max(this.endExitCode, 1);
+    }
     // A later final-flush failure cannot change the already emitted code.
     const reported = this.endExitCode;
     const endFields = {
@@ -440,7 +436,7 @@ export abstract class AiderDriverCore {
         shutdown_requested: this.shutdownWasRequested,
         exit_code: reported,
         usage: this.cumulative,
-        resumable,
+        resumable: resumable && !finalRemoved,
         harness_exit: this.lastChildOutcome,
       };
     const ended = this.lastChildInterrupted

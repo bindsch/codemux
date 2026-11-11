@@ -172,7 +172,7 @@ describe("openhands --result-json", () => {
   });
 
   test("error events fail the run whatever the process exit was", () => {
-    const wire = JSON.stringify({ kind: "AgentErrorEvent", error: { message: "boom" } });
+    const wire = JSON.stringify({ kind: "ConversationErrorEvent", code: "Failure", detail: "boom" });
     const out = openhandsResult(ok(wire), request);
     expect(out.success).toBe(false);
     expect(out.exitCode).toBe(1);

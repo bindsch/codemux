@@ -10,6 +10,7 @@ import type { AutonomyLevel, ReasoningEffort, ToolSelection } from "../types.js"
 import type { SessionProcess } from "./process.js";
 import type { SandboxTrust } from "./registry.js";
 import type { CallerHarnessHome } from "./harness-home.js";
+import type { SessionPrivateHome } from "./private-home-types.js";
 
 export interface AiderDriverOptions {
   /** The codemux-minted session id (the registry key and the history
@@ -44,6 +45,8 @@ export interface AiderDriverOptions {
    * and undefined hermetic would fail open, so the driver arm refuses
    * that combination at construction. */
   hermeticHome?: string;
+  privateHome?: SessionPrivateHome | null;
+  final?: boolean;
   callerHome?: CallerHarnessHome;
   /** The validated working directory — also the registry's cwd record. */
   cwd: string;

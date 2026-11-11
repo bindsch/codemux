@@ -26,7 +26,20 @@ test("aider fresh, resumed, and final sessions use one private home", async () =
     expect(resumed.events.find((event) => event.type === "session_started")?.private_home).toBe(home);
     const final = await fixture.run(["--hermetic", "--resume", id, "--final"]);
     expect(final.exitCode, final.stderr).toBe(0);
+    expect(fixture.record().final).toBe(true);
+    expect(final.events.find((event) => event.type === "session_ended")?.resumable).toBe(false);
     expect(existsSync(home)).toBe(false);
     expect(fixture.observations().map((entry) => entry.redirected)).toEqual([home, home, home]);
+  } finally { fixture.cleanup(); }
+});
+
+test("aider final on its first session stamps the newly minted record", async () => {
+  const fixture = turnLaunchFixture("aider");
+  try {
+    const final = await fixture.run(["--hermetic", "--final"]);
+    expect(final.exitCode, final.stderr).toBe(0);
+    expect(fixture.record().final).toBe(true);
+    expect(final.events.find((event) => event.type === "session_ended")?.resumable).toBe(false);
+    expect(existsSync(fixture.record().harness_home)).toBe(false);
   } finally { fixture.cleanup(); }
 });

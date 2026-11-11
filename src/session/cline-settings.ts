@@ -6,11 +6,12 @@ import { UsageRefusalError } from "../validation.js";
 import { openSessionPrivateHome } from "./private-home.js";
 import type { SessionPrivateHome } from "./private-home-types.js";
 import { CLINE_SESSION_ID_PATTERN } from "./cline-session.js";
+import { scopedResumePattern } from "./scoped-id.js";
 import { isCallerHarnessHome } from "./harness-home.js";
 
 export function openClineSessionHome(stateRoot: string, resumeId?: string): SessionPrivateHome {
   return openSessionPrivateHome({ parent: join(stateRoot, ".codemux-hermetic"), sessionId: resumeId,
-    resume: resumeId !== undefined, idPattern: CLINE_SESSION_ID_PATTERN, blockedPaths: [stateRoot] });
+    resume: resumeId !== undefined, idPattern: scopedResumePattern("cline", CLINE_SESSION_ID_PATTERN), blockedPaths: [stateRoot] });
 }
 
 /** Rebuild private settings before each turn, following the settlement rename.

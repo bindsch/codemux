@@ -72,10 +72,12 @@ describe("Cline session settings and private state", () => {
 });
 
 describe("Cline history command uses synthetic execution only", () => {
+  const launch = { command: ["/synthetic/env", "CLINE_SESSION_BACKEND_MODE=local", "/synthetic/cline", "--acp"],
+    programIndex: 2, env: { CLINE_SESSION_BACKEND_MODE: "local" }, executablePin: { requiredPaths: [], checks: [] } };
   test("history reads the same private roots with a bounded local command", async () => {
-    const usage = await readClineSessionUsage({ sessionId: id, cwd: "/work", home: "/private", env: { CLINE_SESSION_BACKEND_MODE: "auto" },
+    const usage = await readClineSessionUsage({ sessionId: id, cwd: "/work", home: "/private", launch,
       execute: async (command, options) => {
-        expect(command).toEqual(["cline", "--config", "/private/.cline", "history", "--json", "--limit", "2000"]);
+        expect(command).toEqual([...launch.command.slice(0, 3), "--config", "/private/.cline", "history", "--json", "--limit", "2000"]);
         expect(options.env.CLINE_SESSION_BACKEND_MODE).toBe("local"); expect(options.timeoutMs).toBe(10000);
         return { success: true, exitCode: 0, stderr: "", stdout: JSON.stringify([{ sessionId: id, cwd: "/work", metadata: {
           usage: { inputTokens: 7, outputTokens: 2, cacheReadTokens: 1, cacheWriteTokens: 0 },
@@ -84,10 +86,10 @@ describe("Cline history command uses synthetic execution only", () => {
     expect(usage).toEqual({ input_tokens: 6, output_tokens: 2, cached_input_tokens: 1, total_tokens: 9, cost_usd: null });
   });
   test("failure and exceptions leave usage unknown", async () => {
-    expect(await readClineSessionUsage({ sessionId: id, cwd: "/work", env: {}, execute: async (command) => {
+    expect(await readClineSessionUsage({ sessionId: id, cwd: "/work", launch, execute: async (command) => {
       expect(command).not.toContain("--config"); return { success: false, exitCode: 1, stdout: "[]", stderr: "failed" };
     } })).toBeNull();
-    expect(await readClineSessionUsage({ sessionId: id, cwd: "/work", env: {}, execute: async () => { throw new Error("synthetic missing binary"); } })).toBeNull();
+    expect(await readClineSessionUsage({ sessionId: id, cwd: "/work", launch, execute: async () => { throw new Error("synthetic missing binary"); } })).toBeNull();
   });
 });
 

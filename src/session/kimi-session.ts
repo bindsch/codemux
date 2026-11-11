@@ -1,3 +1,4 @@
+import { sessionIdPattern } from "./id-pattern.js";
 import { featureFloor } from "../harness-contracts.js";
 /**
  * The kimi session wiring: the per-turn spawn command over kimi's own
@@ -65,8 +66,7 @@ export const KIMI_SESSION_FLOOR = featureFloor("kimi", "sessions");
 /** The id shape `--session` accepts: `session_` plus a lowercase UUID —
  * the ids kimi's own store mints (verified on disk against 0.31.1:
  * session_index.jsonl keys and the session_<uuid> directories). */
-export const KIMI_SESSION_ID_PATTERN =
-  /^session_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const KIMI_SESSION_ID_PATTERN = sessionIdPattern(/^session_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 
 /**
  * Capability flags for kimi sessions (§3.4): one process per caller input.

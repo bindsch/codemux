@@ -9,8 +9,8 @@ export const content = [{ type: "text", text: " exact\nbytes " }];
 export const resultMessage = { role: "toolResult", toolCallId: "native-1", toolName: name, content, isError: false };
 export const assistant = { role: "assistant", content: [{ type: "toolCall", id: "native-1", name, arguments: {} }] };
 export const stdout = `${JSON.stringify({ type: "message_end", message: assistant })}\n${JSON.stringify({ type: "agent_end" })}\n`;
-export function payload(api: string, messages: JsonObject[] = [resultMessage]): JsonObject {
-  const tool = { name, description: definition.description };
+export function payload(api: string, messages: JsonObject[] = [resultMessage], description = definition.description): JsonObject {
+  const tool = { name, description };
   const results = messages.filter((m) => m.role === "toolResult");
   const calls = messages.filter((m) => m.role === "assistant").flatMap((m) => m.content.filter((c: JsonObject) => c.type === "toolCall"));
   if (api === "anthropic-messages") return { tools: [{ ...tool, input_schema: definition.inputSchema }],
@@ -48,6 +48,11 @@ export function source() {
 
 describe("Pi final provider payload", () => {
   for (const api of ["anthropic-messages", "openai-completions", "openai-responses", "openai-codex-responses", "google-generative-ai", "google-vertex", "google-gemini-cli", "bedrock-converse-stream"]) {
+    test(`${api} preserves the default for an omitted MCP description`, () => {
+      const { description: _description, ...withoutDescription } = definition;
+      expect(verifyPiProviderPayload("test", [withoutDescription], api, payload(api, [resultMessage], ""), [resultMessage])).toEqual(["native-1"]);
+      expect(() => verifyPiProviderPayload("test", [withoutDescription], api, payload(api), [resultMessage])).toThrow("inventory");
+    });
     test(`${api} requires exact inventory and result text`, () => {
       expect(verifyPiProviderPayload("test", [definition], api, payload(api), [resultMessage])).toEqual(["native-1"]);
       const changed = structuredClone(resultMessage); changed.content[0]!.text = "changed";

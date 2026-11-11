@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
 import { driveSession } from "./helpers/session-cli.js";
+import { nativeSessionId } from "../src/session/scoped-id.js";
 
 const FAKE = fileURLToPath(new URL("./fixtures/live/fake-cline-acp.ts", import.meta.url));
 
@@ -53,7 +54,8 @@ describe("CLI - cline sessions over synthetic ACP", () => {
       expect(answer?.text).toBe("echo: hello");
       expect(first.completed.usage).toMatchObject({ input_tokens: 10, output_tokens: 2, cached_input_tokens: 3 });
       const id = String(first.completed.session_id);
-      expect(id).toMatch(/^\d{13,}_[A-Za-z0-9_-]{5}_cli$/);
+      expect(id).toStartWith("cline-");
+      expect(nativeSessionId("cline", id)).toMatch(/^\d{13,}_[A-Za-z0-9_-]{5}_cli$/);
 
       const second = await oneTurn(["--resume", id], r.env, "again");
       expect(second.exitCode).toBe(0);

@@ -30,7 +30,6 @@ import type { SessionProcess } from "./process.js";
 import {
   claimForResume,
   discardUnconfirmedRecord,
-  recordSessionEnd,
   releaseSessionRecord,
 } from "./registry.js";
 import type { SessionPrivateHome } from "./private-home-types.js";
@@ -147,8 +146,8 @@ export function registerSessionCommand(
         // The same --final predicate the driver options carry
         // (cli-drivers.ts): the end path alone stamps the record final,
         // and only after the removal (review round 10, edges 4; round
-        // 16, edges 1). Plain --hermetic qualifies; opencode has no
-        // session-keyed home, so its --final decides about nothing.
+        // 16, edges 1). Plain --hermetic qualifies, including opencode's
+        // persistent session home.
         const finalSession = Boolean(options.final) && hermetic;
         // A print-only invocation records NOTHING (round 17, edges 2; cli-spawn-prep.ts has the story).
         const printOnly = Boolean(options.printSandbox);
@@ -251,7 +250,6 @@ export function registerSessionCommand(
         const {
           driver,
           claudeDriver,
-          agyDriver,
           aiderDriver,
           aiderSessionId,
           aiderPrivateHome,
@@ -301,10 +299,8 @@ export function registerSessionCommand(
           });
         // LANE S1 (flagged edit): a hermetic aider session opens its
         // private home inside the driver arm (the session id that keys
-        // it is minted there), so it is bound here — after the arm,
-        // before the spawn — for the catch and the finally that own its
-        // removal, the same positions codex and kimi reach through the
-        // launch phase above.
+        // it is minted there). Bind it here for pre-spawn failure cleanup;
+        // the driver's end path owns final removal before record release.
         if (aiderPrivateHome !== null) {
           sessionPrivateHome = aiderPrivateHome;
         }
@@ -459,22 +455,9 @@ export function registerSessionCommand(
           if ((finalSession || orphaned) && !claudeDriver?.finalRemovalRan && !sessionProjectDirResumed) {
             finalRemovalFailed = !removeFinalProjectDir(sessionProjectDir);
           }
-          // --final divides by family: the codex and kimi drivers settle
-          // their homes only, so the CLI removes them here (after run(),
-          // the spawn hold, and cleanupRun); the agy and claude-family
-          // drivers remove in their end paths before the end stamp, and a
-          // home agy's end path decided (finalRemovalRan) is never
-          // re-decided here; the call covers agy's no-child end only. A
-          // fresh session's harness id never reaches the CLI, so only a
-          // --final RESUME stamps its record; a fresh record stays
-          // resumable while its home is gone (the next --resume: 78).
-          if (agentId !== "opencode" && sessionPrivateHome !== null && finalSession && !agyDriver?.finalRemovalRan) {
-            finalRemovalFailed =
-              !removeFinalProjectDir(sessionPrivateHome) || finalRemovalFailed;
-            if (!finalRemovalFailed && resumeId !== undefined) {
-              recordSessionEnd(registryPath, resumeId, true);
-            }
-          }
+          // Every private-home driver removes and stamps --final while
+          // it still owns the record. Post-release removal could delete
+          // a concurrent resume's home, so the CLI never repeats it.
         }
         unframe();
         driver.dispose();

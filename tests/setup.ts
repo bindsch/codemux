@@ -1,12 +1,7 @@
 /**
- * The test-run ledger redirect: `--preload` loads this file before every
- * test module, and it points `CODEMUX_TEST_LEDGER` at a per-process temp
- * file so the suite's appends never touch the operator's real ledger
- * (call-log.ts consults the variable only when `CODEMUX_CALL_LOG` is
- * unset — round ul4; the old `NODE_ENV=test` detection is gone, because a
- * generic variable another process may set silently discarded real
- * records). An exported `CODEMUX_TEST_LEDGER` (CI pinning one path for a
- * whole run) keeps its word.
+ * The preload replaces inherited ledger and state roots before tests run.
+ * Neither an operator's CALL_LOG nor an inherited TEST_LEDGER may redirect
+ * test receipts outside this process's fresh temporary directory.
  */
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,7 +21,12 @@ mkdirSync(join(import.meta.dir, "../scratch/fix"), { recursive: true });
 agyKeychainHost.home = () => dir;
 // Nor may the claude session canary's control copy the operator's mirror.
 sessionCanary.credentialSource = () => join(dir, "no-claude-credential.json");
-process.env.CODEMUX_TEST_LEDGER ??= join(dir, "calls.jsonl");
+delete process.env.CODEMUX_CALL_LOG;
+process.env.CODEMUX_TEST_LEDGER = join(dir, "calls.jsonl");
+process.env.HOME = dir;
+process.env.USERPROFILE = dir;
+for (const [name, suffix] of Object.entries({ XDG_CONFIG_HOME: ".config", XDG_DATA_HOME: ".local/share",
+  XDG_STATE_HOME: ".local/state", XDG_CACHE_HOME: ".cache" })) process.env[name] = join(dir, suffix);
 // In-process launch-command tests must not consult the operator's real
 // usagemux through the quota gate (an expired host credential would fail
 // the suite; a healthy one would pass it only by luck). The seam is a

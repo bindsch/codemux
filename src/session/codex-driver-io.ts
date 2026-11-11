@@ -95,6 +95,8 @@ export interface CodexDriverOptions extends CodexSessionSettings {
    * registry's harness_home, and settled by the end path once the child
    * is gone (the long-lived app-server cannot survive the rename). */
   privateHome?: SessionPrivateHome | null;
+  /** Remove the owned private home before releasing the session record. */
+  final?: boolean;
   /** Injectable event sink; defaults to codemux stdout, one line each. */
   sink?: (line: string) => Promise<void> | void;
 }
@@ -364,7 +366,7 @@ export abstract class CodexDriverIo {
   /** A tier-3 fatal from the process layer (non-UTF-8, line overflow). */
   handleFatal(fatal: SessionFatal): void {
     if (this.settled) return;
-    if (fatal.kind === "handler" || fatal.kind === "read-error") {
+    if ("error" in fatal) {
       console.error(`codemux: ${codemuxFatalMessage(fatal)}`, fatal.error);
       this.emitError(true, "codemux", codemuxFatalMessage(fatal));
       void this.finish("crash", 1);

@@ -263,8 +263,8 @@ export async function launchRunRequest(
       options.requestedAutonomy,
       options.sandboxPolicyOverrides
     );
-    adapter.validateRunRequest(request);
-    adapter.beforeLaunch();
+    adapter.validateRunRequest(request, { printOnly: options.printSandbox === true });
+    if (!options.printSandbox) adapter.beforeLaunch();
     // The resolved trust rides into prepareRun so per-run scratch can be
     // shaped for the sandbox the child will actually run in (an untrusted
     // sandbox denies harness state, where codex's fallback file lives).
@@ -273,7 +273,7 @@ export async function launchRunRequest(
     context = adapter.prepareRun(request, sandboxOptions.trust, sandboxOptions, { printOnly: options.printSandbox === true });
     if (adapter.id === "copilot" && request.resultJson && !request.experimentMcp) (adapter as CopilotAdapter).prepareCopilotModelRun({ ...request, sandboxTrust: sandboxOptions.trust }, context, options.printSandbox);
     if (options.harnessVersion !== undefined) context.harnessVersion = options.harnessVersion;
-    releaseExitCleanup = registerRunExitCleanup(adapter, context);
+    if (!options.printSandbox) releaseExitCleanup = registerRunExitCleanup(adapter, context);
     if (context.agyProbe?.diagnostic && context.agyProbe.operatorHome) {
       // Shared temp storage is hidden. Expose only this check's HOME,
       // never the planted parent or cwd; --ro still protects the project.
@@ -353,10 +353,10 @@ export async function launchRunRequest(
     // scode that cannot exempt it refuses the launch rather than running
     // it stripped (the session spawns' rule, withKeepEnvExemption).
     const injectedEnv = {
-      ...adapter.getEnv(),
+      ...adapter.getEnv({ printOnly: options.printSandbox === true }),
       ...adapter.getRunEnv(request, context),
     };
-    const envArg = adapter.buildExecutionEnv(injectedEnv, request.passthroughEnv);
+    const envArg = adapter.buildExecutionEnv(injectedEnv, request.passthroughEnv, { printOnly: options.printSandbox === true });
     // Probe the same binaries and environment that the sandbox runner resolves.
     // The floor comes from SCODE_FLOORS, the table doctor reads, so a launch
     // refusal and the SANDBOX-TOO-OLD row cannot disagree on the number.
@@ -431,6 +431,11 @@ export async function launchRunRequest(
       redirectCheck,
       (command, checks, resolvedPolicy) => {
         if (adapter.id === "codex") codexCostBinding = { command, checks, env: envArg,
+          onSignaled: async () => {
+            recordInterruption();
+            try { await cleanup(); }
+            finally { appendInterruptedLaunchReceipt(provider, request, options, runContext, startedAt); }
+          },
           options: { cwd: options.cwd, sandboxed: true, autonomy: options.requestedAutonomy,
             sandboxOptions: resolvedPolicy, envOmissions: adapter.getEnvOmissions() } };
       }

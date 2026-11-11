@@ -52,6 +52,7 @@ export abstract class TurnDriverRecord extends TurnDriverCore {
         buildEvent(++this.seq, this.sessionIdOrEmpty(), "session_started", null, {
           agent: this.options.profile.agent,
           model: this.options.model ?? null,
+          ...this.modelFields(null),
           autonomy: this.options.autonomy,
           cwd: this.options.cwd,
           sandboxed: this.options.sandboxed,

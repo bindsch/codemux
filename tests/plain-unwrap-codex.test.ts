@@ -32,7 +32,7 @@ describe("codexPlainResult", () => {
 
   test("a stderr without the figure records nothing", () => {
     const raw = { stdout: "the reply\n", stderr: "no summary here\n", exitCode: 0, success: true };
-    expect(codexPlainResult(raw)).toEqual(raw);
+    expect(codexPlainResult(raw)).toEqual({ ...raw, reply: "" });
     expect(codexPlainResult(raw).usage).toBeUndefined();
   });
 

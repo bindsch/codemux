@@ -65,7 +65,7 @@ export function registerCheckCommand(
     )
     .option(
       "--session",
-      "With --hermetic: the session form of the canary — three codemux sessions (hermetic, control, resumed with --final) against planted files"
+      "With --hermetic: five codemux sessions (hermetic, control, resumed with --final, caller-owned home, caller-owned resume) against planted files"
     )
     .option("--tools <selection>", "Built-in tools for the probe: default, none")
     .option("--experiment-mcp <spec.json>", "Extend a supported hermetic canary with an experiment MCP server, including Qwen's explicit-file control")
@@ -308,7 +308,7 @@ export function registerCheckCommand(
           // visible here, and a name that is ambient but not passed through
           // is not — the same environment the run gates decide against.
           agentId, adapter.binaryName, options.cwd,
-          adapter.buildExecutionEnv(adapter.getEnv(), passthroughEnv),
+          adapter.buildExecutionEnv({}, passthroughEnv, { printOnly: Boolean(options.printSandbox) }),
           autonomy, Boolean(options.sandbox), passthroughEnv
         );
         launch.harnessVersion = harnessVersion;

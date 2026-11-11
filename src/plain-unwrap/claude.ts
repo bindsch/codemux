@@ -12,10 +12,10 @@ import { diagnosticExcerpt, failed, jsonShapedStdout, plainText } from "./common
  * claude/zai: stdout should be the single JSON result object (the stream's
  * `result` event, or the envelope `--output-format json` prints). Stdout
  * no binary asked for a structured format
- * would print — plain text that is not JSON — passes through verbatim,
+ * would print — plain text that is not JSON — stays as diagnostics,
  * except empty stdout: a zero-exit run that printed nothing produced
  * neither the envelope nor a reply, and an empty success is a failed run
- * (round 259; kimi's stream-json rule, review round 46). JSON that is
+ * (result-empty also fails nonempty unverified text). JSON that is
  * not a parseable envelope never does: any complete JSON value that is
  * not it (an array, a scalar, an unrecognized object), and an object a
  * kill or the capture cap cut mid-write, both fail the run with the
@@ -33,7 +33,7 @@ export function claudeFamilyPlainResult(result: RunResult, agent: AgentId): RunR
         ""
       );
     }
-    if (!jsonShapedStdout(result.stdout)) return result;
+    if (!jsonShapedStdout(result.stdout)) return { ...result, reply: "" };
     return failed(
       result,
       `codemux: ${agent} printed JSON-shaped stdout that is not a result ` +

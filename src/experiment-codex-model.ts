@@ -3,6 +3,7 @@ import { readUtf8FileBounded } from "./file-io.js";
 import { CODEX_EXPERIMENT_CATALOG_REMOVED, codexExperimentCatalogEntry } from "./experiment-codex-catalog.js";
 import { ExperimentFailure, ExperimentFailureCode as Code } from "./experiment-records.js";
 import { MAX_MODEL_NAME_BYTES, validateModelName } from "./validation.js";
+import { timestampValid } from "./calendar.js";
 
 const MAX_MODEL_CACHE_BYTES = 2 * 1024 * 1024;
 const MAX_CATALOG_BYTES = 1024 * 1024;
@@ -99,7 +100,7 @@ function sourceFailure(sourcePath: string, reason: string): ExperimentFailure {
 function unavailableFailure(model: string, sourcePath: string, fetchedAt: unknown, models: unknown[]): ExperimentFailure {
   // Treat diagnostic metadata as untrusted. Never stringify arbitrary cache values.
   const timestamp = fetchedAt === undefined ? "<missing>" :
-    typeof fetchedAt === "string" && FETCHED_AT_PATTERN.test(fetchedAt) && Number.isFinite(Date.parse(fetchedAt))
+    typeof fetchedAt === "string" && FETCHED_AT_PATTERN.test(fetchedAt) && timestampValid(fetchedAt)
       ? fetchedAt : "<invalid>";
   const slugs = new Set(models.flatMap((entry) => {
     if (!isObject(entry) || typeof entry.slug !== "string" || entry.slug.length > MAX_MODEL_NAME_BYTES ||

@@ -26,9 +26,12 @@
 
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, renameSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { RUN_PREFIX, assertTrustedDirectory, prepareRunDirParent } from "../hermetic-home.js";
+import { assertTrustedDirectory, prepareRunDirParent } from "../hermetic-home.js";
+import { runDirectoryPrefix } from "../run-directory-owner.js";
 import type { SessionHold } from "./registry.js";
-import { recordTrustedParent, removeUnderTrustedParentOrThrow } from "../safe-remove.js";
+import { assertDirectChildPath, assertTrustedParentUnchanged, recordTrustedParent, removeUnderTrustedParentOrThrow } from "../safe-remove.js";
+import { SAFE_SESSION_ID_PATTERN } from "./id-pattern.js";
+import { sessionKeyedHomePath } from "./private-home-key.js";
 import type { TrustedParentRecord } from "../safe-remove.js";
 import type { SessionPrivateHome } from "./private-home-types.js";
 
@@ -75,7 +78,7 @@ function sessionDirName(sessionId: string): string {
 }
 
 function assertIdShape(open: SessionPrivateHomeOpen, sessionId: string): void {
-  if (!open.idPattern.test(sessionId)) {
+  if (!SAFE_SESSION_ID_PATTERN.test(sessionId) || !open.idPattern.test(sessionId)) {
     throw new Error(
       `a session private home is keyed by the session id; '${sessionId}' does not match ` +
         "the id shape this agent's sessions resume by"
@@ -108,11 +111,20 @@ function populateOrRemove(
 ): void {
   if (open.populate === undefined) return;
   try {
+    checkedChild(dir, parentRecord);
+    assertTrustedDirectory(dir);
     open.populate(dir);
   } catch (error) {
     removeUnderTrustedParentOrThrow(dir, parentRecord, `the private home ${dir}`);
     throw error;
   }
+}
+
+/** Recheck containment and parent identity before each child operation. */
+function checkedChild(path: string, record: TrustedParentRecord): string {
+  assertDirectChildPath(path, record.path);
+  assertTrustedParentUnchanged(record, "the private home parent");
+  return path;
 }
 
 /** The refusal a fresh open reads when its keyed name is taken:
@@ -177,10 +189,8 @@ export function openSessionPrivateHome(open: SessionPrivateHomeOpen): SessionPri
         "a resumed hermetic session must be opened with its recorded session id"
       );
     }
-    const dir = join(parent, sessionDirName(knownId));
-    // A link or a foreign-owned directory must not become the home a
-    // resumed child writes into.
-    assertResumableHome(dir, knownId);
+    const dir = sessionKeyedHomePath(parent, knownId);
+    assertResumableHome(checkedChild(dir, parentRecord), knownId);
     return {
       dir,
       resumed: true,
@@ -193,14 +203,15 @@ export function openSessionPrivateHome(open: SessionPrivateHomeOpen): SessionPri
 
   if (knownId !== undefined) {
     // The id is known before the spawn: create the settled name at once.
-    const dir = join(parent, sessionDirName(knownId));
-    if (existsSync(dir)) {
+    const dir = sessionKeyedHomePath(parent, knownId);
+    if (existsSync(checkedChild(dir, parentRecord))) {
       throw refuseExisting("session", knownId, dir);
     }
-    mkdirSync(dir, { mode: 0o700 });
+    mkdirSync(checkedChild(dir, parentRecord), { mode: 0o700 });
     // Stated whatever the umask is (prepareRunDirParent's rule): a
     // narrower creation mode would refuse the harness's own writes.
-    chmodSync(dir, 0o700);
+    assertTrustedDirectory(checkedChild(dir, parentRecord));
+    chmodSync(checkedChild(dir, parentRecord), 0o700);
     populateOrRemove(open, dir, parentRecord);
     return {
       dir,
@@ -216,10 +227,11 @@ export function openSessionPrivateHome(open: SessionPrivateHomeOpen): SessionPri
   // (the dead-run sweep's shape), settle on the hint. `dir` and
   // `remove` follow the rename, so a settled home reports and removes
   // the path it actually sits on.
-  const runShaped = mkdtempSync(join(parent, `${RUN_PREFIX}${process.pid}-`));
+  const runShaped = mkdtempSync(checkedChild(join(parent, runDirectoryPrefix()), parentRecord));
   // mkdtemp answers 0700; the mode is stated so a wider umask cannot
   // leave the home narrower than that.
-  chmodSync(runShaped, 0o700);
+  assertTrustedDirectory(checkedChild(runShaped, parentRecord));
+  chmodSync(checkedChild(runShaped, parentRecord), 0o700);
   populateOrRemove(open, runShaped, parentRecord);
   let currentPath = runShaped;
   let settled = false;
@@ -235,11 +247,12 @@ export function openSessionPrivateHome(open: SessionPrivateHomeOpen): SessionPri
       // Idempotent: the rename happens on the first hint only.
       if (settled) return;
       assertIdShape(open, sessionId);
-      const target = join(parent, sessionDirName(sessionId));
-      if (existsSync(target)) {
+      const target = sessionKeyedHomePath(parent, sessionId);
+      if (existsSync(checkedChild(target, parentRecord))) {
         throw refuseExisting("session", sessionId, target);
       }
-      renameSync(currentPath, target);
+      assertTrustedDirectory(checkedChild(currentPath, parentRecord));
+      renameSync(checkedChild(currentPath, parentRecord), checkedChild(target, parentRecord));
       currentPath = target;
       settled = true;
     },

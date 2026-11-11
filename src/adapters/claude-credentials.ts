@@ -43,7 +43,7 @@ export abstract class ClaudeCredentialAdapter extends BaseAdapter {
    */
   protected reportProfileRedirects(label: string, passthrough: readonly string[]): void {
     const redirects = ClaudeCredentialAdapter.PROFILE_REDIRECTS.filter(
-      (name) => passthrough.includes(name) && name in this.environment
+      (name) => passthrough.includes(name) && typeof this.environment[name] === "string"
     );
     for (const redirect of redirects) {
       const dir = this.environment[redirect] as string;

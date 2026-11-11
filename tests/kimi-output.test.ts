@@ -42,6 +42,7 @@ describe("Kimi headless reply output", () => {
     expect(adapter.processRunResult(result, request, { harnessVersion: "2.3.2" })).toEqual({
       ...result,
       stdout: expected,
+      ...(expected === stdout ? { reply: "" } : {}),
       scanSurface: `${result.stdout}\n${result.stderr}\n`,
     });
   });

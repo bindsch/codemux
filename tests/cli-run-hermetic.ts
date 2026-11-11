@@ -3,9 +3,9 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  createRunFakeBinaryEnv as createFakeBinaryEnv,
   runCli,
 } from "./helpers/cli.js";
+import { createAnswerFakeBinaryEnv as createFakeBinaryEnv } from "./helpers/native-answer-cli.js";
 
 describe("CLI - Hermetic runs", () => {
   test("run --hermetic is refused for a harness without a verified mechanism", async () => {
@@ -132,7 +132,9 @@ describe("CLI - Hermetic runs", () => {
       );
       expect(exitCode).toBe(1);
       expect(stdout).toBe("");
-      expect(stderr).toContain("proved nothing: clean too");
+      expect(stderr).toContain("proved nothing:");
+      expect(stderr).toContain("OK");
+      expect(stderr).toContain("without the planted code word");
     } finally {
       fake.cleanup();
     }
@@ -149,7 +151,9 @@ describe("CLI - Hermetic runs", () => {
       );
       expect(exitCode).toBe(1);
       expect(stdout).toBe("");
-      expect(stderr).toContain("proved nothing: answered 'I cannot determine that' without the planted code word");
+      expect(stderr).toContain("proved nothing: answered");
+      expect(stderr).toContain("I cannot determine that");
+      expect(stderr).toContain("without the planted code word");
     } finally {
       fake.cleanup();
     }

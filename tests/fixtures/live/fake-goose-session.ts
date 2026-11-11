@@ -5,19 +5,19 @@
  * 1.50.1): the turn is `goose run [--resume --session-id <id>]
  * --output-format json -t <prompt>` with the autonomy carried by the
  * environment (GOOSE_MODE and friends — this fake reads argv only), and
- * stdout is human-readable progress lines around ONE final JSON object
- * `{content, session_id, usage:{inputTokens, outputTokens,
- * cacheReadTokens, cacheWriteTokens}}`; the parser takes the LAST
- * parseable object line. This fixture renders the wire itself and
+ * stdout is a startup banner followed by pretty `{messages, metadata}`
+ * JSON. The identity is in the banner, not in an assistant message.
+ * Source: goose-cli v1.50.1 session/output.rs and session/mod.rs.
+ * This fixture renders the wire itself and
  * imports nothing from src/ — the fixture models the harness, so the
  * codemux parser and this file are two independent renderings of the
  * same pinned source.
  *
- * The session identity is deferred: goose mints the id (the date_time
- * shape, '20250921_143022'), a fresh turn's argv carries no session
- * flag and the object names the minted id, and a resumed turn's argv
+ * The session identity is deferred: goose mints a UTC date and counter
+ * (SessionStorage::create_session), a fresh turn's argv carries no session
+ * flag and the banner names the minted id, and a resumed turn's argv
  * carries BOTH --resume and --session-id (the binary's own rule) and
- * the object must name that same id back.
+ * the banner must name that same id back.
  *
  * The scenario is the prompt's `scenario:<name>` prefix. Everything
  * received (argv, stdin bytes) is recorded as JSONL under
@@ -68,17 +68,16 @@ const flagValue = (
 const prompt = flagValue(args, ["-t", "--text"]) ?? "";
 record("stdin.jsonl", { prompt, bytes: Buffer.byteLength(prompt, "utf8"), eof: true });
 
-// The id this fake mints for a fresh session (the binary's date_time
-// mint; any same-shape token exercises the same contract).
-const MINTED_ID = "20261109_120000";
-const OTHER_ID = "20261109_130000";
+// Native date-counter IDs, deliberately shorter than the legacy help example.
+const MINTED_ID = "20261109_1";
+const OTHER_ID = "20261109_2";
 
 const resultObject = (sessionId: string, text: string): string =>
-  `${JSON.stringify({
-    content: text,
-    session_id: sessionId,
-    usage: { inputTokens: 110, outputTokens: 20, cacheReadTokens: 10, cacheWriteTokens: 5 },
-  })}\n`;
+  `\n    __( O)>  ● new session · fixture model\n   \\____)     ${sessionId} · /workspace\n     L L     goose is ready\n${JSON.stringify({
+    messages: [{ role: "assistant", id: "reply", content: [{ type: "text", text }] }],
+    metadata: { status: "completed", total_tokens: 135, input_tokens: 110, output_tokens: 20,
+      cache_read_input_tokens: 10, cache_write_input_tokens: 5 },
+  }, null, 2)}\n`;
 
 const contractHolds =
   args.includes("run") && args.includes("json") && (args.includes("-t") || args.includes("--text"));

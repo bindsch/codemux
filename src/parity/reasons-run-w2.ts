@@ -37,6 +37,10 @@ export const W2_RUN_LIMITATIONS = {
     "OpenHands 1.16.0 exposes no spend limit: the parser's whole option list carries no budget flag, and the env-override surface reads only the LLM trio.",
     `2026-11-09: ${OPENHANDS_ARGPARSE}; agent_store.py LLMEnvOverrides.from_env reads exactly LLM_API_KEY, LLM_BASE_URL, LLM_MODEL`,
     "openhands has no spend limit flag; --max-budget-usd is unsupported", "tests/cli-run-budget.test.ts"),
+  qwenServed: limitation(
+    "Qwen 0.24.0 assistant message.model is the configured model, not provider-reported identity; served_model remains null.",
+    "2026-11-11: installed @qwen-code/qwen-code 0.24.0 chunks/chunk-6XRR4RYH.js:145-158 buildMessage assigns message.model=this.config.getModel(); lines 1293-1304 do the same for message_start. Neither reads the provider response model.",
+    "served_model: null", "tests/review-r201-r7-results.test.ts"),
   qwenCost: limitation(
     "Qwen 0.24.0's stream-json wire reports usage as usageMetadata token counters only; no event or result frame carries a dollar cost, and the package contains no cost symbol, so cost_usd stays null.",
     "2026-11-09: @qwen-code/qwen-code 0.24.0 package (package.json); the result frames carry usageMetadata token counts; grep over every chunk for total_cost, cost_usd, totalCost, and costUSD finds no symbol",
@@ -50,19 +54,19 @@ export const W2_RUN_LIMITATIONS = {
     "2026-11-09: @qwen-code/qwen-code 0.24.0 chunk-HWKWZSZY.js offset 2085997: mergedDeny spreads bareMode||safeMode ? [] : settings.permissions?.deny and the same for settings.tools?.exclude, while argv excludeTools still merge; SettingScope.Workspace exists (chunk-VPFKSRAB.js) but its rules cannot survive safe mode; src/adapters/qwen.ts always passes --safe-mode",
     "qwen has no project setting source mapping", "tests/experiment-project-settings.test.ts"),
   agyNoneEffort: limitation(
-    "Agy's reasoning-effort vocabulary is low, medium, high, xhigh, and max; no none level exists, so an explicit none request is refused while an omitted effort stays the harness default.",
-    "2026-11-09: installed ~/.local/bin/agy (1.5.3) offset 61283926: 'Reasoning effort for the current CLI session (low|medium|high|xhigh|max)'; src/adapters/base-validate.ts effort gate",
+    "Agy's reasoning-effort vocabulary is low, medium, high, xhigh, and max; no none level exists, so codemux omits the effort flag for none and keeps the harness default.",
+    "2026-11-09: installed ~/.local/bin/agy (1.5.3) offset 61283926: 'Reasoning effort for the current CLI session (low|medium|high|xhigh|max)'; src/cli-runtime/options.ts effort resolution",
     "agy does not support reasoning effort 'none'", "tests/cli-runtime-options.test.ts"),
   agyServed: limitation(
     "Agy's print-mode result envelope carries status, response, error, and usage token counts — no model field on the envelope or any stream frame, so the served model cannot be observed.",
     "2026-11-09: installed ~/.local/bin/agy (1.5.3) result envelope field set pinned by the official headless docs and the binary's JSON tags (src/result-envelope/agy.ts); no model key on any frame",
     "served_model: null", "tests/result-envelope-agy.test.ts"),
   agyPlaywright: limitation(
-    "The carrier is in-tree: every sandboxed run's private probe home carries the planted ~/.gemini/config/mcp_config.json with the trust-checked Playwright stdio server (src/agy-playwright-mcp.ts, tests/agy-playwright-mcp.test.ts), and the adapter refuses the flag without scode. The shared activation — the PLAYWRIGHT_MCP_AGENTS entry and the run-command gate — rides scratch/fix/w2-playwright.patch; until it lands, the CLI keeps refusing the flag for agy.",
+    "The carrier is in-tree: every sandboxed run's private probe home carries the planted ~/.gemini/config/mcp_config.json with the trust-checked Playwright stdio server (src/agy-playwright-mcp.ts, tests/agy-playwright-mcp.test.ts), and the adapter refuses the flag without scode. The CLI refuses the flag for agy because shared run activation is not implemented.",
     "2026-11-09: installed ~/.local/bin/agy (1.5.3) strings 'Global Configuration: ~/.gemini/config/mcp_config.json' and the mcp subcommands note ('managing MCP servers in your user-level mcp_config.json', stdio and HTTP both); src/adapters/agy.ts prepareRun planting and the no-sandbox refusal; src/mcp.ts PLAYWRIGHT_MCP_AGENTS omits agy",
     "--enable-playwright-mcp is supported only by", "tests/agy-playwright-mcp.test.ts"),
   openhandsPlaywright: limitation(
-    "The carrier is in-tree: a hermetic run's private persistence dir carries the planted mcp.json with the trust-checked Playwright stdio server (src/openhands-mcp.ts, tests/openhands-mcp.test.ts), the env prefix pins OPENHANDS_PERSISTENCE_DIR at that dir, and the adapter refuses the flag without --hermetic (a plain run shares the operator's persistence dir, and planting there would outlive the run). The shared activation — the PLAYWRIGHT_MCP_AGENTS entry and the hermetic-combination gate's exception — rides scratch/fix/w2-playwright.patch.",
+    "The carrier is in-tree: a hermetic run's private persistence dir carries the planted mcp.json with the trust-checked Playwright stdio server (src/openhands-mcp.ts, tests/openhands-mcp.test.ts), the env prefix pins OPENHANDS_PERSISTENCE_DIR at that dir, and the adapter refuses the flag without --hermetic (a plain run shares the operator's persistence dir, and planting there would outlive the run). The CLI refuses the flag for OpenHands because shared run activation is not implemented.",
     "2026-11-09: openhands 1.16.0 openhands_cli/locations.py MCP_CONFIG_FILE='mcp.json' and mcp/mcp_utils.py _get_mcp_config_path (get_persistence_dir()/mcp.json; the agent's own error help names ~/.openhands/mcp.json); src/adapters/openhands.ts prepareRun planting and the non-hermetic refusal; src/mcp.ts PLAYWRIGHT_MCP_AGENTS omits openhands and src/run-command.ts:240 refuses hermetic+playwright generically",
     "--enable-playwright-mcp is supported only by", "tests/openhands-mcp.test.ts"),
   agyCost: limitation(

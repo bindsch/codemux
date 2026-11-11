@@ -13,7 +13,7 @@
  * disk, argv, or an operator file: the file records only the name
  * `CODEMUX_PI_PROVIDER_API_KEY`, and the value rides the environment
  * codemux itself provides, which is also what lets the override survive
- * `--hermetic` should pi ever gain that mode.
+ * `--hermetic` without reading the operator's settings.
  *
  * The private directory replaces pi's agent directory for the run: the
  * operator's `settings.json` (extension sources), stored `auth.json`

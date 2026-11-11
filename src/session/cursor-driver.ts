@@ -3,7 +3,7 @@
  * codemux-minted UUIDv4 identity claimed on the fresh turn
  * (--new-session-id) and resumed on every later one (--resume), the
  * prompt on stdin, and the one result line of
- * `--output-format json` as the turn's whole verdict
+ * `--output-format stream-json` as the turn's whole verdict
  * (src/session/cursor-session.ts). Not hermetic-capable: the session CLI
  * refuses --hermetic for cursor, and the driver's private home stays
  * null.
@@ -62,11 +62,8 @@ export const CURSOR_DRIVER_PROFILE: TurnAgentProfile = {
       noSessionId: parsed.noSessionId,
       wrongSession: parsed.wrongSession,
       noWire: parsed.noWire,
-      // The wire has no structured failure field: a failed cursor run
-      // prints no result line at all (the module's pin), which is the
-      // noWire fatal; anything else fails on the exit code alone.
-      failed: false,
-      failureReason: null,
+      failed: parsed.failed,
+      failureReason: parsed.failureReason,
     };
   },
 };

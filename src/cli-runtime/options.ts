@@ -224,11 +224,8 @@ export function resolveEffortForAdapter(
   requested?: ReasoningEffort
 ): ReasoningEffort | undefined {
   if (!requested) return undefined;
-  // `none` is the CLI's "send no effort flag" spelling, one rule on every
-  // adapter (docs/cli.md): a harness whose effort list has no native
-  // `none` — whether it lacks effort support entirely (kimi, cursor) or
-  // carries levels without it (claude, agy, opencode) — launches with no
-  // effort flag, and only a value the adapter claims to accept survives.
+  // Preserve native `none` where declared. Without that native value,
+  // omit effort configuration, including on agents with no effort support.
   if (requested === "none" && !caps.effortLevels.includes("none")) {
     return undefined;
   }

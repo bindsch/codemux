@@ -10,8 +10,13 @@ import { awaitFinalFlush } from "./process.js";
 import type { TurnChild } from "./kimi-machine.js";
 import { releaseSessionRecord } from "./registry.js";
 import { KimiDriverIo } from "./kimi-driver-io.js";
+import { removeFinalPrivateHome } from "./final-private-home.js";
+import { isCallerHarnessHome } from "./harness-home.js";
 
 export abstract class KimiDriverFinalize extends KimiDriverIo {
+  protected finalHomeRemoved = false;
+  protected finalHomeRemovalFailed = false;
+  private registryReleased = false;
 
   // --- the two procedures ----------------------------------------------------
 
@@ -70,7 +75,16 @@ export abstract class KimiDriverFinalize extends KimiDriverIo {
     // before children_settled releases the record, so a resume never
     // meets a free record whose keyed home is missing.
     if (!this.state.spawnAbandoned) this.cleanupNoToolsProfile();
+    const finalRequested = this.options.final && this.options.privateHome != null && !isCallerHarnessHome(this.options.privateHome);
+    // An abandoned spawn can still create a child that uses this home.
+    // Final removal must wait even when the ordinary end can report early.
+    if (finalRequested && this.state.spawnAbandoned) await this.holdReleased;
     this.settlePrivateHome();
+    if (finalRequested) {
+      this.finalHomeRemoved = removeFinalPrivateHome(this.options.privateHome);
+      this.finalHomeRemovalFailed = !this.finalHomeRemoved;
+      if (this.state.spawnAbandoned) this.releaseRegistryRecord();
+    }
     this.deliver({ kind: "children_settled" });
   }
 
@@ -161,8 +175,10 @@ export abstract class KimiDriverFinalize extends KimiDriverIo {
   /** The registry release, once no child of this session can exist
    * anymore (children_settled, or the hold's tail). */
   protected releaseRegistryRecord(): void {
-    if (!this.hasRegistryRecord()) return;
-    releaseSessionRecord(this.options.registryPath!, this.state.sessionId!);
+    if (this.registryReleased || !this.hasRegistryRecord()) return;
+    this.registryReleased = true;
+    const stamped = releaseSessionRecord(this.options.registryPath!, this.state.sessionId!, this.finalHomeRemoved);
+    if (!stamped && this.finalHomeRemoved) this.finalEmissionFailed = true;
   }
 
   /** The final step: flush what remains of the event stream, then hand

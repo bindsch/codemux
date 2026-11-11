@@ -100,7 +100,7 @@ test("CLI project-settings and experiment prose equal declared agent sets", () =
 });
 
 test("CLI prompt transport prose equals the current-binary declaration", () => {
-  const stdin = cli.match(/fallback\. ([\s\S]*?) use stdin for prompt text\./);
+  const stdin = cli.match(/fallback\. ([\s\S]*?) use stdin or private files for prompt text\./);
   const argv = cli.match(/This applies to ([\s\S]*?), and the legacy/);
   expect(stdin).not.toBeNull();
   expect(argv).not.toBeNull();

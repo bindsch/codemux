@@ -1,7 +1,7 @@
 /**
  * The goose agent's turn-per-process profile (turn-driver-core.ts): the
- * identity deferred to the first turn's output object (the opencode
- * model — goose mints its date_time id, codemux adopts it), the prompt
+ * identity deferred to the first turn's startup banner (the opencode
+ * model — goose mints its date-counter id, codemux scopes it with a UUID), the prompt
  * as the argv tail (`-t`), and `goose run --output-format json` per turn
  * with the `--resume --session-id <id>` pair on every resumed one
  * (src/session/goose-session.ts). A hermetic session REQUIRES the
@@ -51,11 +51,8 @@ export const GOOSE_DRIVER_PROFILE: TurnAgentProfile = {
       noSessionId: parsed.noSessionId,
       wrongSession: parsed.wrongSession,
       noWire: parsed.noWire,
-      // The wire has no structured failure field: a failed goose turn
-      // fails on the exit code alone (a launch failure prints no
-      // object, which is the noWire fatal).
-      failed: false,
-      failureReason: null,
+      failed: parsed.failureReason !== undefined,
+      failureReason: parsed.failureReason ?? null,
     };
   },
 };

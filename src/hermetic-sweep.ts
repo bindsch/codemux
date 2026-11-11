@@ -9,8 +9,9 @@
 
 import { chmodSync, lstatSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { pidProbeAlive } from "./process-table.js";
+import { runDirectoryOwnerCheck } from "./run-directory-owner.js";
 import { sessionHoldState, sessionRegistryPath, type SessionHold } from "./session/registry.js";
+import { updateRegistry } from "./session/registry/mutations.js";
 import { assertTrustedParentUnchanged, recordTrustedParent, removeUnderTrustedParent, type TrustedParentRecord } from "./safe-remove.js";
 
 // A codemux that died without its exit handler may leave a Codex child
@@ -29,9 +30,8 @@ const STALE_RUN_DIR_MS = 2 * 86_400_000;
 // parent's mtime, so a top-dir age deleted the homes of live,
 // long-running sessions 28 days after their creation (review D2,
 // security 2). A tree nothing has written to for the gate's span is idle
-// past any session's lifetime — and a tree too big to walk is judged by
-// the directory's own mtime when the registry has POSITIVELY freed the
-// id (sweepStaleRunDirs below, review D10).
+// past any session's lifetime. An incomplete scan cannot establish
+// inactivity: a closed session is still resumable when its registry is free.
 const STALE_SESSION_HOME_MS = 28 * 86_400_000;
 
 // The walk's entry budget (review D7, correctness-2 2): these trees sit
@@ -39,10 +39,8 @@ const STALE_SESSION_HOME_MS = 28 * 86_400_000;
 // creates a deep or wide tree there must not slow every later codemux
 // codex run by making the freshness probe walk all of it. Over budget the
 // walk gives up and answers null — a run-directory caller falls back to
-// the directory's own mtime (below), and so does a session-home caller
-// whose id the registry has POSITIVELY freed (the ownership proof the
-// run branch's pid gate provides); every other session home is spared,
-// the safe direction for a removal (review D10, correctness-2 2).
+// the directory's own mtime (below) after proving its process is dead.
+// Every session home is spared on null, including a free resumable one.
 // Exported for the sweep's regression test.
 export const MTIME_WALK_ENTRY_CAP = 4096;
 
@@ -51,8 +49,7 @@ export const MTIME_WALK_ENTRY_CAP = 4096;
  * child planted cannot aim the freshness probe outside the tree. Null
  * when the path itself cannot be stat'd, or when the tree exceeds the
  * entry cap above — a run directory then falls back to its own mtime
- * (directoryMtimeMs, below), and so does a session home the registry
- * has positively freed; any other session home is spared —
+ * (directoryMtimeMs, below). Every session home is spared on null —
  * a removal needs a positive reading, never an exhausted probe. Exported
  * for the opencode hermetic sweep (opencode-hermetic.ts), which ages its
  * homes by the same tree-newest rule (review round 341, item 6). */
@@ -62,13 +59,13 @@ export function newestMtimeMs(path: string): number | null {
   const consider = (mtimeMs: number): void => {
     if (newest === null || mtimeMs > newest) newest = mtimeMs;
   };
-  // Returns false only when the budget ran out mid-tree.
+  // A read failure, like an exhausted budget, leaves freshness unknown.
   const walk = (dir: string): boolean => {
     let entries: string[];
     try {
       entries = readdirSync(dir);
     } catch {
-      return true;
+      return false;
     }
     for (const entry of entries) {
       if (budget-- <= 0) return false;
@@ -78,13 +75,15 @@ export function newestMtimeMs(path: string): number | null {
         consider(stat.mtimeMs);
         if (stat.isDirectory() && !walk(child)) return false;
       } catch {
-        continue;
+        return false;
       }
     }
     return true;
   };
   try {
-    consider(lstatSync(path).mtimeMs);
+    const stat = lstatSync(path);
+    consider(stat.mtimeMs);
+    if (!stat.isDirectory()) return newest;
   } catch {
     return null;
   }
@@ -123,12 +122,11 @@ export function directoryMtimeMs(path: string): number | null {
  * correctness-2 2), and an over-budget tree answers null: a run
  * directory past its pid gate falls back to the directory's OWN mtime,
  * so a huge dead tree is reclaimed by age instead of leaking and being
- * re-walked to the cap forever (review D9, correctness-2) — and so does
- * a session home whose id the registry has POSITIVELY freed, for the
- * same reason under the same proof (review D10, correctness-2 2). Every
- * other session home is spared on null (review D7, correctness-2 2: a
+ * re-walked to the cap forever (review D9, correctness-2). Every
+ * session home is spared on null: a free registry entry means no current
+ * owner, not that its resumable transcript is inactive. A
  * child that can write `~/.codex` must not make the sweep walk a huge
- * tree on every run).
+ * tree on every run.
  * `.codemux-hermetic` and
  * `.codemux-scratch` hold run
  * directories, and so does codex's `.codemux-provider`
@@ -171,6 +169,15 @@ function removeSweepEntry(path: string, record: TrustedParentRecord, what: strin
   removeUnderTrustedParent(path, record, `the ${what} ${path}`);
 }
 
+/** Resume claims use this same lock. Keep it through the freshness walk
+ * and removal; a failed acquisition or unreadable registry spares the home. */
+function sweepSessionIfFree(id: string, holdStateOf: (id: string) => SessionHold, remove: () => void): void {
+  updateRegistry(sessionRegistryPath(), () => {
+    if (holdStateOf(id) === "free") remove();
+    return false; // no registry mutation or pruning
+  }, "fail", { attempts: 1 });
+}
+
 function sweepStaleRunDirs(
   parent: string,
   record: TrustedParentRecord,
@@ -184,6 +191,7 @@ function sweepStaleRunDirs(
   } catch {
     return;
   }
+  const ownerAlive = runDirectoryOwnerCheck();
   for (const entry of entries) {
     // An entry this caller is about to open (a resume's keyed home) is
     // not this sweep's to judge — skipped before any stat or walk, so
@@ -199,7 +207,7 @@ function sweepStaleRunDirs(
       // for nothing here on every prepareRunDirParent call (review D7,
       // correctness-2 2).
       const pid = Number(runMatch[1]);
-      if (pid === process.pid || pidProbeAlive(pid)) continue;
+      if (ownerAlive(entry, pid)) continue;
       // The walk's null must not spare a DEAD run forever: nothing owns
       // the tree anymore, so an over-budget walk falls back to the
       // directory's own mtime (review D9, correctness-2) and the crash
@@ -228,19 +236,12 @@ function sweepStaleRunDirs(
       // with no parseable id is not a registry key — no ownership proof
       // exists — so it keeps the same spare (review round 381: it used
       // to skip the consult and be removed by age alone).
-      if (id === undefined || holdStateOf(id) !== "free") continue;
-      const newest = newestMtimeMs(path);
-      if (newest !== null && Date.now() - newest < STALE_SESSION_HOME_MS) continue;
-      // An over-budget walk (null) falls back to the own mtime above —
-      // already past the gate — for exactly the keyed homes with a
-      // positive `free`: that answer is the ownership proof the run
-      // branch's pid gate provides, so a home grown past the cap is
-      // reclaimed by age instead of leaking and being re-walked to the
-      // cap forever (review D10, correctness-2 2; the run branch's D9
-      // twin). An unstatable directory keeps the spare, as does every
-      // no-id entry above.
-      if (newest === null && own === null) continue;
-      removeSweepEntry(path, record, "stale session home");
+      if (id === undefined) continue;
+      sweepSessionIfFree(id, holdStateOf, () => {
+        const newest = newestMtimeMs(path);
+        if (newest === null || Date.now() - newest < STALE_SESSION_HOME_MS) return;
+        removeSweepEntry(path, record, "stale session home");
+      });
       continue;
     }
     const sessionDirMatch = /^session-(\S{1,128})$/.exec(entry);
@@ -271,13 +272,12 @@ function sweepStaleRunDirs(
       // alone. The id guard is the type's, not the
       // regex's — one capture group always captures — kept in the
       // session-home branch's shape.
-      if (id === undefined || holdStateOf(id) !== "free") continue;
-      const newest = newestMtimeMs(path) ?? own;
-      // Null (unstatable or over-budget) keeps the `own` fallback that
-      // already passed the gate: `free` is the ownership proof, the run
-      // branch's D9 rule under that proof.
-      if (newest === null || Date.now() - newest < STALE_RUN_DIR_MS) continue;
-      removeSweepEntry(path, record, "stale hermetic session directory");
+      if (id === undefined) continue;
+      sweepSessionIfFree(id, holdStateOf, () => {
+        const newest = newestMtimeMs(path);
+        if (newest === null || Date.now() - newest < STALE_RUN_DIR_MS) return;
+        removeSweepEntry(path, record, "stale hermetic session directory");
+      });
       continue;
     }
     // Any other entry is not this sweep's to judge — never walked, never

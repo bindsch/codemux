@@ -76,19 +76,23 @@ const CALL_LOG_BASENAME = "calls.jsonl";
 /** What the ledger claims about `usage.cost_usd`: a figure the provider
  * bills per call, an estimate the harness itself folded (claude and zai
  * report a session-lifetime number, not a per-call bill), or a zero the
- * subscription covers (opencode reports 0 on a Claude subscription). Null
- * when no cost was reported. See docs/results-and-usage.md. */
-export type CostSource = "billed" | "harness-estimate" | "subscription-zero";
+ * subscription covers (opencode reports 0 on a Claude subscription), or
+ * on a `complete` record codemux's own price-table estimate (docs/complete.md).
+ * Null when no cost was reported. See docs/results-and-usage.md. */
+export type CostSource = "billed" | "harness-estimate" | "subscription-zero" | "price-table";
 
-/** The one classifier, run by the writer (appendCallRecord): claude and zai
+/** The classifier for harness records, run by the writer (appendCallRecord)
+ * after completeCostSource, which classifies `complete` records: claude and zai
  * report an estimate whatever the figure; on every other harness a zero
  * means the subscription covered the call; anything else with a figure was
  * billed. No figure, no claim. */
 export function costSourceFor(
-  agent: AgentId,
+  agent: AgentId | null,
   costUsd: number | null
 ): CostSource | null {
   if (costUsd === null) return null;
+  // Only `complete` records carry no agent, and codemux priced them.
+  if (agent === null) return "price-table";
   if (agent === "claude" || agent === "zai") return "harness-estimate";
   if (costUsd === 0) return "subscription-zero";
   return "billed";
@@ -102,8 +106,10 @@ export function costSourceFor(
  * report it, never guessed. */
 export interface CallRecord {
   ts: string;
-  kind: "run" | "check" | "session_turn" | "session";
-  agent: AgentId;
+  kind: "run" | "check" | "session_turn" | "session" | "complete";
+  /** The harness that ran the call; null on a `complete` record, which
+   * no harness serves (src/complete/, docs/complete.md). */
+  agent: AgentId | null;
   /** The model the caller requested; null when none was named. */
   model: string | null;
   /** The model the harness says served the call; null when unreported. */
@@ -135,8 +141,8 @@ export interface CallRecord {
   labels: Record<string, string> | null;
   usage: ResultUsageBlock;
   /** How to read `usage.cost_usd` (CostSource). Computed by the writer from
-   * the agent and the figure, never a caller's claim; null when no cost was
-   * reported and on lines older ledgers wrote before the field existed. */
+   * the agent and the figure (a `complete` row's `billed` is the broker's);
+   * null when no cost was reported or on lines that predate the field. */
   cost_source?: CostSource | null;
 }
 
@@ -281,7 +287,7 @@ export function appendCallRecord(
     // model string it likes), and what is stored is what every later
     // reader gets (review ul6). cost_source is computed here for the same
     // reason — one classifier, not a claim each call site remembers to
-    // make (audit round 2, B5).
+    // make (audit round 2, B5); completeCostSource handles `complete` rows.
     record = {
       ...record,
       model: sanitizeReportedString(record.model),
@@ -290,7 +296,7 @@ export function appendCallRecord(
       provider: sanitizeReportedString(record.provider) || "default",
       finish: sanitizeReportedString(record.finish),
       labels: record.labels ?? null,
-      cost_source: costSourceFor(record.agent, record.usage.cost_usd),
+      cost_source: completeCostSource(record) ?? costSourceFor(record.agent, record.usage.cost_usd),
     };
     const dir = dirname(path);
     // Whether mkdirSync is about to create the directory decides if
@@ -383,6 +389,14 @@ export function appendCallRecord(
         : `codemux: could not append to the call log at ${path}: ${message}`
     );
   }
+}
+
+/** A `complete` record's cost claim: "billed" only when src/complete/
+ * stated the provider reported the charge, else the price-table estimate. */
+function completeCostSource(record: CallRecord): CostSource | null | undefined {
+  if (record.kind !== "complete") return undefined;
+  if (record.usage.cost_usd === null) return null;
+  return record.cost_source === "billed" ? "billed" : "price-table";
 }
 
 function warnOnce(message: string): void {

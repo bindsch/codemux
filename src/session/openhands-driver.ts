@@ -9,9 +9,8 @@
  *
  * The task file's lifecycle: buildTurnCommand writes it (the run path's
  * own writeOpenhandsTaskFile — 0600, exclusive, swept, exit-hooked), and
- * the turn's parse finalizes it; a parse that never runs (a spawn that
- * failed before any output) leaves the file to its exit hook and the
- * stale sweep, the same contract a crashed run's file has.
+ * the turn's process settlement finalizes it. A failed spawn also runs
+ * that turn's cleanup; the exit hook retries a refused removal.
  *
  * A hermetic session carries the private home's env prefix on every
  * turn (openhands-session.ts), the same redirect the run path carries.
@@ -23,14 +22,9 @@ import {
   parseOpenhandsSessionTurn,
   openhandsSessionCapabilities,
 } from "./openhands-session.js";
-import { writeOpenhandsTaskFile, type OpenhandsTaskFile } from "../openhands-task-file.js";
+import { writeOpenhandsTaskFile } from "../openhands-task-file.js";
 import { loginHome } from "../harness-health.js";
 import { join } from "node:path";
-
-/** The task files this process's turns wrote, oldest first: each turn's
- * parse finalizes its own. Bounded by the turn count and swept by the
- * writer's own stale sweep once its owner is gone. */
-const pendingTaskFiles: OpenhandsTaskFile[] = [];
 
 export const OPENHANDS_DRIVER_PROFILE: TurnAgentProfile = {
   agent: "openhands",
@@ -52,7 +46,7 @@ export const OPENHANDS_DRIVER_PROFILE: TurnAgentProfile = {
       join(input.callerHome ?? loginHome(process.env), ".openhands"),
       input.text
     );
-    pendingTaskFiles.push(taskFile);
+    input.onSettled?.(() => taskFile.finalize());
     return buildOpenhandsSessionCommand({
       firstTurn: input.firstTurn,
       conversationId: input.sessionId,
@@ -65,17 +59,6 @@ export const OPENHANDS_DRIVER_PROFILE: TurnAgentProfile = {
     });
   },
   parseTurnOutput: (stdout, knownSessionId) => {
-    // The turn is over, so its prompt file is done: finalize here, and a
-    // refused removal reports instead of failing the parse — the exit
-    // hook's retry owns the recovery (the run path's cleanup rule).
-    const taskFile = pendingTaskFiles.shift();
-    if (taskFile !== undefined) {
-      try {
-        taskFile.finalize();
-      } catch (error) {
-        console.error(`codemux: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
     const parsed = parseOpenhandsSessionTurn(stdout, {
       knownConversationId: knownSessionId,
     });

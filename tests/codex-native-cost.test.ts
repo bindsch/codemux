@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import { hasActiveSignalOwner, signalShutdownPending } from "../src/process-runner-signals.js";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveTrustedCommand, trustCheckedCommandChecks } from "../src/executable-security.js";
@@ -155,12 +156,30 @@ for await (const line of createInterface({ input: process.stdin })) {
     expect(await readCodexNativeCost(binding, THREAD, spawn, 5)).toBeNull();
     await Bun.sleep(30);
     expect(checked).toBe(true);
-    const listeners = process.listenerCount("SIGTERM");
+  });
+
+  test.each(["SIGINT", "SIGTERM", "SIGHUP"] as const)("%s during metadata read exits after stopping the child and recording interruption", async (signal) => {
+    const listeners = process.listenerCount(signal);
     const f = fake(native(), "silent");
-    const reading = readCodexNativeCost(binding, THREAD, f.spawn);
-    queueMicrotask(() => process.emit("SIGTERM"));
-    expect(await reading).toBeNull();
-    expect(process.listenerCount("SIGTERM")).toBe(listeners);
+    let recorded = false;
+    const exit = spyOn(process, "exit").mockImplementation((code) => { throw new Error(`exit ${code}`); });
+    const diagnostic = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const reading = collectCodexNativeCost({ ...raw }, request, { harnessVersion: "0.166.0" }, {
+        ...binding, onSignaled: async () => {
+          expect(f.stopped()).toBe(1);
+          expect(hasActiveSignalOwner()).toBe(true);
+          recorded = true;
+        },
+      }, false, f.spawn);
+      queueMicrotask(() => process.emit(signal));
+      await expect(reading).rejects.toThrow("exit 143");
+      expect(recorded).toBe(true);
+      expect(exit).toHaveBeenCalledWith(143);
+      expect(process.listenerCount(signal)).toBe(listeners);
+      expect(hasActiveSignalOwner()).toBe(false);
+      expect(signalShutdownPending()).toBe(false);
+    } finally { exit.mockRestore(); diagnostic.mockRestore(); }
   });
 
   test("collection skips unsupported routes and enriches plain and JSON successes", async () => {

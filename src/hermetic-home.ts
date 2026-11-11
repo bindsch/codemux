@@ -36,6 +36,7 @@ import {
   symlinkSync,
 } from "node:fs";
 import { join } from "node:path";
+import { runDirectoryPrefix } from "./run-directory-owner.js";
 import { prepareRunDirParent } from "./hermetic-sweep.js";
 import { recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
 import { trackPrivateDir, untrackPrivateDir } from "./private-dir-signals.js";
@@ -117,7 +118,7 @@ export function createCodexHermeticHome(
   const parentRecord = recordTrustedParent(parent);
   // mkdtemp creates the directory mode 0700, which the umask can narrow;
   // the mode is stated so the harness child can write its own home.
-  const home = mkdtempSync(join(parent, `${RUN_PREFIX}${process.pid}-`));
+  const home = mkdtempSync(join(parent, runDirectoryPrefix()));
   chmodSync(home, 0o700); // the mode is stated whatever the umask is
   const codexHome = join(home, ".codex");
   const authLink = join(codexHome, "auth.json");
@@ -187,7 +188,10 @@ export function createCodexHermeticHome(
       }
     }
   } catch (error) {
-    finalize();
+    try { finalize(); }
+    catch (cleanupError) {
+      if (error instanceof Error) error.message += `; cleanup failed: ${String(cleanupError)}`;
+    }
     throw error;
   }
 

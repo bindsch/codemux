@@ -82,7 +82,7 @@ describe("pi generic TUI provider lifecycle", () => {
     } finally { prepared.finalize(); }
   }));
 
-  test("print-only preparation has the same provider model and creates no directory", () => withHome((home) => {
+  test("print-only preparation has the same provider model and creates no files", () => withHome((home) => {
     const adapter = new PiAdapter({ ...OVERRIDE, HOME: home }, home);
     const prepared = adapter.prepareTuiEnvironment("preview", "high", "high", true, [], true);
     try {

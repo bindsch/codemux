@@ -49,8 +49,8 @@ export const QWEN_DRIVER_PROFILE: TurnAgentProfile = {
       noWire: parsed.noWire,
       // The result message's own is_error is the structured verdict,
       // whatever the exit code was (the run path's rule).
-      failed: parsed.isError,
-      failureReason: parsed.errorMessage,
+      failed: parsed.isError || (parsed.subtype !== null && parsed.subtype !== "success"),
+      failureReason: parsed.errorMessage ?? (parsed.subtype !== "success" ? parsed.subtype : null),
     };
   },
 };

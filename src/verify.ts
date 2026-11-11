@@ -441,7 +441,8 @@ export function buildEffectiveScodeCommands(
       // effort-capable adapter whose levels omit `low` would otherwise
       // receive an effort it refuses and fail the whole listing (review
       // round 361). Latent today — every adapter carries `low`.
-      const effort = caps.supportsEffort && caps.effortLevels.includes("low")
+      const effort = adapter.supportsTuiEffort() && caps.effortLevels.includes("low") &&
+        !TUI_EFFORT_NEEDS_MODEL.has(agentId)
         ? "low"
         : undefined;
       const sandboxOptions = resolveSandboxOptionsForAgent(agentId, autonomy, overrides);

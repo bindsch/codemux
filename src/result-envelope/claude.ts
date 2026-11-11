@@ -171,9 +171,9 @@ export function claudeFamilyResult(
     // selection (several models served is a null, not a pick).
     served_model: parsed.multipleModels ? null : parsed.servedModel,
     usage: parsed.usage,
-    // Always null in this release: the adapter passes
+    // Null for one-shot runs: the adapter passes
     // --no-session-persistence, so no run leaves a session a later resume
-    // could reach (reserved for the live-sessions release; see types.ts).
+    // could reach. Live sessions use their separate driver.
     session_id: null,
     // The experiment bridge's JSONL path on an --experiment-mcp run, so the
     // caller can find the recording without scraping stderr; null otherwise.

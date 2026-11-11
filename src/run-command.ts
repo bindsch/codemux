@@ -153,7 +153,7 @@ export function registerRunCommand(
     )
     .option(
       "--max-budget-usd <amount>",
-      "Maximum dollar amount the harness may spend on API calls (agents: docs/harnesses.md); a positive amount with at most two fraction digits"
+      "Soft dollar spend threshold checked after charges; a call may exceed it (agents: docs/harnesses.md); a positive amount with at most two fraction digits"
     )
     .option("-s, --sandbox", "Run in sandbox (default; requires scode)", true)
     .option("--no-sandbox", "Run without the scode boundary (autonomy below high is unavailable)")
@@ -388,7 +388,7 @@ export function registerRunCommand(
         // prompt is the stand-in, the content rules are re-applied to the
         // real text after the read -- the same single validator, twice, with
         // the second pass carrying the text the run will actually submit.
-        adapter.validateRunRequest(request);
+        adapter.validateRunRequest(request, { printOnly: Boolean(options.printSandbox) });
         // The quota options are request checks too, so their values are
         // judged here; the gate itself runs after the stdin read below.
         const quotaPolicy = resolveQuotaGate({
@@ -431,7 +431,7 @@ export function registerRunCommand(
         // builds the child environment from the same passthroughEnv list it
         // validated (one source, request.passthroughEnv).
         request.prompt = prompt;
-        adapter.validateRunRequest(request);
+        adapter.validateRunRequest(request, { printOnly: Boolean(options.printSandbox) });
 
         // The quota gate: after every request check, before anything spawns
         // or is recorded. A refusal exits 64 and nothing runs. A provider
@@ -458,7 +458,7 @@ export function registerRunCommand(
           // deliberately absent: it needs the run context prepareRun
           // builds, which the gate precedes, and no production adapter
           // injects a redirect through it.
-          adapter.buildExecutionEnv(adapter.getEnv(), passthroughEnv),
+          adapter.buildExecutionEnv({}, passthroughEnv, { printOnly: Boolean(options.printSandbox) }),
           request.autonomy,
           Boolean(options.sandbox),
           // The names the launch will keep. One of them may choose which executable runs --

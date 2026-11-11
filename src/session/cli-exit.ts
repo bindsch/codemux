@@ -110,10 +110,9 @@ export function handleSessionAbort(
  * the directory is gone. The claude driver's end path runs this twice and
  * stamps the record to match: final when removed, ended and resumable with
  * exit 1 when both attempts failed (rounds 14-15); the agy driver's end
- * path runs its own two-attempt removal the same way. The CLI's finally
- * calls it where the driver end paths leave removal to the CLI: the codex
- * and kimi homes, and a fresh claude directory the end path decided
- * nothing about. */
+ * path runs its own two-attempt removal the same way. Codex and Kimi also
+ * remove before releasing ownership. The CLI uses this only for a fresh
+ * unreferenced directory or a launch resource, never a released home. */
 export function removeFinalProjectDir(
   dir: Pick<ProjectSettingsSessionDir, "dir" | "remove"> | null
 ): boolean {

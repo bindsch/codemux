@@ -85,7 +85,7 @@ export async function runDirect(
     ],
   });
   await collectCodexNativeCost(raw, request, context, {
-    command, checks, env,
+    command, checks, env, onSignaled,
     options: { cwd, sandboxed: false, autonomy: request.autonomy ?? "read-only",
       envOmissions: adapter.getEnvOmissions() },
   }, adapter.providerOverrideActive());

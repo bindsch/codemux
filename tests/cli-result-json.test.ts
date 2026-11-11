@@ -208,7 +208,7 @@ describe("CLI - result envelopes", () => {
     }
   });
 
-  test("without --result-json the codex reply passes through untouched", async () => {
+  test("without --result-json unverified codex text is retained but fails", async () => {
     const fake = createFakeBinaryEnv({
       codex: `${codexVersionPreamble}cat >/dev/null; printf 'the reply\\n'`,
     });
@@ -217,7 +217,7 @@ describe("CLI - result envelopes", () => {
         ["run", "-a", "codex", "--no-sandbox", "--auto", "high", "-p", "test"],
         fake.env
       );
-      expect(exitCode).toBe(0);
+      expect(exitCode).toBe(1);
       expect(stdout).toBe("the reply\n");
     } finally {
       fake.cleanup();

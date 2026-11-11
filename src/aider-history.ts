@@ -1,14 +1,8 @@
 /**
  * The chat history files behind aider's answer extraction, on two
- * surfaces. On the run path the file is the `--hermetic` check's answer
- * source, and that check is refused for now (aider's own config layers
- * have no switch; docs/isolation.md), so no reachable run reads or
- * creates one — the machinery stays for the day that changes, and a
- * hermetic run would still record its reply here instead of leaving
- * state on the adapter. Plain runs keep /dev/null (h6 review): nothing
- * run-side reads their history, and writing it would persist the whole
- * conversation on disk — 0600, and removed at exit, but on disk — for
- * nothing. On the session path the extraction is live: the aider
+ * surfaces. Every run creates a temporary private history file and
+ * extracts its assistant answer before cleanup. A banner or provider
+ * diagnostic on stdout cannot establish success. On the session path the aider
  * session driver reads the history every turn
  * (src/session/aider-driver.ts), anchoring each turn's reply past the
  * header block the text rules build (src/aider-history-text.ts, split

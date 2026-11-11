@@ -182,7 +182,7 @@ export abstract class AgyFinalize extends AgyDriverIo {
         sandbox_block: [...(this.options.sandboxBlock ?? [])],
         sandbox_strict: this.options.sandboxStrict === true,
         pass_env: [...this.options.passEnv],
-        // The CLI refuses --enable-playwright-mcp outside the claude family.
+        // Agy sessions do not support --enable-playwright-mcp (src/mcp.ts).
         playwright_mcp: false,
         provider_base_url: this.options.providerBaseUrl,
         project_settings: false,
@@ -440,6 +440,7 @@ export abstract class AgyFinalize extends AgyDriverIo {
     } else if (home !== undefined && home !== null) {
       settledHome = this.settleHomeAtEnd(home, resumable, true);
     }
+    if (!settledHome) this.endExitCode = Math.max(this.endExitCode, 1);
     if (
       ownsRecord &&
       this.options.registryPath !== null &&

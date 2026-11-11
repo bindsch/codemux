@@ -429,7 +429,7 @@ describe("assertQuotaHeadroom against a fake usagemux", () => {
       const message = await refusal(() =>
         assertQuotaHeadroom("opencode", { ...POLICY, spendsFrom: { opencode: "claude" } }, env)
       );
-      expect(message).toContain("quota gate: opencode: primary window has 0% left");
+      expect(message).toContain("quota gate: opencode (usagemux client claude): primary window has 0% left");
       warnings = [];
       await assertQuotaHeadroom("opencode", POLICY, env);
       expect(warnings).toEqual([

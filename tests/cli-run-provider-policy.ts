@@ -3,9 +3,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  createRunFakeBinaryEnv as createFakeBinaryEnv,
   runCli,
 } from "./helpers/cli.js";
+import { createAnswerFakeBinaryEnv as createFakeBinaryEnv } from "./helpers/native-answer-cli.js";
 
 describe("CLI - Run validation", () => {
   test("a provider override's injected environment rides scode's --keep-env exemption", async () => {
@@ -48,7 +48,7 @@ exec "$@"
         }
       );
       expect(exitCode).toBe(0);
-      expect(stdout).toBe("OK");
+      expect(stdout).toBe("OK\n");
       const argv = readFileSync(argvFile, "utf8").split("\n");
       expect(argv).toContain("--scrub-env");
       const keepIndex = argv.indexOf("--keep-env");
@@ -112,7 +112,7 @@ exec "$@"
         }
       );
       expect(exitCode).toBe(0);
-      expect(stdout).toBe("OK");
+      expect(stdout).toBe("OK\n");
       const argv = readFileSync(argvFile, "utf8").split("\n");
       // The trust spelling the operator asked for, with the ro the preset
       // forces regardless of --auto high.

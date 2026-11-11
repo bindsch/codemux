@@ -3,8 +3,8 @@
 // copilot, cursor. Every test drives the real `codemux run` CLI against a
 // fake harness binary and pins, end to end: the harness argv the adapter
 // builds (prompt transport, model flag, autonomy flags for the level under
-// test), the environment it injects, exit 0, and the fake's stdout reaching
-// the caller unchanged. The shared style is the goose test in
+// test), the environment it injects, exit 0, and the fake's answer reaching
+// the caller. The shared style is the goose test in
 // tests/cli-run.test.ts (`--no-sandbox --auto high` so no wrapper stands
 // between codemux and the harness).
 import { describe, expect, test } from "bun:test";
@@ -31,6 +31,7 @@ function fakeHarnessBody(
     // bytes, models a turn that consumed its confirmations, and exits —
     // what a real headless aider does once its turn completes.
     stdinBytes?: number;
+    answerWire?: "gemini" | "pi" | "aider" | "droid" | "cursor" | "copilot";
   } = {}
 ): string {
   const lines: string[] = [];
@@ -44,6 +45,7 @@ function fakeHarnessBody(
       `if [ "$1" = "--binary-version" ]; then printf '${options.binaryVersion}\\n'; exit 0; fi`
     );
   }
+  if (options.answerWire) lines.push("{");
   lines.push(`printf 'ARG:%s\\n' "$@"`);
   for (const name of options.env ?? []) {
     lines.push(`printf 'ENV:${name}=%s\\n' "\${${name}-unset}"`);
@@ -51,6 +53,25 @@ function fakeHarnessBody(
   lines.push("printf 'STDIN-START\\n'");
   lines.push(options.stdinBytes !== undefined ? `head -c ${options.stdinBytes}` : "cat");
   lines.push("printf 'STDIN-END\\n'");
+  if (options.answerWire) {
+    const agent = options.answerWire;
+    const script = `const text = await Bun.stdin.text();
+      const agent = ${JSON.stringify(agent)};
+      if (agent === "aider") {
+        const args = process.argv.slice(1);
+        const prompt = await Bun.file(args[args.indexOf("--message-file") + 1]).text();
+        const { aiderHistoryHeader } = await import(${JSON.stringify(join(import.meta.dir, "../src/aider-history-text.ts"))});
+        await Bun.write(args[args.indexOf("--chat-history-file") + 1], aiderHistoryHeader(prompt) + "\\n" + text);
+        process.stdout.write(text);
+      } else if (agent === "copilot") {
+        console.log(JSON.stringify({ type: "assistant.message", data: { content: text } }));
+        console.log(JSON.stringify({ type: "result", exitCode: 0, usage: {} }));
+      } else console.log(JSON.stringify(agent === "gemini" ? { response: text, stats: {} }
+        : agent === "pi" ? { type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop" } }
+        : { type: "result", subtype: "success", is_error: false, result: agent === "cursor" ? text.trimEnd() : text }));`;
+    const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+    lines.push(`} | ${quote(process.execPath)} -e ${quote(script)} -- "$@"`);
+  }
   return lines.join("\n");
 }
 
@@ -125,9 +146,10 @@ async function runFakeHarness(
   }
 }
 
-// None of these adapters post-processes stdout on a plain run (aider's
+// These fakes deliver plain answers (Qwen wraps its answer in a terminal
+// result so its adapter can extract it). Aider's
 // processRunResult acts only on the hermetic history file a plain run never
-// creates; cursor's rewrites stderr only on a sandboxed auth failure), so
+// creates; cursor rewrites stderr only on a sandboxed auth failure, so
 // the caller receives exactly what the fake printed, ending on its last
 // marker.
 function expectUnmangledOutput(run: FakeRun): void {
@@ -140,7 +162,7 @@ describe("run e2e - gemini", () => {
 
   test("high autonomy: stdin prompt, -m model, yolo approval mode, settings env", async () => {
     const run = await runFakeHarness(
-      { gemini: fakeHarnessBody({ env: ["GEMINI_CLI_SYSTEM_SETTINGS_PATH"] }) },
+      { gemini: fakeHarnessBody({ env: ["GEMINI_CLI_SYSTEM_SETTINGS_PATH"], answerWire: "gemini" }) },
       "gemini",
       ["-m", "gemini-3-pro-preview", "-p", PROMPT]
     );
@@ -171,7 +193,7 @@ describe("run e2e - gemini", () => {
   test("read-only under scode: plan approval mode survives the sandbox wrapper", async () => {
     const run = await runFakeHarness(
       {
-        gemini: fakeHarnessBody({ env: ["GEMINI_CLI_SYSTEM_SETTINGS_PATH"] }),
+        gemini: fakeHarnessBody({ env: ["GEMINI_CLI_SYSTEM_SETTINGS_PATH"], answerWire: "gemini" }),
         scode: PASSTHROUGH_SCODE,
       },
       "gemini",
@@ -229,7 +251,7 @@ describe("run e2e - pi", () => {
   test("high autonomy: prompt over stdin, --model, no tool allowlist flags", async () => {
     const PROMPT = "e2e pi run path prompt";
     const run = await runFakeHarness(
-      { pi: fakeHarnessBody() },
+      { pi: fakeHarnessBody({ answerWire: "pi" }) },
       "pi",
       ["-m", "grok-code-1", "-p", PROMPT]
     );
@@ -254,7 +276,10 @@ describe("run e2e - qwen", () => {
   test("high autonomy: current qwen binary, stdin prompt, safe mode, yolo", async () => {
     const PROMPT = "e2e qwen run path prompt";
     const run = await runFakeHarness(
-      { qwen: fakeHarnessBody() },
+      { qwen: `{\n${fakeHarnessBody()}\n} | '${process.execPath.replaceAll("'", "'\\''")}' -e '
+        const result = require("node:fs").readFileSync(0, "utf8");
+        console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result }));
+      '` },
       "qwen",
       ["-m", "qwen3-coder-plus", "-p", PROMPT]
     );
@@ -280,7 +305,7 @@ describe("run e2e - aider", () => {
   test("high autonomy: --message-file prompt, pinned config files, canned stdin declines", async () => {
     const PROMPT = "summarize the changes under tests";
     const run = await runFakeHarness(
-      { aider: fakeHarnessBody({ version: "aider 0.86.2", stdinBytes: 128 }) },
+      { aider: fakeHarnessBody({ version: "aider 0.86.2", stdinBytes: 128, answerWire: "aider" }) },
       "aider",
       ["-m", "gpt-5.2", "-p", PROMPT]
     );
@@ -297,7 +322,7 @@ describe("run e2e - aider", () => {
       "--input-history-file",
       devNull,
       "--chat-history-file",
-      devNull,
+      expect.stringMatching(/[/]\.aider[/]\.codemux[/]history-[^/]+\.md$/),
       "--no-gitignore",
       "--no-auto-commits",
       "--no-dirty-commits",
@@ -331,7 +356,7 @@ describe("run e2e - droid", () => {
   test("high autonomy: exec subcommand, -m model, --auto high, stdin prompt", async () => {
     const PROMPT = "e2e droid run path prompt";
     const run = await runFakeHarness(
-      { droid: fakeHarnessBody({ version: "0.186.0" }) },
+      { droid: fakeHarnessBody({ version: "0.186.0", answerWire: "droid" }) },
       "droid",
       ["-m", "claude-sonnet-4-6", "-p", PROMPT]
     );
@@ -356,6 +381,7 @@ describe("run e2e - copilot", () => {
       {
         copilot: fakeHarnessBody({
           binaryVersion: "Copilot binary version: 1.0.85",
+          answerWire: "copilot",
         }),
       },
       "copilot",
@@ -390,7 +416,7 @@ describe("run e2e - cursor", () => {
   test("high autonomy: standalone cursor-agent entry, stdin prompt, --force", async () => {
     const PROMPT = "e2e cursor run path prompt";
     const run = await runFakeHarness(
-      { "cursor-agent": fakeHarnessBody({ version: "2026.08.11" }) },
+      { "cursor-agent": fakeHarnessBody({ version: "2026.08.11", answerWire: "cursor" }) },
       "cursor",
       ["-m", "composer-6", "-p", PROMPT]
     );

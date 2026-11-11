@@ -72,6 +72,7 @@
  *   session turns and runs cannot drift.
  */
 
+import { sessionIdPattern } from "./id-pattern.js";
 import { featureFloor } from "../harness-contracts.js";
 import { parseDroidResultEnvelope } from "../result-envelope/droid.js";
 import { emptyUsage } from "../result-envelope.js";
@@ -88,9 +89,8 @@ export const DROID_SESSION_FLOOR = featureFloor("droid", "sessions");
  * with no whitespace. The binary mints v4 UUIDs (the quoted template
  * generator) but validates only nonempty (the quoted isValidSessionId),
  * and codemux only ever feeds back ids droid itself reported, so the
- * pattern refuses blanks and whitespace and accepts whatever droid
- * names — permissive on shape, anchored on emptiness. */
-export const DROID_SESSION_ID_PATTERN = /^\S+$/;
+ * pattern also applies codemux's shared single-component safety boundary. */
+export const DROID_SESSION_ID_PATTERN = sessionIdPattern(/^\S+$/);
 
 /**
  * Capability flags for droid sessions (§3.4): live input yes (one caller
@@ -215,6 +215,8 @@ export function buildDroidSessionCommand(command: DroidSessionCommand): string[]
  * for usage and session id) plus the identity check a session adds. */
 export interface DroidSessionTurnParse {
   answer: string | null;
+  failed: boolean;
+  failureReason: string | null;
   usage: ResultUsageBlock;
   /** The completion event's session_id, when it carried a usable one. */
   sessionId: string | null;
@@ -248,6 +250,8 @@ export function parseDroidSessionTurn(
   if (parsed === null) {
     return {
       answer: null,
+      failed: true,
+      failureReason: "no result event",
       usage: emptyUsage(),
       sessionId: null,
       noSessionId: false,
@@ -256,11 +260,13 @@ export function parseDroidSessionTurn(
     };
   }
   const sessionId =
-    parsed.sessionId !== null && parsed.sessionId.trim() !== ""
+    parsed.sessionId !== null && DROID_SESSION_ID_PATTERN.test(parsed.sessionId)
       ? parsed.sessionId
       : null;
   return {
     answer: parsed.answer,
+    failed: parsed.isError || parsed.subtype !== "success",
+    failureReason: parsed.errorMessage ?? (parsed.subtype !== "success" ? `result subtype ${parsed.subtype ?? "missing"}` : null),
     usage: parsed.usage,
     sessionId,
     noSessionId: sessionId === null,

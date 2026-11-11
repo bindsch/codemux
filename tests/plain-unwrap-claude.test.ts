@@ -41,7 +41,7 @@ describe("claudeFamilyPlainResult", () => {
     // An older binary or a wrapper that strips --output-format json: the
     // run is unchanged and the ledger gets nothing rather than a guess.
     const out = claudeFamilyPlainResult(finished("OK\n"), "claude");
-    expect(out).toEqual(finished("OK\n"));
+    expect(out).toEqual({ ...finished("OK\n"), reply: "" });
     expect(out.usage).toBeUndefined();
     expect(out.servedModel).toBeUndefined();
   });
@@ -62,7 +62,7 @@ describe("claudeFamilyPlainResult", () => {
     // A failed run's empty stdout is not re-judged: the harness already
     // failed it, and its stderr is the diagnostic.
     const failedRun = { stdout: "", stderr: "boom", exitCode: 2, success: false };
-    expect(claudeFamilyPlainResult(failedRun, "claude")).toEqual(failedRun);
+    expect(claudeFamilyPlainResult(failedRun, "claude")).toEqual({ ...failedRun, reply: "" });
   });
 
   test("a truncated envelope never passes through: failed run, empty stdout (ul3)", () => {
@@ -111,7 +111,7 @@ describe("claudeFamilyPlainResult", () => {
     // the real CLI), while a real array does not (the test above).
     const echo = finished("[--safe-mode][--tools][]\n");
     const out = claudeFamilyPlainResult(echo, "claude");
-    expect(out).toEqual(echo);
+    expect(out).toEqual({ ...echo, reply: "" });
     expect(out.usage).toBeUndefined();
   });
 

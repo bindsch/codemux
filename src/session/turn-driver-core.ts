@@ -46,7 +46,9 @@ import { isCallerHarnessHome, recordedHarnessHome } from "./harness-home.js";
 import type { SessionPrivateHome } from "./private-home-types.js";
 import type { SessionEndReason } from "./agy-driver.js";
 import type { SessionCapabilities } from "./protocol.js";
+import type { SessionModelFields } from "./protocol.js";
 import type { TurnAgentDriverOptions } from "./turn-driver-types.js";
+import { nativeSessionId } from "./scoped-id.js";
 
 // The vocabulary layer (verdicts, stream events, profiles, options)
 // lives in turn-driver-types.ts; re-exported here because every profile
@@ -63,6 +65,9 @@ export type {
 } from "./turn-driver-types.js";
 
 export abstract class TurnDriverCore {
+  protected nativeSessionId(): string | null {
+    return this.sessionId === null ? null : nativeSessionId(this.options.profile.agent, this.sessionId);
+  }
   protected options!: TurnAgentDriverOptions;
   protected readonly fsm = new SessionFsm();
   /** The agent's honest capability matrix (the profile). */
@@ -122,6 +127,19 @@ export abstract class TurnDriverCore {
   protected resolveDone!: (code: number) => void;
   protected shutdownWasRequested = false;
 
+  /** Accepted work may finish during orderly draining, before session_ended. */
+  protected get receivesTurnOutput(): boolean {
+    return !this.settled && (!this.finished ||
+      ((this.endReason === "stdin-close" || this.endReason === "shutdown") &&
+        this.firstFatal === null && this.endExitCode === 0));
+  }
+
+  protected modelFields(served = this.turnModelEffective): SessionModelFields {
+    return { model_served: served,
+      model_served_source: served === null ? null : this.options.profile.agent === "pi" ? "provider" : "harness",
+      model_alias: this.options.modelAlias ?? null };
+  }
+
   protected abstract emit(line: string, options?: { terminal?: boolean | "fatal" }): void;
   protected abstract emitError(
     fatal: boolean,
@@ -146,18 +164,20 @@ export abstract class TurnDriverCore {
 
   /** Settle the private home onto `session-<id>` (the deferred
    * identity's run-shaped dir): called at the adopt, when no child is
-   * writing. A settle that fails leaves the home run-shaped — the
-   * resume guard's harness_home check then refuses the next resume
-   * (fail closed), which session_ended's resumable fold reports
-   * honestly (the kimi rule). */
-  protected settlePrivateHome(): void {
+   * writing. Failure fails the turn and session. The home remains
+   * run-shaped and cannot be reported as resumable. */
+  protected settlePrivateHome(): boolean {
     const home = this.options.privateHome;
-    if (home === null || home.settled || this.sessionId === null) return;
+    if (home === null || home.settled || this.sessionId === null) return true;
     try {
       home.settle(this.sessionId);
+      return true;
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      console.error(`codemux: hermetic session home settlement failed: ${detail}`);
+      this.turnError = `hermetic session home settlement failed: ${detail}`;
+      this.emitError(true, "codemux", this.turnError);
+      this.endExitCode = Math.max(this.endExitCode, 1);
+      return false;
     }
   }
 
@@ -274,9 +294,10 @@ export abstract class TurnDriverCore {
           child.exited.then((outcome) => {
             void this.onTurnExited(child, outcome);
           });
-          const written = child.writeRaw(this.turnPrompt ?? "");
+          const usesStdin = this.options.profile.promptCarrier === "stdin";
+          const written = usesStdin ? child.writeRaw(this.turnPrompt ?? "") : { ok: true };
           if (written.ok) {
-            child.endInput();
+            if (usesStdin) child.endInput();
             drain = child;
           } else {
             this.turnProc = null;
@@ -350,6 +371,7 @@ export abstract class TurnDriverCore {
           buildEvent(++this.seq, this.sessionIdOrEmpty(), "turn_completed", null, {
             turn_id: turnId,
             finish: synthFinish,
+            ...this.modelFields(),
             reason:
               this.turnError !== null
                 ? this.turnError
@@ -405,6 +427,7 @@ export abstract class TurnDriverCore {
     } else if (home !== null) {
       settledHome = this.settleHomeAtEnd(home, resumableBase, true);
     }
+    if (!settledHome) this.endExitCode = Math.max(this.endExitCode, 1);
     if (ownsRecord && this.options.registryPath !== null && this.sessionId !== null) {
       const stamped = releaseSessionRecord(
         this.options.registryPath,

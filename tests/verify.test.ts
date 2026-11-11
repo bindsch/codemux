@@ -244,6 +244,7 @@ describe("Verifier", () => {
     // registry is pointed at one that does.
     const efforts: (string | undefined)[] = [];
     const fake = {
+      supportsTuiEffort: () => true,
       capabilities: () => ({
         supportsEffort: true,
         effortLevels: ["medium", "high"],

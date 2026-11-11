@@ -8,7 +8,8 @@
 /** Codex thread ids codemux will resume (§4.5): the fixture's ids are
  * UUIDv7-shaped and fit; claude-family ids stay UUIDs. Anything else is
  * exit 64 before it reaches the wire. */
-export const CODEX_THREAD_ID_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
+import { sessionIdPattern } from "./id-pattern.js";
+export const CODEX_THREAD_ID_PATTERN = sessionIdPattern(/^[A-Za-z0-9_-]{8,128}$/);
 
 /** Bounds on the raw-newline rejoin buffer, matching openclaw's client:
  * fragments beyond these are the tier-3 fatal they would have been. */

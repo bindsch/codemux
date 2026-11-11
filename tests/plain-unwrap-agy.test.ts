@@ -28,7 +28,7 @@ describe("agyPlainResult", () => {
 
   test("stdout that is not the agy envelope passes through verbatim", () => {
     const out = agyPlainResult(finished("done\n"));
-    expect(out).toEqual(finished("done\n"));
+    expect(out).toEqual({ ...finished("done\n"), reply: "" });
     expect(out.usage).toBeUndefined();
   });
 
@@ -43,7 +43,7 @@ describe("agyPlainResult", () => {
       expect(out.stderr, JSON.stringify(stdout)).toContain("produced no output");
     }
     const failedRun = { stdout: "", stderr: "boom", exitCode: 2, success: false };
-    expect(agyPlainResult(failedRun)).toEqual(failedRun);
+    expect(agyPlainResult(failedRun)).toEqual({ ...failedRun, reply: "" });
   });
 
   test("an error status fails the run", () => {

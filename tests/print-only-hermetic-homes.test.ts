@@ -1,6 +1,6 @@
 /**
- * A print-only launch (`--print-sandbox`) prepares a hermetic home that holds
- * the path its argv names and nothing of the operator's (review round 55):
+ * A print-only launch (`--print-sandbox`) names an uncreated hermetic home
+ * in its argv and touches nothing of the operator's (review round 55):
  * codex links no auth.json and needs none; kimi reads no configuration and
  * links no credential directory. The quota gate does not run for a print
  * either: it spends nothing.

@@ -167,7 +167,10 @@ export class SessionProcess {
       detached: useProcessGroup,
     });
     this.target = createTerminationTarget(this.proc, useProcessGroup);
-    this.writer = new SessionWriter(this.proc);
+    this.writer = new SessionWriter(this.proc, (error, bytes) => {
+      this.reportFatal({ kind: "write-error", error, bytes });
+      this.requestStop();
+    });
     this.startCapture();
     const giveUp = new Promise<void>((resolve) => {
       this.giveUpReads = resolve;
@@ -471,7 +474,7 @@ export class SessionProcess {
       // The tree is dead; give whatever still holds stdout a moment to
       // close it, then abandon the reader so settled always resolves.
       const giveUpTimer = setTimeout(() => this.giveUpReads(), PIPE_GIVE_UP_MS);
-      await stdoutDone;
+      await Promise.all([stdoutDone, this.writer.settled(PIPE_GIVE_UP_MS)]);
       clearTimeout(giveUpTimer);
     } finally {
       this.stopCapture();

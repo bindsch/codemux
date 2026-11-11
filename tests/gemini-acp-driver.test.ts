@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import { GeminiAcpTransport } from "../src/session/gemini-acp.js";
 import { GEMINI_ACP_DRIVER_PROFILE, GeminiAcpSessionDriver, geminiAcpUsage } from "../src/session/gemini-acp-driver.js";
 import type { TurnAgentDriverOptions } from "../src/session/turn-driver-types.js";
 import { fakeTurnProcess, type FakeTurnProcess } from "./helpers/session-turn-engine.js";
@@ -6,6 +7,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { assertSessionConformance } from "./helpers/session-conformance.js";
 
 const geminiAcpId = "11111111-1111-4111-8111-111111111111";
 function geminiAcpHarness(options: Partial<TurnAgentDriverOptions> & { turnTimeoutMs?: number; delayed?: boolean; failWrites?: boolean } = {}) {
@@ -54,6 +56,79 @@ function geminiAcpHarness(options: Partial<TurnAgentDriverOptions> & { turnTimeo
 }
 
 describe("Gemini ACP uses the shared session lifecycle", () => {
+  test.each(["initialize", "open", "prompt"] as const)("stale %s continuation cannot act on a later turn", async (method) => {
+    const delayed = Promise.withResolvers<any>();
+    const original = GeminiAcpTransport.prototype[method];
+    let calls = 0;
+    const spy = spyOn(GeminiAcpTransport.prototype, method).mockImplementation(function (this: GeminiAcpTransport, ...args: any[]) {
+      return ++calls === 1 ? delayed.promise : (original as any).apply(this, args);
+    });
+    const h = geminiAcpHarness({ resumeSessionId: geminiAcpId });
+    try {
+      h.user(); await h.tick();
+      if (method === "open") { h.reply({ protocolVersion: 1 }); await h.tick(); }
+      if (method === "prompt") await h.ready(true);
+      const old = h.children[0]!, writes = old.wrote.length;
+      old.exit(0); await h.tick();
+      h.user(); await h.tick(); await h.ready(true);
+      h.update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "next answer" } });
+      delayed.resolve(method === "open" ? "22222222-2222-4222-8222-222222222222" : method === "prompt" ? { stopReason: "max_tokens" } : undefined);
+      await h.tick();
+      expect(old.wrote).toHaveLength(writes);
+      expect(h.events.filter((event) => event.type === "turn_completed")).toHaveLength(1);
+      expect(h.events.filter((event) => event.type === "assistant_message")).toHaveLength(0);
+      await h.complete();
+      expect(h.events.filter((event) => event.type === "turn_completed").at(-1)?.finish).toBe("end");
+      expect(h.events.filter((event) => event.type === "turn_completed").at(-1)?.session_id).toBe(geminiAcpId);
+      await h.end();
+    } finally { spy.mockRestore(); delayed.resolve(undefined); h.children.forEach((child) => child.exit(0)); h.driver.handleCallerEnd(); await h.code; h.driver.dispose(); }
+  });
+  test("protocol preserves original ACP frames and object-valued tool inputs", async () => {
+    const h = geminiAcpHarness(); h.user(); await h.tick(); await h.ready();
+    try {
+      for (const input of [undefined, null, [], "bad", { path: "a" }]) {
+        const update = { sessionUpdate: "tool_call", toolCallId: "tool", title: "read", rawInput: input };
+        const raw = ` { "jsonrpc":"2.0", "method":"ignored", "method":"session/update", "params": { "sessionId":"${geminiAcpId}", "update":${JSON.stringify(update)} } } `;
+        h.driver.handleHarnessLine(raw); await h.tick();
+        const event = h.events.filter((e) => e.type === "tool_call").at(-1)!;
+        expect(event).toBeDefined(); expect(event.raw).toBe(raw);
+        expect(event.input).toEqual(input && !Array.isArray(input) && typeof input === "object" ? input : {});
+      }
+      await h.complete(); expect(await h.end()).toBe(0);
+      assertSessionConformance(h.events);
+    } finally { h.children[0]!.exit(0); h.driver.handleCallerEnd(); await h.code; h.driver.dispose(); }
+  });
+  for (const ending of ["eof", "shutdown"] as const) {
+    for (const phase of ["initialize", "prompt"] as const) {
+      test(`drains a successful answer after ${ending} during ${phase}`, async () => {
+        const h = geminiAcpHarness(); h.user(); await h.tick();
+        const child = h.children[0]!;
+        child.awaitEndAnswer = async () => { await child.exited; };
+        if (phase === "prompt") await h.ready();
+        if (ending === "eof") h.driver.handleCallerEnd(); else h.send({ type: "shutdown" });
+        try {
+          if (phase === "initialize") await h.ready();
+          h.update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "drained answer" } });
+          await h.complete();
+          expect(h.events.find((e) => e.type === "assistant_message")?.text).toBe("drained answer");
+          expect(h.events.find((e) => e.type === "turn_completed")?.finish).toBe("end");
+          expect(await h.code).toBe(0);
+        } finally { child.exit(0); await h.code; h.driver.dispose(); }
+      });
+    }
+  }
+
+  test.each(["x", "\u0001", "é"])("rejects an oversized serialized ACP prompt and accepts the next message: %j", async (character) => {
+    const h = geminiAcpHarness({ authorPrefix: true });
+    try {
+      h.send({ type: "user", text: character.repeat(1024 * 1024), author: "writer" }); await h.tick();
+      expect(h.events.find((e) => e.type === "input_rejected")).toMatchObject({ reason: "text_too_long" });
+      expect(h.children).toHaveLength(0);
+      h.user(); await h.tick(); await h.ready(); await h.complete();
+      expect(await h.end()).toBe(0);
+    } finally { for (const child of h.children) child.exit(0); h.driver.handleCallerEnd(); await h.code; h.driver.dispose(); }
+  });
+
   test("native new/load identities, deltas, tools, and truthful usage survive two turns", async () => {
     const h = geminiAcpHarness(); h.user(); await h.tick(); await h.ready();
     expect(h.commands[0]).toContain("--acp");
@@ -82,7 +157,8 @@ describe("Gemini ACP uses the shared session lifecycle", () => {
     h.send({ type: "interrupt" });
     expect(h.children[0]!.wrote.filter((wire) => wire.includes('"method":"session/cancel"'))).toHaveLength(1);
     await h.complete("cancelled"); // allow-british: native ACP enum
-    expect(h.events.find((e) => e.type === "turn_completed")?.finish).toBe("interrupted");
+    expect(h.events.find((e) => e.type === "turn_completed")).toMatchObject({ finish: "interrupted",
+      model_served: null, model_served_source: null, model_alias: null });
     h.user(); await h.tick(); await h.ready(true);
     h.update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "next answer" } });
     await h.complete();
@@ -111,11 +187,15 @@ describe("Gemini ACP uses the shared session lifecycle", () => {
     expect(await h.end()).toBe(0); expect(removed).toBe(1); expect(settled).toBe(0);
   });
 
-  test("idle, malformed, and post-end inputs receive refusal acknowledgments", async () => {
+  test("idle interrupts are no-ops, malformed inputs are rejected, and settled input emits nothing", async () => {
     const h = geminiAcpHarness(); h.send({ type: "interrupt" }); h.send({ type: "interrupt", extra: true });
     h.driver.handleCallerLine("not json"); h.send(null); await h.tick();
-    expect(h.events.filter((e) => e.type === "input_ack").every((e) => e.accepted === false)).toBe(true);
-    expect(await h.end()).toBe(0); h.send({ type: "interrupt" });
+    expect(h.events.filter((e) => e.type === "input_accepted" || e.type === "input_rejected").map((e) => e.type))
+      .toEqual(["input_accepted", "input_rejected", "input_rejected", "input_rejected"]);
+    expect(h.children).toHaveLength(0);
+    expect(await h.end()).toBe(0);
+    const count = h.events.length; h.send({ type: "interrupt" });
+    await h.tick(); expect(h.events).toHaveLength(count);
   });
 
   test("cancellation racing an ordinary answer does not invent interrupted completion", async () => {

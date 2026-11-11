@@ -5,13 +5,13 @@ import {
   statSync,
   type BigIntStats,
 } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 
 function isWithin(path: string, root: string): boolean {
   const relativePath = relative(root, path);
   return (
     relativePath === "" ||
-    (!relativePath.startsWith("..") && !isAbsolute(relativePath))
+    (relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath))
   );
 }
 
@@ -209,15 +209,7 @@ export function trustCheckedCommandPaths(
   resolved: readonly string[]
 ): readonly string[] {
   if (resolved.length === 0) return [];
-  const checked: string[] = [];
-  let offset = 0;
-  while (offset < resolved.length) {
-    checked.push(resolved[offset]!);
-    const program = envProgramIndex(resolved.slice(offset));
-    if (program === null) break;
-    offset += program;
-  }
-  return checked;
+  return commandExecutableIndexes(resolved).map((index) => resolved[index]!);
 }
 
 /** One launch's own resolution of one path, as an opaque handle for
@@ -302,6 +294,22 @@ export function envProgramIndex(command: readonly string[], label = "sandbox com
     throw new Error(`${label} env prefix names no program to run`);
   }
   return index;
+}
+
+/** Follow nested env prefixes too: each wrapper and the final program executes. */
+function commandExecutableIndexes(command: readonly string[], label?: string): number[] {
+  const indexes = [0];
+  let at = 0;
+  for (;;) {
+    const next = envProgramIndex(command.slice(at), label);
+    if (next === null) return indexes;
+    at += next;
+    indexes.push(at);
+  }
+}
+
+export function commandProgramIndex(command: readonly string[]): number {
+  return commandExecutableIndexes(command).at(-1)!;
 }
 
 /**

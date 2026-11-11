@@ -106,15 +106,20 @@ describe("openhands session home", () => {
 
 describe("openhands driver", () => {
   test("a hermetic turn always carries --override-with-envs and the env prefix", () => {
+    let finalize: (() => void) | undefined;
     const argv = OPENHANDS_DRIVER_PROFILE.buildTurnCommand({
       text: "synthetic", sessionId: null, firstTurn: true, hermeticHome: "/synthetic/home", autonomy: "high",
+      onSettled: (cleanup) => { finalize = cleanup; },
     });
     expect(argv.slice(0, 2)).toEqual(["env", "HOME=/synthetic/home"]);
     expect(argv).toContain("--override-with-envs");
     const task = argv[argv.indexOf("--file") + 1]!;
     expect(task.startsWith(join(stateRoot(), ".codemux"))).toBe(true);
-    // The parse finalizes the task file the build wrote.
+    // Parsing is independent of the owning turn's resource cleanup.
     OPENHANDS_DRIVER_PROFILE.parseTurnOutput!("", null);
+    expect(existsSync(task)).toBe(true);
+    expect(finalize).toBeDefined();
+    finalize!();
     expect(existsSync(task)).toBe(false);
   });
 });

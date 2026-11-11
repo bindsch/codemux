@@ -29,12 +29,14 @@ export interface GooseTranscript {
   answer: string | null;
   /** The last assistant message's text alone. */
   finalText: string | null;
-  /** Every assistant message object, in order (usage and model metadata). */
+  /** Assistant objects after the last caller turn (usage and model metadata). */
   messages: Record<string, unknown>[];
   /** The stream's `complete` event, when one arrived. */
   complete: Record<string, unknown> | null;
   /** The first `error` event's text. */
   errorMessage: string | null;
+  /** Identity printed before the JSON by goose-cli's startup banner. */
+  sessionId: string | null;
 }
 
 const record = (value: unknown): Record<string, unknown> | null =>
@@ -56,7 +58,7 @@ export function gooseMessageText(message: Record<string, unknown>): string | nul
 }
 
 function walk(messages: Record<string, unknown>[], complete: Record<string, unknown> | null,
-  errorMessage: string | null): GooseTranscript {
+  errorMessage: string | null, sessionId: string | null): GooseTranscript {
   const collector = new AnswerCollector();
   const assistants: Record<string, unknown>[] = [];
   let finalText: string | null = null;
@@ -64,7 +66,16 @@ function walk(messages: Record<string, unknown>[], complete: Record<string, unkn
   for (const message of messages) {
     const text = gooseMessageText(message);
     if (message.role === "user") {
-      if (text !== null && text.trim() !== "") collector.userTurn();
+      if (text !== null && text.trim() !== "") {
+        collector.userTurn();
+        // Native JSON reprints the conversation and cumulative session totals.
+        // A later caller turn must not charge earlier replies again or use
+        // those totals as evidence for an unmeasured current reply.
+        if (assistants.length > 0) complete = null;
+        assistants.length = 0;
+        finalText = null;
+        finalId = undefined;
+      }
       continue;
     }
     if (message.role !== "assistant") continue;
@@ -81,16 +92,26 @@ function walk(messages: Record<string, unknown>[], complete: Record<string, unkn
     assistants.push(message);
   }
   const transcript = collector.transcript();
-  return { transcript, answer: completeAnswer(transcript, finalText), finalText, messages: assistants, complete, errorMessage };
+  return { transcript, answer: completeAnswer(transcript, finalText), finalText, messages: assistants, complete, errorMessage, sessionId };
 }
 
 /** Reads goose stdout as a transcript, or null when it carries neither
  * stream events nor a `{messages}` object (the caller's legacy
  * single-message path then applies). */
 export function parseGooseTranscript(stdout: string): GooseTranscript | null {
-  const whole = (() => { try { return record(JSON.parse(stdout)); } catch { return null; } })();
+  // JsonOutput is pretty-printed after display_session_info (unless quiet).
+  // Only the prefix before structured output may supply a banner identity:
+  // an assistant's quoted banner must never become session evidence.
+  const start = stdout.search(/^\s*\{/m);
+  const prefix = start < 0 ? "" : stdout.slice(0, start).replace(/\x1b\[[0-9;]*m/g, "");
+  const sessionId = /^\s*\\____\)\s+(\d{8}_\d+)\s+·[^\r\n]*$/m.exec(prefix)?.[1] ?? null;
+  const whole = (() => { try { return record(JSON.parse(start < 0 ? stdout : stdout.slice(start))); } catch { return null; } })();
   if (whole !== null && Array.isArray(whole.messages)) {
-    return walk(whole.messages.map(record).filter((m): m is Record<string, unknown> => m !== null), null, null);
+    const metadata = record(whole.metadata);
+    const status = metadata?.status;
+    const error = typeof status === "string" && status !== "completed" ? `session status: ${status}` : null;
+    return walk(whole.messages.map(record).filter((m): m is Record<string, unknown> => m !== null), metadata, error,
+      typeof whole.session_id === "string" ? whole.session_id : sessionId);
   }
   const messages: Record<string, unknown>[] = [];
   let complete: Record<string, unknown> | null = null;
@@ -115,7 +136,8 @@ export function parseGooseTranscript(stdout: string): GooseTranscript | null {
       sawStream = true;
     }
   }
-  return sawStream ? walk(messages, complete, errorMessage) : null;
+  return sawStream ? walk(messages, complete,
+    errorMessage ?? (complete === null ? "stream ended without a complete event" : null), sessionId) : null;
 }
 
 /** Goose stream lines the answer never reads: extension notifications and

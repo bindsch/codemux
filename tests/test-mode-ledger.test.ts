@@ -3,18 +3,30 @@
  * package.json test scripts load tests/setup.ts with `--preload`, and the
  * preload sets `CODEMUX_TEST_LEDGER` — the one variable the append path
  * trusts for a test run, never a generic marker another process may set.
- * The child process runs the pin fixture under that preload with both
- * ledger variables stripped and a neutral HOME; it fails unless the
- * redirect fires, so a dropped `--preload` flag cannot pass silently.
+ * Child tests cover unset and hostile inherited paths, both with the
+ * explicit preload and with bunfig.toml's automatic test preload.
  */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { callLogPath } from "../src/call-log.js";
 
 describe("the test-run ledger redirect", () => {
+  test.each(["preload", "bare"])("%s overrides inherited ledger and state paths", async (mode) => {
+    const outside = mkdtempSync(join(tmpdir(), "codemux-inherited-state-"));
+    try {
+      const env = { ...process.env, BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", HOME: outside, USERPROFILE: outside,
+        XDG_STATE_HOME: outside, XDG_DATA_HOME: outside, XDG_CACHE_HOME: outside, XDG_CONFIG_HOME: outside,
+        CODEMUX_CALL_LOG: join(outside, "operator.jsonl"), CODEMUX_TEST_LEDGER: join(outside, "inherited.jsonl") };
+      const proc = Bun.spawn([process.execPath, "test", ...(mode === "preload" ? ["--preload", "./tests/setup.ts"] : []),
+        join(import.meta.dir, "fixtures/test-mode-pin.test.ts")], { cwd: join(import.meta.dir, ".."), env, stdout: "pipe", stderr: "pipe" });
+      const [stderr, , code] = await Promise.all([new Response(proc.stderr).text(), new Response(proc.stdout).text(), proc.exited]);
+      expect(code, stderr).toBe(0);
+      expect(readdirSync(outside, { recursive: true })).toEqual([]);
+    } finally { rmSync(outside, { recursive: true, force: true }); }
+  });
   test("the preload wires CODEMUX_TEST_LEDGER into a spawned bun test (ul4)", async () => {
     const home = mkdtempSync(join(tmpdir(), "codemux-test-mode-home-"));
     const env: Record<string, string> = {};

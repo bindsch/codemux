@@ -20,10 +20,20 @@ import { prepareSessionChild } from "../src/session/cli-spawn-prep.js";
 import { createFakeBinaryEnv } from "./helpers/cli.js";
 
 describe("the harness-home resolvers", () => {
-  test("every agent home resolver names its documented default", () => {
+  test("every agent home resolver names its documented default and OpenCode honors XDG", () => {
     expect(cliHomes.agyHarnessHome()).toBe(join(homedir(), ".gemini", "antigravity-cli"));
     expect(cliHomes.aiderHarnessHome()).toBe(join(homedir(), ".aider"));
-    expect(cliHomes.opencodeHarnessHome()).toBe(join(homedir(), ".local", "share", "opencode"));
+    const previous = process.env.XDG_DATA_HOME;
+    try {
+      delete process.env.XDG_DATA_HOME;
+      expect(cliHomes.opencodeHarnessHome()).toBe(join(process.env.HOME!, ".local", "share", "opencode"));
+      const dataHome = join(tmpdir(), "codemux-home-resolver");
+      process.env.XDG_DATA_HOME = dataHome;
+      expect(cliHomes.opencodeHarnessHome()).toBe(join(dataHome, "opencode"));
+    } finally {
+      if (previous === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = previous;
+    }
   });
 
   test("kimiHarnessHome honors a passed-through absolute redirect only", () => {

@@ -46,6 +46,20 @@ async function rig(fn: (home: string) => unknown | Promise<unknown>) {
 }
 
 describe("Cline final model-bound evidence", () => {
+  test("rejects a normalized impossible calendar date in native evidence", () => {
+    const f = fixture(); f.captures[0]!.timestamp = "2026-02-30T00:00:00Z";
+    expect(() => verifyClineExperimentEvidence(f.source, f.evidence, f.captures, stdout)).toThrow("native request correlation");
+  });
+  test("omitted server descriptions match empty native descriptions throughout delivery evidence", () => {
+    const f = fixture(); delete (f.source.toolDefinitions[0] as JsonObject).description;
+    for (const event of f.evidence) for (const tool of event.fields.tools ?? []) tool.description = "";
+    for (const capture of f.captures) {
+      const body = JSON.parse(capture.payload.body); body.tools[0].function.description = "";
+      capture.payload.body = JSON.stringify(body);
+    }
+    verifyClineExperimentEvidence(f.source, f.evidence, f.captures, stdout);
+    expect(f.records.filter((r) => r.kind === "tool_result_delivered")).toHaveLength(1);
+  });
   test("accepts exact definitions including whitespace/$schema, arguments and final text", () => {
     const f = fixture(); verifyClineExperimentEvidence(f.source, f.evidence, f.captures, stdout);
     expect(f.records.filter((r) => r.kind === "turn")).toHaveLength(2);
@@ -162,6 +176,13 @@ describe("Cline native plugin", () => {
     expect(await h.dispose()).toBe(true);
     expect(h.records.map((r) => r.kind)).toContain("result");
   });
+  test("omitted MCP descriptions use the native empty-string default", async () => {
+    const h = await setup({ tools: [{ name: definition.name, inputSchema: definition.inputSchema }] });
+    expect(h.tools[0]!.description).toBe("");
+    h.plugin.hooks.afterModel({ snapshot: { runId: "run-1", iteration: 1 }, assistantMessage: clone(message) });
+    expect(await h.tools[0]!.execute(input, { toolCallId: "native-call-1" })).toEqual(result.content);
+    expect(await h.dispose()).toBe(true);
+  });
   test("stops native model tools, unknown calls, malformed assistant messages, and setup omissions", async () => {
     const h = await setup();
     expect(h.plugin.hooks.beforeModel({ request: { modelTools: [{ name: "image_generation" }] } })).toMatchObject({ stop: true });
@@ -174,7 +195,7 @@ describe("Cline native plugin", () => {
     await expect(h.tools[0]!.execute(input, { toolCallId: "unknown" })).rejects.toThrow("unchanged native");
   });
   test("rejects unsupported definitions/results and repeated IDs", async () => {
-    for (const tools of [[], [{ ...definition, description: undefined }], [{ ...definition, inputSchema: {} }], [{ ...definition, annotations: {} }], [definition, definition]]) {
+    for (const tools of [[], [{ ...definition, description: null }], [{ ...definition, inputSchema: {} }], [{ ...definition, annotations: {} }], [definition, definition]]) {
       await expect(setup({ tools })).rejects.toThrow();
     }
     const h = await setup({ result: { content: [] } });

@@ -1,5 +1,4 @@
 import { PROJECT_SETTING_SOURCES, validateProjectSettingsRunRequest } from "../claude-project-settings.js";
-import type { LaunchIntent } from "../types.js";
 import type { SandboxOptions, ScodeTrustLevel } from "../sandbox.js";
 import { UsageRefusalError } from "../validation.js";
 import { claudeEffortFlags, validateClaudeEffort } from "../claude-effort.js";
@@ -33,6 +32,7 @@ import {
 } from "../claude-family.js";
 import type {
   AgentId,
+  LaunchIntent,
   AutonomyLevel,
   ReasoningEffort,
   RunRequest,
@@ -43,6 +43,7 @@ import { zaiLoginState, loginHome, type LoginState } from "../harness-health.js"
 import { validatedClaudeProvider, claudeProviderModel, claudeProviderEnv } from "../claude-provider.js";
 
 const ZAI_BASE_URL = "https://api.z.ai/api/anthropic";
+const PREVIEW_API_KEY = "codemux-preview";
 const MAX_KEY_FILE_BYTES = 16 * 1024;
 const DEFAULT_API_TIMEOUT_MS = 3_000_000;
 const MAX_API_TIMEOUT_MS = 86_400_000;
@@ -120,11 +121,12 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
       : homedir();
   }
 
-  private getZaiApiKey(): string {
+  private getZaiApiKey(launch: LaunchIntent = {}): string {
     const environmentKey = this.environment.ZAI_API_KEY?.trim();
     if (environmentKey) {
       return this.validateCredential(environmentKey, "ZAI_API_KEY");
     }
+    if (launch.printOnly) return PREVIEW_API_KEY;
 
     const zaiFile = join(this.effectiveHome(), ".zai");
     try {
@@ -188,10 +190,10 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
     return String(value);
   }
 
-  override getEnv(): Record<string, string> {
+  override getEnv(launch: LaunchIntent = {}): Record<string, string> {
     const override = this.validatedProvider();
     if (override !== null) return { ...claudeProviderEnv(override), API_TIMEOUT_MS: this.getApiTimeout() };
-    const apiKey = this.getZaiApiKey();
+    const apiKey = this.getZaiApiKey(launch);
     return {
       // The shared gateway mechanism (claude-family.ts): the token wins over
       // the operator's on-disk login, and the endpoint serves the Anthropic

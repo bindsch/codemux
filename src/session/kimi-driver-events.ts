@@ -14,7 +14,7 @@ import {
   type KimiEffect,
   type TurnChild,
 } from "./kimi-machine.js";
-import { buildSessionEnded, shutdownRequested } from "./process.js";
+import { shutdownRequested } from "./process.js";
 import {
   buildEvent,
   buildInputAck,
@@ -292,7 +292,7 @@ export abstract class KimiDriverEvents extends KimiDriverFinalize {
         this.closingLedger = effect;
         return;
       case "resolve_done":
-        void this.finishDone(Math.max(effect.code, this.finalEmissionFailed ? 1 : 0));
+        void this.finishDone(Math.max(effect.code, this.finalEmissionFailed || this.finalHomeRemovalFailed ? 1 : 0));
         return;
     }
   }
@@ -346,11 +346,13 @@ export abstract class KimiDriverEvents extends KimiDriverFinalize {
       case "unknown_event":
         return buildUnknownEvent(++this.seq, sid, effect.raw);
       case "session_ended":
-        return buildSessionEnded(++this.seq, sid, effect.harnessExit, {
+        return buildEvent(++this.seq, sid, "session_ended", null, {
+          // The machine distinguishes expected interruption from failure.
+          harness_exit: effect.harnessExit,
           reason: effect.reason,
           shutdown_requested: this.state.end.cause !== null &&
             [this.state.end.cause, ...this.state.end.later].some((cause) => shutdownRequested(cause.reason)),
-          exit_code: Math.max(effect.exitCode ?? 0, this.finalEmissionFailed ? 1 : 0),
+          exit_code: Math.max(effect.exitCode ?? 0, this.finalEmissionFailed || this.finalHomeRemovalFailed ? 1 : 0),
           usage: effect.usage,
           // A hermetic session whose private home never reached its
           // session-keyed name is not resumable: the registry's
@@ -358,6 +360,7 @@ export abstract class KimiDriverEvents extends KimiDriverFinalize {
           // the caller now instead of letting a resume fail on it.
           resumable:
             effect.resumable &&
+            !this.finalHomeRemoved &&
             !this.finalEmissionFailed &&
             (this.options.privateHome == null || this.options.privateHome.settled),
         });

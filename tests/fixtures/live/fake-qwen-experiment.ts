@@ -13,8 +13,8 @@ export const input = { text: " exact\nbytes \t" };
 export const content = [{ type: "text", text: input.text }];
 export function nativeEvents(name = "echo", args: JsonObject = input, id = "native-call-42"): JsonObject[] {
   return [
-    { type: "assistant", model: "qwen-fixture-model", session_id: session, parent_tool_use_id: null,
-      message: { role: "assistant", content: [{ type: "tool_use", id, name: `mcp__test__${name}`, input: args }] } },
+    { type: "assistant", session_id: session, parent_tool_use_id: null,
+      message: { role: "assistant", model: "qwen-fixture-model", content: [{ type: "tool_use", id, name: `mcp__test__${name}`, input: args }] } },
     { type: "user", session_id: session, parent_tool_use_id: null,
       message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, is_error: false, content: "native display only" }] } },
     { type: "result", session_id: session, subtype: "success", is_error: false, permission_denials: [],

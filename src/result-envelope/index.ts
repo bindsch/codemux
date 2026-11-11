@@ -47,10 +47,8 @@ export const RESULT_ANSWER_FIELD: Partial<Record<AgentId, string>> = {
  * codex is NOT in this set: probe H cannot assert an override on evidence
  * that arrives only when the provider rerouted (round 26, edges 2). Agy,
  * kimi, openhands, and opencode pins expose no served-model field, so their
- * envelopes report `served_model: null`. Qwen's result message names no
- * model either, but every assistant frame in its message array does, so
- * its envelope reports the LAST assistant frame's model
- * (src/result-envelope/qwen.ts). The release gate's
+ * envelopes report `served_model: null`. Qwen's assistant message.model
+ * comes from its configuration, so it also reports null. The release gate's
  * probe H (the override is asserted on the envelope's served_model) and
  * `codemux list --json` (candidate discovery) read this one table, so
  * the gate's set, the envelope builders, and the listing cannot drift. */
@@ -60,7 +58,7 @@ export const SERVED_MODEL_EVIDENCE_HARNESSES: ReadonlySet<AgentId> = new Set([
   "pi",
   "zai",
   "goose",
-  "qwen",
+  // Qwen's message.model is configuration, not provider-reported identity.
   // A --result-json run is the observed RPC session; the model comes from
   // the provider response bytes (src/copilot-model-evidence.ts).
   "copilot",
@@ -68,7 +66,7 @@ export const SERVED_MODEL_EVIDENCE_HARNESSES: ReadonlySet<AgentId> = new Set([
 
 /** Where a SESSION's served model comes from (design P5): "provider"
  * when the wire names what served each turn (claude and zai's
- * message.model / modelUsage; codex's model/rerouted notice), "harness"
+ * message.model / modelUsage; Pi's assistant model; codex's model/rerouted notice), "harness"
  * when the wire names what it configured (claude's init frame, codex's
  * thread response — both agents carry the two sources side by side: the
  * events report whichever named one), "none" when no machine-readable
@@ -83,6 +81,7 @@ export const SESSION_SERVED_MODEL: Partial<
   claude: ["provider", "harness"],
   zai: ["provider", "harness"],
   codex: ["provider", "harness"],
+  pi: ["provider"],
   agy: ["none"],
   kimi: ["none"],
   opencode: ["none"],

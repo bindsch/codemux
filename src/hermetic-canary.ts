@@ -9,7 +9,7 @@
  * the planted code word, which makes the clean answer meaningful.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { hasActiveSignalOwner } from "./process-runner.js";
@@ -95,6 +95,28 @@ export function untrackScratchRemoval(dir: string): void {
   if (pendingScratch.size > 0) return;
   for (const [signal, handler] of signalHandlers) process.off(signal, handler);
   signalHandlers.clear();
+}
+
+/** Track the created spelling before canonicalization can fail. */
+export function createCanaryScratch(prefix: string): string {
+  const created = mkdtempSync(prefix);
+  trackScratchRemoval(created);
+  try {
+    const canonical = realpathSync(created);
+    if (canonical !== created) {
+      trackScratchRemoval(canonical);
+      untrackScratchRemoval(created);
+    }
+    return canonical;
+  } catch (error) {
+    try {
+      rmSync(created, { recursive: true, force: true });
+      untrackScratchRemoval(created);
+    } catch (cleanupError) {
+      if (error instanceof Error) error.message += `; cleanup failed: ${String(cleanupError)}`;
+    }
+    throw error;
+  }
 }
 
 export function plantCanary(

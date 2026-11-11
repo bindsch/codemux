@@ -151,6 +151,8 @@ describe("agy session e2e - hermetic private home", () => {
       const ended = await waitFor(session.events, of("session_ended"), "session_ended");
       expect(settles).toBe(1);
       expect(ended.resumable).toBe(false);
+      expect(ended.exit_code).toBe(1);
+      expect(await session.code).toBe(1);
       expect(String(errors.mock.calls.flat().join(" "))).toContain("settlement failed");
       expect(String(errors.mock.calls.flat().join(" "))).toContain("synthetic rename refusal");
     } finally {

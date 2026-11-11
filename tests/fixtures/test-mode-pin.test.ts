@@ -1,7 +1,7 @@
 /**
  * The child of tests/test-mode-ledger.test.ts: one test, run by a
- * `bun test --preload ./tests/setup.ts` with both ledger variables
- * stripped from the environment, that fails unless the preload's redirect
+ * `bun test --preload ./tests/setup.ts` with ledger variables either
+ * unset or pointing outside its temporary root. It fails unless the redirect
  * carries — `CODEMUX_TEST_LEDGER` is set, the append path resolves to it
  * (not the neutral HOME's state directory), and a record appended with
  * the default environment lands in it (review ul4). It also runs as part
@@ -9,19 +9,21 @@
  */
 
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { resolve, dirname, relative } from "node:path";
+import { sessionRegistryPath } from "../../src/session/registry.js";
 import {
   appendCallRecord,
   appendLedgerPath,
   CALL_LOG_ENV,
   CALL_LOG_TEST_ENV,
   callLogPath,
+  codemuxStateDir,
 } from "../../src/call-log.js";
 
 test("the preload's CODEMUX_TEST_LEDGER owns the append, never the real ledger", () => {
   const env = { ...process.env } as NodeJS.ProcessEnv;
-  delete env[CALL_LOG_ENV];
+  expect(env[CALL_LOG_ENV]).toBeUndefined();
   const redirected = env[CALL_LOG_TEST_ENV];
   // The preload ran: the redirect variable is set and named by the append
   // path, and the record lands in it.
@@ -29,6 +31,16 @@ test("the preload's CODEMUX_TEST_LEDGER owns the append, never the real ledger",
   expect(redirected).not.toBe("");
   expect(appendLedgerPath(env)).toBe(resolve(redirected!));
   expect(appendLedgerPath(env)).not.toBe(callLogPath(env));
+  // All default state writes must stay under the preload's fresh root,
+  // including the HOME fallback when a test deliberately clears the redirect.
+  const root = dirname(redirected!);
+  for (const path of [callLogPath(env)!, sessionRegistryPath(), codemuxStateDir(env),
+    ...["HOME", "USERPROFILE", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME"].map((name) => env[name]!)]) {
+    expect(relative(root, path).startsWith("..")).toBe(false);
+  }
+  for (const path of [callLogPath(env)!, sessionRegistryPath()]) {
+    mkdirSync(dirname(path), { recursive: true }); writeFileSync(`${path}.test-isolation-probe`, "synthetic state\n");
+  }
   appendCallRecord(
     {
       ts: "2026-10-08T12:00:00.000Z",

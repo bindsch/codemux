@@ -53,7 +53,6 @@ export class OpencodeAdapter extends BaseAdapter {
   readonly id: AgentId = "opencode";
   readonly binaryName = "opencode";
 
-  // Seams so tests can point the real data directory at a scratch directory.
   constructor(
     environment: NodeJS.ProcessEnv = process.env,
     private readonly homeDirectory?: string
@@ -163,7 +162,7 @@ export class OpencodeAdapter extends BaseAdapter {
     const envPrefix: string[] = [];
     if (experiment) envPrefix.push("-u", "OPENCODE_PURE", "-u", "OPENCODE_EXPERIMENTAL_NATIVE_LLM");
     if (request.hermetic) {
-      const carrier = this.remoteConfigCarrier();
+      const carrier = context?.printOnly ? null : this.remoteConfigCarrier();
       if (carrier !== null) {
         throw new UsageRefusalError(hermeticRemoteConfigRefusal(carrier));
       }
@@ -204,7 +203,7 @@ export class OpencodeAdapter extends BaseAdapter {
     if (context) context.playwrightMcpCheck = mcp.check;
     const noWeb = request.web === false ? opencodeNoWebConfig(request.autonomy) : undefined;
     if (request.web === false || mcp.check || experiment) {
-      this.assertNoRemoteLaunchConfig();
+      if (!context?.printOnly) this.assertNoRemoteLaunchConfig();
       const config = { ...noWeb?.config, ...mcp.config, ...experiment?.config };
       envPrefix.push(`OPENCODE_CONFIG_CONTENT=${JSON.stringify(config)}`);
     }
@@ -270,13 +269,13 @@ export class OpencodeAdapter extends BaseAdapter {
 
   override prepareRun(request: RunRequest, _trust?: ScodeTrustLevel, _sandbox?: SandboxOptions, launch: LaunchIntent = {}): RunContext {
     if (launch.printOnly && request.experimentMcp) throw new UsageRefusalError("OpenCode experiment MCP cannot be prepared for a print-only preview");
-    if (request.web === false || request.enablePlaywrightMcp || request.experimentMcp) this.assertNoRemoteLaunchConfig();
+    if (!launch.printOnly && (request.web === false || request.enablePlaywrightMcp || request.experimentMcp)) this.assertNoRemoteLaunchConfig();
     // Programmatic launches enforce the same project-settings gate as the CLI.
     if (request.experimentProjectSettings) {
       validateProjectSettingsRunRequest(request);
     }
     // Per-run artifacts belong to the launcher, never the singleton adapter.
-    const context: RunContext = {};
+    const context: RunContext = { printOnly: launch.printOnly };
     const override = this.validatedProvider();
     if (override !== null) {
       const model = this.rawModelFor(request.model);
@@ -362,9 +361,9 @@ export class OpencodeAdapter extends BaseAdapter {
     };
   }
 
-  override validateRunRequest(request: RunRequest): void {
+  override validateRunRequest(request: RunRequest, launch: import("../types.js").LaunchIntent = {}): void {
     super.validateRunRequest(request);
-    if (request.web === false || request.enablePlaywrightMcp || request.experimentMcp) this.assertNoRemoteLaunchConfig();
+    if (!launch.printOnly && (request.web === false || request.enablePlaywrightMcp || request.experimentMcp)) this.assertNoRemoteLaunchConfig();
     // The inherited XDG directories are refused while still relative,
     // before any walk or spawn: OpenCode resolves them against the run's
     // working directory, past every check below (review round 286).
@@ -391,7 +390,7 @@ export class OpencodeAdapter extends BaseAdapter {
     // The hermetic remote-config refusal, surfaced with its reason too:
     // the login's own configuration channel (opencode-remote-config.ts).
     if (request.hermetic) {
-      const carrier = this.remoteConfigCarrier();
+      const carrier = launch.printOnly ? null : this.remoteConfigCarrier();
       if (carrier !== null) {
         throw new UsageRefusalError(hermeticRemoteConfigRefusal(carrier));
       }
@@ -411,7 +410,7 @@ export class OpencodeAdapter extends BaseAdapter {
     autonomy: AutonomyLevel = "read-only",
     effort?: ReasoningEffort,
     passthroughEnv: readonly string[] = [],
-    enablePlaywrightMcp = false
+    enablePlaywrightMcp = false, launch: import("../types.js").LaunchIntent = {}
   ): void {
     super.validateTuiRequest(
       model,
@@ -430,7 +429,7 @@ export class OpencodeAdapter extends BaseAdapter {
     );
     this.tuiProviderConfig(model);
     if (effort !== undefined) validateOpencodeTuiEffortModel(this.modelFor(model));
-    if (enablePlaywrightMcp || this.validatedProvider()) this.assertNoRemoteLaunchConfig();
+    if (!launch.printOnly && (enablePlaywrightMcp || this.validatedProvider())) this.assertNoRemoteLaunchConfig();
   }
 
   private assertNoRemoteLaunchConfig(): void {
@@ -445,20 +444,21 @@ export class OpencodeAdapter extends BaseAdapter {
     return override ? opencodeProviderConfig(override, this.rawModelFor(model)!) : {};
   }
 
-  override getTuiEnv(model?: string): Record<string, string> {
+  override getTuiEnv(model?: string, _autonomy?: AutonomyLevel, _effort?: ReasoningEffort, _sandboxed?: boolean): Record<string, string> {
+    return this.tuiEnvironment(model, false);
+  }
+  private tuiEnvironment(model: string | undefined, printOnly: boolean): Record<string, string> {
     const override = this.validatedProvider();
     if (!override) return {};
-    this.assertNoRemoteLaunchConfig();
+    if (!printOnly) this.assertNoRemoteLaunchConfig();
     return {
       OPENCODE_CONFIG_CONTENT: JSON.stringify(this.tuiProviderConfig(model)),
       [OPENCODE_PROVIDER_KEY_ENV]: override.apiKey,
     };
   }
-
-  /** The launcher owns private effort state until the TUI settles. */
   override prepareTuiEnvironment(model?: string, _autonomy?: AutonomyLevel, effort?: ReasoningEffort,
     _sandboxed?: boolean, _passthroughEnv?: readonly string[], printOnly = false) {
-    const env = this.getTuiEnv(model);
+    const env = this.tuiEnvironment(model, printOnly);
     if (effort === undefined) return { env, finalize: () => {} };
     const selected = validateOpencodeTuiEffortModel(this.modelFor(model));
     if (printOnly) return { env: { ...env, XDG_STATE_HOME: join(this.realDataDir(), ".codemux-hermetic", "unprepared", ".local", "state") }, finalize: () => {} };
@@ -473,12 +473,12 @@ export class OpencodeAdapter extends BaseAdapter {
     sandboxed?: boolean,
     enablePlaywrightMcp?: boolean,
     cwd?: string,
-    nestedChecks?: ExecutableCheck[]
+    nestedChecks?: ExecutableCheck[], printOnly = false
   ): string[] {
     const mcp = opencodePlaywrightConfig(sandboxed, enablePlaywrightMcp, this.executionPathEnv(), cwd);
     const cmd: string[] = [];
     if (mcp.check) {
-      this.assertNoRemoteLaunchConfig();
+      if (!printOnly) this.assertNoRemoteLaunchConfig();
       nestedChecks?.push(mcp.check);
       cmd.push("env", `OPENCODE_CONFIG_CONTENT=${JSON.stringify({ ...this.tuiProviderConfig(model), ...mcp.config })}`);
     }

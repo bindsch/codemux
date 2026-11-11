@@ -49,20 +49,27 @@ The parser normalizes `permission_response` to `permission_decision` before
 driver dispatch. Both spellings resolve the same pending request.
 
 `text` may be empty, cannot contain NUL, and is at most 16 MiB of UTF-8.
+Parsing accepts empty text; Claude, ZAI, and Agy reject an empty harness-bound
+prompt as `unsupported` before acknowledging or opening a turn, as the shared
+turn driver already does. An enabled author prefix counts as prompt text.
 The whole input line is at most 17 MiB, measured on the delivered payload:
 the carriage return of a CRLF-terminated line is stripped before delivery
 and does not count against the cap. Transport wrapping and escaping can
-make a smaller text undeliverable and produce `text_too_long`. Aider,
-Goose, Kimi, and OpenHands impose a stricter 32 KiB limit on harness-bound
-text, including the author prefix, because they pass the prompt in argv.
+make a smaller text undeliverable and produce `text_too_long`. Gemini and
+Cline ACP frames have a 1 MiB limit; Copilot RPC bodies have a 16 MiB limit.
+Pi RPC prompts must fit the 17 MiB harness write limit after JSON escaping.
+Aider, Goose, Kimi, and OpenHands impose a stricter 32 KiB limit on
+harness-bound text, including the author prefix. Aider and OpenHands use
+private prompt files; Goose and Kimi use argv in sessions.
 
 An author has 1–64 Unicode code points. It cannot contain `[` or `]`, an
 unpaired surrogate, or characters in Unicode categories Cc, Cf, Zl, or Zp
 (controls, format characters, line and paragraph separators). An interrupt
-reason has at most 4096 UTF-16 code units and no NUL. A harness request ID
-has 1–128 UTF-16 code units and no NUL; a Codex `request_id` is that id's
-JSON spelling and may be longer (up to 770 code units), while Claude and
-ZAI request ids are the raw string. `updated_input` must be a non-null JSON
+reason has at most 4096 UTF-16 code units and no NUL. A native Codex string
+request ID has 1–128 UTF-16 code units and no NUL; its `request_id` is the
+JSON spelling and may be longer (up to 770 code units).
+Claude and Z.AI request IDs are raw strings of 1–770 UTF-16 code units
+with no NUL. `updated_input` must be a non-null JSON
 object, not an array. It substitutes Claude/ZAI tool arguments and is
 checked against the ceiling; Codex rejects it as `unsupported`.
 
@@ -126,6 +133,11 @@ assistant text has `raw: null`. Synthetic turn completions also have null
 raw. Treat session IDs and turn IDs as opaque; counters and local turn IDs
 restart in a resumed invocation.
 
+ACP events preserve the complete JSON-RPC line, including its method and
+session envelope. `tool_call.input` is the native object when available;
+missing, null, array, or scalar inputs become `{}`. The original value
+remains in `raw`, including incomplete tool arguments from streaming updates.
+
 ## Output event fields
 
 Fields below are additional to the envelope. Unless marked optional, every
@@ -134,7 +146,7 @@ no extra length guarantee beyond the framing and queue bounds below.
 
 | `type` | Fields |
 |---|---|
-| `session_started` | `agent: string`; `model: string \| null`; `model_served: string \| null`; `model_served_source: "provider" \| "harness" \| null`; `model_alias: string \| null`; `autonomy: "read-only" \| "low" \| "medium" \| "high"`; `cwd: string`; `sandboxed: boolean`; `sandbox_trust: "trusted" \| "standard" \| "untrusted"`; `capabilities: object` below; `protocol: "codemux-live-session/1"`; `private_home: string \| null` — always present, never omitted: the hermetic session's private home directory named by its settled session-keyed path (the spelling a `--resume` reopens), which for an agent that mints its session id later is not yet the live run-shaped directory the child writes while the session runs; null for a plain session or an agent whose hermetic mode keeps no session-keyed home (qwen). Agy additionally emits `hermetic: boolean` on this event |
+| `session_started` | `agent: string`; `model: string \| null`; `model_served: string \| null`; `model_served_source: "provider" \| "harness" \| null`; `model_alias: string \| null`; `autonomy: "read-only" \| "low" \| "medium" \| "high"`; `cwd: string`; `sandboxed: boolean`; `sandbox_trust: "trusted" \| "standard" \| "untrusted"`; `capabilities: object` below; `protocol: "codemux-live-session/1"`; `private_home: string \| null` — always present, never omitted: the caller-owned `--harness-home` directory, or the hermetic session's private home directory named by its settled session-keyed path (the spelling a `--resume` reopens), which for an agent that mints its session id later is not yet the live run-shaped directory the child writes while the session runs; null without either home, including an agent whose hermetic mode keeps no session-keyed home (qwen). Agy additionally emits `hermetic: boolean` on this event |
 | `input_accepted` | `input_seq: positive integer` |
 | `input_rejected` | `input_seq: positive integer`; `reason: string` from the rejection table; optional `message: string` — the denial text sent to the harness, present on `autonomy_escalation` |
 | `user_message` | `input_seq: positive integer`; `text: string`; optional `author: string`; optional `turn_id: string` |
@@ -152,6 +164,8 @@ no extra length guarantee beyond the framing and queue bounds below.
 | `unknown` | No additional fields; `raw` carries the unmapped line |
 | `error` | `fatal: boolean`; `source: "codemux" \| "harness"`; `message: string` |
 | `session_ended` | `reason: "shutdown" \| "stdin-close" \| "signal" \| "timeout" \| "crash" \| "harness_failed"`; `exit_code: integer`; `harness_exit: {code: integer \| null, signal: string \| null} \| null`; `shutdown_requested: boolean`; `usage: Usage`; `resumable: boolean` |
+
+An asynchronous failure while delivering a prompt to the harness's stdin is a fatal codemux error, even if the initial write was accepted into a buffer. The session fails and stops the child. Pending prompt writes settle before process completion, with a one-second limit after child exit. Repeating decline input may stop quietly when the harness closes its input.
 
 The process exit code is the `exit_code` `session_ended` reported, unless
 the event's delivery failed (the sink rejected or stalled), which ends the
@@ -224,7 +238,9 @@ native file changes, or streaming usage. The remaining values are listed in
 `Usage` always has five fields, each `number | null`: `input_tokens`,
 `output_tokens`, `cached_input_tokens`, `total_tokens`, and `cost_usd`.
 Null means unreported, never zero. Input excludes cache-served tokens;
-cached input includes cache reads and writes; total requires all token parts.
+cached input includes cache reads and writes. A derived total requires all
+token parts; a known native total can remain available when the input/cache
+split is unknown (for example, Gemini ACP).
 An unknown or overflowing count is null: token counts are whole non-negative
 safe integers, and a count past that range — or a fold whose sum would
 leave it — reports null in the event and in the ledger's closing summary,
@@ -241,8 +257,10 @@ survive missing later values; derived `total_tokens` becomes null if a
 contributing turn omits a component.
 
 Claude/ZAI turn cost is null. Their session cost adopts the latest reported
-harness-lifetime cost, which can include earlier invocations. Aider and Kimi
-report all-null usage. Do not add turn totals, usage events, and session
+harness-lifetime cost, which can include earlier invocations. Aider reports
+output tokens and positive cost from local analytics; input, cache, and total
+remain unknown. Kimi reports turn token deltas from its wire log; cost remains
+null. Missing native measurements remain null. Do not add turn totals, usage events, and session
 totals together.
 
 ## Ordering and lifecycle
@@ -294,9 +312,10 @@ error event that names no message fails the turn the same way, with a fixed
 reason.
 
 `session_ended` is last. `harness_exit` is the last observed child's raw
-outcome, or null if no outcome was observed. Every nonzero child exit or
-signal forces `reason: "harness_failed"` and a nonzero summary exit,
-regardless of who requested shutdown. `shutdown_requested` records stdin
+outcome, or null if no outcome was observed. An unexpected nonzero child exit or
+signal forces `reason: "harness_failed"` and a nonzero summary exit.
+An expected interrupted turn in Aider, OpenCode, or Kimi may retain its raw
+signal while a later orderly session end reports success. `shutdown_requested` records stdin
 close, shutdown input, or a signal to codemux. It does not excuse failure.
 Absolute timeout is a failure; a first turn timeout can interrupt and leave
 the session running. A second expiry on the same turn ends it. A second
@@ -333,7 +352,7 @@ approval offering no refusal choice also interrupts its turn.
 |---|---|
 | Caller text | 16 MiB UTF-8; `text_too_long` |
 | Caller line / harness write | 17 MiB; caller line overflow is `malformed`; undeliverable text is `text_too_long` |
-| Aider/Goose/Kimi/OpenHands argv text | 32 KiB including author prefix; `text_too_long` |
+| Aider/Goose/Kimi/OpenHands prompt text | 32 KiB including author prefix; `text_too_long` |
 | Harness stdout line | 16 MiB; fatal overflow |
 | Pending stdout events | 1024 ordinary events or 64 MiB; failure ends the session, and ordinary events stay refused after it |
 | Unread harness stdin backlog | 64 MiB; refusal is fatal |

@@ -44,7 +44,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { pidProbeAlive } from "./process-table.js";
+import { runDirectoryOwnerCheck, runDirectoryPrefix } from "./run-directory-owner.js";
 import { directoryMtimeMs, newestMtimeMs } from "./hermetic-sweep.js";
 import { assertTrustedParentUnchanged, recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook, type TrustedParentRecord } from "./safe-remove.js";
 
@@ -56,7 +56,6 @@ export interface OpencodeHermeticHome {
 }
 
 const PARENT_DIR_NAME = ".codemux-hermetic";
-const RUN_PREFIX = "run-";
 
 // A codemux that died without its exit handler may leave an OpenCode child
 // running in its home for as long as a run is allowed to last; a home is
@@ -72,11 +71,12 @@ export function sweepStaleHomes(parent: string, record: TrustedParentRecord): vo
   } catch {
     return;
   }
+  const ownerAlive = runDirectoryOwnerCheck();
   for (const entry of entries) {
     const match = /^run-(\d+)-/.exec(entry);
     if (!match) continue;
     const pid = Number(match[1]);
-    if (pid === process.pid || pidProbeAlive(pid)) continue;
+    if (ownerAlive(entry, pid)) continue;
     const path = join(parent, entry);
     // Age by the NEWEST mtime anywhere in the home's tree, never the top
     // directory's own: the redirected XDG writes land in subdirectories
@@ -216,7 +216,7 @@ export function createOpencodeHermeticHome(
   // A parent the sweep found swapped kept its entries and reported; the
   // new home must not be made through the replacement (review round 295).
   assertTrustedParentUnchanged(parentRecord, "the hermetic home parent");
-  const home = mkdtempSync(join(parent, `${RUN_PREFIX}${process.pid}-`));
+  const home = mkdtempSync(join(parent, runDirectoryPrefix()));
 
   // Cleanup is registered before anything else touches the home: a copy
   // below that throws (disk full, a permission change) must not leave the

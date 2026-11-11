@@ -50,6 +50,10 @@ export abstract class ClaudeDriverInput extends ClaudeDriverEvents {
           this.options.authorPrefix
         );
         const harnessLine = buildHarnessUserMessage(harnessText);
+        if (harnessText.length === 0) {
+          this.ack(inputSeq, false, "unsupported");
+          return;
+        }
         // Deliverability is checked on the exact frame BEFORE the ack: the
         // frame's JSON-escaping can push a text that passed the protocol's
         // 16 MiB bound past the harness write cap, and an accepted line

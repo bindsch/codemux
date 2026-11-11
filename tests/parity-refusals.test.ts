@@ -175,7 +175,7 @@ function reportingOutcome(agent: AgentId, feature: ParityFeature): Outcome | und
   // cells share theirs), and the synthetic parse reports no model.
   const evidencePin: Partial<Record<AgentId, string>> = {
     aider: "aider-chat 0.86.2", codex: "codex 0.166.0", cursor: "1706.index.js", droid: "0.221.0",
-    kimi: "kimi-code 2.5.2", cline: "cli-v3.0.74",
+    kimi: "kimi-code 2.5.2", cline: "cli-v3.0.74", qwen: "@qwen-code/qwen-code 0.24.0",
   };
   const pin = evidencePin[agent];
   if (pin !== undefined && state.state === "harness-limitation" &&
@@ -372,7 +372,7 @@ async function exercise(agent: AgentId, feature: ParityFeature): Promise<Outcome
     return commandOutcome(agent, "check", ["--experiment-mcp", "synthetic-spec.json", "--hermetic", "--tools", "none"]);
   }
   if (feature === "check.provider-override.served-model") {
-    if (agent === "cline" || agent === "opencode" || agent === "codex" || agent === "copilot" || agent === "cursor" || agent === "droid" || agent === "kimi" || agent === "openhands") return reportingOutcome(agent, feature);
+    if (agent === "qwen" || agent === "cline" || agent === "opencode" || agent === "codex" || agent === "copilot" || agent === "cursor" || agent === "droid" || agent === "kimi" || agent === "openhands") return reportingOutcome(agent, feature);
     const provider = providerOutcome(agent, "run.provider-override");
     if (provider.message !== null) return provider;
     const envelope = capture(() => validateRunRequestFor(adapter, { ...request, resultJson: true }));

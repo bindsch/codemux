@@ -1,3 +1,4 @@
+import { sessionIdPattern } from "./id-pattern.js";
 import { join } from "node:path";
 import type { AutonomyLevel, ReasoningEffort } from "../types.js";
 import type { SessionCapabilities } from "./protocol.js";
@@ -6,7 +7,7 @@ import type { TurnAgentProfile } from "./turn-driver-types.js";
 export const CLINE_SESSION_FLOOR = "3.0.74";
 // cli-v3.0.74 helpers.ts randomSessionId(): Date.now() + nanoid(5) + _cli.
 // https://github.com/cline/cline/blob/cli-v3.0.74/apps/cli/src/utils/helpers.ts#L40-L42
-export const CLINE_SESSION_ID_PATTERN = /^\d{13,}_[A-Za-z0-9_-]{5}_cli$/;
+export const CLINE_SESSION_ID_PATTERN = sessionIdPattern(/^\d{13,}_[A-Za-z0-9_-]{5}_cli$/);
 
 export function clineSessionCapabilities(): SessionCapabilities {
   return { live_input: true, user_during_turn: false, steer: false, interrupt: true,

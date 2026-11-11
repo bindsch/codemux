@@ -27,6 +27,7 @@
  */
 
 import { type BigIntStats, lstatSync, realpathSync, rmSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { assertTrustedDirectory } from "./hermetic-sweep.js";
 
 /** A parent directory recorded at creation time for later revalidation. */
@@ -40,6 +41,15 @@ export interface TrustedParentRecord {
    * realpath but not these (review round 98). */
   dev: bigint;
   ino: bigint;
+}
+
+/** All owned entries are immediate children. Reject traversal before any I/O. */
+export function assertDirectChildPath(path: string, parent: string): void {
+  const child = resolve(path);
+  const root = resolve(parent);
+  if (child === root || dirname(child) !== root) {
+    throw new Error(`path ${path} must be a direct child of ${parent}`);
+  }
 }
 
 /**
@@ -65,7 +75,7 @@ export function assertTrustedParentUnchanged(record: TrustedParentRecord, what: 
   } catch (error) {
     throw new Error(`${what} ${record.path} is gone (${reasonOf(error)}); refusing to use it`);
   }
-  if (!stat.isDirectory() || stat.dev !== record.dev || stat.ino !== record.ino) {
+  if (!stat.isDirectory() || stat.dev !== record.dev || stat.ino !== record.ino || realpathSync(record.path) !== record.real) {
     throw new Error(`${what} ${record.path} was replaced after it was recorded; refusing to use it`);
   }
 }
@@ -87,6 +97,7 @@ export function removeUnderTrustedParentOrThrow(
   label: string
 ): void {
   try {
+    assertDirectChildPath(dir, record.path);
     try {
       assertTrustedDirectory(record.path);
     } catch (error) {
@@ -111,7 +122,9 @@ export function removeUnderTrustedParentOrThrow(
     ) {
       throw new Error(`${record.path} is no longer the directory this run created`);
     }
-    rmSync(dir, { recursive: true, force: true });
+    // Use the same normalized path that containment checked. A raw path
+    // with an intermediate symlink followed by '..' resolves differently.
+    rmSync(resolve(dir), { recursive: true, force: true });
   } catch (error) {
     throw new Error(`could not remove ${label} (${reasonOf(error)}); the directory was kept`);
   }

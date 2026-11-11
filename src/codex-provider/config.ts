@@ -4,6 +4,7 @@
 // this.
 
 import { randomBytes } from "node:crypto";
+import { runDirectoryPrefix } from "../run-directory-owner.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { renameIntoPlaceSync, stageExclusiveSync } from "../fs-durable.js";
 import { join } from "node:path";
@@ -213,7 +214,7 @@ export function writeCodexProviderConfig(
   const parent = prepareRunDirParent(realCodexHome, PARENT_DIR_NAME);
   // Recorded for the finalizer's revalidation (src/safe-remove.ts).
   const parentRecord = recordTrustedParent(parent);
-  const codexHome = mkdtempSync(join(parent, `run-${process.pid}-`));
+  const codexHome = mkdtempSync(join(parent, runDirectoryPrefix()));
   try {
     writeCodexProviderConfigInto(codexHome, override, model, multiAgent);
   } catch (error) {

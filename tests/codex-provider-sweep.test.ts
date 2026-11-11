@@ -55,18 +55,10 @@ describe("codex provider session homes (review D1)", () => {
     expect(existsSync(youngSession)).toBe(true);
   });
 
-  test("a stale tree too big to walk is judged by registry proof, and the sweep still works beside it (reviews D7 and D10, correctness-2 2)", () => {
-    // D7 capped the walk: an over-budget tree answers null, so a child
-    // grown tree under `~/.codex` can no longer slow every later codemux
-    // run. D10 split what null then means (the finding: the cap kept any
-    // keyed home forever — every later run re-walked it to the cap): a
-    // KEYED home the registry has POSITIVELY freed carries an ownership
-    // proof (the run branch's pid gate twin), so null falls back to the
-    // directory's own mtime and a huge dead tree is reclaimed by age;
-    // every other over-budget home — `unknown`, or a name with no
-    // parseable registry key — keeps the D7 spare, and the registry
-    // consult runs BEFORE the walk, so the spared ones cost no walk at
-    // all.
+  test("an incomplete session-home scan preserves state while small stale homes are swept", () => {
+    // A free registry entry has no current owner but can still resume.
+    // An incomplete walk cannot prove inactivity, even when every file
+    // it happened to visit was old.
     const home = makeCodexHome();
     const parent = prepareRunDirParent(home, ".codemux-provider");
     const monthAgo = new Date(Date.now() - 30 * 86_400_000);
@@ -92,11 +84,10 @@ describe("codex provider session homes (review D1)", () => {
     mkdirSync(small);
     utimesSync(small, monthAgo, monthAgo);
     // The next prepareRunDirParent (any session or run start) sweeps: the
-    // freed over-budget tree is reclaimed by its own age, the unknown and
-    // id-less ones are spared, and the small stale one still goes.
+    // over-budget trees stay, and the small stale one still goes.
     prepareRunDirParent(home, ".codemux-provider", (id) =>
       id === "cafecafecafecafe" || id === "deadbeefdeadbeef" ? "free" : "unknown");
-    expect(existsSync(freedHuge)).toBe(false); // freed: own-mtime fallback reclaims
+    expect(existsSync(freedHuge)).toBe(true); // free does not prove inactivity
     expect(existsSync(unknownHuge)).toBe(true); // unknown: the D7 spare holds
     expect(existsSync(idlessHuge)).toBe(true); // no registry key: no proof exists
     expect(existsSync(small)).toBe(false);

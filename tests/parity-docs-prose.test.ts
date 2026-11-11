@@ -96,7 +96,7 @@ test("spend-limit, web, and TUI effort prose equal the declarations", () => {
     .toEqual(sorted(notSupporting("tui.effort")));
 });
 
-test("session protocol's argv bound names every argv-carried agent", () => {
+test("session protocol's 32 KiB bound names every limited prompt carrier", () => {
   const profiles = [CLINE_ACP_DRIVER_PROFILE, COPILOT_DRIVER_PROFILE, CURSOR_DRIVER_PROFILE, DROID_DRIVER_PROFILE,
     GEMINI_ACP_DRIVER_PROFILE, GEMINI_DRIVER_PROFILE, GOOSE_DRIVER_PROFILE, OPENHANDS_DRIVER_PROFILE,
     PI_DRIVER_PROFILE, QWEN_DRIVER_PROFILE];
@@ -105,9 +105,9 @@ test("session protocol's argv bound names every argv-carried agent", () => {
   expect(read("src/session/kimi-machine/step.ts")).toContain("MAX_ARGV_PROMPT_BYTES");
   const argv = sorted(["aider", "kimi", ...profiles.filter((p) => p.promptCarrier === "argv").map((p) => p.agent)]);
   const protocol = flat(read("docs/session-protocol.md"));
-  expect(sorted(agentNames(captured(protocol, /produce `text_too_long`\. (.+?) impose a stricter 32 KiB limit/))))
+  expect(sorted(agentNames(captured(protocol, /\. ([A-Za-z, ]+) impose a stricter 32 KiB limit/))))
     .toEqual(argv);
-  expect(sorted(agentNames(captured(read("docs/session-protocol.md"), /\| ([\w/]+) argv text \|/)))).toEqual(argv);
+  expect(sorted(agentNames(captured(read("docs/session-protocol.md"), /\| ([\w/]+) prompt text \|/)))).toEqual(argv);
 });
 
 test("experiment MCP and recording prose equal EXPERIMENT_MCP_HARNESSES", () => {

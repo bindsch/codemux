@@ -82,7 +82,7 @@ export type UpdateOutcome =
   | { ok: false; error: string; kind: "untrusted" | "busy" | "unavailable" };
 
 /** Serialize on the lock, read strictly, mutate, prune, write atomically.
- * `mutate` returns null on success or the specific failure message — a
+ * `mutate` returns null to write, false to finish without a write, or a failure message — a
  * refusal it can name (the ownership claim) rather than the generic
  * not-found error the caller cannot act on. `onCorrupt` decides the
  * recoverable class: a new session's start backs the file up beside the
@@ -109,7 +109,7 @@ export type UpdateOutcome =
  * `recordSessionStartOffStream` (review round 341). */
 export function updateRegistry(
   originalPath: string,
-  mutate: (file: RegistryFile) => string | null,
+  mutate: (file: RegistryFile) => string | null | false,
   onCorrupt: "backup-and-reset" | "fail",
   lockOptions?: LockOptions
 ): UpdateOutcome {
@@ -175,6 +175,8 @@ export function updateRegistry(
     const file: RegistryFile =
       read.outcome === "ok" ? read.file : { version: 1, sessions: [] };
     const failure = mutate(file);
+    // A locked read/action can finish without rewriting or pruning records.
+    if (failure === false) return { ok: true };
     if (failure !== null) {
       return { ok: false, error: failure, kind: "untrusted" };
     }
@@ -263,6 +265,10 @@ export function recordSessionStart(
     path,
     (file) => {
       const existing = file.sessions.find((entry) => entry.id === record.id);
+      if (existing !== undefined &&
+          (existing.agent !== record.agent || existing.harness_home !== record.harness_home)) {
+        return `session ${record.id} already belongs to a different agent or harness home (session_collision)`;
+      }
       // The self check compares the pid alone: no other live process can
       // hold this process's pid, so a record under it is this process's
       // own claim or a dead predecessor's. Comparing the start token too

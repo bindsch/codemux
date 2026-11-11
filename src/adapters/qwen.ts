@@ -55,7 +55,7 @@ export class QwenAdapter extends BaseAdapter {
       // keeps the base refusal through the empty level list below).
       supportsEffort: !this.isLegacyBinary,
       effortLevels: this.isLegacyBinary ? [] : [...QWEN_EFFORT_LEVELS],
-      // Every codemux qwen run already passes --safe-mode, which qwen
+      // Every current qwen run passes --safe-mode, which qwen
       // documents as "Disable all customizations (context files, hooks,
       // extensions, skills, MCP servers)" and announces as "all
       // customizations disabled (hooks, extensions, skills, MCP servers,
@@ -63,7 +63,7 @@ export class QwenAdapter extends BaseAdapter {
       // 2026-11-09). --hermetic therefore closes nothing further: the
       // claim is the always-on safe mode itself, documented in
       // docs/isolation.md.
-      supportsHermetic: true,
+      supportsHermetic: !this.isLegacyBinary,
       // The removal carrier is argv, not settings: safe mode ignores the
       // settings-sourced tool flags outright ("⚠ Safe mode: --core-tools
       // flag is ignored (settings-sourced core tools are also disabled)",
@@ -109,7 +109,8 @@ export class QwenAdapter extends BaseAdapter {
    * OPENAI_MODEL are set (`getAuthTypeFromEnv`: `env["OPENAI_API_KEY"] &&
    * (env["OPENAI_MODEL"] || env["QWEN_MODEL"]) && env["OPENAI_BASE_URL"]`,
    * 0.24.0, read 2026-11-09), so the override requires a model — the
-   * request's or the variable's. The output cap rides
+   * CODEMUX_QWEN_PROVIDER_MODEL variable's. An explicit request model
+   * can replace that configured default after validation. The output cap rides
    * QWEN_CODE_MAX_OUTPUT_TOKENS; the context cap rides the run settings
    * file as model.generationConfig.contextWindowSize
    * (src/qwen-effort.ts), written at prepareRun from the override here.
@@ -223,6 +224,7 @@ export class QwenAdapter extends BaseAdapter {
     const binary = this.resolveBinary();
 
     if (this.isLegacyBinary) {
+      this.validateLegacyRestrictions(request);
       if (request.model) {
         throw new Error("qwen-coder does not support model selection");
       }
@@ -300,6 +302,7 @@ export class QwenAdapter extends BaseAdapter {
   }
 
   override processRunResult(result: RunResult, request: RunRequest, context?: RunContext): RunResult {
+    if (this.isLegacyBinary) return { ...result, reply: "" }; // No verifiable assistant-answer carrier.
     if (context?.experimentQwen) return { ...qwenExperimentResult(result, request, context.experimentQwen.recordingPath),
       scanSurface: context.experimentQwen.scanSurface };
     // The run launched with --output-format stream-json; qwenResult
@@ -332,7 +335,14 @@ export class QwenAdapter extends BaseAdapter {
     };
   }
 
+  private validateLegacyRestrictions(request: RunRequest): void {
+    if (this.isLegacyBinary && (request.hermetic || request.web === false)) {
+      throw new UsageRefusalError("qwen-coder cannot enforce --hermetic or --no-web; install the current qwen CLI");
+    }
+  }
+
   override validateRunRequest(request: RunRequest): void {
+    this.validateLegacyRestrictions(request);
     super.validateRunRequest(request);
     if (request.experimentMcp && this.isLegacyBinary) {
       throw new UsageRefusalError("qwen-coder has no explicit MCP configuration carrier; install qwen 0.24.0 or newer");

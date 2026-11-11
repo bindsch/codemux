@@ -76,6 +76,11 @@ export abstract class BaseAdapter {
     return this.environment.PATH ?? "";
   }
 
+  /** The execution root also bounds trust checks for nested executables. */
+  protected executionWorkingDirectory(request: Pick<RunRequest, "cwd">): string {
+    return request.cwd ?? process.cwd();
+  }
+
   abstract capabilities(): AdapterCapabilities;
 
   /**
@@ -98,7 +103,8 @@ export abstract class BaseAdapter {
     sandboxed?: boolean,
     enablePlaywrightMcp?: boolean,
     cwd?: string,
-    nestedChecks?: ExecutableCheck[]
+    nestedChecks?: ExecutableCheck[],
+    printOnly?: boolean
   ): string[];
 
   isAvailable(): boolean {
@@ -185,7 +191,7 @@ export abstract class BaseAdapter {
    * Returns custom environment variables for this adapter.
    * Override in subclasses to set things like API endpoints.
    */
-  getEnv(): Record<string, string> {
+  getEnv(_launch: LaunchIntent = {}): Record<string, string> {
     return {};
   }
 
@@ -195,10 +201,10 @@ export abstract class BaseAdapter {
 
   buildExecutionEnv(
     extraEnv: Record<string, string> = {},
-    passthroughEnv: readonly string[] = []
+    passthroughEnv: readonly string[] = [], launch: LaunchIntent = {}
   ): Record<string, string> {
     const adapterProvided = {
-      ...this.getEnv(),
+      ...this.getEnv(launch),
       ...extraEnv,
     };
     const env = {
@@ -410,7 +416,7 @@ export abstract class BaseAdapter {
     }
   }
 
-  validateRunRequest(request: RunRequest): void {
+  validateRunRequest(request: RunRequest, _launch: LaunchIntent = {}): void {
     validateRunRequestFor(this, request);
   }
 
@@ -420,7 +426,7 @@ export abstract class BaseAdapter {
     autonomy: AutonomyLevel = "read-only",
     effort?: ReasoningEffort,
     passthroughEnv: readonly string[] = [],
-    enablePlaywrightMcp = false
+    enablePlaywrightMcp = false, _launch: LaunchIntent = {}
   ): void {
     validateTuiRequestFor(this, {
       model,

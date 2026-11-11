@@ -37,6 +37,7 @@ import { COPILOT_SESSION_ID_PATTERN } from "./copilot-session.js";
 import { DROID_SESSION_ID_PATTERN } from "./droid-session.js";
 import { GEMINI_SESSION_ID_PATTERN } from "./gemini-session.js";
 import { GOOSE_SESSION_ID_PATTERN } from "./goose-session.js";
+import { scopedResumePattern } from "./scoped-id.js";
 import { PI_SESSION_ID_PATTERN } from "./pi-session.js";
 import { openSessionPrivateHome } from "./private-home.js";
 import { openOpenhandsSessionHome } from "./openhands-home.js";
@@ -324,7 +325,7 @@ export function openTurnAgentPrivateHome(
         parent: join(stateRoot, PARENT_DIR_NAME),
         sessionId: knownId ?? undefined,
         resume,
-        idPattern: GOOSE_SESSION_ID_PATTERN,
+        idPattern: scopedResumePattern("goose", GOOSE_SESSION_ID_PATTERN),
         blockedPaths: [],
         // An empty home: the provider comes from the override's
         // environment, never a copied config (src/goose-hermetic.ts).

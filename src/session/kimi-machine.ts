@@ -66,9 +66,8 @@
  * line of every completed turn, kimi-session.ts's wire pin), cleared by
  * any fatal. A turn that ends unconfirmed is a failed turn and sets
  * sawUnconfirmedTurnFailure, so the end's resumable verdict cannot ride
- * an earlier turn's hint. There is no turn_timeout row: the CLI refuses
- * `--turn-timeout` for kimi (no verified interrupt channel), so the
- * event cannot occur.
+ * an earlier turn's hint. `turn_timeout` stops the active turn child
+ * through the supervisor's shutdown grace and records an interruption.
  */
 
 import { emptyUsage } from "../result-envelope.js";

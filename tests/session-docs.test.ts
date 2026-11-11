@@ -15,6 +15,9 @@ import { qwenSessionCapabilities, QWEN_SESSION_FLOOR } from "../src/session/qwen
 import { geminiSessionCapabilities, GEMINI_SESSION_FLOOR } from "../src/session/gemini-session.js";
 import { copilotSessionCapabilities, COPILOT_SESSION_FLOOR } from "../src/session/copilot-session.js";
 import { gooseSessionCapabilities, GOOSE_SESSION_FLOOR } from "../src/session/goose-session.js";
+import { SESSION_AGENTS } from "../src/session/cli-agents.js";
+import { clineSessionCapabilities, CLINE_SESSION_FLOOR } from "../src/session/cline-session.js";
+import { openhandsSessionCapabilities, openhandsSessionFloor } from "../src/session/openhands-session.js";
 import { MAX_INPUT_TEXT_BYTES, MAX_AUTHOR_CODEPOINTS, MAX_REASON_CHARS, MAX_ID_CHARS } from "../src/session/protocol.js";
 import { MAX_HARNESS_LINE_BYTES, MAX_INPUT_LINE_BYTES, MAX_PENDING_EVENTS, MAX_PENDING_EVENT_BYTES } from "../src/session/process.js";
 
@@ -38,9 +41,14 @@ const agents = [
   ["gemini", GEMINI_SESSION_FLOOR, geminiSessionCapabilities],
   ["copilot", COPILOT_SESSION_FLOOR, copilotSessionCapabilities],
   ["goose", GOOSE_SESSION_FLOOR, gooseSessionCapabilities],
+  ["cline", CLINE_SESSION_FLOOR, clineSessionCapabilities],
+  ["openhands", openhandsSessionFloor(), openhandsSessionCapabilities],
 ] as const;
 
 describe("published session contract", () => {
+  test("capability assertions cover the entire session registry", () => {
+    expect(agents.map(([agent]): string => agent).sort()).toEqual(Object.keys(SESSION_AGENTS).sort());
+  });
   test.each(agents)("%s capability row agrees with the driver", (agent, floor, capabilities) => {
     const caps = capabilities();
     const yesNo = (value: boolean): string => value ? "yes" : "no";
@@ -126,7 +134,9 @@ describe("session lifecycle source invariants", () => {
   test("Codex settles provider state before releasing registry ownership", () => {
     before("src/session/codex-driver.ts",
       "this.options.settleSessionHome(this.threadId, resumable)",
-      "releaseSessionRecord(this.options.registryPath, this.threadId)");
+      "releaseSessionRecord(this.options.registryPath, this.threadId, finalRemoved)");
+    before("src/session/codex-driver.ts", "removeFinalPrivateHome(this.options.privateHome)",
+      "releaseSessionRecord(this.options.registryPath, this.threadId, finalRemoved)");
     expect(read("src/session/codex-driver.ts")).toContain("resumable: resumable && settledHome");
   });
 

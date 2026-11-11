@@ -21,6 +21,7 @@
  */
 
 import { chmodSync, mkdtempSync } from "node:fs";
+import { runDirectoryPrefix } from "./run-directory-owner.js";
 import { prepareRunDirParent } from "./hermetic-home.js";
 import { recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
 import { trackPrivateDir, untrackPrivateDir } from "./private-dir-signals.js";
@@ -36,7 +37,7 @@ export function createOpenhandsHermeticHome(sourceOpenhandsDir: string, printOnl
   if (printOnly) return { home: join(sourceOpenhandsDir, ".codemux-hermetic", "preview"), finalize: () => {} };
   const parent = prepareRunDirParent(sourceOpenhandsDir, ".codemux-hermetic");
   const parentRecord = recordTrustedParent(parent);
-  const home = mkdtempSync(join(parent, `run-${process.pid}-`));
+  const home = mkdtempSync(join(parent, runDirectoryPrefix()));
   chmodSync(home, 0o700);
   let finalized = false;
   const finalize = (): void => {

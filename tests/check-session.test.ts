@@ -35,6 +35,11 @@ test("every shipped agent has a session driver, so the canary's driver refusal i
 
 const refusals: { label: string; argv: string[]; message: string }[] = [
   {
+    label: "Qwen has no ordinary positive-control channel",
+    argv: ["check", "-a", "qwen", "--hermetic", "--session"],
+    message: "check --hermetic cannot run for qwen",
+  },
+  {
     // cursor's session exists but the harness has no verified hermetic
     // mode; for the CHECK path the hermetic gate answers first with its
     // own spelling (the session command's "no verified hermetic mode"

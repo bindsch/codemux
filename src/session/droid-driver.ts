@@ -50,11 +50,8 @@ export const DROID_DRIVER_PROFILE: TurnAgentProfile = {
       noSessionId: parsed.noSessionId,
       wrongSession: parsed.wrongSession,
       noWire: parsed.noWire,
-      // A failed droid turn fails on the exit code: under stream-json a
-      // failure also prints an error event (parsed into errorMessage), and
-      // a launch that printed no event at all is the noWire fatal.
-      failed: false,
-      failureReason: null,
+      failed: parsed.failed,
+      failureReason: parsed.failureReason,
     };
   },
 };

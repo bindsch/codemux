@@ -10,6 +10,8 @@
  * on. If the launcher's settle ever names the key differently, this
  * function and that doc comment move together. */
 import { dirname, join } from "node:path";
+import { assertSafeSessionId } from "./id-pattern.js";
+import { assertDirectChildPath } from "../safe-remove.js";
 
 export function settledPrivateHomePath(privateHomeDir: string, sessionId: string): string {
   return sessionKeyedHomePath(dirname(privateHomeDir), sessionId);
@@ -21,7 +23,10 @@ export function settledPrivateHomePath(privateHomeDir: string, sessionId: string
  * spellings must agree, or a resume looks one directory too high and
  * answers the missing-home refusal (review round 412, blocker). */
 export function sessionKeyedHomePath(parent: string, sessionId: string): string {
-  return join(parent, `session-${sessionId}`);
+  assertSafeSessionId(sessionId);
+  const path = join(parent, `session-${sessionId}`);
+  assertDirectChildPath(path, parent);
+  return path;
 }
 
 /** The private home's CURRENT directory: the fresh run-shaped path until

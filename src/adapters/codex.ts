@@ -1,4 +1,5 @@
 import { mkdtempSync } from "node:fs";
+import { runDirectoryPrefix } from "../run-directory-owner.js";
 import { combinedCleanupFailure } from "../experiment-records.js";
 import { join } from "node:path";
 import { previewCodexRun } from "../codex-preview.js";
@@ -193,7 +194,12 @@ export class CodexAdapter extends CodexPolicy {
     const toolCatalog = needsCodexNoToolsCatalog(request)
       ? codexNoToolsCatalogBody(this.modelFor(request.model), this.realCodexHome(request)) : undefined;
     if (launch.printOnly) return previewCodexRun(request, this.realCodexHome(request), override !== null, sandboxTrust, toolCatalog);
-    if (request.hermetic) {
+    if (request.hermetic || request.experimentMcp) {
+      if (!request.hermetic && !readExperimentRunSpec(request).control) {
+        throw new UsageRefusalError("Codex experiment requires a private hermetic home");
+      }
+      // Treatment and control share provider, model, and credential setup.
+      // Only the command's isolation flags differ between the two arms.
       // The project-settings mode's gates run before any home is created:
       // a refused request must not leave a private home behind (the kimi
       // arm's rule).
@@ -255,7 +261,7 @@ export class CodexAdapter extends CodexPolicy {
           // CODEX_HOME, so the parent could be swapped after creation.
           context.lastMessageParentRecord = recordTrustedParent(scratchParent);
           context.lastMessageDir = mkdtempSync(
-            join(scratchParent, `run-${process.pid}-`)
+            join(scratchParent, runDirectoryPrefix())
           );
           context.lastMessagePath = join(
             context.lastMessageDir,
@@ -278,20 +284,8 @@ export class CodexAdapter extends CodexPolicy {
     if (request.experimentMcp) {
       try {
         const spec = readExperimentRunSpec(request);
-        if (context.hermeticHome === undefined) {
-          // Only the check's paired control reaches here: a deliberate
-          // non-hermetic launch (spec.control, experiment-mcp.ts). The
-          // relay's config.toml still gets a private per-launch CODEX_HOME —
-          // never a merge into the operator's config — linked to the login
-          // a plain run uses: opening every channel is the control's job.
-          if (!spec.control) throw new UsageRefusalError("Codex experiment requires a private hermetic home");
-          context.hermeticHome = createCodexHermeticHome(
-            this.realCodexHome(request),
-            this.apiKeyAuth()
-          );
-        }
         const experiment = new ExperimentCodexRun(spec,
-          request.cwd ?? process.cwd(), context.hermeticHome.codexHome,
+          request.cwd ?? process.cwd(), context.hermeticHome!.codexHome,
           Boolean(request.resultJson), this.environment, request.prompt, experimentModel,
           (path) => { context.experimentRecording = path; });
         context.experimentCodex = experiment;
@@ -423,7 +417,9 @@ export class CodexAdapter extends CodexPolicy {
       failures.push(error);
     }
     try {
-      context.hermeticHome?.finalize();
+      // Reuse ordinary cleanup for scratch output and both home slots.
+      // Omit the experiment only in this view, preserving retry state.
+      this.cleanupRunSync({ ...context, experimentCodex: undefined });
     } catch (error) {
       failures.push(error);
     }

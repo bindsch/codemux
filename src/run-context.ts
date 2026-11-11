@@ -44,6 +44,8 @@ import type { PiProviderAgentDir } from "./pi-provider.js";
  * state.
  */
 export interface RunContext {
+  /** Paths only: builders and cleanup must perform no artifact I/O. */
+  printOnly?: boolean;
   /** Installed version from the compatibility probe; absent or null when unknown. */
   harnessVersion?: string | null;
   /** Agy private HOME for every sandboxed run; mode also selects native stream handling. */

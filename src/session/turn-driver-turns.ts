@@ -15,11 +15,14 @@ import {
   type SessionProcess,
 } from "./process.js";
 import { buildEvent, buildUnknownEvent } from "./protocol.js";
+import { SAFE_SESSION_ID_PATTERN } from "./id-pattern.js";
 import { addUsage } from "./usage.js";
 import { lateChildRuns } from "./spawn-wait.js";
 import { touchSession } from "./registry.js";
 import { TurnDriverRecord } from "./turn-driver-record.js";
 import { isCallerHarnessHome } from "./harness-home.js";
+import { turnCleanup } from "./turn-cleanup.js";
+import { scopedSessionId } from "./scoped-id.js";
 import type {
   TurnAgentStreamEvent,
   TurnAgentTurnVerdict,
@@ -41,10 +44,12 @@ export abstract class TurnDriverTurns extends TurnDriverRecord {
     // A fresh session's first turn is the only one that claims the id;
     // a resumed session's first turn in this process still resumes.
     const firstTurn = this.turnCounter === 1 && this.options.resumeSessionId === null;
+    const cleanup = turnCleanup();
     const buildArgv = (extras: TurnProviderExtras): string[] =>
       this.options.profile.buildTurnCommand({
+        onSettled: cleanup.register,
         text,
-        sessionId: this.sessionId,
+        sessionId: this.nativeSessionId(),
         firstTurn,
         callerHome: isCallerHarnessHome(this.options.privateHome) ? this.options.privateHome.dir : undefined,
         hermeticHome:
@@ -71,7 +76,9 @@ export abstract class TurnDriverTurns extends TurnDriverRecord {
       spawn = this.options.spawnTurn(buildArgv, () => this.turnSpawnAbandoned);
       this.turnSpawn = spawn;
       proc = await spawn;
+      void proc.settled.then(cleanup.finalize);
     } catch (error) {
+      cleanup.finalize();
       if (this.finished) return;
       this.emitError(
         true,
@@ -141,7 +148,7 @@ export abstract class TurnDriverTurns extends TurnDriverRecord {
       return;
     }
     const stdout = this.turnStdout.join("\n");
-    const verdict = parse(stdout, this.sessionId);
+    const verdict = parse(stdout, this.nativeSessionId());
     const exitDetail =
       outcome.code !== null
         ? `code ${outcome.code}`
@@ -166,7 +173,7 @@ export abstract class TurnDriverTurns extends TurnDriverRecord {
       void this.finish("crash", 1);
       return;
     }
-    if (verdict.noSessionId || verdict.sessionId === null) {
+    if (verdict.noSessionId || verdict.sessionId === null || !SAFE_SESSION_ID_PATTERN.test(verdict.sessionId)) {
       if (this.sessionId === null && this.options.profile.identity === "deferred") {
         // The opencode untrackable rule (§4.8): the first turn named no
         // session id, so the session cannot be recorded in the registry.
@@ -192,7 +199,7 @@ export abstract class TurnDriverTurns extends TurnDriverRecord {
     this.turnModelEffective = verdict.modelEffective;
     const failed = outcome.code !== 0 || verdict.failed;
     if (verdict.failed && this.turnError === null) {
-      this.turnError = verdict.failureReason;
+      this.turnError = verdict.failureReason ?? "the harness reported a failed result";
     }
     if (!failed && verdict.answer !== null) {
       this.emitAssistant(verdict.answer);
@@ -204,7 +211,7 @@ export abstract class TurnDriverTurns extends TurnDriverRecord {
    * (the stream wires). Never throws. */
   protected applyLine(line: string): void {
     if (this.options.profile.parseStreamLine !== undefined) {
-      this.applyStreamEvent(this.options.profile.parseStreamLine(line, this.sessionId ?? ""), line);
+      this.applyStreamEvent(this.options.profile.parseStreamLine(line, this.nativeSessionId() ?? ""), line);
       return;
     }
     // Whole-stdout wire: the line joins the buffer the turn's exit
@@ -234,6 +241,11 @@ export abstract class TurnDriverTurns extends TurnDriverRecord {
         this.emit(buildUnknownEvent(++this.seq, this.sessionIdOrEmpty(), rawLine));
         return;
       case "confirmed":
+        if (!SAFE_SESSION_ID_PATTERN.test(event.sessionId)) {
+          this.emitError(true, "harness", "the harness reported an unsafe session id");
+          void this.finish("crash", 1);
+          return;
+        }
         this.adoptSessionId(event.sessionId);
         if (event.model !== null) this.turnModelEffective = event.model;
         return;
@@ -279,7 +291,7 @@ export abstract class TurnDriverTurns extends TurnDriverRecord {
       case "result":
         this.turnUsage = event.usage;
         if (event.failed && this.turnError === null) {
-          this.turnError = event.failureReason;
+          this.turnError = event.failureReason ?? "the harness reported a failed result";
         }
         return;
     }
@@ -324,6 +336,7 @@ export abstract class TurnDriverTurns extends TurnDriverRecord {
   ): void {
     const turnId = this.fsm.activeTurn;
     if (turnId === null) return;
+    this.turnModelEffective = verdict.modelEffective;
     const error = this.fsm.transition({ kind: "turn_completed", turnId });
     if (error !== null) {
       this.emitError(true, "codemux", error.message);
@@ -335,6 +348,7 @@ export abstract class TurnDriverTurns extends TurnDriverRecord {
       buildEvent(++this.seq, this.sessionIdOrEmpty(), "turn_completed", null, {
         turn_id: turnId,
         finish: "failed",
+        ...this.modelFields(),
         reason:
           this.turnError ??
           `the process exited with ${exitDetail} and named no session id`,
@@ -375,7 +389,7 @@ export abstract class TurnDriverTurns extends TurnDriverRecord {
   protected adoptSessionId(sessionId: string): void {
     this.harnessConfirmed = true;
     if (this.sessionId === null) {
-      this.sessionId = sessionId;
+      this.sessionId = scopedSessionId(this.options.profile.agent, sessionId);
       this.announceSessionStarted();
     }
   }
@@ -412,9 +426,10 @@ export abstract class TurnDriverTurns extends TurnDriverRecord {
   ): void {
     const turnId = this.fsm.activeTurn;
     if (turnId === null) return;
+    const homeSettled = this.settlePrivateHome();
+    failed ||= !homeSettled;
     const completion = this.out.completeTurn(turnId, failed ? "failed" : "end",
       failed ? this.turnError ?? `the process exited with ${exitDetail}` : undefined);
-    this.settlePrivateHome();
     const error = this.fsm.transition({ kind: "turn_completed", turnId });
     if (error !== null) {
       this.emitError(true, "codemux", error.message);
@@ -426,6 +441,7 @@ export abstract class TurnDriverTurns extends TurnDriverRecord {
       buildEvent(++this.seq, this.sessionIdOrEmpty(), "turn_completed", null, {
         turn_id: turnId,
         ...completion,
+        ...this.modelFields(),
         usage,
       })
     );
@@ -440,6 +456,7 @@ export abstract class TurnDriverTurns extends TurnDriverRecord {
     );
     this.turnStartedAt.delete(turnId);
     this.stampActivity();
+    if (!homeSettled) void this.finish("crash", 1);
   }
 
   /** The turn path's best-effort activity stamp (review live13). */
@@ -457,8 +474,7 @@ export abstract class TurnDriverTurns extends TurnDriverRecord {
     }
   }
 
-  /** Assign the next codemux turn id, open it in the FSM, and reset the
-   * per-turn accumulators. */
+  /** Open the next turn in the FSM and reset its accumulators. */
   protected submitTurn(): string | null {
     this.turnCounter += 1;
     const turnId = `t${this.turnCounter}`;

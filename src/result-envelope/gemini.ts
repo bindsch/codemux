@@ -5,6 +5,7 @@ import { parseGeminiStream } from "../gemini-stream-answer.js";
 import {
   appendDiagnostic,
   boundResultEnvelope,
+  envelopeRefused,
   emptyUsage,
   reportedTokenCount,
   safeTokenSum,
@@ -40,7 +41,7 @@ export const GEMINI_ANSWER_FIELD = "response";
  * stream is rebuilt into the json-format envelope, its `response` the
  * complete answer, and finished by geminiResult. A plain run prints that
  * answer. Stdout with no JSON line at all (a binary that ignored the
- * format) passes through a plain run verbatim and fails a --result-json
+ * format) stays as diagnostics and fails both plain and --result-json
  * run. Never infer a served model from init.model, which is only the
  * configured model. */
 export function geminiStreamResult(result: RunResult, request: RunRequest, recording?: string, telemetryPath?: string): RunResult {
@@ -55,11 +56,12 @@ export function geminiStreamResult(result: RunResult, request: RunRequest, recor
   }
   const stream = parseGeminiStream(result.stdout);
   if (stream === null) {
-    if (!request.resultJson && recording === undefined) return result;
+    if (!request.resultJson && recording === undefined) return { ...result, reply: "" };
     return { ...result, success: false, exitCode: result.exitCode || 1,
       stderr: appendDiagnostic(result.stderr, "codemux: gemini stream-json stdout is malformed") };
   }
   const converted = geminiResult({ ...result, stdout: JSON.stringify(stream.envelope) }, request, telemetryPath, stream.transcript);
+  if (envelopeRefused("gemini", converted)) return converted;
   if (!request.resultJson) {
     const response = stream.envelope.response as string;
     return { ...converted, stdout: response === "" || response.endsWith("\n") ? response : `${response}\n` };
@@ -68,7 +70,8 @@ export function geminiStreamResult(result: RunResult, request: RunRequest, recor
   try {
     const output = JSON.parse(converted.stdout);
     output.codemux.recording = recording;
-    return { ...converted, stdout: `${JSON.stringify(output)}\n` };
+    return boundResultEnvelope("gemini", { ...converted, stdout: `${JSON.stringify(output)}\n` },
+      converted.usage ?? emptyUsage(), converted.servedModel ?? null);
   } catch {
     return converted;
   }
@@ -105,7 +108,7 @@ export function parseGeminiResultEnvelope(stdout: string): GeminiEnvelopeInfo | 
       : envelope.error !== null && typeof envelope.error === "object" &&
           typeof (envelope.error as Record<string, unknown>).message === "string"
         ? String((envelope.error as Record<string, unknown>).message)
-        : null;
+        : envelope.error != null ? "error result without a diagnostic" : null;
   const sessionId = typeof envelope.session_id === "string" ? envelope.session_id : null;
 
   const usage =

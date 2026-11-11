@@ -36,6 +36,14 @@ function rig(input: { pages?: unknown[]; result?: unknown; exclusive?: boolean; 
 }
 
 describe("Pi native MCP extension", () => {
+  test("missing optional tool description registers and executes with an empty native description", async () => {
+    const h = rig({ pages: [{ tools: [{ name: "echo", inputSchema: definition.inputSchema }] }] });
+    await h.install();
+    expect(h.tools[0]!.description).toBe("");
+    expect((await h.tools[0]!.execute("optional-description", {})).content).toHaveLength(1);
+    expect(h.closed()).toBe(0);
+    await h.hooks.get("session_shutdown")!({});
+  });
   test("registers the exact catalog, preserves result bytes and correlates model context", async () => {
     const h = rig();
     await h.install();
@@ -152,6 +160,7 @@ describe("Pi native MCP extension", () => {
     ["scalar tool", [{ tools: [null] }]],
     ["missing schema", [{ tools: [{ name: "t", description: "d" }] }]],
     ["invalid name", [{ tools: [{ ...definition, name: "bad/name" }] }]],
+    ["invalid description", [{ tools: [{ ...definition, description: null }] }]],
     ["duplicate name", [{ tools: [definition, definition] }]],
     ["repeated cursor", [{ tools: [definition], nextCursor: "next" }, { tools: [], nextCursor: "next" }]],
     ["invalid cursor", [{ tools: [definition], nextCursor: 1 }]],

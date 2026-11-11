@@ -179,6 +179,7 @@ describe("Qwen captured OpenAI experiment evidence", () => {
     ["no model", (logs: JsonObject[]) => { delete logs[0]!.request.model; }],
     ["duplicate response", (logs: JsonObject[]) => { logs.push(logs[0]!); }],
     ["missing timestamp", (logs: JsonObject[]) => { delete logs[0]!.timestamp; }],
+    ["impossible calendar date", (logs: JsonObject[]) => { logs[0]!.timestamp = "2026-02-30T00:00:00Z"; }],
     ["unfinished response", (logs: JsonObject[]) => { logs[0]!.response.choices[0].finish_reason = null; }],
     ["failed response role", (logs: JsonObject[]) => { logs[0]!.response.choices[0].message.role = "user"; }],
     ["missing prompt", (logs: JsonObject[]) => { delete logs[0]!.context.promptId; }],

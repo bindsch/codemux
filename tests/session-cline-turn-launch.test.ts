@@ -13,6 +13,7 @@ import { createTurnAgentDriver, type TurnAgentDriverArmInput } from "../src/sess
 import type { TurnAgentDriverOptions } from "../src/session/turn-driver-types.js";
 import type { ClineRunContext } from "../src/cline-config.js";
 import * as spawn from "../src/session/spawn.js";
+import * as history from "../src/session/cline-history.js";
 import * as processTable from "../src/process-table.js";
 import { fakeTurnProcess } from "./helpers/session-turn-engine.js";
 import { createFakeBinaryEnv } from "./helpers/cli.js";
@@ -48,7 +49,7 @@ afterEach(() => {
   removeDir(root);
 });
 
-test("a cline caller home names the overlay paths after its own environment on every turn", async () => {
+test("a cline caller home keeps overlays and passes each pinned launch to history", async () => {
   const caller = openCallerHarnessHome({ agent: "cline", dir: join(root, "caller"), cwd: join(root, "work"),
     sourceHome: join(root, "operator"), sourceEnv: {}, blockedPaths: [], apiKeyAuth: true, providerOverride: true });
   const settings = join(caller.dir, ".cline", "data", "settings");
@@ -70,18 +71,33 @@ test("a cline caller home names the overlay paths after its own environment on e
       env: { PATH: fake.env.PATH!, HOME: join(root, "operator"), ...(context as ClineRunContext).clineConfig?.env } }),
   };
   const argv: string[][] = [];
-  const spawnMock = spyOn(spawn, "spawnSessionChild").mockImplementation(async (args) => {
+  const launches: spawn.ResolvedSessionLaunch[] = [];
+  const historyMock = spyOn(history, "readClineSessionUsage").mockResolvedValue(null);
+  const spawnMock = spyOn(spawn, "spawnSessionChild").mockImplementation(async (args, env, options) => {
     argv.push(args);
+    const launch = { command: [`/synthetic/cline-${argv.length}`, "--acp"], programIndex: 0, env,
+      executablePin: { requiredPaths: [], checks: [] } };
+    launches.push(launch);
+    options.onResolvedLaunch?.(launch);
     return fakeTurnProcess();
   });
   const arm = createTurnAgentDriver(input);
-  const options = (arm.driver as unknown as { options: TurnAgentDriverOptions & { configHome: () => string | null } }).options;
+  const options = (arm.driver as unknown as { options: TurnAgentDriverOptions & {
+    configHome: () => string | null; readUsage: (id: string) => Promise<unknown>;
+  } }).options;
   try {
+    expect(await options.readUsage(ID)).toBeNull();
+    expect(historyMock).not.toHaveBeenCalled();
     for (const firstTurn of [true, false]) {
       await options.spawnTurn((extras) => options.profile.buildTurnCommand({
         text: "synthetic prompt", sessionId: ID, firstTurn, hermeticHome: null, callerHome: caller.dir, autonomy: "high", ...extras,
       }));
+      await options.readUsage(ID);
+      expect(historyMock).toHaveBeenLastCalledWith({ sessionId: ID, cwd: input.workdir,
+        home: caller.dir, launch: launches.at(-1) });
+      expect(historyMock.mock.calls.at(-1)![0].launch).toBe(launches.at(-1)!);
     }
+    expect(historyMock).toHaveBeenCalledTimes(2);
     expect(options.configHome()).toBe(caller.dir);
     expect(argv).toHaveLength(2);
     const homeAssignments = callerHarnessHomeEnvAssignments(caller);
@@ -98,5 +114,6 @@ test("a cline caller home names the overlay paths after its own environment on e
   } finally {
     arm.driver.dispose();
     spawnMock.mockRestore();
+    historyMock.mockRestore();
   }
 });

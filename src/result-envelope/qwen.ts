@@ -1,6 +1,6 @@
 import type { CodemuxResultBlock, RunRequest, RunResult } from "../types.js";
 import { answerBlockFields, completeAnswer, type AnswerTranscript } from "../answer-complete.js";
-import { qwenMessages, qwenTranscript } from "../qwen-stream-answer.js";
+import { qwenMessages, qwenTranscript, qwenUserTurn } from "../qwen-stream-answer.js";
 import {
   appendDiagnostic,
   boundResultEnvelope,
@@ -29,9 +29,9 @@ import {
  * cache_read_input_tokens, [total_tokens]}` — the claude-family shape
  * without the cache-creation key, so normalizeClaudeUsage maps it and
  * leaves that one null. The result message carries no model name, but
- * every assistant frame does (`model: this.config.getModel()` on the
- * assistant event, chunk-SMAAYU3F.js, read 2026-11-09), so the LAST
- * assistant frame's `model` is the run's served-model evidence.
+ * assistant frames carry `message.model: this.config.getModel()`
+ * (chunk-6XRR4RYH.js:154, Qwen 0.24.0, read 2026-11-11). That is the
+ * configured model, not provider-reported identity: served_model is null.
  */
 /** The field qwen's --result-json envelope spells its answer text with;
  * the harness's own result message names it `result`. */
@@ -51,22 +51,18 @@ export interface QwenEnvelopeInfo {
   isError: boolean;
   /** The error message a failed result carries. */
   errorMessage: string | null;
-  /** The model name the last assistant frame reports, when one arrived. */
+  /** Qwen's wire exposes no provider-reported model identity. */
   servedModel: string | null;
 }
 
 export function parseQwenResultEnvelope(stdout: string): QwenEnvelopeInfo | null {
   // The stream-json wire (one message per line) or the json format's one
   // array line: either way the result message is the last one printed.
-  const last = qwenMessages(stdout);
+  const messages = qwenMessages(stdout);
+  const last = messages.slice(messages.findLastIndex(qwenUserTurn) + 1);
   const resultMessage = [...last].reverse().find((message) => message.type === "result");
   if (resultMessage === undefined) return null;
-  const error = resultMessage.error as Record<string, unknown> | undefined;
-  const assistantMessage = [...last].reverse().find(
-    (message): message is Record<string, unknown> =>
-      typeof message === "object" && message !== null &&
-      (message as Record<string, unknown>).type === "assistant"
-  );
+  const error = resultMessage.error;
   const harnessAnswer = typeof resultMessage.result === "string" ? resultMessage.result : null;
   const transcript = qwenTranscript(last);
   return {
@@ -78,11 +74,9 @@ export function parseQwenResultEnvelope(stdout: string): QwenEnvelopeInfo | null
     subtype: typeof resultMessage.subtype === "string" ? resultMessage.subtype : null,
     isError: resultMessage.is_error === true,
     errorMessage:
-      error !== undefined && typeof error.message === "string" ? error.message : null,
-    servedModel:
-      assistantMessage !== undefined && typeof assistantMessage.model === "string"
-        ? assistantMessage.model
-        : null,
+      typeof error === "object" && error !== null && !Array.isArray(error) &&
+      "message" in error && typeof error.message === "string" ? error.message : null,
+    servedModel: null,
   };
 }
 
@@ -174,12 +168,14 @@ export function qwenResult(result: RunResult, request: RunRequest): RunResult {
 }
 
 /** A plain qwen run: the same stream, printed as the complete answer with
- * the usage recorded. Stdout with no result message passes through with
- * its exit status (the run path judges an empty one); a result message
+ * the usage recorded. Stdout with no terminal result fails; a result message
  * that reports a failure fails the run with qwen's own error text. */
 export function qwenPlainResult(result: RunResult): RunResult {
   const parsed = parseQwenResultEnvelope(result.stdout);
-  if (parsed === null) return result;
+  if (parsed === null) return {
+    ...result, stdout: "", success: false, exitCode: result.exitCode || 1,
+    stderr: appendDiagnostic(result.stderr, "codemux: qwen printed no terminal result message"),
+  };
   const base = { usage: parsed.usage, servedModel: parsed.servedModel };
   if (parsed.isError || (parsed.subtype !== null && parsed.subtype !== "success")) {
     return {

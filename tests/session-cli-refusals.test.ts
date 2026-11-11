@@ -30,7 +30,7 @@ describe("CLI - session refusals", () => {
     // state relocation to build a session-lifetime home on, so the
     // session refuses --hermetic on the table's field. claude, zai,
     // codex, kimi, opencode, agy, aider, droid, pi, qwen, gemini,
-    // copilot, and goose accept the flag.
+    // copilot, goose, cline, and openhands accept the flag.
     const { stderr, exitCode } = await runCli(
       ["session", "-a", "cursor", "--hermetic"],
       { PATH: minimalPath() }
@@ -398,13 +398,9 @@ describe("CLI - session refusals", () => {
     }
   });
 
-  test("--effort none is codex's no-effort spelling on sessions too (audit round 2, A2)", async () => {
-    // Review live25 made `--effort none` a codex-session refusal because
-    // the wire dropped the level silently. The shared rule now resolves
-    // `none` to "send no effort flag" on every adapter — codex's effort
-    // set no longer lists it — so the session accepts it exactly as run
-    // does, and turn/start carries no effort field (the wire's own drop
-    // is pinned in tests/session-codex-wire.test.ts).
+  test("--effort none is accepted as Codex's native session effort value", async () => {
+    // This checks CLI acceptance. The native effort field is covered by
+    // tests/session-codex-parity.test.ts and session-codex-wire.test.ts.
     const { stderr, exitCode } = await runCli(
       ["session", "-a", "codex", "--no-sandbox", "--auto", "high", "--effort", "none"],
       { PATH: minimalPath() }

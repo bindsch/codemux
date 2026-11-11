@@ -60,6 +60,9 @@ export function writePrivateFile(
   bytes: string | Uint8Array,
   mode: number = 0o600
 ): void {
+  if (!name || name === "." || name === ".." || /[\\/\0]/.test(name)) {
+    throw new Error("private file name must be one path component");
+  }
   assertTrustedDirectory(directory);
   const before = identityOf(directory);
   const target = join(directory, name);

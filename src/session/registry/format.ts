@@ -8,6 +8,7 @@ import { calendarValid } from "../../calendar.js";
 import type { AutonomyLevel } from "../../types.js";
 import { MAX_PASSTHROUGH_ENV_NAMES, UsageRefusalError } from "../../validation.js";
 import { MAX_ID_CHARS } from "../protocol.js";
+import { SAFE_SESSION_ID_PATTERN } from "../id-pattern.js";
 import { MAX_PID } from "../../process-table.js";
 import { registryPlacementProblem, resolveRegistryPath } from "../registry-io.js";
 
@@ -163,14 +164,16 @@ function validRecord(value: unknown): value is SessionRecord {
     "final", "owner_pid", "owner_start", "ended",
   ];
   if (keys.some((key) => !expected.includes(key))) return false;
-  // `provider_base_url`, `project_settings`, `sandbox_block`, and `final`
+  // Only `provider_base_url`, `project_settings`, `sandbox_block`, `final`,
+  // `model_alias`, and `caller_owned_home`
   // may be the missing keys: records an older codemux wrote before the
   // field existed. Sessions refused every provider override before 0.10.0
   // and the project-settings mode before 2.0.0, accepted no
   // `--sandbox-block` before 2.0.0, and had no `--final` before 2.0.0, so
   // an absent field reads as exactly what those releases could have
   // written — an operator-login session, a plain session, an empty block
-  // list, an ordinary resumable session — and refusing it would poison
+  // list, an ordinary resumable session, no alias, and no caller-owned home —
+  // and refusing it would poison
   // every existing registry as corrupt (review D3). Any other missing
   // key is still corrupt.
   // The tolerance is one-directional by design (review D7, correctness-2
@@ -185,7 +188,7 @@ function validRecord(value: unknown): value is SessionRecord {
   if (missing.length > 0) {
     return false;
   }
-  if (!isNonEmptyString(record["id"], MAX_ID_CHARS)) return false;
+  if (!isNonEmptyString(record["id"], MAX_ID_CHARS) || !SAFE_SESSION_ID_PATTERN.test(record["id"] as string)) return false;
   if (!isNonEmptyString(record["agent"], 64)) return false;
   // The writers stamp new Date().toISOString(); pruning orders
   // last_activity as text, so any other string would sort wherever its
@@ -336,7 +339,7 @@ export type RegistryRead =
  * ancestor that exists but cannot be resolved (permissions, a symlink
  * loop) refuses the request: 64, naming the path. */
 export function canonicalSandboxBlockPaths(paths: readonly string[]): string[] {
-  return [...new Set(paths.map(canonicalSandboxBlockPath))].sort();
+  return [...new Set(paths.map((path) => canonicalSandboxBlockPath(path)))].sort();
 }
 
 /** The one-path rule both the record and the launch-time conflict check
@@ -346,7 +349,14 @@ export function canonicalSandboxBlockPaths(paths: readonly string[]): string[] {
  * tree to scode and must compare as it. */
 const MAX_BLOCK_PATH_LINK_HOPS = 40;
 
-export function canonicalSandboxBlockPath(path: string, hops = 0): string {
+export function canonicalSandboxBlockPath(path: string): string {
+  // One argument only: the hop count is private, so a caller such as
+  // `paths.map(canonicalSandboxBlockPath)` cannot pass an array index as
+  // the hop count (the 42nd path of a list used to start at 41 hops).
+  return resolveSandboxBlockPath(path, 0);
+}
+
+function resolveSandboxBlockPath(path: string, hops: number): string {
   // A dangling-link chain is followed at most MAX_BLOCK_PATH_LINK_HOPS
   // times: a self-referential or cyclic chain refuses instead of recursing
   // to stack exhaustion (round 34, edges 8).
@@ -391,7 +401,7 @@ function canonicalMissingSandboxBlockPath(path: string, hops: number): string {
       const resolved = isAbsolute(linkTarget)
         ? linkTarget
         : join(dirname(current), linkTarget);
-      return join(canonicalSandboxBlockPath(resolved, hops + 1), ...tail);
+      return join(resolveSandboxBlockPath(resolved, hops + 1), ...tail);
     }
     const parent = dirname(current);
     if (parent === current) {

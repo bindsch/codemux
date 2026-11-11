@@ -27,6 +27,7 @@
  * - Piped stdin selects prompt mode and carries the full prompt.
  */
 
+import { sessionIdPattern } from "./id-pattern.js";
 import { featureFloor } from "../harness-contracts.js";
 import { parseCopilotResultEnvelope } from "../result-envelope/copilot.js";
 import type { AutonomyLevel, ReasoningEffort } from "../types.js";
@@ -43,8 +44,7 @@ export const COPILOT_SESSION_FLOOR = featureFloor("copilot", "sessions");
  * UUID — the CLI's own help spells the flag "a specific UUID" with a
  * UUID example). Codemux only ever resumes the ids it minted, so the
  * pattern pins its own mint — the claude convention. */
-export const COPILOT_SESSION_ID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const COPILOT_SESSION_ID_PATTERN = sessionIdPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 
 /**
  * Capability flags for copilot sessions (§3.4): live input yes (one

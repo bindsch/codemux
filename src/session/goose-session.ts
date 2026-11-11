@@ -13,15 +13,16 @@
  *   --session-id can only be used with --resume flag" / "Cannot use
  *   --session-id without --resume". A session turn that RESUMES carries
  *   both flags; the turn that STARTS one carries neither, because goose
- *   mints the id itself (a date_time string) — the deferred-identity
+ *   mints the id itself — the deferred-identity
  *   model (the opencode/kimi one), not the codemux-minted one.
- * - The id shape is the binary's own example: eight digits, an
- *   underscore, six digits (`20250921_143022`).
- * - `--output-format json` prints the turn's final serialized agent
- *   message as one JSON object on stdout, and that object carries the
- *   session id (`session_id`) and the usage report — the run path's
- *   parser (src/result-envelope/goose.ts) pins the fields; a session
- *   turn reads the same object.
+ * - Current IDs are a UTC date and an unpadded numeric counter (e.g.
+ *   `20261111_1`), from v1.50.1 SessionStorage::create_session. Older
+ *   date_time IDs such as the help's `20250921_143022` remain valid.
+ * - `--output-format json` prints a pretty `{messages, metadata}` object.
+ *   The startup banner supplies the session ID; JSON has no identity field.
+ *   The command keeps that banner enabled. Source: goose-cli v1.50.1
+ *   session/mod.rs JsonOutput and session/output.rs display_session_info.
+ *   Legacy single-message captures with `session_id` remain accepted.
  * - The prompt is an argv value (`-t`), so the run path's argv byte
  *   bound is the per-turn cap the driver enforces before the ack.
  * - Model, autonomy, and effort ride the environment, never argv
@@ -29,6 +30,7 @@
  *   getRunEnv), so the session's turn environment mirrors it exactly.
  */
 
+import { sessionIdPattern } from "./id-pattern.js";
 import { featureFloor } from "../harness-contracts.js";
 import { parseGooseResultEnvelope } from "../result-envelope/goose.js";
 import { emptyUsage } from "../result-envelope.js";
@@ -46,11 +48,9 @@ import type { SessionCapabilities } from "./protocol.js";
  * this command and parse are pinned against. */
 export const GOOSE_SESSION_FLOOR = featureFloor("goose", "sessions");
 
-/** The id shape goose itself mints (the binary's own help example,
- * '20250921_143022'): eight digits, an underscore, six digits. Goose
- * owns the mint — codemux adopts the id from the first turn's output
- * object and refuses any other shape on --resume. */
-export const GOOSE_SESSION_ID_PATTERN = /^\d{8}_\d{6}$/;
+/** Native date-counter IDs and older date_time IDs share this grammar.
+ * Goose owns the mint; the first turn's banner supplies the identity. */
+export const GOOSE_SESSION_ID_PATTERN = sessionIdPattern(/^\d{8}_\d+$/);
 
 /**
  * Capability flags for goose sessions (§3.4): live input yes (one caller
@@ -189,9 +189,11 @@ export function buildGooseSessionCommand(command: GooseSessionCommand): string[]
  * final JSON object — answer text, usage, session id) plus the identity
  * check a session adds. */
 export interface GooseSessionTurnParse {
+  /** Native structured failure, when present. */
+  failureReason?: string;
   answer: string | null;
   usage: ResultUsageBlock;
-  /** The output object's session_id, when it carried one. */
+  /** The banner identity, or a legacy output object's session_id. */
   sessionId: string | null;
   /** True when the object named no session id at all: a fresh session's
    * first turn owes one (without it the session is untrackable — the
@@ -207,8 +209,8 @@ export interface GooseSessionTurnParse {
 
 /**
  * Parse one turn's stdout: the run envelope parser folds the final
- * object, and this adds the session's two rules — the object must name a
- * session id (the deferred identity arrives here), and on a resumed turn
+ * object, and this adds the session's two rules — the output must name a
+ * session id (normally in the startup banner), and on a resumed turn
  * it must name the id codemux resumed (the kimi wrong-session rule).
  */
 export function parseGooseSessionTurn(
@@ -229,6 +231,7 @@ export function parseGooseSessionTurn(
   const sessionId = parsed.sessionId;
   return {
     answer: parsed.answer,
+    ...(parsed.errorMessage === null ? {} : { failureReason: parsed.errorMessage }),
     usage: parsed.usage,
     sessionId,
     noSessionId: sessionId === null,

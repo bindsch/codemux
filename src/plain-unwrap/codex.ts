@@ -71,6 +71,7 @@ export function parseCodexTokenTotal(stderr: string): number | null {
  * stderr without the figure records no usage.
  */
 export function codexPlainResult(result: RunResult): RunResult {
+  result = { ...result, reply: "" };
   const total = parseCodexTokenTotal(result.stderr);
   if (total === null) return result;
   return {

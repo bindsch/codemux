@@ -97,38 +97,42 @@ export class ClineSessionDriver extends TurnAgentSessionDriver {
   }
 
   private async deliver(child: SessionProcess, text: string): Promise<void> {
+    const turn = this.fsm.activeTurn;
+    const current = () => this.active() && this.fsm.activeTurn === turn && this.acp === transport;
     const transport = new ClineAcpTransport({
       write: (line) => child.writeRaw(line).ok,
-      onUpdate: (update) => { if (this.promptStarted && this.active()) this.applyUpdate(update); },
-      onFailure: (error) => { if (this.acp === transport) this.transportFailure(error); },
+      onUpdate: (update, raw) => { if (this.promptStarted && current()) this.applyUpdate(update, raw); },
+      onFailure: (error) => { if (current()) this.transportFailure(error); },
       permissionPolicy: "deny",
     });
     this.acp = transport;
     try {
       await transport.initialize();
-      if (!this.active()) return;
+      if (!current()) return;
       const resumed = this.sessionId !== null;
-      const id = await transport.open({ cwd: this.options.cwd, resumeId: this.sessionId ?? undefined });
+      const id = await transport.open({ cwd: this.options.cwd, resumeId: this.nativeSessionId() ?? undefined });
+      if (!current()) return;
       if (!CLINE_SESSION_ID_PATTERN.test(id)) throw new Error("Cline ACP returned an invalid native session identity");
       this.adoptSessionId(id);
-      if (!this.active()) return;
       await transport.configure(this.options.model, this.options.autonomy === "read-only" ? "plan" : "act");
+      if (!current()) return;
       const before = resumed ? await this.snapshot(id) : freshClineUsage();
-      if (!this.active()) return;
+      if (!current()) return;
       this.promptStarted = true;
       const pending = transport.prompt(text);
       this.cancelPrompt();
       const result = await pending;
-      if (!this.active()) return;
+      if (!current()) return;
       this.stopReason = result.stopReason as string;
-      this.turnUsage = clineTurnUsage(before, await this.snapshot(id));
-      if (!this.active()) return;
-      if (this.turnUsage.total_tokens === null) {
-        this.emitError(false, "harness", "Cline history did not provide usable cumulative usage; this turn's usage is unknown");
-      }
       if (!["end_turn", "max_tokens", "max_turn_requests"].includes(this.stopReason) &&
           !(this.stopReason === "cancelled" && this.interrupted)) { // allow-british: native ACP enum
         this.turnError = `Cline ACP stopped with ${this.stopReason}`;
+      }
+      const after = await this.snapshot(id);
+      if (!current()) return;
+      this.turnUsage = clineTurnUsage(before, after);
+      if (this.turnUsage.total_tokens === null) {
+        this.emitError(false, "harness", "Cline history did not provide usable cumulative usage; this turn's usage is unknown");
       }
       if (this.turnError === null && this.stopReason !== "cancelled" && this.answer.size > 0) { // allow-british: native ACP enum
         this.emit(buildEvent(++this.seq, this.sessionIdOrEmpty(), "assistant_message", null,
@@ -136,7 +140,7 @@ export class ClineSessionDriver extends TurnAgentSessionDriver {
       }
       child.endInput();
     } catch (error) {
-      if (this.acp === transport) this.transportFailure(error instanceof Error ? error : new Error(String(error)));
+      if (current()) this.transportFailure(error instanceof Error ? error : new Error(String(error)));
     }
   }
 
@@ -150,8 +154,7 @@ export class ClineSessionDriver extends TurnAgentSessionDriver {
     this.turnProc?.requestStop();
   }
 
-  private applyUpdate(update: Record<string, unknown>): void {
-    const raw = JSON.stringify(update);
+  private applyUpdate(update: Record<string, unknown>, raw: string): void {
     const content = update.content as { type?: string; text?: unknown } | undefined;
     if (update.sessionUpdate === "agent_message_chunk" && content?.type === "text" && typeof content.text === "string") {
       this.answer.text(content.text);
@@ -231,7 +234,7 @@ export class ClineSessionDriver extends TurnAgentSessionDriver {
     const turnId = this.fsm.activeTurn;
     this.lastChildOutcome = outcome;
     this.turnProc = null;
-    this.settlePrivateHome();
+    if (!this.settlePrivateHome()) { void this.finish("crash", 1); return; }
     const failure = this.fsm.transition({ kind: "turn_completed", turnId });
     if (failure !== null) { this.transportFailure(new Error(failure.message)); return; }
     const usage = this.turnUsage ?? emptyUsage();

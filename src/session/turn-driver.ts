@@ -144,7 +144,7 @@ export class TurnAgentSessionDriver extends TurnDriverTurns {
   /** A tier-3 fatal from the process layer (non-UTF-8, line overflow). */
   handleFatal(fatal: SessionFatal): void {
     if (this.settled) return;
-    if (fatal.kind === "handler" || fatal.kind === "read-error") {
+    if ("error" in fatal) {
       console.error(`codemux: ${codemuxFatalMessage(fatal)}`, fatal.error);
       this.emitError(true, "codemux", codemuxFatalMessage(fatal));
       void this.finish("crash", 1);
@@ -194,14 +194,14 @@ export class TurnAgentSessionDriver extends TurnDriverTurns {
         );
         // The carrier decides the deliverability bound: an argv carrier
         // (goose -t; openhands, whose argv names a task file) rides the OS argv
-        // limit codemux enforces for run prompts (32 KiB); a stdin
-        // carrier rides the protocol's 16 MiB text bound.
+        // limit codemux enforces for run prompts (32 KiB). Stdin carriers
+        // check their serialized transport bound via promptDeliverable.
         if (this.options.profile.promptCarrier === "argv") {
           if (Buffer.byteLength(harnessText, "utf8") > MAX_ARGV_PROMPT_BYTES) {
             this.ack(inputSeq, false, "text_too_long");
             return;
           }
-        } else if (!harnessLineDeliverable(harnessText)) {
+        } else if (!this.promptDeliverable(harnessText)) {
           this.ack(inputSeq, false, "text_too_long");
           return;
         }
@@ -289,6 +289,10 @@ export class TurnAgentSessionDriver extends TurnDriverTurns {
   dispose(): void {
     this.signals.dispose();
     this.clearTimers();
+  }
+
+  protected promptDeliverable(text: string): boolean {
+    return harnessLineDeliverable(text);
   }
 
   /** Turn-per-process verdict, carrier-routed: a whole-stdout profile

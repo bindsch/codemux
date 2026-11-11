@@ -7,7 +7,11 @@ A provider override selects the endpoint and credentials used by one adapter. Se
 
 Keep the key in the environment, outside committed files and command arguments. Blank values count as unset. Partial overrides, unsupported adapters, malformed URLs/models, and unsupported limits fail before launch.
 
-URLs must be absolute HTTP(S), without user/password credentials, fragments, braces, or embedded control and whitespace characters (URL parsing removes tabs and newlines silently, so a URL carrying one could name a different endpoint than the value supplied). Models cannot contain interpolation braces, and Pi's model additionally refuses `$`, because the `models.json` file codemux writes for it expands `$VAR` and `${VAR}` templates from the environment. Keys must be 1–4096 printable ASCII bytes without whitespace. Avoid secrets in URL queries: the actual endpoint receives the query, although recorded provider identities remove it. Identity is the base URL without its query, so two URLs that differ only in the query are one endpoint: session resume compares them as equal, and a codex session home is shared between them; the query is left out because it can carry a key.
+Qwen requires `CODEMUX_QWEN_PROVIDER_MODEL` even when `--model` is supplied.
+The request model replaces that configured default for the launch; it does not
+complete a partial Qwen override.
+
+URLs must be absolute HTTP(S), without user/password credentials, fragments, braces, or embedded control and whitespace characters (URL parsing removes tabs and newlines silently, so a URL carrying one could name a different endpoint than the value supplied). Droid, OpenCode, and Pi reject interpolation braces in model names. Pi additionally refuses `$`, because the `models.json` file codemux writes for it expands `$VAR` and `${VAR}` templates from the environment. Other adapters apply the shared model validation without a brace restriction. Keys must be 1–4096 printable ASCII bytes without whitespace. Avoid secrets in URL queries: the actual endpoint receives the query, although recorded provider identities remove it. Identity is the base URL without its query, so two URLs that differ only in the query are one endpoint: session resume compares them as equal, and a codex session home is shared between them; the query is left out because it can carry a key.
 
 ## Delivery and wire formats
 
@@ -75,7 +79,7 @@ from 1 through 9007199254740991. Signs, fractions, and exponent notation fail.
 | Goose | GOOSE_MAX_TOKENS | GOOSE_CONTEXT_LIMIT |
 | OpenHands | Refused | Refused |
 | Cursor | Refused | Refused |
-| Qwen | QWEN_CODE_MAX_OUTPUT_TOKENS | Refused |
+| Qwen | QWEN_CODE_MAX_OUTPUT_TOKENS | Run: model.generationConfig.contextWindowSize in private settings; not applied in TUI |
 | Gemini | generateContentConfig.maxOutputTokens in private run/TUI settings | Refused: native tokenLimit(model) table has no numeric override |
 | Copilot | COPILOT_PROVIDER_MAX_OUTPUT_TOKENS or maxOutputTokens | Private providers.json maxContextWindowTokens on run and TUI |
 

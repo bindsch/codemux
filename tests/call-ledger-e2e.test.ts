@@ -22,10 +22,13 @@ import { ENVELOPE, RUN_ARGS, ledgerFile } from "./helpers/call-ledger.js";
 
 describe("the launched call ledger", () => {
   test("a plain run records its receipt while stdout stays the reply alone", async () => {
+    const prompt = `ledger-private-prompt-${crypto.randomUUID()}`;
+    const args = [...RUN_ARGS];
+    args[args.indexOf("-p") + 1] = prompt;
     const fake = createFakeBinaryEnv({ claude: READS_PROMPT + `printf '%s\\n' '${ENVELOPE}'` });
     const ledger = ledgerFile();
     try {
-      const { stdout, stderr, exitCode } = await runCli(RUN_ARGS, {
+      const { stdout, stderr, exitCode } = await runCli(args, {
         ...fake.env,
         [CALL_LOG_ENV]: ledger.path,
       });
@@ -92,7 +95,7 @@ describe("the launched call ledger", () => {
       ]);
       expect(record.sandbox_no_net).toBeNull();
       expect(record.sandbox_trust).toBeNull();
-      expect(log.entries[0]!.line).not.toContain("test");
+      expect(log.entries[0]!.line).not.toContain(prompt);
     } finally {
       fake.cleanup();
       ledger.cleanup();
@@ -155,9 +158,8 @@ describe("the launched call ledger", () => {
     }
   });
 
-  test("a harness that answers plain text still runs and records null usage", async () => {
-    // The escape hatch, honestly ledged: an unparseable stdout records
-    // nothing rather than guessing, and the run succeeds as before.
+  test("unverified plain text fails and records null usage", async () => {
+    // Diagnostic bytes alone cannot prove an assistant answer.
     const fake = createFakeBinaryEnv({ claude: READS_PROMPT + "printf 'OK\\n'" });
     const ledger = ledgerFile();
     try {
@@ -165,10 +167,11 @@ describe("the launched call ledger", () => {
         ...fake.env,
         [CALL_LOG_ENV]: ledger.path,
       });
-      expect(exitCode).toBe(0);
+      expect(exitCode).toBe(1);
       expect(stdout).toBe("OK\n");
       const record = readCallLog(ledger.path).entries[0]!.record as CallRecord;
       expect(record.kind).toBe("run");
+      expect(record.exit_code).toBe(1);
       expect(record.usage).toEqual({
         input_tokens: null,
         output_tokens: null,

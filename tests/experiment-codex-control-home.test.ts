@@ -100,3 +100,50 @@ test("the control request is marked by the canary builder, not by its fields", (
   expect(control.hermetic).toBe(false);
   expect(validateExperimentRequest(control)).toBeUndefined();
 });
+
+// Exercise the home invariant independently of today's catalog+override refusal.
+class CatalogFreeCodexAdapter extends CodexAdapter {
+  protected override experimentModel(request: RunRequest) {
+    return { model: request.model!, clientVersion: "0.165.0", sourcePath: "fixture" };
+  }
+}
+
+test.each([false, true])("control and treatment preserve the same provider and model (ambient API key: %s)", async (ambientKey) => {
+  const { request, home } = setup();
+  writeFileSync(join(home, ".codex", "auth.json"), '{"operator":"must-not-link"}');
+  const environment = { HOME: home,
+    ...(ambientKey ? { CODEX_API_KEY: "operator-key", OPENAI_API_KEY: "other-key" } : {}),
+    CODEMUX_CODEX_PROVIDER_BASE_URL: "https://provider.invalid/v1",
+    CODEMUX_CODEX_PROVIDER_API_KEY: "synthetic-override",
+    CODEMUX_CODEX_PROVIDER_MODEL: "different-default",
+    CODEMUX_CODEX_PROVIDER_MULTI_AGENT: "off",
+  };
+  const actual = new CodexAdapter(environment, home);
+  for (const arm of [request, experimentCanaryControl(request)]) {
+    expect(() => actual.prepareRun(arm)).toThrow("cannot run with the provider override");
+  }
+  const adapter = new CatalogFreeCodexAdapter(environment, home);
+  const configs: string[] = [];
+  for (const arm of [request, experimentCanaryControl(request)]) {
+    const context = adapter.prepareRun(arm);
+    pending.push({ adapter, context });
+    expect(context.codexProviderHome).toBeUndefined();
+    const codexHome = context.hermeticHome!.codexHome;
+    expect(existsSync(join(codexHome, "auth.json"))).toBe(false);
+    await context.experimentCodex!.prepare("0.165.0");
+    const config = readFileSync(join(codexHome, "config.toml"), "utf8");
+    expect(config).toContain('model = "gpt-5.5"');
+    expect(config).toContain('model_provider = "codemux"');
+    expect(config).toContain('base_url = "https://provider.invalid/v1"');
+    expect(config).toContain('env_key = "CODEMUX_CODEX_PROVIDER_API_KEY"');
+    expect(config).toContain("multi_agent = false");
+    expect(config).toContain("[mcp_servers.experiment]");
+    configs.push(config.split("[mcp_servers.experiment]")[0]!);
+    const cmd = adapter.buildRunCommand(arm, context);
+    expect(cmd).toContain(`CODEX_HOME=${codexHome}`);
+    expect(cmd).not.toContain("-m");
+    expect(adapter.getEnvOmissions()).toEqual(expect.arrayContaining(["CODEX_API_KEY", "OPENAI_API_KEY"]));
+    expect(adapter.getRunEnv(arm, context).CODEMUX_CODEX_PROVIDER_API_KEY).toBe("synthetic-override");
+  }
+  expect(configs[0]).toBe(configs[1]);
+});

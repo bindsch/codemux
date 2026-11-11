@@ -62,7 +62,7 @@ export function sweepStaleHomes(root: string): void {
   const rootStat = lstatSync(root, { throwIfNoEntry: false });
   if (!rootStat) return;
   if (!rootStat.isDirectory()) throw new Error("agy probe home root must be a directory, not a symlink");
-  if (rootStat.uid !== process.getuid?.() || realpathSync(root) !== root) {
+  if ((typeof process.getuid === "function" && rootStat.uid !== process.getuid()) || realpathSync(root) !== root) {
     throw new Error("agy probe sweep root must be canonical and user-owned");
   }
   for (const name of readdirSync(root)) {

@@ -15,6 +15,7 @@ import {
 } from "../src/session/registry.js";
 import { MAX_ID_CHARS } from "../src/session/protocol.js";
 import { canonicalSandboxBlockPath } from "../src/session/registry/format.js";
+import { assertNoCallerBlockOverStateDirs } from "../src/sandbox.js";
 import { craftEntry, makeRoot, newRecord, probe, registryIn, seedRegistry } from "./helpers/session-registry.js";
 
 describe("the pre-write validation (review live16)", () => {
@@ -363,3 +364,25 @@ test("a symlink cycle in a --sandbox-block path refuses instead of recursing wit
   }
 });
 
+
+test("a long --sandbox-block list canonicalizes every path, not only the first 41 (array index was the hop count)", () => {
+  // `paths.map(canonicalSandboxBlockPath)` used to pass each path's index
+  // as the symlink hop count, so the 42nd regular file of a list was
+  // refused with "more than 40 symlink hops".
+  const root = mkdtempSync(join(tmpdir(), "codemux-block-many-"));
+  try {
+    const paths = Array.from({ length: 209 }, (_, index) => {
+      const path = join(root, `entry-${String(index).padStart(3, "0")}`);
+      writeFileSync(path, "");
+      return path;
+    });
+    const canonical = canonicalSandboxBlockPaths(paths);
+    expect(canonical).toHaveLength(209);
+    expect(canonical).toEqual(paths.map((path) => realpathSync(path)).sort());
+    const stateDir = join(root, "state");
+    mkdirSync(stateDir);
+    expect(() => assertNoCallerBlockOverStateDirs(paths, Array.from({ length: 60 }, () => stateDir))).not.toThrow();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

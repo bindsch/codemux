@@ -198,7 +198,7 @@ export class AiderSessionDriver extends AiderCallerInput {
   /** A tier-3 fatal from the process layer (non-UTF-8, line overflow). */
   handleFatal(fatal: SessionFatal): void {
     if (this.settled) return;
-    if (fatal.kind === "handler" || fatal.kind === "read-error") {
+    if ("error" in fatal) {
       console.error(`codemux: ${codemuxFatalMessage(fatal)}`, fatal.error);
       this.emitError(true, "codemux", codemuxFatalMessage(fatal));
       void this.finish("crash", 1);

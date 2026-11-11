@@ -4,6 +4,7 @@
 
 import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdtempSync, renameSync } from "node:fs";
+import { runDirectoryPrefix } from "../run-directory-owner.js";
 import { basename, join } from "node:path";
 import { assertTrustedDirectory, prepareRunDirParent } from "../hermetic-home.js";
 import {
@@ -157,7 +158,7 @@ export function createCodexSessionProviderHome(
   // that removes the home must confirm it is still the directory this
   // session's home was made under.
   const parentRecord = recordTrustedParent(parent);
-  const codexHome = mkdtempSync(join(parent, `run-${process.pid}-`));
+  const codexHome = mkdtempSync(join(parent, runDirectoryPrefix()));
   // mkdtemp's 0700 is masked by the umask; the mode is stated whatever the
   // umask is (review round 401, item 1): a 0500 home would refuse the
   // config write below and end the session at its spawn.

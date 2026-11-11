@@ -221,7 +221,7 @@ describe("OpenCodePlainFold", () => {
     expect(foldStream("hello\n").finish()).toBe("hello\n");
     expect(foldStream("OK").finish()).toBe("OK");
     const out = foldStream("hello\n").verdict(finished("hello\n"));
-    expect(out).toEqual(finished("hello\n"));
+    expect(out).toEqual({ ...finished("hello\n"), reply: "" });
     expect(out.usage).toBeUndefined();
   });
 

@@ -83,6 +83,7 @@ export function prepareKimiPlaywright(
   if (!request.sandboxed) throw new Error("--enable-playwright-mcp requires --sandbox");
   const built = buildPlaywrightSandboxMcp(request.sandboxed, { ...options, enabled: true });
   if (context === undefined) return;
+  if (context.printOnly) { context.playwrightMcpCheck = built.check; return; }
   const brandHome = context.kimiHermeticHome?.kimiHome;
   if (brandHome === undefined) throw new Error("kimi private policy home was not prepared before MCP launch");
   if (context.kimiHermeticHome?.printOnly) { context.playwrightMcpCheck = built.check; return; }

@@ -1,3 +1,4 @@
+import { sessionIdPattern } from "./id-pattern.js";
 import { featureFloor } from "../harness-contracts.js";
 /**
  * The aider session wiring: the per-turn spawn command over
@@ -51,8 +52,7 @@ export const AIDER_SESSION_FLOOR = featureFloor("aider", "sessions");
 /** The id shape codemux mints for an aider session (a plain lowercase
  * UUID — aider has no native session id, so codemux owns the identity
  * and keys the per-session history directory by it). */
-export const AIDER_SESSION_ID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const AIDER_SESSION_ID_PATTERN = sessionIdPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 
 /**
  * Capability flags for aider sessions (§3.4): live input yes (one caller

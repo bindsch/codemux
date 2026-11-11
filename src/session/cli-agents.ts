@@ -2,6 +2,8 @@
 // have a session driver, the floor each runs at, and the id shape
 // --resume accepts. src/session/cli.ts owns the command;
 // session/cli-request.ts refuses an agent outside this table.
+import { sessionIdPattern } from "./id-pattern.js";
+import { scopedResumePattern } from "./scoped-id.js";
 import type { AgentId } from "../types.js";
 import { CLINE_SESSION_FLOOR, CLINE_SESSION_ID_PATTERN } from "./cline-session.js";
 import {
@@ -56,8 +58,7 @@ import {
 } from "./goose-session.js";
 import { openhandsSessionFloor, OPENHANDS_CONVERSATION_ID_PATTERN } from "./openhands-session.js";
 
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_PATTERN = sessionIdPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 
 /** Agents whose session drivers have landed (design §7). Each later step
  * widens this set; an agent outside it gets a clear usage refusal, never
@@ -90,7 +91,7 @@ export interface SessionAgentSupport {
  * this set. */
 export const SESSION_AGENTS: Readonly<Partial<Record<AgentId, SessionAgentSupport>>> = {
   cline: {
-    floor: CLINE_SESSION_FLOOR, interrupt: true, resumePattern: CLINE_SESSION_ID_PATTERN,
+    floor: CLINE_SESSION_FLOOR, interrupt: true, resumePattern: scopedResumePattern("cline", CLINE_SESSION_ID_PATTERN),
     resumeLabel: "Cline timestamp_nanoid_cli identity", tools: true, hermetic: true,
     approvals: "none", denyRules: "native",
     approvalsNote: "no permission channel: ACP permission requests are rejected (Cline 3.0.74); default medium/high enables native automatic approval, while --permission-policy deny disables it",
@@ -327,7 +328,7 @@ export const SESSION_AGENTS: Readonly<Partial<Record<AgentId, SessionAgentSuppor
     interrupt: false,
     // Goose mints its date_time id; the driver adopts it from the first
     // turn's output object (the opencode model).
-    resumePattern: GOOSE_SESSION_ID_PATTERN,
+    resumePattern: scopedResumePattern("goose", GOOSE_SESSION_ID_PATTERN),
     resumeLabel: "goose session id",
     // The run path's --no-profile carrier reapplies on every turn
     // (src/session/goose-session.ts), so a resumed session keeps the

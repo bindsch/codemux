@@ -432,7 +432,7 @@ const RUN_BASE = {
     "run.tools-none.writable-autonomy": supported("tests/qwen-run-parity.test.ts", "Same --exclude-tools carrier; safe mode empties settings-sourced deny rules, not the argv one."),
     "run.tools-none.plain": supported("tests/qwen-run-parity.test.ts", "Same --exclude-tools carrier; safe mode empties settings-sourced deny rules, not the argv one."),
     "run.result-json": supported("tests/qwen-run-parity.test.ts"),
-    "run.served-model-evidence": supported("tests/qwen-run-parity.test.ts", "Assistant frames carry model: this.config.getModel() (chunk-SMAAYU3F.js, read 2026-11-09)."),
+    "run.served-model-evidence": W2_RUN_LIMITATIONS.qwenServed,
     "run.max-budget-usd": W2_RUN_LIMITATIONS.qwenBudget,
     "run.provider-override": supported("tests/qwen-run-parity.test.ts", "Current qwen binary; legacy qwen-coder refuses provider overrides."),
     "run.provider-override.max-output-tokens": supported("tests/qwen-run-parity.test.ts"),

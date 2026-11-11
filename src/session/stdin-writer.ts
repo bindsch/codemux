@@ -52,9 +52,31 @@ export class SessionWriter {
    * only when no newer write is still pending behind it. */
   private backlogBytes = 0;
   private backlogGeneration = 0;
+  private writeFailed = false;
+  private pending = new Set<Promise<unknown>>();
 
-  constructor(proc: ReturnType<typeof Bun.spawn>) {
+  constructor(proc: ReturnType<typeof Bun.spawn>, private readonly onFailure: (error: unknown, bytes: number) => void = () => {}) {
     this.proc = proc;
+  }
+
+  /** Prompt writes must settle before the process reports completion. */
+  async settled(timeoutMs: number): Promise<void> {
+    if (this.pending.size === 0) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([Promise.all([...this.pending]), new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          this.failed(new Error("stdin delivery did not settle after child exit"), this.backlogBytes);
+          resolve();
+        }, timeoutMs);
+      })]);
+    } finally { clearTimeout(timer); }
+  }
+
+  private failed(error: unknown, bytes: number): void {
+    if (this.writeFailed) return;
+    this.writeFailed = true;
+    this.onFailure(error, bytes);
   }
 
   /**
@@ -100,7 +122,7 @@ export class SessionWriter {
 
   /** writeRaw's checks and submit, keeping the write's drain state for
    * the repeating carrier, which must wait for it. */
-  private submitRaw(text: string): { result: WriteLineResult; drain: DrainState | null } {
+  private submitRaw(text: string, required = true): { result: WriteLineResult; drain: DrainState | null } {
     const refused = (reason: WriteLineRejectReason) => ({
       result: { ok: false, reason } as WriteLineResult,
       drain: null,
@@ -110,7 +132,7 @@ export class SessionWriter {
     const bytes = utf8ByteLength(text);
     if (bytes > MAX_INPUT_LINE_BYTES) return refused("oversize");
     if (this.backlogBytes + bytes > MAX_HARNESS_BACKLOG_BYTES) return refused("backlog");
-    const drain = this.submit(text, bytes);
+    const drain = this.submit(text, bytes, required);
     return drain === null ? refused("closed") : { result: { ok: true }, drain };
   }
 
@@ -133,7 +155,7 @@ export class SessionWriter {
    * the process layer already reports, is the verdict.
    */
   repeatRawUntilExit(text: string, exited: Promise<unknown>): WriteLineResult {
-    const first = this.submitRaw(text);
+    const first = this.submitRaw(text, false);
     if (!first.result.ok) return first.result;
     void this.repeatLoop(text, exited, first.drain);
     return first.result;
@@ -149,7 +171,9 @@ export class SessionWriter {
       const ended = stdin.end();
       // The trailing drain of a full sink rejects the same way write's
       // does; already closed underneath us is the same outcome.
-      if (typeof ended !== "number") ended.catch(() => {});
+      if (typeof ended !== "number") ended.catch((error) => {
+        if (this.pending.size > 0) this.failed(error, this.backlogBytes);
+      });
     } catch {
       // Already closed underneath us; the outcome is the same.
     }
@@ -170,7 +194,7 @@ export class SessionWriter {
     // event loop.
     let more = await firstBlockLeft(first, pacer);
     while (more && (await pacer.pause())) {
-      const submitted = this.submit(text, bytes);
+      const submitted = this.submit(text, bytes, false);
       // A refused repeat ends the feeder: the only refusals left here are
       // a closed stdin (someone half-closed it, or the child is gone) and
       // the backlog cap (one pending block cannot reach it, a block is
@@ -189,11 +213,12 @@ export class SessionWriter {
   }
 
   /** The shared submit under the caps, with the drain accounting the
-   * backlog rule needs (review live14): an async drain's EPIPE on a dying
-   * child is absorbed, and a resolution clears the backlog only when no
+   * backlog rule needs: a required write's asynchronous failure reaches
+   * the process fatal channel. A resolution clears the backlog only when no
    * newer write is pending behind it. Returns null when the write could
    * not be submitted at all. */
-  private submit(text: string, bytes: number): DrainState | null {
+  private submit(text: string, bytes: number, required = true): DrainState | null {
+    if (this.writeFailed) return null;
     const stdin = this.proc.stdin as import("bun").FileSink | number | undefined;
     if (stdin === undefined || typeof stdin === "number") {
       return null;
@@ -211,12 +236,16 @@ export class SessionWriter {
       const pending = drained as Promise<unknown>;
       this.backlogBytes += bytes;
       const generation = ++this.backlogGeneration;
-      pending.then(
+      const tracked = pending.then(
         () => {
           if (generation === this.backlogGeneration) this.backlogBytes = 0;
         },
-        () => {}
+        (error) => { if (required) this.failed(error, bytes); }
       );
+      if (required) {
+        this.pending.add(tracked);
+        void tracked.then(() => this.pending.delete(tracked));
+      }
       return pending;
     } catch {
       return null;

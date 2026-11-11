@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { ExperimentFailure, ExperimentFailureCode as Code, type ExperimentRecord } from "./experiment-records.js";
 import type { ExperimentRelayCall } from "./experiment-relay.js";
 import type { JsonObject } from "./experiment-server.js";
+import { timestampMs, timestampValid } from "./calendar.js";
 
 const MAX_NATIVE_TOOL_NAME = 63;
 const MCP_TEXT_LIMIT = 500_000;
@@ -250,7 +251,7 @@ export function verifyQwenExperimentEvidence(source: QwenExperimentEvidenceSourc
   for (const value of records) {
     const log = object(value), request = object(log.request), response = object(log.response);
     const context = object(log.context);
-    const t = Date.parse(log.timestamp) / 1000;
+    const t = typeof log.timestamp === "string" && timestampValid(log.timestamp) ? timestampMs(log.timestamp) / 1000 : NaN;
     if (!Number.isFinite(t) || log.error !== null || typeof request.stream !== "boolean" || typeof request.model !== "string" || !request.model ||
         !Array.isArray(request.messages) || !Array.isArray(response.choices) || response.choices.length !== 1 ||
         typeof response.id !== "string" || !response.id || responses.has(response.id)) {

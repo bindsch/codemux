@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { PiRpcSessionDriver } from "../src/session/pi-rpc-driver.js";
+import { assertSessionConformance } from "./helpers/session-conformance.js";
 import { PI_DRIVER_PROFILE } from "../src/session/pi-driver.js";
 import type { TurnAgentDriverOptions, TurnAgentProfile } from "../src/session/turn-driver-types.js";
 import { fakeTurnProcess, type FakeTurnProcess } from "./helpers/session-turn-engine.js";
@@ -58,6 +59,35 @@ function harness(options: { delayed?: boolean; profile?: TurnAgentProfile; failP
 }
 
 describe("Pi RPC turns reuse the S1 session lifecycle", () => {
+  test("protocol conformance: synthesized RPC events have null raw", async () => {
+    const h = harness(); h.user(); await h.tick(); await h.complete();
+    expect(await h.end()).toBe(0); assertSessionConformance(h.events);
+    expect(h.events.every((e) => e.raw === null)).toBe(true);
+  });
+  test("JSON-expanded prompts are rejected before spawning and leave the session usable", async () => {
+    const h = harness();
+    try {
+      h.send({ type: "user", text: "\u0001".repeat(3 * 1024 * 1024) }); await h.tick();
+      expect(h.events.find((e) => e.type === "input_rejected")).toMatchObject({ reason: "text_too_long" });
+      expect(h.children).toHaveLength(0);
+      h.user(); await h.tick(); await h.complete(); expect(await h.end()).toBe(0);
+    } finally { for (const child of h.children) child.exit(0); h.driver.handleCallerEnd(); await h.code; h.driver.dispose(); }
+  });
+
+  test("an accepted interrupt still reaches Pi when EOF starts before its prompt acknowledgment", async () => {
+    const h = harness(); h.user(); await h.tick(); h.send({ type: "interrupt" });
+    const child = h.children[0]!;
+    child.awaitEndAnswer = async () => { await child.exited; };
+    h.driver.handleCallerEnd();
+    try {
+      h.ready();
+      expect(child.wrote.some((line) => line.includes('"type":"abort"'))).toBe(true);
+      await h.complete("aborted");
+      expect(h.events.find((e) => e.type === "turn_completed")?.finish).toBe("interrupted");
+      expect(await h.code).toBe(0);
+    } finally { child.exit(0); await h.code; h.driver.dispose(); }
+  });
+
   test("RPC receives framed prompt/state commands and ends on agent_settled", async () => {
     const h = harness();
     h.user();
@@ -100,7 +130,8 @@ describe("Pi RPC turns reuse the S1 session lifecycle", () => {
     expect(JSON.parse(h.children[0]!.wrote[1]!)).toEqual({ id: "abort", type: "abort" });
     await h.complete("aborted");
     expect(h.events.find((event) => event.type === "turn_completed"))
-      .toMatchObject({ finish: "interrupted", usage: { total_tokens: 17 } });
+      .toMatchObject({ finish: "interrupted", usage: { total_tokens: 17 },
+        model_served: "pi-served", model_served_source: "provider", model_alias: null });
     h.user();
     await h.tick();
     await h.complete();
@@ -111,16 +142,20 @@ describe("Pi RPC turns reuse the S1 session lifecycle", () => {
     h.driver.handleHarnessLine("ignored after settlement");
   });
 
-  test("idle and malformed interrupts get refusal acknowledgments", async () => {
+  test("idle interrupts are accepted as no-ops and malformed inputs are rejected", async () => {
     const h = harness();
     h.send({ type: "interrupt" });
     h.send({ type: "interrupt", extra: 1 });
     h.driver.handleCallerLine("not json");
     h.send(null);
     await h.tick();
-    expect(h.events.filter((event) => event.type === "input_ack").every((event) => event.accepted === false)).toBe(true);
+    expect(h.events.filter((event) => event.type === "input_accepted" || event.type === "input_rejected").map((event) => event.type))
+      .toEqual(["input_accepted", "input_rejected", "input_rejected", "input_rejected"]);
+    expect(h.children).toHaveLength(0);
     expect(await h.end()).toBe(0);
+    const count = h.events.length;
     h.send({ type: "interrupt" });
+    await h.tick(); expect(h.events).toHaveLength(count);
   });
 
   test("an abort that races a normal completion does not invent interruption", async () => {

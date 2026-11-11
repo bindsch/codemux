@@ -19,6 +19,7 @@ import {
 } from "../cli-runtime.js";
 import {
   executableCheck,
+  commandProgramIndex,
   resolveTrustedCommand,
   trustCheckedCommandChecks,
   trustCheckedCommandPaths,
@@ -29,6 +30,14 @@ import { validateWorkingDirectory } from "../validation.js";
 import type { AutonomyLevel } from "../types.js";
 import type { SessionFatal } from "./process.js";
 import { SessionProcess } from "./process.js";
+
+/** The final launch and its pinned native program, including any scode/env prefix. */
+export interface ResolvedSessionLaunch {
+  command: string[];
+  programIndex: number;
+  env: Record<string, string>;
+  executablePin: { requiredPaths: readonly string[]; checks: readonly ExecutableCheck[] };
+}
 
 export interface SessionSpawnOptions {
   cwd?: string;
@@ -53,6 +62,7 @@ export interface SessionSpawnOptions {
   abandoned?: () => boolean;
   /** Recheck caller-owned state after asynchronous probes, before creating a child. */
   validateBeforeSpawn?: () => void;
+  onResolvedLaunch?: (launch: ResolvedSessionLaunch) => void;
 }
 
 /** The refusal of a spawn its caller abandoned while it was resolving. */
@@ -77,6 +87,7 @@ export async function resolveSessionSandboxSpawn(
   workdir: string
 ): Promise<{
   scodeCmd: string[];
+  programIndex: number;
   sandboxEnv: Record<string, string>;
   /** This spawn's own resolutions, captured in each resolution's own
    * synchronous block (round 20, minor 6): the scode identity before
@@ -139,7 +150,8 @@ export async function resolveSessionSandboxSpawn(
   );
   const sandboxEnv = buildSandboxEnv(env, effectiveSandboxOptions);
   for (const name of options.envOmissions ?? []) delete sandboxEnv[name];
-  return { scodeCmd, sandboxEnv, executablePin };
+  return { scodeCmd, sandboxEnv, executablePin,
+    programIndex: scodeCmd.length - resolved.length + commandProgramIndex(resolved) };
 }
 
 /**
@@ -175,7 +187,7 @@ export async function spawnSessionChild(
     throw new Error("session command produced an invalid command");
   }
   if (options.sandboxed) {
-    const { scodeCmd, sandboxEnv, executablePin } = await resolveSessionSandboxSpawn(
+    const { scodeCmd, sandboxEnv, executablePin, programIndex } = await resolveSessionSandboxSpawn(
       command,
       env,
       options,
@@ -183,6 +195,7 @@ export async function spawnSessionChild(
     );
     refuseAbandonedSpawn(options);
     options.validateBeforeSpawn?.();
+    options.onResolvedLaunch?.({ command: scodeCmd, env: sandboxEnv, executablePin, programIndex });
     return new SessionProcess({
       command: scodeCmd,
       cwd: workdir,
@@ -203,18 +216,17 @@ export async function spawnSessionChild(
   );
   refuseAbandonedSpawn(options);
   options.validateBeforeSpawn?.();
+  const executablePin = {
+    requiredPaths: trustCheckedCommandPaths(resolved),
+    checks: [...trustCheckedCommandChecks(resolved), ...(options.extraExecutableChecks ?? [])],
+  };
+  options.onResolvedLaunch?.({ command: resolved, env, executablePin, programIndex: commandProgramIndex(resolved) });
   return new SessionProcess({
     command: resolved,
     cwd: workdir,
     env,
     graceMs: options.graceMs,
-    executableChecks: {
-      requiredPaths: trustCheckedCommandPaths(resolved),
-      checks: [
-        ...trustCheckedCommandChecks(resolved),
-        ...(options.extraExecutableChecks ?? []),
-      ],
-    },
+    executableChecks: executablePin,
     ...hooks,
   });
 }

@@ -69,18 +69,8 @@ export interface CursorEnvelopeInfo {
 
 /** One model_call usage event's wire object: the mapper `$`'s output —
  * camelCase, inputTokens NET of the cache counters. */
-function cursorUsageEvent(usage: unknown): ResultUsageBlock | null {
-  if (typeof usage !== "object" || usage === null) return null;
-  const wire = usage as Record<string, unknown>;
-  if (
-    reportedTokenCount(wire.inputTokens) === null &&
-    reportedTokenCount(wire.outputTokens) === null &&
-    reportedTokenCount(wire.cacheReadTokens) === null &&
-    reportedTokenCount(wire.cacheWriteTokens) === null
-  ) {
-    return null;
-  }
-  return normalizeCursorUsage(wire);
+function cursorUsageEvent(usage: unknown): ResultUsageBlock {
+  return typeof usage !== "object" || usage === null ? emptyUsage() : normalizeCursorUsage(usage as Record<string, unknown>);
 }
 
 /** Maps one cursor usage object (result line or model_call event) onto the
@@ -90,15 +80,14 @@ export function normalizeCursorUsage(wire: Record<string, unknown>): ResultUsage
   const usage = emptyUsage();
   const input = reportedTokenCount(wire.inputTokens);
   const output = reportedTokenCount(wire.outputTokens);
-  const cacheCounts = [reportedTokenCount(wire.cacheReadTokens), reportedTokenCount(wire.cacheWriteTokens)]
-    .filter((count): count is number => count !== null);
+  const read = reportedTokenCount(wire.cacheReadTokens);
+  const write = reportedTokenCount(wire.cacheWriteTokens);
   usage.input_tokens = input;
   usage.output_tokens = output;
-  usage.cached_input_tokens = safeTokenSum(...cacheCounts);
-  usage.total_tokens = safeTokenSum(
-    ...[input, output, usage.cached_input_tokens]
-      .filter((count): count is number => count !== null)
-  );
+  usage.cached_input_tokens = read === null || write === null ? null : safeTokenSum(read, write);
+  if (input !== null && output !== null && usage.cached_input_tokens !== null) {
+    usage.total_tokens = safeTokenSum(input, output, usage.cached_input_tokens);
+  }
   return usage;
 }
 
@@ -106,10 +95,10 @@ export function normalizeCursorUsage(wire: Record<string, unknown>): ResultUsage
  * usage is the LAST call's object, so multi-call runs need the event sum. */
 function sumUsages(events: ResultUsageBlock[]): ResultUsageBlock {
   const usage = emptyUsage();
-  const field = (pick: (block: ResultUsageBlock) => number | null): number | null =>
-    safeTokenSum(
-      ...events.map(pick).filter((count): count is number => count !== null)
-    );
+  const field = (pick: (block: ResultUsageBlock) => number | null): number | null => {
+    const counts = events.map(pick);
+    return counts.every((count): count is number => count !== null) ? safeTokenSum(...counts) : null;
+  };
   usage.input_tokens = field((block) => block.input_tokens);
   usage.output_tokens = field((block) => block.output_tokens);
   usage.cached_input_tokens = field((block) => block.cached_input_tokens);
@@ -136,7 +125,7 @@ export function parseCursorResultEnvelope(stdout: string): CursorEnvelopeInfo | 
     if (sessionId === null && typeof event.session_id === "string") {
       sessionId = event.session_id;
     }
-    if (event.type === "user") collector.userTurn();
+    if (event.type === "user") { collector.userTurn(); last = null; }
     // A tool call ends the open message; the text after it (none, when the
     // run ended on the call) is the next message.
     else if (event.type === "tool_call") { collector.close(); collector.text(""); }
@@ -152,8 +141,7 @@ export function parseCursorResultEnvelope(stdout: string): CursorEnvelopeInfo | 
       }
     }
     if (event.type === "usage" && event.subtype === "model_call") {
-      const mapped = cursorUsageEvent(event.usage);
-      if (mapped !== null) usageEvents.push(mapped);
+      usageEvents.push(cursorUsageEvent(event.usage));
     }
     if (event.type === "result") {
       last = event;

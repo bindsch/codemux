@@ -6,21 +6,14 @@ import {
 } from "./helpers/cli-result-envelopes.js";
 
 describe("CLI - result envelope failures", () => {
-  test("a codex run printing only error events is human mode's bytes end to end: passthrough at the child's own exit (al7, al30)", async () => {
-    // The sixth review's concern, re-settled by round al30's rule 3: a
-    // plain run whose stdout is only {"type":"error",...} lines has a
-    // first non-empty line that is not the thread.started announcement,
-    // so the stream is human mode's — verbatim stdout, the child's exit
-    // code its own verdict, success exactly when the exit was 0. The
-    // fake exits 0 first (human mode's success), then 2 (the nonzero
-    // exit stays). The al7 error-text arm ended with the per-line hatch:
-    // a binary that honored `--json` and errored before starting a thread
-    // is indistinguishable from one that never honored it.
+  test("a codex run printing only error events retains diagnostics but cannot claim an answer", async () => {
+    // No thread announcement means the native parser cannot interpret
+    // these bytes. Retain them, but require an answer before exit 0.
     const events = [
       '{"type":"error","message":"stream error: upstream refused"}',
       '{"type":"error","message":"retry failed: quota exhausted"}',
     ].join("\n");
-    for (const [fakeExit, wantExit] of [["0", 0], ["2", 2]] as const) {
+    for (const [fakeExit, wantExit] of [["0", 1], ["2", 2]] as const) {
       const fake = createFakeBinaryEnv({
         codex: `${codexVersionPreamble}cat >/dev/null; printf '%s\\n' '${events}'; exit ${fakeExit}`,
       });

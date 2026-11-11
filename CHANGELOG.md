@@ -21,6 +21,25 @@ immutable notes and engineering evidence.
 
 - `--print-sandbox` preparation uses representative artifact paths without creating or sweeping harness state. This includes provider preflights, effort settings, private session homes, and TUI configuration. Strict runtime path canonicalization failures retain exit 64 in sessions.
 
+- `codemux complete serve|once`: brokered raw chat completions for
+  measurement harnesses that run their own agent loop. A loopback-only
+  OpenAI chat-completions server with a per-run bearer token forwards to
+  Anthropic (translated field for field, or refused), OpenAI, OpenRouter, or
+  an OpenAI-compatible endpoint. The API key comes only from a named
+  environment variable, and OAuth subscription tokens are refused; a
+  `--base-url` off the provider's own host needs `--key-env`. Every
+  `serve` request passes request and dollar caps priced from a dated table
+  (`src/complete/prices.ts`, checked against the provider pages on
+  2026-11-10) and writes a ledger row of kind `complete`; an answer whose
+  cost cannot be known stops the server. `once` sends one non-streaming
+  request without a dollar cap. Ambient proxy variables are ignored;
+  `--proxy` explicitly selects an HTTP(S) proxy for HTTPS upstreams.
+  A stop signal exits 143, a cap 0 after accepted responses drain.
+  See [complete](https://github.com/bindsch/codemux/blob/main/docs/complete.md).
+- `codemux calls --kind <kind>` filters by record kind;
+  `codemux calls --kind complete --sum` totals brokered completions, with
+  the price-table estimate on its own line.
+
 ### Changed
 
 - Version and capability probes preserve natural exit status until their configured deadline. Only a leader still running at that deadline can succeed from complete stdout, marked `stoppedAfterOutput: true`, before its whole process group is terminated. Cursor's version probe defaults to five seconds to bound its exit hang; other harnesses retain the 30-second default. Cursor model listings require their table footer. Incomplete output and capture errors remain failures. A leader's own signal or nonzero exit remains a failure when descendants retain its pipes.
@@ -34,11 +53,48 @@ immutable notes and engineering evidence.
 
 ### Fixed
 
+- Session IDs reject path separators and dot segments for every harness. Private-home creation, relocation, and cleanup enforce containment under the recorded parent.
+- Stale-session cleanup preserves resumable homes when the freshness scan exceeds its entry limit or cannot read the whole tree.
+- Droid, Qwen, Copilot, and Gemini session turns preserve structured error verdicts even when the harness exits zero or supplies no error text.
+- Legacy `qwen-coder` refuses unsupported `--hermetic` and `--no-web` restrictions. Qwen's configured model is no longer reported as provider identity or used to verify provider overrides.
+- Cline reports unknown input and total token counts when its cache counters exceed input. Budget help describes the enforced soft spend threshold.
+- Goose sessions read the native startup banner and pretty JSON transcript, retaining the session identity and reported totals across turns.
+- Adapter previews build argv and environment values without creating files, linking credentials, sweeping stale directories, or registering cleanup hooks. Pi budget and TUI previews follow the same rule. Copilot result previews show the RPC command used by execution.
+- A staging-file permission failure closes the opened descriptor before returning the error.
+- Result parsers clear earlier replies at new user turns. Pi and Cursor keep missing token measurements unknown, and Pi, Cursor, and Goose preserve unknown or overflowing usage sums.
+- Session prompt delivery failures reach the fatal outcome even when a buffered write initially succeeds. Cursor sessions honor native result failures.
+- Goose and OpenHands sessions drain accepted turns during spawn-time EOF or shutdown without writing prompts to stdin; their argv and task-file carriers already deliver the prompt.
+- Captured runs terminate remaining process-group descendants after normal exit.
+- Correct Qwen hermetic help, provider model restrictions, Antigravity effort handling, TUI Playwright isolation, and stale session cleanup references.
+- Cline history reads reuse the session's pinned executable, environment, and sandbox. Executable trust checks follow nested `env` wrappers through to the harness.
+- Cline, Gemini, and Copilot ignore asynchronous replies after their owning turn or session ends.
+- Test preloads replace inherited ledger and state paths. Session registry defaults honor the current `HOME`.
+- Monthly and other longer quota windows cannot trigger weekly warnings through a misleading label.
+- Correct result-model attribution, Claude/Z.AI request-ID limits, Qwen override requirements, and shipped session capability evidence.
+- Reject repository-local executables under names beginning with two dots, including symlink targets.
+- OpenHands sessions clean up only their own turn's prompt file, including failed spawns. Conversation failures fail runs and turns; recovered tool errors no longer do.
+- Pi and Cline MCP bridges accept tools without the optional description. Cline delivery evidence uses the same empty-string default.
+- Gemini and Cline sessions preserve original ACP lines in `raw`. All session tool inputs remain objects; missing or non-object native inputs become `{}` with the native value retained in `raw`.
+- Gemini and Copilot terminal errors fail even when their diagnostic message is missing.
+- Copilot and Gemini sessions preserve accepted prompts and successful responses while caller EOF or `shutdown` drains the active turn.
+- Gemini, Copilot, and Pi sessions reject prompts that exceed their serialized transport limits with `text_too_long`, leaving the session usable.
+- Pi MCP cleanup waits for server termination after protocol or write errors and escalates to SIGKILL when needed.
+- Pi MCP handles pipe errors, server notifications, and unsupported server requests without an unhandled stream error. Cleanup releases inherited pipes after the server exits.
+- Codex termination during post-run cost collection stops the metadata child, records interruption, and exits 143 instead of reporting success.
+- Plain Copilot experiments return answer text without JSON duplication; plain Qwen experiments discard partial answers after failure.
+- Pi session model discovery advertises its provider-reported evidence. Correct capability, accounting, effort, provider, and persistence references.
+- Agy stale-lock recovery observes its retry delay and deadline when a leftover reclaim file blocks recovery.
+- Copilot RPC accepts valid consecutive frames and maximum-size headers regardless of transport chunk boundaries.
+- Shared session drivers include served-model and alias fields on every session start and turn completion, including interruptions and synthesized failures.
+- Codex native cost enrichment and Pi, Copilot, Gemini, and Qwen experiment metadata respect the final result-envelope size limit. Gemini and Qwen plain output preserve size-limit refusals.
+- Pi delivers an accepted interrupt even when caller EOF arrives before the native prompt acknowledgment.
+- `--sandbox-block` lists longer than 41 paths no longer fail with a false symlink-hop error.
+- Correct prompt-transport, session lifecycle, preview, canary-count, and legacy cost-accounting references. Session capability and caller-home tests cover Cline and OpenHands.
+- CI builds scode v0.6.6 (commit `9cbb7f8`) instead of v0.6.4.
 - Strict runtime grants follow the adapter identity through executable resolution, including native Claude and Z.AI installs with version-named binaries. Codex provider resume previews reject untrusted parent directories without creating or sweeping state.
 
 - `verify --show-scode` resolves executable paths before sandbox checks and reports unavailable commands per row. It also accepts `--sandbox-strict`. Resumed per-turn previews validate private homes without writing state.
 - Session previews and credential preflights use separate sandbox policies, so representative directories cannot become grants on real turns. Resumed previews, including Aider, validate private homes and their parents without creating or sweeping state. Copilot project-settings previews apply policy to the session home after preparing per-turn artifacts.
-- CI builds scode v0.6.5 (commit `f191891`) instead of v0.6.4.
 - **Correction**: the 2.0.0 notes and the `check --session` reference called
   the refused `--pass-env` set "config-directory redirects". It also covers
   single-file and inline config variables such as `OPENCODE_CONFIG`,
@@ -88,9 +144,9 @@ implementation narrative behind it is preserved in the
 
 - Parity (XM): Qwen experiment MCP runs and paired checks use a private relay configuration, exact provider-log verification, and native call records. Agy and OpenHands now refuse with dated evidence of their native inventory and schema limitations. Qwen's tool exclusions cover its complete built-in registry.
 
-- Sessions accept `--harness-home <dir>` for a persistent caller-owned Claude, ZAI, or Codex home. Login hard links, resume checks, sandbox blocks, and synthetic canaries preserve caller settings and skills; `--final` keeps the directory. The registry pins caller-owned mode independently of its path. Older binaries that reject the new `caller_owned_home` field cannot resume these records.
+- Sessions accept `--harness-home <dir>` for a persistent caller-owned home for all 16 session agents. Login hard links, resume checks, sandbox blocks, and synthetic canaries preserve caller settings and skills; `--final` keeps the directory. The registry pins caller-owned mode independently of its path. Older binaries that reject the new `caller_owned_home` field cannot resume these records.
 
-- Parity (W2): Qwen runs deny every built-in tool through `--exclude-tools` and attach the Playwright server through inline `--mcp-config`; its sessions resume the minted `--session-id` ledger with per-turn tool exclusion and a tested Playwright carrier. OpenHands runs load a repository's own `.openhands` hooks under `--experiment-project-settings` and plant the Playwright server in a hermetic run's private `mcp.json`; its session driver, conversation identity, and resume carrier land in-tree pending registration. Agy prompts ride stream-json stdin and its sandboxed runs plant the Playwright server in the probe home's `mcp_config.json`. Every remaining Qwen, Agy, and OpenHands gap except experiment MCP is a recorded harness limitation with dated upstream evidence.
+- Parity (W2): Qwen runs deny every built-in tool through `--exclude-tools` and attach the Playwright server through inline `--mcp-config`; its sessions resume the minted `--session-id` ledger with a tested Playwright carrier. **Correction:** Qwen session tool selection remains refused by the CLI; the internal command builder's exclusion support is not a session CLI feature. OpenHands runs load a repository's own `.openhands` hooks under `--experiment-project-settings` and plant the Playwright server in a hermetic run's private `mcp.json`; its session driver, conversation identity, and resume carrier land in-tree pending registration. Agy prompts ride stream-json stdin and its sandboxed runs plant the Playwright server in the probe home's `mcp_config.json`. Every remaining Qwen, Agy, and OpenHands gap except experiment MCP is a recorded harness limitation with dated upstream evidence.
 - Parity (W3): Copilot gains provider token caps, stdin prompts, and native token reporting; Gemini gains plain tool removal, web-tool denial, stdin prompts, output caps, and provider model evidence; Pi gains a verified soft USD cap and built-in web-tool denial. All three support TUI provider overrides and tested session lifecycles, experiment MCP on run and check, Playwright MCP on run and sessions, native session interrupt, session tools, and sandbox previews; Copilot and Gemini add experiment project settings, and Pi keeps plain provider-override sessions on its native session store.
 - Parity (W4): Droid's TUI carries model, effort, and provider overrides through a private settings file, its runs deny the two web tools, and its session turns reapply the tools allowlist; Goose prompts ride stdin, its token caps ride environment aliases, and its session turns reapply `--no-profile` and can carry the Playwright server per turn; Cursor runs and sessions report usage from the stream-json per-call events, and its TUI carries provider overrides. Every remaining Droid, Goose, and Cursor gap is a recorded harness limitation with dated upstream evidence.
 - Parity (W5): integrated Aider session interruption, tools, deny policy, and sandbox previews; OpenCode session homes, resume/final cleanup, tools, Playwright, TUI effort, and experiment MCP run/check. Ordinary OpenCode served-model reporting remains null because pure mode blocks response-observer plugins and native telemetry can report the requested model.
@@ -105,7 +161,7 @@ implementation narrative behind it is preserved in the
   sessions only), each home removed by `--final` or the stale sweep; aider sessions
   turn hermetic the same way, their chat history inside the private home. Aider, droid,
   pi, gemini, copilot, goose, and qwen accept provider overrides under each agent's own
-  rules (pi's override session requires `--hermetic` plus `--model`).
+  rules. Pi accepts the override's model in plain and hermetic sessions.
 - Feature-parity gate: declare every adapter feature; check capability tables, refusals, docs,
   and probe applicability; fail release checks on undocumented limits and unresolved gaps.
 - Uniform autonomy carriers and served model: `codemux autonomy` and `list --json`
@@ -131,8 +187,8 @@ implementation narrative behind it is preserved in the
   harness limitations); gemini and goose gain provider overrides (GOOGLE_GEMINI_BASE_URL with
   GEMINI_API_KEY, and goose's OPENAI_HOST/OPENAI_BASE_PATH pair); goose gains `--effort` over
   GOOSE_THINKING_EFFORT with none mapping to off (gemini and openhands have no effort carrier
-  at their installed versions, so `--effort` stays refused there); cline keeps both refusals as
-  the documented limitation its absent binary leaves.
+  at their installed versions, so `--effort` stays refused there).
+  **Correction:** Cline accepts provider overrides and maps `--effort` to `--thinking`.
 - Run parity (cursor, droid, pi, qwen): cursor gains `--result-json` over its json result line,
   `--tools none` through the validated `--allowed-tools reflect_tool_call` allowlist, and a provider
   override over CURSOR_API_ENDPOINT/CURSOR_API_KEY (effort stays refused: bracket overrides are
@@ -157,8 +213,8 @@ implementation narrative behind it is preserved in the
   share, carrying the credential copy, with the operator's real config root blocked for the
   session's children — and a resume whose home went missing is refused as policy (78),
   never silently remade; opencode rides the run path's hermetic environment prefix on every
-  turn's argv, keeps no session-keyed home (the real data directory carries the login, so
-  `private_home` reports null), and under `--experiment-project-settings` adds the
+  turn's argv, retains private data/state across resume with a linked login, and
+  reports that directory as `private_home`. Under `--experiment-project-settings` it adds the
   repository's own config to that prefix and drops `--pure`; `--final` removes a codex,
   kimi, or agy home after the session's children settle, leaving the record to answer a
   later resume of a fresh session with the same 78 refusal.
@@ -228,8 +284,8 @@ implementation narrative behind it is preserved in the
   on the input never waits. Every deny a session sends carries Claude Code's
   own rejection text, and a caller decision may supply its own denial
   message.
-- `run --print-sandbox` and `session --print-sandbox` run the version
-  preflights and the quota gate, then print the scode argv the launch would
+- **Correction:** `run --print-sandbox` and `session --print-sandbox` run the version
+  preflights, skip the quota gate, then print the scode argv the launch would
   exec, one argument per line with control characters escaped, and exit 0
   without starting the harness run or recording anything.
 - `run --sandbox-block <path>` and `session --sandbox-block <path>`
@@ -357,122 +413,4 @@ Earlier 2.0.0 fixes are preserved in [part 1](https://github.com/bindsch/codemux
 
 ## Earlier releases
 
-## [0.15.1] - 2026-10-28
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#0151---2026-10-28).
-
-## [0.15.0] - 2026-10-28
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#0150---2026-10-28).
-
-## [0.14.2] - 2026-10-25
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#0142---2026-10-25).
-
-## [0.14.1] - 2026-10-19
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#0141---2026-10-19).
-
-## [0.14.0] - 2026-10-18
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#0140---2026-10-18).
-
-## [0.13.6] - 2026-10-15
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#0136---2026-10-15).
-
-## [0.13.5] - 2026-10-15
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#0135---2026-10-15).
-
-## [0.13.4] - 2026-10-13
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#0134---2026-10-13).
-
-## [0.13.3] - 2026-10-13
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#0133---2026-10-13).
-
-## [0.13.2] - 2026-10-13
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#0132---2026-10-13).
-
-## [0.13.1] - 2026-10-13
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#0131---2026-10-13).
-
-## [0.13.0] - 2026-10-13
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#0130---2026-10-13).
-
-## [0.12.0] - 2026-10-12
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#0120---2026-10-12).
-
-## [0.11.0] - 2026-10-08
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#0110---2026-10-08).
-
-## [0.10.0] - 2026-10-08
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#0100---2026-10-08).
-
-## [0.9.0] - 2026-10-07
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#090---2026-10-07).
-
-## [0.8.0] - 2026-10-07
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#080---2026-10-07).
-
-## [0.7.1] - 2026-10-05
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#071---2026-10-05).
-
-## [0.7.0] - 2026-10-04
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#070---2026-10-04).
-
-## [0.6.1] - 2026-10-04
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#061---2026-10-04).
-
-## [0.6.0] - 2026-10-03
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#060---2026-10-03).
-
-## [0.5.2] - 2026-09-17
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#052---2026-09-17).
-
-## [0.5.1] - 2026-09-15
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#051---2026-09-15).
-
-## [0.5.0] - 2026-08-21
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#050---2026-08-21).
-
-## [0.4.0] - 2026-08-15
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#040---2026-08-15).
-
-## [0.3.1] - 2026-08-13
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#031---2026-08-13).
-
-## [0.3.0] - 2026-08-04
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#030---2026-08-04).
-
-## [0.2.1] - 2026-08-02
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#021---2026-08-02).
-
-## [0.2.0] - 2026-08-02
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#020---2026-08-02).
-
-## [0.1.0] - 2026-02-24
-
-See the [archived release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.0.0.md#010---2026-02-24).
+[Earlier release notes](https://github.com/bindsch/codemux/blob/main/docs/archive/changelog-pre-2.md).

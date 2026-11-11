@@ -1,7 +1,7 @@
 /** Native Gemini 0.60.0 ACP transport. Evidence: gemini-LUNNHKPJ.js
  * GeminiAgent.initialize/newSession/loadSession/prompt/cancel and
- * Session.requestPermission (read 2026-11-09). The shared session factory
- * does not yet activate this transport; no child is started here. */
+ * Session.requestPermission (read 2026-11-09). Gemini and Cline session
+ * drivers share this transport; no child is started here. */
 import type { AutonomyLevel } from "../types.js";
 import { geminiSessionAutonomyFlags } from "./gemini-session.js";
 
@@ -20,7 +20,7 @@ export interface GeminiAcpPermission {
 export interface GeminiAcpHost {
   /** The process writer returns false when its input has closed. */
   write(line: string): boolean;
-  onUpdate(update: JsonObject): void;
+  onUpdate(update: JsonObject, raw: string): void;
   onFailure?(error: Error): void;
   /** The outer driver applies its autonomy ceiling before returning allow. */
   onPermission?(request: GeminiAcpPermission): Promise<"allow" | "deny"> | "allow" | "deny";
@@ -51,7 +51,7 @@ export class GeminiAcpTransport {
     method: string; resolve: (value: JsonObject) => void; reject: (error: Error) => void;
   }>();
   private readonly permissions = new Set<RpcId>();
-  private readonly earlyUpdates: JsonObject[] = [];
+  private readonly earlyUpdates: { params: JsonObject; raw: string }[] = [];
   private initialized = false;
   private opening = false;
   private busy = false;
@@ -102,7 +102,7 @@ export class GeminiAcpTransport {
       }
       this.id = id;
       this.opening = false;
-      try { for (const params of this.earlyUpdates.splice(0)) this.update(params); }
+      try { for (const { params, raw } of this.earlyUpdates.splice(0)) this.update(params, raw); }
       catch (error) { this.close(error as Error); throw error; }
       return id;
     } catch (error) {
@@ -153,7 +153,7 @@ export class GeminiAcpTransport {
       if (typeof frame.method === "string") {
         if (frame.method === "session/update" && frame.id === undefined) {
           if (!record(frame.params)) throw new Error("Gemini ACP update has no parameters");
-          this.update(frame.params);
+          this.update(frame.params, line);
         } else if (frame.method === "session/request_permission" && rpcId(frame.id)) {
           void this.permission(frame.id, frame.params);
         } else if (rpcId(frame.id)) {
@@ -214,14 +214,14 @@ export class GeminiAcpTransport {
     if (!this.host.write(line)) throw new Error("Gemini ACP input closed before the frame was written");
   }
 
-  private update(params: JsonObject): void {
+  private update(params: JsonObject, raw: string): void {
     if (this.opening && this.id === null) {
       if (this.earlyUpdates.length >= GEMINI_ACP_MAX_EARLY_UPDATES) throw new Error("Gemini ACP sent too many updates before its session identity");
-      this.earlyUpdates.push(params);
+      this.earlyUpdates.push({ params, raw });
       return;
     }
     if (this.id === null || params.sessionId !== this.id || !record(params.update)) throw new Error("Gemini ACP update names a foreign session or has no update object");
-    this.host.onUpdate(params.update);
+    this.host.onUpdate(params.update, raw);
   }
 
   private async permission(id: RpcId, raw: unknown): Promise<void> {

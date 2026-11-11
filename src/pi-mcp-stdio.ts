@@ -13,22 +13,44 @@ export function createPiMcpStdioTransport(
   const input = child.stdin;
   const decoder = new TextDecoder("utf-8", { fatal: true });
   const pending = new Map<number, { resolve(value: unknown): void; reject(error: unknown): void; cleanup(): void }>();
-  // A canceled server call can still return once. Bound these IDs together
-  // with pending requests so an uncooperative server cannot grow the set.
+  // Canceled calls normally receive no reply. Retain only the most recent
+  // IDs for late replies, independently of active request capacity.
   const canceled = new Set<number>();
   let nextId = 0, buffered = "", closed = false;
   let closing: Promise<void> | undefined;
+  let processClosed = false;
   const maxBytes = 1024 * 1024;
   const maxPendingRequests = 256;
+  const maxCanceledRequests = 256;
+  const close = (): Promise<void> => closing ??= new Promise((resolve) => {
+    if (processClosed) { resolve(); return; }
+    closed = true;
+    for (const waiter of pending.values()) { waiter.cleanup(); waiter.reject(new Error("pi MCP transport closed")); }
+    pending.clear();
+    canceled.clear();
+    const timer = setTimeout(() => { child.kill("SIGKILL"); }, 1000);
+    child.once("close", () => { clearTimeout(timer); resolve(); });
+    input.end();
+    child.kill("SIGTERM");
+  });
   const reject = (error: Error) => {
     closed = true;
     for (const waiter of pending.values()) { waiter.cleanup(); waiter.reject(error); }
     pending.clear();
     canceled.clear();
-    child.kill("SIGTERM");
+    void close();
   };
+  child.once("close", () => { processClosed = true; });
   child.on("error", reject);
-  child.on("exit", () => reject(new Error("pi MCP server exited")));
+  input.on("error", reject);
+  child.stdout.on("error", reject);
+  child.on("exit", () => {
+    reject(new Error("pi MCP server exited"));
+    // Once the server exits, inherited pipes held by helpers cannot carry
+    // another response. Release them so child close can finish cleanup.
+    input.destroy();
+    child.stdout!.destroy();
+  });
   child.stdout.on("data", (data: Buffer) => {
     if (closed) return;
     try {
@@ -40,6 +62,16 @@ export function createPiMcpStdioTransport(
         if (Buffer.byteLength(line) > maxBytes) throw new Error("pi MCP response exceeds 1 MiB");
         if (!line.trim()) continue;
         const reply = JSON.parse(line) as { jsonrpc?: unknown; id?: unknown; result?: unknown; error?: { message?: unknown }; method?: unknown };
+        if (reply?.jsonrpc === "2.0" && typeof reply.method === "string" &&
+            !("result" in reply) && !("error" in reply)) {
+          if (reply.id === undefined) continue; // Server notifications need no reply.
+          if (typeof reply.id === "string" || typeof reply.id === "number") {
+            // This client advertises no server-request capabilities.
+            void write({ jsonrpc: "2.0", id: reply.id,
+              error: { code: -32601, message: "Method not found" } }).catch(reject);
+            continue;
+          }
+        }
         if (reply === null || typeof reply !== "object" || reply.jsonrpc !== "2.0" ||
             typeof reply.id !== "number" || (!pending.has(reply.id) && !canceled.has(reply.id)) || reply.method !== undefined ||
             ("result" in reply) === ("error" in reply)) throw new Error("pi MCP invalid server response");
@@ -65,7 +97,7 @@ export function createPiMcpStdioTransport(
   return {
     request(method, params, signal) {
       if (signal?.aborted) return Promise.reject(signal.reason);
-      if (pending.size + canceled.size >= maxPendingRequests) return Promise.reject(new Error("pi MCP too many pending requests"));
+      if (pending.size >= maxPendingRequests) return Promise.reject(new Error("pi MCP too many pending requests"));
       const id = ++nextId;
       return new Promise((resolve, fail) => {
         const cleanup = () => signal?.removeEventListener("abort", abort);
@@ -73,6 +105,7 @@ export function createPiMcpStdioTransport(
           if (!pending.delete(id)) return;
           cleanup();
           canceled.add(id);
+          if (canceled.size > maxCanceledRequests) canceled.delete(canceled.values().next().value!);
           fail(signal?.reason);
           void write({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id } }).catch(reject); // allow-british: native MCP method
         };
@@ -83,18 +116,6 @@ export function createPiMcpStdioTransport(
       });
     },
     notify: (method) => write({ jsonrpc: "2.0", method }),
-    close() {
-      return closing ??= new Promise((resolve) => {
-        if (closed) { resolve(); return; }
-        closed = true;
-        for (const waiter of pending.values()) { waiter.cleanup(); waiter.reject(new Error("pi MCP transport closed")); }
-        pending.clear();
-        canceled.clear();
-        const timer = setTimeout(() => { child.kill("SIGKILL"); resolve(); }, 1000);
-        child.once("close", () => { clearTimeout(timer); resolve(); });
-        input.end();
-        child.kill("SIGTERM");
-      });
-    },
+    close,
   };
 }

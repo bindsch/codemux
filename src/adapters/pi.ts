@@ -1,6 +1,8 @@
 import { homedir } from "node:os";
+import { previewHome, previewFinalize } from "../run-preview.js";
 import { isAbsolute, join } from "node:path";
 import { BaseAdapter, type RunContext } from "./base.js";
+import { boundResultEnvelope, emptyUsage } from "../result-envelope/common.js";
 import type { LaunchIntent } from "../types.js";
 import type { SandboxOptions, ScodeTrustLevel } from "../sandbox.js";
 import {
@@ -212,6 +214,8 @@ export class PiAdapter extends BaseAdapter {
     const override = this.validatedProvider();
     const selected = this.modelFor(model);
     if (override === null) return super.prepareTuiEnvironment(model, autonomy, effort, sandboxed, passthroughEnv, printOnly);
+    if (printOnly) return { env: { [PI_AGENT_DIR_ENV]: previewHome(this.realAgentDir({ agent: "pi", prompt: "", passthroughEnv })),
+      [PI_PROVIDER_KEY_ENV]: override.apiKey }, finalize: previewFinalize };
     return preparePiTuiProviderEnvironment(
       this.realAgentDir({ agent: "pi", prompt: "", passthroughEnv }), override, selected!, printOnly
     );
@@ -387,8 +391,9 @@ export class PiAdapter extends BaseAdapter {
       try {
         const envelope = JSON.parse(parsed.stdout);
         envelope.codemux.recording = _context?.experimentRecording ?? null;
-        return { ...parsed, scanSurface: result.stdout,
+        const enriched = { ...parsed, scanSurface: result.stdout,
           stdout: request.resultJson ? `${JSON.stringify(envelope)}\n` : envelope.reply };
+        return request.resultJson ? boundResultEnvelope("pi", enriched, parsed.usage ?? emptyUsage(), parsed.servedModel ?? null) : enriched;
       } catch { return parsed; }
     }
     const scanSurface = `${result.stdout}\n${answerFoldScanEvidence(_context?.stdoutSink)}`;

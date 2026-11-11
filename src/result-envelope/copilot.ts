@@ -84,7 +84,11 @@ export function parseCopilotResultEnvelope(stdout: string): CopilotEnvelopeInfo 
           ? data.model : null;
       }
     } else if (event.type === "user.message") {
-      if (event.agentId === undefined || event.agentId === "main") collector.userTurn();
+      if (event.agentId === undefined || event.agentId === "main") {
+        collector.userTurn();
+        answer = nativeModel = null;
+        reportedExitCode = null;
+      }
     } else if (event.type === "result") {
       if (typeof event.sessionId === "string") sessionId = event.sessionId;
       if (typeof event.exitCode === "number" && Number.isSafeInteger(event.exitCode)) {
@@ -95,7 +99,7 @@ export function parseCopilotResultEnvelope(stdout: string): CopilotEnvelopeInfo 
         typeof event.data === "object" && event.data !== null
           ? (event.data as Record<string, unknown>)
           : {};
-      if (typeof data.message === "string") errorText = data.message;
+      errorText = typeof data.message === "string" ? data.message : "session error without a diagnostic";
     }
   }
   if (!sawWire) return null;
@@ -158,7 +162,9 @@ export function copilotResult(
     failure_code: failure !== null ? "harness-error" : null,
     ...answerBlockFields(parsed.transcript, parsed.finalMessage),
   };
-  const envelope = `${JSON.stringify({ [COPILOT_ANSWER_FIELD]: parsed.answer ?? "", model: parsed.nativeModel, usage: parsed.usage, codemux: block })}\n`;
+  const envelope = request.resultJson !== false
+    ? `${JSON.stringify({ [COPILOT_ANSWER_FIELD]: parsed.answer ?? "", model: parsed.nativeModel, usage: parsed.usage, codemux: block })}\n`
+    : failure !== null || !result.success ? "" : (parsed.answer ?? "").replace(/\n?$/, "\n");
   if (failure !== null) {
     return boundResultEnvelope(
       agent,
@@ -194,11 +200,11 @@ export function copilotResult(
 
 /** A plain copilot run: the same JSONL wire, printed as the complete
  * answer. Stdout with no wire events (a binary that ignored the format)
- * passes through with its exit status; a session error or a nonzero
+ * stays as diagnostics and fails result-empty; a session error or a nonzero
  * result exitCode fails the run with nothing on stdout. */
 export function copilotPlainResult(result: RunResult): RunResult {
   const parsed = parseCopilotResultEnvelope(result.stdout);
-  if (parsed === null) return result;
+  if (parsed === null) return { ...result, reply: "" };
   const failure = parsed.errorText !== null ? `session error (${parsed.errorText})`
     : parsed.reportedExitCode !== null && parsed.reportedExitCode !== 0 ? `result exitCode ${parsed.reportedExitCode}` : null;
   if (failure !== null) {

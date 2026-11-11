@@ -129,9 +129,9 @@ export class AgyAdapter extends BaseAdapter {
     const mode = probe?.mode ?? (request.tools === "none" ? "tools" : request.hermetic ? "hermetic" : undefined);
     const operatorHome = probe?.operatorHome ?? this.environment.HOME ?? homedir();
     const recoveryEnvironment = { ...this.environment, HOME: operatorHome };
-    const roots = agyProbeRoots(recoveryEnvironment);
     const printOnly = launch.printOnly === true;
     if (!printOnly) { // a print-only launch repairs and sweeps nothing
+      const roots = agyProbeRoots(recoveryEnvironment);
       recoverAgyKeychainSearchList(recoveryEnvironment, request.cwd);
       for (const root of roots) sweepStaleHomes(root); }
     if (!request.sandboxed) return {};
@@ -244,6 +244,7 @@ export class AgyAdapter extends BaseAdapter {
    * removal failed and the cleanup stays retryable for no one. The
    * probe home is removed after the search list is restored. */
   override cleanupRunSync(context?: RunContext, atExit = false): void {
+    if (context?.printOnly) return;
     const probe = context?.agyProbe;
     if (!probe?.home) return;
     const owned = ownedProbeHomes.get(context!);

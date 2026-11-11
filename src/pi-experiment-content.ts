@@ -132,7 +132,7 @@ function verifyPiProviderCalls(projected: Projection, messages: JsonObject[]): v
 export function verifyPiProviderPayload(server: string, definitions: readonly JsonObject[], api: string,
   payload: unknown, messages: JsonObject[]): string[] {
   const projected = projection(api, piObject(payload));
-  const expectedTools = definitions.map((t) => ({ name: `mcp__${server}__${t.name}`, description: t.description, schema: t.inputSchema }));
+  const expectedTools = definitions.map((t) => ({ name: `mcp__${server}__${t.name}`, description: t.description ?? "", schema: t.inputSchema }));
   const actualTools = projected.tools.map((t) => ({ name: t.name, description: t.description,
     schema: t.input_schema ?? t.parameters ?? t.parametersJsonSchema ?? t.inputSchema?.json }));
   same(actualTools, expectedTools, "Pi provider tool inventory differs from the experiment server", Code.InventoryMismatch);

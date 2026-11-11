@@ -1,5 +1,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync } from "node:fs";
+import { runDirectoryPrefix } from "./run-directory-owner.js";
 import { join } from "node:path";
+import { previewHome, previewFinalize } from "./run-preview.js";
 import { writeOwnedSync } from "./fs-durable.js";
 import { assertTrustedDirectory, prepareRunDirParent } from "./hermetic-home.js";
 import { recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
@@ -83,10 +85,10 @@ export function createClineConfig(sourceDir: string, environment: NodeJS.Process
   if (options.hermetic && provider === null) {
     throw new UsageRefusalError("cline --hermetic requires a provider override for the private configuration");
   }
-  if (options.printOnly) return { ...populateClineConfig(join(sourceDir, ".codemux-hermetic", "preview"), environment, options), finalize: () => {} };
+  if (options.printOnly) return { ...populateClineConfig(previewHome(sourceDir), environment, options), finalize: previewFinalize };
   const parent = prepareRunDirParent(sourceDir, ".codemux-hermetic");
   const trusted = recordTrustedParent(parent);
-  const home = mkdtempSync(join(parent, `run-${process.pid}-`));
+  const home = mkdtempSync(join(parent, runDirectoryPrefix()));
   chmodSync(home, 0o700);
   let finalized = false;
   const finalize = () => {
@@ -153,27 +155,31 @@ export function populateClineConfig(home: string, environment: NodeJS.ProcessEnv
       for (const name of ["OneDrive", "OneDriveConsumer", "OneDriveCommercial"]) env[name] = home;
     }
     if (options.hermetic || options.noWeb || options.toolsNone) {
-      let settings = options.hermetic || !options.sourceGlobalPath ? {} : readSettings(options.sourceGlobalPath);
-      if (options.noWeb) {
-        // Native web search and the ordinary fetch tool are separate channels.
-        // cli-v3.0.74, read 2026-11-09:
-        // https://github.com/cline/cline/blob/cli-v3.0.74/sdk/packages/core/src/services/global-settings.ts#L358-L380
-        const disabled = settings.disabledTools;
-        if (disabled !== undefined && (!Array.isArray(disabled) || disabled.some((name) => typeof name !== "string"))) {
-          throw new Error("cline disabledTools must be an array of tool names");
-        }
-        settings.disabledTools = [...new Set([...(disabled as string[] | undefined ?? []), "fetch_web_content"])];
-        settings.tools = { ...object(settings.tools), web_search: { enabled: false } };
-      }
-      if (options.toolsNone) settings = clineToolsNoneSettings(settings);
       env.CLINE_GLOBAL_SETTINGS_PATH = join(configDir, "global-settings.json");
-      if (!options.printOnly) writeOwnedSync(env.CLINE_GLOBAL_SETTINGS_PATH, JSON.stringify(settings), 0o600);
+      if (!options.printOnly) {
+        let settings = options.hermetic || !options.sourceGlobalPath ? {} : readSettings(options.sourceGlobalPath);
+        if (options.noWeb) {
+          // Native web search and the ordinary fetch tool are separate channels.
+          // cli-v3.0.74, read 2026-11-09:
+          // https://github.com/cline/cline/blob/cli-v3.0.74/sdk/packages/core/src/services/global-settings.ts#L358-L380
+          const disabled = settings.disabledTools;
+          if (disabled !== undefined && (!Array.isArray(disabled) || disabled.some((name) => typeof name !== "string"))) {
+            throw new Error("cline disabledTools must be an array of tool names");
+          }
+          settings.disabledTools = [...new Set([...(disabled as string[] | undefined ?? []), "fetch_web_content"])];
+          settings.tools = { ...object(settings.tools), web_search: { enabled: false } };
+        }
+        if (options.toolsNone) settings = clineToolsNoneSettings(settings);
+        writeOwnedSync(env.CLINE_GLOBAL_SETTINGS_PATH, JSON.stringify(settings), 0o600);
+      }
     }
     if (options.hermetic || options.mcpServers || options.toolsNone) {
-      const settings = options.hermetic || options.toolsNone || !options.sourceMcpPath ? {} : readSettings(options.sourceMcpPath);
-      settings.mcpServers = { ...object(settings.mcpServers), ...options.mcpServers };
       env.CLINE_MCP_SETTINGS_PATH = join(configDir, "cline_mcp_settings.json");
-      if (!options.printOnly) writeOwnedSync(env.CLINE_MCP_SETTINGS_PATH, JSON.stringify(settings), 0o600);
+      if (!options.printOnly) {
+        const settings = options.hermetic || options.toolsNone || !options.sourceMcpPath ? {} : readSettings(options.sourceMcpPath);
+        settings.mcpServers = { ...object(settings.mcpServers), ...options.mcpServers };
+        writeOwnedSync(env.CLINE_MCP_SETTINGS_PATH, JSON.stringify(settings), 0o600);
+      }
     }
     if (options.toolsNone) env.CLINE_SESSION_BACKEND_MODE = "local";
     return { home, configDir, env };

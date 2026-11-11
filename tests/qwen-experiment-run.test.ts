@@ -250,14 +250,14 @@ describe("Qwen OAuth and result boundaries", () => {
       expect(readFileSync(join(experiment.home, "oauth_creds.json"), "utf8")).toContain("synthetic-child-oauth");
     } finally { experiment.closeSync(); }
   }));
-  test("folds plain and JSON native results, keeps served model and handles malformed failure capture", () => {
+  test("folds plain and JSON native results without treating configuration as served identity", () => {
     const request = { agent: "qwen" as const, prompt, model: "requested-alias" };
     const raw = { stdout: stdout(), stderr: "", exitCode: 0, success: true };
     const plain = qwenExperimentResult(raw, request, "recording.jsonl");
-    expect(plain).toMatchObject({ stdout: "complete", success: true, servedModel: "qwen-fixture-model" });
+    expect(plain).toMatchObject({ stdout: "complete", success: true, servedModel: null });
     const json = qwenExperimentResult(raw, { ...request, resultJson: true }, "recording.jsonl");
     expect(JSON.parse(json.stdout)).toMatchObject({ result: "complete", codemux: { recording: "recording.jsonl", session_id: session,
-      model: "requested-alias", served_model: "qwen-fixture-model", usage: { input_tokens: 12, output_tokens: 3, cached_input_tokens: null } } });
+      model: "requested-alias", served_model: null, usage: { input_tokens: 12, output_tokens: 3, cached_input_tokens: null } } });
     expect(qwenExperimentResult({ ...raw, stdout: "{broken\n\n" }, request, "recording")).toMatchObject({ stdout: "", success: false });
     expect(qwenExperimentResult({ ...raw, stdout: "{broken\n" }, { ...request, resultJson: true }, "recording").success).toBe(false);
   });

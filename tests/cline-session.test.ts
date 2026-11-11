@@ -3,6 +3,7 @@ import { buildClineSessionCommand, CLINE_ACP_DRIVER_PROFILE, CLINE_SESSION_ID_PA
 import { ClineSessionDriver, type ClineDriverOptions } from "../src/session/cline-driver.js";
 import { clineTurnUsage, freshClineUsage, parseClineHistoryUsage } from "../src/session/cline-usage.js";
 import { emptyUsage } from "../src/result-envelope.js";
+import { assertSessionConformance } from "./helpers/session-conformance.js";
 import { fakeTurnProcess, type FakeTurnProcess } from "./helpers/session-turn-engine.js";
 
 const id = "1794230000000_Ab-12_cli";
@@ -56,6 +57,57 @@ function rig(options: Partial<ClineDriverOptions> & { delayed?: boolean; failWri
 }
 
 describe("Cline session carriers", () => {
+  test.each(["end_turn", "cancelled"])("a clean exit during history preserves native %s", async (reason) => { // allow-british: native ACP enum
+    const delayed = Promise.withResolvers<typeof usage>();
+    const h = rig({ readUsage: () => delayed.promise });
+    try {
+      h.user(); await h.tick(); await h.ready(); await h.complete(reason);
+      h.children[0]!.exit(0); await h.tick();
+      expect(h.events.find((event) => event.type === "turn_completed")?.finish).toBe(reason === "end_turn" ? "end" : "failed");
+      const count = h.events.length;
+      delayed.resolve(usage); await h.tick();
+      expect(h.events).toHaveLength(count);
+      expect(await h.end()).toBe(0);
+    } finally { delayed.resolve(usage); h.children.forEach((child) => child.exit(0)); h.driver.handleCallerEnd(); await h.code; h.driver.dispose(); }
+  });
+  test.each(["before", "after"])("a delayed %s history read cannot mutate the next turn", async (phase) => {
+    const delayed = Promise.withResolvers<typeof usage>();
+    let reads = 0;
+    const h = rig({ resumeSessionId: phase === "before" ? id : null,
+      readUsage: () => ++reads === 1 ? delayed.promise : Promise.resolve(usage) });
+    try {
+      h.user(); await h.tick();
+      if (phase === "before") {
+        await h.reply({ protocolVersion: 1 }); await h.reply({}); await h.reply({}); await h.reply({});
+      } else { await h.ready(); await h.complete(); }
+      const oldWrites = h.children[0]!.wrote.length;
+      h.children[0]!.exit(1); await h.tick();
+      h.user(); await h.tick(); await h.ready(true);
+      delayed.resolve({ ...usage, total_tokens: 999 }); await h.tick();
+      expect(h.children[0]!.wrote).toHaveLength(oldWrites);
+      await h.complete();
+      const turns = h.events.filter((e) => e.type === "turn_completed");
+      expect(turns).toHaveLength(2);
+      expect(turns[1]).toMatchObject({ finish: "end", usage: { total_tokens: 0 } });
+      expect(h.events.filter((e) => e.type === "assistant_message").map((e) => e.text)).toEqual(["answer"]);
+      expect(await h.end()).toBe(1);
+    } finally { delayed.resolve(usage); h.children.forEach((child) => child.exit(0)); h.driver.handleCallerEnd(); await h.code; h.driver.dispose(); }
+  });
+  test("protocol preserves original ACP frames and object-valued tool inputs", async () => {
+    const h = rig(); h.user(); await h.tick(); await h.ready();
+    try {
+      for (const input of [undefined, null, [], "bad", { path: "a" }]) {
+        const update = { sessionUpdate: "tool_call", toolCallId: "tool", title: "read", rawInput: input };
+        const raw = ` { "jsonrpc":"2.0", "method":"ignored", "method":"session/update", "params": { "sessionId":"${id}", "update":${JSON.stringify(update)} } } `;
+        h.driver.handleHarnessLine(raw); await h.tick();
+        const event = h.events.filter((e) => e.type === "tool_call").at(-1)!;
+        expect(event).toBeDefined(); expect(event.raw).toBe(raw);
+        expect(event.input).toEqual(input && !Array.isArray(input) && typeof input === "object" ? input : {});
+      }
+      await h.complete(); expect(await h.end()).toBe(0);
+      assertSessionConformance(h.events);
+    } finally { h.children[0]!.exit(0); h.driver.handleCallerEnd(); await h.code; h.driver.dispose(); }
+  });
   test("command uses ACP/local backend and no headless id or private prompt", () => {
     expect(buildClineSessionCommand({ home: "/private" })).toEqual(["env", "CLINE_SESSION_BACKEND_MODE=local", "cline", "--acp", "--auto-approve", "false", "--config", "/private/.cline"]);
     expect(buildClineSessionCommand({ effort: "high" }).slice(-2)).toEqual(["--thinking", "high"]);

@@ -1,8 +1,8 @@
-import { existsSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, chmodSync, constants, existsSync, linkSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ZaiAdapter } from "./adapters/zai.js";
-import { mintCanaryMarker, trackScratchRemoval, untrackScratchRemoval } from "./hermetic-canary.js";
+import { createCanaryScratch, mintCanaryMarker, untrackScratchRemoval } from "./hermetic-canary.js";
 import { canarySessionProtocolProblem, runCanarySession, SESSION_KILL_GRACE_MS } from "./hermetic-session-canary-driver.js";
 import type { HermeticSessionCanaryRequest } from "./hermetic-session-canary.js";
 import { callerHarnessHomeEnvNames } from "./session/harness-home.js";
@@ -96,8 +96,7 @@ export function plantHarnessHomeCanary(
   environment: NodeJS.ProcessEnv = process.env,
   parent = tmpdir()
 ): PlantedHarnessHomeCanary {
-  const root = realpathSync(mkdtempSync(join(parent, "codemux-harness-home-canary-")));
-  trackScratchRemoval(root);
+  const root = createCanaryScratch(join(parent, "codemux-harness-home-canary-"));
   const cleanup = (): void => {
     rmSync(root, { recursive: true, force: true });
     untrackScratchRemoval(root);
@@ -111,6 +110,10 @@ export function plantHarnessHomeCanary(
     const layout = CANARY_LAYOUT[agent];
     mkdirSync(join(cwd, ".git"), { recursive: true, mode: 0o700 });
     mkdirSync(dirname(join(operatorHome, layout.instruction)), { recursive: true, mode: 0o700 });
+    for (const credential of layout.logins) {
+      const destination = join(operatorHome, agent === "claude" ? ".claude" : "", agent === "goose" ? ".config/goose/secrets.yaml" : credential);
+      mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
+    }
     const skillPath = harnessHomeCanarySkillPath(agent, home);
     mkdirSync(dirname(skillPath), { recursive: true, mode: 0o700 });
     writeFileSync(skillPath,
@@ -131,26 +134,42 @@ export function plantHarnessHomeCanary(
     }
     if (agent === "zai") {
       env.ZAI_API_KEY = new ZaiAdapter(environment).getEnv().ANTHROPIC_AUTH_TOKEN;
-    } else if (authenticatedHome !== undefined) {
-      const kimiCredentials = join(authenticatedHome, ".kimi-code", "credentials");
-      // Kimi renames token files, so a per-file link would strand a refresh in
-      // this scratch tree. The caller home shares the real store instead: its
-      // brand home becomes the scratch operator's KIMI_CODE_HOME (harness-home.ts).
-      if (agent === "kimi" && existsSync(kimiCredentials)) env.KIMI_CODE_HOME = dirname(realpathSync(kimiCredentials));
-      for (const credential of layout.logins) {
-        // Pi's disposable hermetic directory is already its agent directory.
-        const source = join(authenticatedHome, agent === "pi" && !existsSync(join(authenticatedHome, credential)) ? "auth.json" : credential);
-        const destination = join(operatorHome, agent === "claude" ? ".claude" : "", agent === "goose" ? ".config/goose/secrets.yaml" : credential);
-        if (!existsSync(source)) continue;
-        mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
-        // Resolve only dedicated login files, including managed login symlinks.
-        linkSync(realpathSync(source), destination);
-      }
     }
-    return { cwd, home, operatorHome, operatorMarker, skillMarker, skillPath, env, cleanup };
+    const plant = { cwd, home, operatorHome, operatorMarker, skillMarker, skillPath, env, cleanup };
+    seedHarnessHomeCanary(agent, plant, authenticatedHome);
+    return plant;
   } catch (error) {
     cleanup();
     throw error;
+  }
+}
+
+/** Credentials arrive after the first session; all scratch setup happens
+ * before it. Copies on EXDEV stay private and die with this canary. */
+export function seedHarnessHomeCanary(agent: AgentId, plant: PlantedHarnessHomeCanary, authenticatedHome?: string): void {
+  const { operatorHome, env } = plant;
+  const layout = CANARY_LAYOUT[agent];
+  if (agent !== "zai" && authenticatedHome !== undefined) {
+    const kimiCredentials = join(authenticatedHome, ".kimi-code", "credentials");
+    // Kimi renames token files, so a per-file link would strand a refresh in
+    // this scratch tree. The caller home shares the real store instead: its
+    // brand home becomes the scratch operator's KIMI_CODE_HOME (harness-home.ts).
+    if (agent === "kimi" && existsSync(kimiCredentials)) env.KIMI_CODE_HOME = dirname(realpathSync(kimiCredentials));
+    for (const credential of layout.logins) {
+      // Pi's disposable hermetic directory is already its agent directory.
+      const source = join(authenticatedHome, agent === "pi" && !existsSync(join(authenticatedHome, credential)) ? "auth.json" : credential);
+      const destination = join(operatorHome, agent === "claude" ? ".claude" : "", agent === "goose" ? ".config/goose/secrets.yaml" : credential);
+      if (!existsSync(source)) continue;
+      mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
+      // Resolve only dedicated login files, including managed login symlinks.
+      const resolved = realpathSync(source);
+      try { linkSync(resolved, destination); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+        copyFileSync(resolved, destination, constants.COPYFILE_EXCL);
+        chmodSync(destination, 0o600);
+      }
+    }
   }
 }
 

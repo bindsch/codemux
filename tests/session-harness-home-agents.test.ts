@@ -8,18 +8,23 @@ import {
 } from "../src/session/harness-home.js";
 import { harnessHomeBlockedPaths, applyHarnessHomeSandboxBlocks } from "../src/launch/harness-home-sandbox.js";
 import type { AgentId } from "../src/types.js";
+import { AGENT_IDS } from "../src/types.js";
 import type { SandboxOptions } from "../src/sandbox.js";
 
 // Synthetic stores only. This test does not import a launcher or start a process.
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-const agents = ["agy", "aider", "claude", "codex", "copilot", "cursor", "droid", "gemini", "goose", "kimi", "opencode", "openhands", "pi", "qwen", "zai"] as const;
+const agents = ["agy", "aider", "claude", "cline", "codex", "copilot", "cursor", "droid", "gemini", "goose", "kimi", "opencode", "openhands", "pi", "qwen", "zai"] as const;
+test("caller-home coverage includes every supported agent", () => {
+  expect([...agents].sort()).toEqual([...AGENT_IDS].sort());
+});
 type SupportedAgent = typeof agents[number];
 const cursorAuth = process.platform === "darwin" ? ".cursor/auth.json" : ".config/cursor/auth.json";
 const paths: Record<SupportedAgent, { settings: string; source?: string; target?: string; rootEnv?: string; rootPath?: string }> = {
   agy: { settings: ".gemini/antigravity-cli/settings.json" },
   aider: { settings: ".aider.conf.yml", source: ".aider/oauth-keys.env", target: ".aider/oauth-keys.env" },
   claude: { settings: "settings.json", source: ".credentials.json", target: ".credentials.json", rootEnv: "CLAUDE_CONFIG_DIR", rootPath: "" },
+  cline: { settings: ".cline/globalState.json", rootEnv: "CLINE_DIR", rootPath: ".cline" },
   codex: { settings: ".codex/config.toml", source: "auth.json", target: ".codex/auth.json", rootEnv: "CODEX_HOME", rootPath: ".codex" },
   copilot: { settings: ".copilot/config.json", rootEnv: "COPILOT_HOME", rootPath: ".copilot" },
   cursor: { settings: ".cursor/cli-config.json", source: cursorAuth, target: cursorAuth, rootEnv: "CURSOR_CONFIG_DIR", rootPath: ".cursor" },
@@ -60,7 +65,7 @@ function fixture(agent: SupportedAgent = "droid") {
   const sourceEnv: Record<string, string> = {};
   const blockedPaths = [sourceHome];
   const input = { agent, dir, cwd, sourceHome, blockedPaths, sourceEnv,
-    apiKeyAuth: agent === "agy", providerOverride: agent === "copilot" || agent === "openhands" || agent === "goose" };
+    apiKeyAuth: agent === "agy", providerOverride: agent === "copilot" || agent === "openhands" || agent === "goose" || agent === "cline" };
   const row = paths[agent];
   if (row.source) write(join(sourceHome, row.source), loginFor(agent));
   return { root, input, row };
@@ -137,7 +142,7 @@ describe("every supported caller-owned harness home", () => {
     if (row.target) expect(existsSync(join(input.dir, row.target))).toBe(false);
   });
 
-  test.each(["copilot", "openhands"] as const)("%s refuses mixed-store auth without a provider override", (agent) => {
+  test.each(["copilot", "openhands", "cline"] as const)("%s refuses mixed-store auth without a provider override", (agent) => {
     const { input, row } = fixture(agent);
     write(join(input.sourceHome, row.settings), "operator-secret-and-settings");
     expect(() => openCallerHarnessHome({ ...input, apiKeyAuth: true, providerOverride: false })).toThrow("requires a provider override");

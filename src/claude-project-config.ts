@@ -55,11 +55,11 @@
 import { mkdtempSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { runDirectoryPrefix } from "./run-directory-owner.js";
 import { writePrivateFile } from "./private-write.js";
 import type { SessionHold } from "./session/registry.js";
 import {
   PARENT_DIR_NAME,
-  RUN_PREFIX,
   prepareRunDirParent,
 } from "./hermetic-home.js";
 import { trackPrivateDir, untrackPrivateDir } from "./private-dir-signals.js";
@@ -178,7 +178,7 @@ export function createProjectSettingsConfigDir(
   // Recorded for the finalizer's revalidation (src/safe-remove.ts).
   const parentRecord = recordTrustedParent(parent);
   // mkdtemp creates mode 0700; the files inside are written 0600.
-  const dir = mkdtempSync(join(parent, `${RUN_PREFIX}${process.pid}-`));
+  const dir = mkdtempSync(join(parent, runDirectoryPrefix()));
   let finalized = false;
   const finalize = (): void => {
     if (finalized) return;

@@ -38,7 +38,7 @@ describe("CodexAdapter", () => {
 
   test("processRunResult leaves stdout alone without --result-json", () => {
     const result = { stdout: "the reply\n", stderr: "", exitCode: 0, success: true };
-    expect(adapter.processRunResult(result, { agent: "codex", prompt: "t" })).toBe(result);
+    expect(adapter.processRunResult(result, { agent: "codex", prompt: "t" })).toEqual({ ...result, reply: "" });
   });
 
   test("a stream with no thread.started is a parse failure, not a warned run", () => {

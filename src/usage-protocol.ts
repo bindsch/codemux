@@ -108,13 +108,13 @@ const parseWindow = (value: unknown): UsageWindow => {
   // violation that fails the snapshot (review round 53: an exhausted weekly
   // window read as an unbounded pool); a negative value becomes null.
   if (
-    value.windowMinutes !== null &&
+    value.windowMinutes != null &&
     (typeof value.windowMinutes !== "number" || !Number.isFinite(value.windowMinutes))
   ) {
     throw new Error("windowMinutes must be a finite number or null");
   }
   const windowMinutes =
-    value.windowMinutes === null || value.windowMinutes < 0 ? null : value.windowMinutes;
+    value.windowMinutes == null || value.windowMinutes < 0 ? null : value.windowMinutes;
   const resetsAt = requireNullableString(value.resetsAt, "resetsAt");
   if (resetsAt !== null) requireTimestamp(resetsAt, "resetsAt");
   const usedPercent = requirePercentage(value.usedPercent, "usedPercent");

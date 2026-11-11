@@ -110,9 +110,10 @@ const testNoQuotaGate = (environment: Record<string, string>): boolean => {
 // predicate (round 381: a weekly-by-span pool such as cursor-grok-bot
 // never matched the name test alone).
 export const isWeekly = (window: UsageWindow): boolean =>
-  (window.windowMinutes !== null &&
+  (window.windowMinutes === null || window.windowMinutes <= WEEKLY_WINDOW_MINUTES + WEEKLY_WINDOW_TOLERANCE_MINUTES) &&
+  ((window.windowMinutes !== null &&
     Math.abs(window.windowMinutes - WEEKLY_WINDOW_MINUTES) <= WEEKLY_WINDOW_TOLERANCE_MINUTES) ||
-  /\bweek(ly)?\b/i.test(window.kind);
+  /\bweek(ly)?\b/i.test(window.kind));
 
 // Weekly by span alone, without reading the name: the refusal rule trusts
 // the measurement, not the provider's wording. agy's weekly pool is
@@ -207,6 +208,8 @@ export const gateOutcomeOnResult = (
   result: UsageSnapshot["results"][number],
   policy: QuotaPolicy
 ): QuotaGateOutcome => {
+  const client = policy.spendsFrom?.[agent] ?? agent;
+  const label = client === agent ? agent : `${agent} (usagemux client ${escapeForTerminal(client)})`;
   const notes: string[] = [];
   if (result.status === "not-applicable") {
     // Silent here meant "the gate is off for this harness," which is not
@@ -216,7 +219,7 @@ export const gateOutcomeOnResult = (
     return {
       refusal: null,
       notes: [
-        `quota gate: ${agent}: usage not measured; spends from its configured provider`,
+        `quota gate: ${label}: usage not measured; spends from its configured provider`,
       ],
     };
   }
@@ -230,7 +233,7 @@ export const gateOutcomeOnResult = (
     return {
       refusal: null,
       notes: [
-        `Warning: quota gate: ${agent}: usage unreadable (${escapeForTerminal(result.message ?? result.status)}); proceeding`,
+        `Warning: quota gate: ${label}: usage unreadable (${escapeForTerminal(result.message ?? result.status)}); proceeding`,
       ],
     };
   }
@@ -254,7 +257,7 @@ export const gateOutcomeOnResult = (
       if (!isWeekly(window) || typeof window.usedPercent !== "number") continue;
       if (window.usedPercent > policy.weeklyWarnUsedPercent) {
         warnings.push(
-          `Warning: quota gate: ${agent} ${escapeForTerminal(window.kind)} window is ${formatUsagePercent(window.usedPercent)}% used ` +
+          `Warning: quota gate: ${label} ${escapeForTerminal(window.kind)} window is ${formatUsagePercent(window.usedPercent)}% used ` +
             `(above ${formatUsagePercent(policy.weeklyWarnUsedPercent)}%); proceeding`
         );
       }
@@ -269,7 +272,7 @@ export const gateOutcomeOnResult = (
   // answers -2.5, not a hardcoded 0.
   if (result.credits !== null && result.credits.remaining <= 0) {
     notes.push(
-      `Warning: quota gate: ${agent}: credits exhausted (${escapeForTerminal(String(result.credits.remaining))} ${escapeForTerminal(result.credits.unit)} left); proceeding`
+      `Warning: quota gate: ${label}: credits exhausted (${escapeForTerminal(String(result.credits.remaining))} ${escapeForTerminal(result.credits.unit)} left); proceeding`
     );
   }
   if (binding.length === 0) {
@@ -278,7 +281,7 @@ export const gateOutcomeOnResult = (
     // the weekly used percent — still warns.
     notes.push(...weeklyOverUseNotes());
     notes.push(
-      `Warning: quota gate: ${agent}: no window that bounds model calls reports a remaining percent; proceeding`
+      `Warning: quota gate: ${label}: no window that bounds model calls reports a remaining percent; proceeding`
     );
     return { refusal: null, notes };
   }
@@ -298,7 +301,7 @@ export const gateOutcomeOnResult = (
     const bindingTier =
       window.kind === "secondary" || window.kind === "tertiary";
     if (window.kind === "primary" || (bindingTier && weeklyBySpan(window))) {
-      return { refusal: `quota gate: ${agent}: ${shortfall}`, notes };
+      return { refusal: `quota gate: ${label}: ${shortfall}`, notes };
     }
     // A pool that is neither the provider's primary window nor a weekly
     // tier does not bound every call: usagemux's third window for cursor
@@ -306,7 +309,7 @@ export const gateOutcomeOnResult = (
     // and a launch that never touches that pool is not blocked by its
     // exhaustion (live gate of 2026-11-02: cursor refused on an empty
     // third-party pool while its plan had 42% left). It warns instead.
-    notes.push(`Warning: quota gate: ${agent}: ${shortfall}; proceeding (not the primary window)`);
+    notes.push(`Warning: quota gate: ${label}: ${shortfall}; proceeding (not the primary window)`);
   }
   notes.push(...weeklyOverUseNotes());
   return { refusal: null, notes };
@@ -323,9 +326,6 @@ export const gateOnResult = (
   if (refusal !== null) throw new UsageRefusalError(refusal);
 };
 
-/** The gate every launch command calls. Never rejects with anything but a
- * UsageRefusalError (exit 64); every unreadable-snapshot path warns on
- * stderr and returns so the launch proceeds. */
 /** Why a snapshot is unreadable by age, or null when it is current: the
  * gate warns and proceeds on it, and the machine check reports the same
  * (review round 54). generatedAt is usagemux's own string and is escaped. */
@@ -344,6 +344,9 @@ export const snapshotFreshnessIssue = (snapshot: { generatedAt: string }): strin
   return null;
 };
 
+/** The gate every launch command calls. Never rejects with anything but a
+ * UsageRefusalError (exit 64); every unreadable-snapshot path warns on
+ * stderr and returns so the launch proceeds. */
 export const assertQuotaHeadroom = async (
   agent: AgentId,
   policy: QuotaPolicy,

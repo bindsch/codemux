@@ -319,7 +319,7 @@ describe("droid --result-json", () => {
       const a = adapter(home);
       const plain = { stdout: "text answer", stderr: "", exitCode: 0, success: true } as RunResult;
       expect(a.processRunResult(plain, { agent: "droid", prompt: "p" }))
-        .toEqual({ ...plain, scanSurface: "text answer\n" });
+        .toEqual({ ...plain, reply: "", scanSurface: "text answer\n" });
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

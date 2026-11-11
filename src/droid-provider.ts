@@ -12,7 +12,7 @@
  * touches disk, argv, or an operator file: the file records only the name
  * `CODEMUX_DROID_PROVIDER_API_KEY`, and the value rides the environment
  * codemux itself provides, which is also what lets the override survive
- * `--hermetic` should droid ever gain that mode.
+ * `--hermetic` without reading the operator's settings.
  *
  * The provider type is `generic-chat-completion-api`, the documented value
  * for "most open-source providers" speaking the OpenAI Chat Completions API

@@ -17,7 +17,7 @@ import { cleanup, setup } from "./helpers/agy-keychain.js";
 
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
 
-test("prepareRun with printOnly names the private HOME without creating it or calling security", () => {
+test("prepareRun with printOnly names an uncreated private HOME and never calls security", () => {
   const { adapter, request, calls, home } = setup();
   const context = adapter.prepareRun(request, undefined, {}, { printOnly: true });
   cleanup.push(() => adapter.cleanupRun(context));

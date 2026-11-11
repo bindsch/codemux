@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { createRunFakeBinaryEnv as createFakeBinaryEnv, runCli } from "./helpers/cli.js";
+import { runCli } from "./helpers/cli.js";
+import { createAnswerFakeBinaryEnv as createFakeBinaryEnv } from "./helpers/native-answer-cli.js";
 
 // End-to-end provider overrides: fake harness binaries that actually call the
 // override endpoint through a local Bun.serve recorder, driven through the
@@ -81,7 +82,7 @@ curl -s -X POST "$ANTHROPIC_BASE_URL/v1/messages" \\
         }
       );
       expect(exitCode).toBe(0);
-      expect(stdout).toBe("OK");
+      expect(stdout).toBe("OK\n");
       // The endpoint saw the Messages path, the override's model, the cap,
       // and the key as a bearer token.
       const hit = seen.find((entry) => entry.path === "/v1/messages");
@@ -131,7 +132,7 @@ curl -s -X POST "$base/responses" \\
         }
       );
       expect(exitCode).toBe(0);
-      expect(stdout).toBe("OK");
+      expect(stdout).toBe("OK\n");
       const hit = seen.find((entry) => entry.path === "/v1/responses");
       expect(hit).toBeDefined();
       expect(hit!.model).toBe(MODEL);
@@ -190,7 +191,7 @@ curl -s -X POST "$base/responses" \\
         CODEMUX_CODEX_PROVIDER_MULTI_AGENT: "off",
       });
       expect(off.exitCode).toBe(0);
-      expect(off.stdout).toBe("OK");
+      expect(off.stdout).toBe("OK\n");
       expect(off.stderr).toContain("MA=false");
       // Without the knob codex's own default stays in force: no features
       // line is written for the run to lean on.
@@ -314,7 +315,7 @@ curl -s -X POST "$LLM_BASE_URL/chat/completions" \\
         }
       );
       expect(exitCode).toBe(0);
-      expect(stdout).toBe("OK");
+      expect(stdout).toBe("OK\n");
       const hit = seen.find((entry) => entry.path === "/v1/chat/completions");
       expect(hit).toBeDefined();
       expect(hit!.model).toBe(`openai/${MODEL}`);

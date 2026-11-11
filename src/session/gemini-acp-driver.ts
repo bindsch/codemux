@@ -16,6 +16,7 @@ import { addUsage } from "./usage.js";
 import { join } from "node:path";
 import { readGeminiAcpTranscript, geminiAcpTranscriptUsage } from "./gemini-acp-usage.js";
 import { GEMINI_SESSION_ID_PATTERN } from "./gemini-session.js";
+import { rpcPromptDeliverable } from "./rpc-prompt-bounds.js";
 
 export const GEMINI_ACP_DRIVER_PROFILE: TurnAgentProfile = {
   ...GEMINI_DRIVER_PROFILE,
@@ -107,10 +108,12 @@ export class GeminiAcpSessionDriver extends TurnAgentSessionDriver {
   }
 
   private async deliver(child: SessionProcess, text: string): Promise<void> {
+    const turn = this.fsm.activeTurn;
+    const current = () => this.receivesTurnOutput && this.fsm.activeTurn === turn && this.acp === transport;
     const transport = new GeminiAcpTransport({
       write: (line) => child.writeRaw(line).ok,
-      onUpdate: (update) => { if (this.promptStarted && !this.finished) this.applyUpdate(update); },
-      onFailure: (error) => { if (this.acp === transport) this.transportFailure(error); },
+      onUpdate: (update, raw) => { if (this.promptStarted && current()) this.applyUpdate(update, raw); },
+      onFailure: (error) => { if (current()) this.transportFailure(error); },
       // No caller permission round trip is advertised. Every native request
       // is refused; --policy separately prevents native automatic approvals.
       permissionPolicy: this.permissionPolicy,
@@ -118,18 +121,18 @@ export class GeminiAcpSessionDriver extends TurnAgentSessionDriver {
     this.acp = transport;
     try {
       await transport.initialize();
-      if (this.finished) return;
+      if (!current()) return;
       const id = await transport.open({ cwd: this.options.cwd, resumeId: this.sessionId ?? undefined });
+      if (!current()) return;
       if (!GEMINI_SESSION_ID_PATTERN.test(id)) throw new Error("Gemini ACP returned a non-UUID session identity");
       this.adoptSessionId(id);
-      if (this.finished) return;
       const brandHome = this.transcriptHome ?? this.options.harnessHome;
       const before = readGeminiAcpTranscript(brandHome, this.options.cwd, id);
       this.promptStarted = true;
       const pending = transport.prompt(text);
       this.cancelPrompt();
       const result = await pending;
-      if (this.finished) return;
+      if (!current()) return;
       this.stopReason = result.stopReason as string;
       const nativeUsage = geminiAcpUsage(result);
       const transcriptUsage = geminiAcpTranscriptUsage(before, readGeminiAcpTranscript(brandHome, this.options.cwd, id));
@@ -152,18 +155,17 @@ export class GeminiAcpSessionDriver extends TurnAgentSessionDriver {
       }
       child.endInput();
     } catch (error) {
-      if (this.acp === transport) this.transportFailure(error instanceof Error ? error : new Error(String(error)));
+      if (current()) this.transportFailure(error instanceof Error ? error : new Error(String(error)));
     }
   }
 
   private transportFailure(error: Error): void {
-    if (this.finished) return;
+    if (!this.receivesTurnOutput) return;
     this.emitError(true, "harness", error.message);
     void this.finish("crash", 1);
   }
 
-  private applyUpdate(update: Record<string, unknown>): void {
-    const raw = JSON.stringify(update);
+  private applyUpdate(update: Record<string, unknown>, raw: string): void {
     const content = update.content as { type?: string; text?: unknown } | undefined;
     if (update.sessionUpdate === "agent_message_chunk" && content?.type === "text" && typeof content.text === "string") {
       this.turnAnswer.text(content.text);
@@ -181,7 +183,7 @@ export class GeminiAcpSessionDriver extends TurnAgentSessionDriver {
   }
 
   override handleHarnessLine(line: string): void {
-    if (!this.finished) this.acp?.handleLine(line);
+    if (this.receivesTurnOutput) this.acp?.handleLine(line);
   }
 
   override handleCallerEnd(error?: unknown): void { this.inputEnded = true; super.handleCallerEnd(error); }
@@ -202,13 +204,17 @@ export class GeminiAcpSessionDriver extends TurnAgentSessionDriver {
   }
 
   private cancelPrompt(): void {
-    if (!this.interruptRequested || !this.promptStarted || this.finished) return;
+    if (!this.interruptRequested || !this.promptStarted || !this.receivesTurnOutput) return;
     try { this.acp?.cancel(); } catch (error) { this.transportFailure(error as Error); }
   }
 
   private clearTurnTimer(): void {
     if (this.turnTimer !== null) clearTimeout(this.turnTimer);
     this.turnTimer = null;
+  }
+
+  protected override promptDeliverable(text: string): boolean {
+    return rpcPromptDeliverable("gemini", text, this.sessionId);
   }
 
   protected override clearTimers(): void { this.clearTurnTimer(); super.clearTimers(); }
@@ -225,13 +231,13 @@ export class GeminiAcpSessionDriver extends TurnAgentSessionDriver {
     const turnId = this.fsm.activeTurn;
     this.lastChildOutcome = outcome;
     this.turnProc = null;
-    this.settlePrivateHome();
+    if (!this.settlePrivateHome()) { void this.finish("crash", 1); return; }
     const failure = this.fsm.transition({ kind: "turn_completed", turnId });
     if (failure !== null) { this.transportFailure(new Error(failure.message)); return; }
     const usage = this.turnUsage ?? emptyUsage();
     this.cumulative = addUsage(this.cumulative, usage);
     this.emit(buildEvent(++this.seq, this.sessionIdOrEmpty(), "turn_completed", null,
-      { turn_id: turnId, finish: "interrupted", reason: "the Gemini turn was interrupted", usage }));
+      { turn_id: turnId, finish: "interrupted", reason: "the Gemini turn was interrupted", usage, ...this.modelFields() }));
     appendSessionTurnCallRecord(this.callLedger, this.ledgerSessionId(), turnId,
       this.turnStartedAt.get(turnId) ?? Date.now(), "interrupted", usage, null);
     this.turnStartedAt.delete(turnId);

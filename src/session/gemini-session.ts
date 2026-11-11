@@ -33,6 +33,7 @@
  *   appending text. The session frame limit applies, not the argv cap.
  */
 
+import { sessionIdPattern } from "./id-pattern.js";
 import { featureFloor } from "../harness-contracts.js";
 import { geminiUsageFromStats } from "../result-envelope/gemini.js";
 import { emptyUsage } from "../result-envelope.js";
@@ -50,8 +51,7 @@ export const GEMINI_SESSION_FLOOR = featureFloor("gemini", "sessions");
  * UUID). The CLI's own coerce accepts the wider /^[a-zA-Z0-9-_]+$/ class
  * (0.60.0 bundle), but codemux only ever resumes the ids it minted, so
  * the pattern pins its own mint — the claude convention. */
-export const GEMINI_SESSION_ID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const GEMINI_SESSION_ID_PATTERN = sessionIdPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 
 /**
  * Capability flags for gemini sessions (§3.4): live input yes (one caller

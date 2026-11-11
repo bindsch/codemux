@@ -15,7 +15,9 @@ exec completion. The dated probe and Atomix findings moved to
 Before creating the private home, Codemux reads the real
 `CODEX_HOME/models_cache.json` with a 2 MiB bound. The cache must be populated,
 contain exactly one entry for the requested model slug, and have a
-`client_version` matching the detected Codex version. Omitting explicit `-m`
+`client_version` in `major.minor.patch` form. A version mismatch produces a
+warning and records `catalog_client_version_mismatch`; it does not refuse
+the catalog. Omitting explicit `-m`
 fails with `model_required`. A slug absent from the account's catalog fails
 with `model_unavailable`. Its diagnostic names the cache path and `fetched_at`,
 lists the catalog's listed slugs, and explains that Codex itself cannot run

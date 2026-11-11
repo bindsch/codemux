@@ -51,7 +51,7 @@ describe("the private home at the end path", () => {
     expect(await waitCode(session)).toBe(0);
   });
 
-  test("a settle that throws at the turn's completion is reported, not fatal", async () => {
+  test("a settle that throws at the turn's completion fails the turn and session", async () => {
     const home = watchingHome({ settleThrows: true });
     const proc = fakeTurnProcess();
     const errors = spyErrors();
@@ -67,10 +67,10 @@ describe("the private home at the end path", () => {
       session.user();
       proc.exit(0);
       const completed = await session.wait("turn_completed");
-      expect(completed).toMatchObject({ finish: "end" });
-      expect(errors.noted()).toContain("settlement failed");
+      expect(completed).toMatchObject({ finish: "failed" });
+      expect(completed.reason).toContain("settlement failed");
       session.shutdown();
-      expect(await session.code()).toBe(0);
+      expect(await session.code()).toBe(1);
     } finally {
       errors.restore();
       session?.dispose();
@@ -181,7 +181,7 @@ describe("the private home at the end path", () => {
       const ended = await session.wait("session_ended");
       expect(ended).toMatchObject({ resumable: false });
       expect(errors.noted()).toContain("settlement failed");
-      expect(await session.code()).toBe(0);
+      expect(await session.code()).toBe(1);
     } finally {
       errors.restore();
       session?.dispose();

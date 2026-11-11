@@ -270,6 +270,7 @@ export function createSessionDriver({
       // session settles the shared private home through privateHome
       // below instead (the override home is null there).
       settleSessionHome: codexSessionHome?.settle,
+      final: Boolean(options.final) && hermetic,
       // A hermetic session's own state home: reported on
       // session_started.private_home, keyed by the thread id (codex-driver-io.ts).
       hermetic,
@@ -355,6 +356,7 @@ export function createSessionDriver({
       cwd: workdir,
       hermetic,
       hermeticSourceHome: kimiSourceBrandHome,
+      final: Boolean(options.final) && hermetic,
       privateHome: sessionPrivateHome,
       // The project-settings mode's one per-turn argv difference and its
       // `project_settings` record (kimi-driver-io.ts).
@@ -415,6 +417,8 @@ export function createSessionDriver({
       cwd: workdir,
       hermetic,
       hermeticHome: aiderPrivateHome?.dir,
+      privateHome: aiderPrivateHome,
+      final: Boolean(options.final) && hermetic,
       callerHome: isCallerHarnessHome(sessionPrivateHome) ? sessionPrivateHome : undefined,
       sandboxed: Boolean(options.sandbox),
       sandboxTrust,

@@ -175,6 +175,7 @@ describe("kimi session e2e - stream tiers", () => {
       ["invalid-utf8", { kind: "invalid-utf8", excerpt: "lossy \u{FFFD}", bytes: 3 }, "unusable harness output (invalid-utf8"],
       ["handler", { kind: "handler", error: new Error("boom in a line handler"), bytes: 40 }, "internal error while processing a harness line"],
       ["read-error", { kind: "read-error", error: new Error("EPIPE: broken pipe"), bytes: 0 }, "reading the harness's stdout failed"],
+      ["write-error", { kind: "write-error", error: new Error("EPIPE: broken pipe"), bytes: 0 }, "writing the harness's stdin failed"],
     ] as const) {
       const session = await startSession();
       send(session.driver, { type: "user", text: "scenario:basic one" });

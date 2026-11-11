@@ -84,6 +84,10 @@ export async function guardedWait(
   const armForceKill = (): void => {
     terminated = true;
     if (target === null || forceKillTimer !== null) return;
+    if (target.childExited) {
+      signalProcess(target, "SIGTERM", "tree");
+      return; // the existing descendant grace deadline still owns SIGKILL
+    }
     forceKillTimer = forceKillAfterGrace(target, "process");
     // Measured from SIGTERM delivery, after the table read inside it, so a
     // slow enumeration cannot eat into the grace period.
@@ -155,6 +159,7 @@ export async function guardedWait(
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (forceKillTimer) {
       clearTimeout(forceKillTimer);
+      forceKillTimer = null;
       // The child exited on SIGTERM before the grace period ran out, so the
       // scheduled tree-scoped SIGKILL was canceled with it. Its remembered
       // descendants keep the rest of the grace period, then get the SIGKILL
@@ -168,6 +173,7 @@ export async function guardedWait(
       // A Ctrl-C during that wait re-armed the burst timer; clear it again
       // so no pending timer keeps the event loop alive after we return.
       if (sigintTimer) clearTimeout(sigintTimer);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
     }
     process.off("SIGINT", onSigint);
     process.off("SIGTERM", onSigterm);

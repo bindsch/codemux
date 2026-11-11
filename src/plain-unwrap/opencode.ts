@@ -138,7 +138,7 @@ function stepFinishReason(line: string): unknown {
 }
 
 /** The verdict every opencode path shares: with no wire evidence the run
- * passes through unchanged (the escape hatch) — except empty stdout,
+ * retains diagnostics but has no verified reply. Empty stdout
  * which fails as the claude family's empty success does (round 259): a
  * zero-exit run that printed nothing produced neither the wire nor a
  * reply. With any wire evidence, the reply is the folded text, the usage
@@ -163,7 +163,7 @@ export function opencodeVerdict(result: RunResult, data: OpenCodeResultData): Ru
         ""
       );
     }
-    return result;
+    return { ...result, reply: "" };
   }
   // A length stop prints its one stderr line on every arm, failed runs
   // included: codemux.truncated says so in the block regardless.

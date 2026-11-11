@@ -62,20 +62,13 @@ describe("session process runner", () => {
     expect(lines).toEqual([]);
   });
 
-  test("a child dying while a large line still drains is no unhandled rejection", async () => {
-    // Review live14: a line larger than the pipe hands its remainder to
-    // FileSink's async drain, and a child that exits mid-drain rejects
-    // that write promise with EPIPE — the submit had already succeeded
-    // (ok:true below), and the child's exit is the report. The rejection
-    // used to escape as an unhandled one, failing whatever test was
-    // running when it fired; writeLine now absorbs it. The child reads
-    // nothing and dies with most of the megabyte still undrained, and the
-    // trailing sleep keeps any escape inside THIS test.
+  test("a child dying while a large line still drains reports delivery failure without an unhandled rejection", async () => {
     const { proc, fatals, done } = harness("sleep 0.2; exit 0");
     expect(proc.writeLine("x".repeat(1024 * 1024))).toEqual({ ok: true });
     await done;
     await Bun.sleep(50);
     expect((await proc.exited).code).toBe(0);
-    expect(fatals).toEqual([]);
+    expect(fatals).toHaveLength(1);
+    expect(fatals[0]!.kind).toBe("write-error");
   });
 });

@@ -29,7 +29,10 @@ file rule enforced rather than advisory.
 
 All package test scripts preload `tests/setup.ts`. Its
 `CODEMUX_TEST_LEDGER` redirect prevents test receipts from entering the
-operator ledger. Do not rely on `NODE_ENV=test` for that isolation. The
+operator ledger. The preload clears inherited `CODEMUX_CALL_LOG`, replaces
+inherited `CODEMUX_TEST_LEDGER`, and redirects HOME, USERPROFILE, and the XDG
+state/config/data/cache roots to fresh temporary directories.
+Do not rely on `NODE_ENV=test` for that isolation. The
 same preload disables the quota gate for in-process launch tests: it
 generates a random nonce, sets `CODEMUX_TEST_NO_QUOTA_GATE` to it, and
 mirrors it on `globalThis.__codemuxTestNoQuotaGate`; the gate honors the

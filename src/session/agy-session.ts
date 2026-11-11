@@ -1,3 +1,4 @@
+import { sessionIdPattern } from "./id-pattern.js";
 import { featureFloor } from "../harness-contracts.js";
 /**
  * The agy session wiring (design §4.7, plan step 8): the spawn command,
@@ -37,10 +38,10 @@ export const AGY_SESSION_FLOOR = featureFloor("agy", "sessions");
  * ever recorded (the fixture's frame carries an empty one), so the
  * pattern deliberately accepts the same class the registry can store — a
  * non-empty whitespace-free token up to MAX_ID_CHARS (128) — and refuses
- * only pastes that are obviously not ids. When a live exchange is ever
- * recorded, tighten this to the observed shape.
+ * path separators, dot segments, and other unsafe path components. When
+ * a live exchange is recorded, tighten this to the observed shape.
  */
-export const AGY_CONVERSATION_ID_PATTERN = /^\S{1,128}$/;
+export const AGY_CONVERSATION_ID_PATTERN = sessionIdPattern(/^\S{1,128}$/);
 
 /**
  * Capability flags for agy sessions (§3.4): live input yes (one NDJSON

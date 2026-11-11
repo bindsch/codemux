@@ -1,5 +1,5 @@
 // Unit tests for the goose session wiring (src/session/goose-session.ts):
-// the floor, the date_time id shape, the honest capability matrix, the
+// the floor, the legacy date_time id shape, the honest capability matrix, the
 // per-turn environment and command (the both-flags-or-neither resume
 // pair), and the turn parse's identity rules. No spawning — the wire
 // strings below are the fixture's and the binary's shapes, rendered

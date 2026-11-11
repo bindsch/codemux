@@ -3,8 +3,8 @@
  * failed removal stays retryable — the validation descriptors and the
  * owned state survive a failure — until the removal succeeds or nothing
  * is left to remove; the process-exit call closes the descriptors
- * whatever the outcome. Print-only probes carry no Keychain state, so
- * the cleanup under test is the directory removal alone.
+ * whatever the outcome. The fixtures create owned homes directly, with
+ * no Keychain state, so cleanup tests directory removal alone.
  */
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -30,11 +30,9 @@ function preparedProbe(): { adapter: AgyAdapter; context: RunContext; probeHome:
   const home = mkdtempSync(join(tmpdir(), "codemux-agy-cleanup-"));
   hostHome = spyOn(agyKeychainHost, "home").mockReturnValue(home);
   const adapter = new AgyAdapter({ HOME: home });
-  const request: RunRequest = {
-    agent: "agy", prompt: "p", cwd: join(home, "w"), autonomy: "read-only", sandboxed: true,
+  const context: RunContext = {
+    agyProbe: { mode: "plain", diagnostic: false, operatorHome: home, printOnly: true },
   };
-  const context = adapter.prepareRun(request, undefined, {}, { printOnly: true });
-  // Exercise real owned-directory cleanup without creating Keychain state.
   createAgyProbeHome(context, home);
   return { adapter, context, probeHome: context.agyProbe!.home! };
 }

@@ -74,7 +74,7 @@ export class KimiSessionDriver extends KimiDriverEvents {
    * stdout read failure), classified here — a codemux-side framing or
    * I/O failure is reported with its own words on stderr as well. */
   handleFatal(fatal: SessionFatal): void {
-    if (fatal.kind === "handler" || fatal.kind === "read-error") {
+    if ("error" in fatal) {
       console.error(`codemux: ${codemuxFatalMessage(fatal)}`, fatal.error);
       this.deliver({
         kind: "fatal",

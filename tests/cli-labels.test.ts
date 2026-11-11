@@ -85,7 +85,7 @@ describe("CLI run labels", () => {
   });
 
   test("environment fallback reaches an ordinary run record", async () => {
-    const fake = createFakeBinaryEnv({ goose: "printf 'OK\\n'" });
+    const fake = createFakeBinaryEnv({ goose: `printf '%s\\n' '{"type":"message","message":{"role":"assistant","content":"OK"}}' '{"type":"complete"}'` });
     const ledger = join(fake.env.PATH!.split(":")[0]!, "calls.jsonl");
     try {
       const result = await runCli([

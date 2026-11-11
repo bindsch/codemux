@@ -95,6 +95,8 @@ export interface TurnProviderExtras {
 
 /** What one turn's command is built from. */
 export interface TurnCommandInput {
+  /** Registers cleanup owned by this turn, after process settlement or spawn failure. */
+  onSettled?: (cleanup: () => void) => void;
   tools?: ToolSelection;
   sessionDir?: string;
   mcpExtensionPath?: string;

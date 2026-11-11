@@ -1,4 +1,5 @@
 import { chmodSync, mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
+import { runDirectoryPrefix } from "./run-directory-owner.js";
 import { writeOwnedSync } from "./fs-durable.js";
 import { join, resolve } from "node:path";
 import { prepareRunDirParent } from "./hermetic-home.js";
@@ -360,7 +361,7 @@ export function createKimiHermeticHome(sourceBrandHome: string, toolsNone = fals
   const parent = prepareRunDirParent(sourceBrandHome, ".codemux-hermetic");
   // Recorded for the finalizer's revalidation (src/safe-remove.ts).
   const parentRecord = recordTrustedParent(parent);
-  const home = mkdtempSync(join(parent, `run-${process.pid}-`));
+  const home = mkdtempSync(join(parent, runDirectoryPrefix()));
   // mkdtemp's and mkdir's modes are masked by the umask; each is stated
   // right after creation, whatever the umask (review round 401, item 1).
   chmodSync(home, 0o700);

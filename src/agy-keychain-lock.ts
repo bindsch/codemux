@@ -166,7 +166,6 @@ export function templateLock(path: string): () => void {
         : ageMs() > EMPTY_LOCK_STALE_MS;
       if (stale) {
         reclaimStaleLock(path, identity);
-        continue;
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;

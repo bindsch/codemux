@@ -5,7 +5,9 @@ read_when: "Checking config keys, defaults, aliases, or environment precedence."
 
 Codemux reads `$XDG_CONFIG_HOME/codemux/config.yaml` when XDG_CONFIG_HOME is
 absolute. Otherwise it reads `~/.config/codemux/config.yaml`. The home is an
-absolute HOME, then USERPROFILE, then the operating system's home fallback.
+absolute HOME or, when HOME is empty or unset, an absolute USERPROFILE.
+A nonempty relative HOME selects the operating system's home fallback,
+even when USERPROFILE is absolute. A relative USERPROFILE also uses that fallback.
 Relative XDG_CONFIG_HOME is ignored.
 
 ```yaml

@@ -368,7 +368,8 @@ codemux: experiment failure [<code>]: <message>
 ```
 
 `--result-json` reports the same code as `codemux.failure_code`. Its type is
-`string | null`; success and non-experiment runs report null.
+`string | null`; success reports null. Ordinary non-experiment failures can
+also report codes such as `harness-error`.
 
 | Code | Meaning |
 |---|---|
@@ -393,15 +394,16 @@ remains a failure even if the child exits zero. Unexpected synchronous exit emit
 ## Verification
 
 `check --hermetic --tools none --experiment-mcp <spec.json>` extends the
-paired canary for Claude, Z.AI, and Kimi. Kimi plants its instruction in a
+paired canary for every supported experiment harness. Codex runs both a hermetic
+probe and a non-hermetic control with the explicit experiment spec; both spend
+model quota. Kimi plants its instruction in a
 scratch brand home and keeps the working directory clean. The hermetic
 probe keeps the experiment spec exactly as a run would. Its non-hermetic
 control keeps that spec and tools selection, reads the planted home instruction, and must reveal the code word.
 Kimi passes the planted `KIMI_CODE_HOME` to the control and carries the planted brand home on the control request itself, so its experiment `mcp.json` and rewritten `config.toml` stay in that home by construction rather than through the planted adapter's environment. After cleanup, the check verifies that the planted brand home is absent before reporting OK.
 The operator's real brand home receives no experiment config. The existing canary verdict and control reporting apply. Recordings distinguish the control with a
-`.control.jsonl` suffix. Codex supports `run` only; its paired
-`check` is refused before installation checks or a model request because
-the control requires a non-hermetic run.
+`.control.jsonl` suffix. Qwen retains safe mode in both probes; the control
+alone loads the planted instruction through `QWEN_SYSTEM_MD`.
 The paired canary tests the specified channels against a positive control,
 not prompt-only reproducibility or every possible upstream customization.
 See the dated [experiment investigation](archive/experiment-mcp-report.md) and

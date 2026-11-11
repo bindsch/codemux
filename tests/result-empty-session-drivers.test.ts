@@ -42,6 +42,7 @@ function fixture(agent: Agent) {
     fsm: SessionFsm;
     out: SessionOutputQueue;
     turnUsage: typeof USAGE;
+    turnError: string | null;
     completeTurn(parse: unknown, raw?: string): void;
     applyResult(parse: unknown, raw: string): void;
     finishTurn(turnId: string, finish: "end" | "failed", reason?: string): void;
@@ -52,16 +53,17 @@ function fixture(agent: Agent) {
     rig.out.enqueue(JSON.stringify({ type: "turn_started", turn_id: turnId }));
     if (text !== undefined) rig.out.enqueue(JSON.stringify({ type: "assistant_message", turn_id: turnId, text }));
   };
-  const complete = (turnId: string) => {
+  const complete = (turnId: string, failed = false) => {
     if (agent === "claude" || agent === "zai") {
-      rig.completeTurn({ kind: "turn_completed", isError: false, reason: null, usage: USAGE, models: [] }, "native result");
+      rig.completeTurn({ kind: "turn_completed", isError: failed, reason: failed ? "provider failed" : null, usage: USAGE, models: [] }, "native result");
     } else if (agent === "codex") {
-      rig.completeTurn({ kind: "turn_completed", threadId: ID, turnId, finish: "end", reason: null }, "native result");
+      rig.completeTurn({ kind: "turn_completed", threadId: ID, turnId, finish: failed ? "failed" : "end", reason: null }, "native result");
     } else if (agent === "agy") {
-      rig.applyResult({ kind: "result", conversationId: ID, isError: false,
-        status: "SUCCESS", errorText: null, responseText: null, usage: USAGE }, "native result");
+      rig.applyResult({ kind: "result", conversationId: ID, isError: failed,
+        status: failed ? "ERROR" : "SUCCESS", errorText: failed ? "provider failed" : null, responseText: null, usage: USAGE }, "native result");
     } else if (agent === "opencode") {
       rig.turnUsage = USAGE;
+      rig.turnError = failed ? "provider failed" : null;
       rig.completeTurn({ code: 0, signal: null });
     } else rig.finishTurn(turnId, "end");
   };
@@ -94,6 +96,16 @@ describe("native driver completion and ledger agree on empty answers", () => {
       }
     });
   }
+});
+
+test.each(["claude", "zai", "codex", "agy", "opencode"] as const)("%s: native error verdict overrides assistant text", async (agent) => {
+  const h = fixture(agent);
+  try {
+    h.start("t1", "Partial answer");
+    h.complete("t1", true);
+    await h.rig.out.flush();
+    expect(h.events.find((event) => event.type === "turn_completed")?.finish).toBe("failed");
+  } finally { h.driver.dispose(); }
 });
 
 test("turn-per-process driver rejects empty success through the public input and child lifecycle", async () => {

@@ -20,7 +20,7 @@ import {
   type SecretReader,
 } from "./oauth.js";
 import { defaultCredentialBackupDir, MAX_CREDENTIAL_MIRROR_BYTES, writeMirror } from "./backups.js";
-import { FileContentError, readUtf8FileBounded } from "../file-io.js";
+import { FileContentError, FileShapeError, readUtf8FileBounded } from "../file-io.js";
 
 /** The bound on every read of the mirror file (review round 73): the file
  * sits under `~/.claude`, a directory the sandboxed child can write, so a
@@ -87,10 +87,10 @@ function readMirror(target: string, noFollow: boolean): string {
  * its refresh token cannot be ruled out: with a Keychain entry behind it
  * the file is a mirror of unknown content and the launch is refused
  * ("unsafe"); with no entry it is Claude Code's own store and proceeds as
- * "failed" (review round 76). A file the operating system refused
- * (vanished, unreadable) is one the child cannot read either: "failed". */
+ * "failed" (review round 76). Shape refusals include a symlink swapped
+ * in after lstat: the child could follow it, so these are unsafe too. */
 function refusedRead(error: unknown, entryExists: boolean): "failed" | "unsafe" {
-  return error instanceof FileContentError && entryExists ? "unsafe" : "failed";
+  return (error instanceof FileContentError || error instanceof FileShapeError) && entryExists ? "unsafe" : "failed";
 }
 
 /** What a finished scrub left on disk, reread once: either the mirror's

@@ -1,12 +1,6 @@
 /**
- * Lane W2's closed session limitations: qwen, agy, and openhands cells
- * that are either pinned harness facts (the binary has no channel) or
- * the W3 registration pattern — the owned implementation is in-tree and
- * tested, and only the SHARED activation (the request threading, the
- * preview arm's agent list, the SESSION_AGENTS registration) rides a
- * patch the wave owner applies. "Not wired" alone is never a limitation;
- * every row here names the in-tree carrier and the patch that lights it,
- * or the installed file, version, and line it was read from.
+ * Qwen, Agy, and OpenHands session limitations, with the native evidence
+ * and current CLI gates that determine availability.
  */
 import { limitation, type FeatureState } from "./features.js";
 
@@ -20,7 +14,7 @@ export const QWEN_SESSION_INTERRUPT: FeatureState = limitation(
 );
 
 export const QWEN_SESSION_TOOLS: FeatureState = limitation(
-  "The carrier is in-tree: buildQwenSessionCommand emits the run path's --exclude-tools on every turn (the argv exclusion merges unconditionally, so a resumed turn keeps the set the first turn promised; tests/qwen-session.test.ts). The shared request threading — cli-request.ts's runLike carries tools for the eight integrated agents only — and the SESSION_AGENTS tools flag ride scratch/fix/w2-session-tools.patch; --tools stays refused until it lands.",
+  "The carrier is in-tree: buildQwenSessionCommand emits the run path's --exclude-tools on every turn (the argv exclusion merges unconditionally, so a resumed turn keeps the set the first turn promised; tests/qwen-session.test.ts). The shared runLike tools field is implemented, but SESSION_AGENTS still declares qwen tools=false, so the CLI refuses --tools for qwen sessions.",
   "2026-11-09: src/session/qwen-session.ts tools carrier and QWEN_DRIVER_PROFILE threading (src/session/qwen-driver.ts); src/session/cli-request.ts runLike tools list; src/session/cli-agents.ts qwen tools=false",
   "--tools is not implemented for 'qwen' sessions in this release",
   "tests/qwen-session.test.ts",
@@ -43,14 +37,14 @@ export const AGY_SESSION_INTERRUPT: FeatureState = limitation(
 );
 
 export const AGY_SESSION_TOOLS: FeatureState = limitation(
-  "The carrier is in-tree on both sides of the session: the run path's tools-none mode writes the deny-every-action settings file into the private home (src/adapters/agy.ts mode 'tools'), and the session's own deny-policy helper writes the same file through --settings (src/session/agy-permission-policy.ts). Threading the selection into buildAgySessionCommand and the SESSION_AGENTS tools flag rides scratch/fix/w2-session-tools.patch; --tools stays refused until it lands.",
+  "The carrier is in-tree on both sides of the session: the run path's tools-none mode writes the deny-every-action settings file into the private home (src/adapters/agy.ts mode 'tools'), and the session's own deny-policy helper writes the same file through --settings (src/session/agy-permission-policy.ts). SESSION_AGENTS declares agy tools=false and runLike omits agy tools, so the CLI refuses --tools for agy sessions.",
   "2026-11-09: src/adapters/agy.ts prepareRun mode 'tools' settings write (tests/agy-isolation.test.ts) and src/session/agy-session.ts agySessionDenySettings carrier; src/session/cli-agents.ts agy tools=false",
   "--tools is not implemented for 'agy' sessions in this release",
   "tests/session-agy.test.ts",
 );
 
 export const AGY_SESSION_PLAYWRIGHT: FeatureState = limitation(
-  "The carrier is in-tree and owned: the same planted mcp_config.json the run path writes (src/agy-playwright-mcp.ts, tested in tests/agy-playwright-mcp.test.ts) serves a session turn's probe home, so the mechanism a session needs is implemented and tested; threading it into the session turn spawn (the turn-input playwright field and the per-turn home planting) rides scratch/fix/w2-playwright.patch with the run activation.",
+  "The carrier is in-tree and owned: the same planted mcp_config.json the run path writes (src/agy-playwright-mcp.ts, tested in tests/agy-playwright-mcp.test.ts) serves a session turn's probe home, so the mechanism a session needs is implemented and tested; the CLI refuses the flag because session turn spawning does not yet wire the carrier.",
   "2026-11-09: src/agy-playwright-mcp.ts plantAgyPlaywrightMcpConfig (tests/agy-playwright-mcp.test.ts); src/session/cli-request.ts runLike enablePlaywrightMcp list and src/mcp.ts PLAYWRIGHT_MCP_AGENTS omit agy",
   "--enable-playwright-mcp is supported only by",
   "tests/agy-playwright-mcp.test.ts",

@@ -19,8 +19,26 @@ import {
   reclaimStaleLock,
 } from "../src/agy-keychain.js";
 import { cleanup, setup } from "./helpers/agy-keychain.js";
+import { templateLock } from "../src/agy-keychain-lock.js";
 
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
+
+test("stale reclaim contention observes its deadline and polling delay", () => {
+  setup(); shortenLockWait(50);
+  const lock = plantLock("", 61_000);
+  const identity = lstatSync(lock);
+  linkSync(lock, `${lock}.reclaim-${identity.dev}-${identity.ino}`);
+  let attempts = 0;
+  const link = spyOn(agyKeychainHost, "linkSync").mockImplementation(() => {
+    if (++attempts > 10) throw new Error("retry guard: deadline was bypassed");
+    throw Object.assign(new Error("claim exists"), { code: "EEXIST" });
+  });
+  const pause = spyOn(Atomics, "wait");
+  cleanup.push(() => link.mockRestore(), () => pause.mockRestore());
+  expect(() => templateLock(lock)).toThrow("leftover reclaim file");
+  expect(attempts).toBeLessThan(10);
+  expect(pause).toHaveBeenCalled();
+});
 
 /** Plant a lock file with the given content, backdated by ageMs. */
 function plantLock(content: string, ageMs: number): string {

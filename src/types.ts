@@ -103,16 +103,16 @@ export interface RunRequest {
   web?: boolean;
   // Ask the harness for a machine-readable result envelope on stdout instead of plain text,
   // so a caller can read what the run actually consumed. Headless runs only: there is no
-  // envelope to parse in an interactive session. The envelope's shape is the harness's, not
-  // codemux's -- codemux re-emits it with every harness field unchanged plus its own
-  // `codemux` block (usage, model, session id), and stdout that is not the envelope the
+  // envelope to parse in an interactive session. Codemux normalizes the harness envelope,
+  // including assembling its answer field, and adds its own
+  // `codemux` block (usage, model, session id). Stdout that is not the envelope the
   // launch asked for fails the run rather than passing through as plain text.
   resultJson?: boolean;
-  // The maximum dollar amount the harness may spend on API calls for this
-  // run (--max-budget-usd, Claude Code's own flag; claude and zai). A
+  // A soft dollar spend threshold for this run (claude, zai, and pi).
+  // Charges are checked after calls; a call may exceed the threshold. A
   // positive decimal with at most two fraction digits, parsed once at the
   // CLI and re-rendered as the plain decimal spelling of the number in the
-  // child's argv. A harness without the flag refuses the request before
+  // adapter's budget carrier. A harness without budget support refuses before
   // launch (the budgetLimit capability).
   maxBudgetUsd?: number;
   // Which built-in tools the harness exposes; undefined means "default".
@@ -148,7 +148,8 @@ export interface RunResult {
   // The model's answer when the harness's stdout is a transcript around it
   // (aider's banner, summaries and cost lines), extracted by
   // processRunResult from the run's own record while the run context is
-  // alive. Absent when stdout is the answer; `codemux run` prints stdout
+  // alive. Empty when stdout has no verified assistant-answer carrier.
+  // Absent when stdout is the answer; `codemux run` prints stdout
   // either way, so the field is for callers (the hermetic check's exact-OK
   // test) that need the answer itself.
   reply?: string;
@@ -186,9 +187,9 @@ export interface ResultUsageBlock {
 
 // The one codemux-owned field on every --result-json envelope, carrying what
 // codemux normalized across harnesses: which adapter ran, the model that
-// served the run when it is known, and token usage. `session_id` is always
-// null in this release -- reserved for the live-sessions design that will
-// add `--session` back. `recording` names the experiment's per-run
+// served the run when it is known, and token usage. `session_id` is the
+// harness-reported identity when the adapter can expose it, otherwise null.
+// `recording` names the experiment's per-run
 // JSONL on an `--experiment-mcp` run and is null on every other run.
 // `failure_code` identifies an experiment verification failure; null otherwise.
 export interface CodemuxResultBlock {
@@ -197,8 +198,8 @@ export interface CodemuxResultBlock {
   /** The model the PROVIDER reported serving the run (claude's and zai's
    * modelUsage key), when it names exactly one. Codex reports one only
    * when a reroute notice names the model — reported, but not evidence
-   * that an override was honored (SERVED_MODEL_EVIDENCE_HARNESSES carries
-   * claude and zai only). Null when the harness's wire exposes no
+   * that an override was honored (SERVED_MODEL_EVIDENCE_HARNESSES lists
+   * the harnesses with that evidence). Null when the harness's wire exposes no
    * served-model field — opencode's pinned run wire and kimi's
    * stream-json and wire log carry none — so `model` above (the
    * selection, served when reported) and this field together distinguish

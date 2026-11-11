@@ -14,7 +14,7 @@ describe("CLI - stdin prompt", () => {
   test("a piped prompt reaches the harness's stdin", async () => {
     // The fake claude echoes its stdin, which is where the prompt rides.
     const fake = createFakeBinaryEnv({
-      claude: `${claudeVersionPreamble}cat`,
+      claude: `${claudeVersionPreamble}cat | '${process.execPath}' -e 'console.log(JSON.stringify({type:"result", subtype:"success", result:await Bun.stdin.text()}))'`,
     });
     try {
       const { stdout, exitCode } = await runCli(
@@ -23,7 +23,7 @@ describe("CLI - stdin prompt", () => {
         { stdin: "hello from stdin" }
       );
       expect(exitCode).toBe(0);
-      expect(stdout).toBe("hello from stdin");
+      expect(stdout).toBe("hello from stdin\n");
     } finally {
       fake.cleanup();
     }

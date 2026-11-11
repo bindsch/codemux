@@ -13,9 +13,9 @@ import { parseGooseTranscript, type GooseTranscript } from "../goose-answer.js";
 /**
  * Parses goose's output. Every run launches with `--output-format
  * stream-json` (1.50.1 `run --output-format <text|json|stream-json>`; lane
- * AN1), read by src/goose-answer.ts; the single serialized agent message
- * that `--output-format json` prints is still accepted, for sessions and
- * older captures. For both, the exact
+ * AN1), read by src/goose-answer.ts. Native JSON is `{messages, metadata}`;
+ * the startup banner supplies the session ID. Legacy single-message
+ * captures remain accepted. For message usage, the exact
  * field order is not recoverable from the compiled binary, so the parser
  * reads the names the binary itself carries (read from `strings` on the
  * installed 1.50.1 binary, 2026-11-09): the MessageUsage struct's
@@ -145,27 +145,38 @@ function gooseAnswer(envelope: Record<string, unknown>): string | null {
  * last message's resolved model. */
 function transcriptInfo(read: GooseTranscript): GooseEnvelopeInfo {
   const perMessage = new Map<unknown, Record<string, unknown>>();
+  let sawUsage = false;
   read.messages.forEach((message, index) => {
     const metadata = typeof message.metadata === "object" && message.metadata !== null
       ? message.metadata as Record<string, unknown> : null;
     const reported = metadata?.usage ?? message.usage;
+    const key = typeof message.id === "string" ? message.id : index;
     if (typeof reported === "object" && reported !== null) {
-      perMessage.set(typeof message.id === "string" ? message.id : index, reported as Record<string, unknown>);
+      sawUsage = true;
+      perMessage.set(key, reported as Record<string, unknown>);
+    } else if (!perMessage.has(key)) {
+      perMessage.set(key, {});
     }
   });
-  let usage = emptyUsage();
+  let usage: ResultUsageBlock | null = null;
   for (const reported of perMessage.values()) {
     const next = normalizeGooseUsage(reported);
-    usage = perMessage.size === 1 ? next : sumGooseUsage(usage, next);
+    usage = usage === null ? next : sumGooseUsage(usage, next);
   }
-  if (perMessage.size === 0 && read.complete !== null) usage.total_tokens = reportedTokenCount(read.complete.total_tokens);
+  usage ??= emptyUsage();
+  if (!sawUsage && read.complete !== null) {
+    usage = normalizeGooseUsage({ ...read.complete,
+      cache_read_tokens: read.complete.cache_read_input_tokens,
+      cache_write_tokens: read.complete.cache_write_input_tokens });
+    usage.total_tokens = reportedTokenCount(read.complete.total_tokens) ?? usage.total_tokens;
+  }
   const last = read.messages[read.messages.length - 1];
   return {
     envelope: last ?? {},
     answer: read.answer,
     usage,
     servedModel: last === undefined ? null : gooseServedModel(last),
-    sessionId: last !== undefined && typeof last.session_id === "string" ? last.session_id : null,
+    sessionId: read.sessionId ?? (last !== undefined && typeof last.session_id === "string" ? last.session_id : null),
     transcript: read.transcript,
     finalText: read.finalText,
     errorMessage: read.errorMessage,
@@ -174,14 +185,12 @@ function transcriptInfo(read: GooseTranscript): GooseEnvelopeInfo {
 
 function sumGooseUsage(a: ResultUsageBlock, b: ResultUsageBlock): ResultUsageBlock {
   const add = (x: number | null, y: number | null): number | null => x === null || y === null ? null : safeTokenSum(x, y);
-  const started = a.input_tokens === null && a.output_tokens === null && a.total_tokens === null && a.cached_input_tokens === null;
-  if (started) return b;
   return {
     input_tokens: add(a.input_tokens, b.input_tokens),
     output_tokens: add(a.output_tokens, b.output_tokens),
     cached_input_tokens: add(a.cached_input_tokens, b.cached_input_tokens),
     total_tokens: add(a.total_tokens, b.total_tokens),
-    cost_usd: a.cost_usd === null || b.cost_usd === null ? null : a.cost_usd + b.cost_usd,
+    cost_usd: a.cost_usd === null || b.cost_usd === null ? null : reportedCount(a.cost_usd + b.cost_usd),
   };
 }
 
@@ -301,11 +310,11 @@ export function gooseResult(result: RunResult, request: RunRequest, recording: s
 
 /** A plain goose run on the stream-json wire: the complete answer on
  * stdout, at the end. Stdout that carries no stream event or message
- * object passes through unchanged (text from a binary that ignored the
- * format flag); a stream error fails the run with its reason. */
+ * object stays as diagnostics and fails result-empty because it proves
+ * no assistant answer; a stream error fails the run with its reason. */
 export function goosePlainResult(result: RunResult): RunResult {
   const read = parseGooseTranscript(result.stdout);
-  if (read === null) return result;
+  if (read === null) return { ...result, reply: "" };
   const info = transcriptInfo(read);
   const answer = info.answer ?? "";
   const stdout = answer === "" || answer.endsWith("\n") ? answer : `${answer}\n`;

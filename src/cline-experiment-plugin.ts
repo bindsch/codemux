@@ -33,12 +33,12 @@ export function createClineExperimentPlugin(options: {
       const names = new Set<string>();
       for (const tool of result.tools) {
         if (!object(tool) || typeof tool.name !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(tool.name) || names.has(tool.name) ||
-            nativeName(tool.name).length > 64 || typeof tool.description !== "string" || !object(tool.inputSchema) ||
+            nativeName(tool.name).length > 64 || (tool.description !== undefined && typeof tool.description !== "string") || !object(tool.inputSchema) ||
             tool.inputSchema.type !== "object" || Object.keys(tool).some((key) => !["name", "description", "inputSchema"].includes(key))) {
-          throw new Error("Cline experiment requires unique object-schema tools with explicit descriptions and no extra definition fields");
+          throw new Error("Cline experiment requires unique object-schema tools with optional string descriptions and no extra definition fields");
         }
         names.add(tool.name);
-        const definition = { name: nativeName(tool.name), description: tool.description, inputSchema: tool.inputSchema };
+        const definition = { name: nativeName(tool.name), description: tool.description ?? "", inputSchema: tool.inputSchema };
         definitions.push(definition);
         api.registerTool({ ...definition, retryable: false, timeoutMs: options.timeoutMs,
           async execute(input: unknown, context: JsonObject) {

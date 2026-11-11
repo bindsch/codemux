@@ -35,6 +35,7 @@
  *   round-trip at any autonomy level — the run path's rule verbatim.
  */
 
+import { sessionIdPattern } from "./id-pattern.js";
 import { featureFloor } from "../harness-contracts.js";
 import { parseOpenhandsResultEnvelope } from "../result-envelope/openhands.js";
 import { emptyUsage } from "../result-envelope.js";
@@ -59,8 +60,7 @@ export function openhandsSessionFloor(): string {
  * str(uuid) prints lowercase, and the hint line's `--resume <id>` is
  * that dashed form, so the pattern pins the exact string codemux will
  * pass back on every later turn. */
-export const OPENHANDS_CONVERSATION_ID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+export const OPENHANDS_CONVERSATION_ID_PATTERN = sessionIdPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 
 /**
  * Capability flags for openhands sessions: live input yes (one caller
@@ -165,8 +165,8 @@ export interface OpenhandsSessionTurnParse {
   /** True when the envelope saw no json events at all (the driver's
    * tier-3 fatal: the turn launched with --json). */
   noWire: boolean;
-  /** True when an AgentErrorEvent or ConversationErrorEvent failed the
-   * turn (the run path's rule), with its text. */
+  /** True when a ConversationErrorEvent failed the turn, with its diagnostic.
+   * AgentErrorEvent is a recoverable tool observation. */
   failed: boolean;
   failureReason: string | null;
 }

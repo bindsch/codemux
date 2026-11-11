@@ -312,10 +312,8 @@ export function registerInfoCommands(
         const caps = adapter.capabilities();
         const features: string[] = [];
         // A capability the TUI form of the flag cannot carry carries its
-        // condition the same way the isolation labels do (parity pass,
-        // 2.0.0): droid accepts neither -m nor --effort interactively, and
-        // opencode no --effort, so their labels say (run) and a workflow
-        // reading `list` does not send the TUI a flag it refuses.
+        // condition the same way the isolation labels do. Current adapters
+        // carry model and effort in TUI; a future run-only flag must say so.
         if (caps.supportsModel) features.push(adapter.supportsTuiModel() ? "model" : "model(run)");
         if (caps.supportsAutonomy) features.push("autonomy");
         if (caps.supportsEffort) features.push(adapter.supportsTuiEffort() ? "effort" : "effort(run)");

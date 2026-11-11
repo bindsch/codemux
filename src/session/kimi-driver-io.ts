@@ -37,6 +37,8 @@ import type { ExecutableCheck } from "../executable-security.js";
 import { isCallerHarnessHome } from "./harness-home.js";
 
 export interface KimiDriverOptions {
+  /** Remove the owned private home before releasing the session record. */
+  final?: boolean;
   /** The native session id to resume, or null to start fresh. */
   resumeSessionId: string | null;
   autonomy: AutonomyLevel;
@@ -368,9 +370,8 @@ export abstract class KimiDriverIo {
    * its store under the private KIMI_CODE_HOME until it exits, so the
    * rename onto the session-keyed name waits for the exit — the first
    * one after the resume hint, always before the record's release. A
-   * settle that fails leaves the home run-shaped: the resume guard's
-   * harness_home check then refuses the next resume (fail closed), which
-   * session_ended's resumable fold reports honestly. */
+   * settle that fails leaves the home run-shaped and fails the turn and
+   * session before the child-exit event can claim success. */
   protected settlePrivateHome(): void {
     const home = this.options.privateHome;
     if (home == null || isCallerHarnessHome(home) || home.settled || this.state.sessionId === null) return;
@@ -378,7 +379,8 @@ export abstract class KimiDriverIo {
       home.settle(this.state.sessionId);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      console.error(`codemux: hermetic session home settlement failed: ${detail}`);
+      this.deliver({ kind: "fatal", source: "codemux",
+        message: `hermetic session home settlement failed: ${detail}` });
     }
   }
 

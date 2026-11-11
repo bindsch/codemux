@@ -1,10 +1,11 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { Command } from "commander";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getDefaultConfig } from "../src/config.js";
 import { registerTuiCommand } from "../src/tui-command.js";
+import { ClaudeAdapter } from "../src/adapters/claude.js";
 import { createFakeBinaryEnv } from "./helpers/cli.js";
 
 /**
@@ -80,6 +81,17 @@ async function runTuiCommand(
 }
 
 describe("the tui command in process", () => {
+  test("unsandboxed TUI uses the validated canonical working directory", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "r8-tui-cwd-"));
+    const link = `${parent}-link`;
+    symlinkSync(parent, link);
+    const launch = spyOn(ClaudeAdapter.prototype, "runInteractive").mockResolvedValue(0);
+    try {
+      const result = await runTuiCommand(["tui", "-a", "claude", "--no-sandbox", "--auto", "high", "--cwd", link]);
+      expect(result.exitCode).toBe(0);
+      expect(launch.mock.calls[0]?.[1]).toBe(realpathSync(parent));
+    } finally { launch.mockRestore(); rmSync(link); rmSync(parent, { recursive: true, force: true }); }
+  });
   test("a non-sandboxed tui runs the harness interactively", async () => {
     const outcome = await runTuiCommand(["tui", "--no-sandbox", "--auto", "high", "-a", "claude"]);
     expect(outcome.exitCode).toBe(7);

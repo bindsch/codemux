@@ -37,12 +37,9 @@ export interface CallLogContents {
   truncated: boolean;
 }
 
-const CALL_RECORD_KINDS: ReadonlySet<string> = new Set([
-  "run",
-  "check",
-  "session_turn",
-  "session",
-]);
+/** Every record kind the writer emits; `calls --kind` accepts the same list. */
+export const CALL_RECORD_KIND_NAMES = ["run", "check", "session_turn", "session", "complete"] as const;
+const CALL_RECORD_KINDS: ReadonlySet<string> = new Set(CALL_RECORD_KIND_NAMES);
 
 // `CallRecord` types `agent` as a known AgentId and `autonomy` as null or a
 // known AutonomyLevel; the reader enforces the same sets (derived from the
@@ -61,6 +58,7 @@ const COST_SOURCES: ReadonlySet<string> = new Set([
   "billed",
   "harness-estimate",
   "subscription-zero",
+  "price-table",
 ]);
 
 // Token counts are whole, never negative, and inside the safe-integer
@@ -118,7 +116,13 @@ function isCallRecord(parsed: unknown): parsed is StoredCallRecord {
   ) {
     return false;
   }
-  if (typeof record["agent"] !== "string" || !KNOWN_AGENT_IDS.has(record["agent"])) return false;
+  // A `complete` record carries no agent (no harness serves it); every
+  // other kind names a known one.
+  if (record["kind"] === "complete") {
+    if (record["agent"] !== null) return false;
+  } else if (typeof record["agent"] !== "string" || !KNOWN_AGENT_IDS.has(record["agent"])) {
+    return false;
+  }
   if (!isStringOrNull(record["model"])) return false;
   if (!isStringOrNull(record["model_effective"])) return false;
   if (typeof record["provider"] !== "string") return false;

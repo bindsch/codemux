@@ -266,11 +266,13 @@ describe("qwen provider override", () => {
   test("an override without a model is refused: the auth type needs all three", () => {
     const home = scratchHome();
     try {
-      expect(() => adapter(home, {
-        CODEMUX_QWEN_PROVIDER_BASE_URL: "https://api.example/v1",
-        CODEMUX_QWEN_PROVIDER_API_KEY: "key-1",
-      }).validateRunRequest({ agent: "qwen", prompt: "p" }))
-        .toThrow("CODEMUX_QWEN_PROVIDER_MODEL");
+      for (const model of [undefined, "request-model"]) {
+        expect(() => adapter(home, {
+          CODEMUX_QWEN_PROVIDER_BASE_URL: "https://api.example/v1",
+          CODEMUX_QWEN_PROVIDER_API_KEY: "key-1",
+        }).validateRunRequest({ agent: "qwen", prompt: "p", model }))
+          .toThrow("CODEMUX_QWEN_PROVIDER_MODEL");
+      }
       expect(() => adapter(home, overrideEnv).validateTuiRequest())
         .not.toThrow();
       expect(adapter(home, overrideEnv).prepareTuiEnvironment().env.OPENAI_API_KEY).toBe(overrideEnv.CODEMUX_QWEN_PROVIDER_API_KEY);
@@ -390,7 +392,7 @@ describe("qwen --result-json", () => {
     expect(result.stderr).toContain("qwen printed no result message");
   });
 
-  test("a success message with empty text fails too, and plain text passes through", () => {
+  test("empty result text and output without the requested terminal result both fail", () => {
     const stdout = wire({ type: "result", subtype: "success", is_error: false, result: " ", session_id: "s" });
     expect(qwenResult(
       { stdout, stderr: "", exitCode: 0, success: true },
@@ -399,7 +401,7 @@ describe("qwen --result-json", () => {
     const home = scratchHome();
     try {
       const plain = { stdout: "text answer", stderr: "", exitCode: 0, success: true } as RunResult;
-      expect(adapter(home).processRunResult(plain, { agent: "qwen", prompt: "p" })).toBe(plain);
+      expect(adapter(home).processRunResult(plain, { agent: "qwen", prompt: "p" })).toMatchObject({ success: false, exitCode: 1, stdout: "" });
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

@@ -56,12 +56,14 @@ describe("Cline cli-v3.0.74 NDJSON result", () => {
     expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(MAX_CAPTURE_BYTES);
   });
 
-  test("native abort events override a completed result before or after its emission", () => {
+  test("native abort events fail an unfinished run but preserve an already completed result", () => {
     for (const type of ["run_abort_requested", "run_aborted"]) {
-      for (const wire of [JSON.stringify({ type }) + "\n" + event(), event() + "\n" + JSON.stringify({ type })]) {
-        expect(parseClineResultEnvelope(wire)).toBeNull();
-        expect(processResult(wire).success).toBe(false);
-      }
+      const unfinished = JSON.stringify({ type }) + "\n" + event();
+      expect(parseClineResultEnvelope(unfinished)).toBeNull();
+      expect(processResult(unfinished).success).toBe(false);
+      const completed = event() + "\n" + JSON.stringify({ type });
+      expect(parseClineResultEnvelope(completed)?.finishReason).toBe("completed");
+      expect(processResult(completed).success).toBe(true);
     }
   });
 });

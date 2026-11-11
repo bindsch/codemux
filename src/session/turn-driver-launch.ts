@@ -61,7 +61,7 @@ import {
 } from "./turn-driver-homes.js";
 import type { SessionPrivateHome } from "./private-home-types.js";
 import type { SessionProcess } from "./process.js";
-import { spawnSessionChild } from "./spawn.js";
+import { spawnSessionChild, type ResolvedSessionLaunch } from "./spawn.js";
 import { prepareTurnContext, type SessionTurnState } from "./turn-driver-spawn.js";
 import type { SessionEnvironmentBuilder } from "./cli-launch.js";
 import type { SessionCommandOptions } from "./cli-request.js";
@@ -221,6 +221,7 @@ export function createTurnAgentDriver(
     permissionPolicy: options.permissionPolicy === "deny" ? "deny" : "default",
   });
   let driver: TurnAgentSessionDriver;
+  let clineLaunch: ResolvedSessionLaunch | null = null;
   // The per-turn spawn: one adapter context per turn (the opencode
   // rule, review D3) — the previous turn's artifacts are finalized
   // here, the new ones prepared with hermetic OFF (the session home is
@@ -309,6 +310,7 @@ export function createTurnAgentDriver(
       extraExecutableChecks: prepared.playwrightMcpCheck == null ? [] : [prepared.playwrightMcpCheck],
       abandoned,
       validateBeforeSpawn: callerHome?.verify,
+      onResolvedLaunch: agent === "cline" ? (launch) => { clineLaunch = launch; } : undefined,
     }, {
       onLine: (line) => driver.handleHarnessLine(line),
       onBytes: agent === "copilot" ? (bytes) => (driver as CopilotRpcSessionDriver).handleHarnessBytes(bytes) : undefined,
@@ -360,8 +362,8 @@ export function createTurnAgentDriver(
     driver = new ClineSessionDriver({
       ...driverOptions, configHome: () => privateHome?.dir ?? null,
       permissionPolicy: options.permissionPolicy === "deny" ? "deny" : "default",
-      readUsage: (sessionId) => readClineSessionUsage({
-        sessionId, cwd: workdir, home: privateHome?.dir, env: turnState.launch?.env ?? {},
+      readUsage: (sessionId) => clineLaunch === null ? Promise.resolve(null) : readClineSessionUsage({
+        sessionId, cwd: workdir, home: privateHome?.dir, launch: clineLaunch,
       }),
     });
   } else if (agent === "copilot") {

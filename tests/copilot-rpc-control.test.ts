@@ -36,7 +36,7 @@ test("Copilot RPC framing rejects malformed lengths, encoding, oversized data an
   }
   expect(() => new CopilotRpcFramer().push(Buffer.from("h".repeat(8193)))).toThrow("header");
   expect(() => new CopilotRpcFramer().push(Buffer.from(`${"h".repeat(8193)}\r\n\r\n`))).toThrow("header");
-  expect(() => new CopilotRpcFramer().push(Buffer.alloc(copilotRpcBodyLimit + 8193))).toThrow("buffered");
+  expect(() => new CopilotRpcFramer().push(Buffer.alloc(copilotRpcBodyLimit + 8193))).toThrow("header");
   expect(() => encodeCopilotRpc({ text: "x".repeat(copilotRpcBodyLimit) })).toThrow("byte limit");
   expect(() => new CopilotRpcFramer().push(Buffer.concat([Buffer.from("Content-Length: 1\r\n\r\n"), Buffer.from([255])]))).toThrow();
   expect(() => new CopilotRpcFramer().push(Buffer.from("Content-Length: 1\r\n\r\nx"))).toThrow();

@@ -43,9 +43,11 @@ import {
   type CallRecord,
 } from "./call-log.js";
 import { timestampMs } from "./calendar.js";
+import { parseCutoffDate } from "./cutoff-date.js";
 import { CallTotals, sessionKey } from "./calls-totals.js";
 import { collectLabel, escapeJsonControls, parseLabels, validateLabelKey } from "./labels.js";
 import { AGENT_IDS, type AgentId } from "./types.js";
+import { CALL_RECORD_KIND_NAMES as CALL_KINDS } from "./call-log-reader.js";
 import { UsageRefusalError, USAGE_REFUSAL_EXIT_CODE } from "./validation.js";
 
 const DEFAULT_LIMIT = 20;
@@ -89,9 +91,7 @@ export function parseSinceOption(
     return Number.isNaN(cutoff.getTime()) ? null : cutoff;
   }
   if (/^\d+$/.test(trimmed)) return null;
-  const parsed = new Date(trimmed);
-  if (Number.isNaN(parsed.getTime())) return null;
-  return parsed;
+  return parseCutoffDate(trimmed);
 }
 
 function formatCount(value: number | null): string {
@@ -128,7 +128,8 @@ interface Column {
 const COLUMNS: readonly Column[] = [
   { header: "TIMESTAMP", align: "left", value: (r) => formatTimestamp(r.ts) },
   { header: "KIND", align: "left", value: (r) => r.kind },
-  { header: "AGENT", align: "left", value: (r) => r.agent },
+  // A `complete` record has no agent; its column shows the upstream host.
+  { header: "AGENT", align: "left", value: (r) => r.agent ?? sanitizeReportedString(r.provider) ?? "-" },
   {
     header: "MODEL",
     align: "left",
@@ -278,6 +279,7 @@ export function registerCallsCommand(
     .description("Show recent records from the per-call usage ledger")
     .option("-n, --limit <count>", "Records to list, newest ledger append first; bounds the listing only", String(DEFAULT_LIMIT))
     .option("-a, --agent <id>", "Show only one agent's calls")
+    .option("--kind <kind>", `Show only one record kind: ${CALL_KINDS.join(", ")}`)
     .option("--label <KEY=VALUE>", "Filter by a label; repeat for AND matching", collectLabel, [])
     .option("--since <when>", "Cutoff as a duration with a unit (90m, 24h, 7d) or an ISO date (a date-only value cuts at UTC midnight); a bare number is refused")
     .option("--json", "Print stored JSONL with controls escaped; --sum appends human-readable totals")
@@ -324,6 +326,13 @@ export function registerCallsCommand(
           return;
         }
         agent = options.agent as AgentId;
+      }
+      let kind: CallRecord["kind"] | undefined;
+      if (options.kind !== undefined) {
+        if (!(CALL_KINDS as readonly string[]).includes(options.kind)) {
+          return usageFail(`--kind must be one of ${CALL_KINDS.join(", ")}`);
+        }
+        kind = options.kind as CallRecord["kind"];
       }
       let since: Date | null = null;
       if (options.since !== undefined) {
@@ -375,6 +384,7 @@ export function registerCallsCommand(
       try {
         const passesFilters = (record: CallRecord): boolean => {
           if (agent !== undefined && record.agent !== agent) return false;
+          if (kind !== undefined && record.kind !== kind) return false;
           if (labels !== null) {
             for (const [key, value] of Object.entries(labels)) {
               if (

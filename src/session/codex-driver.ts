@@ -40,6 +40,8 @@ import { releaseSessionRecord } from "./registry.js";
 import { addTurnUsage } from "./usage.js";
 import { CodexDriverInput } from "./codex-driver-input.js";
 import type { SessionEndReason } from "./codex-driver-io.js";
+import { removeFinalPrivateHome } from "./final-private-home.js";
+import { isCallerHarnessHome } from "./harness-home.js";
 
 export type { CodexDriverOptions, SessionEndReason } from "./codex-driver-io.js";
 export { MAX_HELD_INPUT_LINES, MAX_HELD_INPUT_BYTES } from "./codex-driver-input.js";
@@ -332,8 +334,7 @@ export class CodexSessionDriver extends CodexDriverInput {
     // here before the record release: the child is gone, so nothing writes
     // it anymore, and only a session the registry vouches for (a recorded
     // thread, or a claimed resume whose home arrived already settled)
-    // reaches the keyed name a resume computes. Removal is never this
-    // path's — `--final` and the stale sweep own it — so a home that
+    // reaches the keyed name a resume computes. A home that
     // cannot settle stays in place and the resume guard's harness_home
     // check refuses the next resume (fail closed), which the folded
     // `settledHome` reports honestly now.
@@ -348,10 +349,15 @@ export class CodexSessionDriver extends CodexDriverInput {
       }
       if (!this.options.privateHome.settled) settledHome = false;
     }
+    if (!settledHome && this.threadId !== null) this.endExitCode = Math.max(this.endExitCode, 1);
+    const finalRequested = this.options.final && this.options.privateHome != null && !isCallerHarnessHome(this.options.privateHome);
+    const finalRemoved = finalRequested ? removeFinalPrivateHome(this.options.privateHome) : false;
+    if (finalRequested && !finalRemoved) this.endExitCode = Math.max(this.endExitCode, 1);
     const ownsRecord = this.registryRecorded || this.resumeClaimed;
     if (ownsRecord && this.options.registryPath !== null && this.threadId !== null) {
       // A lost stamp rides stderr (releaseSessionRecord, review live13).
-      releaseSessionRecord(this.options.registryPath, this.threadId);
+      const stamped = releaseSessionRecord(this.options.registryPath, this.threadId, finalRemoved);
+      if (!stamped && finalRemoved) this.endExitCode = Math.max(this.endExitCode, 1);
     }
     // The exit code the report carries, read once here: a signal or a
     // failure landing during the final flush (through `finish`'s re-entry
@@ -367,7 +373,7 @@ export class CodexSessionDriver extends CodexDriverInput {
         shutdown_requested: this.shutdownWasRequested,
         exit_code: reported,
         usage: this.cumulative,
-        resumable: resumable && settledHome,
+        resumable: resumable && settledHome && !finalRemoved,
       }),
       { terminal: true }
     );

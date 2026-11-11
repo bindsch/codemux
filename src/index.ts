@@ -4,6 +4,7 @@ import { getDefaultConfig, loadConfig } from "./config.js";
 import { registerCheckCommand } from "./check-command.js";
 import { registerInfoCommands } from "./info-commands.js";
 import { registerCallsCommand } from "./calls-command.js";
+import { registerCompleteCommand } from "./complete/command.js";
 import { registerSessionCommand } from "./session/cli.js";
 import { registerRunCommand } from "./run-command.js";
 import { registerTuiCommand } from "./tui-command.js";
@@ -46,6 +47,7 @@ registerTuiCommand(program, config, requireValidConfig);
 registerCheckCommand(program, config, requireValidConfig);
 registerInfoCommands(program, config, configError);
 registerCallsCommand(program);
+registerCompleteCommand(program);
 registerSessionCommand(program, config, requireValidConfig);
 
 await program.parseAsync();

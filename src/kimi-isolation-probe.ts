@@ -6,11 +6,12 @@ import { kimiHermeticConfig, MAX_KIMI_STATE_BYTES } from "./kimi-hermetic.js";
 import { mintCanaryMarker, trackScratchRemoval, untrackScratchRemoval } from "./hermetic-canary.js";
 import { prepareRunDirParent } from "./hermetic-home.js";
 import { readFileBytesBounded } from "./file-io.js";
+import { runDirectoryPrefix } from "./run-directory-owner.js";
 
 /** Plant home instructions because Kimi hermetic runs refuse project instructions. */
 export function plantKimiCanary(environment: NodeJS.ProcessEnv = process.env) {
   const source = join(environment.HOME || homedir(), ".kimi-code");
-  const root = mkdtempSync(join(prepareRunDirParent(source, ".codemux-canary"), `run-${process.pid}-`));
+  const root = mkdtempSync(join(prepareRunDirParent(source, ".codemux-canary"), runDirectoryPrefix()));
   trackScratchRemoval(root);
   const cleanup = () => {
     rmSync(root, { recursive: true, force: true });

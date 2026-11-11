@@ -198,7 +198,7 @@ export class ClineAdapter extends BaseAdapter {
   override prepareRun(request: RunRequest, _trust?: ScodeTrustLevel, sandbox?: SandboxOptions, launch: LaunchIntent = {}): ClineRunContext {
     if (launch.printOnly && request.experimentMcp) throw new UsageRefusalError("Cline experiment MCP cannot be prepared for a print-only preview");
     const playwright = buildPlaywrightSandboxMcp(request.sandboxed,
-      { enabled: request.enablePlaywrightMcp, pathEnv: this.environment.PATH ?? "", forbiddenRoot: request.cwd });
+      { enabled: request.enablePlaywrightMcp, pathEnv: this.environment.PATH ?? "", forbiddenRoot: this.executionWorkingDirectory(request) });
     const context: ClineRunContext = request.hermetic || request.tools === "none" || request.web === false || request.enablePlaywrightMcp || clineProvider(this.environment) !== null
       ? { clineConfig: createClineConfig(join(loginHome(this.environment), ".cline"), this.environment,
         { printOnly: launch.printOnly, model: request.model, hermetic: request.hermetic || Boolean(request.experimentMcp), noWeb: request.web === false, toolsNone: request.tools === "none",
@@ -225,7 +225,7 @@ export class ClineAdapter extends BaseAdapter {
   }
 
   override getRunEnv(request: RunRequest, context?: ClineRunContext): Record<string, string> {
-    if ((request.hermetic || request.web === false || request.enablePlaywrightMcp || clineProvider(this.environment) !== null) && !context?.clineConfig) {
+    if ((request.hermetic || request.tools === "none" || request.experimentMcp || request.web === false || request.enablePlaywrightMcp || clineProvider(this.environment) !== null) && !context?.clineConfig) {
       throw new Error("cline launch has no prepared configuration");
     }
     return { ...context?.clineConfig?.env, ...context?.experimentCline?.env };

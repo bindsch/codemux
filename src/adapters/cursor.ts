@@ -401,18 +401,22 @@ export class CursorAdapter extends BaseAdapter {
     // every assistant segment, the ones before tool calls included, a
     // blank line between two (lane AN1), where the text format printed
     // only the trailing buffer — and
-    // record the usage so the ledger is never empty. No new failure rule
-    // rides here: a run whose stdout carried no result line keeps its
-    // stdout and its exit status as the run path judges them.
+    // record the usage so the ledger is never empty. An absent result
+    // keeps stdout as diagnostics but proves no reply. Structured
+    // failure flags apply to plain runs too.
     const parsed = parseCursorResultEnvelope(result.stdout);
-    const rewritten: RunResult = parsed === null
-      ? result
+    let rewritten: RunResult = parsed === null
+      ? result.exitCode === 0 ? { ...result, reply: "" } : result
       : {
         ...result,
         stdout: `${parsed.answer ?? ""}\n`,
         usage: parsed.usage,
         servedModel: null,
       };
+    if (parsed !== null && (parsed.isError || (parsed.subtype !== null && parsed.subtype !== "success"))) {
+      rewritten = { ...rewritten, success: false, exitCode: result.exitCode || 1,
+        stderr: appendDiagnostic(rewritten.stderr, `codemux: cursor reported a failed result (${parsed.subtype ?? "is_error"})`) };
+    }
     if (
       !request.sandboxed || process.platform !== "darwin" ||
       result.exitCode === 0 || !result.stderr.includes("Authentication required")

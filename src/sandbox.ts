@@ -236,7 +236,7 @@ export function assertNoCallerBlockOverStateDirs(
   callerBlockPaths: readonly string[],
   harnessStateDirs: readonly string[]
 ): void {
-  const stateDirs = harnessStateDirs.map(canonicalSandboxBlockPath);
+  const stateDirs = harnessStateDirs.map((dir) => canonicalSandboxBlockPath(dir));
   for (const blocked of callerBlockPaths) {
     const canonicalBlocked = canonicalSandboxBlockPath(blocked);
     // The canonical form never ends in a slash except for the root, whose

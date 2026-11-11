@@ -3,6 +3,7 @@ import { ExperimentFailure, ExperimentFailureCode as Code, type ExperimentRecord
 import type { ExperimentRelayCall } from "./experiment-relay.js";
 import type { JsonObject } from "./experiment-server.js";
 import { parseClineResultEnvelope } from "./result-envelope/cline.js";
+import { timestampMs, timestampValid } from "./calendar.js";
 
 // Cline cli-v3.0.74, inspected 2026-11-09: native calls and final content projection.
 // https://github.com/cline/cline/blob/cli-v3.0.74/sdk/packages/shared/src/agent.ts#L54-L130
@@ -23,7 +24,7 @@ export function assertClineExperimentResult(result: JsonObject): void {
 }
 
 function nativeDefinitions(name: string, tools: readonly JsonObject[]): JsonObject[] {
-  return tools.map((tool) => ({ ...tool, name: clineExperimentToolName(name, tool.name) }));
+  return tools.map((tool) => ({ ...tool, name: clineExperimentToolName(name, tool.name), description: tool.description ?? "" }));
 }
 
 /** The custom provider uses OpenAI Chat Completions. Verify the actual body
@@ -130,12 +131,12 @@ export function verifyClineExperimentEvidence(source: Source, evidence: JsonObje
     if (capture.captureStage !== "wire_request") continue;
     const correlation = clineObject(capture.correlation), id = key({ run_id: correlation.runId, iteration: correlation.iteration });
     const attempt = `${id}:${capture.attempt}`;
-    if (!requests.has(id) || capture.mode !== "full" || !Number.isSafeInteger(capture.attempt) || capture.attempt < 1 || attempts.has(attempt) || !Number.isFinite(Date.parse(capture.timestamp))) throw new ExperimentFailure(Code.HarnessLogMissing, "Cline wire capture lacks native request correlation");
+    if (!requests.has(id) || capture.mode !== "full" || !Number.isSafeInteger(capture.attempt) || capture.attempt < 1 || attempts.has(attempt) || typeof capture.timestamp !== "string" || !timestampValid(capture.timestamp)) throw new ExperimentFailure(Code.HarnessLogMissing, "Cline wire capture lacks native request correlation");
     attempts.add(attempt); wired.add(id);
     for (const callId of verifyClineWireRequest(capture.payload, definitions, calls, source.spec.name)) {
       const origin = origins.get(callId);
       if (!origin || origin.run !== correlation.runId || origin.iteration >= correlation.iteration) throw new ExperimentFailure(Code.HarnessLogMissing, "Cline result delivery must follow its native call in the same run");
-      if (!delivered.has(callId)) source.record("tool_result_delivered", { call_id: callId, t: Date.parse(capture.timestamp) / 1000 });
+      if (!delivered.has(callId)) source.record("tool_result_delivered", { call_id: callId, t: timestampMs(capture.timestamp) / 1000 });
       delivered.add(callId);
     }
     source.record("tool_inventory", { tools: definitions.map((tool) => tool.name), equal: true });

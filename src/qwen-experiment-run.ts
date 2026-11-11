@@ -8,6 +8,7 @@
  * truncation. qwen-experiment-content.ts verifies those requests.
  */
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { runDirectoryPrefix } from "./run-directory-owner.js";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { ExperimentHttpRelay } from "./experiment-relay.js";
@@ -23,6 +24,7 @@ import { assertQwenExperimentResult, qwenExperimentCalls, qwenExperimentToolName
 import type { JsonObject } from "./experiment-server.js";
 import type { RunRequest, RunResult } from "./types.js";
 import { parseQwenResultEnvelope, qwenResult } from "./result-envelope/qwen.js";
+import { boundResultEnvelope, emptyUsage, envelopeRefused } from "./result-envelope/common.js";
 import { assertCleanInstructionFiles, cleanCwdHost } from "./clean-cwd.js";
 import { qwenLoginPath, writeQwenAccessOnlyLogin } from "./qwen-access-login.js";
 
@@ -77,7 +79,7 @@ export class QwenExperimentRun implements StdoutSink {
     assertQwenExperimentCwd(cwd);
     const parent = prepareRunDirParent(brandHome, ".codemux-experiment");
     const trusted = recordTrustedParent(parent);
-    this.home = mkdtempSync(join(parent, `run-${process.pid}-`));
+    this.home = mkdtempSync(join(parent, runDirectoryPrefix()));
     let finalized = false;
     this.finalizeHome = () => {
       if (finalized) return;
@@ -255,12 +257,14 @@ export function qwenExperimentResult(result: RunResult, request: RunRequest, rec
   }
   const batch = { ...result, stdout: JSON.stringify(events) };
   const folded = qwenResult(batch, { ...request, resultJson: true });
+  if (envelopeRefused("qwen", folded)) return folded;
   if (request.resultJson) {
     try {
       const envelope = JSON.parse(folded.stdout);
       envelope.codemux.recording = recording;
-      return { ...folded, stdout: JSON.stringify(envelope) + "\n" };
+      return boundResultEnvelope("qwen", { ...folded, stdout: JSON.stringify(envelope) + "\n" },
+        folded.usage ?? emptyUsage(), folded.servedModel ?? null);
     } catch { return folded; }
   }
-  return { ...folded, stdout: parseQwenResultEnvelope(batch.stdout)?.answer ?? "" };
+  return { ...folded, stdout: folded.success ? parseQwenResultEnvelope(batch.stdout)?.answer ?? "" : "" };
 }

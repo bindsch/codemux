@@ -42,7 +42,7 @@ afterAll(() => {
 
 /** The fake scode that proves it ran: a marker line, then one argument
  * per line. `--print-sandbox` output must carry the marker's absence. */
-const RECORDING_SCODE = `printf 'FAKE-SCODE-RAN\\n'\nprintf '%s\\n' "$@"`;
+const RECORDING_SCODE = `{ printf 'FAKE-SCODE-RAN\\n'; printf '%s\\n' "$@"; } | '${process.execPath}' -e 'console.log(JSON.stringify({type:"result", subtype:"success", result:await Bun.stdin.text()}))'`;
 
 const runFlags = (agent: string, cwd: string): string[] => [
   "run", "-a", agent, "--sandbox", "--hermetic",
@@ -297,10 +297,10 @@ describe("blocked operator state: run --print-sandbox", () => {
       expect(argv.length).toBeGreaterThan(4);
       expect(argv[0]!.endsWith("/scode")).toBe(true);
       expect(argv).toContain("--");
-      expectOwnTreeOnly(argv, home, "preview");
-      // The allow names a representative path; preparation creates nothing.
       const hermetic = join(home, ".claude", ".codemux-hermetic");
-      expect(existsSync(hermetic) ? readdirSync(hermetic) : []).toEqual([]);
+      expect(expectOwnTreeOnly(argv, home, "preview")).toBe(join(hermetic, "preview"));
+      // Nothing spawned; neither the placeholder nor its parent was created.
+      expect(existsSync(hermetic)).toBe(false);
     } finally {
       fake.cleanup();
     }

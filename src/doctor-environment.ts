@@ -198,6 +198,7 @@ export const aliasRow = (config: CodemuxConfig): EnvironmentRow => {
   }
   const problems: string[] = [];
   for (const [alias, mapping] of aliases) {
+    if (Object.keys(mapping).length === 0) problems.push(`${alias}: maps no harness`);
     for (const agent of Object.keys(mapping)) {
       try {
         resolveModel(alias, agent as AgentId, config);

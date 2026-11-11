@@ -10,18 +10,19 @@ import * as mcp from "../src/mcp.js";
 
 function processRig() {
   const child = new EventEmitter() as EventEmitter & {
-    stdin: { write(text: string, done: (error?: Error) => void): void; end(): void } | null;
-    stdout: EventEmitter | null;
+    stdin: EventEmitter & { write(text: string, done: (error?: Error) => void): void; end(): void; destroy(): void } | null;
+    stdout: (EventEmitter & { destroy(): void }) | null;
     kill(signal: string): void;
   };
   const wrote: Record<string, unknown>[] = [];
   const signals: string[] = [];
   let writeError: Error | undefined;
-  child.stdin = {
-    write: (text, done) => { wrote.push(JSON.parse(text)); done(writeError); },
+  child.stdin = Object.assign(new EventEmitter(), {
+    write: (text: string, done: (error?: Error) => void) => { wrote.push(JSON.parse(text)); done(writeError); },
     end: () => { child.emit("close"); },
-  };
-  child.stdout = new EventEmitter();
+    destroy: () => {},
+  });
+  child.stdout = Object.assign(new EventEmitter(), { destroy: () => {} });
   child.kill = (signal) => { signals.push(signal); };
   const calls: unknown[][] = [];
   const spawnFake = ((...args: unknown[]) => { calls.push(args); return child; }) as unknown as typeof spawn;
@@ -30,6 +31,29 @@ function processRig() {
 }
 
 describe("Pi MCP stdio bridge", () => {
+  test.each(["protocol", "write", "process"])("%s failure still waits for forced termination and close", async (failure) => {
+    const p = processRig();
+    let ended = false;
+    p.child.stdin!.end = () => { ended = true; };
+    const client = createPiMcpStdioTransport("/server", [], p.spawnFake);
+    if (failure === "write") p.failWrites();
+    const pending = client.request("test");
+    if (failure === "protocol") p.child.stdout!.emit("data", Buffer.from("bad json\n"));
+    if (failure === "process") p.child.emit("error", new Error("synthetic process error"));
+    await expect(pending).rejects.toThrow();
+    let resolved = false;
+    const closing = client.close().then(() => { resolved = true; });
+    await Promise.resolve();
+    try {
+      expect(ended).toBe(true);
+      expect(resolved).toBe(false);
+      await Bun.sleep(1050);
+      expect(p.signals).toContain("SIGKILL");
+      expect(resolved).toBe(false);
+    } finally { p.child.emit("close"); await closing; }
+    expect(resolved).toBe(true);
+    await client.close();
+  });
   test("correlates requests, notifications, server errors, and cleanup", async () => {
     const p = processRig();
     const client = createPiMcpStdioTransport("/trusted/server", ["literal;arg"], p.spawnFake);
@@ -107,19 +131,22 @@ describe("Pi MCP stdio bridge", () => {
     removed.mockRestore(); await client.close();
   });
 
-  test("canceled request IDs stay bounded while a server ignores cancellation", async () => {
+  test("canceled calls do not exhaust request capacity when the server never replies", async () => {
     const p = processRig(); const client = createPiMcpStdioTransport("/server", [], p.spawnFake);
-    for (let i = 0; i < 256; i++) {
+    for (let i = 0; i < 512; i++) {
       const controller = new AbortController();
       const pending = client.request("tools/call", {}, controller.signal);
       controller.abort();
       await expect(pending).rejects.toThrow();
     }
-    await expect(client.request("tools/list")).rejects.toThrow("too many pending");
-    p.reply({ jsonrpc: "2.0", id: 1, result: {} });
     const next = client.request("tools/list");
-    p.reply({ jsonrpc: "2.0", id: 257, result: {} });
+    p.reply({ jsonrpc: "2.0", id: 512, result: {} });
+    p.reply({ jsonrpc: "2.0", id: 513, result: {} });
     expect(await next).toEqual({});
+    // The oldest cancellation has expired; it is no longer recognized.
+    const expired = client.request("tools/list");
+    p.reply({ jsonrpc: "2.0", id: 1, result: {} });
+    await expect(expired).rejects.toThrow("invalid server response");
     await client.close();
   });
 });

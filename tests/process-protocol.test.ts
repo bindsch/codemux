@@ -274,6 +274,8 @@ test.each(["timeout", "limit", "success", "failure"].flatMap((kind) => ["server"
     : spyOn(fs, "fsyncSync").mockImplementation(() => { throw new Error("recording finalization failed"); });
   let retained = "";
   class BridgeAdapter extends ClaudeAdapter {
+    // This fixture models an already-extracted answer; it tests cleanup.
+    override processRunResult(result: RunResult) { return { ...result, reply: result.stdout }; }
     override prepareRun() {
       return { experimentBridge: bridge, stdoutSink: {
         push(chunk: string) { retained += chunk; }, finish() { return retained; },
@@ -323,6 +325,7 @@ test("a never-settling bridge cleanup does not hang the launcher's cleanup (revi
   const finalize = spyOn(ExperimentServer.prototype, "close").mockImplementation(() => new Promise<void>(() => {}));
   let retained = "";
   class BridgeAdapter extends ClaudeAdapter {
+    override processRunResult(result: RunResult) { return { ...result, reply: result.stdout }; }
     override prepareRun() {
       return { experimentBridge: bridge, stdoutSink: {
         push(chunk: string) { retained += chunk; }, finish() { return retained; },
@@ -373,6 +376,7 @@ test("pipe abandonment also releases an exit promise held open by inherited stdi
 
 test("protocol cleanup failure still writes the completed launch's receipt", async () => {
   class CleanupFailureAdapter extends ClaudeAdapter {
+    override processRunResult(result: RunResult) { return { ...result, reply: result.stdout }; }
     override prepareRun() {
       let output = "";
       return { stdoutSink: {

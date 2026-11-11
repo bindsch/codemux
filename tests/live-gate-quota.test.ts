@@ -84,7 +84,7 @@ test("gateQuotaDecisions applies the launch-path rule over one snapshot", () => 
     ["opencode"]
   );
   expect(mapped.get("opencode")).toMatchObject({ refused: true });
-  expect(mapped.get("opencode")!.reason).toContain("quota gate: opencode:");
+  expect(mapped.get("opencode")!.reason).toContain("quota gate: opencode (usagemux client codex):");
 });
 
 test("a quota-refused harness gets SKIP cells before anything spawns; the no-spend probes still run", async () => {

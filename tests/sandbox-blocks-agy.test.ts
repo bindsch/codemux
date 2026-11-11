@@ -178,8 +178,8 @@ describe("agy isolation sandbox: run argv", () => {
       const argv = result.stdout.trimEnd().split("\n");
       expect(argv[0]!.endsWith("/scode")).toBe(true);
       expectBlockedState(argv, home, "preview");
-      // The allow names a representative path; preparation creates nothing.
-      expect(existsSync(stateRoots(home).probes)).toBe(false);
+      // Nothing spawned; no private home or parent was created.
+      expect(existsSync(stateRoots(home).real)).toBe(false);
     } finally {
       fake.cleanup();
     }

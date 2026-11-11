@@ -63,10 +63,11 @@ the provider modules translate operator login or explicit overrides into
 the selected harness's carriers. Provider overrides reuse these seams for
 sessions. [hermetic-home.ts](../src/hermetic-home.ts) manages isolated
 per-run homes and bounded cleanup. Hermetic runs and persistent sessions
-have different state lifetimes: a hermetic session (every session agent
-but Cursor) holds a session-lifetime private home across turns and
+have different state lifetimes: fourteen hermetic session agents hold
+a session-lifetime private home across turns and
 `--resume`, and `--final` or the stale sweep removes it
-([sessions](sessions.md#hermetic-sessions)).
+([sessions](sessions.md#hermetic-sessions)). Qwen uses safe mode and keeps
+no session-keyed home; Cursor refuses hermetic sessions.
 See [authentication](authentication.md) and [isolation](isolation.md).
 
 ## Sessions

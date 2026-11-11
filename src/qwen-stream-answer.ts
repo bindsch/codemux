@@ -46,15 +46,19 @@ function blocks(message: Message): unknown[] | string | null {
 const isBlock = (block: unknown, type: string): block is Record<string, unknown> =>
   block !== null && typeof block === "object" && (block as Message).type === type;
 
+export function qwenUserTurn(message: Message): boolean {
+  if (message.type !== "user" || message.parent_tool_use_id != null) return false;
+  const content = blocks(message);
+  return typeof content === "string" || (Array.isArray(content) && content.some((block) => isBlock(block, "text")));
+}
+
 export function qwenTranscript(messages: readonly Message[]): AnswerTranscript {
   const collector = new AnswerCollector();
   for (const message of messages) {
     if (message.parent_tool_use_id !== null && message.parent_tool_use_id !== undefined) continue;
     const content = blocks(message);
     if (message.type === "user") {
-      if (typeof content === "string" || (Array.isArray(content) && content.some((block) => isBlock(block, "text")))) {
-        collector.userTurn();
-      }
+      if (qwenUserTurn(message)) collector.userTurn();
       continue;
     }
     if (message.type !== "assistant" || !Array.isArray(content)) continue;

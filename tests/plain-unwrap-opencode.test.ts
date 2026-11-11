@@ -101,7 +101,7 @@ describe("opencodePlainResult", () => {
 
   test("a non-JSON line with no wire evidence is the escape hatch: stdout verbatim, nothing recorded", () => {
     const out = opencodePlainResult(finished("hello\n"));
-    expect(out).toEqual(finished("hello\n"));
+    expect(out).toEqual({ ...finished("hello\n"), reply: "" });
     expect(out.usage).toBeUndefined();
   });
 
@@ -121,7 +121,7 @@ describe("opencodePlainResult", () => {
     const stream = new OpenCodePlainFold();
     expect(stream.verdict(finished("")).success).toBe(false);
     const failedRun = { stdout: "", stderr: "boom", exitCode: 2, success: false };
-    expect(opencodePlainResult(failedRun)).toEqual(failedRun);
+    expect(opencodePlainResult(failedRun)).toEqual({ ...failedRun, reply: "" });
   });
 
   test("a lone malformed event is a failed structured stream, never a plain reply (round 259)", () => {

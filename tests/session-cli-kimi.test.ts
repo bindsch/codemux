@@ -14,7 +14,7 @@ import { FAKE_KIMI, driveSession, fakeKimiEnv } from "./helpers/session-cli.js";
 describe("CLI - kimi sessions", () => {
   test("drives a two-turn session over kimi's own store, carries the override, and records ~/.kimi-code as the home", async () => {
     // The CLI seams the driver e2e cannot reach: the SESSION_AGENTS
-    // entry (floor probe, id pattern, --turn-timeout refusal), the
+    // entry (floor probe, id pattern, --turn-timeout support), the
     // kimi harness home, the spawnTurn env cache under a provider
     // override (KIMI_MODEL_* riding the environment, never argv or a
     // `-m` alias), and the per-turn --session resume of the id the

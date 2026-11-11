@@ -274,7 +274,7 @@ export class KimiAdapter extends BaseAdapter {
   buildRunCommand(request: RunRequest, context?: RunContext): string[] {
     const privateHome = context?.kimiHermeticHome;
     const unpreparedHome = join(this.realBrandHome(), ".codemux-hermetic", "unprepared");
-    prepareKimiPlaywright(request, context, { pathEnv: this.executionPathEnv(), forbiddenRoot: request.cwd });
+    prepareKimiPlaywright(request, context, { pathEnv: this.executionPathEnv(), forbiddenRoot: this.executionWorkingDirectory(request) });
     // Scode must keep the real HOME for policy and credential access. Redirect only its child.
     const cmd = request.hermetic
       ? ["env", ...KIMI_HERMETIC_ENV_OMISSIONS.flatMap((name) => ["-u", name]),

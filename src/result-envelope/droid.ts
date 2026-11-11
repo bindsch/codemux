@@ -80,7 +80,10 @@ export function parseDroidResultEnvelope(stdout: string): DroidEnvelopeInfo | nu
         break;
       case "message":
         sawStream = true;
-        if (event.role === "user") collector.userTurn();
+        if (event.role === "user") {
+          collector.userTurn();
+          last = completion = null;
+        }
         else if (event.role === "assistant" && typeof event.text === "string") collector.message(event.text);
         break;
       case "tool_call":
@@ -144,14 +147,14 @@ export function droidStreamFold(): AnswerStreamFold {
 }
 
 /** A plain droid run: the stream folded to the complete answer. Stdout
- * that carries no droid event passes through unchanged (the escape hatch
- * for a binary that ignored the format flag); a stream with an error
+ * that carries no droid event stays as diagnostics and fails result-empty
+ * because no assistant answer was verified; a stream with an error
  * event or no completion fails the run with the reason on stderr. */
 const plainText = (text: string): string => text === "" || text.endsWith("\n") ? text : `${text}\n`;
 
 export function droidPlainResult(result: RunResult): RunResult {
   const parsed = parseDroidResultEnvelope(result.stdout);
-  if (parsed === null) return result;
+  if (parsed === null) return { ...result, reply: "" };
   const usage = parsed.usage;
   if (parsed.isError || parsed.subtype !== "success") {
     const reason = parsed.errorMessage ?? (parsed.subtype === null ? "no completion event" : `a ${parsed.subtype} result`);

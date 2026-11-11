@@ -6,6 +6,7 @@ import type { PiMcpRunContext } from "./pi-mcp-launch.js";
 import { createPiHermeticAgentDir, type PiProviderAgentDir } from "./pi-provider.js";
 import { readUtf8FileBounded } from "./file-io.js";
 import { piResult } from "./result-envelope/pi.js";
+import { boundResultEnvelope, emptyUsage } from "./result-envelope/common.js";
 import { installPiBudgetExtension, piBudgetUsage, piBudgetModel, type PiBudgetUsage } from "./pi-budget-extension.js";
 
 const MAX_BUDGET_EVIDENCE_BYTES = 1024 * 1024;
@@ -108,7 +109,8 @@ export function piBudgetResult(result: RunResult, request: RunRequest, context?:
     if (diagnostic) envelope.codemux.failure_code = verdict?.exhausted ? "budget-limit" : "budget-evidence-invalid";
     // The run's fold shed tool lines; its marker evidence joins the scan
     // surface, as on every other pi run (src/stream-marker-scan.ts).
-    return { ...parsed, usage: envelope.usage, scanSurface: `${result.stdout}\n${sinkMarkerEvidence(context?.stdoutSink)}`,
+    const enriched = { ...parsed, usage: envelope.usage, scanSurface: `${result.stdout}\n${sinkMarkerEvidence(context?.stdoutSink)}`,
       stdout: request.resultJson ? `${JSON.stringify(envelope)}\n` : envelope.reply };
+    return request.resultJson ? boundResultEnvelope("pi", enriched, enriched.usage ?? emptyUsage(), parsed.servedModel ?? null) : enriched;
   } catch { return parsed; }
 }

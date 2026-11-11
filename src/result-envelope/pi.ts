@@ -58,15 +58,18 @@ export interface PiEnvelopeInfo {
 }
 
 interface UsageSum {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
+  input: number | null;
+  output: number | null;
+  cacheRead: number | null;
+  cacheWrite: number | null;
   costUsd: number | null;
   complete: boolean;
+  seen: boolean;
 }
 
 function recordUsage(sums: UsageSum, reported: unknown): void {
+  const first = !sums.seen;
+  sums.seen = true;
   if (typeof reported !== "object" || reported === null) {
     sums.complete = false;
     return;
@@ -76,10 +79,12 @@ function recordUsage(sums: UsageSum, reported: unknown): void {
   const output = reportedTokenCount(counts.output);
   const cacheRead = reportedTokenCount(counts.cacheRead);
   const cacheWrite = reportedTokenCount(counts.cacheWrite);
-  if (input !== null) sums.input += input;
-  if (output !== null) sums.output += output;
-  if (cacheRead !== null) sums.cacheRead += cacheRead;
-  if (cacheWrite !== null) sums.cacheWrite += cacheWrite;
+  const add = (sum: number | null, count: number | null) =>
+    sum === null || count === null ? null : safeTokenSum(sum, count);
+  sums.input = add(sums.input, input);
+  sums.output = add(sums.output, output);
+  sums.cacheRead = add(sums.cacheRead, cacheRead);
+  sums.cacheWrite = add(sums.cacheWrite, cacheWrite);
   sums.complete =
     sums.complete && input !== null && output !== null && cacheRead !== null && cacheWrite !== null;
   const cost =
@@ -87,21 +92,24 @@ function recordUsage(sums: UsageSum, reported: unknown): void {
       ? reportedCount((counts.cost as Record<string, unknown>).total)
       : null;
   // Dollars, not tokens: a plain finite sum, never an integer-only check.
-  if (cost !== null) sums.costUsd = (sums.costUsd ?? 0) + cost;
+  sums.costUsd = first ? cost : sums.costUsd === null || cost === null ? null : reportedCount(sums.costUsd + cost);
 }
 
 function summedUsage(sums: UsageSum): ResultUsageBlock {
   const usage = emptyUsage();
-  if (!sums.complete) return usage;
+  if (!sums.seen || !sums.complete) return usage;
   usage.input_tokens = sums.input;
   usage.output_tokens = sums.output;
-  const cached = safeTokenSum(sums.cacheRead, sums.cacheWrite);
+  if (sums.input === null) markOverflowed(usage, ["input_tokens"]);
+  if (sums.output === null) markOverflowed(usage, ["output_tokens"]);
+  const cached = sums.cacheRead === null || sums.cacheWrite === null ? null : safeTokenSum(sums.cacheRead, sums.cacheWrite);
   if (cached === null) {
     markOverflowed(usage, ["cached_input_tokens"]);
-    return usage;
   }
   usage.cached_input_tokens = cached;
-  usage.total_tokens = safeTokenSum(usage.input_tokens, cached, usage.output_tokens);
+  if (usage.input_tokens !== null && cached !== null && usage.output_tokens !== null) {
+    usage.total_tokens = safeTokenSum(usage.input_tokens, cached, usage.output_tokens);
+  }
   usage.cost_usd = sums.costUsd;
   return usage;
 }
@@ -124,7 +132,7 @@ export function parsePiResultEnvelope(stdout: string): PiEnvelopeInfo | null {
   let stopReason: string | null = null;
   let errorText: string | null = null;
   const models = new Set<string>();
-  const sums: UsageSum = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: null, complete: true };
+  const sums: UsageSum = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: null, complete: true, seen: false };
   const collector = new AnswerCollector();
   for (const line of stdout.split("\n")) {
     const trimmed = line.trim();
@@ -142,7 +150,10 @@ export function parsePiResultEnvelope(stdout: string): PiEnvelopeInfo | null {
     const message = event.message;
     if (typeof message !== "object" || message === null) continue;
     const typed = message as Record<string, unknown>;
-    if (typed.role === "user") collector.userTurn();
+    if (typed.role === "user") {
+      collector.userTurn();
+      answer = stopReason = errorText = null;
+    }
     if (typed.role !== "assistant") continue;
     // Every assistant message joins the answer; the last one's text stays
     // the final message, and every one contributes usage and model.
@@ -263,10 +274,10 @@ export function piStreamFold(): AnswerStreamFold {
 }
 
 /** A plain pi run on the json wire: the complete answer on stdout. Stdout
- * with no JSON line passes through unchanged (the escape hatch); the
+ * with no JSON line stays as diagnostics and fails result-empty; the
  * failure rules are the envelope's. */
 export function piPlainResult(result: RunResult, request: RunRequest): RunResult {
-  if (parsePiResultEnvelope(result.stdout) === null) return result;
+  if (parsePiResultEnvelope(result.stdout) === null) return { ...result, reply: "" };
   const processed = piResult(result, request);
   try {
     const envelope = JSON.parse(processed.stdout) as Record<string, unknown>;

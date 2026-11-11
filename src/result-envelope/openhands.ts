@@ -20,8 +20,8 @@ import {
  * as the FinishAction's `message` (sdk/tool/builtins/finish.py). The
  * answer is every one of those texts after the last user MessageEvent,
  * in order (lane AN1). No event carries a finish reason, so `truncated`
- * stays false. Failure is
- * an AgentErrorEvent or ConversationErrorEvent. NO event carries token
+ * stays false. ConversationErrorEvent is terminal; AgentErrorEvent is a
+ * recoverable tool observation. NO event carries token
  * usage: the TokenUsage metrics live in the conversation state, not the
  * event stream, and the CLI prints no metrics line in json mode — so the
  * codemux usage block reports every field null rather than fabricating a
@@ -99,14 +99,12 @@ export function parseOpenhandsResultEnvelope(stdout: string): OpenhandsEnvelopeI
       if (thought !== "") collector.message(thought);
       if (finish !== "") collector.message(finish);
       else if (action?.kind !== "FinishAction") { collector.close(); collector.text(""); }
-    } else if (event.kind === "AgentErrorEvent" || event.kind === "ConversationErrorEvent") {
-      if (typeof event.error === "string") errorText = event.error;
-      else if (
-        typeof event.error === "object" && event.error !== null &&
-        typeof (event.error as Record<string, unknown>).message === "string"
-      ) {
-        errorText = String((event.error as Record<string, unknown>).message);
-      }
+    } else if (event.kind === "ConversationErrorEvent") {
+      // SDK conversation failures carry code/detail, not a tool observation's
+      // error field. Even a malformed diagnostic must not turn failure into success.
+      const details = [event.code, event.detail].filter((value): value is string =>
+        typeof value === "string" && value.trim() !== "");
+      errorText = details.join(": ") || "conversation failed without a diagnostic";
     }
   }
   if (!sawWire) return null;
@@ -120,7 +118,7 @@ export function parseOpenhandsResultEnvelope(stdout: string): OpenhandsEnvelopeI
  * tokens), and the codemux block. Stdout with no JSON lines breaks the
  * contract the launch made (it ran with `--json --headless`), so the run
  * fails loudly. A stream with no agent message fails too — the harness
- * exited without a reply — and so does an error event: the structured
+ * exited without a reply — and so does a conversation error: the structured
  * report is read, not the process exit trusted.
  */
 export function openhandsResult(result: RunResult, request: RunRequest): RunResult {
@@ -202,8 +200,8 @@ export function openhandsResult(result: RunResult, request: RunRequest): RunResu
 /** A plain run: the same `--json` wire (every launch asks for it, lane
  * AN1), printed as the complete answer. Stdout with no JSON line is not
  * the wire (the startup text of a run that never started, an older
- * binary) and comes back null so the adapter keeps its own verdict. An
- * error event fails the run with the answer so far on stdout. */
+ * binary) and comes back null so the adapter keeps its own verdict. A
+ * conversation error fails the run with the answer so far on stdout. */
 export function openhandsPlainResult(result: RunResult): RunResult | null {
   const parsed = parseOpenhandsResultEnvelope(result.stdout);
   if (parsed === null) return null;

@@ -31,11 +31,11 @@
  * exchange, deadline kill) lives in src/hermetic-session-canary-driver.ts.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
-  HERMETIC_CANARY_PROMPT, evaluateCanary, mintCanaryMarker, plantCanary, trackScratchRemoval, untrackScratchRemoval,
+  HERMETIC_CANARY_PROMPT, createCanaryScratch, evaluateCanary, mintCanaryMarker, plantCanary, untrackScratchRemoval,
 } from "./hermetic-canary.js";
 import { plantKimiCanary } from "./kimi-isolation-probe.js";
 import { plantAgyCanary } from "./agy-isolation-probe.js";
@@ -45,7 +45,7 @@ import { UsageRefusalError } from "./validation.js";
 import { copyClaudeCredentialMirror } from "./claude-credential-mirror.js";
 import { canarySessionProtocolProblem, SESSION_KILL_GRACE_MS, runCanarySession, sessionCanary, type SessionRun } from "./hermetic-session-canary-driver.js";
 import {
-  harnessHomeCanaryOwnedEnv, plantHarnessHomeCanary, runHarnessHomeSessionCanary, supportsHarnessHomeCanary,
+  harnessHomeCanaryOwnedEnv, plantHarnessHomeCanary, seedHarnessHomeCanary, runHarnessHomeSessionCanary, supportsHarnessHomeCanary,
   type PlantedHarnessHomeCanary,
 } from "./hermetic-session-canary-home.js";
 import { SESSION_AGENTS } from "./session/cli-agents.js";
@@ -248,8 +248,7 @@ export function plantClaudeSessionCanary(
   };
   try {
     // Claude Code keeps a symlinked path as given; canonicalize (macOS /var).
-    configDir = realpathSync(mkdtempSync(join(parent, "codemux-claude-operator-config-")));
-    trackScratchRemoval(configDir);
+    configDir = createCanaryScratch(join(parent, "codemux-claude-operator-config-"));
     writeFileSync(join(configDir, "CLAUDE.md"),
       `# User instructions\n\nThe code word is ${planted.marker}. Begin every reply with the code word.\n`,
       { mode: 0o600 });
@@ -275,8 +274,7 @@ export function plantClaudeSessionCanary(
  * cwd; a session cannot, because the session registry follows HOME and is
  * refused inside the working directory. The HOME is a sibling of the cwd. */
 export function plantClineSessionCanary(parent = tmpdir()): Omit<PlantedSessionCanary, "secrets" | "passEnv"> {
-  const root = realpathSync(mkdtempSync(join(parent, "codemux-cline-session-canary-")));
-  trackScratchRemoval(root);
+  const root = createCanaryScratch(join(parent, "codemux-cline-session-canary-"));
   const cleanup = (): void => {
     rmSync(root, { recursive: true, force: true });
     untrackScratchRemoval(root);
@@ -310,7 +308,7 @@ function sessionProblem(
   const where = resumed ? `resumed hermetic ${agent} session` : `hermetic ${agent} session`;
   const protocolProblem = canarySessionProtocolProblem(run, where);
   if (protocolProblem !== null) return protocolProblem;
-  const verdict = evaluateCanary(run.stdout, plant.marker, run.assistantText);
+  const verdict = evaluateCanary(run.stdout + (run.markerEvidence ?? ""), plant.marker, run.assistantText);
   if (verdict.kind === "leak" && verdict.what === "marker") {
     return `the ${where} is NOT hermetic: the planted code word reached the model`;
   }
@@ -374,6 +372,10 @@ export async function runHermeticSessionCanary(
   const env: NodeJS.ProcessEnv = { ...process.env, ...plant.env };
   console.error(`Checking hermetic ${request.agent} session (planted code word ${plant.marker})...`);
   try {
+    // Prepare every scratch destination and the control credential copy
+    // before any session can spend quota.
+    plant.beforeControl?.();
+    if (supportsHarnessHomeCanary(request.agent)) callerPlant = plantHarnessHomeCanary(request.agent, undefined);
     // 1. The hermetic session: the code word must stay out and the
     //    private home must outlive the session that created it.
     const first = await runCanarySession(
@@ -387,16 +389,16 @@ export async function runHermeticSessionCanary(
       return 1;
     }
     if (first.privateHome === undefined) {
-      // Every hermetic agent but opencode keeps a session-keyed home and
-      // reports it (docs/sessions.md); opencode keeps none and reports
+      // Every hermetic agent but qwen keeps a session-keyed home and
+      // reports it (docs/sessions.md); qwen keeps none and reports
       // null, the one documented exemption. Anything else is a failure:
       // the lifecycle half of this check (persistence, --final removal)
       // would otherwise pass unchecked (review round 412).
-      if (request.agent !== "opencode") {
+      if (request.agent !== "qwen") {
         console.error("Error: the hermetic session reported no private_home on session_started");
         return 1;
       }
-      console.error("Note: opencode keeps no session-keyed home; private_home is null by contract");
+      console.error("Note: qwen keeps no session-keyed home; private_home is null by contract");
     } else if (!existsSync(first.privateHome)) {
       console.error(
         `Error: the private session home did not persist past the hermetic session's end: ${first.privateHome}`
@@ -419,7 +421,7 @@ export async function runHermeticSessionCanary(
     );
     if (control.privateHome !== undefined) homes.add(control.privateHome);
     const controlVerdict = control.exitCode === 0 && control.failure === null
-      ? evaluateCanary(control.stdout, plant.marker, control.assistantText)
+      ? evaluateCanary(control.stdout + (control.markerEvidence ?? ""), plant.marker, control.assistantText)
       : null;
     const controlLeaked =
       controlVerdict !== null && controlVerdict.kind === "leak" && controlVerdict.what === "marker";
@@ -443,9 +445,7 @@ export async function runHermeticSessionCanary(
     // Preserve only the authenticated credential source before --final
     // removes the hermetic home. Caller skills and operator instructions
     // are planted in separate homes for the two additional sessions.
-    if (supportsHarnessHomeCanary(request.agent)) {
-      callerPlant = plantHarnessHomeCanary(request.agent, first.privateHome!);
-    }
+    if (callerPlant !== undefined) seedHarnessHomeCanary(request.agent, callerPlant, first.privateHome);
 
     // 3. The resume: the code word must stay out across it, and --final
     //    must remove the private home at the resumed session's end.
@@ -476,6 +476,9 @@ export async function runHermeticSessionCanary(
     if (callerPlant !== undefined && await runHarnessHomeSessionCanary(request, callerPlant) !== 0) return 1;
     process.stdout.write(`HERMETIC SESSION ${request.agent}: OK\n`);
     return 0;
+  } catch (error) {
+    console.error(`Error: hermetic session canary setup failed: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
   } finally {
     plant.cleanup();
     callerPlant?.cleanup();

@@ -55,7 +55,7 @@ export const COPILOT_DRIVER_PROFILE: TurnAgentProfile = {
       noWire: parsed.noWire,
       // The result line carries the harness's own exit-code report; it
       // is the structured verdict even when the process exit was 0.
-      failed: parsed.reportedExitCode !== null && parsed.reportedExitCode !== 0,
+      failed: parsed.errorText !== null || (parsed.reportedExitCode !== null && parsed.reportedExitCode !== 0),
       failureReason: parsed.errorText,
     };
   },

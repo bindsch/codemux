@@ -34,7 +34,7 @@ const doctorHomes: string[] = [];
 const recordingClaude = (record: string): string =>
   `if [ "$1" = "--version" ]; then printf '2.1.220 (Claude Code)\\n'; exit 0; fi
 printf '%s\\n' "$*" >> ${JSON.stringify(record)}
-printf 'OK\\n'`;
+printf '{"type":"result","subtype":"success","result":"OK"}\\n'`;
 
 // A scode that runs what it wraps (after `--`, the command the launcher
 // built), so a sandboxed print-only launch resolves its argv for real.

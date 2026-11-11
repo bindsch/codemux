@@ -155,7 +155,7 @@ describe.skipIf(process.platform !== "darwin")("Cursor's sandbox credential stor
     const result: RunResult = {
       stdout: "OK", stderr: "Authentication required\n", exitCode: 0, success: true,
     };
-    expect(adapter.processRunResult(result, request)).toBe(result);
+    expect(adapter.processRunResult(result, request)).toEqual({ ...result, reply: "" });
   });
 
   test.each([false, undefined])("does not append the hint when sandboxed is %s", (sandboxed) => {
@@ -203,7 +203,7 @@ exit 7`,
     const { env, bin, request } = setup(true, { [STORE_ENV]: "keychain" });
     writeFileSync(join(bin, "cursor-agent"), `#!/bin/sh
 if [ "$1" = "--version" ]; then printf '2026.08.11\\n'; exit 0; fi
-printf '%s' "$AGENT_CLI_CREDENTIAL_STORE"
+printf '{"type":"result","subtype":"success","result":"%s"}\\n' "$AGENT_CLI_CREDENTIAL_STORE"
 `, { mode: 0o700 });
     writeFileSync(join(bin, "scode"), `#!/bin/sh
 if [ "$1" = "--version" ]; then printf 'scode 0.6.0\\n'; exit 0; fi
@@ -217,7 +217,7 @@ exec "$@"
       sandbox: true, requestedAutonomy: "read-only", cwd: request.cwd,
     });
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toBe(explicit ? "keychain" : "file");
+    expect(result.stdout).toBe(explicit ? "keychain\n" : "file\n");
     expect(result.stderr).toBe("");
   });
 });

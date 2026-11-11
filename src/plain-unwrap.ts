@@ -51,10 +51,10 @@
  * reply — the al28 defect this restates the guard against.
  * Stdout that is not the structured output the launch asked for — an older
  * binary, a wrapper that strips the flag, a fake in a test — passes
- * through verbatim with the run unchanged: no usage is recorded, except
+ * through verbatim as diagnostics: no usage is recorded, except
  * on codex's hatch, whose blended `tokens used` stderr figure becomes the
- * run's usage (codexPlainResult) — the escape hatch that keeps every
- * binary codemux did not structure its output for working. Empty stdout
+ * run's usage (codexPlainResult). The shared result-empty check fails
+ * these unverified outputs, even when they contain text. Empty stdout
  * never takes the hatch (round 259): a zero-exit run that printed
  * nothing produced neither the structured output nor a reply, so
  * claude/zai, agy, and opencode fail it as an empty success — the rule
@@ -93,7 +93,7 @@
  * so that arm's stdout is NOT empty (`" \n"` for a message of one
  * space). `messagelessCompletedTurnSucceeds` drops the whole empty and
  * whitespace arm of the shared verdict (codexStreamVerdict,
- * result-envelope.ts), which is how both spellings reach success here. A
+ * result-envelope.ts); result-empty then fails both spellings. A
  * failed run keeps
  * the harness's own text on stdout — the
  * error envelope's `result` or `response`, the text opencode streamed

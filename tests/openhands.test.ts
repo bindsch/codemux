@@ -81,7 +81,7 @@ describe("OpenHandsAdapter", () => {
     // A nonzero exit keeps its own code; a real reply passes untouched.
     expect(adapter.processRunResult({ stdout, stderr: "", exitCode: 2, success: false }, request).exitCode).toBe(2);
     const ok = { stdout: "OK\n", stderr: "", exitCode: 0, success: true };
-    expect(adapter.processRunResult(ok, request)).toEqual(ok);
+    expect(adapter.processRunResult(ok, request)).toEqual({ ...ok, reply: "" });
     // A reply that quotes the phrase, or carries the marker without the
     // instruction and farewell lines, is a reply (review round 334).
     for (const quoted of [
@@ -91,7 +91,7 @@ describe("OpenHandsAdapter", () => {
     ]) {
       expect(openHandsRanNoTask(quoted)).toBe(false);
       const reply = { stdout: quoted, stderr: "", exitCode: 0, success: true };
-      expect(adapter.processRunResult(reply, request)).toEqual(reply);
+      expect(adapter.processRunResult(reply, request)).toEqual({ ...reply, reply: "" });
     }
     expect(openHandsRanNoTask(stdout)).toBe(true);
   });

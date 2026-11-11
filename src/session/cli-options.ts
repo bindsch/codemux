@@ -30,7 +30,7 @@ export function registerSessionOptions(command: Command, defaultAgent: string): 
     .option("--pass-env <names>", "Pass comma-separated sensitive environment names")
     .option(
       "--hermetic",
-      `Hermetic session: no operator instructions, skills, hooks, or MCP servers load, and the harness keeps its state in a per-session private home (${agents("session.hermetic")})`
+      `Hermetic session: no operator instructions, skills, hooks, or MCP servers load (${agents("session.hermetic")}); per-session private state home except Qwen keeps its native state store`
     )
     .option(
       "--experiment-project-settings",

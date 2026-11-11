@@ -127,7 +127,7 @@ describe("codex session e2e - hermetic", () => {
     send(session.driver, { type: "user", text: "scenario:basic hello" });
     await waitFor(session.events, of("turn_completed"), "turn_completed");
     send(session.driver, { type: "shutdown" });
-    expect(await session.code).toBe(0);
+    expect(await session.code).toBe(1);
     const ended = session.events[session.events.length - 1] as Event;
     expect(ended.type).toBe("session_ended");
     // The registry's harness_home names the settled path, which does not

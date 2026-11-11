@@ -394,6 +394,8 @@ export function buildEvent(
   for (const [key, value] of Object.entries(fields)) {
     envelope[key] = value;
   }
+  if (type === "tool_call" && (envelope.input === null || typeof envelope.input !== "object" ||
+      Array.isArray(envelope.input))) envelope.input = {};
   return JSON.stringify(envelope);
 }
 

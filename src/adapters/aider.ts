@@ -14,7 +14,8 @@ import {
 import { createAiderRunFiles, type AiderRunContext } from "../aider-run-files.js";
 import { aiderReportedLengthStop, parseAiderAnalytics } from "../result-envelope/aider.js";
 import { withTruncationNotice } from "../answer-complete.js";
-import { extractAiderReply } from "../aider-history-text.js";
+import { aiderHistoryHeader, aiderReplyAfterHeader } from "../aider-history-text.js";
+import { aiderHistoryProviderFailure, aiderProviderFailure } from "../aider-failure.js";
 import { assertCleanInstructionFiles } from "../clean-cwd.js";
 import {
   assertProviderCap,
@@ -128,10 +129,8 @@ export class AiderAdapter extends BaseAdapter {
   }
 
   private baseCommand(context?: AiderRunContext): string[] {
-    // A per-run file when prepareRun created one (hermetic runs only,
-    // removed in cleanupRun, and the hermetic check's answer source),
-    // /dev/null otherwise: plain runs, TUI sessions and static previews
-    // keep writing nowhere.
+    // Real runs extract their answer from a private, temporary history.
+    // TUI sessions and static previews keep writing nowhere.
     const cmd = ["aider", ...aiderBaseFlags(context?.aiderHistoryFile?.path ?? devNull)];
     if (context?.aiderRunFiles?.modelSettingsPath) {
       cmd[cmd.indexOf("--model-settings-file") + 1] = context.aiderRunFiles.modelSettingsPath;
@@ -145,8 +144,10 @@ export class AiderAdapter extends BaseAdapter {
     try {
       return {
         aiderRunFiles: files,
+        aiderHistoryFile: launch.printOnly
+          ? { path: join(files.home, "history.txt"), finalize: () => {} }
+          : createAiderHistoryFile(this.effectiveHome()),
         ...(request.hermetic ? {
-          aiderHistoryFile: launch.printOnly ? { path: join(files.home, "history.txt"), finalize: () => {} } : createAiderHistoryFile(this.effectiveHome()),
           aiderHermeticHome: files,
         } : {}),
       };
@@ -181,7 +182,7 @@ export class AiderAdapter extends BaseAdapter {
    */
   override processRunResult(
     result: RunResult,
-    _request: RunRequest,
+    request: RunRequest,
     context?: AiderRunContext
   ): RunResult {
     if (context?.aiderRunFiles) {
@@ -193,19 +194,20 @@ export class AiderAdapter extends BaseAdapter {
     result = withTruncationNotice(result, "aider", { messages: [],
       truncated: aiderReportedLengthStop(`${result.stdout}\n${result.stderr}`) });
     const history = context?.aiderHistoryFile;
-    if (history === undefined) return result;
     // The read itself trusts nothing about the file (readAiderHistory:
     // no symlink, bounded size — the sandboxed harness can write the
     // directory it lives in).
-    const contents = readAiderHistory(history.path);
-    if (contents === null) {
-      // Unreadable, a symlink, or oversized history: leave stdout as the
-      // answer, the check's fail-closed default.
-      return result;
-    }
+    const contents = history === undefined ? null : readAiderHistory(history.path);
+    const failure = contents === null ? aiderProviderFailure(`${result.stdout}\n${result.stderr}`)
+      : aiderHistoryProviderFailure(contents);
+    if (failure !== null) result = { ...result, success: false,
+      exitCode: result.exitCode || 1, stderr: `${result.stderr}\nError: ${failure}\n` };
+    if (contents === null) return { ...result, reply: "" };
+    const header = aiderHistoryHeader(request.prompt);
+    const at = contents.indexOf(header);
     return {
       ...result,
-      reply: extractAiderReply(contents),
+      reply: at < 0 ? "" : aiderReplyAfterHeader(contents.slice(at + header.length)),
       scanSurface: `${result.stdout}\n${contents}`,
     };
   }

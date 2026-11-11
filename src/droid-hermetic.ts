@@ -42,7 +42,8 @@ import {
   symlinkSync,
 } from "node:fs";
 import { join } from "node:path";
-import { PARENT_DIR_NAME, RUN_PREFIX, prepareRunDirParent } from "./hermetic-home.js";
+import { PARENT_DIR_NAME, prepareRunDirParent } from "./hermetic-home.js";
+import { runDirectoryPrefix } from "./run-directory-owner.js";
 import { recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
 import { trackPrivateDir, untrackPrivateDir } from "./private-dir-signals.js";
 
@@ -97,7 +98,7 @@ export function createDroidHermeticHome(
   const parent = prepareRunDirParent(sourceBrandHome, PARENT_DIR_NAME);
   // Recorded for the finalizer's revalidation (src/safe-remove.ts).
   const parentRecord = recordTrustedParent(parent);
-  const home = mkdtempSync(join(parent, `${RUN_PREFIX}${process.pid}-`));
+  const home = mkdtempSync(join(parent, runDirectoryPrefix()));
   chmodSync(home, 0o700); // the mode is stated whatever the umask is
   const brandHome = join(home, ".factory");
   const authLink = join(brandHome, "auth.json");

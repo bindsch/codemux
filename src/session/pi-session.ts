@@ -76,6 +76,7 @@
  *   it below so session turns and runs cannot drift.
  */
 
+import { sessionIdPattern } from "./id-pattern.js";
 import { featureFloor } from "../harness-contracts.js";
 import { parsePiResultEnvelope } from "../result-envelope/pi.js";
 import { emptyUsage } from "../result-envelope.js";
@@ -92,8 +93,7 @@ export const PI_SESSION_FLOOR = featureFloor("pi", "sessions");
  * own validation accepts the wider alphanumeric class quoted in the
  * header, but codemux only ever names ids it minted, so the pattern pins
  * its own mint — the gemini/claude convention. */
-export const PI_SESSION_ID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const PI_SESSION_ID_PATTERN = sessionIdPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 
 /**
  * Capability flags for pi sessions (§3.4): live input yes (one caller

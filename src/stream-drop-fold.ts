@@ -22,6 +22,8 @@ export interface DropRule {
 export class StreamDropFold implements StdoutSink {
   private kept = "";
   private partial = "";
+  private keptByteCount = 0;
+  private partialBytes = 0;
   private dropping: DropRule | null = null;
   private readonly markers = new StreamMarkerScan();
 
@@ -39,10 +41,12 @@ export class StreamDropFold implements StdoutSink {
       rest = newline === -1 ? "" : rest.slice(newline + 1);
       if (this.dropping === null) {
         this.partial += piece;
+        this.partialBytes += Buffer.byteLength(piece);
         const rule = this.rules.find((candidate) => this.partial.startsWith(candidate.opening));
         if (rule !== undefined) {
           this.dropping = rule;
           this.partial = "";
+          this.partialBytes = 0;
         }
       }
       if (newline !== -1) this.endLine("\n");
@@ -50,12 +54,16 @@ export class StreamDropFold implements StdoutSink {
   }
 
   private endLine(terminator: string): void {
+    let line = "";
     if (this.dropping !== null) {
-      if (this.dropping.marker !== null) this.kept += `${this.dropping.marker}${terminator}`;
+      if (this.dropping.marker !== null) line = `${this.dropping.marker}${terminator}`;
     } else {
-      this.kept += `${this.shrink(this.partial)}${terminator}`;
+      line = `${this.shrink(this.partial)}${terminator}`;
     }
+    this.kept += line;
+    this.keptByteCount += Buffer.byteLength(line);
     this.partial = "";
+    this.partialBytes = 0;
     this.dropping = null;
   }
 
@@ -70,6 +78,8 @@ export class StreamDropFold implements StdoutSink {
   }
 
   keptBytes(): number {
-    return Buffer.byteLength(this.kept) + Buffer.byteLength(this.partial);
+    // Until a line can be dropped, its unfinished bytes occupy capture
+    // memory and must count toward the same limit as complete lines.
+    return this.keptByteCount + this.partialBytes;
   }
 }

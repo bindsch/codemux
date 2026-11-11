@@ -57,7 +57,7 @@ export {
  * from `$HOME` alone so moving `XDG_STATE_HOME` cannot hide the record
  * while the transcripts stay put. */
 export function sessionRegistryPath(
-  home: string = homedir(),
+  home: string = process.env.HOME?.trim() || homedir(),
   platform: NodeJS.Platform = process.platform
 ): string {
   if (platform === "darwin") {

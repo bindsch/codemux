@@ -86,7 +86,9 @@ export function signalProcess(
     if (groupSignaled !== null && groupSafe) {
       try {
         process.kill(-proc.pid, signal);
-        return; // the group send reached the child with it
+        // A child can leave its original group. Only skip its handle when
+        // the snapshot confirms membership (the handle guards pid reuse).
+        if (target.childExited || table.get(proc.pid)?.pgid === proc.pid) return;
       } catch (error) {
         // The group signal did not go out. ESRCH means the group is gone
         // (the child exited between the timer and delivery); anything else

@@ -242,10 +242,9 @@ const REPLY_CONTINUATION_INDENT = "  ";
 
 /** The 2.3.2 bullet-block unwrap for plain text a binary printed without the
  * requested wire: applied only for installed major versions 2 and higher,
- * and only when ALL stdout matches the bullet grammar. Anything else stays
- * unchanged (the adapter's former inline rule, verbatim). */
+ * and only when ALL stdout matches the bullet grammar. Other output is
+ * retained as diagnostics and cannot prove an assistant answer. */
 function unwrapBulletedPlain(result: RunResult, majorVersion: number | undefined): RunResult {
-  if (majorVersion === undefined || majorVersion < 2) return result;
   const blocks: string[] = [];
   const stdout = result.stdout.replace(/\r\n/g, "\n");
   for (const block of stdout.replace(/\n+$/, "").split(/\n+(?=• )/)) {
@@ -254,13 +253,15 @@ function unwrapBulletedPlain(result: RunResult, majorVersion: number | undefined
       !first?.startsWith(REPLY_BULLET_PREFIX) ||
       continuation.some((line) => line !== "" && !line.startsWith(REPLY_CONTINUATION_INDENT))
     ) {
-      return result;
+      return { ...result, reply: "" };
     }
     blocks.push([
       first.slice(REPLY_BULLET_PREFIX.length),
       ...continuation.map((line) => line.slice(REPLY_CONTINUATION_INDENT.length)),
     ].join("\n").replace(/\n+$/, ""));
   }
+  if (blocks.every((block) => block.trim() === "")) return { ...result, reply: "" };
+  if (majorVersion === undefined || majorVersion < 2) return result;
   return { ...result, stdout: blocks.join("\n\n").replace(/\n+$/, "") + "\n" };
 }
 
@@ -270,10 +271,10 @@ function unwrapBulletedPlain(result: RunResult, majorVersion: number | undefined
  * way while stdout keeps the plain contract — the model's reply and nothing
  * else, never the wire, failed or not — and the wire-log usage lands on the
  * RunResult for the call ledger. The escape hatch is plain-unwrap.ts's
- * shared rule: stdout that never used the wire's grammar — an older binary,
- * a wrapper that strips the flag, a fake in a test — passes through
- * verbatim with the run unchanged and no usage, and the 2.3.2 bullet
- * unwrap still applies to that text. `majorVersion` is the installed
+ * shared rule: stdout that never used the wire's grammar is retained as
+ * diagnostics, but only the recognized nonempty bullet grammar proves
+ * an assistant answer. The 2.3.2 bullet unwrap applies to that text.
+ * `majorVersion` is the installed
  * version's major part when the launch probed one.
  */
 export function kimiPlainResult(

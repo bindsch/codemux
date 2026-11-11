@@ -10,6 +10,7 @@ import { PI_DRIVER_PROFILE } from "./pi-driver.js";
 import { TurnAgentSessionDriver } from "./turn-driver.js";
 import type { TurnAgentDriverOptions } from "./turn-driver-types.js";
 import { addUsage } from "./usage.js";
+import { rpcPromptDeliverable } from "./rpc-prompt-bounds.js";
 
 /** No prompt reaches RPC as bare text, and the inherited stdin half-close
  * waits until agent_settled. All other process methods retain their receiver. */
@@ -97,6 +98,10 @@ export class PiRpcSessionDriver extends TurnAgentSessionDriver {
     this.turnTimer = null;
   }
 
+  protected override promptDeliverable(text: string): boolean {
+    return rpcPromptDeliverable("pi", text, this.sessionId);
+  }
+
   protected override clearTimers(): void {
     this.clearTurnTimer();
     super.clearTimers();
@@ -132,7 +137,7 @@ export class PiRpcSessionDriver extends TurnAgentSessionDriver {
 
   private sendAbort(): void {
     if (!this.interruptRequested || !this.promptAccepted || this.abortSent ||
-        this.rpcChild === null || this.finished) return;
+        this.rpcChild === null || !this.receivesTurnOutput) return;
     this.abortSent = true;
     const written = this.rpcChild.writeRaw(`${JSON.stringify({ id: "abort", type: "abort" })}\n`);
     if (!written.ok) {
@@ -203,6 +208,7 @@ export class PiRpcSessionDriver extends TurnAgentSessionDriver {
     this.emit(buildEvent(++this.seq, this.sessionIdOrEmpty(), "turn_completed", null, {
       turn_id: turnId,
       finish: "interrupted",
+      ...this.modelFields(),
       reason: this.interruptReason,
       usage: parsed.usage,
     }));

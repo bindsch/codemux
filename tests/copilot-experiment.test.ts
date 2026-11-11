@@ -49,6 +49,18 @@ test("Copilot experiment joins native names and IDs to exact final provider byte
   }
 });
 
+test("Copilot experiment accepts omitted descriptions in the native catalog and provider request", () => {
+  const { description: _description, ...definition } = copilotDefinition;
+  const { description: _metadataDescription, ...metadata } = copilotMetadata[0]!;
+  for (const kind of ["chat", "responses", "anthropic"] as const) {
+    const evidence = new CopilotExperimentEvidence({ ...copilotSource(), toolDefinitions: [definition] }, copilotExperimentId);
+    evidence.catalog([metadata]);
+    const payload = copilotPayload(kind, false);
+    delete (kind === "chat" ? payload.tools[0].function : payload.tools[0]).description;
+    expect(evidence.request(Buffer.from(JSON.stringify(payload))).wireApi).toBe(kind);
+  }
+});
+
 test("Copilot experiment refuses catalog changes, unknown results and ambiguous IDs", () => {
   expect(() => copilotExperimentObject([])).toThrow("object");
   for (const result of [{ content: [] }, { content: [{ type: "image", data: "x" }] }, { ...copilotResult, extra: true }, { ...copilotResult, isError: "yes" }]) {

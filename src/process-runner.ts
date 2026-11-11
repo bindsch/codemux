@@ -165,8 +165,8 @@ export async function runCapturedCommand(
   let captureFailed = false;
   let protocolAborted = false;
   let cleanupStarted = false;
-  // Whether the finally's kill check already ended the tree: a signal that
-  // lands later in the cleanup window must still end it once, not twice.
+  // Failure cleanup kills before closing the protocol; normal cleanup
+  // kills afterward, including when a signal arrives during that close.
   let treeEnded = false;
   let terminationNote: string | undefined;
   let pipesAbandoned = false;
@@ -185,7 +185,10 @@ export async function runCapturedCommand(
   const terminateRun = (): void => {
     if (target === null) return;
     const tree = target;
-    // Cleanup owns the final kill once the child and captures have settled.
+    // A signal during protocol cleanup still terminates the protocol and
+    // records interruption. No tree timer is armed in that window:
+    // the finally block waits for this deadline and kills the tree after
+    // the bounded protocol close. Earlier termination arms the timers below.
     const firstTermination = !terminationStarted;
     terminationStarted = true;
     // Arm forced reaping before protocol code can throw; the server gets
@@ -476,8 +479,9 @@ export async function runCapturedCommand(
       process.off("SIGHUP", onSignal);
       endCapturedCommand(onSignal);
     }
-    // Recheck signals received during asynchronous protocol cleanup.
-    if (!treeEnded && terminationStarted) {
+    // Normal exit ends ownership too. A signal during protocol cleanup
+    // may have armed a deadline since the earlier kill check.
+    if (!treeEnded) {
       await waitForDescendantsGrace(target, forceKillDeadline);
       signalProcess(target, "SIGKILL", "tree");
     }

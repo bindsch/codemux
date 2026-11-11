@@ -194,7 +194,7 @@ test("unavailable model failure lists unique catalog slugs in cache order withou
   expect(failure.message).not.toContain("SYNTHETIC_PRIVATE");
 });
 
-test.each([undefined, null, { secret: "SYNTHETIC_PRIVATE_TIMESTAMP" }, "SYNTHETIC_PRIVATE_TIMESTAMP", 123])(
+test.each([undefined, null, { secret: "SYNTHETIC_PRIVATE_TIMESTAMP" }, "SYNTHETIC_PRIVATE_TIMESTAMP", 123, "2026-02-30T00:00:00Z"])(
   "unavailable model failure sanitizes absent or malformed fetched_at %#", (fetched_at) => {
     const { codexHome, sourcePath, cache } = fixture();
     cache([{ slug: "available", tool_mode: "direct" }], { fetched_at });

@@ -11,9 +11,11 @@
  */
 
 import { claudeCredentialTarget } from "./credentials.js";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { FORCE_KILL_DELAY_MS, signalProcess } from "./process-runner.js";
 import { createTerminationTarget } from "./process-tree.js";
+import { StreamMarkerScan } from "./stream-marker-scan.js";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -33,7 +35,7 @@ export const sessionCanaryCommand = (): string[] => [
  * drives, and the Claude credential mirror the claude control copies
  * (src/hermetic-session-canary.ts). The test preload points the mirror at
  * a scratch path, so no in-process test reads the operator's real login. */
-export const sessionCanaryCredentialSource = (): string => claudeCredentialTarget(process.env.HOME);
+export const sessionCanaryCredentialSource = (): string => claudeCredentialTarget(process.env.HOME || homedir());
 export const sessionCanary = {
   command: sessionCanaryCommand,
   credentialSource: sessionCanaryCredentialSource,
@@ -42,6 +44,8 @@ export const sessionCanary = {
 export interface SessionRun {
   exitCode: number | null;
   stdout: string;
+  /** Marker evidence from the entire stream, including the discarded suffix. */
+  markerEvidence?: string;
   stderr: string;
   /** Set when the canary stopped the child itself (deadline). */
   stopped: boolean;
@@ -76,6 +80,7 @@ export function canarySessionProtocolProblem(run: SessionRun, label: string): st
 
 const SESSION_OUTPUT_LIMIT = 512 * 1024;
 const SESSION_STDERR_LIMIT = 8 * 1024;
+export const SESSION_DRAIN_GRACE_MS = 1_000;
 /** Wall allowance past the child's own --timeout before the canary kills
  * the session: the session's end path (shutdown frame, drain, exit)
  * needs room the turn itself did not spend. */
@@ -137,7 +142,11 @@ export async function runCanarySession(
   };
 
   const stdoutDecoder = new TextDecoder();
+  const markerScan = new StreamMarkerScan();
+  const stdoutReader = proc.stdout.getReader();
+  const stderrReader = proc.stderr.getReader();
   let stdoutHeld = "";
+  let stderrHeld = "";
   let stdoutPending = "";
   const onLine = (line: string): void => {
     if (line.trim() === "") return;
@@ -174,12 +183,14 @@ export async function runCanarySession(
     }
   };
   const drainStdout = (async () => {
-    const reader = proc.stdout.getReader();
+    const reader = stdoutReader;
     try {
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
         const text = stdoutDecoder.decode(value, { stream: true });
+        markerScan.push(text);
+        run.markerEvidence = markerScan.evidence();
         if (stdoutHeld.length < SESSION_OUTPUT_LIMIT) {
           stdoutHeld = (stdoutHeld + text).slice(0, SESSION_OUTPUT_LIMIT);
         }
@@ -200,18 +211,17 @@ export async function runCanarySession(
   })();
   const drainStderr = (async () => {
     const decoder = new TextDecoder();
-    const reader = proc.stderr.getReader();
-    let held = "";
+    const reader = stderrReader;
     try {
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
-        if (held.length < SESSION_STDERR_LIMIT) {
-          held = (held + decoder.decode(value, { stream: true })).slice(0, SESSION_STDERR_LIMIT);
+        if (stderrHeld.length < SESSION_STDERR_LIMIT) {
+          stderrHeld = (stderrHeld + decoder.decode(value, { stream: true })).slice(0, SESSION_STDERR_LIMIT);
         }
       }
     } finally {
-      run.stderr = held;
+      run.stderr = stderrHeld;
       reader.releaseLock();
     }
   })();
@@ -226,11 +236,25 @@ export async function runCanarySession(
   });
   run.exitCode = await Promise.race([proc.exited, giveUp]);
   for (const timer of timers) clearTimeout(timer);
-  if (run.exitCode === null) {
+  if (run.exitCode === null || run.stopped) {
     signalProcess(target, "SIGKILL", "tree");
   }
-  await Promise.allSettled([drainStdout, drainStderr]);
-  void proc.stdout.cancel().catch(swallow);
-  void proc.stderr.cancel().catch(swallow);
+  let drainTimer: ReturnType<typeof setTimeout> | undefined;
+  const drained = await Promise.race([
+    Promise.allSettled([drainStdout, drainStderr]).then(() => true),
+    new Promise<false>((resolve) => {
+      drainTimer = setTimeout(() => resolve(false), SESSION_DRAIN_GRACE_MS);
+    }),
+  ]);
+  clearTimeout(drainTimer);
+  if (!drained) {
+    run.failure ??= "the session output pipes remained open after exit";
+    signalProcess(target, "SIGKILL", "tree");
+    // Cancel the locked readers, not the streams. Never await a descendant's EOF.
+    void stdoutReader.cancel().catch(swallow);
+    void stderrReader.cancel().catch(swallow);
+  }
+  run.stdout = stdoutHeld;
+  run.stderr = stderrHeld;
   return run;
 }

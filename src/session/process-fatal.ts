@@ -1,6 +1,6 @@
 /** The tier-3 fatal facts of the session process layer, split from
  * src/session/process.ts: the fatal shapes the framer reports, the shared
- * message for the two classes that carry a codemux-side error, and the
+ * message for classes that carry a codemux-side error, and the
  * bounded excerpt facts every parser pairs with an unusable line. */
 
 /** Bounded excerpt a tier-3 fatal carries (design §4.2). */
@@ -9,7 +9,7 @@ export const FATAL_EXCERPT_BYTES = 4096;
 const UTF8 = new TextEncoder();
 const LOSSY_DECODER = new TextDecoder("utf-8");
 
-export type SessionFatalKind = "line-overflow" | "invalid-utf8" | "handler" | "read-error";
+export type SessionFatalKind = "line-overflow" | "invalid-utf8" | "handler" | "read-error" | "write-error";
 
 export type SessionFatal =
   | {
@@ -28,20 +28,20 @@ export type SessionFatal =
       bytes: number;
     }
   | {
-      kind: "read-error";
-      /** The error reading the harness's stdout pipe raised: a codemux
-       * I/O failure, not harness output (review live25). */
+      kind: "read-error" | "write-error";
+      /** A harness pipe I/O failure, not harness output. */
       error: unknown;
       bytes: number;
     };
 
-/** The codemux-side message for the two fatal classes that carry an
+/** The codemux-side message for fatal classes that carry an
  * error instead of harness bytes; every driver reports them the same. */
 export function codemuxFatalMessage(fatal: Extract<SessionFatal, { error: unknown }>): string {
   const detail = fatal.error instanceof Error ? fatal.error.message : String(fatal.error);
   return fatal.kind === "handler"
     ? `internal error while processing a harness line: ${detail}`
-    : `reading the harness's stdout failed: ${detail}`;
+    : fatal.kind === "write-error" ? `writing the harness's stdin failed: ${detail}`
+      : `reading the harness's stdout failed: ${detail}`;
 }
 
 function excerptOf(bytes: Uint8Array): string {

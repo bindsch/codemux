@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { previewFinalize } from "../run-preview.js";
 import { isAbsolute, join } from "node:path";
 import { BaseAdapter, type RunContext } from "./base.js";
 import { assertNoCodexSystemMcp, CODEX_EXPERIMENT_PROVIDER_ID } from "../experiment-codex-config.js";
@@ -246,7 +247,8 @@ export abstract class CodexPolicy extends BaseAdapter {
     }
     const override = this.validatedProvider();
     if (override === null) return {};
-    if (!request.hermetic && context?.codexProviderHome === undefined) {
+    if (!request.hermetic && context?.codexProviderHome === undefined &&
+        !(request.experimentMcp && context?.hermeticHome !== undefined)) {
       throw new Error("codex provider config was not prepared before launch");
     }
     // The key the config.toml's env_key names, delivered through the
@@ -323,6 +325,8 @@ export abstract class CodexPolicy extends BaseAdapter {
     if (override === null) {
       return super.prepareTuiEnvironment(model, autonomy, effort, sandboxed, passthroughEnv, _printOnly);
     }
+    if (_printOnly) return { env: { CODEX_HOME: join(this.realCodexHome({ agent: "codex", prompt: "", passthroughEnv }), ".codemux-provider", "preview"),
+      [CODEX_PROVIDER_KEY_ENV]: override.apiKey }, finalize: previewFinalize };
     const home = writeCodexProviderConfig(
       this.realCodexHome({ agent: "codex", prompt: "", passthroughEnv }),
       override,

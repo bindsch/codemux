@@ -42,7 +42,10 @@ export function enforceNonEmptyResult(
       envelopeRefused(request.agent, result)) return result;
   const field = request.resultJson ? RESULT_ANSWER_FIELD[request.agent] : undefined;
   const envelope = request.resultJson ? resultObject(result.stdout) : null;
-  const answer = request.resultJson ? (field === undefined ? undefined : envelope?.[field]) : result.stdout;
+  // Plain parsers set reply="" when they kept diagnostic output without
+  // finding an assistant-answer carrier. Aider always owes history proof.
+  const answer = request.resultJson ? (field === undefined ? undefined : envelope?.[field])
+    : request.agent === "aider" ? result.reply : result.reply ?? result.stdout;
   if (typeof answer === "string" && !isEmptyAnswer(answer)) return result;
   // A malformed nonempty envelope already has its parser failure. Do not
   // replace that evidence with an empty-answer classification.

@@ -11,6 +11,7 @@ import { buildCopilotRpcLaunch } from "./copilot-rpc-config.js";
 import { CopilotRpcControl, type CopilotRpcSessionConfig } from "./copilot-rpc-control.js";
 import { copilotUsageDelta } from "./copilot-profile.js";
 import { addUsage } from "./usage.js";
+import { rpcPromptDeliverable } from "./rpc-prompt-bounds.js";
 
 export interface CopilotRpcDriverOptions extends TurnAgentDriverOptions {
   adapter: BaseAdapter;
@@ -73,7 +74,7 @@ export class CopilotRpcSessionDriver extends TurnAgentSessionDriver {
         return new Proxy(child, {
           get(target, key) {
             if (key === "writeRaw") return (text: string) => {
-              void owner.beginPrompt(text).catch((error: unknown) => owner.rpcFailure(error));
+              void owner.beginPrompt(text);
               return { ok: true };
             };
             if (key === "endInput") return () => {};
@@ -89,28 +90,41 @@ export class CopilotRpcSessionDriver extends TurnAgentSessionDriver {
 
   private openControl(child: SessionProcess): void {
     if (this.sessionId === null) throw new Error("Copilot RPC session identity is missing");
-    this.control = new CopilotRpcControl({
+    const turn = this.fsm.activeTurn;
+    const control = new CopilotRpcControl({
       sessionId: this.sessionId, denyPermissions: this.rpcOptions.permissionPolicy === "deny",
       timeoutMs: this.rpcOptions.rpcTimeoutMs,
       write: (bytes) => {
         const result = child.writeRaw(Buffer.from(bytes).toString("utf8"));
         if (!result.ok) throw new Error("could not write Copilot RPC input");
       },
-      onEvent: (event) => this.nativeEvent(event),
-      onFailure: (error) => this.rpcFailure(error),
+      onEvent: (event) => { if (this.currentControl(control, turn)) this.nativeEvent(event); },
+      onFailure: (error) => { if (this.currentControl(control, turn)) this.rpcFailure(error); },
     });
+    this.control = control;
+  }
+
+  private currentControl(control: CopilotRpcControl, turn: string | null): boolean {
+    return this.receivesTurnOutput && this.control === control && this.fsm.activeTurn === turn;
   }
 
   private async beginPrompt(text: string): Promise<void> {
     const control = this.control!;
-    await control.open(!this.input!.firstTurn, this.config!);
-    await control.configureAutonomy(this.options.autonomy);
-    if (!this.input!.firstTurn) this.baseline = await control.usage();
-    if (this.finished) return;
-    this.promptStarted = true;
-    await control.send(text);
-    this.promptAccepted = true;
-    this.sendAbort();
+    const turn = this.fsm.activeTurn, resumed = !this.input!.firstTurn;
+    try {
+      await control.open(resumed, this.config!);
+      if (!this.currentControl(control, turn)) return;
+      await control.configureAutonomy(this.options.autonomy);
+      if (!this.currentControl(control, turn)) return;
+      const baseline = resumed ? await control.usage() : null;
+      if (!this.currentControl(control, turn)) return;
+      this.baseline = baseline;
+      this.promptStarted = true;
+      await control.send(text);
+      if (!this.currentControl(control, turn)) return;
+      this.promptAccepted = true;
+      this.sendAbort();
+    } catch (error) { if (this.currentControl(control, turn)) this.rpcFailure(error); }
   }
 
   protected override async startTurn(text: string): Promise<void> {
@@ -149,6 +163,10 @@ export class CopilotRpcSessionDriver extends TurnAgentSessionDriver {
   private clearTurnTimer(): void {
     if (this.turnTimer !== null) clearTimeout(this.turnTimer);
     this.turnTimer = null;
+  }
+
+  protected override promptDeliverable(text: string): boolean {
+    return rpcPromptDeliverable("copilot", text, this.sessionId);
   }
 
   protected override clearTimers(): void {
@@ -197,17 +215,19 @@ export class CopilotRpcSessionDriver extends TurnAgentSessionDriver {
   }
 
   private sendAbort(): void {
-    if (!this.interruptRequested || !this.promptAccepted || this.abortSent || this.idleSeen || this.finished) return;
+    if (!this.interruptRequested || !this.promptAccepted || this.abortSent || this.idleSeen || !this.receivesTurnOutput) return;
     this.abortSent = true;
-    void this.control!.abort().then((value) => {
+    const control = this.control!, turn = this.fsm.activeTurn;
+    void control.abort().then((value) => {
+      if (!this.currentControl(control, turn)) return;
       if (typeof value !== "object" || value === null || (value as { success?: unknown }).success !== true) {
         this.rpcFailure(new Error("Copilot RPC did not confirm the abort"));
       }
-    }, (error: unknown) => this.rpcFailure(error));
+    }, (error: unknown) => { if (this.currentControl(control, turn)) this.rpcFailure(error); });
   }
 
   private nativeEvent(event: Record<string, unknown>): void {
-    if (this.finished || !this.promptStarted || event.agentId !== undefined) return;
+    if (!this.receivesTurnOutput || !this.promptStarted || event.agentId !== undefined) return;
     if (event.type === "abort") {
       const reason = (event.data as { reason?: unknown } | undefined)?.reason;
       this.aborted = this.abortSent && reason === "user_initiated";
@@ -220,21 +240,27 @@ export class CopilotRpcSessionDriver extends TurnAgentSessionDriver {
     if (event.type === "session.idle" && !this.idleSeen) {
       this.idleSeen = true;
       this.clearTurnTimer();
-      void this.finishNativeTurn().catch((error: unknown) => this.rpcFailure(error));
+      void this.finishNativeTurn();
     }
   }
 
   private async finishNativeTurn(): Promise<void> {
-    this.rpcUsage = copilotUsageDelta(await this.control!.usage(), this.baseline);
-    await this.control!.detach();
-    if (this.finished) return;
-    super.handleHarnessLine(JSON.stringify({ type: "result", sessionId: this.sessionId,
-      exitCode: this.nativeFailed ? 1 : 0 }));
-    this.child!.endInput();
+    const control = this.control!, turn = this.fsm.activeTurn, child = this.child!;
+    const baseline = this.baseline;
+    try {
+      const usage = await control.usage();
+      if (!this.currentControl(control, turn)) return;
+      this.rpcUsage = copilotUsageDelta(usage, baseline);
+      await control.detach();
+      if (!this.currentControl(control, turn)) return;
+      super.handleHarnessLine(JSON.stringify({ type: "result", sessionId: this.sessionId,
+        exitCode: this.nativeFailed ? 1 : 0 }));
+      child.endInput();
+    } catch (error) { if (this.currentControl(control, turn)) this.rpcFailure(error); }
   }
 
   private rpcFailure(error: unknown): void {
-    if (this.finished) return;
+    if (!this.receivesTurnOutput) return;
     this.emitError(true, "harness", error instanceof Error ? error.message : String(error));
     void this.finish("crash", 1);
   }
@@ -251,13 +277,14 @@ export class CopilotRpcSessionDriver extends TurnAgentSessionDriver {
     this.turnProc = null;
     this.child = null;
     this.adoptSessionId(this.sessionId!);
-    this.settlePrivateHome();
+    if (!this.settlePrivateHome()) { void this.finish("crash", 1); return; }
     const error = this.fsm.transition({ kind: "turn_completed", turnId });
     if (error !== null) { this.rpcFailure(error.message); return; }
     this.turnUsage = this.rpcUsage;
     this.cumulative = addUsage(this.cumulative, this.rpcUsage);
     this.emit(buildEvent(++this.seq, this.sessionIdOrEmpty(), "turn_completed", null, {
       turn_id: turnId, finish: "interrupted", reason: this.interruptReason, usage: this.rpcUsage,
+      ...this.modelFields(),
     }));
     appendSessionTurnCallRecord(this.callLedger, this.ledgerSessionId(), turnId,
       this.turnStartedAt.get(turnId) ?? Date.now(), "interrupted", this.rpcUsage, this.turnModelEffective);

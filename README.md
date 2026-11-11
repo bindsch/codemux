@@ -91,6 +91,7 @@ for complete event schemas.
 | `run` | One non-interactive prompt |
 | `tui` | Interactive harness |
 | `session` | Multi-turn JSONL protocol |
+| `complete` | Hosted chat completions with spend caps and a call ledger |
 | `check` | Real model probes; consumes provider quota |
 | `calls` | Local call ledger and selected-record totals |
 | `usage` | Optional subscription reporting through usagemux |
@@ -106,7 +107,7 @@ lists options, defaults, incompatibilities, and exit codes.
 - Hermetic mode suppresses specified automatic customization loading. It does
   not make a result reproducible from a prompt alone. See
   [isolation and persistence](https://github.com/bindsch/codemux/blob/main/docs/isolation.md).
-- Some adapters place the prompt in process arguments, including Agy even when
+- Some adapters place the prompt in process arguments, including Kimi even when
   input comes from a file or stdin. See
   [prompt transport](https://github.com/bindsch/codemux/blob/main/docs/cli.md#prompt-input).
 - A run's null codemux session ID is not a guarantee that the upstream harness

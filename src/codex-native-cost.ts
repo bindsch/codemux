@@ -7,6 +7,9 @@ import { spawnSessionChild, type SessionSpawnOptions } from "./session/spawn.js"
 import type { SessionProcess } from "./session/process.js";
 import { codexSessionConfigArgs } from "./session/codex-config.js";
 import { sandboxRestrictsNetwork } from "./sandbox.js";
+import { boundResultEnvelope } from "./result-envelope/common.js";
+import { beginCapturedCommand, endCapturedCommand, noteSignaledRun } from "./process-runner-signals.js";
+import { exitSignaledRun, SIGNALED_PEER_WAIT_MS } from "./process-runner-exit.js";
 
 // Native evidence read 2026-11-09, Codex rust-v0.166.0:
 // https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/app-server-protocol/src/protocol/common.rs#L1349
@@ -24,6 +27,7 @@ export type CodexCostBinding = {
   checks: readonly ExecutableCheck[];
   env: Record<string, string>;
   options: SessionSpawnOptions;
+  onSignaled?: () => void | Promise<void>;
 };
 type CostChild = Pick<SessionProcess, "writeLine" | "requestStop" | "settled">;
 type CostSpawn = (command: string[], env: Record<string, string>, options: SessionSpawnOptions,
@@ -89,7 +93,7 @@ export function codexCostCommand(command: readonly string[]): string[] {
 
 /** Exactly initialize + one account metadata read. No thread or model
  * operation is sent. Timeout, unsupported auth, missing data, and malformed
- * replies leave cost unknown and cannot change the completed run's verdict. */
+ * replies leave cost unknown. A termination signal still stops the launch. */
 export async function readCodexNativeCost(
   binding: CodexCostBinding, threadId: string, spawn: CostSpawn = spawnSessionChild,
   timeoutMs = COST_READ_TIMEOUT_MS
@@ -104,9 +108,17 @@ export async function readCodexNativeCost(
     finish = (value) => { if (!finished) { finished = true; resolve(value); } };
   });
   const timer = setTimeout(() => finish(null), timeoutMs);
-  const interrupted = () => finish(null);
-  process.once("SIGINT", interrupted);
-  process.once("SIGTERM", interrupted);
+  let signaled = false;
+  const interrupted = () => {
+    if (signaled) return;
+    signaled = true;
+    noteSignaledRun();
+    finish(null);
+  };
+  beginCapturedCommand(interrupted);
+  process.on("SIGINT", interrupted);
+  process.on("SIGTERM", interrupted);
+  process.on("SIGHUP", interrupted);
   const write = (value: unknown): void => {
     if (!child?.writeLine(JSON.stringify(value)).ok) finish(null);
   };
@@ -150,8 +162,21 @@ export async function readCodexNativeCost(
   } catch { return null; }
   finally {
     clearTimeout(timer);
+    if (signaled) {
+      // Keep signal ownership through cleanup and the interruption receipt.
+      try { await binding.onSignaled?.(); }
+      finally {
+        process.removeListener("SIGINT", interrupted);
+        process.removeListener("SIGTERM", interrupted);
+        process.removeListener("SIGHUP", interrupted);
+        endCapturedCommand(interrupted);
+        await exitSignaledRun({ peerWaitMs: SIGNALED_PEER_WAIT_MS });
+      }
+    }
     process.removeListener("SIGINT", interrupted);
     process.removeListener("SIGTERM", interrupted);
+    process.removeListener("SIGHUP", interrupted);
+    endCapturedCommand(interrupted);
   }
 }
 
@@ -178,6 +203,7 @@ export function withCodexNativeCost(result: RunResult, request: RunRequest, cont
     const envelope = JSON.parse(result.stdout);
     if (!envelope?.codemux || typeof envelope.codemux !== "object") return result;
     envelope.codemux.usage = usage;
-    return { ...result, usage, stdout: `${JSON.stringify(envelope)}\n` };
+    return boundResultEnvelope(request.agent,
+      { ...result, usage, stdout: `${JSON.stringify(envelope)}\n` }, usage, result.servedModel ?? null);
   } catch { return result; }
 }

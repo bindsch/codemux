@@ -216,22 +216,17 @@ describe("aider chat history file", () => {
     expect(() => statSync(path)).toThrow();
   });
 
-  test("plain runs keep /dev/null and write no history at all", () => {
-    // Regression (h6 review): the per-run history file rode EVERY headless
-    // run, so plain runs — whose history nothing reads, the check being
-    // refused — persisted the whole conversation under ~/.aider/.codemux/
-    // where the run used to write /dev/null. Only hermetic runs (the
-    // check's own runs, the day its refusal lifts) create one now.
+  test("plain runs extract answers through temporary private history", () => {
     const dir = home();
     const adapter = new AiderAdapter({}, dir);
     const request = { agent: "aider" as const, prompt: "p" };
     const context = adapter.prepareRun(request);
     prepared.push({ adapter, context });
-    expect(context.aiderHistoryFile).toBeUndefined();
+    expect(context.aiderHistoryFile).toBeDefined();
     const cmd = adapter.buildRunCommand(request, context);
-    expect(cmd[cmd.indexOf("--chat-history-file") + 1]).toBe("/dev/null");
-    // Prompt and analytics files have a separate per-run lifecycle.
-    expect(existsSync(join(dir, ".aider", ".codemux"))).toBe(false);
+    expect(cmd[cmd.indexOf("--chat-history-file") + 1]).toBe(context.aiderHistoryFile!.path);
+    adapter.cleanupRunSync(context);
+    expect(existsSync(context.aiderHistoryFile!.path)).toBe(false);
   });
 
   test("processRunResult reads the answer from the run's history", () => {
@@ -243,7 +238,7 @@ describe("aider chat history file", () => {
     const path = cmd[cmd.indexOf("--chat-history-file") + 1]!;
     writeFileSync(
       path,
-      "#### Configuration test.\n\nOK\n\n> tokens: 1k sent\n",
+      aiderHistoryHeader(request.prompt) + "\nOK\n\n> tokens: 1k sent\n",
       { flag: "a" }
     );
     const processed = adapter.processRunResult(
@@ -275,7 +270,7 @@ describe("aider chat history file", () => {
     symlinkSync(secret, path);
     expect(readAiderHistory(path)).toBeNull();
     const viaLink = adapter.processRunResult(runResult("banner\nOK"), request, context);
-    expect(viaLink.reply).toBeUndefined();
+    expect(viaLink.reply).toBe("");
     expect(viaLink.scanSurface).toBeUndefined();
     expect(viaLink.stdout).toBe("banner\nOK");
 
@@ -404,13 +399,13 @@ describe("aider chat history file", () => {
     expect(new TextDecoder().decode(result.stdout).trim()).toBe("null");
   });
 
-  test("without a prepared history the raw stdout is the answer", () => {
+  test("without a prepared history no answer is certified", () => {
     const adapter = new AiderAdapter({}, home());
     const processed = adapter.processRunResult(runResult("banner\nOK"), {
       agent: "aider",
       prompt: "p",
     });
-    expect(processed.reply).toBeUndefined();
+    expect(processed.reply).toBe("");
     expect(processed.stdout).toBe("banner\nOK");
   });
 
@@ -423,7 +418,7 @@ describe("aider chat history file", () => {
     const path = cmd[cmd.indexOf("--chat-history-file") + 1]!;
     writeFileSync(
       path,
-      "#### q\n\n<thinking-content-deadbeef01>\n\nCODEMUX-CANARY-HIDDEN\n\n</thinking-content-deadbeef01>\n\nOK\n",
+      aiderHistoryHeader(request.prompt) + "\n<thinking-content-deadbeef01>\n\nCODEMUX-CANARY-HIDDEN\n\n</thinking-content-deadbeef01>\n\nOK\n",
       { flag: "a" }
     );
     const processed = adapter.processRunResult(runResult("Aider v0.86.2\nOK\n"), request, context);

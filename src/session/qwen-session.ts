@@ -72,6 +72,7 @@
  *   argv byte cap.
  */
 
+import { sessionIdPattern } from "./id-pattern.js";
 import { featureFloor } from "../harness-contracts.js";
 import { buildPlaywrightSandboxMcp } from "../mcp.js";
 import { parseQwenResultEnvelope } from "../result-envelope/qwen.js";
@@ -94,8 +95,7 @@ export const QWEN_SESSION_FLOOR = featureFloor("qwen", "sessions");
  * class adds a `-agent-<name>` suffix for subagent messages; codemux
  * only ever resumes the ids it minted, so the pattern pins its own
  * mint — the claude convention. */
-export const QWEN_SESSION_ID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+export const QWEN_SESSION_ID_PATTERN = sessionIdPattern(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 
 /**
  * Capability flags for qwen sessions (§3.4): live input yes (one caller

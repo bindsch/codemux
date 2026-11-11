@@ -1,4 +1,5 @@
 import { mkdtempSync } from "node:fs";
+import { runDirectoryPrefix } from "../run-directory-owner.js";
 import { join } from "node:path";
 import { SCRATCH_PARENT_DIR_NAME } from "../adapters/codex-flags.js";
 import {
@@ -81,7 +82,7 @@ export function prepareCodexSessionCatalog(options: {
   }
   const parent = prepareRunDirParent(realCodexHome, SCRATCH_PARENT_DIR_NAME);
   const parentRecord = recordTrustedParent(parent);
-  const dir = mkdtempSync(join(parent, `run-${process.pid}-`));
+  const dir = mkdtempSync(join(parent, runDirectoryPrefix()));
   let removed = false;
   const remove = (): boolean => {
     if (removed) return true;

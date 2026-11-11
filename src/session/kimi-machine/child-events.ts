@@ -255,7 +255,8 @@ export function childExit(
     state.turn = null;
     state.child = null;
     state.phase = "idle";
-    state.confirmed = state.sessionId !== null;
+    // Keep only this turn's own hint; a prior turn's ID proves no flush.
+    if (!state.confirmed) state.sawUnconfirmedTurnFailure = true;
     state.cumulative = addUsage(state.cumulative, usage);
     const interrupted: KimiEffect[] = [
       { kind: "emit", event: "turn_completed", turnId: turn.id, finish: "interrupted", reason: turn.interruption, usage },

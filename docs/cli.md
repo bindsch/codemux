@@ -30,7 +30,7 @@ see [harnesses](harnesses.md) and [session capabilities](sessions.md).
 | `-a, --agent <agent>` | Configured default, initially `claude`; resume must select the recorded agent |
 | `-m, --model <model>` | Unset; resolves aliases, otherwise adapter/harness default |
 | `--auto <level>` | `read-only`; also `low`, `medium`, `high` |
-| `--effort <level>` | Unset; `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`; mapped only where supported. `none` always means "send no effort flag": on a harness without a native `none` the launch carries no effort flag, on run, tui, check, and session alike |
+| `--effort <level>` | Unset; `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`; mapped only where supported. `none` uses the harness's native value where supported (for example, Codex `none` and Pi `off`); otherwise codemux omits effort configuration. This resolution applies to run, tui, check, and session |
 | `-s, --sandbox` | Enabled; requires compatible scode |
 | `--no-sandbox` | Disable scode; requires `--auto high` |
 | `--sandbox-trust <level>` | Policy default; `trusted`, `standard`, `untrusted`; sandboxed sessions refuse `untrusted` |
@@ -82,9 +82,9 @@ control characters escaped (a newline inside an argument, such as a
 multi-line `-p` prompt, prints as `\n`), so one argument can never read as
 several. Fresh private homes and generated files use representative paths
 that need not exist. Preview preparation creates no directories or files,
-changes no existing state, and runs no stale-directory sweep. No credential
-is read or written (agy creates no private Keychain, reads no login, and
-repairs no search list). It
+changes no existing state, runs no stale-directory sweep, and registers no
+cleanup hook. No credential is read or written (agy creates no private Keychain,
+reads no login, and repairs no search list). It
 requires `--sandbox` and is refused (exit 64) together with
 `--experiment-mcp`: the MCP relay is minted at start, so its argv cannot be
 shown without starting it. The credential sandbox preparation
@@ -199,13 +199,12 @@ File/stdin decoding rejects invalid UTF-8. Harnesses that put prompts in argv
 also impose a 32 KiB limit, including when codemux reads the input from a file
 or stdin. This applies to Kimi, and the legacy
 `qwen-coder` fallback. Agy, Aider, Claude, Z.AI, Cline, Codex, Copilot, Cursor, Droid,
-Gemini, Goose, OpenCode, OpenHands, Pi, and current Qwen use stdin for prompt text.
-Aider uses a private `--message-file`; its stdin remains a stream of negative confirmation answers.
+Gemini, Goose, OpenCode, OpenHands, Pi, and current Qwen use stdin or private files for prompt text.
+Aider uses a private `--message-file`; its stdin remains a stream of negative confirmation answers. OpenHands uses a private task file.
 An inline `-p` always exposes the prompt in
 codemux's own process arguments.
 
-Agy passes the complete prompt as `--print=…`; file/stdin input does not hide
-it from process inspection. Aider rejects prompts that invoke its command
+Agy sends stream-json prompt frames on stdin; file/stdin input keeps the prompt out of the harness's argv. Aider rejects prompts that invoke its command
 language. Kimi refuses the word-bounded `/goal` command name and `!` shell-line
 shapes as codemux policy. Other slash-leading paths remain model text.
 Upstream Kimi 0.31.1 does not execute `!` as a headless shell command.
@@ -303,7 +302,8 @@ repository's own settings — see
 [hermetic project-settings sessions](sessions.md#hermetic-project-settings-sessions).
 Sessions also take `--permission-policy <policy>` (`default`, or `deny` to
 answer every permission request with an immediate deny) and `--final`
-(requires `--hermetic`; removes that session's private home when it ends).
+(requires `--hermetic` or `--harness-home`; removes a disposable hermetic home
+when the session ends, but preserves a caller-owned `--harness-home`).
 
 ## calls
 
@@ -311,6 +311,7 @@ answer every permission request with an immediate deny) and `--final`
 |---|---|
 | `-n, --limit <count>` | 20; integer 1–100000; bounds the listing only, never the totals |
 | `-a, --agent <id>` | All agents |
+| `--kind <kind>` | All kinds; `run`, `check`, `session_turn`, `session`, or `complete`; anything else exits 64 |
 | `--since <when>` | No cutoff; an integer duration with a unit (s/m/h/d/w) or an ISO date. A date-only value (`2026-11-08`) cuts at UTC midnight; durations are relative to the local now. A bare number is refused as a usage error: it is neither a duration nor a date, and engines read it differently |
 | `--label <KEY=VALUE>` | Repeatable; retain records matching every supplied key and value |
 | `--json` | Stored JSONL instead of a table; DEL and C1 characters are escaped |
@@ -339,6 +340,32 @@ filters use the [label syntax](#labels) above;
 The [results and usage reference](results-and-usage.md#ledger-selection-and-totals)
 defines filtering, summary selection, and interval limitations.
 
+## complete
+
+Brokered raw chat completions from a paid API key, for measurement harnesses
+that run their own agent loop. The full contract is in
+[complete](complete.md). `serve` prints one JSON line on stdout (`base_url`,
+`token`, `pid`, `provider`, `upstream_host`, `budget_usd`, `max_requests`,
+`prices_as_of`), then serves `POST /v1/chat/completions` on 127.0.0.1 until
+SIGTERM, SIGINT, SIGHUP, or a cap. A cap exits 0; a signal exits 143, as
+the exit-code table below gives for a handled termination signal.
+`once` with `-f <file>` forwards one request (no streaming) and prints the answer;
+an upstream error or refusal exits 1.
+
+| Option | Default and meaning |
+|---|---|
+| `--provider <name>` | Required; `anthropic`, `openai`, `openrouter`, or `openai-compatible` |
+| `--base-url <url>` | The provider's public URL ending in `/v1`; required for `openai-compatible`; plain http only to a loopback host |
+| `--proxy <url>` | Unset; explicit HTTP(S) proxy for an HTTPS upstream; ambient proxy variables are ignored |
+| `--key-env <name>` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `OPENROUTER_API_KEY` on the provider's own host; required for `openai-compatible` and for a `--base-url` naming another host; the variable's name, never the key |
+| `--label <KEY=VALUE>` | Repeatable ledger labels; without flags, `CODEMUX_LABELS` |
+| `--input-usd-per-mtok`, `--output-usd-per-mtok` | Unset; given together, they price every model instead of the table |
+| `--timeout <seconds>` | 600; per upstream request, 1–86400 |
+| `--budget-usd <usd>` | serve only, required; positive |
+| `--max-requests <count>` | serve only, required; 1–1000000000 |
+| `--port <port>` | serve only; 0 picks a free port |
+| `-f, --file <path>` | once only, required; the request body |
+
 ## usage
 
 | Option | Default and meaning |
@@ -359,7 +386,7 @@ protocol compatibility, and unavailable results.
 
 | Command | Options and behavior |
 |---|---|
-| `list` | `--json` prints the same facts machine-readable (schema `codemux-list-1`: each agent's id, availability, binary name, and the `hermetic`, `resultJson`, `budgetLimit`, `toolsNoneRequiresHermetic`, `toolsNoneRequiresReadOnly`, `isolationRequiresReadOnly`, `providerOverride`, `sessions`, `model`, `effort`, and `toolsNone` capability booleans, `effortLevels` (the accepted values, or null), a `tui` block (`model`, `effort`: whether the interactive form carries each flag), plus `experimentMcp`, `experimentPrefix`, `servedModelEvidence`, `sessionServedModel` (the session wire sources that name the serving model, or an empty array), and `autonomyCarrier` (the carrier class each `--auto` level uses)). JSON also exposes `capabilities.sessionPermissions` and `sessionPermissionsNote` from `SESSION_AGENTS`, plus `sessionHermetic`, `checkHermetic`, and limitation reasons with evidence. Without `--json`, it prints available adapters and capability labels (`model`, `autonomy`, `effort`, `hermetic`, `tools`, `provider`, `result-json`, `budget`, `sessions(permissions)`, `sessions(no-permissions)`). Session labels distinguish an ask channel from native deny rules. A label carries the condition the adapter enforces: `tools(read-only)` (codex: `--tools none` needs `--auto read-only`), `tools(hermetic)` (OpenCode: `--tools none` on hermetic runs only), `model(run)`/`effort(run)` (qwen takes no `--effort` in the TUI), `budget` (`run --max-budget-usd`; claude and zai) |
+| `list` | `--json` prints the same facts machine-readable (schema `codemux-list-1`: each agent's id, availability, binary name, and the `hermetic`, `resultJson`, `budgetLimit`, `toolsNoneRequiresHermetic`, `toolsNoneRequiresReadOnly`, `isolationRequiresReadOnly`, `providerOverride`, `sessions`, `model`, `effort`, and `toolsNone` capability booleans, `effortLevels` (the accepted values, or null), a `tui` block (`model`, `effort`: whether the interactive form carries each flag), plus `experimentMcp`, `experimentPrefix`, `servedModelEvidence`, `sessionServedModel` (the session wire sources that name the serving model, or an empty array), and `autonomyCarrier` (the carrier class each `--auto` level uses)). JSON also exposes `capabilities.sessionPermissions` and `sessionPermissionsNote` from `SESSION_AGENTS`, plus `sessionHermetic`, `checkHermetic`, and limitation reasons with evidence. Without `--json`, it prints available adapters and capability labels (`model`, `autonomy`, `effort`, `hermetic`, `tools`, `provider`, `result-json`, `budget`, `sessions(permissions)`, `sessions(no-permissions)`). Session labels distinguish an ask channel from native deny rules. Codex supports `--tools none` at every autonomy level; writable runs use a sanitized model catalog. A label carries the condition the adapter enforces: `tools(hermetic)` (OpenCode: `--tools none` on hermetic runs only), `model(run)`/`effort(run)` (when a flag is available only on runs), `budget` (`run --max-budget-usd`; claude, zai, and pi) |
 | `autonomy` | No command options; per-harness autonomy mappings |
 | `doctor` | `--format <format>` (`text`, the default, or `json`, schema `codemux-doctor-1`), `--only <agents>`/`--skip <agents>` (narrow the harness set, comma-separated), `--timeout <seconds>` (per-probe bound for one version verdict, default 10; a number of seconds from 0.001 to 60 with at most three decimals, whole milliseconds from 1 to 60000), `--strict` (warnings count as broken for the exit code), `--capabilities` (print only the per-harness capabilities block, the pre-2.0 output), and the paid stage `--spend`, `--spend-cap <n>` (at most n spend probes, default one per eligible harness), `--spend-unreadable` (spend on harnesses whose usage row is unreadable too; each spend probe is one real `codemux check` request labeled `machine-check=<stamp>`, and the JSON spend detail names the stamp `codemux calls --label machine-check=<stamp> --sum` needs). Without `--spend` it makes no model requests: installation, configuration, scode, optional usagemux status. Per installed harness it also prints the capability rows and a version-contract verdict: `ok`, `above audited ceiling` (newer than this codemux audited), `below minimum` (older than this codemux enforces), `known break at <levels> autonomy from <version> (sandbox mitigates or no mitigation)` (a recorded contract break names the autonomy levels it affects), `no contract` (no version contract exists for that harness), `untrusted binary (<reason>)` (the probe refused to run a binary that fails the same trust check as a launch: not a regular file owned by the invoking user or by root, group- or world-writable, or inside the working directory), `unreadable` (the version probe returned nothing parseable), or `unreadable (timed out)` (the probe exceeded its 10 s bound), `unreadable (binary not found)`, or `unreadable (<reason>)` (the probe failed before producing output: a spawn error with its cause). Version probes run in parallel |
 | `verify` | `-a, --agent <agent>`, `--show-scode`, `--sandbox-strict`, `--sandbox-trust <level>`, `--sandbox-no-net`, `--sandbox-scrub-env` |
@@ -380,7 +407,7 @@ These commands may inspect local binaries or execute version/help paths.
 | 0 | Command succeeded; does not imply every optional harness is installed |
 | 1 | Parser errors, configuration/I/O/launch or protocol failures (including a zero-exit run with an empty answer), and runtime errors |
 | 2 | doctor only: the configuration is invalid; the check still prints everything it could |
-| 64 | Every pre-launch refusal of a caller mistake, with the same code on run, tui, check, session, calls, usage, and verify: unknown agent (also the unknown `--agent` of calls/usage and `--agent` combined with `--all`); a request the named agent cannot carry (model, effort, autonomy without sandbox, hermetic, tools, result JSON, provider override, --experiment-project-settings); prompt refusals ("No prompt provided. Use -p or -f", an unreadable or empty -f file, a malformed, empty, oversized, or terminal -f - read); sandbox policy option rules ("--sandbox-block requires absolute paths", "--sandbox-account requires an absolute path", "--sandbox-account-id without --sandbox-account"); capability and combination refusals ("--enable-playwright-mcp requires --sandbox", "--no-web applies to the" followed by the agents that declare `run.no-web`); "--print-sandbox requires --sandbox"; bad option values (--timeout, --pass-env, --auto, --effort, --tools, --sandbox-trust, an invalid `-m/--model` name, an inaccessible `--cwd`, an explicitly empty value given to any option above); project-execution configuration refusals (a forbidden harness execution knob in the project tree) and the codex multi-agent knob's on/off rule; invalid labels, calls cutoff/grouping, quota-gate refusals, and unsupported session agents. Parser errors stay exit 1. |
+| 64 | Every pre-launch refusal of a caller mistake, with the same code on run, tui, check, session, calls, usage, and verify: unknown agent (also the unknown `--agent` of calls/usage and `--agent` combined with `--all`); a request the named agent cannot carry (model, effort, autonomy without sandbox, hermetic, tools, result JSON, provider override, --experiment-project-settings); prompt refusals ("No prompt provided. Use -p or -f", an unreadable or empty -f file, a malformed, empty, oversized, or terminal -f - read); sandbox policy option rules ("--sandbox-block requires absolute paths", "--sandbox-account requires an absolute path", "--sandbox-account-id without --sandbox-account"); capability and combination refusals ("--enable-playwright-mcp requires --sandbox", "--no-web applies to the" followed by the agents that declare `run.no-web`); "--print-sandbox requires --sandbox"; bad option values (--timeout, --pass-env, --auto, --effort, --tools, --sandbox-trust, an invalid `-m/--model` name, an inaccessible `--cwd`, an explicitly empty value given to any option above); project-execution configuration refusals (a forbidden harness execution knob in the project tree) and the codex multi-agent knob's on/off rule; invalid labels, calls cutoff/grouping/kind, quota-gate refusals, and unsupported session agents; `complete` option refusals (an unset key variable, a key or OAuth token where a variable name belongs, an OAuth token as the key, a bad base URL, budget, cap, port, or price). Parser errors stay exit 1. |
 | 66 | Requested resume identity not found |
 | 69 | Optional usagemux absent or untrusted; a usagemux that exits nonzero is an unreadable query and exits 1 |
 | 78 | Session policy/trust refusal; registry access failure can instead be 1 |

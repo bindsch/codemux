@@ -46,7 +46,14 @@ export function openStagingSync(path: string, mode: number, noFollow = false): n
   const flags =
     constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (noFollow ? NOFOLLOW : 0);
   const fd = durableFs.openSync(path, flags, mode);
-  durableFs.fchmodSync(fd, mode);
+  try {
+    durableFs.fchmodSync(fd, mode);
+  } catch (error) {
+    // Ownership transfers only after the mode is set. Preserve that failure
+    // even if closing the descriptor also fails.
+    try { durableFs.closeSync(fd); } catch { /* Preserve the permission error. */ }
+    throw error;
+  }
   return fd;
 }
 

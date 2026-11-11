@@ -197,7 +197,8 @@ export function registerTuiCommand(
           autonomy,
           effort,
           passthroughEnv,
-          enablePlaywrightMcp
+          enablePlaywrightMcp,
+          { printOnly: Boolean(options.printSandbox) }
         );
 
         // The quota options are request checks too: their values are
@@ -234,7 +235,7 @@ export function registerTuiCommand(
         // getEnv is otherwise trust-pinned by the launch but never
         // version-gated. getTuiEnv is absent on purpose: it may need the
         // sandbox preparation that follows the gate.
-        const gateEnv = adapter.buildExecutionEnv(adapter.getEnv(), passthroughEnv);
+        const gateEnv = adapter.buildExecutionEnv({}, passthroughEnv, { printOnly: Boolean(options.printSandbox) });
         await assertHarnessSupported(
           agentId,
           adapter.binaryName,
@@ -248,7 +249,7 @@ export function registerTuiCommand(
         // `sandboxOptions` resolves exactly when `options.sandbox` is set;
         // the compound guard lets the type system see that too.
         if (options.sandbox && sandboxOptions !== undefined) {
-          adapter.beforeLaunch();
+          if (!options.printSandbox) adapter.beforeLaunch();
           // A print-only launch skips the sandbox preparation the run path
           // skips under --print-sandbox (launch.ts): it exists for its side
           // effects alone — the claude family's refreshes or scrubs the
@@ -289,10 +290,10 @@ export function registerTuiCommand(
               : adapter.prepareTuiEnvironment(model, autonomy, effort, true, passthroughEnv, Boolean(options.printSandbox));
           finalizeTui = preparedTui.finalize;
           const injectedEnv = {
-            ...adapter.getEnv(),
+            ...adapter.getEnv({ printOnly: Boolean(options.printSandbox) }),
             ...preparedTui.env,
           };
-          const adapterEnv = adapter.buildExecutionEnv(injectedEnv, passthroughEnv);
+          const adapterEnv = adapter.buildExecutionEnv(injectedEnv, passthroughEnv, { printOnly: Boolean(options.printSandbox) });
           // The Playwright binary the command embeds is trust-checked
           // inside buildTuiCommand, but its path sits in the --mcp-config
           // JSON argument the command re-check never parses (review round
@@ -314,7 +315,8 @@ export function registerTuiCommand(
             true,
             enablePlaywrightMcp,
             workdir,
-            nestedChecks
+            nestedChecks,
+            Boolean(options.printSandbox)
           );
           const exitCode = await runSandboxed(
             command,
@@ -340,7 +342,7 @@ export function registerTuiCommand(
         } else {
           const exitCode = await adapter.runInteractive(
             model,
-            options.cwd,
+            workdir,
             autonomy,
             effort,
             false,

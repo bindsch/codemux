@@ -3,6 +3,7 @@
 // --print-sandbox introspection. src/session/cli.ts owns the command
 // and the spawn itself.
 import { randomUUID } from "node:crypto";
+import { nativeSessionId } from "./scoped-id.js";
 import { join } from "node:path";
 import { piProviderModelSelector } from "../pi-provider.js";
 import { buildCopilotRpcLaunch } from "./copilot-rpc-config.js";
@@ -400,7 +401,7 @@ export async function prepareSessionChild({
         // selection, the Playwright flag, and the argv extras that need
         // no file write, through the turn's own helper.
         const turnInput = {
-          text: "<session prompt>", sessionId: id, firstTurn: resumeId === undefined,
+          text: "<session prompt>", sessionId: nativeSessionId(agentId, id), firstTurn: resumeId === undefined,
           hermeticHome: privateDir, autonomy, model, effort,
           callerHome: callerHome?.dir,
           tools: runLike.tools, playwrightMcp: runLike.enablePlaywrightMcp === true,

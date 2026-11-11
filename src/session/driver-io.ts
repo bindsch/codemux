@@ -272,7 +272,7 @@ export abstract class ClaudeDriverIo {
    * and is reported as such, never as unusable harness output. */
   handleFatal(fatal: SessionFatal): void {
     if (this.settled) return;
-    if (fatal.kind === "handler" || fatal.kind === "read-error") {
+    if ("error" in fatal) {
       console.error(`codemux: ${codemuxFatalMessage(fatal)}`, fatal.error);
       this.emitError(true, "codemux", codemuxFatalMessage(fatal));
       void this.finish("crash", 1);

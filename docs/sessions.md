@@ -89,6 +89,15 @@ Do not treat `shutdown_requested: true` as evidence of success.
 
 ## Resume
 
+Goose and Cline session IDs reported by Codemux have the form
+`<agent>-<uuid>--<native-id>`. The UUID distinguishes separate homes even
+when the harness assigns the same native ID. Pass the full reported ID to
+`--resume`; Codemux sends only the native part to the harness. Existing
+registry entries with native IDs remain resumable. The registry refuses
+to replace a record belonging to another agent or home. A private-home
+settlement failure fails the session. When settlement runs between turns,
+it also fails the current turn; a persistent child's home settles at shutdown.
+
 Extract a usable ID only after the first command has ended successfully:
 
 ```sh
@@ -180,8 +189,9 @@ the record stays resumable for the next attempt.
 
 Aider and OpenCode accept `--tools default` and `--tools none` on every turn and resume. OpenCode requires hermetic mode without project settings for `none`. Copilot names an unavailable-tool sentinel that empties the registry, Gemini writes empty core tools into its per-turn settings, and Pi passes `--no-tools`; each is reapplied on every resumed turn and `default` restores discovery. Kimi binds an empty native allowlist on the first tools-none turn; resume restores it and refuses a different tool selection. Other session tool selections remain agent-specific. `--max-budget-usd` is refused for sessions; the spend limit applies to headless runs.
 `--hermetic` is accepted by Claude, ZAI, Codex, Agy, OpenCode, Aider, Kimi, Droid, Pi, Qwen, Gemini, Copilot, Goose, Cline, and OpenHands. Cursor refuses it with exit 64 because its state cannot be relocated to a session-lifetime private home.
-`--effort none` sends no effort field on every
-session harness, codex included. `--enable-playwright-mcp` is supported
+`--effort none` uses the native value where supported: Codex sends `effort: "none"`
+and Pi sends `--thinking off`. On other agents without a native `none`, codemux
+omits effort configuration. `--enable-playwright-mcp` is supported
 for Claude/ZAI/Cline/Codex/Kimi/OpenCode/Copilot/Gemini/Goose/Pi/Qwen, never combined with either
 isolation flag, and requires `--sandbox`; Claude, ZAI, Codex, Kimi, Gemini, Goose, Pi, and Qwen
 require `--auto low`, Copilot and Cline require `--auto medium` or `high`
@@ -215,6 +225,8 @@ All paths below are relative to `<dir>`. HOME, USERPROFILE, and XDG roots move i
 With scode, real harness stores are blocked and only the caller directory receives writable state access. `--print-sandbox`, where supported, shows the same policy without creating the home. See [isolation](isolation.md#caller-owned-session-homes).
 ## Hermetic sessions
 
+Session IDs must be single path components: separators, dot segments, whitespace, and NUL bytes are refused for every harness. Private-home operations check containment and the recorded parent's identity before accessing a child.
+
 `--hermetic` applies the harness's run isolation to session turns; see [isolation](isolation.md) for each harness's conditions and unresolved limits. Flag acceptance alone does not promise a session-lifetime private home.
 Fourteen agents keep a session-lifetime private home: Claude, ZAI, Codex, Kimi, Agy, Aider, OpenCode, Droid, Pi, Gemini, Copilot, Goose, Cline, and OpenHands. The home is reported on `session_started.private_home` and removed by `--final` or the two-day stale sweep. Qwen keeps none: its sessions live in the real data directory, and it reports `private_home: null`. A session cannot gain or lose hermetic mode on resume. A missing home on resume is refused as policy (exit 78), never silently remade, because its transcript would be gone.
 
@@ -230,10 +242,9 @@ Per agent:
 - **pi** keeps a home under `~/.pi/agent/.codemux-hermetic/` (a
   passed-through `PI_CODING_AGENT_DIR` redirects it) and points
   `PI_CODING_AGENT_DIR` there on every turn; under a provider override
-  the home's `models.json` carries the routing entry and `--model` is
-  required. A pi provider override works only hermetic: plain pi runs
-  relocate the whole session store with `PI_CODING_AGENT_DIR`, so only
-  the session home is stable across turns (plain + override exits 64).
+  the home's `models.json` carries the routing entry and a selected model is
+  required, from `--model` or `CODEMUX_PI_PROVIDER_MODEL`. Plain Pi override sessions keep the native session directory
+  stable with `--session-dir`, independently of per-turn provider settings.
 - **gemini** keeps a home under `~/.gemini/.codemux-hermetic/` whose
   `.gemini/` holds hard links to the OAuth login files (skipped under an
   API-key override); `GEMINI_CLI_HOME` never routes a session.
@@ -250,9 +261,10 @@ Per agent:
   the whole hermetic claim, the native sessions stay in the real data
   directory, and `private_home` reports null.
 
-`--final` removes the home when the session ends. On the claude family, on agy, and on the six hermetic second-wave agents (droid, pi, gemini, copilot, goose, openhands) the driver's end path runs the removal twice before it stamps the record, and a failed pair keeps the home, exits 1, and leaves the record resumable — on agy and those six the kept home also settles onto the session-keyed name, so the resume the verdict promises finds it (the project-settings section below spells this out).
+`--final` removes the home when the session ends. On the claude family, agy, cline, opencode, droid, pi, gemini, copilot, goose, and openhands, the driver's end path retries a failed removal before stamping the record. If both attempts fail, it keeps the home, exits 1, and leaves the record resumable. Deferred homes settle onto the session-keyed name so the reported resume path exists (the project-settings section below spells this out).
 On codex, kimi, and aider the CLI removes the home after the session's children settled; a fresh session's record keeps its resumable stamp (the harness's own id never reaches the CLI), so a later resume of it answers the missing-home refusal, exit 78.
-Without `--final`, the home persists for the next `--resume`, and the stale sweep removes it once it has been quiet for two days and its registry record is free: ended without a final stamp, or gone. A session that ended normally and was never resumed therefore loses its home after two quiet days, and a later `--resume` answers the missing-home refusal, exit 78.
+Without `--final`, the home persists for the next `--resume`, and the stale sweep removes it once it has been quiet for two days and its registry record is free: ended without a final stamp, gone, or an unended record whose owner process is dead. A session that ended normally or crashed and was never resumed therefore loses its home after two quiet days, and a later `--resume` answers the missing-home refusal, exit 78.
+The sweep retains a resumable home if its freshness scan cannot finish, including when it exceeds 4,096 entries or cannot read a subtree. A free registry record alone does not establish inactivity.
 
 ## Hermetic project-settings sessions
 
@@ -301,8 +313,8 @@ Three lifetimes:
   resumable with no final stamp — so a later `--resume --final` or the
   stale sweep can retry.
 - The stale sweep removes a directory that has been quiet for two days
-  and whose registry record is free (ended without a final stamp, or
-  gone); a held or unreadable record spares it.
+  and whose registry record is free (ended without a final stamp, gone, or
+  an unended record whose owner process is dead); a held or unreadable record spares it.
 
 The mode is containment provenance: a resume must carry the same flags,
 and a session cannot gain or lose the mode on resume. A project's
@@ -316,7 +328,7 @@ login ([authentication](authentication.md)).
 On OpenHands the mode is the hermetic session without the clean-working-directory rule: every turn runs in the empty private home and loads the working directory's own `.openhands` (1.16.0 reads `{working_dir}/.openhands/hooks.json` before the home's). It requires scode and `--auto low`, and refuses `--permission-policy deny`, whose rule in the home that file would replace.
 
 Provider overrides via `CODEMUX_<AGENT>_PROVIDER_*` are supported on session spawns for Aider, Claude, Cline, Codex, Copilot, Cursor, Droid, Goose, Gemini, Kimi, OpenCode, OpenHands, Pi, Qwen, and ZAI. Agy sessions refuse overrides.
-The adapter validates overrides as on `run`; the selected provider must match on resume. Qwen requires a non-legacy binary. A Pi override session requires `--hermetic` because its session home keeps the session store stable across turns. A hermetic Goose session requires an override because its private home contains no operator configuration. See [CLI reference](cli.md).
+The adapter validates overrides as on `run`; the selected provider must match on resume. Qwen requires a non-legacy binary. A Pi override session supports both plain and hermetic mode; plain mode preserves the native session directory while private provider settings are prepared per turn. A hermetic Goose session requires an override because its private home contains no operator configuration. See [CLI reference](cli.md).
 
 Claude/ZAI account redirects use `CLAUDE_CONFIG_DIR`, Codex uses `CODEX_HOME`,
 and Kimi uses `KIMI_CODE_HOME`, only when included in `--pass-env`. Values
@@ -455,44 +467,11 @@ nothing: the session had already ended, so the status stays what the event
 said, 0 after a clean end. Only a failed delivery of the event changes the
 status, to at least 1. Every agent follows this rule.
 
-Kimi, OpenCode, and agy learn a fresh session's id from the first turn's
-output and record it beside the stream: the session never waits on the
-registry lock mid-turn. A session that ends with that record still unwritten
-— the lock stayed busy until the end — ends as a crash: the fatal error
-`cannot record the session in the registry` is the verdict, the exit is
-nonzero (1, or the signal's 143 when a signal ended it), the registry holds
-no entry, and the session is not resumable. A resumed session is tracked by
-the record the CLI claimed before the spawn, so the verdict applies to fresh
-sessions only. The same holds when the lock stays busy past the whole retry
-budget while a resumed session is live: the exhausted record is a lost
-refresh of a record that exists, so the session prints one stderr line
-naming the spent budget and the claim that stays the record, announces
-`session_started`, and keeps running.
+Kimi, OpenCode, and agy learn a fresh session's id from the first turn's output and record it beside the stream: the session never waits on the registry lock mid-turn. A session that ends with that record still unwritten — the lock stayed busy until the end — ends as a crash: the fatal error `cannot record the session in the registry` is the verdict, the exit is nonzero (1, or the signal's 143 when a signal ended it), the registry holds no entry, and the session is not resumable. A resumed session is tracked by the record the CLI claimed before the spawn, so the verdict applies to fresh sessions only. The same holds when the lock stays busy past the whole retry budget while a resumed session is live: the exhausted record is a lost refresh of a record that exists, so the session prints one stderr line naming the spent budget and the claim that stays the record, announces `session_started`, and keeps running.
 
-Child failures can preserve another nonzero code. Any observed nonzero child
-exit or signal changes the final reason to `harness_failed`, including after
-a requested shutdown. A caller must inspect both exit status and events.
-Malformed caller JSON receives a rejection and does not itself end a session.
+Child failures can preserve another nonzero code. Any observed nonzero child exit or signal changes the final reason to `harness_failed`, including after a requested shutdown. A caller must inspect both exit status and events. Malformed caller JSON receives a rejection and does not itself end a session.
 
-Aider's stdout is a human transcript: non-JSON lines become `unknown`.
-Its assistant message is extracted from persistent history. History is
-checked before each turn, reads are bounded per turn, and the accumulated
-file has no codemux size cap. An explicit interrupt stops the turn child and
-removes only that turn's history delta after the child settles. The session
-can continue; its end event retains the raw signal. Other unanswered failed
-turns end the session because a resume would replay them. The test is what aider
-itself restores: a reply that is only a reasoning block counts as a reply,
-and a reply made only of `> `, `# `, or `#### ` lines does not, because
-aider writes its tool output and the user's text in those shapes and
-restores none of them as assistant text. Local analytics report native output
-tokens, which Aider may estimate, and known cost; input, cache, and total counts stay null. Aider refuses text
-beginning with `/` or `!`;
-Kimi refuses `/goal` followed by whitespace or end, and `!`; OpenCode
-refuses a message that is empty after trimming, which its wire exits 1 on.
-These checks apply after the author prefix. An OpenCode `error` event, and
-a Kimi roleless `{type:"error",message}` frame, fail their turn even when
-the turn's process exits 0 — the failed turn's reason is the error message
-— while the session itself continues with the next turn.
+Aider's stdout is a human transcript: non-JSON lines become `unknown`. Its assistant message is extracted from persistent history. History is checked before each turn, reads are bounded per turn, and the accumulated file has no codemux size cap. An explicit interrupt stops the turn child and removes only that turn's history delta after the child settles. The session can continue; its end event retains the raw signal. Other unanswered failed turns end the session because a resume would replay them. The test is what aider itself restores: a reply that is only a reasoning block counts as a reply, and a reply made only of `> `, `# `, or `#### ` lines does not, because aider writes its tool output and the user's text in those shapes and restores none of them as assistant text. Local analytics report native output tokens, which Aider may estimate, and known cost; input, cache, and total counts stay null. Aider refuses text beginning with `/` or `!`; Kimi refuses `/goal` followed by whitespace or end, and `!`; OpenCode refuses a message that is empty after trimming, which its wire exits 1 on. These checks apply after the author prefix. An OpenCode `error` event, and a Kimi roleless `{type:"error",message}` frame, fail their turn even when the turn's process exits 0 — the failed turn's reason is the error message — while the session itself continues with the next turn.
 
 Usage is described in [results and usage](results-and-usage.md). Token
 totals belong to this driver instance, including after resume. Claude/ZAI

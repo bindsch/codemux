@@ -80,7 +80,7 @@ export async function installPiMcpExtension(
         const name = `mcp__${options.name}__${String(tool.name)}`;
         if (typeof tool.name !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(tool.name) ||
             name.length > 64 || names.has(name) || existing.has(name) ||
-            typeof tool.description !== "string") {
+            (tool.description !== undefined && typeof tool.description !== "string")) {
           throw new Error("pi MCP tool name or description is invalid or duplicated");
         }
         object(tool.inputSchema);
@@ -99,7 +99,7 @@ export async function installPiMcpExtension(
     for (const tool of definitions) {
       const name = `mcp__${options.name}__${String(tool.name)}`;
       pi.registerTool({
-        name, label: name, description: tool.description as string, parameters: object(tool.inputSchema),
+        name, label: name, description: (tool.description as string | undefined) ?? "", parameters: object(tool.inputSchema),
         execute: async (id, input, signal) => {
           if (closed) throw new Error("pi MCP transport is closed");
           signal?.throwIfAborted();

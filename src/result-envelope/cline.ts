@@ -31,7 +31,11 @@ export function normalizeClineUsage(value: unknown) {
     if (input !== null && usage.cached_input_tokens !== null && input >= usage.cached_input_tokens) {
       usage.input_tokens = input - usage.cached_input_tokens;
     }
-    if (input !== null && usage.output_tokens !== null) usage.total_tokens = safeTokenSum(input, usage.output_tokens);
+    const inconsistentCache = input !== null && read !== null && write !== null &&
+      (usage.cached_input_tokens === null || input < usage.cached_input_tokens);
+    if (!inconsistentCache && input !== null && usage.output_tokens !== null) {
+      usage.total_tokens = safeTokenSum(input, usage.output_tokens);
+    }
   }
   return usage;
 }
@@ -68,7 +72,10 @@ export function parseClineResultEnvelope(stdout: string) {
     // A signal can arrive after the model completed. Native run-agent emits
     // run_aborted after run_result without changing that result's reason.
     // https://github.com/cline/cline/blob/cli-v3.0.74/apps/cli/src/runtime/run-agent.ts#L382-L399
-    if (event.type === "run_aborted" || event.type === "run_abort_requested") return null;
+    if (event.type === "run_aborted" || event.type === "run_abort_requested") {
+      if (result === null) return null;
+      continue;
+    }
     if (event.type === "run_start" && typeof event.sessionId === "string") {
       if (sessionId !== null && sessionId !== event.sessionId) return null;
       sessionId = event.sessionId;

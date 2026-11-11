@@ -3,9 +3,9 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  createRunFakeBinaryEnv as createFakeBinaryEnv,
   runCli,
 } from "./helpers/cli.js";
+import { createAnswerFakeBinaryEnv as createFakeBinaryEnv } from "./helpers/native-answer-cli.js";
 
 describe("CLI - Signals", () => {
   test("a SIGTERM to a headless run terminates the agent's process tree", async () => {
@@ -223,7 +223,7 @@ printf 'OK'
       );
       expect(none.exitCode).toBe(0);
       expect(none.stderr).not.toContain("does not support reasoning effort");
-      expect(none.stdout).toBe("OK");
+      expect(none.stdout).toBe("OK\n");
       const noneArgv = readFileSync(argvFile, "utf8").split("\n");
       expect(noneArgv).not.toContain("--effort");
 

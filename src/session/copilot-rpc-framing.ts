@@ -16,16 +16,18 @@ export class CopilotRpcFramer {
   private bodyLength: number | null = null;
 
   push(chunk: Uint8Array): unknown[] {
-    if (this.buffer.length + chunk.length > copilotRpcBodyLimit + copilotRpcHeaderLimit) {
-      throw new Error("Copilot RPC buffered data exceeds the byte limit");
-    }
+    // Bounds apply to each frame, not a chunk that can contain several.
+    // The loop consumes complete frames and bounds any retained remainder.
     this.buffer = Buffer.concat([this.buffer, chunk]);
     const messages: unknown[] = [];
     for (;;) {
       if (this.bodyLength === null) {
         const end = this.buffer.indexOf("\r\n\r\n");
         if (end < 0) {
-          if (this.buffer.length > copilotRpcHeaderLimit) throw new Error("Copilot RPC header exceeds the byte limit");
+          // Up to three delimiter bytes may trail a maximum-size header.
+          const tail = this.buffer.subarray(-3).toString("latin1");
+          const pendingDelimiterBytes = tail.endsWith("\r\n\r") ? 3 : tail.endsWith("\r\n") ? 2 : tail.endsWith("\r") ? 1 : 0;
+          if (this.buffer.length - pendingDelimiterBytes > copilotRpcHeaderLimit) throw new Error("Copilot RPC header exceeds the byte limit");
           break;
         }
         if (end > copilotRpcHeaderLimit) throw new Error("Copilot RPC header exceeds the byte limit");

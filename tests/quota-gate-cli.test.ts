@@ -42,7 +42,7 @@ describe("CLI quota gate", () => {
       ],
     });
     return createFakeBinaryEnv({
-      claude: `if [ "$1" = "--version" ]; then printf '${claudeVersion}\\n'; exit 0; fi\ntouch "$(dirname "$0")/claude-ran"\nprintf 'status banner\\nOK.\\nusage summary\\n'`,
+      claude: `if [ "$1" = "--version" ]; then printf '${claudeVersion}\\n'; exit 0; fi\ncat >/dev/null\ntouch "$(dirname "$0")/claude-ran"\nprintf '%s\\n' '{"type":"result","subtype":"success","result":"status banner\\nOK.\\nusage summary"}'`,
       usagemux: `printf '%s' '${snapshot}'`,
       // The default 0.6.0 answers --version through the helper's preamble;
       // the sandboxed session test needs scode installed on PATH.

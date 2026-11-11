@@ -7,7 +7,7 @@ import { diagnosticExcerpt, failed, jsonShapedStdout, plainText } from "./common
 
 /**
  * agy: stdout should be the `--output-format=json` result object. Anything
- * that is not JSON passes through verbatim — except empty stdout, which
+ * that is not JSON stays as diagnostics with no verified reply. Empty stdout
  * fails like the claude family's empty success (round 259), and except
  * JSON that is not the envelope: the envelope is one JSON object, so a
  * JSON value the parser cannot take (an array or a scalar, a complete but
@@ -27,7 +27,7 @@ export function agyPlainResult(result: RunResult): RunResult {
         ""
       );
     }
-    if (!jsonShapedStdout(result.stdout)) return result;
+    if (!jsonShapedStdout(result.stdout)) return { ...result, reply: "" };
     return failed(
       result,
       `codemux: agy printed JSON-shaped stdout that is not a result ` +

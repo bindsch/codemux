@@ -388,9 +388,10 @@ export class DroidAdapter extends BaseAdapter {
     model?: string,
     autonomy?: AutonomyLevel,
     effort?: ReasoningEffort,
-    _sandboxed?: boolean
+    _sandboxed?: boolean, _playwright?: boolean, _cwd?: string,
+    _checks?: import("../executable-security.js").ExecutableCheck[], printOnly = false
   ): string[] {
-    return this.prepareTuiCommand(model, autonomy, effort);
+    return this.prepareTuiCommand(model, autonomy, effort, printOnly);
   }
 
   prepareTuiCommand(
@@ -412,7 +413,7 @@ export class DroidAdapter extends BaseAdapter {
     const resolved = this.modelFor(model);
     const cmd: string[] = ["droid"];
     if (override !== null || resolved !== undefined || effort !== undefined) {
-      const settings = writeDroidTuiSettings(this.realBrandHome(), {
+      const settings = printOnly ? { path: join(this.realBrandHome(), ".codemux", "preview", "settings.json") } : writeDroidTuiSettings(this.realBrandHome(), {
         model: override !== null ? resolved : undefined,
         defaultModel:
           override !== null && resolved !== undefined
