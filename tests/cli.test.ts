@@ -18,6 +18,7 @@ import {
 import { fakeScodeHelp } from "./helpers/doctor.js";
 import { getAllAdapters } from "../src/adapters/index.js";
 import { SESSION_AGENTS } from "../src/session/cli-agents.js";
+import { runVerifyCli } from "./helpers/verify.js";
 
 describe("CLI - Help", () => {
   test("--help shows usage", async () => {
@@ -226,7 +227,7 @@ describe("CLI - Verify", () => {
   });
 
   test("verify --show-scode prints effective command matrix", async () => {
-    const { stdout, exitCode } = await runCli(["verify", "-a", "codex", "--show-scode"]);
+    const { stdout, exitCode } = await runVerifyCli(["verify", "-a", "codex", "--show-scode"]);
     expect(exitCode).toBe(0);
     expect(stdout).toContain("Effective scode command preview");
     expect(stdout).toContain("| Agent | Autonomy | Mode | Command |");
@@ -236,7 +237,7 @@ describe("CLI - Verify", () => {
   });
 
   test("verify --show-scode applies sandbox policy overrides", async () => {
-    const { stdout, exitCode } = await runCli([
+    const { stdout, exitCode } = await runVerifyCli([
       "verify",
       "-a",
       "codex",
@@ -251,13 +252,13 @@ describe("CLI - Verify", () => {
   });
 
   test("verify --show-scode keeps hosted agents network-capable", async () => {
-    const { stdout, exitCode } = await runCli(["verify", "-a", "codex", "--show-scode"]);
+    const { stdout, exitCode } = await runVerifyCli(["verify", "-a", "codex", "--show-scode"]);
     expect(exitCode).toBe(0);
     expect(stdout).toMatch(/\| codex \| low \| run \| `scode -C \S+ --trust standard --rw --/);
   });
 
   test("verify --show-scode uses explicit standard trust for coarse harnesses", async () => {
-    const { stdout, exitCode } = await runCli(["verify", "-a", "opencode", "--show-scode"]);
+    const { stdout, exitCode } = await runVerifyCli(["verify", "-a", "opencode", "--show-scode"]);
     expect(exitCode).toBe(0);
     expect(stdout).toMatch(/\| opencode \| medium \| run \| `scode -C \S+ --trust standard --rw --/);
   });

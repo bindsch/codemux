@@ -198,11 +198,13 @@ function sweepStaleDirectories(parent: string, record: TrustedParentRecord): voi
 export function writeOpencodeProviderConfig(
   dataDir: string,
   override: ProviderOverride & { baseUrl: string; apiKey: string },
-  model: string
+  model: string,
+  printOnly = false
 ): OpencodeProviderConfig {
   // Refused before anything is created: an unwritable cap leaves no
   // directory behind for the sweep to find.
   const config = opencodeProviderConfig(override, model);
+  if (printOnly) return { path: join(dataDir, PARENT_DIR_NAME, "preview", "opencode.json"), finalize: () => {} };
   const parent = join(dataDir, PARENT_DIR_NAME);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   // A run with write access to the data directory could have replaced the

@@ -75,6 +75,10 @@ export function createGeminiHermeticHome(
     mcpServers?: Record<string, GeminiMcpServer>;
   } = {}
 ): GeminiHermeticHome {
+  if (options.printOnly) {
+    const home = join(sourceGeminiDir, ".codemux-hermetic", "preview");
+    return { home, geminiDir: join(home, ".gemini"), finalize: () => {} };
+  }
   const links = options.loginLinks ?? realLoginLinks;
   const parent = prepareRunDirParent(sourceGeminiDir, ".codemux-hermetic");
   const parentRecord = recordTrustedParent(parent);
@@ -98,7 +102,7 @@ export function createGeminiHermeticHome(
     mkdirSync(geminiDir, { mode: 0o700 });
     chmodSync(geminiDir, 0o700);
     let settings: Record<string, unknown> = options.preserveCustomization
-      ? inheritGeminiSettings(sourceGeminiDir, geminiDir, options.printOnly === true) : {};
+      ? inheritGeminiSettings(sourceGeminiDir, geminiDir, false) : {};
     if (options.toolsNone === true) settings.tools = { core: [], exclude: ["*"] };
     if (options.outputLimit !== undefined) {
       settings = geminiSettingsWithOutputLimit(settings, options.outputLimit.model, options.outputLimit.tokens);
@@ -113,7 +117,7 @@ export function createGeminiHermeticHome(
     if (Object.keys(settings).length > 0 || options.preserveCustomization) {
       writeOwnedSync(join(geminiDir, "settings.json"), JSON.stringify(settings), 0o600);
     }
-    if (!options.preserveCustomization && !options.printOnly && !options.apiKeyAuth) {
+    if (!options.preserveCustomization && !options.apiKeyAuth) {
       for (const name of GEMINI_LOGIN_FILES) {
         const source = join(sourceGeminiDir, name);
         let stat;

@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { BaseAdapter, type RunContext } from "./base.js";
+import type { LaunchIntent } from "../types.js";
 import { assertNoGooseProjectExecutionConfig } from "../project-safety.js";
 import {
   readProviderOverride,
@@ -246,8 +247,10 @@ export class GooseAdapter extends BaseAdapter {
   override prepareRun(
     request: RunRequest,
     _sandboxTrust?: ScodeTrustLevel,
-    _sandboxOptions?: SandboxOptions
+    _sandboxOptions?: SandboxOptions,
+    launch: LaunchIntent = {}
   ): RunContext {
+    if (launch.printOnly && request.experimentMcp) throw new UsageRefusalError("Goose experiment MCP cannot be prepared for a print-only preview");
     const experimentSpec = request.experimentMcp ? readExperimentRunSpec(request) : undefined;
     // The probe rides the private configuration root alone (src/goose-
     // experiment-run.ts plants config.yaml under GOOSE_PATH_ROOT): a plain
@@ -273,7 +276,7 @@ export class GooseAdapter extends BaseAdapter {
       throw new UsageRefusalError("goose --hermetic requires an explicit --cwd owned by this run");
     }
     const context: RunContext = {
-      gooseHermeticHome: createGooseHermeticHome(this.realGooseConfigDir()),
+      gooseHermeticHome: createGooseHermeticHome(this.realGooseConfigDir(), launch.printOnly),
       stdoutSink: gooseStreamFold(),
     };
     if (experimentSpec !== undefined) {

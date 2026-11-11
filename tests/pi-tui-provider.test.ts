@@ -82,13 +82,13 @@ describe("pi generic TUI provider lifecycle", () => {
     } finally { prepared.finalize(); }
   }));
 
-  test("print-only preparation has the same provider model and owned finalizer", () => withHome((home) => {
+  test("print-only preparation has the same provider model and creates no directory", () => withHome((home) => {
     const adapter = new PiAdapter({ ...OVERRIDE, HOME: home }, home);
     const prepared = adapter.prepareTuiEnvironment("preview", "high", "high", true, [], true);
     try {
       expect(adapter.buildTuiCommand("preview", "high", "high", true))
         .toEqual(["pi", "--no-approve", "--model", "codemux/preview", "--thinking", "high"]);
-      expect(existsSync(join(prepared.env[AGENT_ENV]!, "models.json"))).toBe(true);
+      expect(existsSync(prepared.env[AGENT_ENV]!)).toBe(false);
     } finally { prepared.finalize(); }
     expect(existsSync(prepared.env[AGENT_ENV]!)).toBe(false);
   }));

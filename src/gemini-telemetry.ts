@@ -16,9 +16,9 @@ export function geminiTelemetryEnvironment(path: string): Record<string, string>
     OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT: String(GEMINI_MAX_TELEMETRY_BYTES), OTEL_LOGRECORD_ATTRIBUTE_VALUE_LENGTH_LIMIT: String(GEMINI_MAX_TELEMETRY_BYTES) };
 }
 
-export function prepareGeminiTelemetry(home: string): string {
+export function prepareGeminiTelemetry(home: string, printOnly = false): string {
   const path = join(home, "codemux-telemetry.json");
-  writeFileSync(path, "", { mode: 0o600, flag: "wx" });
+  if (!printOnly) writeFileSync(path, "", { mode: 0o600, flag: "wx" });
   return path;
 }
 

@@ -52,6 +52,8 @@ export interface HarnessContract {
    * `calendar` for rolling YYYY.MM.DD builds. */
   scheme: "semver" | "calendar";
   versionArgs: readonly string[];
+  /** Override the default version deadline for this harness, not its exit semantics. */
+  versionTimeoutMs?: number;
   pattern: RegExp;
   min: string;
   maxAudited: string;
@@ -215,6 +217,8 @@ export const HARNESS_CONTRACTS: Readonly<Partial<Record<AgentId, HarnessContract
   cursor: {
     scheme: "calendar",
     versionArgs: ["--version"],
+    // Cursor prints its version then lingers for roughly 30 seconds.
+    versionTimeoutMs: 5_000,
     // The adapter runs the standalone `cursor-agent`, then the `agent`
     // alias (scode 0.6.0 dropped the bare `agent` name from its
     // known-harness list, so a sandboxed `agent` launch warns that its

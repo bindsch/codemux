@@ -1,6 +1,6 @@
 import { statSync } from "node:fs";
 import type { ProbeEnvironment } from "./environment.js";
-import { runCapturedCommand } from "./process-runner.js";
+import { runOutputProbe, versionAnswer } from "./output-probe.js";
 import type { AgentId, AutonomyLevel } from "./types.js";
 
 import {
@@ -277,13 +277,14 @@ export const probeHarnessVersionDetailed = async (
   options?: { timeoutMs?: number }
 ): Promise<VersionProbeResult> => {
   const read = async (args: readonly string[], pattern: RegExp) => {
-    const result = await runCapturedCommand([binary, ...args], {
+    const result = await runOutputProbe([binary, ...args], {
       cwd: workdir,
       env: environment,
-      timeoutMs: options?.timeoutMs ?? DEFAULT_VERSION_PROBE_TIMEOUT_MS,
-    });
+      timeoutMs: options?.timeoutMs ?? contract.versionTimeoutMs ?? DEFAULT_VERSION_PROBE_TIMEOUT_MS,
+    }, versionAnswer(pattern));
     if (result.timedOut) return { version: null, timedOut: true };
     if (result.exitCode !== 0) return { version: null, timedOut: false };
+    pattern.lastIndex = 0;
     return {
       version: pattern.exec(`${result.stdout}\n${result.stderr}`.trim())?.[1] ?? null,
       timedOut: false,

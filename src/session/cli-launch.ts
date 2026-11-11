@@ -103,8 +103,8 @@ export async function prepareSessionLaunch({
   codexOverride: (ProviderOverride & { baseUrl: string; apiKey: string }) | null;
   runLike: RunRequest;
 }) {
-  // Both preflight and child launches use the adapter's built environment,
-  // including the per-launch credentials and command resolution context.
+  if (options.printSandbox) sandboxOptions = structuredClone(sandboxOptions);
+  // Preflight and children use the adapter's credential and executable environment.
   let callerHome: CallerHarnessHome | null = null;
   const baseEnvironment = prepareSessionEnvironment({
     adapter, runLike, passthroughEnv, sandboxed: Boolean(options.sandbox), sandboxOptions, override,
@@ -181,7 +181,6 @@ export async function prepareSessionLaunch({
     ceiling: options.quotaCeiling,
     disabled: options.quotaGate === false,
   });
-  // A print-only session spends nothing (review round 56).
   if (quotaPolicy !== null && !options.printSandbox) await assertQuotaHeadroomForLaunch(adapter, quotaPolicy);
 
   // Pin before probing; app-server argv and spawn keep this executable identity.
@@ -245,13 +244,13 @@ export async function prepareSessionLaunch({
             // one.
             model as string,
             readCodexMultiAgent(),
-            resumeId
+            resumeId, options.printSandbox === true
           )
         : createCodexSessionProviderHome(
             codexHome(),
             codexOverride,
             model as string,
-            readCodexMultiAgent()
+            readCodexMultiAgent(), options.printSandbox === true
           )
       : null;
   // A hermetic claude-family session's private config directory
@@ -293,7 +292,7 @@ export async function prepareSessionLaunch({
           claudeSessionId as string,
           resumeId !== undefined,
           workdir,
-          process.env
+          process.env, undefined, options.printSandbox === true
         )
       : null;
     if (sessionProjectDir !== null && sandboxOptions !== undefined) {
@@ -304,6 +303,7 @@ export async function prepareSessionLaunch({
       // stays unreachable, read and write. Sits before every spawn
       // (the long-lived child and each turn), because every child
       // inherits these options.
+      sandboxOptions.callerBlockPaths ??= sandboxOptions.blockPaths ?? [];
       sandboxOptions.blockPaths = [
         ...(sandboxOptions.blockPaths ?? []),
         ...sessionProjectDir.blockedPaths,
@@ -364,12 +364,11 @@ export async function prepareSessionLaunch({
   }
   if ((hermetic && (agentId === "codex" || agentId === "kimi" || agentId === "agy")) || (agentId === "kimi" && enablePlaywrightMcp && options.harnessHome === undefined)) {
     // Print-only launches need the home's path for the argv and none of
-    // the operator's state, so nothing is populated and the print exit
-    // removes the fresh directory (cli-exit.ts) — the run path's rule
-    // for its own hermetic homes (review round 55).
+    // the operator's state. Preparation and cleanup leave the tree intact.
     const printOnly = options.printSandbox === true;
     if (agentId === "codex") {
       sessionPrivateHome = openSessionPrivateHome({
+        printOnly,
         parent: join(codexHome(), ".codemux-hermetic"),
         sessionId: resumeId,
         resume: resumeId !== undefined,
@@ -405,6 +404,7 @@ export async function prepareSessionLaunch({
       // home), exactly as a hermetic run's does.
       kimiSourceBrandHome = kimiHarnessHome(passthroughEnv);
       sessionPrivateHome = openSessionPrivateHome({
+        printOnly,
         parent: join(kimiSourceBrandHome, ".codemux-hermetic"),
         sessionId: resumeId,
         resume: resumeId !== undefined,
@@ -435,6 +435,7 @@ export async function prepareSessionLaunch({
       // is re-allowed after it (launch/agy-isolation-sandbox.ts).
       const realAgyState = dirname(agyHarnessHome());
       sessionPrivateHome = openSessionPrivateHome({
+        printOnly,
         parent: join(realAgyState, ".codemux-isolation-probes"),
         sessionId: resumeId,
         resume: resumeId !== undefined,
@@ -473,6 +474,7 @@ export async function prepareSessionLaunch({
     if (sandboxOptions !== undefined) {
       try {
         assertNoCallerBlockOverStateDirs(sandboxOptions.blockPaths ?? [], [sessionPrivateHome.dir]);
+        sandboxOptions.callerBlockPaths ??= sandboxOptions.blockPaths ?? [];
         sandboxOptions.blockPaths = [...(sandboxOptions.blockPaths ?? []), ...sessionPrivateHome.blockedPaths];
         sandboxOptions.harnessStateDirs = [...(sandboxOptions.harnessStateDirs ?? []), sessionPrivateHome.dir];
       } catch (error) {
@@ -482,6 +484,7 @@ export async function prepareSessionLaunch({
     }
   }
   return {
+    sandboxOptions,
     needsKeepEnvPreflight,
     buildSessionEnvironment,
     claudeFamilyAgent,

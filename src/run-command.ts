@@ -26,7 +26,6 @@ import { collectLabel, LABELS_ENV, parseLabels } from "./labels.js";
 import { assertQuotaHeadroomForLaunch, resolveQuotaGate } from "./quota-gate.js";
 import { UsageRefusalError, requireNonEmptyOption } from "./validation.js";
 import { agentsSupporting } from "./parity/index.js";
-
 /** A prompt-source refusal is usage (exit 64): the prompt is part of
  * the request, so an empty, oversized, malformed, or ambiguous source
  * is a mistake only the caller can fix. The one exception is a plain
@@ -163,6 +162,7 @@ export function registerRunCommand(
       "scode trust override: trusted, standard, untrusted"
     )
     .option("--sandbox-no-net", "Pass --no-net to scode when sandboxed")
+    .option("--sandbox-strict", "Pass --strict to scode (deny-default); requires --sandbox")
     .option("--sandbox-scrub-env", "Pass --scrub-env to scode when sandboxed")
     .option(
       "--sandbox-account <file>",
@@ -227,7 +227,7 @@ export function registerRunCommand(
         const tools = parseToolsOption(options.tools);
         const sandboxPolicyOverrides = parseSandboxPolicyOverrides({
           sandbox: Boolean(options.sandbox),
-          sandboxTrust: options.sandboxTrust,
+          sandboxTrust: options.sandboxTrust, sandboxStrict: options.sandboxStrict,
           sandboxNoNet: Boolean(options.sandboxNoNet),
           sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
           sandboxAccount: options.sandboxAccount,

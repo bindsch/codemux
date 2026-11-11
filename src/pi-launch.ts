@@ -24,13 +24,16 @@ export function piNativeSessionDir(agentDir: string, cwd: string): string {
 export function preparePiTuiProviderEnvironment(
   realAgentDir: string,
   override: ProviderOverride & { baseUrl: string; apiKey: string },
-  model: string
+  model: string,
+  printOnly = false
 ): { env: Record<string, string>; finalize: () => void } {
-  const directory = writePiProviderAgentDir(realAgentDir, override, model);
+  const directory = writePiProviderAgentDir(realAgentDir, override, model, printOnly);
   try {
     const sessions = join(realAgentDir, "sessions");
-    mkdirSync(sessions, { recursive: true, mode: 0o700 });
-    symlinkSync(sessions, join(directory.path, "sessions"), "dir");
+    if (!printOnly) {
+      mkdirSync(sessions, { recursive: true, mode: 0o700 });
+      symlinkSync(sessions, join(directory.path, "sessions"), "dir");
+    }
     return {
       env: { [PI_AGENT_DIR_ENV]: directory.path, [PI_PROVIDER_KEY_ENV]: override.apiKey },
       finalize: directory.finalize,
@@ -60,6 +63,7 @@ export function preparePiTuiLaunch(
     passthroughEnv?: readonly string[];
     enablePlaywrightMcp?: boolean;
     sandboxed?: boolean;
+    printOnly?: boolean;
   }
 ): PiTuiLaunch {
   const request: RunRequest = {
@@ -74,7 +78,7 @@ export function preparePiTuiLaunch(
     sandboxed: input.sandboxed,
   };
   adapter.validateRunRequest(request);
-  const context = adapter.prepareRun(request);
+  const context = adapter.prepareRun(request, undefined, undefined, { printOnly: input.printOnly });
   try {
     const command = adapter.buildRunCommand(request, context);
     command.splice(1, 2); // Remove the fixed --print/--no-session prefix only.

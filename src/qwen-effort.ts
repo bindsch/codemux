@@ -118,6 +118,11 @@ export interface QwenRunSettingsInput {
   contextWindowTokens?: number;
 }
 
+/** Representative path only: previews neither create files nor sweep stale state. */
+export function previewQwenRunSettings(brandHome: string): QwenEffortSettings {
+  return { path: join(brandHome, PARENT_DIR_NAME, "effort-preview", "settings.json"), finalize: () => {} };
+}
+
 /**
  * Writes the system settings file carrying the tier and/or the context
  * cap. The context cap is `model.generationConfig.contextWindowSize`:

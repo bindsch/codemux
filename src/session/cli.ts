@@ -203,7 +203,7 @@ export function registerSessionCommand(
         sessionPrivateHomeResumed = resumeId !== undefined;
         codexSessionCatalog = agentId === "codex" ? prepareCodexSessionCatalog({
           request: { ...runLike, model }, realCodexHome: codexHome(), binary: launch.codexCatalogBinary,
-          harnessVersion: launch.harnessVersion, sandboxOptions, callerBlockPaths: sandboxBlock, printOnly,
+          harnessVersion: launch.harnessVersion, sandboxOptions: launch.sandboxOptions, callerBlockPaths: sandboxBlock, printOnly,
         }) : null;
         const {
           needsKeepEnvPreflight,
@@ -225,7 +225,7 @@ export function registerSessionCommand(
             effort,
             workdir,
             requestedAutonomy,
-            sandboxOptions: codexSessionCatalog?.sandboxOptions ?? sandboxOptions,
+            sandboxOptions: codexSessionCatalog?.sandboxOptions ?? launch.sandboxOptions,
             callerBlockPaths: agentId === "opencode" ? sandboxBlock : undefined,
             claudeBuilt,
             codexSessionHome,

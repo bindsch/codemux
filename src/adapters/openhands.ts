@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { BaseAdapter, type RunContext } from "./base.js";
+import type { LaunchIntent } from "../types.js";
 import { appendDiagnostic } from "../result-envelope.js";
 import { assertNoOpenHandsProjectExecutionConfig } from "../project-safety.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
@@ -286,13 +287,14 @@ export class OpenHandsAdapter extends BaseAdapter {
   override prepareRun(
     request: RunRequest,
     _sandboxTrust?: ScodeTrustLevel,
-    _sandboxOptions?: SandboxOptions
+    _sandboxOptions?: SandboxOptions,
+    launch: LaunchIntent = {}
   ): RunContext {
     if (request.experimentMcp !== undefined) refuseOpenhandsExperiment();
     // Every launch carries its prompt in a task file (--file): openhands
     // has no stdin transport, and argv would bound the prompt
     // (src/openhands-task-file.ts).
-    const taskFile = writeOpenhandsTaskFile(this.realOpenhandsDir(), request.prompt);
+    const taskFile = writeOpenhandsTaskFile(this.realOpenhandsDir(), request.prompt, launch.printOnly);
     if (!request.hermetic) return { openhandsTaskFile: taskFile };
     // Rechecked here, not only in validateRunRequest: the headless gate
     // passes only with env overrides, so a hermetic launch without the
@@ -307,7 +309,7 @@ export class OpenHandsAdapter extends BaseAdapter {
       taskFile.finalize();
       throw new UsageRefusalError("openhands --hermetic requires an explicit --cwd owned by this run");
     }
-    const hermeticHome = createOpenhandsHermeticHome(this.realOpenhandsDir());
+    const hermeticHome = createOpenhandsHermeticHome(this.realOpenhandsDir(), launch.printOnly);
     const context: RunContext = {
       openhandsTaskFile: taskFile,
       openhandsHermeticHome: hermeticHome,
@@ -318,7 +320,7 @@ export class OpenHandsAdapter extends BaseAdapter {
       try {
         context.playwrightMcpCheck = plantOpenhandsPlaywrightMcp(
           join(hermeticHome.home, ".openhands"),
-          { pathEnv: this.executionPathEnv(), forbiddenRoot: request.cwd }
+          { pathEnv: this.executionPathEnv(), forbiddenRoot: request.cwd, printOnly: launch.printOnly }
         ).check;
       } catch (error) {
         hermeticHome.finalize();

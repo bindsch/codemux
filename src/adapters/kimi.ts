@@ -138,6 +138,7 @@ export class KimiAdapter extends BaseAdapter {
 
   override prepareRun(request: RunRequest, _sandboxTrust?: ScodeTrustLevel, _sandboxOptions?: SandboxOptions, launch: LaunchIntent = {}): RunContext {
     const printOnly = launch.printOnly === true;
+    if (printOnly && request.experimentMcp) throw new UsageRefusalError("Kimi experiment MCP cannot be prepared for a print-only preview");
     // The project-settings gate runs before any artifact this method
     // creates (claude's ordering rule): a programmatic caller cannot
     // reach the private home without hermetic mode, the scode sandbox,
@@ -176,7 +177,7 @@ export class KimiAdapter extends BaseAdapter {
     if (request.tools !== "none") {
       return request.resultJson ? {} : { stdoutSink: new KimiPlainFold() };
     }
-    const noToolsFile = writeKimiNoToolsFile(this.realBrandHome(request.passthroughEnv));
+    const noToolsFile = writeKimiNoToolsFile(this.realBrandHome(request.passthroughEnv), printOnly);
     const context: RunContext = { kimiNoToolsFile: noToolsFile };
     if (!request.resultJson) context.stdoutSink = new KimiPlainFold();
     return context;

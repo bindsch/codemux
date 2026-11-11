@@ -191,9 +191,11 @@ export function piProviderModelsJson(
 export function writePiProviderAgentDir(
   realAgentDir: string,
   override: ProviderOverride & { baseUrl: string; apiKey: string },
-  model: string
+  model: string,
+  printOnly = false
 ): PiProviderAgentDir {
   const bareModel = piProviderBareModel(model);
+  if (printOnly) return { path: join(realAgentDir, PARENT_DIR_NAME, "preview-provider"), finalize: () => {} };
   const parent = join(realAgentDir, PARENT_DIR_NAME);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   // A run with write access to the agent directory could have replaced
@@ -263,8 +265,10 @@ export function createPiHermeticAgentDir(
   realAgentDir: string,
   override: (ProviderOverride & { baseUrl: string; apiKey: string }) | null,
   model: string | undefined,
-  copyLogin = true
+  copyLogin = true,
+  printOnly = false
 ): PiProviderAgentDir {
+  if (printOnly) return { path: join(realAgentDir, PARENT_DIR_NAME, "preview-hermetic"), finalize: () => {} };
   const parent = join(realAgentDir, PARENT_DIR_NAME);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const parentRecord = recordTrustedParent(parent);

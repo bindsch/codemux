@@ -206,8 +206,10 @@ export function writeCodexProviderConfig(
   realCodexHome: string,
   override: ProviderOverride & { baseUrl: string },
   model: string,
-  multiAgent: boolean | null
+  multiAgent: boolean | null,
+  printOnly = false
 ): CodexProviderHome {
+  if (printOnly) return { codexHome: join(realCodexHome, PARENT_DIR_NAME, "preview"), finalize: () => {} };
   const parent = prepareRunDirParent(realCodexHome, PARENT_DIR_NAME);
   // Recorded for the finalizer's revalidation (src/safe-remove.ts).
   const parentRecord = recordTrustedParent(parent);

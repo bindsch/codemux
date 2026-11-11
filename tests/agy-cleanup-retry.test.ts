@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import * as fs from "node:fs";
 import { AgyAdapter } from "../src/adapters/agy.js";
+import { createAgyProbeHome } from "../src/adapters/agy-probe-home.js";
 import { agyKeychainHost } from "../src/agy-keychain.js";
 import type { RunContext } from "../src/adapters/base.js";
 import type { RunRequest } from "../src/types.js";
@@ -33,6 +34,8 @@ function preparedProbe(): { adapter: AgyAdapter; context: RunContext; probeHome:
     agent: "agy", prompt: "p", cwd: join(home, "w"), autonomy: "read-only", sandboxed: true,
   };
   const context = adapter.prepareRun(request, undefined, {}, { printOnly: true });
+  // Exercise real owned-directory cleanup without creating Keychain state.
+  createAgyProbeHome(context, home);
   return { adapter, context, probeHome: context.agyProbe!.home! };
 }
 

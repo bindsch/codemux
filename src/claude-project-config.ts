@@ -168,9 +168,12 @@ export function generatedGlobalState(projectKey: string): string {
  */
 export function createProjectSettingsConfigDir(
   cwd: string,
-  environment: NodeJS.ProcessEnv
+  environment: NodeJS.ProcessEnv,
+  printOnly = false
 ): ClaudeProjectConfigDir {
   const root = projectSettingsConfigRoot(environment);
+  if (printOnly) return { dir: join(root, PARENT_DIR_NAME, "preview"),
+    blockedPaths: projectSettingsBlockedStatePaths(environment), deferCredentialCopy: true, finalize: () => {} };
   const parent = prepareRunDirParent(root, PARENT_DIR_NAME);
   // Recorded for the finalizer's revalidation (src/safe-remove.ts).
   const parentRecord = recordTrustedParent(parent);
@@ -286,7 +289,8 @@ export function openProjectSettingsSessionConfigDir(
   resume: boolean,
   cwd: string,
   environment: NodeJS.ProcessEnv,
-  holdStateOf?: (id: string) => SessionHold
+  holdStateOf?: (id: string) => SessionHold,
+  printOnly = false
 ): ProjectSettingsSessionDir {
   const root = projectSettingsConfigRoot(environment);
   // A thin delegate over the shared hermetic-session home
@@ -295,6 +299,7 @@ export function openProjectSettingsSessionConfigDir(
   // family's own root, id shape, blocked state, and generated state
   // file. The id is validated inside, before anything is created.
   return openSessionPrivateHome({
+    printOnly,
     parent: join(root, PARENT_DIR_NAME),
     sessionId,
     resume,

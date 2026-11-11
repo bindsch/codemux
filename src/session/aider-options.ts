@@ -55,6 +55,7 @@ export interface AiderDriverOptions {
    * compared on resume (registry/format.ts). */
   sandboxBlock?: readonly string[];
   sandboxScrubEnv: boolean;
+  sandboxStrict?: boolean;
   passEnv: readonly string[];
   authorPrefix: boolean;
   sessionTimeoutMs: number | null;

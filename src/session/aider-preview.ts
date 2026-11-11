@@ -9,6 +9,7 @@ import {
   type AiderSessionCommand,
 } from "./aider-session.js";
 import { sessionKeyedHomePath } from "./private-home-key.js";
+import { assertResumableHome } from "./private-home.js";
 
 export interface AiderSessionPreviewOptions extends Pick<AiderSessionCommand,
   "autonomy" | "model" | "weakModel" | "effort" | "permissionPolicy" | "tools" | "callerHome"> {
@@ -16,6 +17,7 @@ export interface AiderSessionPreviewOptions extends Pick<AiderSessionCommand,
   harnessHome: string;
   /** A known resume ID or a caller-minted preview ID. Nothing is recorded. */
   sessionId: string;
+  resume?: boolean;
   hermetic: boolean;
   /** A validated provider cap; the actual turn prepares the named file. */
   maxOutputTokens?: number;
@@ -31,6 +33,9 @@ export function buildAiderSessionPreview(options: AiderSessionPreviewOptions) {
   const privateHome = options.callerHome?.dir ?? (options.hermetic
     ? sessionKeyedHomePath(join(options.harnessHome, ".codemux-hermetic"), options.sessionId)
     : null);
+  if (options.resume && privateHome !== null && options.callerHome === undefined) {
+    assertResumableHome(privateHome, options.sessionId);
+  }
   const historyPath = options.callerHome ? aiderSessionHistoryPath(join(options.callerHome.dir, ".aider"), options.sessionId) : privateHome === null
     ? aiderSessionHistoryPath(options.harnessHome, options.sessionId)
     : join(privateHome, "history.md");

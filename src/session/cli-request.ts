@@ -53,6 +53,7 @@ export interface SessionCommandOptions {
   permissionPolicy?: string;
   sandbox?: boolean;
   sandboxTrust?: string;
+  sandboxStrict?: boolean;
   sandboxNoNet?: boolean;
   sandboxScrubEnv?: boolean;
   sandboxBlock?: string[];
@@ -216,6 +217,7 @@ export function resolveSessionRequest(
     parseSandboxPolicyOverrides({
       sandbox: Boolean(options.sandbox),
       sandboxTrust: options.sandboxTrust,
+      sandboxStrict: options.sandboxStrict,
       sandboxNoNet: Boolean(options.sandboxNoNet),
       sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
       sandboxBlock: options.sandboxBlock,

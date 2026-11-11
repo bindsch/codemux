@@ -103,6 +103,26 @@ describe("Cline provider and hermetic configuration", () => {
     finally { failure.mockRestore(); cleanup.mockRestore(); }
   });
 
+  test("TUI preview grants stay out of a subsequent real launch", () => {
+    const binary = join(root, "bin", "playwright-mcp");
+    writeFileSync(binary, "#!/bin/sh\nexit 0\n"); chmodSync(binary, 0o700);
+    const adapter = new ClineAdapter(env);
+    const input = { cwd: join(root, "cwd"), sandboxed: true, enablePlaywrightMcp: true };
+    const policy: SandboxOptions = { trust: "standard", harnessStateDirs: [] };
+    const preview = prepareClineTuiLaunch(adapter, { ...input, printOnly: true }, policy);
+    const previewDir = preview.sandboxOptions!.harnessStateDirs![0]!;
+    expect(previewDir).toEndWith("/preview");
+    expect(preview.env.CLINE_MCP_SETTINGS_PATH).toStartWith(previewDir + "/");
+    preview.cleanup();
+    expect(policy.harnessStateDirs).toEqual([]);
+    const real = prepareClineTuiLaunch(adapter, input, policy);
+    try {
+      expect(policy.harnessStateDirs).toHaveLength(1);
+      expect(policy.harnessStateDirs).not.toContain(previewDir);
+      expect(real.sandboxOptions).toBe(policy);
+    } finally { real.cleanup(); }
+  });
+
   test("generated sandbox state is allowed without overriding caller blocks", () => {
     const adapter = new ClineAdapter(env);
     const request = { agent: "cline" as const, prompt: "p", cwd: join(root, "cwd"), sandboxed: true };

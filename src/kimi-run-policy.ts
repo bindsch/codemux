@@ -52,7 +52,7 @@ export function createKimiPolicyHome(source: string, request: RunRequest, printO
     if (!request.hermetic && !printOnly) {
       copyKimiCustomization(source, home.kimiHome);
     }
-    if (request.web === false) disableKimiWebTools(home.kimiHome);
+    if (request.web === false && !printOnly) disableKimiWebTools(home.kimiHome);
     return home;
   } catch (error) { home.finalize(); throw error; }
 }
@@ -85,6 +85,7 @@ export function prepareKimiPlaywright(
   if (context === undefined) return;
   const brandHome = context.kimiHermeticHome?.kimiHome;
   if (brandHome === undefined) throw new Error("kimi private policy home was not prepared before MCP launch");
+  if (context.kimiHermeticHome?.printOnly) { context.playwrightMcpCheck = built.check; return; }
   const path = join(brandHome, "mcp.json");
   const source = readOptional(path);
   const config = table(source === "" ? {} : JSON.parse(source), "MCP config");

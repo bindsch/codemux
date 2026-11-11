@@ -20,6 +20,7 @@ export interface ClineConfig {
 }
 export interface ClineRunContext extends RunContext { clineConfig?: ClineConfig; experimentCline?: ClineExperimentRun }
 export interface ClineConfigOptions {
+  printOnly?: boolean;
   model?: string;
   hermetic?: boolean;
   noWeb?: boolean;
@@ -82,6 +83,7 @@ export function createClineConfig(sourceDir: string, environment: NodeJS.Process
   if (options.hermetic && provider === null) {
     throw new UsageRefusalError("cline --hermetic requires a provider override for the private configuration");
   }
+  if (options.printOnly) return { ...populateClineConfig(join(sourceDir, ".codemux-hermetic", "preview"), environment, options), finalize: () => {} };
   const parent = prepareRunDirParent(sourceDir, ".codemux-hermetic");
   const trusted = recordTrustedParent(parent);
   const home = mkdtempSync(join(parent, `run-${process.pid}-`));
@@ -111,16 +113,18 @@ export function populateClineConfig(home: string, environment: NodeJS.ProcessEnv
     const provider = clineProvider(environment);
     if (options.hermetic && provider === null) throw new UsageRefusalError("cline --hermetic requires a provider override for the private configuration");
     const configDir = join(home, ".cline");
-    assertTrustedDirectory(home);
-    mkdirSync(configDir, { mode: 0o700, recursive: true });
-    assertTrustedDirectory(configDir);
-    chmodSync(configDir, 0o700);
+    if (!options.printOnly) {
+      assertTrustedDirectory(home);
+      mkdirSync(configDir, { mode: 0o700, recursive: true });
+      assertTrustedDirectory(configDir);
+      chmodSync(configDir, 0o700);
+    }
     const env: Record<string, string> = {};
     // cli-v3.0.74 storage paths honor these file overrides (read 2026-11-09):
     // https://github.com/cline/cline/blob/cli-v3.0.74/sdk/packages/shared/src/storage/paths.ts#L431-L452
     if (provider !== null) {
       const path = join(configDir, "providers.json");
-      writeOwnedSync(path, clineProviderFile(environment, options.model), 0o600);
+      if (!options.printOnly) writeOwnedSync(path, clineProviderFile(environment, options.model), 0o600);
       env.CLINE_PROVIDER_SETTINGS_PATH = path;
     }
     if (options.hermetic) {
@@ -163,13 +167,13 @@ export function populateClineConfig(home: string, environment: NodeJS.ProcessEnv
       }
       if (options.toolsNone) settings = clineToolsNoneSettings(settings);
       env.CLINE_GLOBAL_SETTINGS_PATH = join(configDir, "global-settings.json");
-      writeOwnedSync(env.CLINE_GLOBAL_SETTINGS_PATH, JSON.stringify(settings), 0o600);
+      if (!options.printOnly) writeOwnedSync(env.CLINE_GLOBAL_SETTINGS_PATH, JSON.stringify(settings), 0o600);
     }
     if (options.hermetic || options.mcpServers || options.toolsNone) {
       const settings = options.hermetic || options.toolsNone || !options.sourceMcpPath ? {} : readSettings(options.sourceMcpPath);
       settings.mcpServers = { ...object(settings.mcpServers), ...options.mcpServers };
       env.CLINE_MCP_SETTINGS_PATH = join(configDir, "cline_mcp_settings.json");
-      writeOwnedSync(env.CLINE_MCP_SETTINGS_PATH, JSON.stringify(settings), 0o600);
+      if (!options.printOnly) writeOwnedSync(env.CLINE_MCP_SETTINGS_PATH, JSON.stringify(settings), 0o600);
     }
     if (options.toolsNone) env.CLINE_SESSION_BACKEND_MODE = "local";
     return { home, configDir, env };

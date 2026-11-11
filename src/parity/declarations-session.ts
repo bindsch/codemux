@@ -1,3 +1,4 @@
+import { STRICT_LIMITATIONS } from "./reasons-strict.js";
 import type { AgentId } from "../types.js";
 import { RUN_CARRIERS } from "./reasons-run-carriers.js";
 import { sessionHarnessHome, supported, type FeatureState, type SessionFeature } from "./features.js";
@@ -12,6 +13,7 @@ import * as W2_SESSION from "./reasons-session-w2.js";
 // with the implementation, including OPEN cells for unfinished wrapper work.
 export const SESSION_DECLARATIONS = {
   claude: {
+    "session.sandbox-strict": STRICT_LIMITATIONS.claude,
     "session.harness-home": sessionHarnessHome("claude"),
     "session.empty-answer-fails": supported("tests/result-empty-session.test.ts"),
     "session.driver": supported("tests/session-cli-happy-path.test.ts"),
@@ -29,6 +31,7 @@ export const SESSION_DECLARATIONS = {
     "session.private-home": supported("tests/session-cli-project-settings.test.ts"),
   },
   codex: {
+    "session.sandbox-strict": STRICT_LIMITATIONS.codex,
     "session.harness-home": sessionHarnessHome("codex"),
     "session.empty-answer-fails": supported("tests/result-empty-session.test.ts"),
     "session.driver": supported("tests/session-cli-happy-path.test.ts"),
@@ -46,6 +49,7 @@ export const SESSION_DECLARATIONS = {
     "session.private-home": supported("tests/session-codex-e2e-hermetic.test.ts"),
   },
   zai: {
+    "session.sandbox-strict": STRICT_LIMITATIONS.zai,
     "session.harness-home": sessionHarnessHome("zai"),
     "session.empty-answer-fails": supported("tests/result-empty-session.test.ts"),
     "session.driver": supported("tests/session-zai-e2e.test.ts"),
@@ -63,6 +67,7 @@ export const SESSION_DECLARATIONS = {
     "session.private-home": supported("tests/session-cli-project-settings.test.ts"),
   },
   agy: {
+    "session.sandbox-strict": STRICT_LIMITATIONS.agy,
     "session.harness-home": sessionHarnessHome("agy"),
     "session.empty-answer-fails": supported("tests/result-empty-session.test.ts"),
     "session.driver": supported("tests/session-cli-agy.test.ts"),
@@ -80,6 +85,7 @@ export const SESSION_DECLARATIONS = {
     "session.private-home": supported("tests/session-agy-private-home-e2e.test.ts"),
   },
   aider: {
+    "session.sandbox-strict": STRICT_LIMITATIONS.aider,
     "session.harness-home": sessionHarnessHome("aider"),
     "session.empty-answer-fails": supported("tests/result-empty-session.test.ts"),
     "session.driver": supported("tests/session-cli-aider.test.ts"),
@@ -97,6 +103,7 @@ export const SESSION_DECLARATIONS = {
     "session.private-home": supported("tests/session-aider-hermetic.test.ts"),
   },
   kimi: {
+    "session.sandbox-strict": STRICT_LIMITATIONS.kimi,
     "session.harness-home": sessionHarnessHome("kimi"),
     "session.empty-answer-fails": supported("tests/result-empty-session.test.ts"),
     "session.driver": supported("tests/session-cli-kimi.test.ts"),
@@ -114,6 +121,7 @@ export const SESSION_DECLARATIONS = {
     "session.private-home": supported("tests/session-kimi-e2e-hermetic.test.ts"),
   },
   opencode: {
+    "session.sandbox-strict": STRICT_LIMITATIONS.opencode,
     "session.harness-home": sessionHarnessHome("opencode"),
     "session.empty-answer-fails": supported("tests/result-empty-session.test.ts"),
     "session.driver": supported("tests/session-cli-opencode.test.ts"),
@@ -131,6 +139,7 @@ export const SESSION_DECLARATIONS = {
     "session.private-home": supported("tests/session-cli-opencode-parity.test.ts"),
   },
   cline: {
+    "session.sandbox-strict": STRICT_LIMITATIONS.cline,
     "session.harness-home": sessionHarnessHome("cline"),
     "session.empty-answer-fails": supported("tests/result-empty-session.test.ts", "Shared session event validation applies independently of session-driver availability."),
     "session.driver": supported("tests/session-cli-cline.test.ts"),
@@ -148,6 +157,7 @@ export const SESSION_DECLARATIONS = {
     "session.private-home": supported("tests/cline-session-settings.test.ts"),
   },
   copilot: {
+    "session.sandbox-strict": STRICT_LIMITATIONS.copilot,
     "session.harness-home": sessionHarnessHome("copilot"),
     "session.empty-answer-fails": supported("tests/result-empty-session.test.ts"),
     "session.driver": supported("tests/pi-gemini-copilot-session-lifecycle.test.ts", "S1 createTurnAgentDriver is integrated; fixture now models stdin prompts."),
@@ -165,6 +175,7 @@ export const SESSION_DECLARATIONS = {
     "session.private-home": supported("tests/pi-gemini-copilot-session-lifecycle.test.ts", "S1 reports the private session home and resumes it."),
   },
   cursor: {
+    "session.sandbox-strict": STRICT_LIMITATIONS.cursor,
     "session.harness-home": sessionHarnessHome("cursor"),
     "session.empty-answer-fails": supported("tests/result-empty-session.test.ts"),
     "session.driver": supported("tests/cursor-session.test.ts"),
@@ -182,6 +193,7 @@ export const SESSION_DECLARATIONS = {
     "session.private-home": RUN_CARRIERS.cursorW4SessionHermetic,
   },
   droid: {
+    "session.sandbox-strict": STRICT_LIMITATIONS.droid,
     "session.harness-home": sessionHarnessHome("droid"),
     "session.empty-answer-fails": supported("tests/result-empty-session.test.ts"),
     "session.driver": supported("tests/droid-session.test.ts"),
@@ -199,6 +211,7 @@ export const SESSION_DECLARATIONS = {
     "session.private-home": supported("tests/session-cli-turn-launch.test.ts"),
   },
   gemini: {
+    "session.sandbox-strict": STRICT_LIMITATIONS.gemini,
     "session.harness-home": sessionHarnessHome("gemini"),
     "session.empty-answer-fails": supported("tests/result-empty-session.test.ts"),
     "session.driver": supported("tests/pi-gemini-copilot-session-lifecycle.test.ts", "S1 integrated CLI driver dispatch and stream-json lifecycle; stdin prompt delivery updated in W3."),
@@ -216,6 +229,7 @@ export const SESSION_DECLARATIONS = {
     "session.private-home": supported("tests/pi-gemini-copilot-session-lifecycle.test.ts", "S1 records and resumes the settled session private home and reports its path."),
   },
   goose: {
+    "session.sandbox-strict": STRICT_LIMITATIONS.goose,
     "session.harness-home": sessionHarnessHome("goose"),
     "session.empty-answer-fails": supported("tests/result-empty-session.test.ts"),
     "session.driver": supported("tests/goose-session.test.ts"),
@@ -233,6 +247,7 @@ export const SESSION_DECLARATIONS = {
     "session.private-home": supported("tests/session-cli-turn-launch.test.ts"),
   },
   openhands: {
+    "session.sandbox-strict": STRICT_LIMITATIONS.openhands,
     "session.harness-home": sessionHarnessHome("openhands"),
     "session.empty-answer-fails": supported("tests/result-empty-session.test.ts", "Shared session event validation applies independently of session-driver availability."),
     "session.driver": supported("tests/session-harness-home-openhands-cli.test.ts"),
@@ -250,6 +265,7 @@ export const SESSION_DECLARATIONS = {
     "session.private-home": supported("tests/session-openhands-hermetic-cli.test.ts"),
   },
   pi: {
+    "session.sandbox-strict": STRICT_LIMITATIONS.pi,
     "session.harness-home": sessionHarnessHome("pi"),
     "session.empty-answer-fails": supported("tests/result-empty-session.test.ts"),
     "session.driver": supported("tests/pi-gemini-copilot-session-lifecycle.test.ts"),
@@ -267,6 +283,7 @@ export const SESSION_DECLARATIONS = {
     "session.private-home": supported("tests/pi-gemini-copilot-session-lifecycle.test.ts"),
   },
   qwen: {
+    "session.sandbox-strict": STRICT_LIMITATIONS.qwen,
     "session.harness-home": sessionHarnessHome("qwen"),
     "session.empty-answer-fails": supported("tests/result-empty-session.test.ts"),
     "session.driver": supported("tests/qwen-session.test.ts", "S1's integrated turn-per-process driver: QWEN_DRIVER_PROFILE in TURN_AGENT_PROFILES, the minted --session-id/--resume identity, and the json-wire turn parse."),
@@ -276,7 +293,7 @@ export const SESSION_DECLARATIONS = {
     "session.provider-override": supported("tests/qwen-session.test.ts", "The OPENAI_* trio rides every turn's spawn through the adapter's getRunEnv on the shared session environment builder — the run path's own carrier; argv never carries a key."),
     "session.experiment-project-settings": W2_SESSION.QWEN_SESSION_PROJECT,
     "session.permission-policy-deny": W2_SESSION.QWEN_SESSION_PERMISSION_POLICY,
-    "session.print-sandbox": W2_SESSION.QWEN_SESSION_PRINT_SANDBOX,
+    "session.print-sandbox": supported("tests/sandbox-strict-parity.test.ts"),
     "session.playwright-mcp": supported("tests/qwen-session.test.ts", "Requires sandbox and low autonomy; the captured Playwright executable rides --mcp-config on every turn and is rechecked before spawn."),
     "session.usage": supported("tests/qwen-session.test.ts", "Each turn's result message carries the turn's usage (parseQwenSessionTurn); cost stays null, the run envelope's fact."),
     "session.hermetic": supported("tests/qwen-session.test.ts", "Safe mode rides every turn's argv — the run path's always-on claim, held for the session's lifetime."),

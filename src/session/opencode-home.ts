@@ -52,6 +52,7 @@ export function openOpenCodeSessionHome(input: {
   printOnly?: boolean;
 }): SessionPrivateHome {
   return openSessionPrivateHome({
+    printOnly: input.printOnly,
     parent: join(input.dataDir, ".codemux-hermetic"),
     sessionId: input.resumeSessionId,
     resume: input.resumeSessionId !== undefined,

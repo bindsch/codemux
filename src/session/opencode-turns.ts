@@ -5,6 +5,7 @@
  * src/session/opencode-driver.ts owns the lifecycle.
  */
 
+import { strictLaunchFailureExitCode } from "../sandbox-command.js";
 import {
   type OpenCodeParse,
 } from "./opencode-session.js";
@@ -76,7 +77,7 @@ export abstract class OpenCodeTurns extends OpenCodeDriverCore {
         "could not spawn the opencode turn process " +
           `(${error instanceof Error ? error.message : String(error)})`
       );
-      void this.finish("crash", 1);
+      void this.finish("crash", strictLaunchFailureExitCode(error));
       return;
     } finally {
       if (spawn !== null && this.turnSpawn === spawn) this.turnSpawn = null;
@@ -320,6 +321,7 @@ export abstract class OpenCodeTurns extends OpenCodeDriverCore {
         sandbox_no_net: this.options.sandboxNoNet,
         sandbox_scrub_env: this.options.sandboxScrubEnv,
         sandbox_block: [...(this.options.sandboxBlock ?? [])],
+        sandbox_strict: this.options.sandboxStrict === true,
         pass_env: [...(this.options.passEnv)],
         playwright_mcp: this.options.playwrightMcp === true,
         provider_base_url: this.options.providerBaseUrl,

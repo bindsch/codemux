@@ -1,6 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { combinedCleanupFailure } from "../experiment-records.js";
 import { join } from "node:path";
+import { previewCodexRun } from "../codex-preview.js";
 import type { RunContext } from "./base.js";
 import { CodexPolicy } from "./codex-policy.js";
 import {
@@ -185,11 +186,13 @@ export class CodexAdapter extends CodexPolicy {
    * experiment bridge. Nothing is recorded on the adapter; the launcher
    * owns the returned context. */
   override prepareRun(request: RunRequest, sandboxTrust?: ScodeTrustLevel, _sandboxOptions?: SandboxOptions, launch: LaunchIntent = {}): RunContext {
+    if (launch.printOnly && request.experimentMcp) throw new UsageRefusalError("Codex experiment MCP cannot be prepared for a print-only preview");
     const context: RunContext = {};
     const override = this.validatedProvider();
     const experimentModel = request.experimentMcp ? this.experimentModel(request) : undefined;
     const toolCatalog = needsCodexNoToolsCatalog(request)
       ? codexNoToolsCatalogBody(this.modelFor(request.model), this.realCodexHome(request)) : undefined;
+    if (launch.printOnly) return previewCodexRun(request, this.realCodexHome(request), override !== null, sandboxTrust, toolCatalog);
     if (request.hermetic) {
       // The project-settings mode's gates run before any home is created:
       // a refused request must not leave a private home behind (the kimi
@@ -201,11 +204,10 @@ export class CodexAdapter extends CodexPolicy {
       // login state must not reach the next one. hermetic-home.ts tracks
       // live homes itself, so the context holds the home as plain data. An
       // override run never links the operator's auth.json (the provider key
-      // is the credential) and a print-only launch needs no login either
-      // (round 55): both homes start empty.
+      // is the credential), so its home starts empty.
       context.hermeticHome = createCodexHermeticHome(
         this.realCodexHome(request),
-        this.apiKeyAuth() || override !== null || launch.printOnly === true
+        this.apiKeyAuth() || override !== null
       );
       if (override !== null) {
         writeCodexProviderConfigInto(

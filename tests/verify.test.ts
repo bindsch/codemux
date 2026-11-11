@@ -8,13 +8,13 @@ import { tmpdir } from "node:os";
 import * as os from "node:os";
 import { join } from "node:path";
 import {
-  buildEffectiveScodeCommands,
   scratchCwdUnder,
   verificationCwd,
   verifyAgentWiring,
   verifyAgentsWiring,
 } from "../src/verify.js";
 import { assertNoCopilotProjectExecutionConfig } from "../src/project-safety.js";
+import { buildFixtureScodeCommands as buildEffectiveScodeCommands } from "./helpers/verify.js";
 
 describe("Verifier", () => {
   test("verification cwd ends the project-configuration walk at itself", () => {

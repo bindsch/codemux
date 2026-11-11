@@ -43,12 +43,14 @@ export function copilotProviderConfiguration(provider: ProviderOverride, selecte
 export function createCopilotProviderFile(
   configDir: string,
   provider: ProviderOverride,
-  selectedModel?: string
+  selectedModel?: string,
+  printOnly = false
 ): CopilotProviderFile {
-  const scratch = createCopilotHermeticHome(configDir, { printOnly: true });
+  const scratch = createCopilotHermeticHome(configDir, { copyLogin: false, printOnly });
   try {
     const path = join(scratch.home, "providers.json");
-    writeFileSync(path, JSON.stringify(copilotProviderConfiguration(provider, selectedModel)), { flag: "wx", mode: 0o600 });
+    const config = copilotProviderConfiguration(provider, selectedModel);
+    if (!printOnly) writeFileSync(path, JSON.stringify(config), { flag: "wx", mode: 0o600 });
     return { path, modelId: "codemux/model", finalize: scratch.finalize };
   } catch (error) {
     scratch.finalize();

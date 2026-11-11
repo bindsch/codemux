@@ -57,13 +57,12 @@ const valuesAfter = (argv: readonly string[], flag: string): string[] =>
 const expectOwnTreeOnly = (
   argv: readonly string[],
   home: string,
-  expectRunDir: boolean
+  prefix: "run-" | "session-" | "preview"
 ): string => {
   const blocks = valuesAfter(argv, "--block");
   expect(blocks).toEqual([join(home, ".claude"), join(home, ".claude.json")]);
   const allows = valuesAfter(argv, "--allow");
   expect(allows.length).toBe(1);
-  const prefix = expectRunDir ? "run-" : "session-";
   expect(allows[0]!.startsWith(join(home, ".claude", ".codemux-hermetic", prefix))).toBe(true);
   // The blocks come first: scode emits the child allow after the parent
   // block and re-asserts both in its final guards.
@@ -212,7 +211,7 @@ describe("blocked operator state: run argv", () => {
         expect(result.exitCode).toBe(0);
         expect(result.stdout.split("\n")[0]).toBe("FAKE-SCODE-RAN");
         const argv = result.stdout.trimEnd().split("\n").slice(1);
-        const allowed = expectOwnTreeOnly(argv, home, true);
+        const allowed = expectOwnTreeOnly(argv, home, "run-");
         // The launch cleaned its private directory up.
         expect(readdirSync(join(home, ".claude", ".codemux-hermetic"))).toEqual([]);
         expect(allowed).not.toBe(join(home, ".claude"));
@@ -298,9 +297,8 @@ describe("blocked operator state: run --print-sandbox", () => {
       expect(argv.length).toBeGreaterThan(4);
       expect(argv[0]!.endsWith("/scode")).toBe(true);
       expect(argv).toContain("--");
-      expectOwnTreeOnly(argv, home, true);
-      // Nothing spawned and nothing left behind: the private directory
-      // was created (the allow names it) and then removed.
+      expectOwnTreeOnly(argv, home, "preview");
+      // The allow names a representative path; preparation creates nothing.
       const hermetic = join(home, ".claude", ".codemux-hermetic");
       expect(existsSync(hermetic) ? readdirSync(hermetic) : []).toEqual([]);
     } finally {
@@ -379,7 +377,7 @@ describe("blocked operator state: session --print-sandbox", () => {
         expect(result.exitCode).toBe(0);
         expect(result.stdout).not.toContain("FAKE-SCODE-RAN");
         const argv = result.stdout.trimEnd().split("\n");
-        const sessionDir = expectOwnTreeOnly(argv, s.home, false);
+        const sessionDir = expectOwnTreeOnly(argv, s.home, "session-");
         expect(sessionDir).toMatch(/session-[0-9a-f-]{36}$/);
         // A fresh session that never recorded is abandoned: the printed
         // directory did not survive the command.

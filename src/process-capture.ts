@@ -93,7 +93,8 @@ export async function readBounded(
   streamName: "stdout" | "stderr",
   giveUp: Promise<void> = new Promise(() => {}),
   sink?: StdoutSink,
-  finishOptions: () => { timedOut: boolean; aborted?: boolean } = () => ({ timedOut: false })
+  finishOptions: () => { timedOut: boolean; aborted?: boolean } = () => ({ timedOut: false }),
+  observe?: (output: string, ended: boolean) => void
 ): Promise<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -167,6 +168,7 @@ export async function readBounded(
           }
           return folded;
         }
+        observe?.(output + tail, true);
         return output + tail;
       }
       if (sink !== undefined) {
@@ -188,6 +190,7 @@ export async function readBounded(
         throw new OutputLimitError(streamName, output);
       }
       output += decodeChunk(decoder, streamName, value);
+      observe?.(output, false);
     }
   } finally {
     reader.releaseLock();

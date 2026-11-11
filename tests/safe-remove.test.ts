@@ -77,7 +77,7 @@ const SITES: Site[] = [
     name: "the kimi hermetic home",
     make: () => {
       const root = mkdtempSync(join(tmpdir(), "codemux-f3-"));
-      const home = createKimiHermeticHome(root, false, true);
+      const home = createKimiHermeticHome(root);
       return {
         parent: join(root, ".codemux-hermetic"),
         dir: home.home,
@@ -330,7 +330,7 @@ describe("cleanup revalidates the parent before a recursive removal", () => {
   test("the exit hook of a refused finalizer reports instead of throwing, and stays registered", () => {
     const root = mkdtempSync(join(tmpdir(), "codemux-f3-"));
     const before = new Set(process.listeners("exit"));
-    const home = createKimiHermeticHome(root, false, true);
+    const home = createKimiHermeticHome(root);
     const hooks = process.listeners("exit").filter((listener) => !before.has(listener));
     const parent = join(root, ".codemux-hermetic");
     const errors: string[] = [];

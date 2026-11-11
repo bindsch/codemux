@@ -51,6 +51,7 @@
  */
 
 import { providerHost } from "../call-log.js";
+import { strictLaunchFailureExitCode } from "../sandbox-command.js";
 import { HEADLESS_NEGATIVE_RESPONSES } from "../adapters/aider.js";
 import {
   aiderHistorySizeBytes,
@@ -304,7 +305,7 @@ export class AiderSessionDriver extends AiderCallerInput {
         "could not spawn the aider turn process " +
           `(${error instanceof Error ? error.message : String(error)})`
       );
-      void this.finish("crash", 1);
+      void this.finish("crash", strictLaunchFailureExitCode(error));
       return;
     } finally {
       if (spawn !== null && this.turnSpawn === spawn) this.turnSpawn = null;

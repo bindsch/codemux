@@ -48,6 +48,7 @@ export function registerSessionOptions(command: Command, defaultAgent: string): 
     .option("--no-sandbox", "Run without the scode boundary (autonomy below high is unavailable)")
     .option("--sandbox-trust <level>", "scode trust override: trusted or standard (untrusted refused for sandboxed sessions)")
     .option("--sandbox-no-net", "Pass --no-net to scode when sandboxed")
+    .option("--sandbox-strict", "Pass --strict to scode (deny-default); requires --sandbox and must match on resume")
     .option("--sandbox-scrub-env", "Pass --scrub-env to scode when sandboxed")
     .option(
       "--sandbox-block <path>",
@@ -57,7 +58,7 @@ export function registerSessionOptions(command: Command, defaultAgent: string): 
     )
     .option(
       "--print-sandbox",
-      "Print scode argv for the session child, or a representative per-turn command for Aider/OpenCode, one argument per line (controls escaped, a newline prints as \\n), and exit 0 without starting a session; requires --sandbox"
+      "Print scode argv for the session child, or a representative per-turn command for Aider, Cline, Copilot, Cursor, Droid, Gemini, Goose, Kimi, OpenCode, OpenHands, Pi, or Qwen, one argument per line (controls escaped, a newline prints as \\n), and exit 0 without starting a session; requires --sandbox"
     )
     .option(
       "--sandbox-account <file>",

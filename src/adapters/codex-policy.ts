@@ -327,7 +327,7 @@ export abstract class CodexPolicy extends BaseAdapter {
       this.realCodexHome({ agent: "codex", prompt: "", passthroughEnv }),
       override,
       this.modelFor(model)!,
-      readCodexMultiAgent(this.environment)
+      readCodexMultiAgent(this.environment), _printOnly
     );
     return {
       env: { CODEX_HOME: home.codexHome, [CODEX_PROVIDER_KEY_ENV]: override.apiKey },

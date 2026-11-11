@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { runCapturedCommand } from "../src/process-runner.js";
+import { cursorModelsAnswer, helpAnswer, runOutputProbe } from "../src/output-probe.js";
 import { getDefaultConfig } from "../src/config.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,16 +21,16 @@ function standaloneCursorBinary(): string {
   return Bun.which("cursor-agent", { PATH: process.env.PATH }) ? "cursor-agent" : "agent";
 }
 
-async function help(binary: string, args: string[]): Promise<string> {
+async function help(binary: string, args: string[], required: readonly string[] = []): Promise<string> {
   // Copilot extracts its bundled help package even for --help. Keep this
   // test write out of the operator's cache, which may be read-only in CI.
   const cache = binary === "copilot" ? mkdtempSync(join(tmpdir(), "codemux-copilot-contract-")) : undefined;
   try {
-    const result = await runCapturedCommand([binary, ...args], {
+    const result = await runOutputProbe([binary, ...args], {
       cwd: process.cwd(),
       env: { ...process.env, ...(cache ? { COPILOT_PKG_CACHE_HOME: cache } : {}) } as Record<string, string>,
       timeoutMs: CONTRACT_TIMEOUT_MS,
-    });
+    }, args[0] === "models" ? cursorModelsAnswer : helpAnswer(required));
     expect(result.exitCode, result.stderr).toBe(0);
     return `${result.stdout}\n${result.stderr}`;
   } finally {
@@ -244,7 +244,7 @@ describe("installed harness contracts", () => {
           continue;
         }
         exercised.add(contract.binary);
-        const output = await help(contract.binary, [...contract.args]);
+        const output = await help(contract.binary, [...contract.args], contract.required);
         for (const flag of contract.required) {
           expect(output, `${contract.binary} is missing ${flag}`).toContain(flag);
         }
@@ -263,20 +263,21 @@ describe("installed harness contracts", () => {
       // reported as a contract break; the help-surface contract above still
       // ran. The probe goes through the standalone entry resolved above.
       const cursorLoggedIn = async (): Promise<boolean> => {
-        const probe = await runCapturedCommand(
+        const probe = await runOutputProbe(
           [cursorBinary, "models"],
           {
             cwd: process.cwd(),
             env: process.env as Record<string, string>,
             timeoutMs: CONTRACT_TIMEOUT_MS,
-          }
+          },
+          cursorModelsAnswer
         );
         if (probe.exitCode === 0) return true;
         if (/Authentication required/.test(`${probe.stdout}\n${probe.stderr}`)) {
           console.log("[contracts] cursor model aliases skipped: no cursor login on this machine");
           return false;
         }
-        expect(probe.exitCode, probe.stderr).toBe(0);
+        expect(probe.exitCode, `${probe.stdout}\n${probe.stderr}`).toBe(0);
         return false;
       };
       if (Bun.which(cursorBinary, { PATH: process.env.PATH }) !== null && (await cursorLoggedIn())) {

@@ -34,6 +34,7 @@ see [harnesses](harnesses.md) and [session capabilities](sessions.md).
 | `-s, --sandbox` | Enabled; requires compatible scode |
 | `--no-sandbox` | Disable scode; requires `--auto high` |
 | `--sandbox-trust <level>` | Policy default; `trusted`, `standard`, `untrusted`; sandboxed sessions refuse `untrusted` |
+| `--sandbox-strict` | Off; pass scode `--strict` on run, session, tui, and plain check. Requires sandboxing (exit 64 otherwise). Explicit strict overrides trusted's strict-off preset; untrusted still disables automatic harness grants and implies read-only, no network, and environment scrubbing. Sessions record strict and refuse a mismatch on resume; repeat the flag to resume a strict session. |
 | `--sandbox-no-net` | Off; deny networking through scode |
 | `--sandbox-scrub-env` | Off; request scode environment scrubbing |
 | `--pass-env <names>` | Empty; comma-separated environment variable names, at most 64 |
@@ -70,7 +71,7 @@ the quota gate: a print spends nothing), then prints the scode argv the
 launch would exec and
 exits 0 without starting the harness run or recording anything. On `session`,
 `--print-sandbox` prints the long-lived child command or a representative
-per-turn command for Aider, OpenCode, Copilot, Cursor, Droid, Gemini, Goose, Kimi, and Pi. On `check`
+per-turn command for Aider, Cline, OpenCode, OpenHands, Copilot, Cursor, Droid, Gemini, Goose, Kimi, Pi, and Qwen. On `check`
 it supports the plain probe only (hermetic, Agy isolation, and tools
 canaries run several probes with no single scode argv); the version preflight is the harness's
 `--version`; for the opted-in Cursor desktop entry (`CODEMUX_CURSOR_ENTRY=cursor`,
@@ -79,14 +80,20 @@ which the operator must pass through on purpose) that probe is `cursor agent
 documents. Each argument prints on its own line with
 control characters escaped (a newline inside an argument, such as a
 multi-line `-p` prompt, prints as `\n`), so one argument can never read as
-several. The private config directory is created and removed. The adapter prepares only the paths the argv names: no credential is read or written (agy creates no private Keychain, reads no login, and repairs no search list). It
+several. Fresh private homes and generated files use representative paths
+that need not exist. Preview preparation creates no directories or files,
+changes no existing state, and runs no stale-directory sweep. No credential
+is read or written (agy creates no private Keychain, reads no login, and
+repairs no search list). It
 requires `--sandbox` and is refused (exit 64) together with
 `--experiment-mcp`: the MCP relay is minted at start, so its argv cannot be
 shown without starting it. The credential sandbox preparation
 (`prepareSandbox`, which refreshes the claude credential mirror) is
-skipped, and the per-run credential copy into the private config directory
-is deferred: the command is print only, never reads the credential mirror,
-and writes nothing into the private directory it creates and removes.
+skipped, as is the per-run credential copy. Preview finalizers are no-ops;
+resumed previews validate existing private homes and their parents, including Codex provider homes, without modifying them.
+Preview and credential-preflight grants never enter a later real launch's policy. Generated
+paths stand in for launch-time names; the remaining argv follows the real
+launch's flags and output mode, including effort settings in `--keep-env`.
 After validation, sandbox policy/accounting options with `--no-sandbox` are
 warned about and ignored. See
 [policy details](autonomy-and-sandboxing.md).
@@ -355,11 +362,15 @@ protocol compatibility, and unavailable results.
 | `list` | `--json` prints the same facts machine-readable (schema `codemux-list-1`: each agent's id, availability, binary name, and the `hermetic`, `resultJson`, `budgetLimit`, `toolsNoneRequiresHermetic`, `toolsNoneRequiresReadOnly`, `isolationRequiresReadOnly`, `providerOverride`, `sessions`, `model`, `effort`, and `toolsNone` capability booleans, `effortLevels` (the accepted values, or null), a `tui` block (`model`, `effort`: whether the interactive form carries each flag), plus `experimentMcp`, `experimentPrefix`, `servedModelEvidence`, `sessionServedModel` (the session wire sources that name the serving model, or an empty array), and `autonomyCarrier` (the carrier class each `--auto` level uses)). JSON also exposes `capabilities.sessionPermissions` and `sessionPermissionsNote` from `SESSION_AGENTS`, plus `sessionHermetic`, `checkHermetic`, and limitation reasons with evidence. Without `--json`, it prints available adapters and capability labels (`model`, `autonomy`, `effort`, `hermetic`, `tools`, `provider`, `result-json`, `budget`, `sessions(permissions)`, `sessions(no-permissions)`). Session labels distinguish an ask channel from native deny rules. A label carries the condition the adapter enforces: `tools(read-only)` (codex: `--tools none` needs `--auto read-only`), `tools(hermetic)` (OpenCode: `--tools none` on hermetic runs only), `model(run)`/`effort(run)` (qwen takes no `--effort` in the TUI), `budget` (`run --max-budget-usd`; claude and zai) |
 | `autonomy` | No command options; per-harness autonomy mappings |
 | `doctor` | `--format <format>` (`text`, the default, or `json`, schema `codemux-doctor-1`), `--only <agents>`/`--skip <agents>` (narrow the harness set, comma-separated), `--timeout <seconds>` (per-probe bound for one version verdict, default 10; a number of seconds from 0.001 to 60 with at most three decimals, whole milliseconds from 1 to 60000), `--strict` (warnings count as broken for the exit code), `--capabilities` (print only the per-harness capabilities block, the pre-2.0 output), and the paid stage `--spend`, `--spend-cap <n>` (at most n spend probes, default one per eligible harness), `--spend-unreadable` (spend on harnesses whose usage row is unreadable too; each spend probe is one real `codemux check` request labeled `machine-check=<stamp>`, and the JSON spend detail names the stamp `codemux calls --label machine-check=<stamp> --sum` needs). Without `--spend` it makes no model requests: installation, configuration, scode, optional usagemux status. Per installed harness it also prints the capability rows and a version-contract verdict: `ok`, `above audited ceiling` (newer than this codemux audited), `below minimum` (older than this codemux enforces), `known break at <levels> autonomy from <version> (sandbox mitigates or no mitigation)` (a recorded contract break names the autonomy levels it affects), `no contract` (no version contract exists for that harness), `untrusted binary (<reason>)` (the probe refused to run a binary that fails the same trust check as a launch: not a regular file owned by the invoking user or by root, group- or world-writable, or inside the working directory), `unreadable` (the version probe returned nothing parseable), or `unreadable (timed out)` (the probe exceeded its 10 s bound), `unreadable (binary not found)`, or `unreadable (<reason>)` (the probe failed before producing output: a spawn error with its cause). Version probes run in parallel |
-| `verify` | `-a, --agent <agent>`, `--show-scode`, `--sandbox-trust <level>`, `--sandbox-no-net`, `--sandbox-scrub-env` |
+| `verify` | `-a, --agent <agent>`, `--show-scode`, `--sandbox-strict`, `--sandbox-trust <level>`, `--sandbox-no-net`, `--sandbox-scrub-env` |
 
 `verify` checks wiring without model requests. Sandbox policy flags are parsed
 even without `--show-scode`; they affect previews when requested. A previewed
 scode argv carries the same `-C <workdir>` pin a real launch's argv carries.
+Executable paths are resolved and trust-checked as on a real launch, including
+programs behind `env`. Missing or refused executables produce an `Unavailable`
+row; other rows still print. These diagnostics do not change the static wiring
+status or certify that a harness can run under the selected policy.
 These commands may inspect local binaries or execute version/help paths.
 
 ## Exit codes

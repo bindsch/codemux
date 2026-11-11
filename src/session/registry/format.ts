@@ -32,6 +32,8 @@ export interface SessionRecord {
   autonomy: AutonomyLevel;
   sandboxed: boolean;
   sandbox_trust: SandboxTrust;
+  /** Absent on legacy records; false unless strict was explicitly requested. */
+  sandbox_strict?: boolean;
   /** Containment flags the resume guard compares one-directionally:
    * created-with-`--sandbox-no-net`/`--sandbox-scrub-env` cannot resume
    * without them (a transcript may carry injected content, so the resume
@@ -156,7 +158,7 @@ function validRecord(value: unknown): value is SessionRecord {
   const expected = [
     "id", "agent", "created_at", "last_activity", "cwd", "hermetic",
     "harness_home", "caller_owned_home", "model", "model_alias", "autonomy", "sandboxed",
-    "sandbox_trust", "sandbox_no_net", "sandbox_scrub_env", "sandbox_block",
+    "sandbox_trust", "sandbox_no_net", "sandbox_scrub_env", "sandbox_block", "sandbox_strict",
     "pass_env", "playwright_mcp", "provider_base_url", "project_settings",
     "final", "owner_pid", "owner_start", "ended",
   ];
@@ -178,7 +180,7 @@ function validRecord(value: unknown): value is SessionRecord {
   // is documented in the release notes (CHANGELOG) as the
   // downgrade/co-install cost; widening this validator cannot fix
   // the old binary.
-  const LEGACY_OPTIONAL_KEYS = new Set(["provider_base_url", "project_settings", "sandbox_block", "final", "model_alias", "caller_owned_home"]);
+  const LEGACY_OPTIONAL_KEYS = new Set(["provider_base_url", "project_settings", "sandbox_block", "final", "model_alias", "caller_owned_home", "sandbox_strict"]);
   const missing = expected.filter((key) => !keys.includes(key) && !LEGACY_OPTIONAL_KEYS.has(key));
   if (missing.length > 0) {
     return false;
@@ -205,6 +207,7 @@ function validRecord(value: unknown): value is SessionRecord {
   if (typeof record["sandbox_trust"] !== "string" || !Object.hasOwn(TRUST_RANK, record["sandbox_trust"])) return false;
   if (typeof record["sandbox_no_net"] !== "boolean") return false;
   if (typeof record["sandbox_scrub_env"] !== "boolean") return false;
+  if (record["sandbox_strict"] !== undefined && typeof record["sandbox_strict"] !== "boolean") return false;
   // The record's block spelling is canonical (absolute, no NUL); a
   // relative or padded entry is a record no writer of this shape makes.
   const block = record["sandbox_block"];
@@ -304,6 +307,7 @@ export function validRegistryFile(value: unknown): RegistryFile | null {
       provider_base_url: entry["provider_base_url"] ?? null,
       project_settings: entry["project_settings"] ?? false,
       sandbox_block: entry["sandbox_block"] ?? [],
+      sandbox_strict: entry["sandbox_strict"] ?? false,
       final: entry["final"] ?? false,
       model_alias: entry["model_alias"] ?? null,
     })),

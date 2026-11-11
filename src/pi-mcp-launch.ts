@@ -29,7 +29,8 @@ export function preparePiPlaywright(
   request: RunRequest,
   context: PiMcpRunContext,
   realAgentDir: string,
-  pathEnv: string
+  pathEnv: string,
+  printOnly = false
 ): PiMcpRunContext {
   if (!request.enablePlaywrightMcp) return context;
   const mcp = buildPlaywrightSandboxMcp(request.sandboxed, {
@@ -37,11 +38,11 @@ export function preparePiPlaywright(
   });
   if (mcp.check === null) throw new Error("pi Playwright MCP requires a sandboxed trusted server");
   const config = JSON.parse(mcp.args[1]!) as { mcpServers: { playwright: { command: string; args: string[] } } };
-  const directory = createPiHermeticAgentDir(realAgentDir, null, undefined, false);
+  const directory = createPiHermeticAgentDir(realAgentDir, null, undefined, false, printOnly);
   try {
     const path = join(directory.path, "playwright.mjs");
     const server = config.mcpServers.playwright;
-    writeFileSync(path, piMcpExtensionSource(server.command, server.args, "playwright"), { mode: 0o600 });
+    if (!printOnly) writeFileSync(path, piMcpExtensionSource(server.command, server.args, "playwright"), { mode: 0o600 });
     return { ...context, piMcpExtension: { path, directory }, playwrightMcpCheck: mcp.check };
   } catch (error) { directory.finalize(); throw error; }
 }

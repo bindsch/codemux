@@ -14,6 +14,7 @@ import { PARITY, agentsSupporting } from "../src/parity/index.js";
 import { SERVED_MODEL_EVIDENCE_HARNESSES, SESSION_SERVED_MODEL } from "../src/result-envelope/index.js";
 import { createFakeBinaryEnv, minimalPath } from "./helpers/cli.js";
 import { cleanupFixtureHomes, fakeScodeHelp, fakeUsagemux, fixtureHome, runDoctor } from "./helpers/doctor.js";
+import { withVerifyExecutables } from "./helpers/verify.js";
 
 afterAll(() => cleanupFixtureHomes(homes));
 
@@ -65,7 +66,7 @@ describe("information commands", () => {
   });
 
   test("renders verifier warning details and scode previews", async () => {
-    const result = await runInfoCommand(["verify", "-a", "codex", "--show-scode"]);
+    const result = await withVerifyExecutables(() => runInfoCommand(["verify", "-a", "codex", "--show-scode"]));
     expect(result.output).not.toContain("Warning details:");
     expect(result.output).toContain("Effective scode command preview");
     expect(result.output).toContain("--ro");

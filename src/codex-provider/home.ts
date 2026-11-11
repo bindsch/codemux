@@ -146,8 +146,11 @@ export function createCodexSessionProviderHome(
   realCodexHome: string,
   override: ProviderOverride & { baseUrl: string },
   model: string,
-  multiAgent: boolean | null
+  multiAgent: boolean | null,
+  printOnly = false
 ): CodexSessionProviderHome {
+  if (printOnly) return { codexHome: join(realCodexHome, PARENT_DIR_NAME, "preview"),
+    prepareConfig: () => {}, settle: () => false, abandon: () => {} };
   const parent = prepareRunDirParent(realCodexHome, PARENT_DIR_NAME);
   // Recorded for the removal's revalidation (src/safe-remove.ts): every
   // session's child can write this shared parent, so a settle or abandon
@@ -234,7 +237,8 @@ export function openCodexSessionProviderHome(
   override: ProviderOverride & { baseUrl: string },
   model: string,
   multiAgent: boolean | null,
-  sessionId: string
+  sessionId: string,
+  printOnly = false
 ): CodexSessionProviderHome {
   // The parent is created (and its stale entries swept) as a side
   // effect, as at any session or run start — with THIS home's entry
@@ -245,7 +249,9 @@ export function openCodexSessionProviderHome(
   // (review D10, correctness-2 3). Any other codemux run may still sweep
   // it; this one just refused to delete what it came to open.
   const codexHome = codexSessionProviderHomePath(realCodexHome, override.baseUrl, sessionId);
-  prepareRunDirParent(realCodexHome, PARENT_DIR_NAME, undefined, basename(codexHome));
+  // The preview checks the same parent without creating it or sweeping state.
+  if (printOnly) assertTrustedDirectory(codexProviderSessionsParent(realCodexHome));
+  else prepareRunDirParent(realCodexHome, PARENT_DIR_NAME, undefined, basename(codexHome));
   try {
     assertTrustedDirectory(codexHome);
   } catch {
@@ -255,6 +261,7 @@ export function openCodexSessionProviderHome(
         "to settle it, or the stale-home sweep removed it)"
     );
   }
+  if (printOnly) return { codexHome, prepareConfig: () => {}, settle: () => true, abandon: () => {} };
   const prepareConfig = (): void => {
     writeCodexProviderConfigInto(codexHome, override, model, multiAgent);
   };

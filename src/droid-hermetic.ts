@@ -86,8 +86,13 @@ function inodeOf(path: string): number | null {
  */
 export function createDroidHermeticHome(
   sourceBrandHome: string,
-  loginLinks: DroidLoginLinkOperations = realLoginLinks
+  loginLinks: DroidLoginLinkOperations = realLoginLinks,
+  printOnly = false
 ): DroidHermeticHome {
+  if (printOnly) {
+    const home = join(sourceBrandHome, PARENT_DIR_NAME, "preview");
+    return { home, brandHome: join(home, ".factory"), finalize: () => {} };
+  }
   const sourceAuth = join(sourceBrandHome, "auth.json");
   const parent = prepareRunDirParent(sourceBrandHome, PARENT_DIR_NAME);
   // Recorded for the finalizer's revalidation (src/safe-remove.ts).

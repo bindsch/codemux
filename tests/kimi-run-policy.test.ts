@@ -140,7 +140,7 @@ describe("Kimi run-scoped native policy", () => {
     expect(readdirSync(join(f.brand, ".codemux-hermetic"))).toEqual([]);
     const home = createKimiPolicyHome(f.brand, { ...f.request, web: false }, true);
     cleanups.push(home.finalize);
-    expect(Bun.TOML.parse(readFileSync(join(home.kimiHome, "config.toml"), "utf8"))).toEqual({ tools: { disabled: KIMI_WEB_TOOLS } });
+    expect(existsSync(home.home)).toBe(false);
     expect(() => f.adapter.getRunEnv({ ...f.request, web: false })).toThrow("private policy home");
   });
 });

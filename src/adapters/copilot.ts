@@ -130,6 +130,7 @@ export class CopilotAdapter extends BaseAdapter {
     sandboxOptions?: SandboxOptions,
     launch: LaunchIntent = {}
   ): CopilotRunContext {
+    if (launch.printOnly && request.experimentMcp) throw new UsageRefusalError("Copilot experiment MCP cannot be prepared for a print-only preview");
     if (request.experimentProjectSettings) {
       validateCopilotProjectSettingsRun(request);
       if (sandboxOptions === undefined) {
@@ -149,8 +150,8 @@ export class CopilotAdapter extends BaseAdapter {
         context.copilotUsageFile = createCopilotUsageFile(this.realConfigDir());
       }
       const provider = copilotProvider(this.environment);
-      if (provider?.maxContextTokens !== undefined && !launch.printOnly) {
-        context.copilotProviderFile = createCopilotProviderFile(this.realConfigDir(), provider, request.model);
+      if (provider?.maxContextTokens !== undefined) {
+        context.copilotProviderFile = createCopilotProviderFile(this.realConfigDir(), provider, request.model, launch.printOnly);
       }
       if (request.experimentProjectSettings) {
         const artifacts = [context.copilotUsageFile?.path, context.copilotProviderFile?.path]
@@ -185,12 +186,13 @@ export class CopilotAdapter extends BaseAdapter {
   }
 
   /** Shared launch calls this only after its sandbox/network validation. */
-  prepareCopilotModelRun(request: RunRequest, context: CopilotRunContext): void {
+  prepareCopilotModelRun(request: RunRequest, context: CopilotRunContext, printOnly = false): void {
     if (request.sandboxNoNet || request.sandboxTrust === "untrusted") throw new UsageRefusalError("Copilot model-response observation requires network access; it cannot bypass sandbox network denial");
     const native = buildCopilotRpcLaunch({ adapter: this, request, context, harnessHome: this.realConfigDir(),
       turn: { text: request.prompt, sessionId: null, firstTurn: true, hermeticHome: context.copilotHermeticHome?.home ?? null,
         autonomy: request.autonomy ?? "read-only", model: request.model, effort: request.effort } });
     context.copilotModelArgv = native.argv;
+    if (printOnly) return;
     context.copilotModelRun = new CopilotModelRun(request.prompt, native.config, request.autonomy ?? "read-only");
     context.stdoutSink = context.copilotModelRun;
   }
@@ -403,9 +405,7 @@ export class CopilotAdapter extends BaseAdapter {
   prepareTuiProvider(model?: string, printOnly = false): CopilotProviderFile | undefined {
     const provider = copilotProvider(this.environment);
     if (provider?.maxContextTokens === undefined) return undefined;
-    if (printOnly) return { path: join(this.realConfigDir(), ".codemux-hermetic", "preview", "providers.json"),
-      modelId: "codemux/model", finalize() {} };
-    return createCopilotProviderFile(this.realConfigDir(), provider, model);
+    return createCopilotProviderFile(this.realConfigDir(), provider, model, printOnly);
   }
 
   override prepareTuiEnvironment(model?: string, autonomy?: AutonomyLevel, effort?: ReasoningEffort,

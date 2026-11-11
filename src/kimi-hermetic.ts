@@ -7,6 +7,7 @@ import { readBoundedKimiFile } from "./kimi-wire-log.js";
 import { recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
 
 export interface KimiHermeticHome {
+  printOnly?: boolean;
   home: string;
   kimiHome: string;
   skillsDir: string;
@@ -350,9 +351,12 @@ export function populateKimiHermeticSessionHome(
 
 /** Each private brand home shares the credential directory, including atomic token renames. */
 export function createKimiHermeticHome(sourceBrandHome: string, toolsNone = false, printOnly = false): KimiHermeticHome {
-  // A print-only launch needs the home path for its argv and nothing of the
-  // operator's: no configuration read, no credential link (review round 55).
-  const config = printOnly ? "" : kimiHermeticConfig(sourceBrandHome);
+  if (printOnly) {
+    const home = join(sourceBrandHome, ".codemux-hermetic", "preview");
+    return { home, kimiHome: join(home, ".kimi-code"), skillsDir: join(home, "skills-dir"),
+      agentFile: join(home, "agent.md"), printOnly: true, finalize: () => {} };
+  }
+  const config = kimiHermeticConfig(sourceBrandHome);
   const parent = prepareRunDirParent(sourceBrandHome, ".codemux-hermetic");
   // Recorded for the finalizer's revalidation (src/safe-remove.ts).
   const parentRecord = recordTrustedParent(parent);
@@ -381,14 +385,14 @@ export function createKimiHermeticHome(sourceBrandHome: string, toolsNone = fals
     mkdirSync(skillsDir, { mode: 0o700 });
     chmodSync(skillsDir, 0o700);
     writeOwnedSync(join(kimiHome, "config.toml"), config, 0o600);
-    if (!printOnly) symlinkSync(resolve(sourceBrandHome, "credentials"), join(kimiHome, "credentials"), "dir");
+    symlinkSync(resolve(sourceBrandHome, "credentials"), join(kimiHome, "credentials"), "dir");
     // `region` and `device_id` sit in the brand home a previous kimi child
     // could write, so they are read through the bounded no-follow reader:
     // a symlink or a FIFO swapped in for either is refused (the launch
     // fails and the private home is removed) instead of followed or
     // blocked on, and the bytes are copied only after every file passed
     // (review round 100). An absent file is skipped as before.
-    const stateFiles = printOnly ? [] : ["region", "device_id"].map((name) => {
+    const stateFiles = ["region", "device_id"].map((name) => {
       const source = join(sourceBrandHome, name);
       try { return { name, bytes: readBoundedKimiFile(source, MAX_KIMI_STATE_BYTES) }; }
       catch (error) {

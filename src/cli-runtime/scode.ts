@@ -5,7 +5,7 @@
 import { realpathSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
-import { runCapturedCommand } from "../process-runner.js";
+import { helpAnswer, runOutputProbe, versionAnswer } from "../output-probe.js";
 import { resolveTrustedExecutable } from "../executable-security.js";
 import { statEntryPresent } from "../file-io.js";
 import { UsageRefusalError } from "../validation.js";
@@ -111,11 +111,11 @@ export async function assertCompatibleScode(
   extraEnv?: Record<string, string>,
   minimumVersion = SCODE_MINIMUM_VERSION
 ): Promise<void> {
-  const result = await runCapturedCommand([scode, "--version"], {
+  const result = await runOutputProbe([scode, "--version"], {
     cwd: workdir,
     env: buildSandboxEnv(extraEnv),
     timeoutMs: SCODE_VERSION_TIMEOUT_MS,
-  });
+  }, versionAnswer(SCODE_VERSION_TOKEN));
   const output = `${result.stdout}\n${result.stderr}`.trim();
   if (!result.success) {
     throw new Error(
@@ -158,11 +158,11 @@ export async function assertScodeSupportsAccounting(
   workdir: string,
   extraEnv?: Record<string, string>
 ): Promise<void> {
-  const result = await runCapturedCommand([scode, "--help"], {
+  const result = await runOutputProbe([scode, "--help"], {
     cwd: workdir,
     env: buildSandboxEnv(extraEnv),
     timeoutMs: SCODE_VERSION_TIMEOUT_MS,
-  });
+  }, helpAnswer(["SCODE_ACCOUNT_FILE"]));
   if (!result.success) {
     // A probe that cannot run proves nothing either way; launching would
     // mean guessing about the one capability this run asked for.
@@ -192,11 +192,11 @@ async function probeScodeKeepEnvSupportOnce(
 ): Promise<ScodeKeepEnvSupport> {
   let result;
   try {
-    result = await runCapturedCommand([scode, "--help"], {
+    result = await runOutputProbe([scode, "--help"], {
       cwd: workdir,
       env: buildSandboxEnv(extraEnv),
       timeoutMs: SCODE_VERSION_TIMEOUT_MS,
-    });
+    }, helpAnswer(["--keep-env"]));
   } catch {
     // A probe that cannot run at all proves nothing either way; whether
     // that matters is the caller's call (an override run refuses on the

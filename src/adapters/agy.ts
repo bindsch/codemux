@@ -1,4 +1,5 @@
 import { BaseAdapter, type RunContext } from "./base.js";
+import { canonicalSandboxBlockPath } from "../session/registry/format.js";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -146,6 +147,7 @@ export class AgyAdapter extends BaseAdapter {
       const planted = plantAgyPlaywrightMcpConfig(prepared.agyProbe.home, {
         pathEnv: this.executionPathEnv(),
         forbiddenRoot: request.cwd ?? process.cwd(),
+        printOnly,
       });
       prepared.playwrightMcpCheck = planted.check;
     }
@@ -155,12 +157,15 @@ export class AgyAdapter extends BaseAdapter {
   /** Prepare a private Keychain, then select API key, file token, or Keychain login. */
   private preparePrivateHome(context: RunContext, realHome: string, shareState: boolean,
     request: RunRequest, sandboxOptions: SandboxOptions): RunContext {
+    if (context.agyProbe!.printOnly) {
+      context.agyProbe!.home = canonicalSandboxBlockPath(join(realHome, ".gemini", ".codemux-isolation-probes", "preview"));
+      return context;
+    }
     // Creation registers the home as this context's own before anything
     // can fail afterward, so the catch below always owns its full cleanup
     // (agy-probe-home.ts keeps the descriptor-verified lifecycle).
     const home = createAgyProbeHome(context, realHome).home;
     try {
-      if (context.agyProbe!.printOnly) return context; // print-only: the HOME path for the argv, no Keychain, no login
       const keychainPassword = prepareAgyPrivateKeychain(home, this.environment, request.cwd);
       const token = join(agyKeychainHost.home(), PROBE_TOKEN);
       const injectedEnv = { ...this.getEnv(), ...this.getRunEnv(request, context) };
@@ -242,6 +247,7 @@ export class AgyAdapter extends BaseAdapter {
     const probe = context?.agyProbe;
     if (!probe?.home) return;
     const owned = ownedProbeHomes.get(context!);
+    if (probe.printOnly && !owned) return;
     if (!owned || probe.home !== owned.home || dirname(probe.home) !== owned.parent) {
       throw new Error("refusing cleanup of an unowned agy probe home");
     }

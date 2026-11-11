@@ -7,6 +7,7 @@
  */
 
 import { appendSessionTurnCallRecord } from "../call-log.js";
+import { strictLaunchFailureExitCode } from "../sandbox-command.js";
 import { emptyUsage } from "../result-envelope.js";
 import type { ResultUsageBlock } from "../types.js";
 import {
@@ -78,7 +79,7 @@ export abstract class TurnDriverTurns extends TurnDriverRecord {
         `could not spawn the ${agent} turn process ` +
           `(${error instanceof Error ? error.message : String(error)})`
       );
-      void this.finish("crash", 1);
+      void this.finish("crash", strictLaunchFailureExitCode(error));
       return;
     } finally {
       if (spawn !== null && this.turnSpawn === spawn) this.turnSpawn = null;

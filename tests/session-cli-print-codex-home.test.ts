@@ -1,9 +1,7 @@
 /**
  * The --print-sandbox exit of a fresh codex provider-override session
- * (review round 2, edges 3): the run-<pid>-* CODEX_HOME is created before
- * the print branch, so the print path must run the same finalizers the
- * abort path owns — the home is abandoned, the registry never written —
- * instead of process.exit past them.
+ * uses a representative CODEX_HOME without creating it. The print path
+ * still returns through the launcher's finalizers and writes no registry.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -15,7 +13,7 @@ const FAKE_CODEX = `if [ "$1" = "--version" ]; then printf 'codex-cli 0.159.3\\n
 exit 7`;
 
 describe("a codex provider-override session's --print-sandbox", () => {
-  test("abandons its fresh provider home and records nothing", async () => {
+  test("prints a representative provider home without creating state or records", async () => {
     const root = tempWorkdir("session-print-codex");
     const regRoot = tempWorkdir("session-print-codex-reg");
     const registry = join(regRoot, "live-sessions.json");
@@ -25,11 +23,12 @@ describe("a codex provider-override session's --print-sandbox", () => {
     mkdirSync(workdir);
     try {
       const outcome = await runSessionCommand(
-        ["-a", "codex", "--print-sandbox", "--cwd", workdir],
+        ["-a", "codex", "--print-sandbox", "--cwd", workdir, "--pass-env", "CODEX_HOME"],
         { codex: FAKE_CODEX, scode: "exit 9" },
         {
           registryFile: registry,
           env: {
+            HOME: root,
             CODEX_HOME: codexHome,
             CODEMUX_CODEX_PROVIDER_BASE_URL: "https://provider.example/v1",
             CODEMUX_CODEX_PROVIDER_API_KEY: "sk-test-key",
@@ -42,18 +41,9 @@ describe("a codex provider-override session's --print-sandbox", () => {
       // process.exit of its own (edges 3): the finalizers ran before it.
       expect(outcome.exitCalls).toEqual([]);
       expect(outcome.stdout.split("\n").some((line) => line.endsWith("/scode"))).toBe(true);
-      // The override home really fed this print (not a vacuous pass with
-      // no override resolved): the child's CODEX_HOME is the fresh
-      // run-<pid>-* directory under .codemux-provider.
-      expect(outcome.stdout).toContain(".codemux-provider");
-      expect(outcome.stdout).toContain("run-");
+      expect(outcome.stdout).toContain(`CODEX_HOME=${join(codexHome, ".codemux-provider", "preview")}`);
       expect(existsSync(registry)).toBe(false);
-      // The provider parent may exist (it predates the home), but no
-      // run-<pid>-* directory may remain under it: the print exit
-      // abandoned the fresh home the launch had created.
-      const parent = join(codexHome, ".codemux-provider");
-      const entries = existsSync(parent) ? readdirSync(parent) : [];
-      expect(entries.filter((name) => name.startsWith("run-"))).toEqual([]);
+      expect(readdirSync(codexHome)).toEqual([]);
     } finally {
       removeDir(root);
       removeDir(regRoot);

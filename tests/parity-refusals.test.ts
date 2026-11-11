@@ -53,7 +53,7 @@ import { resolveSessionRequest, type SessionCommandOptions } from "../src/sessio
 import { UsageRefusalError } from "../src/validation.js";
 import type { AgentId, RunRequest } from "../src/types.js";
 import { refusingCall } from "./helpers/session-cli-hermetic.js";
-
+import { assertStrictRuntimeLimitation, strictSandboxOutcome } from "./helpers/parity-strict.js";
 const root = resolve(import.meta.dir, "..");
 let cleanCwd: string;
 beforeAll(() => { cleanCwd = fs.mkdtempSync(join(root, "scratch/fix/parity-refusals-")); });
@@ -117,7 +117,7 @@ describe("capability refusal inventory", () => {
   });
 });
 
-type Outcome = { message: string | null; code: number | null; observedAbsence?: true; omittedMetric?: true };
+type Outcome = { message: string | null; code: number | null; observedAbsence?: true; omittedMetric?: true; runtimeLimitation?: true };
 const accepted: Outcome = { message: null, code: null };
 const usage = { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 3, cache_creation_input_tokens: 0 };
 const resultFrame = { type: "result", subtype: "success", result: "parity", usage, total_cost_usd: 0.25, modelUsage: { "parity-served": {} } };
@@ -315,9 +315,8 @@ async function commandOutcome(agent: AgentId, command: "run" | "check" | "tui", 
   return message.includes(validationPassed.message) ? { message: null, code: null } : { message, code };
 }
 
-/** Each request varies the advertised feature while keeping prerequisites
- * valid. Unsupported features must produce their declared usage refusal. */
 async function exercise(agent: AgentId, feature: ParityFeature): Promise<Outcome | undefined> {
+  if (feature.endsWith(".sandbox-strict")) return strictSandboxOutcome(agent);
   const names = providerOverrideEnvNames(agent);
   const adapter = getAdapter(agent, agent === "cline" || (["goose", "openhands"].includes(agent) && feature === "run.hermetic.any-cwd")
     ? { HOME: cleanCwd, [names.baseUrl]: "https://parity.invalid/v1", [names.apiKey]: "synthetic-key", [names.model]: "parity-model" } : {});
@@ -466,6 +465,7 @@ describe("declared capabilities at synthetic validation boundaries", () => {
           continue;
         }
         if (state.state === "supported") expect(outcome.message, `${agent} ${feature}`).toBeNull();
+        else if (outcome.runtimeLimitation) assertStrictRuntimeLimitation(feature, state, outcome.message);
         else if (outcome.omittedMetric) expect(state.reason.startsWith("OPEN:")).toBe(false);
         else if (outcome.observedAbsence) {
           expect(["run.served-model-evidence", "check.provider-override.served-model"]).toContain(feature);

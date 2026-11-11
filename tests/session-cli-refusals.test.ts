@@ -173,7 +173,7 @@ describe("CLI - session refusals", () => {
     expect(flat).toContain(
       `Tool selection: default or none (${agentsSupporting("session.tools").join(", ")}; opencode none requires --hermetic)`
     );
-    expect(flat).toContain("representative per-turn command for Aider/OpenCode");
+    expect(flat).toContain("representative per-turn command for Aider, Cline, Copilot, Cursor, Droid, Gemini, Goose, Kimi, OpenCode, OpenHands, Pi, or Qwen");
   });
 
   test("a well-formed --resume id the registry never recorded exits 66", async () => {

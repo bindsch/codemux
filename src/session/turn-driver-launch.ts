@@ -270,6 +270,7 @@ export function createTurnAgentDriver(
         if (state) {
           const policy = launch.sandboxOptions, directories = [...(policy.harnessStateDirs ?? []), state];
           assertNoCallerBlockOverStateDirs(policy.blockPaths ?? [], directories);
+          policy.callerBlockPaths ??= policy.blockPaths ?? [];
           policy.blockPaths = [...(policy.blockPaths ?? []), ...(privateHome?.blockedPaths ?? [])];
           policy.harnessStateDirs = directories;
         }
@@ -334,7 +335,7 @@ export function createTurnAgentDriver(
     sandboxTrust,
     sandboxNoNet,
     sandboxScrubEnv,
-    sandboxBlock,
+    sandboxBlock, sandboxStrict: options.sandboxStrict === true,
     passEnv: passthroughEnv,
     authorPrefix: Boolean(options.authorPrefix),
     sessionTimeoutMs,

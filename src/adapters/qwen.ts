@@ -9,6 +9,7 @@ import {
   qwenBrandHome,
   writeQwenEffortSettings,
   writeQwenRunSettings,
+  previewQwenRunSettings,
   QWEN_EFFORT_LEVELS,
   QWEN_EFFORT_SETTINGS_ENV,
 } from "../qwen-effort.js";
@@ -27,6 +28,7 @@ import type {
   RunRequest,
   RunResult,
   AdapterCapabilities,
+  LaunchIntent,
 } from "../types.js";
 import { envKeyLoginState, type LoginState } from "../harness-health.js";
 
@@ -166,8 +168,9 @@ export class QwenAdapter extends BaseAdapter {
     return this.isLegacyBinary || super.requiresSandboxForAutonomy(level);
   }
 
-  override prepareRun(request: RunRequest, _trust?: ScodeTrustLevel, sandbox?: SandboxOptions): RunContext {
+  override prepareRun(request: RunRequest, _trust?: ScodeTrustLevel, sandbox?: SandboxOptions, launch?: LaunchIntent): RunContext {
     if (request.experimentMcp) {
+      if (launch?.printOnly) throw new UsageRefusalError("Qwen experiment MCP cannot be prepared for a print-only preview");
       if (this.isLegacyBinary) throw new UsageRefusalError("qwen-coder has no explicit MCP configuration carrier; install qwen 0.24.0 or newer");
       const spec = readExperimentRunSpec(request);
       const override = this.validatedProvider();
@@ -197,7 +200,7 @@ export class QwenAdapter extends BaseAdapter {
     }
     return {
       stdoutSink: qwenStreamFold(),
-      qwenEffortSettings: writeQwenRunSettings(qwenBrandHome(this.environment), {
+      qwenEffortSettings: launch?.printOnly ? previewQwenRunSettings(qwenBrandHome(this.environment)) : writeQwenRunSettings(qwenBrandHome(this.environment), {
         ...(request.effort === undefined ? {} : { effort: request.effort }),
         ...(override?.maxContextTokens === undefined
           ? {}
@@ -315,10 +318,11 @@ export class QwenAdapter extends BaseAdapter {
     // because only this hook owns launch-lifetime state on the TUI path,
     // and finalized on every exit path the launcher owns. A print-only
     // preview spawns nothing, so it writes nothing.
-    if (this.isLegacyBinary || effort === undefined || printOnly) {
+    if (this.isLegacyBinary || effort === undefined) {
       return { env: this.providerEnv(model), finalize: () => {} };
     }
-    const settings = writeQwenEffortSettings(qwenBrandHome(this.environment), effort);
+    const settings = printOnly ? previewQwenRunSettings(qwenBrandHome(this.environment))
+      : writeQwenEffortSettings(qwenBrandHome(this.environment), effort);
     return {
       env: {
         ...this.providerEnv(model),

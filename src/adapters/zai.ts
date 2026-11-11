@@ -1,4 +1,7 @@
 import { PROJECT_SETTING_SOURCES, validateProjectSettingsRunRequest } from "../claude-project-settings.js";
+import type { LaunchIntent } from "../types.js";
+import type { SandboxOptions, ScodeTrustLevel } from "../sandbox.js";
+import { UsageRefusalError } from "../validation.js";
 import { claudeEffortFlags, validateClaudeEffort } from "../claude-effort.js";
 import { createProjectSettingsConfigDir, projectSettingsOrHermeticHome } from "../claude-project-config.js";
 import { homedir } from "node:os";
@@ -240,7 +243,8 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
   // The experiment bridge as claude's: same binary, same SDK control
   // protocol, same recordings and result envelope. The private config
   // directory of a project-settings run is the same mechanism too.
-  override prepareRun(request: RunRequest): RunContext {
+  override prepareRun(request: RunRequest, _trust?: ScodeTrustLevel, _sandbox?: SandboxOptions, launch: LaunchIntent = {}): RunContext {
+    if (launch.printOnly && request.experimentMcp) throw new UsageRefusalError("Z.AI experiment MCP cannot be prepared for a print-only preview");
     const context: RunContext = {};
     if (request.experimentProjectSettings) {
       // The launch-path gate, from the request's own fields (review
@@ -250,7 +254,7 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
       validateProjectSettingsRunRequest(request);
       context.claudeProjectConfigDir = createProjectSettingsConfigDir(
         request.cwd ?? process.cwd(),
-        this.environment
+        this.environment, launch.printOnly
       );
     }
     if (!request.experimentMcp) {

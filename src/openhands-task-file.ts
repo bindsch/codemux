@@ -87,8 +87,10 @@ function sweepStaleFiles(parent: string, record: TrustedParentRecord): void {
  */
 export function writeOpenhandsTaskFile(
   openhandsDir: string,
-  prompt: string
+  prompt: string,
+  printOnly = false
 ): OpenhandsTaskFile {
+  if (printOnly) return { path: join(openhandsDir, PARENT_DIR_NAME, "preview", "task.txt"), finalize: () => {} };
   const parent = join(openhandsDir, PARENT_DIR_NAME);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   // Recorded before the sweep runs, and every removal revalidates the

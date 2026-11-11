@@ -56,6 +56,7 @@ export interface CodexDriverOptions extends CodexSessionSettings {
    * compared on resume (registry/format.ts). */
   sandboxBlock?: readonly string[];
   sandboxScrubEnv: boolean;
+  sandboxStrict?: boolean;
   /** Passed environment names, recorded for the resume guard. */
   passEnv: readonly string[];
   /** Prefix harness-bound text with `[<author>] ` (§4.4, default on). */

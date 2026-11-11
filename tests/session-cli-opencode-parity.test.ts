@@ -88,7 +88,7 @@ test("OpenCode preview prints the actual native resume and provider carriers wit
   } finally { s.cleanup(); }
 });
 
-test("OpenCode fresh preview removes temporary homes and creates no registry or native process", async () => {
+test("OpenCode fresh preview creates no temporary homes, registry, or native process", async () => {
   const s = opencodeLaunchFixture();
   try {
     const preview = await s.launch(["--hermetic", "--print-sandbox"]);
@@ -97,7 +97,7 @@ test("OpenCode fresh preview removes temporary homes and creates no registry or 
     expect(preview.stdout).toContain("--pure\nrun\n--format\njson");
     expect(existsSync(s.registryFile)).toBe(false);
     expect(existsSync(join(s.state, "observations.jsonl"))).toBe(false);
-    expect(readdirSync(s.parent)).toEqual([]);
+    expect(existsSync(s.parent)).toBe(false);
     expect(s.sandboxes()).toEqual([]);
   } finally { s.cleanup(); }
 });

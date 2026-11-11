@@ -41,7 +41,8 @@ export interface AiderHermeticHome {
   finalize: () => void;
 }
 
-export function createAiderHermeticHome(sourceAiderDir: string): AiderHermeticHome {
+export function createAiderHermeticHome(sourceAiderDir: string, printOnly = false): AiderHermeticHome {
+  if (printOnly) return { home: join(sourceAiderDir, ".codemux-hermetic", "preview"), finalize: () => {} };
   const parent = prepareRunDirParent(sourceAiderDir, ".codemux-hermetic");
   const parentRecord = recordTrustedParent(parent);
   const home = mkdtempSync(join(parent, `run-${process.pid}-`));

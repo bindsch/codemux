@@ -20,6 +20,7 @@ import { remedyFor } from "./doctor-remedies.js";
 import type { EnvironmentRow, HarnessRow, RowSeverity } from "./doctor-model.js";
 import { resolveTrustedExecutable } from "./executable-security.js";
 import { runCapturedCommand } from "./process-runner.js";
+import { runOutputProbe } from "./output-probe.js";
 import { withoutAmbientScodeEnv } from "./sandbox.js";
 import { isNamespaceCapabilityFailure } from "./scode-namespace.js";
 import { readUsagemuxVersion, USAGEMUX_MINIMUM_VERSION } from "./usage.js";
@@ -83,11 +84,11 @@ export const readScodeFacts = async (
     };
   }
   try {
-    const result = await runCapturedCommand([trusted, "--version"], {
+    const result = await runOutputProbe([trusted, "--version"], {
       cwd: workdir,
       env: process.env as unknown as Record<string, string>,
       timeoutMs: 10_000,
-    });
+    }, (output) => extractScodeVersion(output) !== null);
     const output = `${result.stdout}\n${result.stderr}`.trim();
     if (!result.success) {
       return { present: true, path: trusted, version: null, label: "unreadable", issue: `scode --version exited ${result.exitCode}` };

@@ -7,17 +7,47 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexAdapter } from "../src/adapters/codex.js";
 import { KimiAdapter } from "../src/adapters/kimi.js";
+import { createGeminiHermeticHome } from "../src/gemini-hermetic.js";
+import { createKimiHermeticHome } from "../src/kimi-hermetic.js";
+import { treeSnapshot } from "./helpers/tree-snapshot.js";
 import { createRunFakeBinaryEnv as createFakeBinaryEnv, runCli } from "./helpers/cli.js";
 import { fakeUsagemux } from "./helpers/doctor.js";
 
 const homes: string[] = [];
 afterEach(() => { for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true }); });
 const home = (): string => { const h = mkdtempSync(join(tmpdir(), "codemux-print-only-")); homes.push(h); return h; };
+
+test("Kimi previews skip state copying while real homes retain short state files", () => {
+  const source = home();
+  for (const name of ["region", "device_id"]) writeFileSync(join(source, name), `synthetic-${name}`);
+  const before = treeSnapshot(source);
+  createKimiHermeticHome(source, false, true).finalize();
+  expect(treeSnapshot(source)).toEqual(before);
+  const real = createKimiHermeticHome(source);
+  try {
+    for (const name of ["region", "device_id"]) {
+      expect(readFileSync(join(real.kimiHome, name), "utf8")).toBe(`synthetic-${name}`);
+    }
+  } finally { real.finalize(); }
+});
+
+test("Gemini previews skip login links while real homes retain them", () => {
+  const source = home();
+  writeFileSync(join(source, "oauth_creds.json"), '{"synthetic":true}');
+  const before = treeSnapshot(source);
+  createGeminiHermeticHome(source, { printOnly: true }).finalize();
+  expect(treeSnapshot(source)).toEqual(before);
+  const real = createGeminiHermeticHome(source);
+  try {
+    expect(lstatSync(join(real.geminiDir, "oauth_creds.json")).ino)
+      .toBe(lstatSync(join(source, "oauth_creds.json")).ino);
+  } finally { real.finalize(); }
+});
 
 describe("codex", () => {
   test("a print-only hermetic home holds no login and needs none", () => {
@@ -47,7 +77,7 @@ describe("kimi", () => {
     try {
       const kimiHome = context.kimiHermeticHome!.kimiHome;
       expect(lstatSync(join(kimiHome, "credentials"), { throwIfNoEntry: false })).toBeUndefined();
-      expect(readFileSync(join(kimiHome, "config.toml"), "utf8")).toBe("");
+      expect(existsSync(kimiHome)).toBe(false);
     } finally {
       adapter.cleanupRun(context);
     }

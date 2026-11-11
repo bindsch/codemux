@@ -49,6 +49,7 @@ export interface OpenCodeDriverOptions {
    * compared on resume (registry/format.ts). */
   sandboxBlock?: readonly string[];
   sandboxScrubEnv: boolean;
+  sandboxStrict?: boolean;
   /** The `--pass-env` names the child runs with; recorded for the
    * resume guard. */
   passEnv: readonly string[];

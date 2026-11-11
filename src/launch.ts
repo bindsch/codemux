@@ -271,7 +271,7 @@ export async function launchRunRequest(
     // Print-only launches prepare paths, never credentials (LaunchIntent);
     // the request itself is never mutated (review round 42).
     context = adapter.prepareRun(request, sandboxOptions.trust, sandboxOptions, { printOnly: options.printSandbox === true });
-    if (adapter.id === "copilot" && request.resultJson && !request.experimentMcp && !options.printSandbox) (adapter as CopilotAdapter).prepareCopilotModelRun({ ...request, sandboxTrust: sandboxOptions.trust }, context);
+    if (adapter.id === "copilot" && request.resultJson && !request.experimentMcp) (adapter as CopilotAdapter).prepareCopilotModelRun({ ...request, sandboxTrust: sandboxOptions.trust }, context, options.printSandbox);
     if (options.harnessVersion !== undefined) context.harnessVersion = options.harnessVersion;
     releaseExitCleanup = registerRunExitCleanup(adapter, context);
     if (context.agyProbe?.diagnostic && context.agyProbe.operatorHome) {
@@ -307,6 +307,7 @@ export async function launchRunRequest(
         sandboxOptions.blockPaths ?? [],
         [...(sandboxOptions.harnessStateDirs ?? []), context.claudeProjectConfigDir.dir]
       );
+      sandboxOptions.callerBlockPaths ??= sandboxOptions.blockPaths ?? [];
       sandboxOptions.blockPaths = [
         ...(sandboxOptions.blockPaths ?? []),
         ...context.claudeProjectConfigDir.blockedPaths,

@@ -180,6 +180,7 @@ export abstract class AgyFinalize extends AgyDriverIo {
         sandbox_no_net: this.options.sandboxNoNet,
         sandbox_scrub_env: this.options.sandboxScrubEnv,
         sandbox_block: [...(this.options.sandboxBlock ?? [])],
+        sandbox_strict: this.options.sandboxStrict === true,
         pass_env: [...this.options.passEnv],
         // The CLI refuses --enable-playwright-mcp outside the claude family.
         playwright_mcp: false,

@@ -131,7 +131,7 @@ export function assertSessionCanaryRequest(guards: SessionCanaryGuards): void {
   }
   const overrides = guards.sandboxOverrides;
   const overrideGiven = overrides !== undefined && Boolean(
-    overrides.trust !== undefined || overrides.noNet || overrides.scrubEnv ||
+    overrides.trust !== undefined || overrides.strict || overrides.noNet || overrides.scrubEnv ||
     overrides.accountFile !== undefined || overrides.accountId !== undefined ||
     (overrides.blockPaths !== undefined && overrides.blockPaths.length > 0)
   );

@@ -59,6 +59,7 @@ export function applyCopilotProjectSandbox(
   privateHome: string,
   artifactDirs: readonly string[] = []
 ): void {
+  options.callerBlockPaths ??= options.blockPaths ?? [];
   options.blockPaths = [...(options.blockPaths ?? []), sourceConfigDir,
     join(dirname(sourceConfigDir), ".claude"), join(dirname(sourceConfigDir), ".claude.json")];
   options.harnessStateDirs = [...(options.harnessStateDirs ?? []), privateHome, ...artifactDirs];

@@ -38,7 +38,7 @@ export function agyMcpConfigPath(probeHome: string): string {
  */
 export function plantAgyPlaywrightMcpConfig(
   probeHome: string,
-  options: { pathEnv: string; forbiddenRoot: string }
+  options: { pathEnv: string; forbiddenRoot: string; printOnly?: boolean }
 ): { path: string; check: PlaywrightSandboxMcp["check"] } {
   const built = buildPlaywrightSandboxMcp(true, {
     enabled: true,
@@ -47,8 +47,10 @@ export function plantAgyPlaywrightMcpConfig(
   });
   const config = built.args[built.args.indexOf("--mcp-config") + 1];
   if (typeof config !== "string") throw new Error("playwright MCP config argument is missing");
-  mkdirSync(join(probeHome, ".gemini", "config"), { recursive: true, mode: 0o700 });
   const path = agyMcpConfigPath(probeHome);
-  writeFileSync(path, `${config}\n`, { mode: 0o600, flag: "wx" });
+  if (!options.printOnly) {
+    mkdirSync(join(probeHome, ".gemini", "config"), { recursive: true, mode: 0o700 });
+    writeFileSync(path, `${config}\n`, { mode: 0o600, flag: "wx" });
+  }
   return { path, check: built.check };
 }

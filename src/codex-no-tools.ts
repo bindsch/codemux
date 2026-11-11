@@ -37,9 +37,10 @@ function catalogPath(context: RunContext): string {
   return join(dirname(context.lastMessagePath), CODEX_NO_TOOLS_CATALOG_BASENAME);
 }
 
-export function prepareCodexNoToolsCatalog(context: RunContext, body: string, trust?: ScodeTrustLevel): void {
+export function prepareCodexNoToolsCatalog(context: RunContext, body: string, trust?: ScodeTrustLevel, printOnly = false): void {
   if (trust === "untrusted") throw new UsageRefusalError(CATALOG_PATH_REFUSAL);
-  writeOwnedSync(catalogPath(context), body, 0o600);
+  const path = catalogPath(context);
+  if (!printOnly) writeOwnedSync(path, body, 0o600);
 }
 
 export function assertCodexNoToolsCatalogVersion(version: string | null | undefined): void {

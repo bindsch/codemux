@@ -22,19 +22,22 @@ export function createAiderRunFiles(
   sourceAiderDir: string,
   prompt: string,
   model?: string,
-  maxOutputTokens?: number
+  maxOutputTokens?: number,
+  printOnly = false
 ): AiderRunFiles {
-  const privateHome = createAiderHermeticHome(sourceAiderDir);
+  const privateHome = createAiderHermeticHome(sourceAiderDir, printOnly);
   try {
     const promptPath = join(privateHome.home, "prompt.txt");
     const analyticsPath = join(privateHome.home, "analytics.jsonl");
-    writeFileSync(promptPath, prompt, { mode: 0o600, flag: "wx" });
-    writeFileSync(analyticsPath, "", { mode: 0o600, flag: "wx" });
+    if (!printOnly) {
+      writeFileSync(promptPath, prompt, { mode: 0o600, flag: "wx" });
+      writeFileSync(analyticsPath, "", { mode: 0o600, flag: "wx" });
+    }
     let modelSettingsPath: string | undefined;
     if (maxOutputTokens !== undefined) {
       if (!model) throw new Error("aider output cap requires a resolved model");
       modelSettingsPath = join(privateHome.home, "model-settings.yml");
-      writeFileSync(modelSettingsPath, JSON.stringify([{
+      if (!printOnly) writeFileSync(modelSettingsPath, JSON.stringify([{
         name: "aider/extra_params",
         extra_params: { max_tokens: maxOutputTokens },
       }]), { mode: 0o600, flag: "wx" });

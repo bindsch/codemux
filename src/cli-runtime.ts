@@ -266,7 +266,8 @@ export async function runSandboxed(
     workdir,
     autonomy,
     effectiveSandboxOptions,
-    scode
+    scode,
+    extraEnv ?? process.env
   );
   const env = buildSandboxEnv(extraEnv, effectiveSandboxOptions);
   for (const name of envOmissions) delete env[name];
@@ -383,7 +384,8 @@ export async function runSandboxedWithStdin(
     workdir,
     autonomy,
     effectiveSandboxOptions,
-    scode
+    scode,
+    extraEnv ?? process.env
   );
   const env = buildSandboxEnv(extraEnv, effectiveSandboxOptions);
   for (const name of envOmissions) delete env[name];

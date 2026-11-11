@@ -203,15 +203,20 @@ export function assertExecutablesUnchanged(
  * and trust-checked: the leading executable, plus the program an `env`
  * prefix launches. Exported so a spawn site can re-check exactly those
  * (assertExecutablesUnchanged's requiredPaths) and refuse a recording
- * gap instead of skipping it. Re-derives the env program index with the
- * same parse resolveTrustedCommand used, so the two cannot disagree. */
+ * gap instead of skipping it. Resolution parses each resolved executable
+ * too, so an alias of env has the same wrapper semantics here. */
 export function trustCheckedCommandPaths(
   resolved: readonly string[]
 ): readonly string[] {
   if (resolved.length === 0) return [];
-  const checked = [resolved[0]!];
-  const program = envProgramIndex(resolved);
-  if (program !== null) checked.push(resolved[program]!);
+  const checked: string[] = [];
+  let offset = 0;
+  while (offset < resolved.length) {
+    checked.push(resolved[offset]!);
+    const program = envProgramIndex(resolved.slice(offset));
+    if (program === null) break;
+    offset += program;
+  }
   return checked;
 }
 
@@ -331,8 +336,13 @@ export function resolveTrustedCommand(
     // and would resolve under the child's --cwd to another file (round 48).
     resolved[index] = keepName ? (isAbsolute(binaryPath) ? binaryPath : resolve(binaryPath)) : trusted;
   };
-  const program = envProgramIndex(command, label);
-  resolveAt(0, program !== null);
-  if (program !== null) resolveAt(program);
+  let offset = 0;
+  while (offset < command.length) {
+    const rawProgram = envProgramIndex(command.slice(offset), label);
+    resolveAt(offset, rawProgram !== null);
+    const program = envProgramIndex(resolved.slice(offset), label);
+    if (program === null) break;
+    offset += program;
+  }
   return resolved;
 }

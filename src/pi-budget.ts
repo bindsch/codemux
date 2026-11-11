@@ -29,14 +29,16 @@ export function piBudgetExtensionSource(limit: number, evidencePath: string): st
     `}}); }\n`;
 }
 
-export function preparePiBudget(request: RunRequest, context: PiMcpRunContext, realAgentDir: string): PiBudgetRunContext {
+export function preparePiBudget(request: RunRequest, context: PiMcpRunContext, realAgentDir: string, printOnly = false): PiBudgetRunContext {
   if (request.maxBudgetUsd === undefined) return context;
-  const directory = createPiHermeticAgentDir(realAgentDir, null, undefined, false);
+  const directory = createPiHermeticAgentDir(realAgentDir, null, undefined, false, printOnly);
   try {
     const path = join(directory.path, "budget.mjs");
     const evidencePath = join(directory.path, "budget-evidence.jsonl");
-    writeFileSync(evidencePath, "", { mode: 0o600, flag: "wx" });
-    writeFileSync(path, piBudgetExtensionSource(request.maxBudgetUsd, evidencePath), { mode: 0o600, flag: "wx" });
+    if (!printOnly) {
+      writeFileSync(evidencePath, "", { mode: 0o600, flag: "wx" });
+      writeFileSync(path, piBudgetExtensionSource(request.maxBudgetUsd, evidencePath), { mode: 0o600, flag: "wx" });
+    }
     return { ...context, piBudget: { path, evidencePath, limit: request.maxBudgetUsd, directory } };
   } catch (error) { directory.finalize(); throw error; }
 }

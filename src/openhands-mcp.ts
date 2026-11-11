@@ -44,7 +44,7 @@ export function openhandsMcpConfigPath(persistenceDir: string): string {
  */
 export function plantOpenhandsPlaywrightMcp(
   persistenceDir: string,
-  options: { pathEnv: string; forbiddenRoot: string }
+  options: { pathEnv: string; forbiddenRoot: string; printOnly?: boolean }
 ): { path: string; check: PlaywrightSandboxMcp["check"] } {
   const built = buildPlaywrightSandboxMcp(true, {
     enabled: true,
@@ -55,8 +55,10 @@ export function plantOpenhandsPlaywrightMcp(
   if (typeof config !== "string") throw new Error("playwright MCP config argument is missing");
   // The private home arrives empty: openhands itself would create the
   // persistence dir at startup, and the plant must not depend on that.
-  mkdirSync(persistenceDir, { recursive: true, mode: 0o700 });
   const path = openhandsMcpConfigPath(persistenceDir);
-  writeFileSync(path, `${config}\n`, { mode: 0o600, flag: "wx" });
+  if (!options.printOnly) {
+    mkdirSync(persistenceDir, { recursive: true, mode: 0o700 });
+    writeFileSync(path, `${config}\n`, { mode: 0o600, flag: "wx" });
+  }
   return { path, check: built.check };
 }

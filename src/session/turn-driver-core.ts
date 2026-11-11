@@ -15,6 +15,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { strictLaunchFailureExitCode } from "../sandbox-command.js";
 import type { ResultUsageBlock } from "../types.js";
 import {
   appendSessionCallRecord,
@@ -249,7 +250,7 @@ export abstract class TurnDriverCore {
             "could not spawn the " + agent + " turn process " +
               `(${wait.error instanceof Error ? wait.error.message : String(wait.error)})`
           );
-          void this.finish("crash", 1);
+          void this.finish("crash", strictLaunchFailureExitCode(wait.error));
         }
       } else {
         this.turnSpawnAbandoned = true;

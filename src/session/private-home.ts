@@ -34,6 +34,7 @@ import type { SessionPrivateHome } from "./private-home-types.js";
 
 /** Everything `openSessionPrivateHome` needs. */
 export interface SessionPrivateHomeOpen {
+  printOnly?: boolean;
   /** The parent directory the home lives under — the agent's brand home
    * plus `.codemux-hermetic` (for example the claude family's
    * `<~/.claude>/.codemux-hermetic`). Created when missing, swept of
@@ -123,6 +124,19 @@ function refuseExisting(kind: string, sessionId: string, target: string): Error 
   );
 }
 
+/** Real resumes and previews require the same surviving transcript home. */
+export function assertResumableHome(dir: string, sessionId: string): void {
+  if (!existsSync(dir)) {
+    throw new Error(
+      `session ${sessionId} has no private home at ${dir}: it was removed (--final or ` +
+        "the stale sweep) and the session's transcript with it, so it cannot resume"
+    );
+  }
+  // Match prepareRunDirParent's trust check without creating or sweeping.
+  assertTrustedDirectory(dirname(dir));
+  assertTrustedDirectory(dir);
+}
+
 /**
  * Creates (first command) or opens (`--resume`) one hermetic session's
  * private home. See the module comment for the full lifetime; the sweep
@@ -133,6 +147,13 @@ function refuseExisting(kind: string, sessionId: string, target: string): Error 
 export function openSessionPrivateHome(open: SessionPrivateHomeOpen): SessionPrivateHome {
   const knownId = open.sessionId;
   if (knownId !== undefined) assertIdShape(open, knownId);
+  if (open.printOnly) {
+    if (open.resume && knownId === undefined) throw new Error("a resumed hermetic session requires its recorded session id");
+    const dir = join(open.parent, knownId === undefined ? "preview" : sessionDirName(knownId));
+    if (open.resume) assertResumableHome(dir, knownId!);
+    return { dir, resumed: open.resume, settled: knownId !== undefined, blockedPaths: open.blockedPaths,
+      settle: () => {}, remove: () => true };
+  }
   // The sweep must spare the entry this caller came for (or is about to
   // create) even past its age gate: the resume itself is the
   // counter-claim to a `free` registry answer (hermetic-sweep.ts). A
@@ -157,15 +178,9 @@ export function openSessionPrivateHome(open: SessionPrivateHomeOpen): SessionPri
       );
     }
     const dir = join(parent, sessionDirName(knownId));
-    if (!existsSync(dir)) {
-      throw new Error(
-        `session ${knownId} has no private home at ${dir}: it was removed (--final or ` +
-          "the stale sweep) and the session's transcript with it, so it cannot resume"
-      );
-    }
     // A link or a foreign-owned directory must not become the home a
     // resumed child writes into.
-    assertTrustedDirectory(dir);
+    assertResumableHome(dir, knownId);
     return {
       dir,
       resumed: true,

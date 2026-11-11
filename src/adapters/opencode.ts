@@ -1,5 +1,7 @@
 import { join } from "node:path";
 import { BaseAdapter } from "./base.js";
+import type { LaunchIntent } from "../types.js";
+import type { SandboxOptions, ScodeTrustLevel } from "../sandbox.js";
 import { OpencodeExperimentRun, OPENCODE_EXPERIMENT_TOKEN_ENV, type OpencodeExperimentContext as RunContext } from "../opencode-experiment-run.js";
 import { readExperimentRunSpec } from "../experiment-mcp.js";
 import { createOpencodeHermeticHome } from "../opencode-hermetic.js";
@@ -266,7 +268,8 @@ export class OpencodeAdapter extends BaseAdapter {
       : opencodePlainResult(result), result.stdout, sink);
   }
 
-  override prepareRun(request: RunRequest): RunContext {
+  override prepareRun(request: RunRequest, _trust?: ScodeTrustLevel, _sandbox?: SandboxOptions, launch: LaunchIntent = {}): RunContext {
+    if (launch.printOnly && request.experimentMcp) throw new UsageRefusalError("OpenCode experiment MCP cannot be prepared for a print-only preview");
     if (request.web === false || request.enablePlaywrightMcp || request.experimentMcp) this.assertNoRemoteLaunchConfig();
     // Programmatic launches enforce the same project-settings gate as the CLI.
     if (request.experimentProjectSettings) {
@@ -281,7 +284,7 @@ export class OpencodeAdapter extends BaseAdapter {
         context.opencodeProviderConfig = writeOpencodeProviderConfig(
           this.realDataDir(),
           override,
-          model
+          model, launch.printOnly
         );
       }
     }
@@ -290,7 +293,7 @@ export class OpencodeAdapter extends BaseAdapter {
       try {
         context.opencodeHermeticHome = createOpencodeHermeticHome(
           this.realDataDir(),
-          opencodeRealStateDir(this.environment, this.homeDirectory)
+          opencodeRealStateDir(this.environment, this.homeDirectory), launch.printOnly
         );
         if (request.experimentMcp) {
           context.experimentOpencode = new OpencodeExperimentRun(readExperimentRunSpec(request), request.cwd ?? process.cwd(),
@@ -304,7 +307,6 @@ export class OpencodeAdapter extends BaseAdapter {
         throw error;
       }
     }
-    // Streaming keeps reply and usage while dropping completed tool events.
     context.stdoutSink = context.experimentOpencode ?? new OpenCodePlainFold();
     return context;
   }

@@ -55,8 +55,8 @@ export function isToolSelection(value: string): value is ToolSelection {
 
 /** What the launcher tells an adapter about this launch beyond the request:
  * `printOnly` is `--print-sandbox` (the argv is printed and nothing runs), so
- * preparation builds only the paths the argv needs and never reads or writes
- * a credential (agy: no private Keychain, no login mirror, no search-list
+ * preparation builds only the paths the argv needs, never mutates files,
+ * and never reads a credential (agy: no private Keychain, no login mirror, no search-list
  * repair). Review rounds 36, 39, 41, 42. */
 export interface LaunchIntent {
   printOnly?: boolean;
@@ -141,8 +141,10 @@ export interface RunResult {
   success: boolean;
   /** Set only when the runner exceeds its stdout or stderr capture bound. */
   captureLimitExceeded?: true;
-  /** Set only when the runner's timeout timer fires, including after stdout EOF. */
+  /** Set when the deadline fails the run, including after stdout EOF. */
   timedOut?: true;
+  /** A probe accepted complete stdout at its deadline and stopped its live leader. */
+  stoppedAfterOutput?: true;
   // The model's answer when the harness's stdout is a transcript around it
   // (aider's banner, summaries and cost lines), extracted by
   // processRunResult from the run's own record while the run context is

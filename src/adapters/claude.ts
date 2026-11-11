@@ -1,4 +1,7 @@
 import type { RunContext } from "./base.js";
+import type { LaunchIntent } from "../types.js";
+import type { SandboxOptions, ScodeTrustLevel } from "../sandbox.js";
+import { UsageRefusalError } from "../validation.js";
 import { claudeEffortFlags, validateClaudeEffort } from "../claude-effort.js";
 import { validatedClaudeProvider, claudeProviderModel, claudeProviderEnv } from "../claude-provider.js";
 import { ClaudeCredentialAdapter } from "./claude-credentials.js";
@@ -163,7 +166,8 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
     this.validateEffort(effort, model, passthroughEnv);
   }
 
-  override prepareRun(request: RunRequest): RunContext {
+  override prepareRun(request: RunRequest, _trust?: ScodeTrustLevel, _sandbox?: SandboxOptions, launch: LaunchIntent = {}): RunContext {
+    if (launch.printOnly && request.experimentMcp) throw new UsageRefusalError("Claude experiment MCP cannot be prepared for a print-only preview");
     const context: RunContext = {};
     if (request.experimentProjectSettings) {
       // The launch-path gate, from the request's own fields (review
@@ -173,7 +177,7 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
       // The private config directory must exist before anything else this
       // run prepares reads the child's config root (the bridge below).
       context.claudeProjectConfigDir =
-        createProjectSettingsConfigDir(request.cwd ?? process.cwd(), this.environment);
+        createProjectSettingsConfigDir(request.cwd ?? process.cwd(), this.environment, launch.printOnly);
     }
     if (!request.experimentMcp) {
       context.stdoutSink = claudeFamilyStdoutSink();

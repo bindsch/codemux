@@ -154,7 +154,7 @@ describe("Codex session native tool-free model catalog", () => {
 
   test("a preview is write-free, retains sandbox options, and cannot start a driver", () => {
     const f = fixture();
-    const sandboxOptions = { trust: "standard" as const, noNet: true, scrubEnv: true,
+    const sandboxOptions = { trust: "standard" as const, strict: true, noNet: true, scrubEnv: true,
       blockPaths: [f.options.realCodexHome], harnessStateDirs: ["/synthetic/prior-state"] };
     const catalog = prepare({ ...f.options, sandboxOptions, printOnly: true });
     expect(catalog.path).toContain("/unprepared/no-tools-model-catalog.json");
@@ -166,7 +166,7 @@ describe("Codex session native tool-free model catalog", () => {
 
   test("sandboxed sessions re-allow only their catalog directory and preserve every policy option", () => {
     const f = fixture();
-    const sandboxOptions = { trust: "trusted" as const, noNet: true, scrubEnv: true,
+    const sandboxOptions = { trust: "trusted" as const, strict: true, noNet: true, scrubEnv: true,
       blockPaths: [f.options.realCodexHome], harnessStateDirs: ["/synthetic/prior-state"], keepEnv: ["SYNTHETIC_KEY"] };
     const catalog = prepare({ ...f.options, sandboxOptions });
     expect(catalog.sandboxOptions).toEqual({ ...sandboxOptions, harnessStateDirs: [...sandboxOptions.harnessStateDirs, catalog.dir] });

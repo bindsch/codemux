@@ -170,6 +170,7 @@ export class GeminiAdapter extends BaseAdapter {
     launch: LaunchIntent = {}
   ): GeminiExperimentContext {
     const printOnly = launch.printOnly === true;
+    if (printOnly && request.experimentMcp) throw new UsageRefusalError("Gemini experiment MCP cannot be prepared for a print-only preview");
     const experimentSpec = request.experimentMcp ? readExperimentRunSpec(request) : undefined;
     if (experimentSpec && !request.hermetic && !experimentSpec.control) throw new UsageRefusalError("Gemini experiment requires a private hermetic home");
     const override = this.validatedProvider();
@@ -178,14 +179,14 @@ export class GeminiAdapter extends BaseAdapter {
     if (request.hermetic || request.resultJson || experimentSpec || geminiToolPolicy(request) !== null || tokens !== undefined || mcp.check !== null) {
       const home = createGeminiHermeticHome(this.realGeminiDir(), {
           toolsNone: request.tools === "none" || experimentSpec !== undefined,
-          apiKeyAuth: override !== null,
-          printOnly: printOnly || (!request.hermetic && !request.resultJson && request.tools !== "none" && tokens === undefined && mcp.check === null),
+          apiKeyAuth: override !== null || (!request.hermetic && !request.resultJson && request.tools !== "none" && tokens === undefined && mcp.check === null),
+          printOnly,
           preserveCustomization: !request.hermetic && !experimentSpec && (request.resultJson || request.tools === "none" || tokens !== undefined || mcp.check !== null),
           outputLimit: tokens === undefined ? undefined : { model: this.modelFor(request.model)!, tokens },
           mcpServers: mcp.servers,
         });
       try {
-        writeGeminiToolPolicy(home.home, request);
+        if (!printOnly) writeGeminiToolPolicy(home.home, request);
         const context: GeminiExperimentContext = { geminiHermeticHome: home, playwrightMcpCheck: mcp.check };
         if (experimentSpec) {
           const experiment = new GeminiExperimentRun(experimentSpec, request.cwd ?? process.cwd(), home.home, this.environment, request.prompt);
@@ -194,7 +195,7 @@ export class GeminiAdapter extends BaseAdapter {
           context.experimentRecording = experiment.recordingPath;
         } else {
           context.stdoutSink = geminiStreamFold();
-          if (request.resultJson) context.geminiTelemetryPath = prepareGeminiTelemetry(home.home);
+          if (request.resultJson) context.geminiTelemetryPath = prepareGeminiTelemetry(home.home, printOnly);
         }
         return context;
       } catch (error) {

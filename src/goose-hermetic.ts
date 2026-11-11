@@ -42,7 +42,11 @@ export interface GooseHermeticHome {
   finalize: () => void;
 }
 
-export function createGooseHermeticHome(sourceGooseConfigDir: string): GooseHermeticHome {
+export function createGooseHermeticHome(sourceGooseConfigDir: string, printOnly = false): GooseHermeticHome {
+  if (printOnly) {
+    const home = join(sourceGooseConfigDir, ".codemux-hermetic", "preview");
+    return { home, envAssignments: gooseHomeEnv(home), finalize: () => {} };
+  }
   const parent = prepareRunDirParent(sourceGooseConfigDir, ".codemux-hermetic");
   const parentRecord = recordTrustedParent(parent);
   const home = mkdtempSync(join(parent, `run-${process.pid}-`));
@@ -64,11 +68,14 @@ export function createGooseHermeticHome(sourceGooseConfigDir: string): GooseHerm
   // it, the XDG redirect leaves the global `~/.agents/AGENTS.md` instruction
   // file in the real home readable (load_hints.rs, `in_agents_home_dir`).
   // The XDG trio stays for the libraries that read it directly.
-  const envAssignments = [
+  return { home, envAssignments: gooseHomeEnv(home), finalize };
+}
+
+function gooseHomeEnv(home: string): string[] {
+  return [
     `GOOSE_PATH_ROOT=${home}`,
     `XDG_CONFIG_HOME=${join(home, "config")}`,
     `XDG_DATA_HOME=${join(home, "share")}`,
     `XDG_CACHE_HOME=${join(home, "cache")}`,
   ];
-  return { home, envAssignments, finalize };
 }

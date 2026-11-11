@@ -7,18 +7,18 @@ import { resolveSandboxOptionsForAgent } from "../src/sandbox-policy.js";
 describe("sandbox policy", () => {
   test("enforces read-only filesystem modes where the native level is not durable", () => {
     expect(resolveSandboxOptionsForAgent("codex", "read-only"))
-      .toEqual({ trust: "standard", fsMode: "ro" });
+      .toEqual({ agentId: "codex", trust: "standard", fsMode: "ro" });
     expect(resolveSandboxOptionsForAgent("codex", "low"))
-      .toEqual({ trust: "standard" });
+      .toEqual({ agentId: "codex", trust: "standard" });
     expect(resolveSandboxOptionsForAgent("opencode", "read-only"))
-      .toEqual({ trust: "standard", fsMode: "ro" });
+      .toEqual({ agentId: "opencode", trust: "standard", fsMode: "ro" });
   });
 
   test("uses writable standard mode where the normalized level permits writes", () => {
     expect(resolveSandboxOptionsForAgent("codex", "medium"))
-      .toEqual({ trust: "standard" });
+      .toEqual({ agentId: "codex", trust: "standard" });
     expect(resolveSandboxOptionsForAgent("pi", "high"))
-      .toEqual({ trust: "standard" });
+      .toEqual({ agentId: "pi", trust: "standard" });
   });
 
   test("applies only representable scode policy overrides", () => {
@@ -27,6 +27,7 @@ describe("sandbox policy", () => {
       noNet: true,
       scrubEnv: true,
     })).toEqual({
+      agentId: "codex",
       trust: "trusted",
       noNet: true,
       scrubEnv: true,
@@ -38,6 +39,7 @@ describe("sandbox policy", () => {
       accountFile: "/tmp/trace/account.jsonl",
       accountId: "crew-job-42",
     })).toEqual({
+      agentId: "codex",
       trust: "standard",
       accountFile: "/tmp/trace/account.jsonl",
       accountId: "crew-job-42",
@@ -49,6 +51,7 @@ describe("sandbox policy", () => {
     expect(resolveSandboxOptionsForAgent("claude", "low", {
       blockPaths: ["/Users/example/secrets"],
     })).toEqual({
+      agentId: "claude",
       trust: "standard",
       blockPaths: ["/Users/example/secrets"],
     });
@@ -88,6 +91,6 @@ describe("sandbox policy", () => {
   test("untrusted trust still retains mandatory read-only invariants", () => {
     expect(resolveSandboxOptionsForAgent("codex", "read-only", {
       trust: "untrusted",
-    })).toEqual({ trust: "untrusted", fsMode: "ro" });
+    })).toEqual({ agentId: "codex", trust: "untrusted", fsMode: "ro" });
   });
 });

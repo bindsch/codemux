@@ -1,4 +1,5 @@
 import { BaseAdapter } from "./base.js";
+import type { LaunchIntent } from "../types.js";
 import { assertNoClineProjectExecutionConfig } from "../project-safety.js";
 import { withStreamScanSurface } from "../stream-marker-scan.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
@@ -194,12 +195,13 @@ export class ClineAdapter extends BaseAdapter {
     catch (error) { return error instanceof Error ? error.message : String(error); }
   }
 
-  override prepareRun(request: RunRequest, _trust?: ScodeTrustLevel, sandbox?: SandboxOptions): ClineRunContext {
+  override prepareRun(request: RunRequest, _trust?: ScodeTrustLevel, sandbox?: SandboxOptions, launch: LaunchIntent = {}): ClineRunContext {
+    if (launch.printOnly && request.experimentMcp) throw new UsageRefusalError("Cline experiment MCP cannot be prepared for a print-only preview");
     const playwright = buildPlaywrightSandboxMcp(request.sandboxed,
       { enabled: request.enablePlaywrightMcp, pathEnv: this.environment.PATH ?? "", forbiddenRoot: request.cwd });
     const context: ClineRunContext = request.hermetic || request.tools === "none" || request.web === false || request.enablePlaywrightMcp || clineProvider(this.environment) !== null
       ? { clineConfig: createClineConfig(join(loginHome(this.environment), ".cline"), this.environment,
-        { model: request.model, hermetic: request.hermetic || Boolean(request.experimentMcp), noWeb: request.web === false, toolsNone: request.tools === "none",
+        { printOnly: launch.printOnly, model: request.model, hermetic: request.hermetic || Boolean(request.experimentMcp), noWeb: request.web === false, toolsNone: request.tools === "none",
           ...(playwright.args[1] ? { mcpServers: JSON.parse(playwright.args[1]).mcpServers } : {}) }),
         playwrightMcpCheck: playwright.check } : {};
     try {
@@ -238,9 +240,10 @@ export class ClineAdapter extends BaseAdapter {
     this.cleanupRunSync(context);
   }
 
-  override prepareTuiEnvironment(model?: string) {
+  override prepareTuiEnvironment(model?: string, _autonomy?: AutonomyLevel, _effort?: ReasoningEffort,
+    _sandboxed?: boolean, _passthroughEnv?: readonly string[], printOnly = false) {
     if (clineProvider(this.environment) === null) return { env: {}, finalize: () => {} };
-    const config = createClineConfig(join(loginHome(this.environment), ".cline"), this.environment, { model });
+    const config = createClineConfig(join(loginHome(this.environment), ".cline"), this.environment, { model, printOnly });
     return { env: config.env, finalize: config.finalize };
   }
 }

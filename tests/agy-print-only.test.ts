@@ -9,7 +9,7 @@
  */
 
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { AGY_MIRROR_PATH } from "../src/agy-keychain.js";
 import { runCli } from "./helpers/cli.js";
@@ -17,13 +17,13 @@ import { cleanup, setup } from "./helpers/agy-keychain.js";
 
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
 
-test("prepareRun with printOnly creates the private HOME skeleton and never calls security", () => {
+test("prepareRun with printOnly names the private HOME without creating it or calling security", () => {
   const { adapter, request, calls, home } = setup();
   const context = adapter.prepareRun(request, undefined, {}, { printOnly: true });
   cleanup.push(() => adapter.cleanupRun(context));
   const privateHome = context.agyProbe!.home!;
   expect(privateHome.startsWith(join(realpathSync(home), ".gemini"))).toBe(true);
-  expect(lstatSync(privateHome).mode & 0o777).toBe(0o700);
+  expect(existsSync(privateHome)).toBe(false);
   // No mirror, no token copy, no security call: the file the fake writes
   // on its first invocation never appears.
   expect(existsSync(join(privateHome, AGY_MIRROR_PATH))).toBe(false);

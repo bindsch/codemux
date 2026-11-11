@@ -1,6 +1,8 @@
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { BaseAdapter, type RunContext } from "./base.js";
+import type { LaunchIntent } from "../types.js";
+import type { SandboxOptions, ScodeTrustLevel } from "../sandbox.js";
 import { assertNoDroidProjectExecutionConfig } from "../project-safety.js";
 import { assertCleanInstructionFiles } from "../clean-cwd.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
@@ -189,12 +191,12 @@ export class DroidAdapter extends BaseAdapter {
     return join(home && isAbsolute(home) ? home : homedir(), ".factory");
   }
 
-  override prepareRun(request: RunRequest): RunContext {
+  override prepareRun(request: RunRequest, _trust?: ScodeTrustLevel, _sandbox?: SandboxOptions, launch: LaunchIntent = {}): RunContext {
     // The hermetic home first, so a settings-file failure after it leaves
     // nothing private behind (cleanupRun finalizes what this returned).
     const context: RunContext = { stdoutSink: droidStreamFold() };
     if (request.hermetic) {
-      context.droidHermeticHome = createDroidHermeticHome(this.realBrandHome());
+      context.droidHermeticHome = createDroidHermeticHome(this.realBrandHome(), undefined, launch.printOnly);
     }
     // One settings file per run with an override, never shared and never
     // recorded on the adapter: the launcher owns the returned context and
@@ -206,7 +208,7 @@ export class DroidAdapter extends BaseAdapter {
         context.droidProviderSettings = writeDroidProviderSettings(
           this.realBrandHome(),
           override,
-          model
+          model, launch.printOnly
         );
       }
     }
@@ -388,6 +390,15 @@ export class DroidAdapter extends BaseAdapter {
     effort?: ReasoningEffort,
     _sandboxed?: boolean
   ): string[] {
+    return this.prepareTuiCommand(model, autonomy, effort);
+  }
+
+  prepareTuiCommand(
+    model?: string,
+    autonomy?: AutonomyLevel,
+    effort?: ReasoningEffort,
+    printOnly = false
+  ): string[] {
     // The TUI selects model and effort through the settings schema's
     // sessionDefaultSettings (src/droid-provider.ts), so an interactive
     // session that asked for either — or runs under an override, whose
@@ -396,6 +407,7 @@ export class DroidAdapter extends BaseAdapter {
     // here, not in prepareTuiEnvironment, because the plain interactive
     // path builds its argv before it prepares the environment
     // (src/adapters/interactive.ts); the file's exit hook removes it.
+    // Preview preparation returns the carrier path without writing it.
     const override = this.validatedProvider();
     const resolved = this.modelFor(model);
     const cmd: string[] = ["droid"];
@@ -408,7 +420,7 @@ export class DroidAdapter extends BaseAdapter {
             : resolved,
         effort,
         override,
-      });
+      }, printOnly);
       cmd.push("--settings", settings.path);
     }
     if (autonomy) {

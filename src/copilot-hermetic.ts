@@ -45,8 +45,9 @@ const realLoginLinks: CopilotLoginLinks = { hard: linkSync, symlink: symlinkSync
 
 export function createCopilotHermeticHome(
   sourceConfigDir: string,
-  options: { printOnly?: boolean; loginLinks?: CopilotLoginLinks } = {}
+  options: { printOnly?: boolean; copyLogin?: boolean; loginLinks?: CopilotLoginLinks } = {}
 ): CopilotHermeticHome {
+  if (options.printOnly) return { home: join(sourceConfigDir, ".codemux-hermetic", "preview"), finalize: () => {} };
   const links = options.loginLinks ?? realLoginLinks;
   const parent = prepareRunDirParent(sourceConfigDir, ".codemux-hermetic");
   const parentRecord = recordTrustedParent(parent);
@@ -64,7 +65,7 @@ export function createCopilotHermeticHome(
   process.once("exit", hook);
   trackPrivateDir(hook);
   try {
-    if (!options.printOnly) {
+    if (options.copyLogin !== false) {
       const source = join(sourceConfigDir, "config.json");
       let stat;
       try {

@@ -1,6 +1,8 @@
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { BaseAdapter, type RunContext } from "./base.js";
+import type { LaunchIntent } from "../types.js";
+import type { SandboxOptions, ScodeTrustLevel } from "../sandbox.js";
 import {
   PI_AGENT_DIR_ENV,
   PI_PROVIDER_KEY_ENV,
@@ -148,17 +150,18 @@ export class PiAdapter extends BaseAdapter {
     }
   }
 
-  override prepareRun(request: RunRequest): PiBudgetRunContext {
+  override prepareRun(request: RunRequest, _trust?: ScodeTrustLevel, _sandbox?: SandboxOptions, launch: LaunchIntent = {}): PiBudgetRunContext {
+    if (launch.printOnly && request.experimentMcp) throw new UsageRefusalError("Pi experiment MCP cannot be prepared for a print-only preview");
     this.validateBudgetPricing(request);
-    const context = this.prepareNativeRun(request);
+    const context = this.prepareNativeRun(request, launch.printOnly);
     // The json wire repeats tool output several times over; the fold
     // sheds it as it arrives (an experiment run keeps its own sink).
     context.stdoutSink ??= piStreamFold();
-    try { return preparePiBudget(request, context, this.realAgentDir(request)); }
+    try { return preparePiBudget(request, context, this.realAgentDir(request), launch.printOnly); }
     catch (error) { this.cleanupRunSync(context); throw error; }
   }
 
-  private prepareNativeRun(request: RunRequest): PiMcpRunContext {
+  private prepareNativeRun(request: RunRequest, printOnly = false): PiMcpRunContext {
     // One private agent directory per run with an override or with
     // --hermetic, never shared and never recorded on the adapter: the
     // launcher owns the returned context and finalizes the directory in
@@ -172,7 +175,7 @@ export class PiAdapter extends BaseAdapter {
         piProviderAgentDir: createPiHermeticAgentDir(
           this.realAgentDir(request),
           override,
-          model
+          model, true, printOnly
         ),
       };
       try {
@@ -190,12 +193,12 @@ export class PiAdapter extends BaseAdapter {
       piProviderAgentDir: writePiProviderAgentDir(
         this.realAgentDir(request),
         override,
-        model
+        model, printOnly
       ),
     };
     if (!request.enablePlaywrightMcp) return context;
     try {
-      return preparePiPlaywright(request, context, this.realAgentDir(request), this.executionPathEnv());
+      return preparePiPlaywright(request, context, this.realAgentDir(request), this.executionPathEnv(), printOnly);
     } catch (error) { this.cleanupRunSync(context); throw error; }
   }
 
@@ -210,7 +213,7 @@ export class PiAdapter extends BaseAdapter {
     const selected = this.modelFor(model);
     if (override === null) return super.prepareTuiEnvironment(model, autonomy, effort, sandboxed, passthroughEnv, printOnly);
     return preparePiTuiProviderEnvironment(
-      this.realAgentDir({ agent: "pi", prompt: "", passthroughEnv }), override, selected!
+      this.realAgentDir({ agent: "pi", prompt: "", passthroughEnv }), override, selected!, printOnly
     );
   }
 

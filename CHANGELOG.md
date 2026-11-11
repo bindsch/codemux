@@ -13,7 +13,17 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
+### Added
+
+- `--sandbox-strict` on run, session, tui, and plain check passes scode's deny-default policy with explicit state grants. It refuses env-wrapped executables outside system read grants with exit 64 instead of granting writable access to code; nested wrappers follow the same rule. Runtime grants preserve launcher isolation blocks. Strict requires sandboxing, composes with trust presets, and is recorded for session resume. Resume refuses a strict-mode mismatch. Every harness has argv or refusal coverage, including Qwen's session preview. Live support is conditional; see the declared strict limitations before relying on a successful preview.
+
+- Session records now include `sandbox_strict`. Older binaries reject the new record shape; do not share a registry with an older codemux installation.
+
+- `--print-sandbox` preparation uses representative artifact paths without creating or sweeping harness state. This includes provider preflights, effort settings, private session homes, and TUI configuration. Strict runtime path canonicalization failures retain exit 64 in sessions.
+
 ### Changed
+
+- Version and capability probes preserve natural exit status until their configured deadline. Only a leader still running at that deadline can succeed from complete stdout, marked `stoppedAfterOutput: true`, before its whole process group is terminated. Cursor's version probe defaults to five seconds to bound its exit hang; other harnesses retain the 30-second default. Cursor model listings require their table footer. Incomplete output and capture errors remain failures. A leader's own signal or nonzero exit remains a failure when descendants retain its pipes.
 
 - `codemux session --harness-home` refuses with exit 64 a `--pass-env` name
   the caller home sets or clears: `HOME`, `USERPROFILE`, the XDG roots, and
@@ -24,6 +34,10 @@ immutable notes and engineering evidence.
 
 ### Fixed
 
+- Strict runtime grants follow the adapter identity through executable resolution, including native Claude and Z.AI installs with version-named binaries. Codex provider resume previews reject untrusted parent directories without creating or sweeping state.
+
+- `verify --show-scode` resolves executable paths before sandbox checks and reports unavailable commands per row. It also accepts `--sandbox-strict`. Resumed per-turn previews validate private homes without writing state.
+- Session previews and credential preflights use separate sandbox policies, so representative directories cannot become grants on real turns. Resumed previews, including Aider, validate private homes and their parents without creating or sweeping state. Copilot project-settings previews apply policy to the session home after preparing per-turn artifacts.
 - CI builds scode v0.6.5 (commit `f191891`) instead of v0.6.4.
 - **Correction**: the 2.0.0 notes and the `check --session` reference called
   the refused `--pass-env` set "config-directory redirects". It also covers

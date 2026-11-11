@@ -71,6 +71,7 @@ export abstract class ClaudeDriverLedger extends ClaudeDriverIo {
       sandbox_no_net: this.options.sandboxNoNet,
       sandbox_scrub_env: this.options.sandboxScrubEnv,
       sandbox_block: [...(this.options.sandboxBlock ?? [])],
+      sandbox_strict: this.options.sandboxStrict === true,
       pass_env: [...this.options.passEnv],
       playwright_mcp: this.options.playwrightMcp,
       provider_base_url: this.options.providerBaseUrl,

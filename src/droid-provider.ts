@@ -129,11 +129,13 @@ function sweepStaleDirectories(parent: string): void {
 export function writeDroidProviderSettings(
   brandHome: string,
   override: ProviderOverride & { baseUrl: string; apiKey: string },
-  model: string
+  model: string,
+  printOnly = false
 ): DroidProviderSettings {
   // Refused before anything is created: an unusable model leaves no
   // directory behind for the sweep to find.
   const entryId = droidProviderModelId(model);
+  if (printOnly) return { path: join(brandHome, PARENT_DIR_NAME, "preview", "settings.json"), finalize: () => {} };
   return writeDroidSettingsFile(brandHome, DIR_PREFIX, "provider", () => ({
     // The session's default model, so subagents and any path that ignores
     // `-m` still land on the override rather than a Factory catalog id.
@@ -200,9 +202,11 @@ export interface DroidTuiSettingsSpec {
  */
 export function writeDroidTuiSettings(
   brandHome: string,
-  spec: DroidTuiSettingsSpec
+  spec: DroidTuiSettingsSpec,
+  printOnly = false
 ): DroidProviderSettings {
   const entryId = spec.model !== undefined ? droidProviderModelId(spec.model) : undefined;
+  if (printOnly) return { path: join(brandHome, PARENT_DIR_NAME, "preview", "settings.json"), finalize: () => {} };
   return writeDroidSettingsFile(brandHome, TUI_DIR_PREFIX, "tui", () => ({
     sessionDefaultSettings: {
       ...(spec.defaultModel !== undefined ? { model: spec.defaultModel } : {}),

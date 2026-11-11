@@ -37,6 +37,7 @@ import type { SessionEnvironmentBuilder } from "./cli-launch.js";
 import type { SessionCommandOptions } from "./cli-request.js";
 import type { ClaudeSessionBuilt } from "./claude-session/builders.js";
 import type { SessionPrivateHome } from "./private-home-types.js";
+import { assertResumableHome } from "./private-home.js";
 import { callerHarnessHomeEnvAssignments, isCallerHarnessHome } from "./harness-home.js";
 import { usageError } from "./cli-usage.js";
 import { applyTurnProjectSandbox, isTurnAgent, TURN_AGENT_PROFILES, turnArgvExtras } from "./turn-driver-launch.js";
@@ -88,6 +89,8 @@ export async function prepareSessionChild({
   needsKeepEnvPreflight: boolean;
   buildSessionEnvironment: SessionEnvironmentBuilder;
 }) {
+  // Preview preparation owns its policy, including every nested list.
+  if (options.printSandbox) sandboxOptions = structuredClone(sandboxOptions);
   const callerHome = isCallerHarnessHome(sessionPrivateHome) ? sessionPrivateHome : null;
   const callerPreviewContext = (): RunContext => {
     if (callerHome === null) return {};
@@ -103,6 +106,7 @@ export async function prepareSessionChild({
     ? buildAiderSessionPreview({
         harnessHome: aiderHarnessHome(),
         sessionId: resumeId ?? randomUUID(),
+        resume: resumeId !== undefined,
         hermetic: runLike.hermetic === true,
         callerHome: isCallerHarnessHome(sessionPrivateHome) ? sessionPrivateHome : undefined,
         autonomy, effort,
@@ -249,16 +253,10 @@ export async function prepareSessionChild({
       });
     }
     if (isTurnAgent(agentId) && needsKeepEnvPreflight) {
-      // The seven second-wave agents need a prepared context to build
-      // their run environment (droid's override settings file, pi's
-      // override agent directory) — and their getRunEnv gates refuse
-      // without one, so the keep-env preflight could not resolve
-      // scode otherwise. Probe-only, cleaned on success and failure
-      // (the opencode rule); every actual turn still prepares its own
-      // fresh context. hermetic stays off in the probe request: the
-      // gemini gate the real turn satisfies through its session home
-      // has no home to name here, and the probe only reads names.
-      const probeContext = agentId === "openhands" ? openhandsPreviewContext() : adapter.prepareRun({ ...runLike, hermetic: false });
+      // Preflight needs representative provider paths. Its policy must
+      // not add those paths to the live session or a later preview.
+      const probeContext = agentId === "openhands" ? openhandsPreviewContext() : adapter.prepareRun(runLike,
+        sandboxOptions?.trust, structuredClone(sandboxOptions), { printOnly: true });
       try {
         return buildSessionEnvironment(probeContext);
       } finally {
@@ -275,7 +273,7 @@ export async function prepareSessionChild({
     // OpenCode needs a prepared config to build its run environment.
     // This probe-only context is cleaned on success and failure;
     // every actual turn still prepares a fresh, private config.
-    const probeContext = adapter.prepareRun(runLike);
+    const probeContext = adapter.prepareRun(runLike, sandboxOptions?.trust, structuredClone(sandboxOptions), { printOnly: true });
     try {
       return buildSessionEnvironment(probeContext);
     } finally {
@@ -340,7 +338,7 @@ export async function prepareSessionChild({
     return { argv: preview, buildLongLivedEnvironment, extraExecutableChecks, printedSandbox: true };
   }
   if (options.printSandbox && agentId === "opencode" && adapter instanceof OpencodeAdapter) {
-    const context = callerHome === null ? adapter.prepareRun(runLike) : callerPreviewContext();
+    const context = callerHome === null ? adapter.prepareRun(runLike, sandboxOptions?.trust, sandboxOptions, { printOnly: true }) : callerPreviewContext();
     try {
       const probe = buildSessionEnvironment(context);
       const prefix = callerHome !== null ? null : openCodeHermeticTurnPrefix({
@@ -380,15 +378,16 @@ export async function prepareSessionChild({
     }
     if (argv === null && (agentId === "pi" || agentId === "gemini" || agentId === "copilot" ||
         agentId === "cursor" || agentId === "droid" || agentId === "goose" || agentId === "cline" ||
-        agentId === "openhands" || (callerHome !== null && agentId === "qwen"))) {
+        agentId === "openhands" || agentId === "qwen")) {
       const id = resumeId ?? (agentId === "cline" ? `${Date.now()}_print_cli` : randomUUID());
-      const privateDir = runLike.hermetic
+      const privateDir = runLike.hermetic && agentId !== "qwen" && agentId !== "cursor"
         ? join(turnAgentStateRoot(agentId, runLike.passthroughEnv ?? []),
             ".codemux-hermetic", `session-${id}`)
         : null;
-      // Printing never opens or claims a session home. The path is the
-      // same path the session would own; prompt text arrives on stdin.
-      const prepared = callerHome !== null ? callerPreviewContext() : agentId === "openhands" ? openhandsPreviewContext() : adapter.prepareRun({ ...runLike, hermetic: agentId === "cline" && runLike.hermetic === true },
+      if (privateDir !== null && resumeId !== undefined) assertResumableHome(privateDir, resumeId);
+      // Validate resumed homes without claiming or changing them.
+      const prepared = callerHome !== null ? callerPreviewContext() : agentId === "openhands" ? openhandsPreviewContext() : adapter.prepareRun({ ...runLike, hermetic: agentId === "cline" && runLike.hermetic === true,
+        experimentProjectSettings: agentId === "copilot" ? false : runLike.experimentProjectSettings },
         sandboxOptions?.trust, sandboxOptions, { printOnly: true });
       try {
         const context = agentId === "cline"
@@ -416,6 +415,7 @@ export async function prepareSessionChild({
           const disposable = (prepared as ReturnType<typeof previewClineSessionSettings>).clineConfig?.home;
           const directories = [...(printedOptions.harnessStateDirs ?? []).filter((path) => path !== disposable), privateDir];
           assertNoCallerBlockOverStateDirs(printedOptions.blockPaths ?? [], directories);
+          printedOptions.callerBlockPaths ??= printedOptions.blockPaths ?? [];
           printedOptions.blockPaths = [...(printedOptions.blockPaths ?? []), turnAgentStateRoot(agentId, runLike.passthroughEnv ?? [])];
           printedOptions.harnessStateDirs = directories;
         }

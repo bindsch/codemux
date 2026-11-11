@@ -21,6 +21,7 @@ export interface ResumeProbe {
   autonomy: AutonomyLevel;
   sandboxed: boolean;
   sandboxTrust: SandboxTrust;
+  sandboxStrict?: boolean;
   /** The flags the resuming command actually runs with — a resume may
    * not clear one the entry was created under. */
   sandboxNoNet: boolean;
@@ -236,6 +237,9 @@ function judgeResumeEntry(
       outcome: "refused",
       reason: `session ${id} was created under scode and cannot resume unsandboxed`,
     };
+  }
+  if ((entry.sandbox_strict === true) !== (probe.sandboxStrict === true)) {
+    return { outcome: "refused", reason: `session ${id} cannot gain or lose --sandbox-strict on resume` };
   }
   if (entry.sandboxed && TRUST_RANK[probe.sandboxTrust] > TRUST_RANK[entry.sandbox_trust]) {
     return {

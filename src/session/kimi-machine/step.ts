@@ -6,6 +6,7 @@
  */
 
 import { MAX_ARGV_PROMPT_BYTES } from "../../process-runner.js";
+import { strictLaunchFailureExitCode } from "../../sandbox-command.js";
 import { emptyUsage } from "../../result-envelope.js";
 import { kimiPromptIsCommand } from "../kimi-session.js";
 import { applyAuthorPrefix, parseInputLine } from "../protocol.js";
@@ -213,15 +214,16 @@ export function step(
       }
       state.spawnInFlight = false;
       const message = turnSpawnFailureMessage(event.error);
+      const code = strictLaunchFailureExitCode(event.error);
       if (state.end.cause === null) {
         // The accepted turn never ran: codemux's own failure, a crash
         // end — never a silently interrupted turn.
-        return fatalEnd(state, "codemux", message, "crash", 1);
+        return fatalEnd(state, "codemux", message, "crash", code);
       }
       // The graceful end awaited this spawn and it rejected: a later
       // cause. The race the end path runs resolves with it; the turn's
       // synthesis reads failed.
-      state.end.record({ reason: "crash", code: 1 });
+      state.end.record({ reason: "crash", code });
       state.graceOpen = false;
       state.fatalClosed = true;
       state.fatalMessage ??= message;

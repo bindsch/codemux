@@ -1,3 +1,4 @@
+import { STRICT_LIMITATIONS } from "./reasons-strict.js";
 import type { AgentId } from "../types.js";
 import { supported, type FeatureState, type RunFeature } from "./features.js";
 import { RUN_REASONS } from "./reasons-run.js";
@@ -11,6 +12,7 @@ import { clineAnyCwd, clineBudget, clineServed } from "./reasons-cline.js";
 /** Independent declarations: adapter changes must update and verify these cells. */
 const RUN_BASE = {
   agy: {
+    "run.sandbox-strict": STRICT_LIMITATIONS.agy, "check.sandbox-strict": STRICT_LIMITATIONS.agy,
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
     "run.answer-complete": ANSWER_COMPLETE.agy,
     "run.model": supported("tests/new-adapters.test.ts"),
@@ -39,6 +41,7 @@ const RUN_BASE = {
     "check.hermetic": hermeticCheckDeclaration("agy", "tests/check-hermetic-channels.test.ts"),
   },
   aider: {
+    "run.sandbox-strict": STRICT_LIMITATIONS.aider, "check.sandbox-strict": STRICT_LIMITATIONS.aider,
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
     "run.answer-complete": ANSWER_COMPLETE.aider,
     "run.model": supported("tests/new-adapters-aider.test.ts"),
@@ -67,6 +70,7 @@ const RUN_BASE = {
     "check.hermetic": hermeticCheckDeclaration("aider", "tests/check-hermetic-channels.test.ts"),
   },
   claude: {
+    "run.sandbox-strict": STRICT_LIMITATIONS.claude, "check.sandbox-strict": STRICT_LIMITATIONS.claude,
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
     "run.answer-complete": ANSWER_COMPLETE.claude,
     "run.model": supported("tests/adapters-claude.test.ts"),
@@ -95,6 +99,7 @@ const RUN_BASE = {
     "check.hermetic": hermeticCheckDeclaration("claude", "tests/check-hermetic-channels.test.ts"),
   },
   cline: {
+    "run.sandbox-strict": STRICT_LIMITATIONS.cline, "check.sandbox-strict": STRICT_LIMITATIONS.cline,
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
     "run.answer-complete": ANSWER_COMPLETE.cline,
     "run.model": supported("tests/new-adapters-cline.test.ts"),
@@ -123,6 +128,7 @@ const RUN_BASE = {
     "check.hermetic": hermeticCheckDeclaration("cline", "tests/check-hermetic-channels.test.ts"),
   },
   codex: {
+    "run.sandbox-strict": STRICT_LIMITATIONS.codex, "check.sandbox-strict": STRICT_LIMITATIONS.codex,
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
     "run.answer-complete": ANSWER_COMPLETE.codex,
     "run.model": supported("tests/adapters-codex-argv.test.ts"),
@@ -152,6 +158,7 @@ const RUN_BASE = {
     "check.hermetic": hermeticCheckDeclaration("codex", "tests/check-hermetic-channels.test.ts"),
   },
   copilot: {
+    "run.sandbox-strict": STRICT_LIMITATIONS.copilot, "check.sandbox-strict": STRICT_LIMITATIONS.copilot,
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
     "run.answer-complete": ANSWER_COMPLETE.copilot,
     "run.model": supported("tests/new-adapters-copilot.test.ts"),
@@ -180,6 +187,7 @@ const RUN_BASE = {
     "check.hermetic": hermeticCheckDeclaration("copilot", "tests/check-hermetic-channels.test.ts"),
   },
   cursor: {
+    "run.sandbox-strict": STRICT_LIMITATIONS.cursor, "check.sandbox-strict": STRICT_LIMITATIONS.cursor,
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
     "run.answer-complete": ANSWER_COMPLETE.cursor,
     "run.model": supported("tests/new-adapters-cursor.test.ts"),
@@ -208,6 +216,7 @@ const RUN_BASE = {
     "check.hermetic": RUN_CARRIERS.cursorW4CheckHermetic,
   },
   droid: {
+    "run.sandbox-strict": STRICT_LIMITATIONS.droid, "check.sandbox-strict": STRICT_LIMITATIONS.droid,
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
     "run.answer-complete": ANSWER_COMPLETE.droid,
     "run.model": supported("tests/adapters-droid.test.ts"),
@@ -236,6 +245,7 @@ const RUN_BASE = {
     "check.hermetic": hermeticCheckDeclaration("droid", "tests/check-hermetic-channels.test.ts"),
   },
   goose: {
+    "run.sandbox-strict": STRICT_LIMITATIONS.goose, "check.sandbox-strict": STRICT_LIMITATIONS.goose,
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
     "run.answer-complete": ANSWER_COMPLETE.goose,
     "run.model": supported("tests/adapters-goose.test.ts"),
@@ -264,6 +274,7 @@ const RUN_BASE = {
     "check.hermetic": hermeticCheckDeclaration("goose", "tests/check-hermetic-channels.test.ts"),
   },
   gemini: {
+    "run.sandbox-strict": STRICT_LIMITATIONS.gemini, "check.sandbox-strict": STRICT_LIMITATIONS.gemini,
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
     "run.answer-complete": ANSWER_COMPLETE.gemini,
     "run.model": supported("tests/adapters-gemini.test.ts"),
@@ -292,6 +303,7 @@ const RUN_BASE = {
     "check.hermetic": hermeticCheckDeclaration("gemini", "tests/check-hermetic-channels.test.ts"),
   },
   kimi: {
+    "run.sandbox-strict": STRICT_LIMITATIONS.kimi, "check.sandbox-strict": STRICT_LIMITATIONS.kimi,
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
     "run.answer-complete": ANSWER_COMPLETE.kimi,
     "run.model": supported("tests/kimi.test.ts"),
@@ -320,6 +332,7 @@ const RUN_BASE = {
     "check.hermetic": hermeticCheckDeclaration("kimi", "tests/check-hermetic-channels.test.ts"),
   },
   opencode: {
+    "run.sandbox-strict": STRICT_LIMITATIONS.opencode, "check.sandbox-strict": STRICT_LIMITATIONS.opencode,
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
     "run.answer-complete": ANSWER_COMPLETE.opencode,
     "run.model": supported("tests/adapters-extended.test.ts"),
@@ -348,6 +361,7 @@ const RUN_BASE = {
     "check.hermetic": hermeticCheckDeclaration("opencode", "tests/check-hermetic-channels.test.ts"),
   },
   openhands: {
+    "run.sandbox-strict": STRICT_LIMITATIONS.openhands, "check.sandbox-strict": STRICT_LIMITATIONS.openhands,
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
     "run.answer-complete": ANSWER_COMPLETE.openhands,
     "run.model": supported("tests/openhands.test.ts"),
@@ -376,6 +390,7 @@ const RUN_BASE = {
     "check.hermetic": hermeticCheckDeclaration("openhands", "tests/check-hermetic-channels.test.ts"),
   },
   pi: {
+    "run.sandbox-strict": STRICT_LIMITATIONS.pi, "check.sandbox-strict": STRICT_LIMITATIONS.pi,
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
     "run.answer-complete": ANSWER_COMPLETE.pi,
     "run.model": supported("tests/adapters-extended.test.ts"),
@@ -404,6 +419,7 @@ const RUN_BASE = {
     "check.hermetic": hermeticCheckDeclaration("pi", "tests/check-hermetic-channels.test.ts"),
   },
   qwen: {
+    "run.sandbox-strict": STRICT_LIMITATIONS.qwen, "check.sandbox-strict": STRICT_LIMITATIONS.qwen,
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
     "run.answer-complete": ANSWER_COMPLETE.qwen,
     "run.model": supported("tests/qwen-run-parity.test.ts", "Current qwen binary; legacy qwen-coder refuses model selection."),
@@ -432,6 +448,7 @@ const RUN_BASE = {
     "check.hermetic": hermeticCheckDeclaration("qwen", "tests/check-hermetic-channels.test.ts"),
   },
   zai: {
+    "run.sandbox-strict": STRICT_LIMITATIONS.zai, "check.sandbox-strict": STRICT_LIMITATIONS.zai,
     "run.empty-answer-fails": supported("tests/result-empty.test.ts"),
     "run.answer-complete": ANSWER_COMPLETE.zai,
     "run.model": supported("tests/adapters-zai.test.ts"),

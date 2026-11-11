@@ -1,5 +1,7 @@
-import type { AutonomyLevel } from "./types.js";
+import type { AgentId, AutonomyLevel } from "./types.js";
 import { UsageRefusalError } from "./validation.js";
+import { assertStrictExecutables, containsPath, StrictSandboxRefusalError } from "./sandbox-command.js";
+import { strictRuntimeGrants } from "./sandbox-runtime-grants.js";
 // From the format module, which owns the rule, rather than the registry
 // barrel: sandbox.ts sits below the session layer and imports only this
 // one helper from it.
@@ -10,6 +12,10 @@ export const SCODE_TRUST_LEVELS = ["trusted", "standard", "untrusted"] as const;
 export type ScodeTrustLevel = (typeof SCODE_TRUST_LEVELS)[number];
 
 export interface SandboxOptions {
+  /** Adapter identity, preserved independently of resolved executable paths. */
+  agentId?: AgentId;
+  /** Deny-default filesystem access while retaining detected and explicit grants. */
+  strict?: boolean;
   trust?: ScodeTrustLevel;
   fsMode?: ScodeFsMode;
   noNet?: boolean;
@@ -51,6 +57,8 @@ export interface SandboxOptions {
    * that: see assertNoCallerBlockOverStateDirs.
    */
   blockPaths?: readonly string[];
+  /** Caller blocks captured before appending launcher isolation blocks. */
+  callerBlockPaths?: readonly string[];
 }
 
 export function mapAutonomyToScodeFsMode(autonomy?: AutonomyLevel): ScodeFsMode {
@@ -75,7 +83,8 @@ export function buildScodeCommand(
   cwd?: string,
   autonomy?: AutonomyLevel,
   options?: SandboxOptions,
-  executable = "scode"
+  executable = "scode",
+  environment: NodeJS.ProcessEnv = process.env
 ): string[] {
   if (
     command.length === 0 ||
@@ -93,6 +102,7 @@ export function buildScodeCommand(
 
   const trust = options?.trust ?? mapAutonomyToScodeTrust(autonomy);
   scodeCmd.push("--trust", trust);
+  if (options?.strict) scodeCmd.push("--strict");
   const fsMode = trust === "untrusted"
     ? "ro"
     : options?.fsMode ?? mapAutonomyToScodeFsMode(autonomy);
@@ -119,6 +129,26 @@ export function buildScodeCommand(
     }
     scodeCmd.push("--allow", directory);
   }
+
+  const grants = [...(options?.harnessStateDirs ?? [])];
+  if (options?.strict && trust !== "untrusted") {
+    const runtimePaths = strictRuntimeGrants(options.agentId, command, environment);
+    try {
+      assertNoCallerBlockOverStateDirs(options?.callerBlockPaths ?? blockedPaths, runtimePaths);
+    } catch (error) {
+      if (error instanceof UsageRefusalError) throw new StrictSandboxRefusalError(error.message);
+      throw error;
+    }
+    // Runtime detection must not reopen launcher isolation blocks. Private
+    // state beneath an intentional parent block already has its own allow.
+    const blocks = blockedPaths.map(canonicalSandboxBlockPath);
+    for (const path of runtimePaths) {
+      if (blocks.some((block) => containsPath(block, path) || containsPath(path, block))) continue;
+      grants.push(path);
+      scodeCmd.push("--allow", path);
+    }
+  }
+  if (options?.strict || trust === "untrusted") assertStrictExecutables(command, blockedPaths, grants);
 
   scodeCmd.push("--", ...command);
 

@@ -32,7 +32,8 @@ export interface OpenhandsHermeticHome {
   finalize: () => void;
 }
 
-export function createOpenhandsHermeticHome(sourceOpenhandsDir: string): OpenhandsHermeticHome {
+export function createOpenhandsHermeticHome(sourceOpenhandsDir: string, printOnly = false): OpenhandsHermeticHome {
+  if (printOnly) return { home: join(sourceOpenhandsDir, ".codemux-hermetic", "preview"), finalize: () => {} };
   const parent = prepareRunDirParent(sourceOpenhandsDir, ".codemux-hermetic");
   const parentRecord = recordTrustedParent(parent);
   const home = mkdtempSync(join(parent, `run-${process.pid}-`));

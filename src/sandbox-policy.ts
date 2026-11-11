@@ -8,6 +8,7 @@ import type {
 } from "./sandbox.js";
 
 export interface SandboxPolicyOverrides {
+  strict?: boolean;
   trust?: ScodeTrustLevel;
   noNet?: boolean;
   scrubEnv?: boolean;
@@ -32,11 +33,15 @@ export function resolveSandboxOptionsForAgent(
   overrides: SandboxPolicyOverrides = {}
 ): SandboxOptions {
   const options: SandboxOptions = {
+    // Carry the adapter identity through policy copies and executable resolution.
+    // Native installs can resolve to version-named files shared by several agents.
+    agentId,
     trust: overrides.trust ?? "standard",
   };
   const fsMode = autonomy ? ENFORCED_FS_MODE[agentId]?.[autonomy] : undefined;
   if (fsMode) options.fsMode = fsMode;
   if (overrides.noNet) options.noNet = true;
+  if (overrides.strict) options.strict = true;
   if (overrides.scrubEnv) options.scrubEnv = true;
   if (overrides.accountFile) options.accountFile = overrides.accountFile;
   if (overrides.accountId) options.accountId = overrides.accountId;

@@ -215,7 +215,8 @@ describe("hermetic sessions through the launcher", () => {
       const allowed = values("--allow");
       expect(allowed).toHaveLength(1);
       expect(dirname(allowed[0]!)).toBe(s.parent);
-      expect(basename(allowed[0]!)).toMatch(/^run-/);
+      expect(basename(allowed[0]!)).toBe("preview");
+      expect(existsSync(s.parent)).toBe(false);
       expect(argv.indexOf("--block")).toBeLessThan(argv.indexOf("--allow"));
       expect(argv).toContain("--rw");
       expect(existsSync(allowed[0]!)).toBe(false);

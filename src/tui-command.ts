@@ -29,6 +29,7 @@ import type { ClineAdapter } from "./adapters/cline.js";
 import { prepareClineTuiLaunch } from "./cline-tui.js";
 import { KimiAdapter } from "./adapters/kimi.js";
 import { prepareKimiTuiLaunch } from "./kimi-tui-launch.js";
+import { DroidAdapter } from "./adapters/droid.js";
 
 export function registerTuiCommand(
   program: Command,
@@ -47,6 +48,7 @@ export function registerTuiCommand(
       "scode trust override: trusted, standard, untrusted"
     )
     .option("--sandbox-no-net", "Pass --no-net to scode when sandboxed")
+    .option("--sandbox-strict", "Pass --strict to scode (deny-default); requires --sandbox")
     .option("--sandbox-scrub-env", "Pass --scrub-env to scode when sandboxed")
     .option(
       "--sandbox-account <file>",
@@ -116,6 +118,7 @@ export function registerTuiCommand(
         const sandboxPolicyOverrides = parseSandboxPolicyOverrides({
           sandbox: Boolean(options.sandbox),
           sandboxTrust: options.sandboxTrust,
+          sandboxStrict: options.sandboxStrict,
           sandboxNoNet: Boolean(options.sandboxNoNet),
           sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
           sandboxAccount: options.sandboxAccount,
@@ -269,11 +272,11 @@ export function registerTuiCommand(
               enablePlaywrightMcp, sandboxed: true, printOnly: Boolean(options.printSandbox) })
             : undefined;
           const piLaunch = adapter instanceof PiAdapter && enablePlaywrightMcp
-            ? preparePiTuiLaunch(adapter, { model, cwd: workdir, autonomy, effort, passthroughEnv, enablePlaywrightMcp, sandboxed: true })
+            ? preparePiTuiLaunch(adapter, { model, cwd: workdir, autonomy, effort, passthroughEnv, enablePlaywrightMcp, sandboxed: true, printOnly: Boolean(options.printSandbox) })
             : undefined;
           const clineLaunch = adapter.id === "cline" && enablePlaywrightMcp
             ? prepareClineTuiLaunch(adapter as ClineAdapter, { model, cwd: workdir, autonomy, effort, passthroughEnv,
-              enablePlaywrightMcp, sandboxed: true }, sandboxOptions) : undefined;
+              enablePlaywrightMcp, sandboxed: true, printOnly: Boolean(options.printSandbox) }, sandboxOptions) : undefined;
           const kimiLaunch = adapter instanceof KimiAdapter && enablePlaywrightMcp
             ? prepareKimiTuiLaunch(adapter, { model, cwd: workdir, autonomy, effort, passthroughEnv,
               enablePlaywrightMcp, sandboxed: true, printOnly: Boolean(options.printSandbox) })
@@ -302,7 +305,9 @@ export function registerTuiCommand(
           if (clineLaunch?.playwrightCheck) nestedChecks.push(clineLaunch.playwrightCheck);
           if (piLaunch?.playwrightCheck) nestedChecks.push(piLaunch.playwrightCheck);
           if (geminiLaunch?.playwrightCheck) nestedChecks.push(geminiLaunch.playwrightCheck);
-          const command = kimiLaunch?.command ?? clineLaunch?.command ?? piLaunch?.command ?? geminiLaunch?.command ?? adapter.buildTuiCommand(
+          const droidCommand = adapter instanceof DroidAdapter
+            ? adapter.prepareTuiCommand(model, autonomy, effort, Boolean(options.printSandbox)) : undefined;
+          const command = droidCommand ?? kimiLaunch?.command ?? clineLaunch?.command ?? piLaunch?.command ?? geminiLaunch?.command ?? adapter.buildTuiCommand(
             model,
             autonomy,
             effort,
@@ -318,7 +323,7 @@ export function registerTuiCommand(
             true,
             sandboxAutonomy,
             withKeepEnvExemption(
-              sandboxOptions,
+              clineLaunch?.sandboxOptions ?? sandboxOptions,
               injectedEnv,
               adapter.providerOverrideActive()
             ),

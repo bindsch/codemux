@@ -27,7 +27,7 @@ export interface CopilotRunContext extends RunContext {
 }
 
 export function createCopilotUsageFile(configDir: string): CopilotUsageFile {
-  const scratch = createCopilotHermeticHome(configDir, { printOnly: true });
+  const scratch = createCopilotHermeticHome(configDir, { copyLogin: false });
   return { path: join(scratch.home, "usage.json"), finalize: scratch.finalize };
 }
 

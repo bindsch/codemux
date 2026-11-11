@@ -52,9 +52,8 @@ export function prepareClineSessionSettings(input: {
     : { ...clineConfig, env } };
 }
 
-/** A sandbox preview must not open or rewrite a resumed session. Rebase a
- * disposable prepared context onto the representative path, then let the
- * caller clean up the disposable context after printing. No child runs. */
+/** A sandbox preview must not open or rewrite a resumed session.
+ * Rebase the write-free prepared context onto the representative path. */
 export function previewClineSessionSettings(input: {
   request: RunRequest; prepared: RunContext; privateDir: string | null; environment: NodeJS.ProcessEnv;
 }): ClineRunContext {

@@ -132,7 +132,8 @@ function sweepStaleFiles(parent: string, record: TrustedParentRecord): void {
  * Writes the no-tools agent file. `brandHome` is the real kimi brand home
  * (the directory `kimi` reads config.toml, skills and agents from).
  */
-export function writeKimiNoToolsFile(brandHome: string): KimiNoToolsFile {
+export function writeKimiNoToolsFile(brandHome: string, printOnly = false): KimiNoToolsFile {
+  if (printOnly) return { path: join(brandHome, PARENT_DIR_NAME, "preview-agent.yaml"), finalize: () => {} };
   const parent = join(brandHome, PARENT_DIR_NAME);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   // Recorded BEFORE the sweep runs, and every removal the sweep makes

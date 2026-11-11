@@ -1,4 +1,6 @@
 import { BaseAdapter } from "./base.js";
+import type { LaunchIntent } from "../types.js";
+import type { SandboxOptions, ScodeTrustLevel } from "../sandbox.js";
 import { existsSync } from "node:fs";
 import { devNull, homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -137,14 +139,14 @@ export class AiderAdapter extends BaseAdapter {
     return cmd;
   }
 
-  override prepareRun(request: RunRequest): AiderRunContext {
+  override prepareRun(request: RunRequest, _trust?: ScodeTrustLevel, _sandbox?: SandboxOptions, launch: LaunchIntent = {}): AiderRunContext {
     const files = createAiderRunFiles(this.realAiderDir(), request.prompt,
-      this.modelFor(request.model), this.validatedProvider()?.maxOutputTokens);
+      this.modelFor(request.model), this.validatedProvider()?.maxOutputTokens, launch.printOnly);
     try {
       return {
         aiderRunFiles: files,
         ...(request.hermetic ? {
-          aiderHistoryFile: createAiderHistoryFile(this.effectiveHome()),
+          aiderHistoryFile: launch.printOnly ? { path: join(files.home, "history.txt"), finalize: () => {} } : createAiderHistoryFile(this.effectiveHome()),
           aiderHermeticHome: files,
         } : {}),
       };

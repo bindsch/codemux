@@ -31,6 +31,7 @@ export function applyAgyIsolationSandboxBlocks(
     sandboxOptions.blockPaths ?? [],
     [...(sandboxOptions.harnessStateDirs ?? []), isolation.privateHome]
   );
+  sandboxOptions.callerBlockPaths ??= sandboxOptions.blockPaths ?? [];
   sandboxOptions.blockPaths = [
     ...(sandboxOptions.blockPaths ?? []),
     isolation.realStateRoot,

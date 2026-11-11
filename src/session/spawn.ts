@@ -134,7 +134,8 @@ export async function resolveSessionSandboxSpawn(
     workdir,
     options.autonomy,
     effectiveSandboxOptions,
-    scode
+    scode,
+    env
   );
   const sandboxEnv = buildSandboxEnv(env, effectiveSandboxOptions);
   for (const name of options.envOmissions ?? []) delete sandboxEnv[name];

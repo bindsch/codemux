@@ -202,8 +202,10 @@ const MODEL_STATE_MAX_BYTES = 64 * 1024;
  */
 export function createOpencodeHermeticHome(
   realDataDir: string,
-  realStateDir?: string
+  realStateDir?: string,
+  printOnly = false
 ): OpencodeHermeticHome {
+  if (printOnly) return { home: join(realDataDir, PARENT_DIR_NAME, "preview"), finalize: () => {} };
   const parent = join(realDataDir, PARENT_DIR_NAME);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   // A run with write access to the data directory could have replaced the

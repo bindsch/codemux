@@ -79,7 +79,7 @@ describe("Gemini prepared TUI lifecycle", () => {
         expect(settings.modelConfigs.customOverrides[0].modelConfig.generateContentConfig.maxOutputTokens).toBe(64);
         expect(existsSync(join(preview.env.GEMINI_CLI_HOME!, ".gemini", "oauth_creds.json"))).toBe(false);
         first.finalize(); expect(existsSync(home)).toBe(false);
-        expect(existsSync(preview.env.GEMINI_CLI_HOME!)).toBe(true);
+        expect(existsSync(preview.env.GEMINI_CLI_HOME!)).toBe(false);
       } finally { first.finalize(); preview.finalize(); }
       const ordinary = new GeminiAdapter({ HOME: f.home }).prepareTuiEnvironment();
       expect(ordinary.env).toEqual({}); ordinary.finalize();

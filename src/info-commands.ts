@@ -144,6 +144,7 @@ export function registerInfoCommands(
     .description("Verify harness wiring and autonomy mapping consistency")
     .option("-a, --agent <agent>", "Verify a single agent")
     .option("--show-scode", "Show effective scode command preview per harness/autonomy")
+    .option("--sandbox-strict", "Add --strict in --show-scode preview")
     .option(
       "--sandbox-trust <level>",
       "scode trust override for --show-scode: trusted, standard, untrusted"
@@ -168,7 +169,8 @@ export function registerInfoCommands(
 
       const sandboxPolicyOverrides = parseSandboxPolicyOverrides(
         {
-          sandbox: false,
+          sandbox: true,
+          sandboxStrict: Boolean(options.sandboxStrict),
           sandboxTrust: options.sandboxTrust,
           sandboxNoNet: Boolean(options.sandboxNoNet),
           sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
@@ -202,7 +204,7 @@ export function registerInfoCommands(
       }
 
       const hasSandboxPreviewFlags = Boolean(
-        options.sandboxTrust ||
+        options.sandboxStrict || options.sandboxTrust ||
           options.sandboxNoNet ||
           options.sandboxScrubEnv
       );
@@ -215,9 +217,9 @@ export function registerInfoCommands(
         console.log("| Agent | Autonomy | Mode | Command |");
         console.log("|-------|----------|------|---------|");
         for (const row of scodeRows) {
-          const rendered = row.command
+          const rendered = row.error === undefined ? row.command
             .map(shellQuote)
-            .join(" ");
+            .join(" ") : `Unavailable: ${JSON.stringify(row.error).slice(1, -1)}`;
           console.log(`| ${row.agentId} | ${row.autonomy} | ${row.mode} | \`${rendered}\` |`);
         }
       } else if (hasSandboxPreviewFlags) {

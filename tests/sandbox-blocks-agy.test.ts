@@ -9,7 +9,7 @@
  * operation synthetic (helpers/cli.ts).
  */
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgyAdapter } from "../src/adapters/agy.js";
@@ -80,12 +80,12 @@ const cleanCwd = (): string => {
 /** The block/allow contract of every isolated agy spawn: exactly the real
  * state tree blocked, exactly one allow inside it for the private home,
  * and the block ahead of the allow. */
-const expectBlockedState = (argv: readonly string[], home: string): string => {
+const expectBlockedState = (argv: readonly string[], home: string, prefix = "run-"): string => {
   const { real, probes } = stateRoots(home);
   expect(valuesAfter(argv, "--block")).toEqual([real]);
   const allows = valuesAfter(argv, "--allow");
   expect(allows).toHaveLength(1);
-  expect(allows[0]!.startsWith(join(probes, "run-"))).toBe(true);
+  expect(allows[0]!.startsWith(join(probes, prefix))).toBe(true);
   // The block comes first: scode emits the child allow after the parent
   // block and re-asserts both in its final guards.
   expect(argv.indexOf("--block")).toBeLessThan(argv.indexOf("--allow"));
@@ -177,10 +177,9 @@ describe("agy isolation sandbox: run argv", () => {
       expect(result.stdout).not.toContain("FAKE-SCODE-RAN");
       const argv = result.stdout.trimEnd().split("\n");
       expect(argv[0]!.endsWith("/scode")).toBe(true);
-      expectBlockedState(argv, home);
-      // Nothing spawned and nothing left behind: the private home the
-      // allow names was created for the argv and then removed.
-      expect(readdirSync(stateRoots(home).probes)).toEqual([]);
+      expectBlockedState(argv, home, "preview");
+      // The allow names a representative path; preparation creates nothing.
+      expect(existsSync(stateRoots(home).probes)).toBe(false);
     } finally {
       fake.cleanup();
     }

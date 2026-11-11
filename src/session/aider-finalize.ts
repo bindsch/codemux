@@ -6,7 +6,7 @@
  * above it in the chain (aider-turns.ts, aider-input.ts) and the driver
  * itself fill in the machinery.
  */
-
+import { strictLaunchFailureExitCode } from "../sandbox-command.js";
 import type { ResultUsageBlock } from "../types.js";
 import {
   appendSessionCallRecord,
@@ -252,7 +252,7 @@ export abstract class AiderDriverCore {
             "could not spawn the aider turn process " +
               `(${wait.error instanceof Error ? wait.error.message : String(wait.error)})`
           );
-          void this.finish("crash", 1);
+          void this.finish("crash", strictLaunchFailureExitCode(wait.error));
         }
       } else {
         // The spawn outlasted the grace (review round 110): fatal
@@ -487,6 +487,7 @@ export abstract class AiderDriverCore {
       sandbox_no_net: this.options.sandboxNoNet,
       sandbox_scrub_env: this.options.sandboxScrubEnv,
       sandbox_block: [...(this.options.sandboxBlock ?? [])],
+      sandbox_strict: this.options.sandboxStrict === true,
       pass_env: [...this.options.passEnv],
       playwright_mcp: false,
       provider_base_url: this.options.providerBaseUrl,

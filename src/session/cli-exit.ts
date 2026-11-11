@@ -18,13 +18,10 @@ import type { SessionDriver } from "./stdin-frame.js";
  * the registry is untouched: a print-only invocation never claims, so it
  * never releases or stamps either (review round 17, edges 2; the decision
  * sits ahead of the claim in cli.ts). releaseOwnedRecord stays as the
- * no-op guard. What the print did create still goes: a fresh codex
- * override home (its run-<pid>-* directory) is abandoned, a fresh
- * project-settings directory nothing points at is removed, and the
- * registry was never written (review rounds 2 and 13, edges 3). A fresh
- * hermetic session home (codex, kimi, agy) goes the same way — the print
- * populated nothing into it, and a failure is reported without failing
- * the print's exit 0 (the stale sweep removes what stayed).
+ * no-op guard. Fresh previews return representative paths without
+ * creating directories, copying credentials, or sweeping old state.
+ * Their abandon/remove finalizers are no-ops. Resumed previews validate
+ * existing homes without modifying them.
  */
 export function exitPrintedSandbox(exit: {
   codexSessionHome: CodexSessionProviderHome | null;

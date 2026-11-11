@@ -77,6 +77,7 @@ export function registerCheckCommand(
       "scode trust override: trusted, standard, untrusted"
     )
     .option("--sandbox-no-net", "Pass --no-net to scode when sandboxed")
+    .option("--sandbox-strict", "Pass --strict to scode (deny-default); requires --sandbox")
     .option("--sandbox-scrub-env", "Pass --scrub-env to scode when sandboxed")
     .option(
       "--sandbox-block <path>",
@@ -125,6 +126,7 @@ export function registerCheckCommand(
         const sandboxPolicyOverrides = parseSandboxPolicyOverrides({
           sandbox: Boolean(options.sandbox),
           sandboxTrust: options.sandboxTrust,
+          sandboxStrict: options.sandboxStrict,
           sandboxNoNet: Boolean(options.sandboxNoNet),
           sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
           sandboxBlock: options.sandboxBlock,
@@ -167,13 +169,13 @@ export function registerCheckCommand(
           assertAgyProbeMode(options.agyIsolationProbe);
           if (agentId !== "agy" || hermetic || tools === "none" || options.experimentMcp ||
               !options.sandbox || requestedAutonomy !== "read-only" || options.cwd !== undefined || passthroughEnv.length ||
-              options.sandboxTrust || options.sandboxNoNet || options.sandboxScrubEnv || requestedEffort) {
+              options.sandboxTrust || options.sandboxStrict || options.sandboxNoNet || options.sandboxScrubEnv || requestedEffort) {
             throw new UsageRefusalError("--agy-isolation-probe requires -a agy --auto read-only with default scode and no other isolation flags");
           }
         }
         if (agentId === "agy" && (hermetic || tools === "none")) {
           if (!options.sandbox || requestedAutonomy !== "read-only" || options.cwd !== undefined || passthroughEnv.length ||
-              options.sandboxTrust || options.sandboxNoNet || options.sandboxScrubEnv || requestedEffort) {
+              options.sandboxTrust || options.sandboxStrict || options.sandboxNoNet || options.sandboxScrubEnv || requestedEffort) {
             throw new UsageRefusalError("agy canary checks require default read-only scode and manage their own scratch cwd and HOME");
           }
         }

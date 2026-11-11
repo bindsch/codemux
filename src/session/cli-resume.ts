@@ -216,6 +216,7 @@ export function resolveSessionContext({
     callerOwnedHome: options.harnessHome !== undefined,
     autonomy,
     sandboxed: Boolean(options.sandbox),
+    sandboxStrict: Boolean(options.sandboxStrict),
     sandboxTrust,
     sandboxNoNet,
     sandboxScrubEnv,

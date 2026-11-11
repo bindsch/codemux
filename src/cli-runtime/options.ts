@@ -100,6 +100,7 @@ function parseSandboxTrustOption(value: string | undefined): ScodeTrustLevel | u
 
 export interface SandboxCliOptions {
   sandbox: boolean;
+  sandboxStrict?: boolean;
   sandboxTrust?: string;
   sandboxNoNet?: boolean;
   sandboxScrubEnv?: boolean;
@@ -112,9 +113,13 @@ export function parseSandboxPolicyOverrides(
   options: SandboxCliOptions,
   allowWithoutSandbox = false
 ): SandboxPolicyOverrides | undefined {
+  if (options.sandboxStrict && !options.sandbox) {
+    throw new UsageRefusalError("--sandbox-strict requires --sandbox");
+  }
   const trust = parseSandboxTrustOption(options.sandboxTrust);
   const overrides: SandboxPolicyOverrides = {
     trust,
+    ...(options.sandboxStrict ? { strict: true } : {}),
     noNet: Boolean(options.sandboxNoNet),
     scrubEnv: Boolean(options.sandboxScrubEnv),
     accountFile: options.sandboxAccount,

@@ -2,6 +2,7 @@ import type { AgentId } from "../types.js";
 
 /** Public capability cells. Conditional support has its own narrower cell. */
 export const PARITY_FEATURES = [
+  "run.sandbox-strict", "check.sandbox-strict", "session.sandbox-strict", "tui.sandbox-strict",
   "run.model", "run.autonomy.all-four", "run.effort", "run.effort.none-native",
   "run.hermetic", "run.hermetic.any-cwd",
   "run.tools-none", "run.tools-none.writable-autonomy", "run.tools-none.plain",

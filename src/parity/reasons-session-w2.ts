@@ -33,13 +33,6 @@ export const QWEN_SESSION_PERMISSION_POLICY: FeatureState = limitation(
   "tests/qwen-session.test.ts",
 );
 
-export const QWEN_SESSION_PRINT_SANDBOX: FeatureState = limitation(
-  "The shared per-turn preview exists (cli-spawn-prep.ts builds the representative first turn through TURN_AGENT_PROFILES and prints its scode argv) and qwen's turn command builder is registered in it; the preview arm's agent list — pi, gemini, copilot today — is shared across the wave and qwen joins it in scratch/fix/w2-session-tools.patch.",
-  "2026-11-09: src/session/cli-spawn-prep.ts print-sandbox branch (the pi/gemini/copilot arm) and its TURN_AGENT_PROFILES.qwen lookup; src/session/qwen-driver.ts buildTurnCommand",
-  "--print-sandbox is not available for this agent: its session children spawn per turn, so there is no one scode argv to print",
-  "tests/qwen-session.test.ts",
-);
-
 // -- agy ------------------------------------------------------------------
 
 export const AGY_SESSION_INTERRUPT: FeatureState = limitation(

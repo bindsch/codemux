@@ -60,6 +60,7 @@ Codemux maps read-only to scode `--ro` and other levels to `--rw`. Standard trus
 | Option | Effect |
 | --- | --- |
 | `--sandbox-trust standard` | Default scode trust policy. |
+| `--sandbox-strict` | Requires `--sandbox`. Deny-default filesystem access; keep project, system, scratch, detected harness state, and explicit grants. Overrides trusted's strict-off setting. External hooks can still fail; see [strict limitations](harnesses.md#harness-limitations). |
 | `--sandbox-trust trusted` | Broader trust under scode's policy; independent of autonomy. |
 | `--sandbox-trust untrusted` | Scode's strict, no-network, scrubbed, read-only preset. Harness state is denied; persistent sessions refuse it. |
 | `--sandbox-no-net` | Add network denial. Remote providers will generally be unreachable. |
@@ -73,6 +74,7 @@ Scode enforcement depends on the installed scode version and platform. The versi
 | Launch or feature | Requirement |
 | --- | --- |
 | Ordinary sandboxed launch | General scode minimum 0.2.0. |
+| `--sandbox-strict` | The flag exists in scode 0.2.0. Live runtime grants were checked against scode 0.6.5 on macOS; accepting the flag does not certify a harness or customization. |
 | Any sandboxed Antigravity headless run, including API-key/file-token login | Scode 0.6.0 or newer. |
 | Scrubbed launch whose injected environment carries its only credential, including provider overrides and Z.AI | A scode that documents `--keep-env` in help, introduced in 0.6.0. Missing support refuses before spawn. |
 | Scrubbed launch without a required injected credential | Use `--keep-env` if supported; otherwise omit the unsupported flag and preserve the older scrub behavior. |

@@ -110,6 +110,8 @@ export interface CapturedCommandOptions {
   /** Consumes stdout incrementally instead of capturing it whole; stderr is
    * captured normally either way. */
   stdoutSink?: StdoutSink;
+  /** One-shot probes only: complete stdout permits success at the deadline. */
+  outputComplete?: (stream: "stdout" | "stderr", output: string, ended: boolean) => boolean;
   /** Called when a signal to codemux stops the run, right before the
    * runner exits 143. Await adapter cleanup and write the call receipt,
    * since the launch path never resumes. Rejections and waits beyond
@@ -142,6 +144,7 @@ export async function runCapturedCommand(
   }
   const timeoutMs = options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
   validateTimeout(timeoutMs);
+  if (options.outputComplete && options.stdoutSink) throw new Error("outputComplete cannot be combined with stdoutSink");
   // A signaled command is still terminating its tree and exits codemux
   // when it has: a child started now would outlive that exit in its own
   // process group, so nothing starts (review round 169).
@@ -149,6 +152,9 @@ export async function runCapturedCommand(
   const useProcessGroup = process.platform !== "win32";
   assertExecutablesUnchanged(command, "command", options.requiredPaths, options.checks);
   let timedOut = false;
+  let outputCompleted = false;
+  let stoppingCompletedLeader = false;
+  let leaderExit: number | undefined;
   let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
   let forceKillDeadline = 0;
   let giveUpTimer: ReturnType<typeof setTimeout> | null = null;
@@ -179,14 +185,7 @@ export async function runCapturedCommand(
   const terminateRun = (): void => {
     if (target === null) return;
     const tree = target;
-    // The first termination of this tree, whenever it lands: a signal
-    // inside the cleanup window (closeProtocol awaiting real I/O) is still
-    // the first, and the group may still have members (review round 401,
-    // item 2). Inside that window no timer is armed: the child has exited
-    // or been killed by then, the cleanup is bounded by the protocol
-    // grace, and the kill check at the end of the finally sends the
-    // SIGKILL once the cleanup settles, so a termination with nothing
-    // left to stop creates nothing.
+    // Cleanup owns the final kill once the child and captures have settled.
     const firstTermination = !terminationStarted;
     terminationStarted = true;
     // Arm forced reaping before protocol code can throw; the server gets
@@ -208,12 +207,7 @@ export async function runCapturedCommand(
     }
     if (firstTermination) signalProcess(tree, "SIGTERM", "tree");
   };
-  // After a signal, a timeout, or a capture failure the protocol cleanup
-  // gets the same grace the receipt gets: closeProtocol has no deadline of
-  // its own, and one that never settled kept the interruption receipt from
-  // being written and codemux from exiting (review round 174); after a
-  // timeout or a capture failure the same never-settling cleanup held the
-  // run open past its own configured end (review round 286).
+  // Bound protocol cleanup after interruptions and capture failures too.
   let closingProtocol = false;
   let protocolGraceTimer: ReturnType<typeof setTimeout> | null = null;
   let expireProtocolGrace: () => void = () => {};
@@ -249,7 +243,12 @@ export async function runCapturedCommand(
           streamName,
           giveUp,
           streamName === "stdout" ? options.stdoutSink : undefined,
-          () => ({ timedOut, aborted: captureFailed || signaled })
+          () => ({ timedOut, aborted: captureFailed || signaled }),
+          (output, ended) => {
+            if (!terminationStarted && !signaled && !captureFailed && options.outputComplete) {
+              outputCompleted = options.outputComplete(streamName, output, ended);
+            }
+          }
         ),
       };
     } catch (error) {
@@ -285,7 +284,13 @@ export async function runCapturedCommand(
     });
     target = createTerminationTarget(spawned, useProcessGroup);
     timeoutTimer = setTimeout(() => {
-      timedOut = true;
+      // Only the deadline can accept output from a still-running probe.
+      // An already-exited leader keeps its status even if its pipes remain open.
+      const leaderRunning = leaderExit === undefined &&
+        spawned?.exitCode === null && spawned.signalCode === null;
+      stoppingCompletedLeader = Boolean(options.outputComplete && leaderRunning &&
+        outputCompleted && !terminationStarted && !signaled && !captureFailed);
+      timedOut = !stoppingCompletedLeader && (!options.outputComplete || leaderRunning);
       terminateRun();
     }, timeoutMs);
   } catch (error) {
@@ -302,7 +307,10 @@ export async function runCapturedCommand(
     throw error;
   }
   const proc = spawned;
-
+  const leaderExited = proc.exited.then((code) => {
+    leaderExit = code;
+    return code;
+  });
   try {
     // Stdin failures after the spawn are the run's (rounds 64 to 67): see
     // process-stdin.ts for the rules.
@@ -336,25 +344,13 @@ export async function runCapturedCommand(
     const [stdoutResult, stderrResult, exitCode] = await Promise.all([
       capture(proc.stdout as ReadableStream<Uint8Array>, "stdout"),
       capture(proc.stderr as ReadableStream<Uint8Array>, "stderr"),
-      // Bun can retain the exit promise while inherited stdio is open, so
-      // abandonment must release this wait as well as the readers.
-      Promise.race([proc.exited, exitGiveUp.then(() => TIMEOUT_EXIT_CODE)]),
+      // Record the leader independently of the pipes; abandonment still
+      // bounds the wait when Bun retains its exit promise with inherited I/O.
+      Promise.race([leaderExited, exitGiveUp.then(() => TIMEOUT_EXIT_CODE)]),
     ]);
-    // The exit and both captures are settled: the run's outcome is fixed, and
-    // the timeout has nothing left to terminate. Disarm it before the bounded
-    // stdin wait below, so a deadline landing inside that window cannot
-    // recast a child that exited cleanly as 124 "agent timed out" (round
-    // 391, item 4).
+    // Disarm before stdin settlement so its deadline cannot recast an exit.
     disarmTimeout();
-    // Every write issued before the exit is in stdin's chain by now, so
-    // the wait starts only here: started with the captures it could drain
-    // an empty chain before a protocol sink's first write (round 68).
-    // Bounded like the pipe reads (PIPE_GIVE_UP_MS): with the exit
-    // settled, a chain that never settles means a descendant holds the
-    // read end open and never reads, and nothing else can fire exitGiveUp
-    // — without this bound the run parks until its own timeout and
-    // reports 124 "agent timed out" for a child that exited cleanly
-    // (review round 372, item 10).
+    // Bound stdin settlement too: a descendant can retain its read end.
     let stdinOrphan = false;
     let giveUpStdin: () => void = () => {};
     const stdinGiveUp = new Promise<void>((resolve) => { giveUpStdin = resolve; });
@@ -399,6 +395,8 @@ export async function runCapturedCommand(
     // had no newline would otherwise share it (review round 265).
     const captured = stderrResult.value ?? "";
     const separated = captured === "" || captured.endsWith("\n") ? captured : `${captured}\n`;
+    const leaderCode = leaderExit ?? exitCode;
+    const probeSucceeded = stoppingCompletedLeader && !signaled;
     const result = {
       stdout: stdoutResult.value ?? "",
       stderr: timedOut
@@ -408,9 +406,10 @@ export async function runCapturedCommand(
           : stdinOrphan
             ? `${separated}${stdinOrphanNote}`
             : captured,
-      exitCode: timedOut ? TIMEOUT_EXIT_CODE : signaled ? SIGNAL_EXIT_CODE : exitCode,
-      success: !timedOut && !signaled && exitCode === 0,
+      exitCode: timedOut ? TIMEOUT_EXIT_CODE : signaled ? SIGNAL_EXIT_CODE : probeSucceeded ? 0 : leaderCode,
+      success: !timedOut && !signaled && (leaderCode === 0 || probeSucceeded),
       ...(timedOut ? { timedOut: true as const } : {}),
+      ...(probeSucceeded ? { stoppedAfterOutput: true as const } : {}),
     };
     if (timedOut) {
       firstError = new CapturedRunFailure(`agent timed out after ${timeoutMs}ms`);
@@ -426,10 +425,8 @@ export async function runCapturedCommand(
     disarmTimeout();
     if (forceKillTimer) clearTimeout(forceKillTimer);
     if (giveUpTimer) clearTimeout(giveUpTimer);
-    // The leader may exit on SIGTERM while a descendant closes the pipes
-    // early: give the descendants the rest of the promised grace, then kill
-    // the whole group, which reaches members the pid walk never saw.
-    if (timedOut || signaled || captureFailed) {
+    // Give descendants their remaining grace, then kill the whole group.
+    if (terminationStarted) {
       await waitForDescendantsGrace(target, forceKillDeadline);
       signalProcess(target, "SIGKILL", "tree");
       treeEnded = true;
@@ -479,10 +476,8 @@ export async function runCapturedCommand(
       process.off("SIGHUP", onSignal);
       endCapturedCommand(onSignal);
     }
-    // A signal that landed while the protocol cleanup awaited real I/O set
-    // `signaled` after the kill check above read it: re-read, and end the
-    // tree the same way before the exit below (review round 401, item 2).
-    if (!treeEnded && (timedOut || signaled || captureFailed)) {
+    // Recheck signals received during asynchronous protocol cleanup.
+    if (!treeEnded && terminationStarted) {
       await waitForDescendantsGrace(target, forceKillDeadline);
       signalProcess(target, "SIGKILL", "tree");
     }

@@ -28,8 +28,8 @@ describe("the parity hermetic homes", () => {
   const cleanUp = (): void => rmSync(source, { recursive: true, force: true });
 
   test.each([
-    ["gemini", (dir: string) => createGeminiHermeticHome(dir, { printOnly: true })],
-    ["copilot", (dir: string) => createCopilotHermeticHome(dir, { printOnly: true })],
+    ["gemini", (dir: string) => createGeminiHermeticHome(dir, { apiKeyAuth: true })],
+    ["copilot", (dir: string) => createCopilotHermeticHome(dir, { copyLogin: false })],
     ["goose", createGooseHermeticHome],
     ["openhands", createOpenhandsHermeticHome],
     ["aider", createAiderHermeticHome],
@@ -54,12 +54,12 @@ describe("the parity hermetic homes", () => {
   test("gemini: writes the deny-all tools settings only for --tools none", () => {
     makeSource();
     try {
-      const plain = createGeminiHermeticHome(join(source, "g1"), { printOnly: true });
+      const plain = createGeminiHermeticHome(join(source, "g1"), { apiKeyAuth: true });
       expect(existsSync(join(plain.geminiDir, "settings.json"))).toBe(false);
       plain.finalize();
       const toolsNone = createGeminiHermeticHome(join(source, "g2"), {
         toolsNone: true,
-        printOnly: true,
+        apiKeyAuth: true,
       });
       expect(readFileSync(join(toolsNone.geminiDir, "settings.json"), "utf-8"))
         .toBe(GEMINI_NO_TOOLS_SETTINGS);

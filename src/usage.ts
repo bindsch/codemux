@@ -1,6 +1,7 @@
 import { executableCheck, resolveTrustedExecutable } from "./executable-security.js";
 import { compareVersions } from "./harness-compatibility.js";
 import { OUTPUT_LIMIT_EXIT_CODE, runCapturedCommand, validateTimeout } from "./process-runner.js";
+import { runOutputProbe, versionAnswer } from "./output-probe.js";
 import type { AgentId } from "./types.js";
 import { escapeForTerminal, parseUsageSnapshot, type UsageSnapshot } from "./usage-protocol.js";
 import { UsageRefusalError } from "./validation.js";
@@ -138,11 +139,11 @@ export const readUsagemuxVersion = async (
     return { version: null, belowMinimum: false, issue: "usagemux is not installed" };
   }
   try {
-    const result = await runCapturedCommand([binary, "--version"], {
+    const result = await runOutputProbe([binary, "--version"], {
       cwd: workdir,
       env: environment,
       timeoutMs: 10_000,
-    });
+    }, versionAnswer(/usagemux\s+(\d+\.\d+\.\d+)/));
     if (result.exitCode !== 0) {
       return { version: null, belowMinimum: false, issue: `usagemux --version exited ${result.exitCode}` };
     }

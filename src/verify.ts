@@ -8,7 +8,7 @@ import {
   resolveSandboxOptionsForAgent,
   type SandboxPolicyOverrides,
 } from "./sandbox-policy.js";
-import { buildScodeCommand } from "./sandbox.js";
+import { verifiedScodeCommand } from "./verify-scode.js";
 import {
   AUTONOMY_LEVELS,
   type AgentId,
@@ -143,6 +143,7 @@ export interface EffectiveScodeCommand {
   autonomy: (typeof AUTONOMY_LEVELS)[number];
   mode: "run" | "tui";
   command: string[];
+  error?: string;
 }
 
 // The legitimate empty arguments are the value of `--tools` (an empty
@@ -461,7 +462,7 @@ export function buildEffectiveScodeCommands(
         agentId,
         autonomy,
         mode: "run",
-        command: buildScodeCommand(runCmd, verificationCwd(), autonomy, sandboxOptions),
+        ...verifiedScodeCommand(runCmd, verificationCwd(), autonomy, sandboxOptions),
       });
 
       const tuiCmd = captureWarnings(() =>
@@ -471,7 +472,7 @@ export function buildEffectiveScodeCommands(
         agentId,
         autonomy,
         mode: "tui",
-        command: buildScodeCommand(tuiCmd, verificationCwd(), autonomy, sandboxOptions),
+        ...verifiedScodeCommand(tuiCmd, verificationCwd(), autonomy, sandboxOptions),
       });
     }
   }
