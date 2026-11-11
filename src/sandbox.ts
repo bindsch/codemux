@@ -181,7 +181,7 @@ export function isCredentialEnvName(name: string): boolean {
  * every run that carries the flag without a scrub (verified on the
  * installed 0.6.0), so the flag rides only where it can act. A scode
  * config file's `scrub_env: true` is invisible to codemux and stays the
- * operator's responsibility (README "Sandbox Integration"). The
+ * operator's responsibility (docs/autonomy-and-sandboxing.md). The
  * exemption is REQUIRED — a scode without --keep-env refuses rather
  * than run it stripped — when the caller passed `keepEnvRequired` (a
  * provider override: its key is the run's only credential, the

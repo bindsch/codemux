@@ -1,6 +1,6 @@
 {
   "name": "codemux",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "private": true,
   "packageManager": "bun@1.4.4",
   "description": "Unified CLI for AI coding agents",

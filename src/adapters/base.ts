@@ -125,10 +125,10 @@ export abstract class BaseAdapter {
 
   /** Whether the prompt rides argv for this request. The shared validator
    * reads this — not `getStdinInput` — to decide the argv rules (the NUL
-   * refusal and the argv byte bound): an adapter whose stdin carries
-   * something other than the prompt (aider's canned declines) still puts
-   * the prompt in argv, and the default here is wrong for exactly that
-   * shape, so such an adapter overrides it (review round 153). */
+   * refusal and the argv byte bound). The default assumes a null stdin
+   * means an argv prompt; an adapter whose prompt rides neither (aider
+   * passes it by --message-file while stdin carries canned declines)
+   * overrides it (review round 153). */
   promptInArgv(request: RunRequest): boolean {
     return this.getStdinInput(request) === null;
   }

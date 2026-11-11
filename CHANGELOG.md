@@ -13,6 +13,8 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-11-11
+
 ### Added
 
 - `--sandbox-strict` on run, session, tui, and plain check passes scode's deny-default policy with explicit state grants. It refuses env-wrapped executables outside system read grants with exit 64 instead of granting writable access to code; nested wrappers follow the same rule. Runtime grants preserve launcher isolation blocks. Strict requires sandboxing, composes with trust presets, and is recorded for session resume. Resume refuses a strict-mode mismatch. Every harness has argv or refusal coverage, including Qwen's session preview. Live support is conditional; see the declared strict limitations before relying on a successful preview.

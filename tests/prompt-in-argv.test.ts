@@ -7,11 +7,10 @@ import { OpencodeAdapter } from "../src/adapters/opencode.js";
 import type { RunRequest } from "../src/types.js";
 
 // Review round 153, finding 4: the shared argv rules key on the adapter's
-// promptInArgv, not on `getStdinInput(request) === null` — an adapter whose
-// stdin carries something other than the prompt (aider's canned declines)
-// still puts the prompt itself in argv, so the NUL refusal and the argv
-// byte bound must apply there; an adapter whose prompt rides stdin is
-// exempt from the argv bound exactly as before.
+// promptInArgv, not on `getStdinInput(request) === null`. Aider's stdin
+// carries canned declines and its prompt rides --message-file, so aider
+// reports false and is exempt from the NUL refusal and the argv byte bound,
+// like an adapter whose prompt rides stdin.
 
 describe("the argv prompt rules follow promptInArgv", () => {
   const scratch: string[] = [];

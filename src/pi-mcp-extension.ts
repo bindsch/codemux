@@ -65,8 +65,10 @@ export async function installPiMcpExtension(
     if (options.toolTimeoutMs !== undefined && (!Number.isSafeInteger(options.toolTimeoutMs) || options.toolTimeoutMs <= 0 || options.toolTimeoutMs > 2_147_483_647)) {
       throw new Error("pi MCP tool timeout must be a positive timer-safe integer");
     }
+    // The generated extension is serialized into pi without imports, so the
+    // client version is a fixed placeholder, never the package version.
     await transport.request("initialize", {
-      protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "codemux-pi", version: "2.0.0" },
+      protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "codemux-pi", version: "1" },
     });
     await transport.notify("notifications/initialized");
     const definitions: ObjectValue[] = [];

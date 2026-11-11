@@ -46,8 +46,9 @@ export const RESULT_ANSWER_FIELD: Partial<Record<AgentId, string>> = {
  * a successful run that was not rerouted reports `served_model: null` and
  * codex is NOT in this set: probe H cannot assert an override on evidence
  * that arrives only when the provider rerouted (round 26, edges 2). Agy,
- * kimi, openhands, and opencode pins expose no served-model field, so their
- * envelopes report `served_model: null`. Qwen's assistant message.model
+ * kimi, openhands, and opencode pins expose no native served-model field;
+ * their envelopes report `served_model: null`, except an opencode experiment
+ * run, which carries the experiment observer's provider-verified model. Qwen's assistant message.model
  * comes from its configuration, so it also reports null. The release gate's
  * probe H (the override is asserted on the envelope's served_model) and
  * `codemux list --json` (candidate discovery) read this one table, so

@@ -201,11 +201,10 @@ export function validateRunRequestFor(
   if (request.timeoutMs !== undefined) validateTimeout(request.timeoutMs);
   // The argv rules key on where the prompt goes (promptInArgv), not on
   // whether getStdinInput is null: aider's stdin carries canned declines
-  // while the prompt itself still rides `--message=` argv, so both rules
-  // must apply there too — the NUL refusal as a usage error before launch,
-  // not the spawn-time "invalid command" it used to become (review round
-  // 153). A NUL cannot survive real argv and the bound keeps the launch
-  // inside the OS limit.
+  // and its prompt rides --message-file, so aider reports false and skips
+  // both rules (review round 153). Where the prompt is in argv, the NUL
+  // refusal is a usage error before launch, since a NUL cannot survive real
+  // argv, and the bound keeps the launch inside the OS limit.
   if (adapter.promptInArgv(request)) {
     if (request.prompt.includes("\0")) {
       throw new UsageRefusalError(`${adapter.id} cannot pass a NUL byte in an argv prompt`);
