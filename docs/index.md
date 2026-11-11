@@ -20,6 +20,7 @@ Run `codemux --version` to identify an installed release.
 - [Sessions](sessions.md): fresh sessions, shutdown, resume.
 - [Session protocol](session-protocol.md): input and event schemas.
 - [Experiment MCP](experiment-mcp.md): server specification, recordings, verification.
+- [Complete](complete.md): brokered raw chat completions with a spend cap.
 - [Troubleshooting](troubleshooting.md): common refusals and failures.
 
 ## Contribute

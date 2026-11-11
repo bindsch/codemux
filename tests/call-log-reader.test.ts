@@ -346,7 +346,7 @@ describe("readCallLog", () => {
       handle.end();
       const records: string[] = [];
       const streamed = streamCallLog(path, (entry) => {
-        if (entry.record !== null) records.push(entry.record.agent);
+        if (entry.record !== null) records.push(entry.record.agent ?? "-");
       });
       expect(streamed.malformed).toBe(1);
       expect(records).toEqual(["aider", "zai"]);

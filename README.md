@@ -91,6 +91,7 @@ for complete event schemas.
 | `run` | One non-interactive prompt |
 | `tui` | Interactive harness |
 | `session` | Multi-turn JSONL protocol |
+| `complete` | Hosted chat completions with spend caps and a call ledger |
 | `check` | Real model probes; consumes provider quota |
 | `calls` | Local call ledger and selected-record totals |
 | `usage` | Optional subscription reporting through usagemux |

@@ -241,8 +241,8 @@ Each record contains:
 | Field | Shape |
 |---|---|
 | `ts` | Start time as an RFC 3339 timestamp; a `ts` that is not one makes the line malformed |
-| `kind` | `run`, `check`, `session_turn`, or closing `session` |
-| `agent`, `provider`, `cwd` | Strings; provider is `default` or the override URL host read from the launch adapter's own environment, never its key. `default` means no codemux provider override: the harness's own configuration or ambient variables may still name another endpoint (OpenHands under `--model` reads exported `LLM_BASE_URL`/`LLM_API_KEY`), so `default` is not a claim about the vendor's first-party endpoint |
+| `kind` | `run`, `check`, `session_turn`, closing `session`, or `complete` (one [brokered completion](complete.md)) |
+| `agent`, `provider`, `cwd` | Strings, except `agent`, which is null on a `complete` row (no harness serves it); provider is `default` or the override URL host read from the launch adapter's own environment, never its key. `default` means no codemux provider override: the harness's own configuration or ambient variables may still name another endpoint (OpenHands under `--model` reads exported `LLM_BASE_URL`/`LLM_API_KEY`), so `default` is not a claim about the vendor's first-party endpoint |
 | `model`, `model_effective`, `model_alias` | Requested and reported model, each string or null, and the `-m` value as typed when it resolved through `config.models` (else null). A `session_turn` records the model that served that turn in `model_effective`; the closing `session` keeps it null — no single model serves a whole session. Older session-turn lines carry no `model_effective`, and no pre-2.0.0 line carries `model_alias` |
 | `session_id`, `turn_id` | Strings or null; turns identify their session |
 | `autonomy` | Autonomy string or null |
@@ -253,9 +253,12 @@ Each record contains:
 | `finish` | End/turn reason string or null; a run the provider refused for quota after the spawn ends `provider-quota-refused`; an empty-answer run ends `empty-answer` |
 | `duration_ms` | Nonnegative elapsed time from the record's start |
 | `usage` | The five-field object above |
-| `cost_source` | `billed`, `harness-estimate`, `subscription-zero`, or null; written by the ledger from the agent and the figure, never taken from the caller |
+| `cost_source` | `billed`, `harness-estimate`, `subscription-zero`, `price-table`, or null; written by the ledger from the agent and the figure, never taken from the caller, except on a `complete` row, where codemux's own broker states `billed` for a provider-reported charge, any other cost is `price-table`, and a row without a cost has null |
 
-`agent` must be a known agent id and `autonomy` a known autonomy level or
+A `complete` record carries `agent` null, `provider` set to the upstream host, `autonomy` null, `hermetic` and `sandboxed` false, and a cost that is
+either the provider's own charge (`billed`, OpenRouter) or codemux's
+`price-table` estimate; `calls --sum` prints the estimate on its own line.
+Every other kind's `agent` must be a known agent id and `autonomy` a known autonomy level or
 null; a line naming anything else is skipped as malformed and never reaches
 the totals, which key on exactly those fields. `ts` is judged by the same
 RFC 3339 rule the usage protocol's timestamp fields use: a date-only string

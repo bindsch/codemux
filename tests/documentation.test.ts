@@ -179,7 +179,7 @@ describe("documentation integrity", () => {
   test("every parsed command and option has a current reference", () => {
     const reference = read("docs/cli.md") + read("docs/sessions.md");
     for (const path of ["src/index.ts", "src/info-commands.ts",
-      "src/check-command.ts", "src/calls-command.ts", "src/session/cli.ts"]) {
+      "src/check-command.ts", "src/calls-command.ts", "src/session/cli.ts", "src/complete/command.ts"]) {
       const source = read(path);
       for (const match of source.matchAll(/\.command\("([^"]+)"/g)) {
         const name = match[1]!;
@@ -434,10 +434,11 @@ describe("current documentation set", () => {
     const runTimeout = optionDefault("src/run-command.ts", "--timeout <seconds>");
     const checkTimeout = optionDefault("src/check-command.ts", "--timeout <seconds>");
     const usageTimeout = optionDefault("src/info-commands.ts", "--timeout <seconds>");
+    const completeTimeout = optionDefault("src/complete/command.ts", "--timeout <seconds>");
     const cliTimeouts = [...read("docs/cli.md").matchAll(/^\| `--timeout <seconds>` \| (\d+)/gm)]
       .map((match) => match[1]!);
-    expect(cliTimeouts.slice().sort()).toEqual([runTimeout, checkTimeout, usageTimeout].sort());
-    expect(cliTimeouts).toHaveLength(3);
+    expect(cliTimeouts.slice().sort()).toEqual([runTimeout, checkTimeout, usageTimeout, completeTimeout].sort());
+    expect(cliTimeouts).toHaveLength(4);
 
     const limit = read("src/calls-command.ts").match(/const DEFAULT_LIMIT = (\d+)/)![1]!;
     expect(read("docs/cli.md")).toMatch(new RegExp("^\\| `-n, --limit <count>` \\| " + limit + "\\b", "m"));

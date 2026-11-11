@@ -13,7 +13,23 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- `codemux complete serve|once`: brokered raw chat completions for
+  measurement harnesses that run their own agent loop. A loopback-only
+  OpenAI chat-completions server with a per-run bearer token forwards to
+  Anthropic (translated field for field, or refused), OpenAI, OpenRouter, or
+  an OpenAI-compatible endpoint. The API key comes only from a named
+  environment variable, and OAuth subscription tokens are refused; a
+  `--base-url` off the provider's own host needs `--key-env`. Every
+  request passes a request cap and a dollar cap priced from a dated table
+  (`src/complete/prices.ts`, checked against the provider pages on
+  2026-11-10) and writes a ledger row of kind `complete`; an answer whose
+  cost cannot be known stops the server. A stop signal exits 143, a cap 0.
+  See [complete](https://github.com/bindsch/codemux/blob/main/docs/complete.md).
+- `codemux calls --kind <kind>` filters by record kind;
+  `codemux calls --kind complete --sum` totals brokered completions, with
+  the price-table estimate on its own line.
 
 ## [2.0.0] - 2026-10-31
 

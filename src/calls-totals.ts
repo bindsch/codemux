@@ -111,6 +111,10 @@ class GroupTotals {
   // own line beneath, so a claude session-lifetime figure never reads as
   // money billed per call.
   private costEstimated: number | null = null;
+  // The `complete` price-table estimate (docs/complete.md) gets its own
+  // bucket and line too: codemux priced the reported tokens itself.
+  private costPriced: number | null = null;
+  private costPricedOverflowed = false;
   private nonSessionRecords = 0;
   private keyedClosings = 0;
   private excludedSummaries = 0;
@@ -154,12 +158,20 @@ class GroupTotals {
    * zai estimate recorded before 2.0.0 does not read as a provider charge
    * (review round 39). A total that would leave the finite range is
    * unknown and stays unknown (review round 90). */
-  private addCost(value: number | null, source: CostSource | null, agent: AgentId): void {
+  private addCost(value: number | null, source: CostSource | null, agent: AgentId | null): void {
     if (value === null) {
       this.unknowns.cost_usd++;
       return;
     }
-    if ((source ?? costSourceFor(agent, value)) === "harness-estimate") {
+    const resolved = source ?? costSourceFor(agent, value);
+    if (resolved === "price-table") {
+      if (this.costPricedOverflowed) return;
+      const next = nextCostSum(this.costPriced, value);
+      if (next === null) this.costPricedOverflowed = true;
+      this.costPriced = next;
+      return;
+    }
+    if (resolved === "harness-estimate") {
       if (this.costEstimatedOverflowed) return;
       const next = nextCostSum(this.costEstimated, value);
       if (next === null) this.costEstimatedOverflowed = true;
@@ -344,6 +356,13 @@ class GroupTotals {
       console.log(
         `${heading} harness estimate ${figure} — ` +
           "claude and zai report session-lifetime figures, not per-call bills"
+      );
+    }
+    if (this.costPriced !== null || this.costPricedOverflowed) {
+      const figure = this.costPriced === null ? "unknown" : `$${this.costPriced.toFixed(4)}`;
+      console.log(
+        `${heading} price-table estimate ${figure} — ` +
+          "codemux complete priced the reported tokens (src/complete/prices.ts)"
       );
     }
   }

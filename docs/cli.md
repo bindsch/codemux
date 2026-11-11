@@ -300,6 +300,7 @@ answer every permission request with an immediate deny) and `--final`
 |---|---|
 | `-n, --limit <count>` | 20; integer 1–100000; bounds the listing only, never the totals |
 | `-a, --agent <id>` | All agents |
+| `--kind <kind>` | All kinds; `run`, `check`, `session_turn`, `session`, or `complete`; anything else exits 64 |
 | `--since <when>` | No cutoff; an integer duration with a unit (s/m/h/d/w) or an ISO date. A date-only value (`2026-11-08`) cuts at UTC midnight; durations are relative to the local now. A bare number is refused as a usage error: it is neither a duration nor a date, and engines read it differently |
 | `--label <KEY=VALUE>` | Repeatable; retain records matching every supplied key and value |
 | `--json` | Stored JSONL instead of a table; DEL and C1 characters are escaped |
@@ -327,6 +328,32 @@ filters use the [label syntax](#labels) above;
 `CODEMUX_LABELS`. Invalid filters or grouping keys fail with exit 64.
 The [results and usage reference](results-and-usage.md#ledger-selection-and-totals)
 defines filtering, summary selection, and interval limitations.
+
+## complete
+
+Brokered raw chat completions from a paid API key, for measurement harnesses
+that run their own agent loop. The full contract is in
+[complete](complete.md). `serve` prints one JSON line on stdout (`base_url`,
+`token`, `pid`, `provider`, `upstream_host`, `budget_usd`, `max_requests`,
+`prices_as_of`), then serves `POST /v1/chat/completions` on 127.0.0.1 until
+SIGTERM, SIGINT, SIGHUP, or a cap. A cap exits 0; a signal exits 143, as
+the exit-code table below gives for a handled termination signal.
+`once` with `-f <file>` forwards one request (no streaming) and prints the answer;
+an upstream error or refusal exits 1.
+
+| Option | Default and meaning |
+|---|---|
+| `--provider <name>` | Required; `anthropic`, `openai`, `openrouter`, or `openai-compatible` |
+| `--base-url <url>` | The provider's public URL ending in `/v1`; required for `openai-compatible`; plain http only to a loopback host |
+| `--proxy <url>` | Unset; explicit HTTP(S) proxy for an HTTPS upstream; ambient proxy variables are ignored |
+| `--key-env <name>` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `OPENROUTER_API_KEY` on the provider's own host; required for `openai-compatible` and for a `--base-url` naming another host; the variable's name, never the key |
+| `--label <KEY=VALUE>` | Repeatable ledger labels; without flags, `CODEMUX_LABELS` |
+| `--input-usd-per-mtok`, `--output-usd-per-mtok` | Unset; given together, they price every model instead of the table |
+| `--timeout <seconds>` | 600; per upstream request, 1–86400 |
+| `--budget-usd <usd>` | serve only, required; positive |
+| `--max-requests <count>` | serve only, required; 1–1000000000 |
+| `--port <port>` | serve only; 0 picks a free port |
+| `-f, --file <path>` | once only, required; the request body |
 
 ## usage
 
@@ -365,7 +392,7 @@ These commands may inspect local binaries or execute version/help paths.
 | 0 | Command succeeded; does not imply every optional harness is installed |
 | 1 | Parser errors, configuration/I/O/launch or protocol failures (including a zero-exit run with an empty answer), and runtime errors |
 | 2 | doctor only: the configuration is invalid; the check still prints everything it could |
-| 64 | Every pre-launch refusal of a caller mistake, with the same code on run, tui, check, session, calls, usage, and verify: unknown agent (also the unknown `--agent` of calls/usage and `--agent` combined with `--all`); a request the named agent cannot carry (model, effort, autonomy without sandbox, hermetic, tools, result JSON, provider override, --experiment-project-settings); prompt refusals ("No prompt provided. Use -p or -f", an unreadable or empty -f file, a malformed, empty, oversized, or terminal -f - read); sandbox policy option rules ("--sandbox-block requires absolute paths", "--sandbox-account requires an absolute path", "--sandbox-account-id without --sandbox-account"); capability and combination refusals ("--enable-playwright-mcp requires --sandbox", "--no-web applies to the" followed by the agents that declare `run.no-web`); "--print-sandbox requires --sandbox"; bad option values (--timeout, --pass-env, --auto, --effort, --tools, --sandbox-trust, an invalid `-m/--model` name, an inaccessible `--cwd`, an explicitly empty value given to any option above); project-execution configuration refusals (a forbidden harness execution knob in the project tree) and the codex multi-agent knob's on/off rule; invalid labels, calls cutoff/grouping, quota-gate refusals, and unsupported session agents. Parser errors stay exit 1. |
+| 64 | Every pre-launch refusal of a caller mistake, with the same code on run, tui, check, session, calls, usage, and verify: unknown agent (also the unknown `--agent` of calls/usage and `--agent` combined with `--all`); a request the named agent cannot carry (model, effort, autonomy without sandbox, hermetic, tools, result JSON, provider override, --experiment-project-settings); prompt refusals ("No prompt provided. Use -p or -f", an unreadable or empty -f file, a malformed, empty, oversized, or terminal -f - read); sandbox policy option rules ("--sandbox-block requires absolute paths", "--sandbox-account requires an absolute path", "--sandbox-account-id without --sandbox-account"); capability and combination refusals ("--enable-playwright-mcp requires --sandbox", "--no-web applies to the" followed by the agents that declare `run.no-web`); "--print-sandbox requires --sandbox"; bad option values (--timeout, --pass-env, --auto, --effort, --tools, --sandbox-trust, an invalid `-m/--model` name, an inaccessible `--cwd`, an explicitly empty value given to any option above); project-execution configuration refusals (a forbidden harness execution knob in the project tree) and the codex multi-agent knob's on/off rule; invalid labels, calls cutoff/grouping/kind, quota-gate refusals, and unsupported session agents; `complete` option refusals (an unset key variable, a key or OAuth token where a variable name belongs, an OAuth token as the key, a bad base URL, budget, cap, port, or price). Parser errors stay exit 1. |
 | 66 | Requested resume identity not found |
 | 69 | Optional usagemux absent or untrusted; a usagemux that exits nonzero is an unreadable query and exits 1 |
 | 78 | Session policy/trust refusal; registry access failure can instead be 1 |
