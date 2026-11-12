@@ -31,6 +31,13 @@ function geminiSetup(home: string) {
 }
 
 describe("Gemini experiment launch ownership", () => {
+  test("a final relay failure cannot record verified delivery", async () => geminiRig(async (h) => {
+    await h.experiment.prepare("0.60.0"); h.write(); h.experiment.push(geminiStdout()); h.experiment.finish();
+    h.relay.finish = () => { throw new Error("late relay failure"); };
+    await expect(h.experiment.complete()).rejects.toThrow("late relay failure");
+    expect(h.records.filter((r) => r.kind === "model_tool_result" || r.kind === "result_comparison")).toEqual([]);
+    await h.experiment.close();
+  }));
   test("prepares local telemetry and authenticated MCP, matches delayed stdout, verifies and retains evidence", async () => geminiRig(async (h) => {
     await Promise.all([h.experiment.prepare("0.60.0"), h.experiment.prepare("0.60.0")]);
     expect(h.state().starts).toBe(1);

@@ -176,6 +176,23 @@ describe("goose experiment verification", () => {
     result: { content: [{ type: "text", text: "ok" }], isError: false }, ...over,
   }];
 
+  test("stored ledger equality cannot emit model delivery records, including before a late mismatch", () => {
+    for (const lateFailure of [false, true]) {
+      const records: string[] = [], calls = withCalls();
+      const ledger = { calls: [{ id: "b1", name: "parity_echo", input: { x: 1 } }],
+        responses: [{ id: "b1", content: [{ type: "text", text: "ok" }], isError: false }] };
+      if (lateFailure) {
+        calls.push(...withCalls({ relay_index: 2, call_id: "b2" }));
+        ledger.calls.push({ id: "b2", name: "parity_echo", input: { x: 1 } });
+      }
+      const verify = () => verifyGooseExperimentLedger(ledger, { spec, calls, record: (kind) => { records.push(kind); } });
+      if (lateFailure) expect(verify).toThrow("differs from server bytes"); else verify();
+      expect(records).toEqual(["goose_ledger_evidence"]);
+      expect(records).not.toContain("model_tool_result");
+      expect(records).not.toContain("result_comparison");
+    }
+  });
+
   test("a matching ledger verifies and records native evidence", () => {
     const records: Array<{ kind: string }> = [];
     verifyGooseExperimentLedger(

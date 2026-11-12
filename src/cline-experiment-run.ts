@@ -133,8 +133,8 @@ export class ClineExperimentRun implements StdoutSink {
       try {
         this.preserveEvidence();
         if (this.interrupted || this.bytes > MAX_CAPTURE_BYTES) throw new ExperimentFailure(Code.HarnessLogMissing, "Cline experiment capture was interrupted or exceeded its bound");
-        verifyClineExperimentEvidence(this.relay, this.readEvidence(), readClineCaptures(this.captureDir), this.capture);
         this.relay.finish();
+        verifyClineExperimentEvidence(this.relay, this.readEvidence(), readClineCaptures(this.captureDir), this.capture);
       } catch (error) { this.relay.fail(error); }
       if (this.relay.failureError) throw this.relay.failureError;
     })();

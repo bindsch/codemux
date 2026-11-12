@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { ExperimentFailure, ExperimentFailureCode as Code, type ExperimentRecord } from "./experiment-records.js";
 import type { ExperimentRelayCall } from "./experiment-relay.js";
 import type { JsonObject } from "./experiment-server.js";
+import { recordVerifiedDeliveries } from "./experiment-delivery-records.js";
 import { geminiExperimentArguments, geminiExperimentDefinitions, geminiExperimentObject, geminiExperimentOutput, geminiExperimentToolName } from "./gemini-experiment-content.js";
 
 export interface GeminiExperimentEvidenceSource {
@@ -36,6 +37,8 @@ export function verifyGeminiExperimentEvidence(source: GeminiExperimentEvidenceS
     wireCalls.set(wireId, call);
   }
   const declared = new Set<string>(), completed = new Set<string>(), delivered = new Set<string>();
+  const deliveries: { id: string; t: number }[] = [];
+  const modelCalls = new Map<string, ExperimentRelayCall>();
   let ended = false, session: string | undefined;
   const events = stdout.split("\n").filter((line) => line.trim()).map((line) => geminiExperimentObject(JSON.parse(line)));
   if (!stdout.endsWith("\n")) throw new ExperimentFailure(Code.HarnessLogMissing, "Gemini native stdout is truncated");
@@ -138,7 +141,11 @@ export function verifyGeminiExperimentEvidence(source: GeminiExperimentEvidenceS
           }
           nativeResults.add(native.id);
           if (settled && !delivered.has(call.call_id!)) {
-            source.record("tool_result_delivered", { call_id: call.call_id!, t: Date.now() / 1000 });
+            const t = Date.now() / 1000;
+            source.record("tool_result_delivered", { call_id: call.call_id!, t });
+            deliveries.push({ id: call.call_id!, t });
+            // Preserve the actual output, including the opted-in wrapper.
+            modelCalls.set(call.call_id!, { ...call, result: { content: [{ type: "text", text: native.response.output }] } });
             delivered.add(call.call_id!);
           }
         }
@@ -151,4 +158,5 @@ export function verifyGeminiExperimentEvidence(source: GeminiExperimentEvidenceS
       [...responses.keys()].some((key) => !seenRequests.has(key)) || calls.size !== declared.size || calls.size !== completed.size || calls.size !== delivered.size) {
     throw new ExperimentFailure(Code.HarnessLogMissing, "Gemini experiment lacks complete native calls, successful model delivery, or terminal evidence");
   }
+  recordVerifiedDeliveries(source, "gemini", modelCalls, deliveries, "canonical-generator-request");
 }

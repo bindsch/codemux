@@ -146,8 +146,8 @@ export class GeminiExperimentRun implements StdoutSink {
         const evidence = readUtf8FileBounded(this.evidencePath, { maxBytes: GEMINI_MAX_TELEMETRY_BYTES, label: "Gemini experiment telemetry", noFollow: true });
         this.preserve(evidence);
         if (this.interrupted || this.bytes > MAX_CAPTURE_BYTES) throw new ExperimentFailure(Code.HarnessLogMissing, "Gemini experiment capture was interrupted or oversized");
-        verifyGeminiExperimentEvidence(this.relay, parseGeminiExperimentTelemetry(evidence), this.capture);
         this.relay.finish();
+        verifyGeminiExperimentEvidence(this.relay, parseGeminiExperimentTelemetry(evidence), this.capture);
       } catch (error) { this.relay.fail(error); }
       if (this.relay.failureError) throw this.relay.failureError;
     })();

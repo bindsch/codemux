@@ -13,6 +13,10 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
+### Fixed
+
+- Gemini, Copilot, and Cline experiment recordings now emit `model_tool_result` and `result_comparison` once per verified call, after delivery and terminal checks pass. Probe G checks Gemini's opted-in untrusted-context wrapper; Copilot and Cline retain bare content. Goose remains unchanged because its stored ledger does not prove that a model request consumed the result.
+
 ## [2.0.1] - 2026-11-11
 
 ### Added

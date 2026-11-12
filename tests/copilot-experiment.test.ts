@@ -49,6 +49,27 @@ test("Copilot experiment joins native names and IDs to exact final provider byte
   }
 });
 
+test("Copilot records one delivery pair after completeness and none on a late pending request", () => {
+  for (const kind of ["chat", "responses", "anthropic"] as const) for (const lateFailure of [false, true]) {
+    const f = copilotEvidence(), bytes = Buffer.from(JSON.stringify(copilotPayload(kind)));
+    f.evidence.commit(f.evidence.request(bytes)); f.evidence.commit(f.evidence.request(bytes));
+    expect(f.source.records.filter((r) => r.kind === "model_tool_result" || r.kind === "result_comparison")).toEqual([]);
+    if (lateFailure) {
+      f.evidence.request(bytes);
+      expect(() => f.evidence.complete()).toThrow("complete provider");
+    } else { f.evidence.complete(); f.evidence.complete(); }
+    const delivered = f.source.records.filter((r) => r.kind === "model_tool_result");
+    const comparisons = f.source.records.filter((r) => r.kind === "result_comparison");
+    expect(delivered).toHaveLength(lateFailure ? 0 : 1);
+    expect(comparisons).toHaveLength(lateFailure ? 0 : 1);
+    if (!lateFailure) {
+      expect(delivered[0]).toMatchObject({ call_id: "call-1", content: copilotResult.content, output: copilotResult.content[0]!.text,
+        is_error: false, evidence_boundary: "captured-provider-request" });
+      expect(comparisons[0]).toMatchObject({ call_id: "call-1", harness: "copilot", equal: true, t: delivered[0]!.t });
+    }
+  }
+});
+
 test("Copilot experiment accepts omitted descriptions in the native catalog and provider request", () => {
   const { description: _description, ...definition } = copilotDefinition;
   const { description: _metadataDescription, ...metadata } = copilotMetadata[0]!;
@@ -169,7 +190,8 @@ function copilotRelay() {
   return { source, relay, state: () => ({ starts, closes, finishes, terms, listeners: listeners.size }) };
 }
 
-test.each([false, true])("Copilot experiment native RPC lifecycle binds terminal evidence (aborted=%p)", async (nativeAborted) => {
+test.each(["success", "abort", "relay-failure"])("Copilot experiment native RPC lifecycle binds terminal evidence (%s)", async (outcome) => {
+  const nativeAborted = outcome === "abort";
   const f = copilotRelay();
   const run = new CopilotExperimentRun(copilotSpec, "/synthetic", {}, "literal prompt", { workingDirectory: "/synthetic" }, f.relay,
     async () => new Response(copilotChatResponse));
@@ -206,7 +228,9 @@ test.each([false, true])("Copilot experiment native RPC lifecycle binds terminal
   await requestWork;
   if (nativeAborted) {
     expect([ended, aborted]).toEqual([false, true]); expect(run.usage).toBeUndefined(); run.finish();
-    await expect(run.complete()).rejects.toThrow("aborted"); await run.close(); return;
+    await expect(run.complete()).rejects.toThrow("aborted");
+    expect(f.source.records.filter((r) => r.kind === "model_tool_result" || r.kind === "result_comparison")).toEqual([]);
+    await run.close(); return;
   }
   expect([ended, aborted]).toEqual([true, false]);
   expect(run.usage).toMatchObject({ input_tokens: 5, output_tokens: 3, cached_input_tokens: 2, total_tokens: 10 });
@@ -214,6 +238,12 @@ test.each([false, true])("Copilot experiment native RPC lifecycle binds terminal
   expect(writes.find((write) => write.method === "session.create")?.params.mcpServers.test.timeout).toBe(321000);
   expect(run.finish()).toContain("complete"); expect(run.keptBytes()).toBeGreaterThan(0);
   expect(run.capturedOutput).toContain(run.sessionId); expect(run.recordingPath).toBe("synthetic-recording.jsonl");
+  if (outcome === "relay-failure") {
+    f.relay.finish = () => { throw new Error("late relay failure"); };
+    await expect(run.complete()).rejects.toThrow("late relay failure");
+    expect(f.source.records.filter((r) => r.kind === "model_tool_result" || r.kind === "result_comparison")).toEqual([]);
+    await run.close(); return;
+  }
   await run.complete(); await run.close(); run.closeSync();
   expect(f.state()).toMatchObject({ starts: 1, closes: 2, finishes: 1, listeners: 0 });
   await expect(f.relay.resolveCallId!({ relay_index: 1, name: "echo", input: {} }, {})).rejects.toThrow("native hook");

@@ -46,6 +46,24 @@ async function rig(fn: (home: string) => unknown | Promise<unknown>) {
 }
 
 describe("Cline final model-bound evidence", () => {
+  test("records one delivery pair after terminal checks and none on a late terminal failure", () => {
+    for (const lateFailure of [false, true]) {
+      const f = fixture();
+      f.captures.push({ ...f.captures[1], attempt: 2 });
+      const verify = () => verifyClineExperimentEvidence(f.source, f.evidence, f.captures, lateFailure ? "" : stdout);
+      if (lateFailure) expect(verify).toThrow("terminal evidence"); else verify();
+      const delivered = f.records.filter((r) => r.kind === "model_tool_result");
+      const comparisons = f.records.filter((r) => r.kind === "result_comparison");
+      expect(f.records.filter((r) => r.kind === "tool_result_delivered")).toHaveLength(1);
+      expect(delivered).toHaveLength(lateFailure ? 0 : 1);
+      expect(comparisons).toHaveLength(lateFailure ? 0 : 1);
+      if (!lateFailure) {
+        expect(delivered[0]!.fields).toMatchObject({ call_id: "native-call-1", content: result.content, output: result.content[0]!.text,
+          is_error: false, evidence_boundary: "captured-provider-request" });
+        expect(comparisons[0]!.fields).toMatchObject({ call_id: "native-call-1", harness: "cline", equal: true, t: delivered[0]!.fields.t });
+      }
+    }
+  });
   test("rejects a normalized impossible calendar date in native evidence", () => {
     const f = fixture(); f.captures[0]!.timestamp = "2026-02-30T00:00:00Z";
     expect(() => verifyClineExperimentEvidence(f.source, f.evidence, f.captures, stdout)).toThrow("native request correlation");
@@ -232,6 +250,13 @@ describe("Cline owned carrier", () => {
     };
     return { ...f, relay, run, write, state: () => ({ starts, finishes, closes, terms, listeners: listeners.size }) };
   }
+  test("a final relay failure cannot record verified delivery", async () => rig(async (home) => {
+    const h = host(home); await h.run.prepare(); h.write(); h.run.push(stdout); h.run.finish();
+    h.relay.finish = () => { throw new Error("late relay failure"); };
+    await expect(h.run.complete()).rejects.toThrow("late relay failure");
+    expect(h.records.filter((r) => r.kind === "model_tool_result" || r.kind === "result_comparison")).toEqual([]);
+    await h.run.close();
+  }));
   test("prepares once, verifies native evidence, retains redacted payloads and closes", async () => rig(async (home) => {
     const h = host(home); expect(h.run.isPrepared).toBe(false);
     await Promise.all([h.run.prepare(), h.run.prepare()]); expect(h.run.isPrepared).toBe(true); h.write();

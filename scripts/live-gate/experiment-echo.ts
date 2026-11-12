@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { modelResultMatches } from "../../src/experiment-claude-content.js";
 import { compareCodexOutput, wallTimeHeader } from "../../src/experiment-codex-content.js";
 import { kimiWallTimeHeader, kimiWithoutHeader } from "../../src/experiment-kimi-content.js";
+import { geminiExperimentOutput } from "../../src/gemini-experiment-content.js";
 import type { AgentId } from "../../src/types.js";
 
 /** The reply rule: the marker is the reply's substance — models drop the
@@ -76,10 +77,15 @@ function deliveredResultFailure(record: Record<string, unknown>, marker: string,
     }
     return null;
   }
-  // Claude and Z.AI record the SDK block; OpenCode, Pi, and Qwen record the
-  // delivered content directly. Neither carries a header, and a Claude or
-  // Z.AI record without its block fails. Gemini, Copilot, Goose, and Cline
-  // write no record yet, so they fail earlier at the record count.
+  if (agent === "gemini") {
+    const text = geminiExperimentOutput({ content: [{ type: "text", text: marker }] });
+    return modelResultMatches([{ type: "text", text }], record.content)
+      ? null
+      : `the recording's model_tool_result lacks the marker in Gemini's exact untrusted-context wrapper (${path})`;
+  }
+  // Claude and Z.AI record the SDK block; OpenCode, Pi, Qwen, Copilot,
+  // and Cline record the delivered content directly. Goose's ledger
+  // cannot prove model delivery, so it emits neither required record.
   const sdkBlock = agent === "claude" || agent === "zai";
   const block = record.block as { content?: unknown } | null | undefined;
   const content = sdkBlock ? (block !== null && typeof block === "object" ? block.content : undefined) : record.content;

@@ -35,7 +35,30 @@ describe("Gemini native experiment evidence", () => {
     const text = geminiTelemetry().map((record) => JSON.stringify(record, null, 2)).join("\n");
     verifyGeminiExperimentEvidence(source, parseGeminiExperimentTelemetry(text), geminiStdout());
     expect(source.records.filter((r) => r.kind === "tool_result_delivered")).toHaveLength(1);
-    expect(source.records.at(-1)?.evidence_boundary).toBe("canonical-generator-request");
+    expect(source.records.find((r) => r.kind === "gemini_generator_request")?.evidence_boundary).toBe("canonical-generator-request");
+  });
+  test("records one wrapped delivery pair only after all generator evidence passes", () => {
+    for (const lateFailure of [false, true]) {
+      const source = geminiSource(), telemetry = geminiTelemetry();
+      // A second settled request repeats the history, not the delivery.
+      telemetry.push({ ...telemetry[1], _spanContext: { traceId: "trace", spanId: "retry" } },
+        { ...telemetry[2], spanContext: { traceId: "trace", spanId: "retry" } },
+        { ...telemetry[3], spanContext: { traceId: "trace", spanId: "retry" } });
+      if (lateFailure) telemetry.push({ ...telemetry[1], _spanContext: { traceId: "trace", spanId: "orphan" } });
+      const verify = () => verifyGeminiExperimentEvidence(source, telemetry, geminiStdout());
+      if (lateFailure) expect(verify).toThrow("lacks complete"); else verify();
+      const delivered = source.records.filter((r) => r.kind === "model_tool_result");
+      const comparisons = source.records.filter((r) => r.kind === "result_comparison");
+      expect(source.records.filter((r) => r.kind === "tool_result_delivered")).toHaveLength(1);
+      expect(delivered).toHaveLength(lateFailure ? 0 : 1);
+      expect(comparisons).toHaveLength(lateFailure ? 0 : 1);
+      if (!lateFailure) {
+        const output = geminiExperimentOutput(geminiResult);
+        expect(delivered[0]).toMatchObject({ call_id: geminiNativeId, content: [{ type: "text", text: output }], output,
+          is_error: false, evidence_boundary: "canonical-generator-request" });
+        expect(comparisons[0]).toMatchObject({ call_id: geminiNativeId, harness: "gemini", equal: true, t: delivered[0]!.t });
+      }
+    }
   });
   test("pins native naming, schema insertion, collisions and unmodified server properties", () => {
     expect(geminiExperimentToolName("mcp_test", "a/b")).toBe("mcp_test_a_b");

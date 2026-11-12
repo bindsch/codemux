@@ -4,9 +4,9 @@ import type { JsonObject } from "./experiment-server.js";
 /** The delivery evidence the live gate's experiment probe reads: one
  * model_tool_result and one result_comparison per delivered call. Callers
  * emit these only after their provider-request and stdout checks pass, so
- * a failed run never records an unchanged result. The provider request
- * carried exactly the relay result, so the relay content is what the
- * model received. */
+ * a failed verification never records an unchanged result. Calls contain
+ * the verified model-facing result: the relay content, or an explicitly
+ * accepted native projection (Gemini's untrusted-context wrapper). */
 export function recordVerifiedDeliveries(
   source: { record: (kind: string, fields: JsonObject) => void },
   harness: string,

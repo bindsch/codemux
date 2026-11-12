@@ -129,8 +129,8 @@ export class CopilotExperimentRun implements StdoutSink {
     await this.ending;
     try {
       if (this.interrupted || options?.timedOut || !this.ended) throw new ExperimentFailure(Code.HarnessLogMissing, "Copilot experiment has no complete native terminal turn");
-      this.evidence.complete();
       this.relay.finish();
+      this.evidence.complete();
     } catch (error) { this.relay.fail(experimentFailure(error)); }
     if (this.relay.failureError) throw this.relay.failureError;
   }

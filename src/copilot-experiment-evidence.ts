@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { ExperimentFailure, ExperimentFailureCode as Code, type ExperimentRecord } from "./experiment-records.js";
 import type { ExperimentRelayCall } from "./experiment-relay.js";
 import type { JsonObject } from "./experiment-server.js";
+import { recordVerifiedDeliveries } from "./experiment-delivery-records.js";
 
 export function copilotExperimentObject(value: unknown): JsonObject {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ExperimentFailure(Code.Protocol, "Copilot experiment requires an object");
@@ -43,6 +44,8 @@ export class CopilotExperimentEvidence {
   private readonly tools = new Map<string, JsonObject>();
   private readonly calls = new Map<string, { name: string; input: unknown }>();
   private readonly delivered = new Set<string>();
+  private readonly deliveries: { id: string; t: number }[] = [];
+  private recorded = false;
   private requests = 0;
   private readonly pending = new Set<CopilotExperimentDelivery>();
 
@@ -156,7 +159,11 @@ export class CopilotExperimentEvidence {
     if (!this.pending.delete(delivery)) throw new ExperimentFailure(Code.Protocol, "Copilot provider delivery was not pending");
     this.requests++;
     for (const id of delivery.callIds) {
-      if (!this.delivered.has(id)) this.source.record("tool_result_delivered", { call_id: id, t: Date.now() / 1000 });
+      if (!this.delivered.has(id)) {
+        const t = Date.now() / 1000;
+        this.source.record("tool_result_delivered", { call_id: id, t });
+        this.deliveries.push({ id, t });
+      }
       this.delivered.add(id);
     }
   }
@@ -167,6 +174,10 @@ export class CopilotExperimentEvidence {
     if (!this.requests || this.pending.size || this.calls.size !== this.source.calls.length || this.delivered.size !== this.calls.size ||
         this.source.calls.some((call) => !call.call_id || !this.delivered.has(call.call_id))) {
       throw new ExperimentFailure(Code.HarnessLogMissing, "Copilot experiment lacks complete provider delivery evidence");
+    }
+    if (!this.recorded) {
+      recordVerifiedDeliveries(this.source, "copilot", new Map(this.source.calls.map((call) => [call.call_id!, call])), this.deliveries);
+      this.recorded = true;
     }
   }
 }

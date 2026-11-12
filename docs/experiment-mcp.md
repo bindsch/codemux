@@ -14,9 +14,19 @@ Title generation is best-effort in OpenCode, so a failed or unanswered title
 request does not fail the run. Two other OpenCode 1.19.5 agents send no tools:
 compaction, which rewrites the history that verification checks, and
 project-copy-name, which only OpenCode's HTTP API starts. A turn from either
-fails the run with a diagnostic that names the agent. OpenCode, Pi, and Qwen
+fails the run with a diagnostic that names the agent. OpenCode, Pi, Qwen, Gemini, Copilot, and Cline
 record each verified delivery as `model_tool_result` and `result_comparison`,
-and only after every provider-request and stdout check has passed.
+and only after their native delivery and terminal checks have passed. Repeated
+request history emits one pair per call. Gemini records the exact wrapped
+function-response output under `canonical-generator-request`; `equal: true`
+means it matches the relay text under the opted-in `gemini-untrusted-context`
+projection. Copilot and Cline record unchanged relay content under
+`captured-provider-request`. Probe G checks these content-shaped records.
+
+Goose remains excluded from these delivery records. Its SQLite ledger reader
+matches stored calls and results but discards message roles and ordering and
+captures no later provider request consuming the result. Ledger equality and
+a final stdout object do not prove exact model delivery; probe G fails for Goose.
 
 The server runs **outside scode** with only the environment names in the spec. Its command and arguments are operator-controlled. The harness remains inside read-only scode. Hermetic mode excludes operator-configured MCP integrations; this explicitly requested server is the exception.
 
