@@ -174,24 +174,17 @@ describe("cursor provider override", () => {
     CODEMUX_CURSOR_PROVIDER_MODEL: "provider-model",
   };
 
-  test("the endpoint and key ride the run environment", () => {
+  test("the unsafe override is refused before building the run environment", () => {
     const request: RunRequest = { agent: "cursor", prompt: "p" };
-    expect(adapter(overrideEnv).getRunEnv(request)).toEqual({
-      CURSOR_API_ENDPOINT: "https://api.example/v1",
-      CURSOR_API_KEY: "key-1",
-    });
+    expect(() => adapter(overrideEnv).getRunEnv(request)).toThrow("saved account credential");
     expect(adapter({}).getRunEnv(request)).toEqual({});
   });
 
-  test("the override's model rides --model when the request names none", () => {
-    expect(adapter(overrideEnv).buildRunCommand({ agent: "cursor", prompt: "p" })).toEqual([
-      "agent", "--print", "--output-format", "stream-json", "--trust",
-      "--model", "provider-model",
-    ]);
-    expect(adapter(overrideEnv).buildRunCommand({ agent: "cursor", prompt: "p", model: "explicit" })).toEqual([
-      "agent", "--print", "--output-format", "stream-json", "--trust",
-      "--model", "explicit",
-    ]);
+  test("an explicit model cannot bypass provider refusal", () => {
+    expect(() => adapter(overrideEnv).buildRunCommand({ agent: "cursor", prompt: "p" }))
+      .toThrow("saved account credential");
+    expect(() => adapter(overrideEnv).buildRunCommand({ agent: "cursor", prompt: "p", model: "explicit" }))
+      .toThrow("saved account credential");
   });
 
   test("a token cap is refused with the no-surface evidence", () => {
@@ -203,12 +196,9 @@ describe("cursor provider override", () => {
       .toThrow(/no token-budget surface/);
   });
 
-  test("the override reaches the interactive environment too", () => {
-    expect(() => adapter(overrideEnv).validateTuiRequest()).not.toThrow();
-    expect(adapter(overrideEnv).getTuiEnv()).toEqual({
-      CURSOR_API_ENDPOINT: "https://api.example/v1",
-      CURSOR_API_KEY: "key-1",
-    });
+  test("the interactive path refuses the same override", () => {
+    expect(() => adapter(overrideEnv).validateTuiRequest()).toThrow("saved account credential");
+    expect(() => adapter(overrideEnv).getTuiEnv()).toThrow("saved account credential");
     expect(() => adapter({}).validateTuiRequest()).not.toThrow();
   });
 });

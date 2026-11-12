@@ -202,7 +202,7 @@ const RUN_BASE = {
     "run.result-json": supported("tests/cursor-run-parity.test.ts"),
     "run.served-model-evidence": RUN_CARRIERS.cursorW4RunServed,
     "run.max-budget-usd": RUN_CARRIERS.cursorW4RunBudget,
-    "run.provider-override": supported("tests/cursor-run-parity.test.ts"),
+    "run.provider-override": RUN_CARRIERS.cursorProvider,
     "run.provider-override.max-output-tokens": RUN_CARRIERS.cursorOutput,
     "run.provider-override.max-context-tokens": RUN_CARRIERS.cursorContext,
     "run.no-web": supported("tests/cursor-run-parity.test.ts", "--exclude-tools web_search_tool_call,web_fetch_tool_call removes exactly the two web tools; an unknown ID fails the launch."),

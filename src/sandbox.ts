@@ -1,6 +1,6 @@
 import type { AgentId, AutonomyLevel } from "./types.js";
 import { UsageRefusalError } from "./validation.js";
-import { assertStrictExecutables, containsPath, StrictSandboxRefusalError } from "./sandbox-command.js";
+import { assertStrictExecutables, containsPath, strictCommandPaths, StrictSandboxRefusalError } from "./sandbox-command.js";
 import { strictRuntimeGrants } from "./sandbox-runtime-grants.js";
 // From the format module, which owns the rule, rather than the registry
 // barrel: sandbox.ts sits below the session layer and imports only this
@@ -59,6 +59,8 @@ export interface SandboxOptions {
   blockPaths?: readonly string[];
   /** Caller blocks captured before appending launcher isolation blocks. */
   callerBlockPaths?: readonly string[];
+  /** Operator stores blocked by --harness-home, distinct from caller policy. */
+  harnessHomeBlockedPaths?: readonly string[];
 }
 
 export function mapAutonomyToScodeFsMode(autonomy?: AutonomyLevel): ScodeFsMode {
@@ -131,6 +133,26 @@ export function buildScodeCommand(
   }
 
   const grants = [...(options?.harnessStateDirs ?? [])];
+  // A harness can be installed inside its own operator store. Reopen only
+  // the resolved executable files, never their containing config directory.
+  // Strict mode still refuses writable executable grants below.
+  if (options?.harnessHomeBlockedPaths?.length) {
+    const stores = options.harnessHomeBlockedPaths.map(canonicalSandboxBlockPath);
+    for (const executable of strictCommandPaths(command)) {
+      if (!executable.startsWith("/")) continue;
+      const path = canonicalSandboxBlockPath(executable);
+      if (!stores.some((store) => containsPath(store, path))) continue;
+      // Session turns map only StrictSandboxRefusalError to exit 64.
+      try {
+        assertNoCallerBlockOverStateDirs(options.callerBlockPaths ?? [], [path]);
+      } catch (error) {
+        if (error instanceof UsageRefusalError) throw new StrictSandboxRefusalError(error.message);
+        throw error;
+      }
+      grants.push(path);
+      scodeCmd.push("--allow", path);
+    }
+  }
   if (options?.strict && trust !== "untrusted") {
     const runtimePaths = strictRuntimeGrants(options.agentId, command, environment);
     try {

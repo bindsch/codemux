@@ -3,7 +3,7 @@ import { readOpencodeResponseModel, servedOpencodeResponseModel } from "./openco
 export const OPENCODE_EVIDENCE_HEADER = "x-codemux-experiment-evidence";
 
 export interface OpencodeExperimentHooks {
-  "chat.headers": (input: { sessionID: string }, output: { headers: Record<string, string> }) => Promise<void>;
+  "chat.headers": (input: { sessionID: string; agent?: string }, output: { headers: Record<string, string> }) => Promise<void>;
   "tool.execute.before": (input: { tool: string; sessionID: string; callID: string }, output: { args: unknown }) => Promise<void>;
   dispose: () => Promise<void>;
 }
@@ -75,7 +75,8 @@ export function installOpencodeExperimentObserver(runtime: { fetch: typeof fetch
     async "chat.headers"(input, output) {
       const id = String(++sequence);
       pending.add(id);
-      record("model_turn", { request_id: id, session_id: input.sessionID });
+      record("model_turn", { request_id: id, session_id: input.sessionID,
+        ...(input.agent === undefined ? {} : { agent: input.agent }) });
       output.headers[marker] = id;
     },
     async "tool.execute.before"(input, output) {

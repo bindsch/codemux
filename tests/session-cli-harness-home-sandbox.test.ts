@@ -177,6 +177,7 @@ describe("caller-managed harness home sandbox policy", () => {
     expect(options).toEqual({
       trust: "untrusted", fsMode: "ro", noNet: true, scrubEnv: true,
       callerBlockPaths: [callerBlock],
+      harnessHomeBlockedPaths: [blocked],
       blockPaths: [callerBlock, blocked], harnessStateDirs: [privateHome],
     });
     const argv = buildScodeCommand(["synthetic-harness"], root, "read-only", options);

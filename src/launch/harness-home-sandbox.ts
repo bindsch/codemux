@@ -151,5 +151,6 @@ export function applyHarnessHomeSandboxBlocks(
   assertNoCallerBlockOverStateDirs(callerBlocks, shared);
   options.callerBlockPaths ??= callerBlocks;
   options.blockPaths = [...new Set([...callerBlocks, ...operatorBlocks])];
+  options.harnessHomeBlockedPaths = operatorBlocks;
   options.harnessStateDirs = [...stateDirs, ...shared];
 }

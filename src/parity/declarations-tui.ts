@@ -3,6 +3,7 @@ import type { AgentId } from "../types.js";
 import { supported, type FeatureState, type TuiFeature } from "./features.js";
 import { RUN_REASONS } from "./reasons-run.js";
 import { W2_RUN_LIMITATIONS } from "./reasons-run-w2.js";
+import { RUN_CARRIERS } from "./reasons-run-carriers.js";
 
 export const TUI_DECLARATIONS = {
   claude: {
@@ -52,7 +53,7 @@ export const TUI_DECLARATIONS = {
     "tui.sandbox-strict": STRICT_LIMITATIONS.cursor,
     "tui.model": supported("tests/new-adapters-cursor.test.ts"),
     "tui.effort": RUN_REASONS.cursorEffort,
-    "tui.provider-override": supported("tests/cursor-run-parity.test.ts", "CURSOR_API_ENDPOINT and CURSOR_API_KEY ride the TUI environment under an override."),
+    "tui.provider-override": RUN_CARRIERS.cursorProvider,
   },
   droid: {
     "tui.sandbox-strict": STRICT_LIMITATIONS.droid,

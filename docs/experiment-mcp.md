@@ -5,6 +5,12 @@ read_when: "Checking the experiment MCP server contract, flags, or recordings."
 
 `run --experiment-mcp <spec.json>` connects one experiment-owned stdio MCP server with Claude, Z.AI, Codex, Kimi, OpenCode, Copilot, Gemini, Goose, Pi, Qwen, or Cline. It requires `--hermetic --tools none --auto read-only`, scode, and no Playwright MCP. Claude and Z.AI use Claude Code's SDK control bridge. The other harnesses use a loopback HTTP relay; Codex, Kimi, and Gemini require explicit result-header opt-ins, and Gemini also an explicit schema opt-in. Unsupported adapters refuse before reading the spec or starting a model; [harness limitations](harnesses.md) give their native evidence.
 
+OpenCode's native `chat.headers` hook identifies its auxiliary title agent.
+That agent sends requests without a `tools` field. Codemux verifies those
+requests against an empty inventory and excludes them from experiment inventory,
+delivery, and served-model evidence. Missing tools on the experiment agent,
+malformed tool fields, and tool calls from the title agent still fail closed.
+
 The server runs **outside scode** with only the environment names in the spec. Its command and arguments are operator-controlled. The harness remains inside read-only scode. Hermetic mode excludes operator-configured MCP integrations; this explicitly requested server is the exception.
 
 Qwen requires version 0.24.0 or later. A private `--mcp-config` file supplies the authenticated loopback relay while `--safe-mode` stays enabled. Built-in tools are excluded. Native OpenAI request logs must show exactly the original tool schemas, every native call, and unchanged delivered text. A schema Qwen rewrites fails verification. Results must contain one successful, unannotated text block of at most 500000 characters; error, media, multipart, metadata, and structured-content conversions are refused. Network-blocking sandbox modes are refused because the relay needs loopback access.

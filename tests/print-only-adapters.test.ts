@@ -35,8 +35,13 @@ for (const agent of AGENT_IDS) {
       const restore = forbidSideEffects();
       try {
         const context = adapter.prepareRun(request, "standard", {}, { printOnly: true });
-        expect(adapter.buildRunCommand(request, context).length).toBeGreaterThan(0);
-        adapter.getRunEnv(request, context);
+        if (agent === "cursor") {
+          expect(() => adapter.buildRunCommand(request, context)).toThrow("cursor provider override is unsupported");
+          expect(() => adapter.getRunEnv(request, context)).toThrow("cursor provider override is unsupported");
+        } else {
+          expect(adapter.buildRunCommand(request, context).length).toBeGreaterThan(0);
+          adapter.getRunEnv(request, context);
+        }
         adapter.cleanupRunSync(context);
       } finally { restore(); }
     });
@@ -50,6 +55,11 @@ test.each([...AGENT_IDS])("%s TUI preview never prepares provider files", (agent
     [`CODEMUX_${agent.toUpperCase()}_PROVIDER_MODEL`]: "test-model" });
   const restore = forbidSideEffects();
   try {
+    if (agent === "cursor") {
+      expect(() => adapter.prepareTuiEnvironment("test-model", "read-only", undefined, true, [], true))
+        .toThrow("cursor provider override is unsupported");
+      return;
+    }
     const prepared = adapter.prepareTuiEnvironment("test-model", "read-only", undefined, true, [], true);
     expect(adapter.buildTuiCommand("test-model", "read-only", undefined, true, false, process.cwd(), [], true).length).toBeGreaterThan(0);
     prepared.finalize();

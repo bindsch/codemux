@@ -27,13 +27,22 @@ URLs must be absolute HTTP(S), without user/password credentials, fragments, bra
 | Pi | OpenAI-compatible provider | Private PI_CODING_AGENT_DIR/models.json with environment-key reference | Yes |
 | Goose | Built-in OpenAI provider | GOOSE_PROVIDER, OPENAI_HOST, OPENAI_BASE_PATH, OPENAI_API_KEY, GOOSE_MODEL | Yes |
 | OpenHands | OpenAI-compatible provider | LLM_BASE_URL/LLM_API_KEY/LLM_MODEL through `--override-with-envs`; litellm prefix | Yes |
-| Cursor | Cursor-compatible endpoint | CURSOR_API_ENDPOINT/CURSOR_API_KEY and selected model | Yes |
 | Gemini | Gemini-compatible endpoint | GOOGLE_GEMINI_BASE_URL/GEMINI_API_KEY and selected model; output cap in private modelConfigs settings | Yes |
 | Copilot | OpenAI-compatible endpoint | COPILOT_PROVIDER_* environment; private providers.json for a context cap | Yes |
 | Qwen | OpenAI-compatible provider | OPENAI_BASE_URL/OPENAI_API_KEY/OPENAI_MODEL; the TUI launch injects the same group | Yes |
 | Cline | OpenAI-compatible provider | Private `CLINE_PROVIDER_SETTINGS_PATH` file carries endpoint, key, model, maxTokens and contextWindow; required for `--hermetic` | Yes |
 
-Antigravity's runs do not support this override group. Without an override, Z.AI uses its fixed gateway.
+Antigravity and Cursor do not support this override group. Without an override, Z.AI uses its fixed gateway.
+
+Cursor 2026.11.05 sends dashboard requests to the selected endpoint using its
+saved account token, independently of the override API key. The live H2 probe
+observed this on `DashboardService/GetMe`. Run, check, session, and TUI overrides
+are refused with exit 64 before launch. `AGENT_CLI_CREDENTIAL_STORE=memory`
+prevents saved-token reads, but API-key login still requires Cursor's token
+exchange and native ConnectRPC model protocol. `--auth-token` bypasses that
+exchange but does not change the model protocol. `--authless` and `--base-url`
+require the separate `agent-cli-local` runtime. Storage isolation alone cannot
+meet the provider override contract or the unchanged H2 probe.
 
 No override set is not the same thing as the vendor's first-party endpoint. Without an override, codemux changes nothing about where a harness sends its traffic: a harness whose own configuration or ambient variables name another endpoint keeps using it. OpenHands is the recorded example — its credential variables are `LLM_BASE_URL`/`LLM_API_KEY`, environment sanitization keeps them when the operator exported them, and under `--model` codemux passes `--override-with-envs`, which makes OpenHands read that environment. Those variables are then the operator's own OpenHands configuration, not a codemux override; a codemux override, when set, replaces them.
 

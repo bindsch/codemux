@@ -1,0 +1,7 @@
+{
+  "source": "codemux-live-gate-report-ekCKfZ",
+  "opencodeK": "env: <operator>/.opencode/bin/opencode: Operation not permitted",
+  "cursorH2": "1 of 2 request(s) carried a credential other than the override key (POST /aiserver.v1.DashboardService/GetMe); the override did not isolate the run",
+  "cursorStderr": "The API key was loaded from the CURSOR_API_KEY environment variable.",
+  "provenance": "OpenCode K stderr with the operator path redacted. Cursor H2 report diagnostic and stderr; its preserved probe directory is empty, so no raw HTTP recording is available."
+}

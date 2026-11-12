@@ -34,7 +34,7 @@ describe("CursorAdapter", () => {
       effortLevels: [],
       supportsResultJson: true,
       supportsToolSelection: true,
-      supportsProviderOverride: true,
+      supportsProviderOverride: false,
     });
   });
 

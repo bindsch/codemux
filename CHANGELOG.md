@@ -55,6 +55,9 @@ immutable notes and engineering evidence.
 
 ### Fixed
 
+- OpenCode experiment runs accept OpenCode's tool-free title request, which omits `tools`. Only a classified title turn may omit the array; main turns still require the exact tool inventory.
+- `--harness-home` sessions can launch a harness whose executable sits inside its own blocked operator store, as OpenCode's `~/.opencode/bin/opencode` and Kimi's `~/.kimi-code/bin/kimi` do. The sandbox grants the executable file only, not its directory.
+- Cursor provider overrides refuse before launch with exit 64 on run, check, session, and TUI. Cursor 2026.11.05 still sends its account credential to `DashboardService/GetMe` and has no carrier for a provider model request, so the override cannot isolate a run.
 - Session IDs reject path separators and dot segments for every harness. Private-home creation, relocation, and cleanup enforce containment under the recorded parent.
 - Stale-session cleanup preserves resumable homes when the freshness scan exceeds its entry limit or cannot read the whole tree.
 - Droid, Qwen, Copilot, and Gemini session turns preserve structured error verdicts even when the harness exits zero or supplies no error text.

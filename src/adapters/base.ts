@@ -388,7 +388,7 @@ export abstract class BaseAdapter {
    * `verify` (PATH-only view) never reports an exported override as broken
    * wiring while a real launch still refuses it.
    */
-  // Public for base-validate.ts's structural seam; no adapter overrides it.
+  // Public for base-validate.ts's structural seam and evidence-specific refusals.
   assertNoUnsupportedProviderOverride(): void {
     if (this.capabilities().supportsProviderOverride) return;
     const override = readProviderOverride(this.id, this.environment);

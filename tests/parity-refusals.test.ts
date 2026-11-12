@@ -372,6 +372,7 @@ async function exercise(agent: AgentId, feature: ParityFeature): Promise<Outcome
     return commandOutcome(agent, "check", ["--experiment-mcp", "synthetic-spec.json", "--hermetic", "--tools", "none"]);
   }
   if (feature === "check.provider-override.served-model") {
+    if (PARITY[agent]["run.provider-override"].state !== "supported") return providerOutcome(agent, feature);
     if (agent === "qwen" || agent === "cline" || agent === "opencode" || agent === "codex" || agent === "copilot" || agent === "cursor" || agent === "droid" || agent === "kimi" || agent === "openhands") return reportingOutcome(agent, feature);
     const provider = providerOutcome(agent, "run.provider-override");
     if (provider.message !== null) return provider;
@@ -487,7 +488,6 @@ describe("declared capabilities at synthetic validation boundaries", () => {
     }
   });
 });
-
 describe("hard-coded capability lists agree with the declaration", () => {
   test("project settings, Playwright, experiment MCP and session membership", () => {
     for (const [feature, actual] of [

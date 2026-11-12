@@ -1,7 +1,10 @@
 import { limitation, supported } from "./features.js";
+import { CURSOR_PROVIDER_EVIDENCE, CURSOR_PROVIDER_REASON, CURSOR_PROVIDER_REFUSAL } from "../cursor-provider-limitation.js";
 
 /** A refused codemux carrier is OPEN when another native carrier remains possible. */
 export const RUN_CARRIERS = {
+  cursorProvider: limitation(CURSOR_PROVIDER_REASON, CURSOR_PROVIDER_EVIDENCE,
+    CURSOR_PROVIDER_REFUSAL, "tests/live-gate-cursor-provider.test.ts"),
   agyCwd: limitation(
     "Agy 1.5.3 walks up from the working directory to the repository root loading GEMINI.md, AGENTS.md, and .agents/rules/*.md as directory-based rules, with no suppression flag, so a hermetic run needs a clean directory owned by the run.",
     "2026-11-09: src/adapters/agy.ts validateRunRequest asserts the refusal; installed ~/.local/bin/agy (1.5.3) offsets 62105582 and 63285886: rule-discovery text 'The system automatically discovers and applies rules from' GEMINI.md/AGENTS.md 'placed directly in any directory' walked up 'to the repository root', plus .agents/rules/*.md",

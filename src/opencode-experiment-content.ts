@@ -48,22 +48,27 @@ const same = (actual: unknown, expected: unknown, code: Code, message: string): 
 export function verifyOpencodeProviderPayload(server: string, definitions: readonly JsonObject[],
   value: unknown, calls: ReadonlyMap<string, ExperimentRelayCall>): string[] {
   const payload = opencodeEvidenceObject(value);
+  // OpenCode 1.19.5's title agent has tools:{}, which the AI SDK omits
+  // from HTTP JSON. Only an explicitly empty expected inventory permits it.
+  const toolList = () => payload.tools === undefined && definitions.length === 0 ? [] : array(payload.tools);
   let tools: JsonObject[], results: JsonObject[], declared: JsonObject[], kind: string;
   if (Array.isArray(payload.input)) {
-    kind = "responses"; tools = array(payload.tools);
+    kind = "responses"; tools = toolList();
     const input = array(payload.input);
     results = input.filter((item) => item.type === "function_call_output");
     declared = input.filter((item) => item.type === "function_call").map((item) =>
       ({ id: item.call_id, name: item.name, args: JSON.parse(item.arguments) }));
   } else if (Array.isArray(payload.messages)) {
     const messages = array(payload.messages);
-    if (array(payload.tools).every((tool) => tool.type === "function" && tool.function)) {
-      kind = "chat"; tools = array(payload.tools).map((tool) => opencodeEvidenceObject(tool.function));
+    const anthropicContent = messages.some((message) => Array.isArray(message.content) &&
+      message.content.some((part: JsonObject) => part?.type === "tool_use" || part?.type === "tool_result"));
+    if (!anthropicContent && toolList().every((tool) => tool.type === "function" && tool.function)) {
+      kind = "chat"; tools = toolList().map((tool) => opencodeEvidenceObject(tool.function));
       results = messages.filter((message) => message.role === "tool");
       declared = messages.flatMap((message) => (message.tool_calls ?? []).map((call: JsonObject) =>
         ({ id: call.id, name: call.function.name, args: JSON.parse(call.function.arguments) })));
     } else {
-      kind = "anthropic"; tools = array(payload.tools);
+      kind = "anthropic"; tools = toolList();
       const content = messages.flatMap((message) => Array.isArray(message.content) ? array(message.content) : []);
       results = content.filter((part) => part.type === "tool_result");
       declared = content.filter((part) => part.type === "tool_use").map((part) => ({ id: part.id, name: part.name, args: part.input }));

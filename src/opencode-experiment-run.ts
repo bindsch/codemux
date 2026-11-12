@@ -35,6 +35,7 @@ export function verifyOpencodeExperimentEvidence(source: EvidenceSource, records
   }
   const dispatched = new Set<string>(), delivered = new Set<string>(), turns = new Set<string>();
   const acceptedIds = new Set<string>(), modelIds = new Set<string>();
+  const auxiliaryIds = new Set<string>();
   const servedModels = new Map<string, string | null>();
   const requests = new Map<string, { deliveries: string[]; t: number }>();
   let session: string | undefined;
@@ -61,6 +62,9 @@ export function verifyOpencodeExperimentEvidence(source: EvidenceSource, records
         sessionMatches(fields.session_id);
         if (typeof fields.request_id !== "string" || turns.has(fields.request_id) || acceptedIds.has(fields.request_id)) throw new ExperimentFailure(Code.Protocol, "OpenCode repeated a model turn");
         turns.add(fields.request_id);
+        // The native chat.headers hook supplies agent.name for title requests
+        // too. Never infer an auxiliary turn from a missing tools field.
+        if (fields.agent === "title") auxiliaryIds.add(fields.request_id);
         break;
       case "tool_call":
         sessionMatches(fields.session_id);
@@ -70,10 +74,12 @@ export function verifyOpencodeExperimentEvidence(source: EvidenceSource, records
         break;
       case "provider_request": {
         if (!turns.has(fields.request_id) || requests.has(fields.request_id)) throw new ExperimentFailure(Code.Protocol, "OpenCode provider request has no unique model turn");
-        const ids = verifyOpencodeProviderPayload(source.spec.name, source.toolDefinitions, fields.payload, calls);
+        const auxiliary = auxiliaryIds.has(fields.request_id);
+        const ids = verifyOpencodeProviderPayload(source.spec.name, auxiliary ? [] : source.toolDefinitions,
+          fields.payload, auxiliary ? new Map() : calls);
         if (ids.some((id) => !dispatched.has(id))) throw new ExperimentFailure(Code.CallIdUnresolved, "OpenCode provider result precedes native dispatch");
         requests.set(fields.request_id, { deliveries: ids, t: record.t });
-        source.record("tool_inventory", { tools: source.toolDefinitions.map((tool) => opencodeExperimentToolName(source.spec.name, tool.name)), equal: true,
+        if (!auxiliary) source.record("tool_inventory", { tools: source.toolDefinitions.map((tool) => opencodeExperimentToolName(source.spec.name, tool.name)), equal: true,
           provider_request_id: fields.request_id });
         break;
       }
@@ -86,7 +92,8 @@ export function verifyOpencodeExperimentEvidence(source: EvidenceSource, records
         // Only a successful attempt proves delivery; an exhausted turn remains
         // pending and fails the final completeness check.
         if (fields.status < 200 || fields.status >= 300) { requests.delete(fields.request_id); break; }
-        requests.delete(fields.request_id); turns.delete(fields.request_id); acceptedIds.add(fields.request_id); accepted++;
+        requests.delete(fields.request_id); turns.delete(fields.request_id); acceptedIds.add(fields.request_id);
+        if (!auxiliaryIds.has(fields.request_id)) accepted++;
         for (const id of request.deliveries) {
           if (!delivered.has(id)) source.record("tool_result_delivered", { call_id: id, t: request.t });
           delivered.add(id);
@@ -142,7 +149,7 @@ export function verifyOpencodeExperimentEvidence(source: EvidenceSource, records
       calls.size !== dispatched.size || calls.size !== declared.size) {
     throw new ExperimentFailure(Code.HarnessLogMissing, "OpenCode experiment lacks complete native calls, provider delivery, or terminal evidence");
   }
-  const identities = new Set([...acceptedIds].map((id) => servedModels.get(id) ?? null));
+  const identities = new Set([...acceptedIds].filter((id) => !auxiliaryIds.has(id)).map((id) => servedModels.get(id) ?? null));
   return identities.size === 1 ? identities.values().next().value ?? null : null;
 }
 

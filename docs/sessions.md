@@ -222,7 +222,7 @@ All paths below are relative to `<dir>`. HOME, USERPROFILE, and XDG roots move i
 | Pi | `PI_CODING_AGENT_DIR=.pi/agent`; `settings.json`, `skills/` inside it | `.pi/agent/auth.json` |
 | Qwen | `QWEN_HOME=.qwen`; `settings.json`, `skills/` inside it; runtime stays in the root | Access-token-only `.qwen/oauth_creds.json`, rewritten per launch |
 
-With scode, real harness stores are blocked and only the caller directory receives writable state access. `--print-sandbox`, where supported, shows the same policy without creating the home. See [isolation](isolation.md#caller-owned-session-homes).
+With scode, real harness stores are blocked and the caller directory receives writable state access. Resolved command executables installed inside a blocked store receive exact-file grants; their parent directories stay blocked. Scode 0.6.5 has no read-only path grant, so strict and untrusted modes refuse these writable executable exceptions. Caller-supplied blocks remain authoritative. `--print-sandbox`, where supported, shows the same policy without creating the home. See [isolation](isolation.md#caller-owned-session-homes).
 ## Hermetic sessions
 
 Session IDs must be single path components: separators, dot segments, whitespace, and NUL bytes are refused for every harness. Private-home operations check containment and the recorded parent's identity before accessing a child.
@@ -327,7 +327,7 @@ login ([authentication](authentication.md)).
 
 On OpenHands the mode is the hermetic session without the clean-working-directory rule: every turn runs in the empty private home and loads the working directory's own `.openhands` (1.16.0 reads `{working_dir}/.openhands/hooks.json` before the home's). It requires scode and `--auto low`, and refuses `--permission-policy deny`, whose rule in the home that file would replace.
 
-Provider overrides via `CODEMUX_<AGENT>_PROVIDER_*` are supported on session spawns for Aider, Claude, Cline, Codex, Copilot, Cursor, Droid, Goose, Gemini, Kimi, OpenCode, OpenHands, Pi, Qwen, and ZAI. Agy sessions refuse overrides.
+Provider overrides via `CODEMUX_<AGENT>_PROVIDER_*` are supported on session spawns for Aider, Claude, Cline, Codex, Copilot, Droid, Goose, Gemini, Kimi, OpenCode, OpenHands, Pi, Qwen, and ZAI. Agy and Cursor sessions refuse overrides.
 The adapter validates overrides as on `run`; the selected provider must match on resume. Qwen requires a non-legacy binary. A Pi override session supports both plain and hermetic mode; plain mode preserves the native session directory while private provider settings are prepared per turn. A hermetic Goose session requires an override because its private home contains no operator configuration. See [CLI reference](cli.md).
 
 Claude/ZAI account redirects use `CLAUDE_CONFIG_DIR`, Codex uses `CODEX_HOME`,

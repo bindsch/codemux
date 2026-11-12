@@ -182,7 +182,7 @@ export const SESSION_DECLARATIONS = {
     "session.interrupt": RUN_CARRIERS.cursorW4SessionInterrupt,
     "session.resume": supported("tests/cursor-session.test.ts"),
     "session.tools": supported("tests/cursor-session.test.ts", "The run path's --allowed-tools allowlist reapplies on every turn, so a resumed session keeps the tool set the first turn promised."),
-    "session.provider-override": supported("tests/cursor-session.test.ts", "CURSOR_API_ENDPOINT and CURSOR_API_KEY reach every per-turn spawn through the adapter's environment view."),
+    "session.provider-override": RUN_CARRIERS.cursorProvider,
     "session.experiment-project-settings": RUN_CARRIERS.cursorW4SessionProject,
     "session.permission-policy-deny": RUN_CARRIERS.cursorW4SessionPermissionPolicyDeny,
     "session.print-sandbox": supported("tests/cursor-session.test.ts", "The representative per-turn preview prints through the shared spawn-prep carrier."),

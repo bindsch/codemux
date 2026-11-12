@@ -4,11 +4,8 @@ import { withStreamScanSurface } from "../stream-marker-scan.js";
 import { BaseAdapter, type RunContext } from "./base.js";
 import { assertNoCursorProjectExecutionConfig } from "../project-safety.js";
 import { appendDiagnostic } from "../result-envelope.js";
-import {
-  readProviderOverride,
-  requireProviderOverride,
-  type ProviderOverride,
-} from "../provider-override.js";
+import { readProviderOverride } from "../provider-override.js";
+import { CURSOR_PROVIDER_REFUSAL } from "../cursor-provider-limitation.js";
 import { assertProviderCap } from "../provider-override.js";
 import { cursorResult, parseCursorResultEnvelope } from "../result-envelope/cursor.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
@@ -160,24 +157,19 @@ export class CursorAdapter extends BaseAdapter {
       // the 2026.11.05 descriptor, "|32 reflect_tool_call #25 tool") is a
       // fail-closed `--tools none` carrier.
       supportsToolSelection: true,
-      // CURSOR_API_ENDPOINT and CURSOR_API_KEY ride the environment: the
-      // agent command registers `-e, --endpoint <url>` with
-      // `.env("CURSOR_API_ENDPOINT")` and `--api-key <key>` with
-      // CURSOR_API_KEY (index.js option factories, 2026.11.05).
-      supportsProviderOverride: true,
+      supportsProviderOverride: false,
     };
   }
 
   /**
-   * The provider override, validated: cursor's agent command needs a
-   * base URL and a key (the model may come from `--model` instead of the
-   * variable). Both token caps are refused: the model string's bracket
+   * Refuse provider overrides before launch. Both token caps also lack
+   * a carrier: the model string's bracket
    * overrides carry `context`, `effort` and `fast` only — no output or
    * context cap key — and their values are server-defined per model with
    * a silent fallback on invalid combinations (the effort evidence
    * above), so no cap can ride the override verifiably.
    */
-  private validatedProvider(): (ProviderOverride & { baseUrl: string; apiKey: string }) | null {
+  private validatedProvider(): null {
     const override = readProviderOverride("cursor", this.environment);
     if (override === null) return null;
     const noCapSurface =
@@ -186,15 +178,17 @@ export class CursorAdapter extends BaseAdapter {
       "silently dropped server-side, so no cap can ride the override";
     assertProviderCap("cursor", override, "maxOutputTokens", noCapSurface);
     assertProviderCap("cursor", override, "maxContextTokens", noCapSurface);
-    return requireProviderOverride("cursor", override, [
-      "baseUrl",
-      "apiKey",
-    ]) as ProviderOverride & { baseUrl: string; apiKey: string };
+    throw new UsageRefusalError(CURSOR_PROVIDER_REFUSAL);
   }
 
-  /** The model id the run requests: the request's, else the override's. */
+  override assertNoUnsupportedProviderOverride(): void {
+    this.validatedProvider();
+  }
+
+  /** Validate the environment even when the request supplies a model. */
   private modelFor(model: string | undefined): string | undefined {
-    return model ?? this.validatedProvider()?.model;
+    this.validatedProvider();
+    return model;
   }
 
   override mapAutonomy(level: AutonomyLevel): string[] {
@@ -305,17 +299,7 @@ export class CursorAdapter extends BaseAdapter {
   }
 
   override getRunEnv(request: RunRequest, _context?: RunContext): Record<string, string> {
-    const override = this.validatedProvider();
-    // The override names outrank the passthrough: the operator asked
-    // codemux to route this run, so the child receives the override's
-    // endpoint and key whatever the environment carried.
-    if (override !== null) {
-      return {
-        ...this.credentialStoreEnv(request.sandboxed, request.passthroughEnv),
-        CURSOR_API_ENDPOINT: override.baseUrl,
-        CURSOR_API_KEY: override.apiKey,
-      };
-    }
+    this.validatedProvider();
     return this.credentialStoreEnv(request.sandboxed, request.passthroughEnv);
   }
 
@@ -329,19 +313,9 @@ export class CursorAdapter extends BaseAdapter {
     // The sandboxed TUI needs the same file-store selection as the run
     // path: the sandbox blocks cursor's Keychain login either way (review
     // round 381 — the TUI built its environment from getEnv + getTuiEnv
-    // alone and failed authentication inside the sandbox). The provider
-    // override rides the same environment variables the run path sets —
-    // CURSOR_API_ENDPOINT and CURSOR_API_KEY reach an interactive child
-    // unchanged (the option factories read them from process.env), so an
-    // interactive session under an override routes like a run does.
-    const override = this.validatedProvider();
-    const store = this.credentialStoreEnv(sandboxed, passthroughEnv);
-    if (override === null) return store;
-    return {
-      ...store,
-      CURSOR_API_ENDPOINT: override.baseUrl,
-      CURSOR_API_KEY: override.apiKey,
-    };
+    // alone and failed authentication inside the sandbox).
+    this.validatedProvider();
+    return this.credentialStoreEnv(sandboxed, passthroughEnv);
   }
 
   private credentialStoreEnv(
@@ -364,14 +338,12 @@ export class CursorAdapter extends BaseAdapter {
   }
 
   override validateRunRequest(request: RunRequest): void {
+    this.validatedProvider();
     super.validateRunRequest(request);
     assertNoCursorProjectExecutionConfig(
       validateWorkingDirectory(request.cwd) ?? process.cwd()
     );
     this.assertDesktopEntryAuthorized(request.passthroughEnv);
-    // Surface a half-configured override before launch, the droid/pi rule:
-    // the caps refuse here and a missing baseUrl or apiKey names the fix.
-    this.validatedProvider();
   }
 
   override processRunResult(result: RunResult, request: RunRequest, context?: RunContext): RunResult {
@@ -432,6 +404,7 @@ export class CursorAdapter extends BaseAdapter {
     passthroughEnv: readonly string[] = [],
     enablePlaywrightMcp = false
   ): void {
+    this.validatedProvider();
     super.validateTuiRequest(
       model,
       cwd,
@@ -444,12 +417,6 @@ export class CursorAdapter extends BaseAdapter {
       validateWorkingDirectory(cwd) ?? process.cwd()
     );
     this.assertDesktopEntryAuthorized(passthroughEnv);
-    // The override rides environment variables an interactive child reads
-    // too (getTuiEnv sets the same CURSOR_API_ENDPOINT/CURSOR_API_KEY
-    // pair the run path does), so a session under an override routes like
-    // a run does — validatedProvider here surfaces a half-configured
-    // override before the launch.
-    this.validatedProvider();
   }
 
   buildTuiCommand(
