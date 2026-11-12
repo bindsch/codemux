@@ -64,8 +64,12 @@ test("a failed canary session reports its own error and end events, not quota wa
   // An oversized event leaves a marker instead of vanishing.
   const { keepFailureEventForTest } = await import("../src/hermetic-session-canary-driver.js");
   const run = { failureEvents: undefined } as { failureEvents?: string[] };
-  keepFailureEventForTest(run, JSON.stringify({ type: "error", message: "x".repeat(70 * 1024) }));
+  const envelope = (type: string, extra: object) => JSON.stringify({ seq: 7, ts: "t", session_id: "s", type, raw: null, ...extra });
+  keepFailureEventForTest(run, envelope("error", { message: "x".repeat(70 * 1024) }));
   expect(run.failureEvents).toEqual(['{"type":"error","message":"(error event over 64 KiB omitted)"}']);
+  // A nested "type":"error" inside another oversized event is not an event.
+  keepFailureEventForTest(run, envelope("tool_call", { input: { type: "error" }, pad: "x".repeat(70 * 1024) }));
+  expect(run.failureEvents).toHaveLength(1);
   // Events kept past the stdout cap win over the held stdout prefix.
   expect(sessionFailureDetail({ stderr: "", stdout: "", failureEvents: [JSON.stringify({ type: "session_ended", reason: "crash", exit_code: 1 })] }))
     .toEqual(['session ended: {"reason":"crash","exit_code":1}']);

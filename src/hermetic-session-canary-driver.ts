@@ -274,7 +274,9 @@ function keepFailureEvent(run: Pick<SessionRun, "failureEvents">, line: string):
       if (type === "error" || type === "session_ended") kind = type;
     } catch { /* not a JSON event line */ }
   } else {
-    kind = /"type":"(error|session_ended)"/.exec(line.slice(0, 64 * 1024))?.[1];
+    // buildEvent (session/protocol.ts) writes seq, ts, session_id, then
+    // type, so an anchored match reads the top-level type and no nested one.
+    kind = /^\{"seq":\d+,"ts":"[^"]*","session_id":(?:"[^"]*"|null),"type":"(error|session_ended)"/.exec(line.slice(0, 1024))?.[1];
   }
   if (kind === undefined) return;
   const kept = (run.failureEvents ??= []);

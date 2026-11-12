@@ -76,9 +76,10 @@ function deliveredResultFailure(record: Record<string, unknown>, marker: string,
     }
     return null;
   }
-  // Claude and Z.AI record the SDK block; every other experiment harness
-  // records the delivered content directly. Neither carries a header, and
-  // a Claude or Z.AI record without its block fails.
+  // Claude and Z.AI record the SDK block; OpenCode, Pi, and Qwen record the
+  // delivered content directly. Neither carries a header, and a Claude or
+  // Z.AI record without its block fails. Gemini, Copilot, Goose, and Cline
+  // write no record yet, so they fail earlier at the record count.
   const sdkBlock = agent === "claude" || agent === "zai";
   const block = record.block as { content?: unknown } | null | undefined;
   const content = sdkBlock ? (block !== null && typeof block === "object" ? block.content : undefined) : record.content;
