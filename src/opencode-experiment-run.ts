@@ -65,6 +65,12 @@ export function verifyOpencodeExperimentEvidence(source: EvidenceSource, records
         // The native chat.headers hook supplies agent.name for title requests
         // too. Never infer an auxiliary turn from a missing tools field.
         if (fields.agent === "title") auxiliaryIds.add(fields.request_id);
+        // OpenCode 1.19.5 also calls the model without tools for compaction,
+        // which rewrites the history this verifier checks, and for the HTTP
+        // API's project-copy-name. Neither belongs in an experiment run.
+        if (fields.agent === "compaction" || fields.agent === "project-copy-name") {
+          throw new ExperimentFailure(Code.Protocol, `OpenCode ran its ${fields.agent} agent during the experiment; experiment runs cannot verify that turn`);
+        }
         break;
       case "tool_call":
         sessionMatches(fields.session_id);
@@ -95,7 +101,16 @@ export function verifyOpencodeExperimentEvidence(source: EvidenceSource, records
         requests.delete(fields.request_id); turns.delete(fields.request_id); acceptedIds.add(fields.request_id);
         if (!auxiliaryIds.has(fields.request_id)) accepted++;
         for (const id of request.deliveries) {
-          if (!delivered.has(id)) source.record("tool_result_delivered", { call_id: id, t: request.t });
+          if (!delivered.has(id)) {
+            // verifyOpencodeProviderPayload matched this request's result to
+            // the relay result, so the relay content is what the model got.
+            const result = calls.get(id)!.result!;
+            source.record("model_tool_result", { call_id: id, content: result.content,
+              output: result.content.map((block: JsonObject) => block.text).join("\n\n"),
+              is_error: result.isError === true, evidence_boundary: "captured-provider-request", t: request.t });
+            source.record("result_comparison", { call_id: id, equal: true, harness: "opencode", t: request.t });
+            source.record("tool_result_delivered", { call_id: id, t: request.t });
+          }
           delivered.add(id);
         }
         break;
@@ -145,7 +160,10 @@ export function verifyOpencodeExperimentEvidence(source: EvidenceSource, records
     }
     if (event.type === "error") throw new ExperimentFailure(Code.Protocol, "OpenCode emitted an error event");
   }
-  if (!terminal || !accepted || turns.size || requests.size || calls.size !== delivered.size ||
+  // A title turn is best-effort in OpenCode: a failed or unanswered title
+  // request carries no tool evidence, so only main turns must complete.
+  const pending = (ids: Iterable<string>) => [...ids].some((id) => !auxiliaryIds.has(id));
+  if (!terminal || !accepted || pending(turns) || pending(requests.keys()) || calls.size !== delivered.size ||
       calls.size !== dispatched.size || calls.size !== declared.size) {
     throw new ExperimentFailure(Code.HarnessLogMissing, "OpenCode experiment lacks complete native calls, provider delivery, or terminal evidence");
   }

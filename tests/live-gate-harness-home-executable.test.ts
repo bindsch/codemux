@@ -49,3 +49,37 @@ test.each([...AGENT_IDS])("%s harness-home grants only resolved command files un
   const outside = buildScodeCommand(["/usr/bin/synthetic"], undefined, "read-only", options);
   expect(outside.filter((arg) => arg === "--allow")).toHaveLength(1);
 });
+
+test("a failed canary session reports its own error and end events, not quota warnings", async () => {
+  const { sessionFailureDetail } = await import("../src/hermetic-session-canary-driver.js");
+  const detail = sessionFailureDetail({
+    stderr: "Warning: quota gate: opencode: usage unreadable; proceeding\nreal stderr line\n",
+    stdout: [
+      JSON.stringify({ type: "turn_started", seq: 1 }),
+      JSON.stringify({ type: "error", seq: 2, ts: "t", session_id: "s", raw: "x", message: "auth failed", code: "harness" }),
+      JSON.stringify({ type: "session_ended", reason: "crash", exit_code: 1, harness_exit: { code: 1, signal: null } }),
+      "not json",
+    ].join("\n"),
+  });
+  expect(detail).toEqual([
+    "real stderr line",
+    'session error: {"type":"error","message":"auth failed","code":"harness"}',
+    'session ended: {"reason":"crash","exit_code":1,"harness_exit":{"code":1,"signal":null}}',
+  ]);
+});
+
+test("the OpenCode caller-home canary carries the authenticated model preference once", async () => {
+  const { mkdirSync, readFileSync, writeFileSync } = await import("node:fs");
+  const { seedHarnessHomeCanary } = await import("../src/hermetic-session-canary-home.js");
+  const root = join(process.cwd(), "scratch", "fix", `model-seed-${process.pid}`);
+  const authenticated = join(root, "auth"), home = join(root, "caller"), operatorHome = join(root, "operator");
+  mkdirSync(join(authenticated, ".local", "state", "opencode"), { recursive: true });
+  mkdirSync(home, { recursive: true });
+  mkdirSync(operatorHome, { recursive: true });
+  const preference = JSON.stringify({ recent: [{ providerID: "zhipuai-coding-plan", modelID: "glm-5.3" }] });
+  writeFileSync(join(authenticated, ".local", "state", "opencode", "model.json"), preference, { mode: 0o600 });
+  const plant = { home, operatorHome, env: {} } as unknown as Parameters<typeof seedHarnessHomeCanary>[1];
+  seedHarnessHomeCanary("opencode", plant, authenticated);
+  seedHarnessHomeCanary("opencode", plant, authenticated);
+  expect(readFileSync(join(home, ".local", "state", "opencode", "model.json"), "utf8")).toBe(preference);
+});

@@ -23,6 +23,12 @@ test("OpenCode 1.19.5 title request has no tools; main requests retain exact inv
   expect(() => verifyOpencodeExperimentEvidence(source, records, fixture.stdout)).not.toThrow();
   expect(audit.filter((r) => r.kind === "tool_inventory")).toHaveLength(2);
   expect(audit.filter((r) => r.kind === "tool_result_delivered")).toHaveLength(1);
+  // The live-gate G probe proves delivery from these two records.
+  const delivered = audit.filter((r) => r.kind === "model_tool_result");
+  expect(delivered).toHaveLength(1);
+  expect(delivered[0]!.fields.content).toEqual(fixture.calls[0]!.result.content);
+  expect(delivered[0]!.fields.evidence_boundary).toBe("captured-provider-request");
+  expect(audit.filter((r) => r.kind === "result_comparison").map((r) => r.fields.equal)).toEqual([true]);
   for (const tools of [null, {}, "invalid", [records[3]!.fields.payload.tools[0]]]) {
     const malformed = structuredClone(records);
     malformed[1]!.fields.payload.tools = tools;
@@ -34,6 +40,23 @@ test("OpenCode 1.19.5 title request has no tools; main requests retain exact inv
   const unclassified = structuredClone(records);
   delete unclassified[0]!.fields.agent;
   expect(() => verifyOpencodeExperimentEvidence(source, unclassified, fixture.stdout)).toThrow("array");
+  // A failed or unanswered title request is best-effort; a failed main turn is not.
+  const titleFailed = structuredClone(records);
+  titleFailed[4]!.fields.status = 429;
+  titleFailed.splice(5, 1);
+  expect(() => verifyOpencodeExperimentEvidence(source, titleFailed, fixture.stdout)).not.toThrow();
+  const titleUnanswered = structuredClone(records);
+  titleUnanswered.splice(4, 2);
+  expect(() => verifyOpencodeExperimentEvidence(source, titleUnanswered, fixture.stdout)).not.toThrow();
+  const mainFailed = structuredClone(records);
+  mainFailed[6]!.fields.status = 500;
+  mainFailed.splice(8, 1);
+  expect(() => verifyOpencodeExperimentEvidence(source, mainFailed, fixture.stdout)).toThrow("lacks complete");
+  for (const agent of ["compaction", "project-copy-name"]) {
+    const auxiliary = structuredClone(records);
+    auxiliary[0]!.fields.agent = agent;
+    expect(() => verifyOpencodeExperimentEvidence(source, auxiliary, fixture.stdout)).toThrow(`${agent} agent`);
+  }
   const changed = structuredClone(records);
   changed[10]!.fields.payload.input.at(-1).output = "changed";
   expect(() => verifyOpencodeExperimentEvidence(source, changed, fixture.stdout)).toThrow("changed");

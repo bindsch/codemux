@@ -156,6 +156,11 @@ const claudeDelivered = (content: unknown): string => recording(
   { kind: "model_tool_result", tool_use_id: "t1", block: { type: "tool_result", content } },
   { kind: "result_comparison", tool_use_id: "t1", equal: true },
 );
+// OpenCode, Qwen, and Pi record the delivered content directly, with no SDK block.
+const relayDelivered = (content: unknown): string => recording(
+  { kind: "model_tool_result", call_id: "call_1", content, output: MARKER, is_error: false, evidence_boundary: "captured-provider-request" },
+  { kind: "result_comparison", call_id: "call_1", equal: true, harness: "opencode" },
+);
 const codexGood = codexDelivered([{ type: "input_text", text: CODEX_HEADER }, { type: "input_text", text: MARKER }]);
 const kimiGood = kimiDelivered([{ type: "text", text: `${KIMI_HEADER}${MARKER}` }]);
 const claudeGood = claudeDelivered(MARKER);
@@ -225,6 +230,8 @@ test("probe G proves delivery from the recording, and fails without it (finding 
     { label: "kimi delivered without the header", agent: "kimi", recording: kimiDelivered([{ type: "text", text: MARKER }]), reply: MARKER, failure: "no valid kimi wall-time header" },
     { label: "codex header with a changed marker after it", agent: "codex", recording: codexDelivered([{ type: "input_text", text: CODEX_HEADER }, { type: "input_text", text: "WRONG" }]), reply: MARKER, failure: "carries the codex header but not the marker after it" },
     { label: "claude delivered text is not the bare marker", agent: "claude", recording: claudeDelivered("WRONG"), reply: MARKER, failure: "is not the bare marker" },
+    { label: "opencode delivered the bare marker as content", agent: "opencode", recording: relayDelivered([{ type: "text", text: MARKER }]), reply: MARKER, failure: "" },
+    { label: "opencode delivered text is not the bare marker", agent: "opencode", recording: relayDelivered([{ type: "text", text: "WRONG" }]), reply: MARKER, failure: "is not the bare marker" },
     { label: "a reply without the marker", agent: "codex", recording: codexGood, reply: "WRONG-MARKER", failure: "neither the bare marker" },
     { label: "no recording at all", agent: "claude", reply: MARKER, failure: "holds no experiment recording" },
     { label: "a comparison that found the result changed", agent: "claude", recording: recording(

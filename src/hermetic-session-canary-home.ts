@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ZaiAdapter } from "./adapters/zai.js";
 import { createCanaryScratch, mintCanaryMarker, untrackScratchRemoval } from "./hermetic-canary.js";
-import { canarySessionProtocolProblem, runCanarySession, SESSION_KILL_GRACE_MS } from "./hermetic-session-canary-driver.js";
+import { carryOpencodeModelState } from "./opencode-hermetic.js";
+import { canarySessionProtocolProblem, runCanarySession, SESSION_KILL_GRACE_MS, sessionFailureDetail } from "./hermetic-session-canary-driver.js";
 import type { HermeticSessionCanaryRequest } from "./hermetic-session-canary.js";
 import { callerHarnessHomeEnvNames } from "./session/harness-home.js";
 import type { AgentId } from "./types.js";
@@ -155,6 +156,13 @@ export function seedHarnessHomeCanary(agent: AgentId, plant: PlantedHarnessHomeC
     // this scratch tree. The caller home shares the real store instead: its
     // brand home becomes the scratch operator's KIMI_CODE_HOME (harness-home.ts).
     if (agent === "kimi" && existsSync(kimiCredentials)) env.KIMI_CODE_HOME = dirname(realpathSync(kimiCredentials));
+    // A caller's own OpenCode home keeps its model preference. Without it
+    // OpenCode falls to the provider's first model, which the subscription
+    // may not include (live gate 2026-11-12: GLM-5.3-Highspeed refused).
+    if (agent === "opencode" && !existsSync(join(plant.home, ".local", "state", "opencode", "model.json"))) {
+      const problem = carryOpencodeModelState(join(authenticatedHome, ".local", "state", "opencode"), plant.home);
+      if (problem) console.error(`Warning: opencode --harness-home canary keeps no model preference: ${problem}`);
+    }
     for (const credential of layout.logins) {
       // Pi's disposable hermetic directory is already its agent directory.
       const source = join(authenticatedHome, agent === "pi" && !existsSync(join(authenticatedHome, credential)) ? "auth.json" : credential);
@@ -212,7 +220,8 @@ export async function runHarnessHomeSessionCanary(
     }
     if (problem !== null) {
       console.error(`Error: ${problem}`);
-      if (run.stderr.trim() !== "") console.error(run.stderr.trim().split("\n").slice(0, 4).join("\n"));
+      const detail = sessionFailureDetail(run);
+      if (detail.length > 0) console.error(detail.join("\n"));
       return 1;
     }
     sessionId = run.sessionId;

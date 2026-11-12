@@ -258,3 +258,24 @@ export async function runCanarySession(
   run.stderr = stderrHeld;
   return run;
 }
+
+/** What a failed canary session says about itself: its stderr without the
+ * quota-gate warnings, then the session's own error and session_ended
+ * events from stdout, which carry the cause when stderr has none. */
+export function sessionFailureDetail(run: Pick<SessionRun, "stderr" | "stdout">): string[] {
+  const lines = run.stderr.split("\n").map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("Warning: quota gate:")).slice(0, 4);
+  for (const line of run.stdout.split("\n")) {
+    let event: { type?: unknown; [key: string]: unknown };
+    try { event = JSON.parse(line); } catch { continue; }
+    if (event === null || typeof event !== "object") continue;
+    if (event.type === "error") {
+      const { seq: _seq, ts: _ts, session_id: _id, raw: _raw, ...fields } = event;
+      lines.push(`session error: ${JSON.stringify(fields)}`);
+    }
+    if (event.type === "session_ended") {
+      lines.push(`session ended: ${JSON.stringify({ reason: event.reason, exit_code: event.exit_code, harness_exit: event.harness_exit })}`);
+    }
+  }
+  return lines.map((line) => line.length > 600 ? `${line.slice(0, 600)}...` : line).slice(0, 10);
+}

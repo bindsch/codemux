@@ -1,3 +1,5 @@
+import { realpathSync } from "node:fs";
+import { accountHome } from "./account-home.js";
 import type { AgentId, AutonomyLevel } from "./types.js";
 import { UsageRefusalError } from "./validation.js";
 import { assertStrictExecutables, containsPath, strictCommandPaths, StrictSandboxRefusalError } from "./sandbox-command.js";
@@ -80,6 +82,21 @@ export function sandboxRestrictsNetwork(
   return options?.noNet === true || options?.trust === "untrusted";
 }
 
+/** scode blocks the account home wholesale when HOME names a different
+ * directory (scode 0.6.6, "A caller may intentionally use a synthetic HOME").
+ * A harness installed in the real home then needs the same exact-file grant
+ * as one installed in a blocked operator store. */
+export function scodeAccountHomeBlock(environment: NodeJS.ProcessEnv, account = accountHome()): string[] {
+  if (account === null) return [];
+  let home: string;
+  try {
+    home = realpathSync(environment.HOME ?? "");
+  } catch {
+    return [];
+  }
+  return account !== home ? [account] : [];
+}
+
 export function buildScodeCommand(
   command: string[],
   cwd?: string,
@@ -137,7 +154,7 @@ export function buildScodeCommand(
   // the resolved executable files, never their containing config directory.
   // Strict mode still refuses writable executable grants below.
   if (options?.harnessHomeBlockedPaths?.length) {
-    const stores = options.harnessHomeBlockedPaths.map(canonicalSandboxBlockPath);
+    const stores = [...options.harnessHomeBlockedPaths, ...scodeAccountHomeBlock(environment)].map(canonicalSandboxBlockPath);
     for (const executable of strictCommandPaths(command)) {
       if (!executable.startsWith("/")) continue;
       const path = canonicalSandboxBlockPath(executable);

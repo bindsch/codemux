@@ -43,7 +43,7 @@ import { CLINE_INSTRUCTION_CHANNEL } from "./cline-isolation-probe.js";
 import type { SandboxPolicyOverrides } from "./sandbox-policy.js";
 import { UsageRefusalError } from "./validation.js";
 import { copyClaudeCredentialMirror } from "./claude-credential-mirror.js";
-import { canarySessionProtocolProblem, SESSION_KILL_GRACE_MS, runCanarySession, sessionCanary, type SessionRun } from "./hermetic-session-canary-driver.js";
+import { canarySessionProtocolProblem, SESSION_KILL_GRACE_MS, runCanarySession, sessionCanary, sessionFailureDetail, type SessionRun } from "./hermetic-session-canary-driver.js";
 import {
   harnessHomeCanaryOwnedEnv, plantHarnessHomeCanary, seedHarnessHomeCanary, runHarnessHomeSessionCanary, supportsHarnessHomeCanary,
   type PlantedHarnessHomeCanary,
@@ -325,10 +325,8 @@ function sessionProblem(
 }
 
 function reportSessionFailure(run: SessionRun): void {
-  const text = run.stderr.trim();
-  if (text !== "") {
-    process.stderr.write(`${text.split("\n").slice(0, 4).join("\n")}\n`);
-  }
+  const lines = sessionFailureDetail(run);
+  if (lines.length > 0) process.stderr.write(`${lines.join("\n")}\n`);
 }
 
 export interface HermeticSessionCanaryRequest {
