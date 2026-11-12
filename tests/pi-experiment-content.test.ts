@@ -128,6 +128,14 @@ describe("Pi experiment evidence joins", () => {
     const s = source(); const events = evidence(); events.push(events.at(-1)!);
     verifyPiExperimentEvidence(s, events, stdout);
     expect(s.records.filter((r) => r.kind === "tool_result_delivered")).toEqual([{ kind: "tool_result_delivered", fields: { call_id: "native-1", t: 1 } }]);
+    // The live gate's experiment probe proves delivery from these records.
+    expect(s.records.filter((r) => r.kind === "model_tool_result").map((r) => r.fields.call_id)).toEqual(["native-1"]);
+    expect(s.records.filter((r) => r.kind === "result_comparison").map((r) => r.fields)).toEqual([{ call_id: "native-1", equal: true, harness: "pi", t: 1 }]);
+  });
+  test("a run that fails after delivery records no unchanged-result claim", () => {
+    const s = source();
+    expect(() => verifyPiExperimentEvidence(s, evidence(), "")).toThrow();
+    expect(s.records.filter((r) => r.kind === "model_tool_result" || r.kind === "result_comparison")).toEqual([]);
   });
   test.each([
     ["inventory", (r: JsonObject[]) => { r[0]!.fields.tools = []; }],

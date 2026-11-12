@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { accountHome } from "../src/account-home.js";
 import { applyHarnessHomeSandboxBlocks } from "../src/launch/harness-home-sandbox.js";
@@ -18,10 +18,17 @@ test("the account home blocks only when HOME names a different directory", () =>
   expect(scodeAccountHomeBlock({ HOME: join(account, "src") }, null)).toEqual([]);
 });
 
-test("the account home comes from the password database, not HOME", () => {
-  const home = accountHome();
-  expect(home).not.toBeNull();
-  expect(home!.startsWith("/")).toBe(true);
+test.skipIf(accountHome() === null)("the account home comes from the password database, not HOME", () => {
+  const other = join(process.cwd(), "scratch", "fix", "other-home");
+  mkdirSync(other, { recursive: true });
+  try {
+    const child = Bun.spawnSync([process.execPath, "-e",
+      'import { accountHome } from "./src/account-home.ts"; console.log(accountHome());'],
+      { cwd: process.cwd(), env: { ...process.env, HOME: other } });
+    expect(child.stdout.toString().trim()).toBe(accountHome()!);
+  } finally {
+    rmSync(other, { recursive: true, force: true });
+  }
 });
 
 test.skipIf(accountHome() === null)("a synthetic HOME grants the harness binary under the account home", () => {
@@ -37,7 +44,11 @@ test.skipIf(accountHome() === null)("a synthetic HOME grants the harness binary 
     const argv = buildScodeCommand(command, process.cwd(), "read-only", options, undefined, env);
     return argv.flatMap((arg, i) => arg === "--allow" ? [argv[i + 1]] : []);
   };
-  expect(allows({ HOME: synthetic })).toContain(binary);
-  // With the real HOME, scode adds no account-home block, so no grant either.
-  expect(allows({ HOME: account })).not.toContain(binary);
+  try {
+    expect(allows({ HOME: synthetic })).toContain(binary);
+    // With the real HOME, scode adds no account-home block, so no grant either.
+    expect(allows({ HOME: account })).not.toContain(binary);
+  } finally {
+    rmSync(synthetic, { recursive: true, force: true });
+  }
 });

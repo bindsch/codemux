@@ -39,7 +39,10 @@ export {
 export const MAX_HARNESS_LINE_BYTES = 16 * 1024 * 1024;
 
 /** Default grace for the harness to persist before the tree is killed. */
-export const DEFAULT_SHUTDOWN_GRACE_MS = 10_000;
+// Claude Code 2.1.317 sometimes needs over 10 s to exit after a completed
+// shutdown (11.1 s measured, 2026-11-12); a SIGTERM inside that window left
+// it hung until SIGKILL. 30 s covers it, and a hung child still dies by 60 s.
+export const DEFAULT_SHUTDOWN_GRACE_MS = 30_000;
 /** 128 + SIGTERM, the process runner's convention for a signaled stop. */
 export const SESSION_SIGNAL_EXIT_CODE = 143;
 

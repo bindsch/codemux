@@ -4,6 +4,7 @@ import type { ExperimentRelayCall } from "./experiment-relay.js";
 import { experimentToolTimeoutSeconds } from "./experiment-mcp.js";
 import type { JsonObject } from "./experiment-server.js";
 import { piObject, verifyPiProviderPayload } from "./pi-experiment-content.js";
+import { recordVerifiedDeliveries } from "./experiment-delivery-records.js";
 
 export interface PiExperimentEvidenceSource {
   spec: { name: string; tool_timeout_seconds?: number };
@@ -36,6 +37,7 @@ export function verifyPiExperimentEvidence(source: PiExperimentEvidenceSource, r
     calls.set(call.call_id, call);
   }
   const dispatched = new Set<string>(), delivered = new Set<string>();
+  const deliveries: { id: string; t: number }[] = [];
   let messages: JsonObject[] | undefined, inventory = false, requests = 0;
   const matchCall = (id: unknown, name: unknown, input: unknown): ExperimentRelayCall => {
     const call = typeof id === "string" ? calls.get(id) : undefined;
@@ -87,7 +89,10 @@ export function verifyPiExperimentEvidence(source: PiExperimentEvidenceSource, r
       case "provider_request":
         if (!inventory || !messages || typeof fields.api !== "string") throw new ExperimentFailure(Code.HarnessLogMissing, "Pi provider request lacks context, catalog, or API identity");
         for (const id of verifyPiProviderPayload(source.spec.name, definitions, fields.api, fields.payload, messages)) {
-          if (!delivered.has(id)) source.record("tool_result_delivered", { call_id: id, t: record.t });
+          if (!delivered.has(id)) {
+            source.record("tool_result_delivered", { call_id: id, t: record.t });
+            deliveries.push({ id, t: record.t });
+          }
           delivered.add(id);
         }
         requests++;
@@ -114,4 +119,5 @@ export function verifyPiExperimentEvidence(source: PiExperimentEvidenceSource, r
   if (!ended || !assistants || requests < assistants || calls.size !== delivered.size || calls.size !== dispatched.size || calls.size !== declared.size) {
     throw new ExperimentFailure(Code.HarnessLogMissing, "Pi experiment lacks complete native call, provider delivery, or terminal evidence");
   }
+  recordVerifiedDeliveries(source, "pi", calls, deliveries);
 }

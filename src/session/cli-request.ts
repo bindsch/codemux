@@ -275,7 +275,7 @@ export function resolveSessionRequest(
   const permissionTimeoutMs =
     parseOptionalTimeout(options.permissionTimeout, "--permission-timeout") ?? 300_000;
   const shutdownGraceMs =
-    parseOptionalTimeout(options.shutdownGrace, "--shutdown-grace") ?? 10_000;
+    parseOptionalTimeout(options.shutdownGrace, "--shutdown-grace") ?? 30_000; // DEFAULT_SHUTDOWN_GRACE_MS in process.ts
 
   // Presence is `!== undefined` (review round 159): an explicit
   // `--model ""` is a given model option and refuses in resolveModel's

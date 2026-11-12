@@ -8,6 +8,7 @@ import { experimentToolTimeoutSeconds, type ExperimentSpec } from "./experiment-
 import { MAX_CAPTURE_BYTES, type StdoutSink } from "./process-runner.js";
 import { capturePrefix } from "./experiment-capture.js";
 import { readUtf8FileBounded } from "./file-io.js";
+import { recordVerifiedDeliveries } from "./experiment-delivery-records.js";
 import { OpenCodePlainFold } from "./plain-unwrap.js";
 import { opencodeEvidenceObject, opencodeExperimentToolName, assertOpencodeExperimentResult, verifyOpencodeProviderPayload } from "./opencode-experiment-content.js";
 import { opencodeExperimentPluginSource } from "./opencode-experiment-plugin.js";
@@ -38,6 +39,7 @@ export function verifyOpencodeExperimentEvidence(source: EvidenceSource, records
   const auxiliaryIds = new Set<string>();
   const servedModels = new Map<string, string | null>();
   const requests = new Map<string, { deliveries: string[]; t: number }>();
+  const deliveries: { id: string; t: number }[] = [];
   let session: string | undefined;
   const sessionMatches = (id: unknown) => {
     if (typeof id !== "string" || !id || (session !== undefined && id !== session)) {
@@ -102,14 +104,8 @@ export function verifyOpencodeExperimentEvidence(source: EvidenceSource, records
         if (!auxiliaryIds.has(fields.request_id)) accepted++;
         for (const id of request.deliveries) {
           if (!delivered.has(id)) {
-            // verifyOpencodeProviderPayload matched this request's result to
-            // the relay result, so the relay content is what the model got.
-            const result = calls.get(id)!.result!;
-            source.record("model_tool_result", { call_id: id, content: result.content,
-              output: result.content.map((block: JsonObject) => block.text).join("\n\n"),
-              is_error: result.isError === true, evidence_boundary: "captured-provider-request", t: request.t });
-            source.record("result_comparison", { call_id: id, equal: true, harness: "opencode", t: request.t });
             source.record("tool_result_delivered", { call_id: id, t: request.t });
+            deliveries.push({ id, t: request.t });
           }
           delivered.add(id);
         }
@@ -167,6 +163,9 @@ export function verifyOpencodeExperimentEvidence(source: EvidenceSource, records
       calls.size !== dispatched.size || calls.size !== declared.size) {
     throw new ExperimentFailure(Code.HarnessLogMissing, "OpenCode experiment lacks complete native calls, provider delivery, or terminal evidence");
   }
+  // Only now, with stdout and completeness verified too, does the recording
+  // claim the delivered result is unchanged.
+  recordVerifiedDeliveries(source, "opencode", calls, deliveries);
   const identities = new Set([...acceptedIds].filter((id) => !auxiliaryIds.has(id)).map((id) => servedModels.get(id) ?? null));
   return identities.size === 1 ? identities.values().next().value ?? null : null;
 }

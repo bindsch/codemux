@@ -232,6 +232,7 @@ test("probe G proves delivery from the recording, and fails without it (finding 
     { label: "claude delivered text is not the bare marker", agent: "claude", recording: claudeDelivered("WRONG"), reply: MARKER, failure: "is not the bare marker" },
     { label: "opencode delivered the bare marker as content", agent: "opencode", recording: relayDelivered([{ type: "text", text: MARKER }]), reply: MARKER, failure: "" },
     { label: "opencode delivered text is not the bare marker", agent: "opencode", recording: relayDelivered([{ type: "text", text: "WRONG" }]), reply: MARKER, failure: "is not the bare marker" },
+    { label: "claude recording without its SDK block", agent: "claude", recording: relayDelivered([{ type: "text", text: MARKER }]), reply: MARKER, failure: "is not the bare marker" },
     { label: "a reply without the marker", agent: "codex", recording: codexGood, reply: "WRONG-MARKER", failure: "neither the bare marker" },
     { label: "no recording at all", agent: "claude", reply: MARKER, failure: "holds no experiment recording" },
     { label: "a comparison that found the result changed", agent: "claude", recording: recording(

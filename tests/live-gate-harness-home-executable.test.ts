@@ -61,6 +61,14 @@ test("a failed canary session reports its own error and end events, not quota wa
       "not json",
     ].join("\n"),
   });
+  // An oversized event leaves a marker instead of vanishing.
+  const { keepFailureEventForTest } = await import("../src/hermetic-session-canary-driver.js");
+  const run = { failureEvents: undefined } as { failureEvents?: string[] };
+  keepFailureEventForTest(run, JSON.stringify({ type: "error", message: "x".repeat(70 * 1024) }));
+  expect(run.failureEvents).toEqual(['{"type":"error","message":"(error event over 64 KiB omitted)"}']);
+  // Events kept past the stdout cap win over the held stdout prefix.
+  expect(sessionFailureDetail({ stderr: "", stdout: "", failureEvents: [JSON.stringify({ type: "session_ended", reason: "crash", exit_code: 1 })] }))
+    .toEqual(['session ended: {"reason":"crash","exit_code":1}']);
   expect(detail).toEqual([
     "real stderr line",
     'session error: {"type":"error","message":"auth failed","code":"harness"}',
@@ -69,7 +77,7 @@ test("a failed canary session reports its own error and end events, not quota wa
 });
 
 test("the OpenCode caller-home canary carries the authenticated model preference once", async () => {
-  const { mkdirSync, readFileSync, writeFileSync } = await import("node:fs");
+  const { mkdirSync, readFileSync, rmSync, writeFileSync } = await import("node:fs");
   const { seedHarnessHomeCanary } = await import("../src/hermetic-session-canary-home.js");
   const root = join(process.cwd(), "scratch", "fix", `model-seed-${process.pid}`);
   const authenticated = join(root, "auth"), home = join(root, "caller"), operatorHome = join(root, "operator");
@@ -79,7 +87,14 @@ test("the OpenCode caller-home canary carries the authenticated model preference
   const preference = JSON.stringify({ recent: [{ providerID: "zhipuai-coding-plan", modelID: "glm-5.3" }] });
   writeFileSync(join(authenticated, ".local", "state", "opencode", "model.json"), preference, { mode: 0o600 });
   const plant = { home, operatorHome, env: {} } as unknown as Parameters<typeof seedHarnessHomeCanary>[1];
-  seedHarnessHomeCanary("opencode", plant, authenticated);
-  seedHarnessHomeCanary("opencode", plant, authenticated);
-  expect(readFileSync(join(home, ".local", "state", "opencode", "model.json"), "utf8")).toBe(preference);
+  try {
+    seedHarnessHomeCanary("opencode", plant, authenticated);
+    // A second seed must not overwrite the caller's copy, even when the
+    // authenticated preference changed in between.
+    writeFileSync(join(authenticated, ".local", "state", "opencode", "model.json"), "{\"changed\":true}", { mode: 0o600 });
+    seedHarnessHomeCanary("opencode", plant, authenticated);
+    expect(readFileSync(join(home, ".local", "state", "opencode", "model.json"), "utf8")).toBe(preference);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

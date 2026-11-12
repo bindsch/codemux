@@ -83,10 +83,11 @@ test("live gate builds the documented command for every probe letter", async () 
           calls.push({ agent: command[3]!, command, stdin });
           if (command.includes("--experiment-mcp")) {
             // Probe G's verifier reads the recording from the probe's run
-            // directory (finding 2); write one claude-shaped recording so
-            // the bare-marker reply verifies while the directory is alive.
+            // directory (finding 2); write one recording carrying both the
+            // claude SDK block and the relay harnesses' content so the
+            // bare-marker reply verifies while the directory is alive.
             const cwd = command[command.indexOf("--cwd") + 1]!;
-            writeFileSync(join(cwd, `${randomUUID()}.jsonl`), `${JSON.stringify({ kind: "model_tool_result", tool_use_id: "t1", block: { type: "tool_result", content: MARKER } })}\n${JSON.stringify({ kind: "result_comparison", tool_use_id: "t1", equal: true })}\n`);
+            writeFileSync(join(cwd, `${randomUUID()}.jsonl`), `${JSON.stringify({ kind: "model_tool_result", tool_use_id: "t1", block: { type: "tool_result", content: MARKER }, content: MARKER })}\n${JSON.stringify({ kind: "result_comparison", tool_use_id: "t1", equal: true })}\n`);
             experimentVerify = verify;
             experimentResults = {
               bare: verify({ exit: 0, stdout: `${MARKER}\n` }),

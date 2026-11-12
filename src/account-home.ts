@@ -15,7 +15,10 @@ function lookup(): string | null {
     const user = spawnSync("/usr/bin/id", ["-un"], { encoding: "utf8" }).stdout?.trim();
     if (!user) return null;
     const line = spawnSync("/usr/bin/dscl", [".", "-read", `/Users/${user}`, "NFSHomeDirectory"], { encoding: "utf8" }).stdout ?? "";
-    home = line.replace(/^NFSHomeDirectory: /, "").trim();
+    // Same parse as scode (${line#NFSHomeDirectory: }). A home with spaces
+    // prints on the next line; scode then falls back to HOME and adds no
+    // account-home block, and this returns null, so neither side blocks.
+    home = line.replace(/^NFSHomeDirectory: /, "").replace(/\n$/, "");
   } else if (process.platform === "linux") {
     for (const entry of readFileSync("/etc/passwd", "utf8").split("\n")) {
       const fields = entry.split(":");

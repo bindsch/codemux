@@ -82,6 +82,13 @@ describe("Qwen native names and result boundary", () => {
 });
 
 describe("Qwen captured OpenAI experiment evidence", () => {
+  test("a run that fails after a delivery records no unchanged-result claim", () => {
+    const src = source();
+    // A malformed log after the delivering one fails the run late.
+    expect(() => verifyQwenExperimentEvidence(src, [...evidence(), { timestamp: "bad" }], stdout())).toThrow();
+    expect(src.emitted.some((event) => event.kind === "tool_result_delivered")).toBe(true);
+    expect(src.emitted.filter((event) => event.kind === "model_tool_result" || event.kind === "result_comparison")).toEqual([]);
+  });
   test("joins stream IDs, exact provider inventory, response calls and delivered bytes", () => {
     const src = source();
     verifyQwenExperimentEvidence(src, evidence(), stdout());

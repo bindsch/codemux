@@ -44,6 +44,7 @@ immutable notes and engineering evidence.
 
 ### Changed
 
+- `codemux session --shutdown-grace` defaults to 30 s, up from 10 s. Claude Code 2.1.317 sometimes needs over 10 s to exit after a completed turn, and a SIGTERM in that window left it hung until SIGKILL, so the session ended as a harness failure.
 - Version and capability probes preserve natural exit status until their configured deadline. Only a leader still running at that deadline can succeed from complete stdout, marked `stoppedAfterOutput: true`, before its whole process group is terminated. Cursor's version probe defaults to five seconds to bound its exit hang; other harnesses retain the 30-second default. Cursor model listings require their table footer. Incomplete output and capture errors remain failures. A leader's own signal or nonzero exit remains a failure when descendants retain its pipes.
 
 - `codemux session --harness-home` refuses with exit 64 a `--pass-env` name
@@ -55,7 +56,7 @@ immutable notes and engineering evidence.
 
 ### Fixed
 
-- OpenCode experiment runs accept OpenCode's tool-free title request, which omits `tools`. Only a classified title turn may omit the array, and a failed title request no longer fails the run; main turns still require the exact tool inventory. A compaction or project-copy-name turn fails with a diagnostic that names the agent. OpenCode experiment recordings now include `model_tool_result` and `result_comparison`, which the live gate's experiment probe requires.
+- OpenCode experiment runs accept OpenCode's tool-free title request, which omits `tools`. Only a classified title turn may omit the array, and a failed title request no longer fails the run; main turns still require the exact tool inventory. A compaction or project-copy-name turn fails with a diagnostic that names the agent. OpenCode and Pi experiment recordings now include `model_tool_result` and `result_comparison`, which the live gate's experiment probe requires. OpenCode, Pi, and Qwen write both only once the run's checks pass, so a failed run never claims an unchanged result.
 - `--harness-home` sessions can launch a harness whose executable sits inside its own blocked operator store, as OpenCode's `~/.opencode/bin/opencode` and Kimi's `~/.kimi-code/bin/kimi` do. The sandbox grants the executable file only, not its directory. The same grant covers an executable in the account home when the caller's `HOME` differs from it, because scode then blocks the account home.
 - The live gate's session probe reports a failed session's own `error` and `session_ended` events instead of only quota warnings. Its OpenCode `--harness-home` arm seeds the caller home with the authenticated model preference, as a real caller home holds one; without it OpenCode chose a model the subscription did not include.
 - Cursor provider overrides refuse before launch with exit 64 on run, check, session, and TUI. Cursor 2026.11.05 still sends its account credential to `DashboardService/GetMe` and has no carrier for a provider model request, so the override cannot isolate a run.

@@ -28,7 +28,7 @@ function replyFailure(trimmed: string, marker: string, agent: AgentId): string |
     }
     return `stdout is neither the bare marker nor the marker after a valid ${agent} wall-time header: ${escapePreview(trimmed)}`;
   }
-  return `stdout is not the bare marker (claude and zai results carry no wall-time header): ${escapePreview(trimmed)}`;
+  return `stdout is not the bare marker (${agent} results carry no wall-time header): ${escapePreview(trimmed)}`;
 }
 
 /** The delivered text of one recorded `model_tool_result`, checked under
@@ -76,10 +76,12 @@ function deliveredResultFailure(record: Record<string, unknown>, marker: string,
     }
     return null;
   }
-  // Claude and Z.AI record the SDK block; the relay harnesses (OpenCode,
-  // Qwen, Pi) record the delivered content directly. Both carry no header.
+  // Claude and Z.AI record the SDK block; every other experiment harness
+  // records the delivered content directly. Neither carries a header, and
+  // a Claude or Z.AI record without its block fails.
+  const sdkBlock = agent === "claude" || agent === "zai";
   const block = record.block as { content?: unknown } | null | undefined;
-  const content = block !== undefined ? (block !== null && typeof block === "object" ? block.content : undefined) : record.content;
+  const content = sdkBlock ? (block !== null && typeof block === "object" ? block.content : undefined) : record.content;
   if (!modelResultMatches([{ type: "text", text: marker }], content)) {
     return `the recording's model_tool_result text is not the bare marker (${agent} delivers no wall-time header) (${path})`;
   }

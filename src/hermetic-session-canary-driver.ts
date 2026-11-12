@@ -57,6 +57,8 @@ export interface SessionRun {
   rejection?: string;
   completed: boolean;
   ended?: { reason: unknown; exitCode: unknown };
+  /** The stream's error and session_ended lines, kept past the stdout cap. */
+  failureEvents?: string[];
 }
 
 /** Protocol failures precede any judgment of model context or home state. */
@@ -200,10 +202,11 @@ export async function runCanarySession(
           if (newline === -1) break;
           const line = stdoutPending.slice(0, newline);
           stdoutPending = stdoutPending.slice(newline + 1);
+          keepFailureEvent(run, line);
           onLine(line);
         }
       }
-      if (stdoutPending.trim() !== "") onLine(stdoutPending);
+      if (stdoutPending.trim() !== "") { keepFailureEvent(run, stdoutPending); onLine(stdoutPending); }
     } finally {
       run.stdout = stdoutHeld;
       reader.releaseLock();
@@ -259,13 +262,34 @@ export async function runCanarySession(
   return run;
 }
 
+/** At most this many error and session_ended lines survive per session. */
+const FAILURE_EVENT_LIMIT = 8;
+
+function keepFailureEvent(run: Pick<SessionRun, "failureEvents">, line: string): void {
+  let kind: string | undefined;
+  if (line.length <= 64 * 1024) {
+    // The top-level type only: a nested "type":"error" is not an event.
+    try {
+      const type = (JSON.parse(line) as { type?: unknown } | null)?.type;
+      if (type === "error" || type === "session_ended") kind = type;
+    } catch { /* not a JSON event line */ }
+  } else {
+    kind = /"type":"(error|session_ended)"/.exec(line.slice(0, 64 * 1024))?.[1];
+  }
+  if (kind === undefined) return;
+  const kept = (run.failureEvents ??= []);
+  // An oversized event keeps a marker, so the report still shows it ended.
+  kept.push(line.length > 64 * 1024 ? JSON.stringify({ type: kind, message: `(${kind} event over 64 KiB omitted)` }) : line);
+  if (kept.length > FAILURE_EVENT_LIMIT) kept.shift();
+}
+
 /** What a failed canary session says about itself: its stderr without the
  * quota-gate warnings, then the session's own error and session_ended
  * events from stdout, which carry the cause when stderr has none. */
-export function sessionFailureDetail(run: Pick<SessionRun, "stderr" | "stdout">): string[] {
+export function sessionFailureDetail(run: Pick<SessionRun, "stderr" | "stdout" | "failureEvents">): string[] {
   const lines = run.stderr.split("\n").map((line) => line.trim())
     .filter((line) => line !== "" && !line.startsWith("Warning: quota gate:")).slice(0, 4);
-  for (const line of run.stdout.split("\n")) {
+  for (const line of run.failureEvents ?? run.stdout.split("\n")) {
     let event: { type?: unknown; [key: string]: unknown };
     try { event = JSON.parse(line); } catch { continue; }
     if (event === null || typeof event !== "object") continue;
@@ -279,3 +303,6 @@ export function sessionFailureDetail(run: Pick<SessionRun, "stderr" | "stdout">)
   }
   return lines.map((line) => line.length > 600 ? `${line.slice(0, 600)}...` : line).slice(0, 10);
 }
+
+/** Test seam for the bounded failure-event capture. */
+export const keepFailureEventForTest = keepFailureEvent;

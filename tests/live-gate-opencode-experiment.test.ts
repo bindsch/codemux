@@ -57,6 +57,13 @@ test("OpenCode 1.19.5 title request has no tools; main requests retain exact inv
     auxiliary[0]!.fields.agent = agent;
     expect(() => verifyOpencodeExperimentEvidence(source, auxiliary, fixture.stdout)).toThrow(`${agent} agent`);
   }
+  // A run that fails after delivery never claims the result was unchanged.
+  const failedAudit: JsonObject[] = [];
+  const stdoutChanged = fixture.stdout.replace("CODEMUX-MCP-RESULT", "CODEMUX-MCP-RESULX");
+  expect(stdoutChanged).not.toBe(fixture.stdout);
+  expect(() => verifyOpencodeExperimentEvidence({ ...source, record: (kind: string, fields: JsonObject) => { failedAudit.push({ kind, fields }); } },
+    records, stdoutChanged)).toThrow();
+  expect(failedAudit.filter((r) => r.kind === "model_tool_result" || r.kind === "result_comparison")).toEqual([]);
   const changed = structuredClone(records);
   changed[10]!.fields.payload.input.at(-1).output = "changed";
   expect(() => verifyOpencodeExperimentEvidence(source, changed, fixture.stdout)).toThrow("changed");

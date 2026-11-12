@@ -14,9 +14,9 @@ Title generation is best-effort in OpenCode, so a failed or unanswered title
 request does not fail the run. Two other OpenCode 1.19.5 agents send no tools:
 compaction, which rewrites the history that verification checks, and
 project-copy-name, which only OpenCode's HTTP API starts. A turn from either
-fails the run with a diagnostic that names the agent. OpenCode records the
-verified delivery as `model_tool_result` and `result_comparison`, as the other
-relay harnesses do.
+fails the run with a diagnostic that names the agent. OpenCode, Pi, and Qwen
+record each verified delivery as `model_tool_result` and `result_comparison`,
+and only after every provider-request and stdout check has passed.
 
 The server runs **outside scode** with only the environment names in the spec. Its command and arguments are operator-controlled. The harness remains inside read-only scode. Hermetic mode excludes operator-configured MCP integrations; this explicitly requested server is the exception.
 

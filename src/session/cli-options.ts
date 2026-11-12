@@ -23,7 +23,7 @@ export function registerSessionOptions(command: Command, defaultAgent: string): 
     .option("--timeout <seconds>", "Whole-session cap: >0 to 86400 seconds; fractions rounded up to milliseconds (default: none)")
     .option("--turn-timeout <seconds>", "Per-turn cap for agents with interruption support; interrupts the current turn (default: none)")
     .option("--permission-timeout <seconds>", "How long a permission request waits before codemux answers deny", "300")
-    .option("--shutdown-grace <seconds>", "How long the harness gets to answer the end before SIGTERM, and again to exit before the kill", "10")
+    .option("--shutdown-grace <seconds>", "How long the harness gets to answer the end before SIGTERM, and again to exit before the kill", "30")
     .option("--no-author-prefix", "Do not prefix harness-bound text with [author]")
     .option("--tools <selection>", `Tool selection: default or none (${agents("session.tools")}; opencode none requires --hermetic)`)
     .option("--enable-playwright-mcp", `Enable the local Playwright MCP (${agents("session.playwright-mcp")}; requires --sandbox; autonomy rules: docs/sessions.md)`)

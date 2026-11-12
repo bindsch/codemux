@@ -3,6 +3,7 @@ import { ExperimentFailure, ExperimentFailureCode as Code, type ExperimentRecord
 import type { ExperimentRelayCall } from "./experiment-relay.js";
 import type { JsonObject } from "./experiment-server.js";
 import { timestampMs, timestampValid } from "./calendar.js";
+import { recordVerifiedDeliveries } from "./experiment-delivery-records.js";
 
 const MAX_NATIVE_TOOL_NAME = 63;
 const MCP_TEXT_LIMIT = 500_000;
@@ -247,6 +248,7 @@ export function verifyQwenExperimentEvidence(source: QwenExperimentEvidenceSourc
   const calls = relayCalls(source);
   const session = stdoutEvidence(source, calls, stdout);
   const produced = new Set<string>(), delivered = new Set<string>(), responses = new Set<string>();
+  const deliveries: { id: string; t: number }[] = [];
   let mainRequests = 0;
   for (const value of records) {
     const log = object(value), request = object(log.request), response = object(log.response);
@@ -283,11 +285,8 @@ export function verifyQwenExperimentEvidence(source: QwenExperimentEvidenceSourc
     }
     for (const id of resultIds) {
       if (!delivered.has(id)) {
-        const call = calls.get(id)!;
-        source.record("model_tool_result", { call_id: id, content: call.result!.content, output: call.result!.content[0].text,
-          is_error: false, evidence_boundary: "captured-openai-request", t });
-        source.record("result_comparison", { call_id: id, equal: true, harness: "qwen", t });
         source.record("tool_result_delivered", { call_id: id, t });
+        deliveries.push({ id, t });
         delivered.add(id);
       }
     }
@@ -297,4 +296,5 @@ export function verifyQwenExperimentEvidence(source: QwenExperimentEvidenceSourc
   if (!mainRequests || produced.size !== calls.size || delivered.size !== calls.size) {
     throw new ExperimentFailure(Code.HarnessLogMissing, "Qwen lacks complete model-call and successful result-delivery evidence");
   }
+  recordVerifiedDeliveries(source, "qwen", calls, deliveries, "captured-openai-request");
 }
