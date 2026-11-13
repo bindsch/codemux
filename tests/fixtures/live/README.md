@@ -30,6 +30,11 @@ result.
 
 ## Files
 
+- `shutdown-linger.ts` — shared synthetic shutdown behavior for the Claude,
+  Codex, and agy fixtures. `FAKE_SHUTDOWN_LINGER` selects a SIGTERM exit,
+  a hold until SIGKILL, a SIGTERM handler exiting 143, or an independent
+  exit 42/143 at EOF. `tests/session-shutdown-kill.test.ts` drives it through
+  those persistent fixtures, including the ZAI path.
 - `zai-session-a.ndjson` — four-turn exchange: two plain turns, a turn with
   a Bash call, a mid-turn user message (line 34) that the harness folded
   into the ACTIVE turn — echoed with `isReplay: true` after the tool

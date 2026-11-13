@@ -8,7 +8,7 @@ export interface SessionChildOutcome {
   signal: string | null;
 }
 
-/** Exit classification never depends on who sent a signal or when. */
+/** Raw child failure; an accepted idle shutdown kill is handled separately. */
 export function harnessFailed(outcome: SessionChildOutcome | null): boolean {
   return outcome !== null && (outcome.signal !== null || outcome.code !== 0);
 }
@@ -22,11 +22,12 @@ export function buildSessionEnded(
   seq: number,
   sessionId: string,
   outcome: SessionChildOutcome | null,
-  fields: Record<string, unknown>
+  fields: Record<string, unknown>,
+  cleanShutdownKill = false
 ): string {
   return buildEvent(seq, sessionId, "session_ended", null, {
     ...fields,
     harness_exit: outcome,
-    reason: harnessFailed(outcome) ? "harness_failed" : fields.reason,
+    reason: harnessFailed(outcome) && !cleanShutdownKill ? "harness_failed" : fields.reason,
   });
 }

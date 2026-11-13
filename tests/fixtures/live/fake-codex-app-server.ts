@@ -401,6 +401,7 @@ process.stdin.on("data", (chunk: string) => {
   }
 });
 process.stdin.on("end", () => {
+  if (lingerOnShutdown()) return;
   // The persistence scenarios also run on a protocol shutdown.
   if (process.listenerCount("SIGTERM") > 0) process.emit("SIGTERM");
   else process.exit(0);
@@ -429,6 +430,7 @@ process.stdin.on("end", () => {
 // failure (review live11). Without the env the default SIGTERM
 // disposition applies (die at once), the behavior every other test
 // relies on.
+import { lingerOnShutdown } from "./shutdown-linger.js";
 const persistMode = process.env.FAKE_SIGTERM_PERSIST;
 if (
   persistMode === "1" ||

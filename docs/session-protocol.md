@@ -151,6 +151,7 @@ no extra length guarantee beyond the framing and queue bounds below.
 | `input_rejected` | `input_seq: positive integer`; `reason: string` from the rejection table; optional `message: string` — the denial text sent to the harness, present on `autonomy_escalation` |
 | `user_message` | `input_seq: positive integer`; `text: string`; optional `author: string`; optional `turn_id: string` |
 | `turn_started` | `turn_id: string` |
+| `warning` | `message: string`; `raw: null` — a codemux diagnostic, including the signal used to stop an idle child after requested shutdown |
 | `assistant_delta` | `delta: string`; `turn_id: string \| null` |
 | `assistant_message` | `text: string`; `turn_id: string \| null` |
 | `tool_call` | `call_id: string`; `name: string`; `input: object` |
@@ -314,6 +315,12 @@ reason.
 `session_ended` is last. `harness_exit` is the last observed child's raw
 outcome, or null if no outcome was observed. An unexpected nonzero child exit or
 signal forces `reason: "harness_failed"` and a nonzero summary exit.
+When all turns have completed and the caller requests shutdown (including
+EOF), a codemux-initiated SIGTERM/SIGKILL or its exit-143 wrapper instead
+ends with `reason: "shutdown"`, `exit_code: 0`, and a preceding `warning`
+naming the kill. `harness_exit` retains the raw outcome; resumability follows
+the existing registry and private-home rules. A death with an open turn,
+an independent nonzero exit, or another session failure is not excused.
 An expected interrupted turn in Aider, OpenCode, or Kimi may retain its raw
 signal while a later orderly session end reports success. `shutdown_requested` records stdin
 close, shutdown input, or a signal to codemux. It does not excuse failure.

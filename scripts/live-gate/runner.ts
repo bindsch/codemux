@@ -8,8 +8,10 @@ import { join, resolve } from "node:path";
 import type { ReadableStreamDefaultReader } from "node:stream/web";
 import { FORCE_KILL_DELAY_MS, PIPE_GIVE_UP_MS, signalProcess } from "../../src/process-runner.js";
 import { createTerminationTarget, waitForDescendantsGrace, type TerminationTarget } from "../../src/process-tree.js";
+import { providerQuotaRefusal } from "./quota.js";
 
 const STDERR_LIMIT = 160;
+const DIAGNOSTIC_LINE_LIMIT = 4096;
 const STDOUT_LIMIT = 80;
 const CAPTURE_LIMIT = 512 * 1024;
 const ROOT = resolve(import.meta.dir, "../..");
@@ -28,6 +30,10 @@ export interface ProbeResult {
   seconds: number;
   stderr: string;
   note?: string;
+  /** A refusal found beyond the first stderr line; bounded independently. */
+  /** The last error line's quota refusal; null when it was none. Absent
+   * only on results built outside the runner. */
+  quotaRefusal?: string | null;
 }
 
 export interface CapturedOutput {
@@ -150,8 +156,10 @@ export class ProbeRunner {
   private async execute(command: string[], execution: ProbeExecution & { timeout: number; outputPath?: string }): Promise<ProbeResult> {
     const { expected, verify, stdin, timeout, outputPath, env, allowAnyExit } = execution;
     const start = performance.now();
+    let quotaRefusal: string | null = null;
     const failed = (stderr: string, note?: string): ProbeResult => ({
       status: "FAIL", seconds: (performance.now() - start) / 1000, stderr, ...(note === undefined ? {} : { note }),
+      quotaRefusal,
     });
     const warnings: string[] = [];
     const stdoutPath = outputPath && `${outputPath}.out`;
@@ -293,12 +301,14 @@ export class ProbeRunner {
     }, stdoutPath);
     let stderr = "";
     let pendingLine = "";
-    let collectingStderr = true;
     const finishLine = (): void => {
       const line = pendingLine;
       pendingLine = "";
       const trimmed = line.trim();
       if (trimmed === "" || /^Running with/.test(trimmed)) return;
+      // Only the last error line decides: a refusal followed by an
+      // unrelated error is a behavior failure, not an account state.
+      if (!/^Warning:/i.test(trimmed)) quotaRefusal = providerQuotaRefusal(trimmed);
       if (/^Warning:/.test(trimmed)) {
         if (warnings.length < STDERR_WARNING_CAP) warnings.push(escapeControls(trimmed).slice(0, STDERR_LIMIT));
       } else if (!stderr) {
@@ -307,14 +317,9 @@ export class ProbeRunner {
     };
     const errors = drain(stderrReader, (chunk) => {
       for (const character of chunk) {
-        if (!collectingStderr) break;
         if (character === "\n") {
           finishLine();
-          // Bounded read: stop once the first ordinary line and the
-          // warning cap are both covered; the raw bytes still reach the
-          // report file, up to its byte cap.
-          if (stderr && warnings.length >= STDERR_WARNING_CAP) collectingStderr = false;
-        } else if (pendingLine.length < STDERR_LIMIT && (pendingLine || character.trim())) {
+        } else if (pendingLine.length < DIAGNOSTIC_LINE_LIMIT && (pendingLine || character.trim())) {
           pendingLine += character;
         }
       }

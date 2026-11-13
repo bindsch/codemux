@@ -384,7 +384,7 @@ export async function runProbes(
           if (probed?.status === "FAIL") {
             const refusal = quotaRefusalIn(probed);
             if (refusal !== null) {
-              row.results[letter] = { status: "SKIP", seconds: probed.seconds, stderr: "", note: `${refusal} (${probed.stderr})` };
+              row.results[letter] = { status: "SKIP", seconds: probed.seconds, stderr: "", note: [refusal, probed.stderr, probed.note].filter(Boolean).join("; ") };
             }
           }
         } catch {

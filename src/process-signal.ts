@@ -6,8 +6,8 @@ import { readProcessTable, type ProcessTable } from "./process-table.js";
  * leads one) and every descendant found by walking the process table;
  * `scope: "process"` signals the child alone but still records its
  * descendants so a later tree-scoped escalation can reach them. This
- * function sends signals and reports send failures. Every nonzero or
- * signal child exit remains a failure, regardless of signal delivery.
+ * function sends signals and reports send failures. Callers classify the
+ * outcome; sessions can accept an owned kill after an idle shutdown.
  * Process-table reads serve tree cleanup alone:
  * `signalDescendants` walks before it signals — an agent that exits
  * promptly reparents its escaped descendants within milliseconds, so the

@@ -10,6 +10,7 @@ import { assertExecutablesUnchanged } from "../executable-security.js";
 import type { SessionChildOutcome } from "./process-outcome.js";
 import { SessionWriter, type WriteLineResult } from "./process-outbound.js";
 import { excerptOf, type SessionFatal } from "./process-fatal.js";
+import { SessionStopSignals } from "./shutdown-kill.js";
 
 export { buildSessionEnded, harnessFailed, shutdownRequested, type SessionChildOutcome } from "./process-outcome.js";
 export {
@@ -39,12 +40,10 @@ export {
 export const MAX_HARNESS_LINE_BYTES = 16 * 1024 * 1024;
 
 /** Default grace for the harness to persist before the tree is killed. */
-// Claude Code 2.1.317 sometimes needs over 10 s to exit after a completed
-// shutdown (11.1 s measured, 2026-11-12); a SIGTERM inside that window left
-// it hung until SIGKILL. 30 s covers it, and a hung child still dies by 60 s.
+// Claude Code 2.1.317 can linger after shutdown; allow 30 s before SIGTERM.
 export const DEFAULT_SHUTDOWN_GRACE_MS = 30_000;
 /** 128 + SIGTERM, the process runner's convention for a signaled stop. */
-export const SESSION_SIGNAL_EXIT_CODE = 143;
+export { SESSION_SIGNAL_EXIT_CODE } from "./shutdown-kill.js";
 
 const DESCENDANT_CAPTURE_MS = 5_000;
 /** One more descendant sample this long after the stop signal (review
@@ -107,6 +106,7 @@ function indexOfByte(
  * attribute: they are reparented the moment their parent dies.
  */
 export class SessionProcess {
+  readonly stopSignals = new SessionStopSignals();
   private readonly target: TerminationTarget;
   private readonly proc: ReturnType<typeof Bun.spawn>;
   private readonly writer: SessionWriter;
@@ -249,6 +249,7 @@ export class SessionProcess {
     // starts while handling SIGTERM before it exits past the next tick. A
     // helper whose parent exits at once is reparented before any sample and
     // unattributable: the documented limit (docs/sessions.md, round 334).
+    this.stopSignals.record("SIGTERM", this.proc);
     signalProcess(this.target, "SIGTERM", "process");
     this.stopSampleTimer = setTimeout(() => {
       this.stopSampleTimer = null;
@@ -258,6 +259,7 @@ export class SessionProcess {
     }, DESCENDANT_SAMPLE_AFTER_STOP_MS);
     this.killDeadline = performance.now() + this.graceMs;
     this.killTimer = setTimeout(() => {
+      this.stopSignals.record("SIGKILL", this.proc);
       signalProcess(this.target, "SIGKILL", "tree");
     }, this.graceMs);
   }
@@ -274,7 +276,7 @@ export class SessionProcess {
   escalateStop(): void {
     if (this.escalatedChild) return;
     this.escalatedChild = true;
-    // The capture stays armed; the end path's finally stops it (round 331, item 3).
+    this.stopSignals.record("SIGKILL", this.proc);
     signalProcess(this.target, "SIGKILL", "tree");
   }
 

@@ -7,6 +7,7 @@
 
 import { appendSessionCallRecord, appendSessionTurnCallRecord } from "../call-log.js";
 import { emptyUsage } from "../result-envelope.js";
+import { shutdownKillWarning } from "./shutdown-kill.js";
 import {
   awaitFinalFlush,
   buildSessionEnded,
@@ -293,8 +294,10 @@ export abstract class AgyFinalize extends AgyDriverIo {
       childOutcome = await proc.exited;
 
     }
-    // Every nonzero code and signal exit fails, including during shutdown.
-    const drainFailureCode = harnessFailed(childOutcome)
+    const killWarning = shutdownKillWarning("agy", childOutcome, proc?.stopSignals,
+      reason, this.fsm.activeTurn !== null, this.endExitCode);
+    if (killWarning) { reason = "shutdown"; this.out.enqueue(buildEvent(++this.seq, this.sessionIdOrEmpty(), "warning", null, { message: killWarning })); }
+    const drainFailureCode = !killWarning && harnessFailed(childOutcome)
       ? childOutcome!.code ?? 1
       : null;
     if (drainFailureCode !== null) {
@@ -455,13 +458,7 @@ export abstract class AgyFinalize extends AgyDriverIo {
       );
       if (!stamped && finalRemoved) this.endExitCode = Math.max(this.endExitCode, 1);
     }
-    // The exit code the report carries, read once here: a signal or a
-    // failure landing during the final flush (through `finish`'s re-entry
-    // arm) no longer changes the process exit code — the session had
-    // already ended and told the caller its verdict. That holds for a
-    // termination signal too: it exits 143 only when it stopped the
-    // session, which the event then says (kimi's machine has the same
-    // rule; docs/sessions.md states it under the exit table).
+    // Freeze the reported verdict before the final flush.
     const reported = this.endExitCode;
     const sent = this.out.enqueue(
       buildSessionEnded(++this.seq, this.sessionIdOrEmpty(), childOutcome, {
@@ -473,7 +470,7 @@ export abstract class AgyFinalize extends AgyDriverIo {
         // removal that failed both attempts kept the home and the record
         // non-final, so the base verdict's promise is real (round 14).
         resumable: resumable && settledHome && !(this.options.final === true && finalRemoved),
-      }),
+      }, killWarning !== null),
       { terminal: true }
     );
     // Exit-code honesty: `session_ended` is the one event the caller

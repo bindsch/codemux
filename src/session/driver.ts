@@ -21,6 +21,8 @@ import { appendSessionCallRecord, appendSessionTurnCallRecord } from "../call-lo
 import { reportSpawnThrow } from "./stdin-frame.js";
 import { emptyUsage } from "../result-envelope.js";
 import { buildInterruptRequest } from "./claude-session.js";
+import { shutdownKillWarning } from "./shutdown-kill.js";
+import { buildEvent } from "./protocol.js";
 import {
   awaitFinalFlush,
   buildSessionEnded,
@@ -304,8 +306,7 @@ export class ClaudeSessionDriver extends ClaudeDriverInput {
       // arrival, not the drain below.
       if (proc !== null) this.stopEscalation.escalateIfRequested(proc);
     }
-    // The closing event carries both the child code and its full outcome,
-    // preserving the signal when the child code is null.
+    // Preserve the raw child outcome, including signal-only exits.
     let childOutcome: SessionChildOutcome | null = null;
     if (proc !== null) {
       if (interruptWritten) {
@@ -327,10 +328,11 @@ export class ClaudeSessionDriver extends ClaudeDriverInput {
       if (!this.stopEscalation.escalateIfRequested(proc)) proc.requestStop();
       await proc.settled;
       childOutcome = await proc.exited;
-
     }
-    // Every nonzero code and signal exit fails, including during shutdown.
-    const drainFailureCode = harnessFailed(childOutcome)
+    const killWarning = shutdownKillWarning(this.options.agent, childOutcome, proc?.stopSignals,
+      reason, this.fsm.activeTurn !== null || this.forwardedAtEnd, this.endExitCode);
+    if (killWarning) { reason = "shutdown"; this.out.enqueue(buildEvent(++this.seq, this.options.sessionId, "warning", null, { message: killWarning })); }
+    const drainFailureCode = !killWarning && harnessFailed(childOutcome)
       ? childOutcome!.code ?? 1
       : null;
     if (drainFailureCode !== null) {
@@ -480,13 +482,10 @@ export class ClaudeSessionDriver extends ClaudeDriverInput {
         exit_code: reported,
         usage: this.cumulative,
         resumable,
-      }),
+      }, killWarning !== null),
       { terminal: true }
     );
-    // Exit-code honesty: `session_ended` is the one event the caller
-    // cannot afford to lose, so a delivery that failed (the sink rejected
-    // or stalled, the queue refused the entry) cannot report success; the
-    // give-up abandons the queue so a stalled sink cannot hold the process.
+    // A failed final delivery cannot report success or hold the process.
     const delivered = sent ? await awaitFinalFlush(this.out) : false;
     const finalCode = delivered ? reported : Math.max(reported, 1);
     // The closing ledger line carries the process exit code: the reported

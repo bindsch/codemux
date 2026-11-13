@@ -11,25 +11,30 @@ import { gateOutcomeOnResult, snapshotFreshnessIssue } from "../../src/quota-gat
 import type { ProbeResult } from "./runner.js";
 
 /** A provider or gate quota refusal seen in a probe's captured stderr.
- * Exactly the three evidenced spellings from the live gate of 2026-11-08
- * (the saved report's agy, codex, and kimi rows):
+ * Evidenced spellings from the live gates of 2026-11-08 and 2026-11-12:
  * - codemux's own pre-spawn refusal, exit 64, printed as
  *   `Error: quota gate: <agent>: ... below the ...% ceiling`;
- * - agy's provider line `error: Individual quota reached. ...`;
+ * - agy's `Individual quota reached` and `RESOURCE_EXHAUSTED (code 429)`;
  * - kimi's `provider.api_error: You've reached your weekly (7-day) usage
- *   limit. ...`. Substring matches: the runner stores stderr's first
- *   ordinary line escaped and cut at 160 characters, so a sentence match
- *   would miss the truncated tail (kimi's line ends mid-word at "To co").
+ *   limit. ...`. The runner retains the refusal independently of its
+ *   bounded first-line preview. Older callers can still pass that preview.
  * Anything else is a behavior failure and stays a FAIL. */
 export function quotaRefusalIn(result: ProbeResult): string | null {
   if (result.status !== "FAIL") return null;
+  return result.quotaRefusal !== undefined ? result.quotaRefusal : providerQuotaRefusal(result.stderr);
+}
+
+/** Match diagnostics before the runner truncates them for the report. */
+export function providerQuotaRefusal(stderr: string): string | null {
+  if (/^warning:/i.test(stderr.trim())) return null;
   const patterns: [RegExp, string][] = [
     [/Error: quota gate: .* below the \d+% ceiling/, "the codemux quota gate refused the launch"],
-    [/Individual quota reached\./, "the provider refused the run: individual quota reached"],
+    [/Individual quota reached\b/, "the provider refused the run: individual quota reached"],
+    [/RESOURCE_EXHAUSTED\s*\(code 429\)/, "the provider refused the run: RESOURCE_EXHAUSTED (code 429)"],
     [/reached your weekly \(7-day\) usage limit/, "the provider refused the run: weekly usage limit reached"],
   ];
   for (const [pattern, label] of patterns) {
-    if (pattern.test(result.stderr)) return label;
+    if (pattern.test(stderr)) return label;
   }
   return null;
 }

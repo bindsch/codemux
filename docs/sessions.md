@@ -412,8 +412,12 @@ agents drain a child still being spawned on orderly shutdown; a hard end
 stops it when it arrives. That wait is bounded by the stop grace for every
 end (review round 110): a spawn that outlasts it fails the session, and
 that spawn refuses to create its process when it resumes, so no child
-starts after the CLI's run cleanup. Grace expiry can kill the child and therefore
-make an otherwise requested shutdown fail.
+starts after the CLI's run cleanup. Grace expiry with a turn still open fails
+the session. After all turns complete, an idle child killed by codemux during
+caller-requested shutdown ends with reason `shutdown` and exit 0. A `warning`
+event names SIGTERM, SIGKILL, or a SIGTERM wrapper's exit 143. The raw
+`harness_exit` and resume rules remain unchanged. This applies to shutdown
+input and caller EOF, not a timeout or a signal that stops codemux itself.
 
 A second SIGINT/SIGTERM/SIGHUP while the first signal's end still runs
 SIGKILLs the whole child tree at once, for every agent: the first signal
@@ -469,7 +473,7 @@ status, to at least 1. Every agent follows this rule.
 
 Kimi, OpenCode, and agy learn a fresh session's id from the first turn's output and record it beside the stream: the session never waits on the registry lock mid-turn. A session that ends with that record still unwritten — the lock stayed busy until the end — ends as a crash: the fatal error `cannot record the session in the registry` is the verdict, the exit is nonzero (1, or the signal's 143 when a signal ended it), the registry holds no entry, and the session is not resumable. A resumed session is tracked by the record the CLI claimed before the spawn, so the verdict applies to fresh sessions only. The same holds when the lock stays busy past the whole retry budget while a resumed session is live: the exhausted record is a lost refresh of a record that exists, so the session prints one stderr line naming the spent budget and the claim that stays the record, announces `session_started`, and keeps running.
 
-Child failures can preserve another nonzero code. Any observed nonzero child exit or signal changes the final reason to `harness_failed`, including after a requested shutdown. A caller must inspect both exit status and events. Malformed caller JSON receives a rejection and does not itself end a session.
+Child failures can preserve another nonzero code. A nonzero child exit or signal changes the final reason to `harness_failed`, except for the idle shutdown kill described above and the supported turn-interrupt cases below. A harness that exits nonzero on its own still fails. A caller must inspect both exit status and events. Malformed caller JSON receives a rejection and does not itself end a session.
 
 Aider's stdout is a human transcript: non-JSON lines become `unknown`. Its assistant message is extracted from persistent history. History is checked before each turn, reads are bounded per turn, and the accumulated file has no codemux size cap. An explicit interrupt stops the turn child and removes only that turn's history delta after the child settles. The session can continue; its end event retains the raw signal. Other unanswered failed turns end the session because a resume would replay them. The test is what aider itself restores: a reply that is only a reasoning block counts as a reply, and a reply made only of `> `, `# `, or `#### ` lines does not, because aider writes its tool output and the user's text in those shapes and restores none of them as assistant text. Local analytics report native output tokens, which Aider may estimate, and known cost; input, cache, and total counts stay null. Aider refuses text beginning with `/` or `!`; Kimi refuses `/goal` followed by whitespace or end, and `!`; OpenCode refuses a message that is empty after trimming, which its wire exits 1 on. These checks apply after the author prefix. An OpenCode `error` event, and a Kimi roleless `{type:"error",message}` frame, fail their turn even when the turn's process exits 0 — the failed turn's reason is the error message — while the session itself continues with the next turn.
 

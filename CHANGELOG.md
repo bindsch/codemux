@@ -15,6 +15,9 @@ immutable notes and engineering evidence.
 
 ### Fixed
 
+- Sessions now end successfully when codemux must SIGTERM or SIGKILL a lingering child after caller-requested shutdown with no open turn. Exit 143 from a stopped wrapper follows the same rule. A warning names the kill; the raw child outcome and resume rules are preserved. Unrequested nonzero exits and deaths with an open turn still fail.
+- Runs whose adapters need no stdin now spawn with closed stdin, so argv/file prompt carriers such as Kimi do not wait for EOF before contacting their provider. Prompt streams, protocol exchanges, and Aider's repeating declines retain their pipes.
+- Live-gate provider quota refusals become SKIP with a reason even when earlier diagnostics fill the report's warning limit. This includes agy's `RESOURCE_EXHAUSTED (code 429)` response. Other failures remain FAIL.
 - Gemini, Copilot, and Cline experiment recordings now emit `model_tool_result` and `result_comparison` once per verified call, after delivery and terminal checks pass. Probe G checks Gemini's opted-in untrusted-context wrapper; Copilot and Cline retain bare content. Goose remains unchanged because its stored ledger does not prove that a model request consumed the result.
 
 ## [2.0.1] - 2026-11-11

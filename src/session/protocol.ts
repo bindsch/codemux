@@ -351,6 +351,7 @@ export function applyAuthorPrefix(
 }
 
 export type EventName =
+  | "warning"
   | "session_started"
   | "input_accepted"
   | "input_rejected"

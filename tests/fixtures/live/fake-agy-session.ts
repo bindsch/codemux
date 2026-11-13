@@ -244,6 +244,7 @@ process.stdin.on("data", (chunk: string) => {
 // ignores it too but keeps the default SIGTERM disposition (die at once,
 // never answering), the shape whose open turn codemux must synthesize.
 process.stdin.on("end", () => {
+  if (lingerOnShutdown()) return;
   if (process.env.FAKE_SIGTERM_PERSIST !== undefined || process.env.FAKE_IGNORE_EOF === "1") {
     // Nothing else holds the event loop once stdin is gone; stay alive
     // for the signal.
@@ -275,6 +276,7 @@ process.stdin.on("end", () => {
 // behavior, not a claim about what the real harness does on SIGTERM
 // (nothing in the recorded fixture or help text evidences that). Without
 // the env the default SIGTERM disposition applies (die at once).
+import { lingerOnShutdown } from "./shutdown-linger.js";
 const persistMode = process.env.FAKE_SIGTERM_PERSIST;
 if (
   persistMode === "1" ||

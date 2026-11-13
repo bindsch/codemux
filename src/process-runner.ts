@@ -275,13 +275,14 @@ export async function runCapturedCommand(
     if (timeoutTimer !== null) clearTimeout(timeoutTimer);
     timeoutTimer = null;
   };
-  let spawned: Bun.Subprocess<"pipe", "pipe", "pipe"> | undefined;
+  const needsStdin = options.stdinInput != null || Boolean(options.stdoutSink?.start);
+  let spawned: Bun.Subprocess<"pipe" | "ignore", "pipe", "pipe"> | undefined;
   try {
     spawned = Bun.spawn(command, {
       cwd: options.cwd,
       stdout: "pipe",
       stderr: "pipe",
-      stdin: "pipe",
+      stdin: needsStdin ? "pipe" : "ignore",
       env: options.env,
       detached: useProcessGroup,
     });
@@ -327,10 +328,10 @@ export async function runCapturedCommand(
       // The plain path's stdin carrier — one shot, or the repeating
       // decline feeder an always-decline harness needs (review round
       // 153) — lives beside its repeater in process-stdin-repeat.ts.
-      writeRunStdin(options, proc, trackStdin);
+      if (proc.stdin) writeRunStdin(options, { stdin: proc.stdin, exited: proc.exited }, trackStdin);
       options.stdoutSink?.start?.(
-        (line) => { stdin.attempt(() => proc.stdin.write(line)); },
-        () => { stdin.attempt(() => proc.stdin.end()); },
+        (line) => { stdin.attempt(() => proc.stdin!.write(line)); },
+        () => { stdin.attempt(() => proc.stdin!.end()); },
         () => { protocolAborted = true; abortCapture(); },
         options.cwd
       );

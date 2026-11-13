@@ -148,9 +148,14 @@ prints one row per harness × probe. A row is `PASS`, `FAIL`, `SKIP`, or
 - `UNSUPPORTED` means the adapter declares no capability for that probe.
   It is documented behavior (the [harness matrix](harnesses.md) lists each
   capability), never a pass, and the row quotes the absent capability.
-- `SKIP` is an operator request or a login pre-check refusal. A skip is not
-  a passing probe. Do not skip an installed harness that has credentials to
-  hide a failure.
+- `SKIP` is an operator request, a login or quota pre-check refusal, or a
+  provider quota refusal. The reason is recorded, including agy's
+  `RESOURCE_EXHAUSTED (code 429)` / `Individual quota reached` and Kimi's
+  weekly usage limit. The runner checks later stderr lines even after the
+  report's warning limit is full; only the last error line decides, so a
+  refusal followed by another error stays a FAIL. Quota warnings that allow
+  execution and unrelated harness failures do not qualify. A skip is not a passing probe;
+  rerun after quota resets before claiming coverage of that probe.
 - Harness `Warning:` stderr lines are kept in the row's note. A stale-version
   warning can no longer hide behind a `PASS`.
 

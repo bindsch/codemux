@@ -201,6 +201,7 @@ or stdin. This applies to Kimi, and the legacy
 `qwen-coder` fallback. Agy, Aider, Claude, Z.AI, Cline, Codex, Copilot, Cursor, Droid,
 Gemini, Goose, OpenCode, OpenHands, Pi, and current Qwen use stdin or private files for prompt text.
 Aider uses a private `--message-file`; its stdin remains a stream of negative confirmation answers. OpenHands uses a private task file.
+When an adapter needs no stdin input, the child starts with closed stdin (`/dev/null`). This includes Kimi's argv prompt carrier, even when codemux read that prompt from `-f` or its own stdin. Adapters that consume a prompt stream, exchange protocol messages, or answer confirmations retain their stdin pipe.
 An inline `-p` always exposes the prompt in
 codemux's own process arguments.
 

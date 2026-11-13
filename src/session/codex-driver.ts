@@ -26,6 +26,7 @@
 
 import { appendSessionCallRecord, appendSessionTurnCallRecord } from "../call-log.js";
 import { emptyUsage } from "../result-envelope.js";
+import { shutdownKillWarning } from "./shutdown-kill.js";
 import {
   awaitFinalFlush,
   buildSessionEnded,
@@ -191,8 +192,10 @@ export class CodexSessionDriver extends CodexDriverInput {
           `${fragment.bytes} bytes): ${fragment.excerpt}`
       );
     }
-    // Every nonzero code and signal exit fails, including during shutdown.
-    const drainFailureCode = harnessFailed(childOutcome)
+    const killWarning = shutdownKillWarning("codex", childOutcome, proc?.stopSignals,
+      reason, this.fsm.activeTurn !== null, this.endExitCode);
+    if (killWarning) { reason = "shutdown"; this.out.enqueue(buildEvent(++this.seq, this.sessionIdOrEmpty(), "warning", null, { message: killWarning })); }
+    const drainFailureCode = !killWarning && harnessFailed(childOutcome)
       ? childOutcome!.code ?? 1
       : null;
     if (drainFailureCode !== null) {
@@ -374,7 +377,7 @@ export class CodexSessionDriver extends CodexDriverInput {
         exit_code: reported,
         usage: this.cumulative,
         resumable: resumable && settledHome && !finalRemoved,
-      }),
+      }, killWarning !== null),
       { terminal: true }
     );
     // Exit-code honesty: `session_ended` is the one event the caller
