@@ -166,6 +166,7 @@ export {
   buildSteerRequest,
   buildThreadResumeRequest,
   buildThreadStartRequest,
+  buildThreadUnsubscribeRequest,
   buildTurnStartRequest,
   codemuxClientVersion,
   codexSessionPolicy,

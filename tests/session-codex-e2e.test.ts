@@ -32,7 +32,7 @@ describe("codex session e2e - lifecycle", () => {
     const requests = fakeRecord(session, "requests.jsonl");
     expect(requests.map((r) => r.method)).toEqual([
       "initialize",
-      "notifications/initialized",
+      "initialized",
       "thread/start",
     ]);
 
@@ -201,7 +201,7 @@ describe("codex session e2e - lifecycle", () => {
     const requests = fakeRecord(session, "requests.jsonl");
     expect(requests.map((r) => r.method)).toEqual([
       "initialize",
-      "notifications/initialized",
+      "initialized",
       "thread/resume",
     ]);
     send(session.driver, { type: "user", text: "scenario:basic again" });

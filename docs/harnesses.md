@@ -277,6 +277,12 @@ Reasons and evidence match `src/parity` verbatim. The test column in the declara
 
 “None” means no entry in `HARNESS_CONTRACTS`; codemux does not apply a version floor or audited ceiling for that adapter. It does not mean all upstream releases are verified. Installed evidence is historical, not a fresh inventory of this checkout's host. The installed column records the binaries on the release machine on 2026-11-02, or on the date a cell carries itself — 2026-11-06 for the 2.0.0 candidate gate, agy's 2026-11-07, kimi's 2026-11-08 (scode 0.6.2 with them). Droid sits above its audited ceiling and warns on launch until a credentialed live gate covers it; it has no credentials on the release machine. A ceiling or floor moves only together with recorded live-gate evidence; see the [release gate](RELEASE-GATE.md).
 
+Codex 0.167.1 was also inspected on 2026-11-14. Acknowledged
+`thread/unsubscribe` before EOF fixed the observed session shutdown failure.
+The ceiling remains 0.166.0: the supplied gate still has an experiment-MCP
+failure, and a live hermetic resume found a stale rollout path after private
+home relocation. See the [shutdown audit and limits](codex-shutdown.md).
+
 Last live-verified, per row: kimi 2026-11-08, agy 2026-11-07, and claude, codex, cursor, opencode, and zai 2026-11-06 (the 2.0.0 candidate gate); aider, copilot, droid, gemini, goose, openhands, pi, and qwen September or October 2026 at the latest, with no credentials on the release machine for 2.0.0; cline not installed, its last probes refused isolation. Those nine rows are static contracts for 2.0.0 — code-enforced declarations, not freshly probed behavior — until a credentialed machine live-gates them.
 
 The [dated evidence report](archive/isolation-verification.md) names retained sources and limits. The live-tested codemux revision is not recorded for several checks. Do not substitute a release tag or the current documentation branch for an unknown tested revision.

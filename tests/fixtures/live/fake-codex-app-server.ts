@@ -133,6 +133,7 @@
  */
 
 import * as scenarios from "./fake-codex-app-server-parts/scenarios.js";
+import { handleUnsubscribe, checkUnsubscribeAtEof } from "./fake-codex-app-server-parts/shutdown.js";
 import { THREAD_ID, notify, record, respond, respondError, state, stateDir } from "./fake-codex-app-server-parts/wire.js";
 import { usage } from "./fake-codex-app-server-parts/items.js";
 import { checkApprovalPolicy, startArm } from "./fake-codex-app-server-parts/start-arms.js";
@@ -361,7 +362,10 @@ const handleLine = (line: string): void => {
       case "initialize":
         handleInitialize(id);
         return;
-      case "notifications/initialized":
+      case "initialized":
+        return;
+      case "thread/unsubscribe":
+        handleUnsubscribe(id);
         return;
       case "thread/start":
       case "thread/resume":
@@ -401,6 +405,7 @@ process.stdin.on("data", (chunk: string) => {
   }
 });
 process.stdin.on("end", () => {
+  checkUnsubscribeAtEof();
   if (lingerOnShutdown()) return;
   // The persistence scenarios also run on a protocol shutdown.
   if (process.listenerCount("SIGTERM") > 0) process.emit("SIGTERM");

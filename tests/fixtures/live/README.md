@@ -72,6 +72,9 @@ result.
   usage arrives only via `thread/tokenUsage/updated` with `total`
   (cumulative) and `last` (per-turn delta); plus the ambient notification
   stream (`remoteControl/status/changed`, `account/*`, `mcpServer/*`).
+  **Correction (2026-11-14):** the captured client notification used the MCP
+  spelling. The app-server schema requires `initialized`; the current
+  builders and fake use that spelling. The historical capture stays intact.
 - `agy-session.ndjson` — the auth-failure result frame. Envelope key is
   `event` (not `type`): `{"event":"result","result":{conversation_id,
   status, response, error, duration_seconds, num_turns, usage}}`. The

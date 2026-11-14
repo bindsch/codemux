@@ -1,9 +1,5 @@
-// Per-agent session driver construction: the wire models, the
-// turn-per-process spawn closure (turn-driver-spawn.ts), and the
-// codex/agy/opencode/kimi/aider/claude/second-wave driver arms — the
-// seven turn-per-process agents through turn-driver-launch.ts.
-// src/session/cli.ts owns the command, the record claims, and the
-// spawn.
+// Constructs per-agent session drivers and their turn spawn closures.
+// src/session/cli.ts owns the command, registry claims, and initial spawn.
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { AiderAdapter } from "../adapters/aider.js";
@@ -52,6 +48,7 @@ export function createSessionDriver({
   codexOverride,
   codexSessionHome,
   codexSessionCatalog = null,
+  harnessVersion = null,
   resumeId,
   claudeFamilyAgent,
   claudeBuilt,
@@ -92,6 +89,7 @@ export function createSessionDriver({
   codexOverride: (ProviderOverride & { baseUrl: string; apiKey: string }) | null;
   codexSessionHome: CodexSessionProviderHome | null;
   codexSessionCatalog?: CodexSessionCatalog | null;
+  harnessVersion?: string | null;
   resumeId: string | undefined;
   claudeFamilyAgent: "claude" | "zai";
   claudeBuilt: ClaudeSessionBuilt | null;
@@ -232,6 +230,7 @@ export function createSessionDriver({
     driver = turnAgentDriver;
   } else if (agentId === "codex") {
     driver = new CodexSessionDriver({
+      harnessVersion,
       tools: runLike.tools, noToolsCatalog: codexSessionCatalog, projectSettings: experimentProjectSettings,
       // Record the MCP flag used by the argv and resume guard.
       playwrightMcp: enablePlaywrightMcp,

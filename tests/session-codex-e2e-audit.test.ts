@@ -202,11 +202,11 @@ describe("codex session e2e - review live23 audit siblings", () => {
     const session = await startSession({}, {}, (_driver, proc) => {
       refuseWrites(proc, (line) => {
         attempted.push(line);
-        return line.includes("notifications/initialized");
+        return line.includes('"method":"initialized"');
       });
     });
     expect(await session.code).toBe(1);
-    expect(attempted.some((line) => line.includes("notifications/initialized"))).toBe(true);
+    expect(attempted.some((line) => line.includes('"method":"initialized"'))).toBe(true);
     expect(attempted.some((line) => line.includes("thread/start"))).toBe(false);
   });
 

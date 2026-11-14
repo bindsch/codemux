@@ -113,6 +113,14 @@ export abstract class CodexDriverResponses extends CodexDriverSteer {
       return;
     }
     this.pendingCalls.delete(id);
+    if (pending === "thread_unsubscribe") {
+      const status = (result as { status?: unknown } | null)?.status;
+      if (status !== "unsubscribed" && status !== "notSubscribed" && status !== "notLoaded") {
+        this.emitGrammarViolation(rawLine, "the thread/unsubscribe response carries an invalid status");
+        void this.finish("crash", 1);
+      }
+      return;
+    }
     if (pending === "initialize" || pending === "thread_start" || pending === "thread_resume") {
       if (this.finished) {
         // The handshake is codemux's own continuation chain — initialize

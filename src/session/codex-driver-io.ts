@@ -30,6 +30,8 @@ import type { SessionPrivateHome } from "./private-home-types.js";
 import { isCallerHarnessHome } from "./harness-home.js";
 
 export interface CodexDriverOptions extends CodexSessionSettings {
+  /** Version from the launcher's trusted executable probe; null/absent is unknown. */
+  harnessVersion?: string | null;
   /** The thread id to resume, or null to start a fresh thread. */
   resumeThreadId: string | null;
   autonomy: AutonomyLevel;
@@ -114,6 +116,7 @@ export type PendingCall =
   | "initialize"
   | "thread_start"
   | "thread_resume"
+  | "thread_unsubscribe"
   /** `completedHarnessTurnId`: the harness id a turn that completed before
    * this response arrived adopted; the response must name it (round 244). */
   | { kind: "turn_start"; turnId: string; completedHarnessTurnId?: string }

@@ -360,7 +360,7 @@ describe("codex session e2e - turns", () => {
     const requests = fakeRecord(session, "requests.jsonl");
     expect(requests.map((request) => request.method)).toEqual([
       "initialize",
-      "notifications/initialized",
+      "initialized",
       "thread/start",
       "turn/start",
       "turn/steer",

@@ -20,6 +20,7 @@ import {
   buildSteerRequest,
   buildThreadResumeRequest,
   buildThreadStartRequest,
+  buildThreadUnsubscribeRequest,
   buildTurnStartRequest,
   buildCodexSessionCommand,
   codexSessionCapabilities,
@@ -131,12 +132,13 @@ describe("codex session - policy pair", () => {
 });
 
 describe("codex session - method allowlist and builders", () => {
-  test("the allowlist is exactly the seven verified methods", () => {
+  test("the allowlist is exactly the eight verified methods", () => {
     expect([...CODEX_SESSION_METHODS]).toEqual([
       "initialize",
-      "notifications/initialized",
+      "initialized",
       "thread/start",
       "thread/resume",
+      "thread/unsubscribe",
       "turn/start",
       "turn/steer",
       "turn/interrupt",
@@ -152,6 +154,7 @@ describe("codex session - method allowlist and builders", () => {
       buildTurnStartRequest(4, "0123456789abcdef", "hello", policy),
       buildSteerRequest(5, "0123456789abcdef", "turn-1", ["a", "b"]),
       buildInterruptRequest(6, "0123456789abcdef", "turn-1"),
+      buildThreadUnsubscribeRequest(7, "0123456789abcdef"),
     ];
     for (const line of lines) {
       const frame = parseJson(line);
@@ -161,9 +164,9 @@ describe("codex session - method allowlist and builders", () => {
     }
   });
 
-  test("the initialized notification has no id and carries jsonrpc", () => {
+  test("0.166 and 0.167 app-server initialization uses initialized, not the MCP notification", () => {
     const frame = parseJson(buildInitializedNotification());
-    expect(frame).toEqual({ jsonrpc: "2.0", method: "notifications/initialized" });
+    expect(frame).toEqual({ jsonrpc: "2.0", method: "initialized" });
   });
 
   test("responses omit jsonrpc, matching the server's own frames", () => {

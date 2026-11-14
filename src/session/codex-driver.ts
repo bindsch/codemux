@@ -26,6 +26,8 @@
 
 import { appendSessionCallRecord, appendSessionTurnCallRecord } from "../call-log.js";
 import { emptyUsage } from "../result-envelope.js";
+import { compareVersions, parseVersionParts } from "../harness-compatibility.js";
+import { buildThreadUnsubscribeRequest } from "./codex-session.js";
 import { shutdownKillWarning } from "./shutdown-kill.js";
 import {
   awaitFinalFlush,
@@ -169,6 +171,23 @@ export class CodexSessionDriver extends CodexDriverInput {
             this.endExitCode > startCode ||
             (!this.interruptQueued && this.interruptCallId === null)
         );
+      }
+      const version = this.options.harnessVersion;
+      if (this.threadId !== null && this.fsm.state === "idle" && this.endExitCode === 0 &&
+          version != null && parseVersionParts(version) !== null && compareVersions(version, "0.167.0") >= 0) {
+        // 0.167.1's binary contains thread/unsubscribe and a 45s EOF/SIGTERM
+        // watchdog that exits 1. Acknowledged unsubscribe before EOF exited 0
+        // in the live probe; EOF alone hit that watchdog. Keep 0.166's EOF
+        // sequence. This detaches, never archives/deletes, the resumable thread.
+        // Binary/source evidence and probe results: docs/codex-shutdown.md.
+        const threadId = this.threadId;
+        const id = this.call("thread_unsubscribe", (id) => buildThreadUnsubscribeRequest(id, threadId));
+        if (id !== null) await proc.awaitEndAnswer(() => !this.pendingCalls.has(id) || this.endExitCode !== 0);
+        if (id === null || this.pendingCalls.has(id)) {
+          this.emit(buildEvent(++this.seq, this.sessionIdOrEmpty(), "warning", null, {
+            message: "codex thread/unsubscribe was not acknowledged before shutdown; closing stdin",
+          }));
+        }
       }
       proc.endInput();
       await proc.awaitEndAnswer(() => false);

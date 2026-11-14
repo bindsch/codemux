@@ -315,6 +315,11 @@ reason.
 `session_ended` is last. `harness_exit` is the last observed child's raw
 outcome, or null if no outcome was observed. An unexpected nonzero child exit or
 signal forces `reason: "harness_failed"` and a nonzero summary exit.
+On Codex 0.167.0 and later, a successful idle shutdown first requests
+`thread/unsubscribe` and waits up to `--shutdown-grace` for its reply before
+closing stdin. This avoids the observed 0.167.1 shutdown watchdog exit;
+it does not excuse nonzero exits. Earlier or unknown versions keep EOF
+shutdown. See the [binary, protocol, and live evidence](codex-shutdown.md).
 When all turns have completed and the caller requests shutdown (including
 EOF), a codemux-initiated SIGTERM/SIGKILL or its exit-143 wrapper instead
 ends with `reason: "shutdown"`, `exit_code: 0`, and a preceding `warning`

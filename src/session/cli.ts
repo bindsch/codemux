@@ -257,6 +257,7 @@ export function registerSessionCommand(
           turnAgentFreshHome: freshTurnHome,
         } =
           createSessionDriver({
+            harnessVersion: launch.harnessVersion,
             options,
             agentId,
             adapter,

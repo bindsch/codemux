@@ -78,9 +78,10 @@ export function codexSessionPolicy(
  * turn/settings/update, command/*, process/*, or review/start. */
 export const CODEX_SESSION_METHODS = [
   "initialize",
-  "notifications/initialized",
+  "initialized",
   "thread/start",
   "thread/resume",
+  "thread/unsubscribe",
   "turn/start",
   "turn/steer",
   "turn/interrupt",
@@ -156,7 +157,14 @@ export function buildInitializeRequest(id: RequestId): string {
 }
 
 export function buildInitializedNotification(): string {
-  return JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" });
+  // App-server ClientNotification::Initialized (0.166.0 and 0.167.1),
+  // not MCP's notifications/initialized. See docs/codex-shutdown.md.
+  return JSON.stringify({ jsonrpc: "2.0", method: "initialized" });
+}
+
+/** Detach the idle thread before closing the app-server transport. */
+export function buildThreadUnsubscribeRequest(id: RequestId, threadId: string): string {
+  return request(id, "thread/unsubscribe", { threadId });
 }
 
 /** The hermetic thread-level config object (§4.7): the same project-doc

@@ -20,6 +20,7 @@ Run `codemux --version` to identify an installed release.
 - [Quota and subscription usage](quota.md): `codemux usage` and the launch-time quota gate.
 - [Sessions](sessions.md): fresh sessions, shutdown, resume.
 - [Session protocol](session-protocol.md): input and event schemas.
+- [Codex shutdown](codex-shutdown.md): 0.167.1 protocol, binary evidence, and verification limits.
 - [Experiment MCP](experiment-mcp.md): server specification, recordings, verification.
 - [Complete](complete.md): brokered raw chat completions with a spend cap.
 - [Troubleshooting](troubleshooting.md): common refusals and failures.
