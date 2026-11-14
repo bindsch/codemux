@@ -42,7 +42,7 @@ test("session capability evidence describes shipped gates without patch provenan
 });
 
 test("CI pins the requested scode release and commit", () => {
-  expect(read(".github/workflows/ci.yml")).toContain("SCODE_TAG: v0.6.6");
-  expect(read(".github/workflows/ci.yml")).toContain("SCODE_SHA: 9cbb7f8c995d778589e23d82ad334ab555e209ae");
-  expect(read("CHANGELOG.md")).toContain("scode v0.6.6 (commit `9cbb7f8`)");
+  expect(read(".github/workflows/ci.yml")).toContain("SCODE_TAG: v0.6.7");
+  expect(read(".github/workflows/ci.yml")).toContain("SCODE_SHA: 2e360949aa3775609cc7cdeb03bb47df4dc765f2");
+  expect(read("CHANGELOG.md")).toContain("scode v0.6.7 (commit `2e36094`)");
 });

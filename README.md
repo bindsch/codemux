@@ -23,7 +23,7 @@ options, autonomy, results, and reported usage.
 
 ## Install
 
-The current release is 2.0.1; the
+The current release is 2.0.2; the
 [changelog](https://github.com/bindsch/codemux/blob/main/CHANGELOG.md) lists
 every earlier one. Normal execution uses the scode sandbox by default. Install
 scode and an authenticated harness before running a prompt. Homebrew installs
