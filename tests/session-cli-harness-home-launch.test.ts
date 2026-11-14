@@ -158,15 +158,14 @@ test("Claude OAuth-token authentication needs no file login", async () => {
   } finally { s.cleanup(); }
 });
 
-// Review R420 M1: the Claude copy is rebuilt after async preflight, so a
-// rename refresh of the operator mirror in that window reaches the child.
 test("claude rebuilds the access-only login after async sandbox preflight", async () => {
   const s = fixture("claude");
   const original = runtime.assertCompatibleScode;
   const preflight = spyOn(runtime, "assertCompatibleScode").mockImplementation(async (...args) => {
-    await original(...args);
+    const version = await original(...args);
     writeFileSync(join(s.root, "staged-login"), claudeLogin("synthetic-access-b"), { mode: 0o600 });
     renameSync(join(s.root, "staged-login"), s.sourceLogin);
+    return version;
   });
   try {
     started(await s.run(s.flags));
@@ -207,12 +206,13 @@ test("codex rechecks the login after async sandbox preflight", async () => {
   const original = runtime.assertCompatibleScode;
   let changed = false;
   const preflight = spyOn(runtime, "assertCompatibleScode").mockImplementation(async (...args) => {
-    await original(...args);
+    const version = await original(...args);
     if (existsSync(s.targetLogin) && !changed) {
       renameSync(s.targetLogin, join(s.root, "saved-private-login"));
       writeFileSync(s.targetLogin, "planted-after-preflight");
       changed = true;
     }
+    return version;
   });
   try {
     const outcome = await s.invoke(s.flags);

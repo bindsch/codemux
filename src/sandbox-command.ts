@@ -28,10 +28,19 @@ export function strictCommandPaths(command: readonly string[]): readonly string[
   }
 }
 
-export function assertStrictExecutables(command: readonly string[], blocks: readonly string[], grants: readonly string[]): void {
+export function needsWrappedExecutableGrant(path: string, blocks: readonly string[]): boolean {
+  return !isAbsolute(path) || !SYSTEM_ROOTS.some((root) => containsPath(root, path)) ||
+    blocks.some((block) => containsPath(block, path));
+}
+
+export function assertStrictExecutables(
+  command: readonly string[], blocks: readonly string[], grants: readonly string[],
+  readOnlyGrants: readonly string[] = []
+): void {
   const paths = strictCommandPaths(command);
   const canonicalBlocks = blocks.map(canonicalSandboxBlockPath);
   const canonicalGrants = grants.map(canonicalSandboxBlockPath);
+  const canonicalReadOnlyGrants = readOnlyGrants.map(canonicalSandboxBlockPath);
   for (const [index, executable] of paths.entries()) {
     const path = isAbsolute(executable) ? canonicalSandboxBlockPath(executable) : executable;
     const diagnosticPath = JSON.stringify(executable).slice(1, -1);
@@ -39,8 +48,8 @@ export function assertStrictExecutables(command: readonly string[], blocks: read
       throw new StrictSandboxRefusalError(`strict sandbox refuses writable executable grant: ${diagnosticPath}`);
     }
     if (index === 0) continue; // scode's exact, read/execute-only command exception
-    if (!isAbsolute(path) || !SYSTEM_ROOTS.some((root) => containsPath(root, path)) ||
-        canonicalBlocks.some((block) => containsPath(block, path))) {
+    if (canonicalReadOnlyGrants.includes(path)) continue;
+    if (needsWrappedExecutableGrant(path, canonicalBlocks)) {
       throw new StrictSandboxRefusalError(`strict sandbox cannot read env-wrapped executable ${diagnosticPath}; scode has no read-only path grant`);
     }
   }

@@ -51,6 +51,9 @@ test("strict support prose distinguishes superseded probes from final executable
   expect(summary).toContain("superseded writable-executable policy");
   expect(summary).toContain("installed Antigravity wrapped launch is refused before spawn with exit 64");
   expect(summary).toContain("Ordinary OpenCode at `~/.opencode/bin/opencode` is also refused");
+  expect(summary).toContain("Before scode 0.6.7");
+  expect(summary).toContain("exact-file `--allow-ro` grants");
+  expect(summary).toContain("they do not establish live harness support on 0.6.7");
   expect(summary).toContain("Cursor was held by the quota reserve");
   expect(summary).toContain("Copilot was refused because of ancestor executable configuration");
   expect(summary).not.toContain("could not launch the permitted model alias");

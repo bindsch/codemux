@@ -183,10 +183,10 @@ describe("CLI runtime scode resolution and gating", () => {
       // minimum is below the minimum.
       await expect(
         assertCompatibleScode(writeScode("0.6.0"), workdir, env, "0.6.0")
-      ).resolves.toBeUndefined();
+      ).resolves.toBe("0.6.0");
       await expect(
         assertCompatibleScode(writeScode("0.7.0-beta"), workdir, env, "0.6.0")
-      ).resolves.toBeUndefined();
+      ).resolves.toBe("0.7.0-beta");
       // A glued suffix is no version at all: the token's closing boundary
       // refuses it instead of reading its numeric core (review round 344).
       await expect(

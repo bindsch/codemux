@@ -344,6 +344,7 @@ describe("executable re-stat before spawn", () => {
     const probe = spyOn(scodeModule, "assertCompatibleScode").mockImplementation(async () => {
       replace(scodePath);
       resolveTrustedExecutable(scodePath, "scode");
+      return "0.6.6";
     });
     try {
       await expect(
@@ -364,7 +365,7 @@ describe("executable re-stat before spawn", () => {
     scratch.push(dirA, bin);
     script(bin, "wrapped");
     script(bin, "scode");
-    const probe = spyOn(scodeModule, "assertCompatibleScode").mockImplementation(async () => {});
+    const probe = spyOn(scodeModule, "assertCompatibleScode").mockResolvedValue("0.6.6");
     const launch = (plan: ReturnType<typeof buildPlaywrightSandboxMcp>) =>
       runSandboxedWithStdin(["wrapped", ...plan.args], "", dirA, { PATH: bin }, "high", undefined, 5_000,
         undefined, undefined, undefined, false, plan.check);

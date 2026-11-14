@@ -256,7 +256,7 @@ describe("caller-managed harness home sandbox policy", () => {
     const spies = [
       spyOn(runtime, "assertNoProjectScodePolicy").mockImplementation(() => {}),
       spyOn(runtime, "resolveScodeExecutableForEnv").mockReturnValue("/synthetic/scode"),
-      spyOn(runtime, "assertCompatibleScode").mockResolvedValue(undefined),
+      spyOn(runtime, "assertCompatibleScode").mockResolvedValue("0.6.6"),
       spyOn(runtime, "resolveKeepEnvSandboxOptions").mockResolvedValue(sandboxOptions),
       spyOn(executables, "executableCheck").mockReturnValue(null),
       spyOn(executables, "resolveTrustedCommand").mockImplementation((command) => [...command]),

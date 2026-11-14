@@ -13,7 +13,12 @@ import { buildSandboxEnv, type SandboxOptions } from "../sandbox.js";
 import { compareVersions } from "../harness-compatibility.js";
 
 export const SCODE_MINIMUM_VERSION = "0.2.0";
+export const SCODE_ALLOW_RO_MINIMUM_VERSION = "0.6.7";
 const SCODE_VERSION_TIMEOUT_MS = 5_000;
+
+export function scodeSupportsAllowRo(version: string): boolean {
+  return compareVersions(version, SCODE_ALLOW_RO_MINIMUM_VERSION) >= 0;
+}
 
 export interface ScodeCompatibilityStatus {
   available: boolean;
@@ -105,12 +110,13 @@ export function isVersionAtLeast(
   return true;
 }
 
+/** Validate the version floor and return the version from this same probe. */
 export async function assertCompatibleScode(
   scode: string,
   workdir: string,
   extraEnv?: Record<string, string>,
   minimumVersion = SCODE_MINIMUM_VERSION
-): Promise<void> {
+): Promise<string> {
   const result = await runOutputProbe([scode, "--version"], {
     cwd: workdir,
     env: buildSandboxEnv(extraEnv),
@@ -147,6 +153,7 @@ export async function assertCompatibleScode(
       `scode ${actual} is too old; ${minimumVersion} or newer is required`
     );
   }
+  return actual;
 }
 
 // scode reports a version number for features it does not have (accounting

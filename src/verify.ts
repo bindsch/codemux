@@ -8,7 +8,7 @@ import {
   resolveSandboxOptionsForAgent,
   type SandboxPolicyOverrides,
 } from "./sandbox-policy.js";
-import { verifiedScodeCommand } from "./verify-scode.js";
+import { verifiedScodeCommand, type VerifiedScodeFeatures } from "./verify-scode.js";
 import {
   AUTONOMY_LEVELS,
   type AgentId,
@@ -428,7 +428,8 @@ export function verifyAgentsWiring(agentIds: readonly AgentId[]): VerificationRe
 
 export function buildEffectiveScodeCommands(
   agentIds: readonly AgentId[],
-  overrides: SandboxPolicyOverrides = {}
+  overrides: SandboxPolicyOverrides = {},
+  features?: VerifiedScodeFeatures
 ): EffectiveScodeCommand[] {
   const rows: EffectiveScodeCommand[] = [];
 
@@ -463,7 +464,7 @@ export function buildEffectiveScodeCommands(
         agentId,
         autonomy,
         mode: "run",
-        ...verifiedScodeCommand(runCmd, verificationCwd(), autonomy, sandboxOptions),
+        ...verifiedScodeCommand(runCmd, verificationCwd(), autonomy, sandboxOptions, features),
       });
 
       const tuiCmd = captureWarnings(() =>
@@ -473,7 +474,7 @@ export function buildEffectiveScodeCommands(
         agentId,
         autonomy,
         mode: "tui",
-        ...verifiedScodeCommand(tuiCmd, verificationCwd(), autonomy, sandboxOptions),
+        ...verifiedScodeCommand(tuiCmd, verificationCwd(), autonomy, sandboxOptions, features),
       });
     }
   }

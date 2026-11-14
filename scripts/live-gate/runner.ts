@@ -30,9 +30,8 @@ export interface ProbeResult {
   seconds: number;
   stderr: string;
   note?: string;
-  /** A refusal found beyond the first stderr line; bounded independently. */
-  /** The last error line's quota refusal; null when it was none. Absent
-   * only on results built outside the runner. */
+  /** The last non-Warning stderr line's quota classification; null when
+   * it was no refusal. Runner-built PASS results omit this field. */
   quotaRefusal?: string | null;
 }
 
@@ -306,8 +305,8 @@ export class ProbeRunner {
       pendingLine = "";
       const trimmed = line.trim();
       if (trimmed === "" || /^Running with/.test(trimmed)) return;
-      // Only the last error line decides: a refusal followed by an
-      // unrelated error is a behavior failure, not an account state.
+      // Only the last non-Warning stderr line decides: a refusal followed
+      // by unrelated output is a behavior failure, not an account state.
       if (!/^Warning:/i.test(trimmed)) quotaRefusal = providerQuotaRefusal(trimmed);
       if (/^Warning:/.test(trimmed)) {
         if (warnings.length < STDERR_WARNING_CAP) warnings.push(escapeControls(trimmed).slice(0, STDERR_LIMIT));

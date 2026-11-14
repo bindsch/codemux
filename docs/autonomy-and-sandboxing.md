@@ -69,6 +69,8 @@ Codemux maps read-only to scode `--ro` and other levels to `--rw`. Standard trus
 
 Scode enforcement depends on the installed scode version and platform. The version check verifies the stated minimum, not every operating-system restriction; a prerelease of the minimum (for example `0.6.0-rc1` against the `0.6.0` floor) counts as below it, the same ordering harness versions follow. Harness-native enforcement also remains version-sensitive.
 
+With scode 0.6.7+, executable exceptions use exact-file `--allow-ro` grants. Strict and untrusted executable checks accept them, and strict can read executables behind nested `env` wrappers outside system roots. Older scode retains writable `--allow` exceptions and strict refusals. Caller blocks and refusals for writable state covering executable code remain in force. `--print-sandbox` and `verify --show-scode` use the resolved scode version to select the policy. See [isolation](isolation.md#directory-and-login-requirements) for the remaining runtime limits.
+
 ### Conditional scode requirements
 
 | Launch or feature | Requirement |

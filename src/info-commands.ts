@@ -4,6 +4,7 @@ import { getAllAdapters } from "./adapters/index.js";
 import { AUTONOMY_EQUIVALENCE } from "./autonomy.js";
 import { parseSandboxPolicyOverrides } from "./cli-runtime.js";
 import { buildEffectiveScodeCommands, verifyAgentsWiring } from "./verify.js";
+import { verifiedScodeFeatures } from "./verify-scode.js";
 import { AGENT_IDS, type AdapterCapabilities, type AgentId, type CodemuxConfig } from "./types.js";
 import { SESSION_AGENTS } from "./session/cli.js";
 import { runMachineCheck, type MachineCheckReport } from "./doctor-machine-check.js";
@@ -151,7 +152,7 @@ export function registerInfoCommands(
     )
     .option("--sandbox-no-net", "Add --no-net in --show-scode preview")
     .option("--sandbox-scrub-env", "Add --scrub-env in --show-scode preview")
-    .action((options) => {
+    .action(async (options) => {
       let selectedAgents: readonly AgentId[] = AGENT_IDS;
       // Presence is `!== undefined` (review round 159): `--agent ""` is a
       // given selector that names no agent, refused below like any unknown
@@ -212,7 +213,8 @@ export function registerInfoCommands(
         const previewAgents = rows
           .filter((row) => row.status !== "FAIL")
           .map((row) => row.agentId);
-        const scodeRows = buildEffectiveScodeCommands(previewAgents, sandboxPolicyOverrides);
+        const features = await verifiedScodeFeatures(process.cwd());
+        const scodeRows = buildEffectiveScodeCommands(previewAgents, sandboxPolicyOverrides, features);
         console.log("\nEffective scode command preview (run+tui x autonomy):\n");
         console.log("| Agent | Autonomy | Mode | Command |");
         console.log("|-------|----------|------|---------|");

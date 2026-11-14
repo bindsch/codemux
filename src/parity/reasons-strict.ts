@@ -6,15 +6,15 @@ const hookEvidence = "2026-11-11, scode 0.6.5 on macOS: an external agentstat ho
 
 export const STRICT_LIMITATIONS = {
   agy: limitation(
-    "Strict refuses env-wrapped executables outside scode's system read grants with exit 64, at every wrapper depth. It never uses a writable --allow for executable code. A system installation can avoid this limitation.",
+    "Before scode 0.6.7, strict refuses env-wrapped executables outside system read grants with exit 64 at every wrapper depth. Scode 0.6.7+ uses exact-file --allow-ro grants. Runtime dependencies and hooks still need their own access; no newer live OK probe is claimed.",
     "2026-11-11, scode 0.6.5 --help: --allow PATH Request recursive access (subject to policy precedence; repeatable); --ro Mount project directory read-only. No read-only path grant exists. A non-agent strict cat of ~/.local/bin/agy failed with Operation not permitted; the installed wrapped launch is refused before spawn.",
     "strict sandbox cannot read env-wrapped executable", test),
   opencode: limitation(
-    "Ordinary strict launches of ~/.opencode/bin/opencode are refused because the .opencode runtime-state grant would make the executable writable. Strict also refuses nested env-wrapped executables outside scode's system read grants. Hermetic private state remains allowed beneath launcher isolation blocks, but scode cannot grant the installed home-directory binary read-only access.",
+    "Ordinary strict launches of ~/.opencode/bin/opencode are refused because the .opencode runtime-state grant would make the executable writable. With scode 0.6.7+, isolated launches and nested env wrappers use exact-file --allow-ro grants; older scode retains the executable refusal. Private state stays writable beneath launcher blocks. Writable state grants covering executable code still refuse.",
     "2026-11-11, scode 0.6.5 --help lists only --allow PATH Request recursive access and --ro for the project. The installed hermetic session preview names ~/.opencode/bin/opencode and exits 64. Nested-wrapper and isolation-order regressions cover the refusal without a writable binary grant.",
     "strict sandbox cannot read env-wrapped executable", test),
   cline: limitation(
-    "Cline sessions use an env wrapper. Strict refuses installations outside scode's system read grants instead of making the executable writable. Cline is not installed locally, so no live strict support is claimed.",
+    "Cline sessions use an env wrapper. Before scode 0.6.7, strict refuses installations outside system read grants. Scode 0.6.7+ uses exact-file --allow-ro grants. Cline is not installed locally, so no live strict support is claimed.",
     "2026-11-11, scode 0.6.5 --help: --allow PATH Request recursive access; --ro applies only to the project. A fixture-backed Cline session outside system roots exits 64 naming its env-wrapped executable. No installed Cline binary was probed.",
     "strict sandbox cannot read env-wrapped executable", test),
   aider: limitation(

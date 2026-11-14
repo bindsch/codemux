@@ -188,11 +188,12 @@ test.each(agents)("%s CLI refuses caller root replacement during asynchronous sa
   const original = runtime.assertCompatibleScode;
   let changed = false;
   const preflight = spyOn(runtime, "assertCompatibleScode").mockImplementation(async (...args) => {
-    await original(...args);
+    const version = await original(...args);
     if (!changed) {
       renameSync(s.caller, join(s.root, "saved-caller"));
       changed = true;
     }
+    return version;
   });
   try {
     const result = await s.run(s.flags);

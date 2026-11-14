@@ -152,8 +152,9 @@ prints one row per harness × probe. A row is `PASS`, `FAIL`, `SKIP`, or
   provider quota refusal. The reason is recorded, including agy's
   `RESOURCE_EXHAUSTED (code 429)` / `Individual quota reached` and Kimi's
   weekly usage limit. The runner checks later stderr lines even after the
-  report's warning limit is full; only the last error line decides, so a
-  refusal followed by another error stays a FAIL. Quota warnings that allow
+  report's warning limit is full; only the last non-Warning stderr line decides (blank lines and
+  `Running with` banners are not counted), so a refusal followed by other
+  output stays a FAIL. Quota warnings that allow
   execution and unrelated harness failures do not qualify. A skip is not a passing probe;
   rerun after quota resets before claiming coverage of that probe.
 - Harness `Warning:` stderr lines are kept in the row's note. A stale-version

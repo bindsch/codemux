@@ -26,6 +26,7 @@ import {
   type ExecutableCheck,
 } from "../executable-security.js";
 import { buildSandboxEnv, buildScodeCommand, type SandboxOptions } from "../sandbox.js";
+import { scodeSupportsAllowRo } from "../cli-runtime/scode.js";
 import { validateWorkingDirectory } from "../validation.js";
 import type { AutonomyLevel } from "../types.js";
 import type { SessionFatal } from "./process.js";
@@ -111,7 +112,7 @@ export async function resolveSessionSandboxSpawn(
   // states): the probes below await, and a capture after them could
   // read another launch's record for the same path (round 20, minor 7).
   const scodeCheck = executableCheck(scode);
-  await assertCompatibleScode(scode, workdir, env);
+  const scodeVersion = await assertCompatibleScode(scode, workdir, env);
   // The keep-env seam the run runner owns (runSandboxedWithStdin): the
   // session's sandbox options may carry the exemption for the env the
   // CLI injected (an override's credential above all), and the same
@@ -146,7 +147,8 @@ export async function resolveSessionSandboxSpawn(
     options.autonomy,
     effectiveSandboxOptions,
     scode,
-    env
+    env,
+    scodeSupportsAllowRo(scodeVersion)
   );
   const sandboxEnv = buildSandboxEnv(env, effectiveSandboxOptions);
   for (const name of options.envOmissions ?? []) delete sandboxEnv[name];

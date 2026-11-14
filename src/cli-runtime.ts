@@ -8,6 +8,7 @@ import type { AgentId, AutonomyLevel, RunResult } from "./types.js";
 import { UsageRefusalError, validateWorkingDirectory } from "./validation.js";
 import { escapeArgvForPrint } from "./usage-protocol.js";
 import { assertCompatibleScode, assertNoProjectScodePolicy, assertScodeSupportsAccounting, resolveKeepEnvSandboxOptions, resolveScodeExecutable, resolveScodeExecutableForEnv, warnIfSinkInsideWorkdir } from "./cli-runtime/scode.js";
+import { scodeSupportsAllowRo } from "./cli-runtime/scode.js";
 
 export {
   SCODE_MINIMUM_VERSION,
@@ -237,7 +238,7 @@ export async function runSandboxed(
   // path — a replaced scode only that launch probed — so the check is
   // carried to the spawn, not re-derived there.
   const carriedScodeCheck = executableCheck(scode);
-  await assertCompatibleScode(scode, workdir, extraEnv);
+  const scodeVersion = await assertCompatibleScode(scode, workdir, extraEnv);
   if (sandboxOptions?.accountFile || sandboxOptions?.accountId) {
     await assertScodeSupportsAccounting(scode, workdir, extraEnv);
     if (sandboxOptions.accountFile) {
@@ -267,7 +268,8 @@ export async function runSandboxed(
     autonomy,
     effectiveSandboxOptions,
     scode,
-    extraEnv ?? process.env
+    extraEnv ?? process.env,
+    scodeSupportsAllowRo(scodeVersion)
   );
   const env = buildSandboxEnv(extraEnv, effectiveSandboxOptions);
   for (const name of envOmissions) delete env[name];
@@ -356,7 +358,7 @@ export async function runSandboxedWithStdin(
   // capture after them could read another launch's record for the same
   // path, so the check is carried to the spawn, not re-derived there.
   const carriedScodeCheck = executableCheck(scode);
-  await assertCompatibleScode(scode, workdir, extraEnv);
+  const scodeVersion = await assertCompatibleScode(scode, workdir, extraEnv);
   if (sandboxOptions?.accountFile || sandboxOptions?.accountId) {
     await assertScodeSupportsAccounting(scode, workdir, extraEnv);
     if (sandboxOptions.accountFile) {
@@ -385,7 +387,8 @@ export async function runSandboxedWithStdin(
     autonomy,
     effectiveSandboxOptions,
     scode,
-    extraEnv ?? process.env
+    extraEnv ?? process.env,
+    scodeSupportsAllowRo(scodeVersion)
   );
   const env = buildSandboxEnv(extraEnv, effectiveSandboxOptions);
   for (const name of envOmissions) delete env[name];

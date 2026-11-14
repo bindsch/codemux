@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { accountHome } from "./account-home.js";
 import type { AgentId, AutonomyLevel } from "./types.js";
 import { UsageRefusalError } from "./validation.js";
-import { assertStrictExecutables, containsPath, strictCommandPaths, StrictSandboxRefusalError } from "./sandbox-command.js";
+import { assertStrictExecutables, containsPath, needsWrappedExecutableGrant, strictCommandPaths, StrictSandboxRefusalError } from "./sandbox-command.js";
 import { strictRuntimeGrants } from "./sandbox-runtime-grants.js";
 // From the format module, which owns the rule, rather than the registry
 // barrel: sandbox.ts sits below the session layer and imports only this
@@ -103,7 +103,8 @@ export function buildScodeCommand(
   autonomy?: AutonomyLevel,
   options?: SandboxOptions,
   executable = "scode",
-  environment: NodeJS.ProcessEnv = process.env
+  environment: NodeJS.ProcessEnv = process.env,
+  allowReadOnlyExecutables = false
 ): string[] {
   if (
     command.length === 0 ||
@@ -150,24 +151,31 @@ export function buildScodeCommand(
   }
 
   const grants = [...(options?.harnessStateDirs ?? [])];
+  const readOnlyGrants: string[] = [];
   // A harness can be installed inside its own operator store. Reopen only
   // the resolved executable files, never their containing config directory.
-  // Strict mode still refuses writable executable grants below.
-  if (options?.harnessHomeBlockedPaths?.length) {
-    const stores = [...options.harnessHomeBlockedPaths, ...scodeAccountHomeBlock(environment)].map(canonicalSandboxBlockPath);
-    for (const executable of strictCommandPaths(command)) {
+  // Older scode needs a writable exception, which strict mode refuses.
+  const strict = options?.strict || trust === "untrusted";
+  if (options?.harnessHomeBlockedPaths?.length || allowReadOnlyExecutables) {
+    const stores = [...(options?.harnessHomeBlockedPaths ?? []), ...scodeAccountHomeBlock(environment)].map(canonicalSandboxBlockPath);
+    const blocks = blockedPaths.map(canonicalSandboxBlockPath);
+    for (const [index, executable] of strictCommandPaths(command).entries()) {
       if (!executable.startsWith("/")) continue;
       const path = canonicalSandboxBlockPath(executable);
-      if (!stores.some((store) => containsPath(store, path))) continue;
+      const blockedStore = stores.some((store) => containsPath(store, path));
+      const wrapped = allowReadOnlyExecutables && strict && index > 0 && needsWrappedExecutableGrant(path, blocks);
+      if (!blockedStore && !wrapped) continue;
       // Session turns map only StrictSandboxRefusalError to exit 64.
       try {
-        assertNoCallerBlockOverStateDirs(options.callerBlockPaths ?? [], [path]);
+        assertNoCallerBlockOverStateDirs(options?.callerBlockPaths ?? blockedPaths, [path]);
       } catch (error) {
         if (error instanceof UsageRefusalError) throw new StrictSandboxRefusalError(error.message);
         throw error;
       }
-      grants.push(path);
-      scodeCmd.push("--allow", path);
+      const target = allowReadOnlyExecutables ? readOnlyGrants : grants;
+      if (target.includes(path)) continue;
+      target.push(path);
+      scodeCmd.push(allowReadOnlyExecutables ? "--allow-ro" : "--allow", path);
     }
   }
   if (options?.strict && trust !== "untrusted") {
@@ -187,7 +195,7 @@ export function buildScodeCommand(
       scodeCmd.push("--allow", path);
     }
   }
-  if (options?.strict || trust === "untrusted") assertStrictExecutables(command, blockedPaths, grants);
+  if (strict) assertStrictExecutables(command, blockedPaths, grants, readOnlyGrants);
 
   scodeCmd.push("--", ...command);
 
