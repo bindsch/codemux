@@ -15,7 +15,8 @@ immutable notes and engineering evidence.
 
 ### Fixed
 
-- Codex 0.167+ sessions detach an idle thread with `thread/unsubscribe` and wait for its reply before closing stdin. Live 0.167.1 probes exited 0 instead of reaching the silent 45-second exit-1 watchdog. Codex 0.166 and unknown versions keep EOF shutdown; nonzero child exits still fail. The app-server initialization notification now uses `initialized`. The audited ceiling remains 0.166.0 because experiment-MCP and hermetic-resume evidence is incomplete; see [the shutdown audit](https://github.com/bindsch/codemux/blob/main/docs/codex-shutdown.md).
+- Codex 0.167+ sessions detach an idle thread with `thread/unsubscribe` and wait for its reply before closing stdin. Live 0.167.1 probes exited 0 instead of reaching the silent 45-second exit-1 watchdog. Codex 0.166 and unknown versions keep EOF shutdown; nonzero child exits still fail. The app-server initialization notification now uses `initialized`. The audited ceiling remains 0.166.0 because experiment-MCP evidence is incomplete; see [the shutdown audit](https://github.com/bindsch/codemux/blob/main/docs/codex-shutdown.md).
+- Codex sessions repair native rollout paths after moving a hermetic or provider-override home, including homes left by earlier versions. Resume preserves the selected history and excludes replayed historical usage from the new session's accounting.
 
 ## [2.0.2] - 2026-11-14
 

@@ -49,6 +49,7 @@ import {
 import { CODEX_THREAD_ID_PATTERN } from "./codex-parse-facts.js";
 import { KIMI_SESSION_ID_PATTERN } from "./kimi-session.js";
 import { openSessionPrivateHome } from "./private-home.js";
+import { openCodexSessionPrivateHome } from "./codex-home.js";
 import type { SessionPrivateHome } from "./private-home-types.js";
 import { prepareSessionEnvironment } from "./cli-environment.js";
 import { openOpenCodeSessionHome } from "./opencode-home.js";
@@ -367,7 +368,7 @@ export async function prepareSessionLaunch({
     // the operator's state. Preparation and cleanup leave the tree intact.
     const printOnly = options.printSandbox === true;
     if (agentId === "codex") {
-      sessionPrivateHome = openSessionPrivateHome({
+      sessionPrivateHome = openCodexSessionPrivateHome({
         printOnly,
         parent: join(codexHome(), ".codemux-hermetic"),
         sessionId: resumeId,
@@ -375,10 +376,7 @@ export async function prepareSessionLaunch({
         idPattern: CODEX_THREAD_ID_PATTERN,
         blockedPaths: [],
         populate: printOnly ? undefined : (dir) => {
-          // The run path's own rule (adapters/codex.ts): API-key auth
-          // from CODEX_API_KEY alone, and an override run never links
-          // the operator's auth.json — the provider key is the
-          // credential.
+          // API-key auth and provider overrides do not link auth.json.
           const apiKeyAuth =
             Boolean(process.env.CODEX_API_KEY?.trim()) || codexOverride !== null;
           const { codexHome: privateCodexHome } =

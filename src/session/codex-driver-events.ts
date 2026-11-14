@@ -33,6 +33,8 @@ export abstract class CodexDriverEvents extends CodexDriverResponses {
       threadId: this.threadId,
       activeTurnId: this.harnessTurnId,
       closedTurnIds: this.closedHarnessTurnIds,
+      resumedUsageTurnIds: this.resumedUsageTurnIds,
+      discoverResumedUsage: this.resumedThreadValidated && this.turnCounter === 0,
       // The window between sending turn/start and its response naming
       // the harness turn: scoped events there belong to that turn and
       // cannot be checked against an id (review round 64).
@@ -64,6 +66,10 @@ export abstract class CodexDriverEvents extends CodexDriverResponses {
 
   private applyParse(parse: CodexParse, rawLine: string): void {
     switch (parse.kind) {
+      case "resumed_usage":
+        this.rememberResumedUsageTurn(parse.historicalTurnId);
+        this.emit(buildUnknownEvent(++this.seq, this.sessionIdOrEmpty(), rawLine));
+        return;
       case "unusable":
         // Tier 3 (§4.2): the fatal report carries the excerpt; the line
         // itself is not mirrored (there is no event to preserve).

@@ -279,9 +279,10 @@ Reasons and evidence match `src/parity` verbatim. The test column in the declara
 
 Codex 0.167.1 was also inspected on 2026-11-14. Acknowledged
 `thread/unsubscribe` before EOF fixed the observed session shutdown failure.
-The ceiling remains 0.166.0: the supplied gate still has an experiment-MCP
-failure, and a live hermetic resume found a stale rollout path after private
-home relocation. See the [shutdown audit and limits](codex-shutdown.md).
+Round 2 repairs stale rollout paths after private-home relocation and
+recognizes historical usage replay on resume. The ceiling remains 0.166.0:
+the supplied gate still has an experiment-MCP failure. See the
+[shutdown audit and limits](codex-shutdown.md).
 
 Last live-verified, per row: kimi 2026-11-08, agy 2026-11-07, and claude, codex, cursor, opencode, and zai 2026-11-06 (the 2.0.0 candidate gate); aider, copilot, droid, gemini, goose, openhands, pi, and qwen September or October 2026 at the latest, with no credentials on the release machine for 2.0.0; cline not installed, its last probes refused isolation. Those nine rows are static contracts for 2.0.0 — code-enforced declarations, not freshly probed behavior — until a credentialed machine live-gates them.
 

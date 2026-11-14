@@ -17,7 +17,20 @@ import { CodexDriverSteer } from "./codex-steer.js";
 import { inputSeqList } from "./codex-turns.js";
 import type { PendingCall } from "./codex-driver-io.js";
 
+const MAX_RESUMED_USAGE_TURNS = 1024;
+
 export abstract class CodexDriverResponses extends CodexDriverSteer {
+  /** Resume replays saved usage; it is not new session usage. */
+  protected readonly resumedUsageTurnIds = new Set<string>();
+  protected resumedThreadValidated = false;
+
+  protected rememberResumedUsageTurn(id: string): void {
+    this.resumedUsageTurnIds.delete(id);
+    this.resumedUsageTurnIds.add(id);
+    if (this.resumedUsageTurnIds.size > MAX_RESUMED_USAGE_TURNS) {
+      this.resumedUsageTurnIds.delete(this.resumedUsageTurnIds.values().next().value!);
+    }
+  }
   /** Run the session-start machinery both start paths share: the FSM
    * transition, the registry record, the announcement, and the buffered
    * input replay. The announcement follows the record's verdict: a
@@ -224,6 +237,16 @@ export abstract class CodexDriverResponses extends CodexDriverSteer {
       }
       if (this.threadId === null) this.threadId = threadId;
       if (pending === "thread_resume" && this.fsm.state === "starting") {
+        this.resumedThreadValidated = true;
+        const turns = (thread as { turns?: unknown }).turns;
+        if (Array.isArray(turns)) {
+          for (const turn of turns.slice(-MAX_RESUMED_USAGE_TURNS)) {
+            if (turn && typeof turn.id === "string" && turn.id.length > 0 &&
+                ["completed", "interrupted", "failed", "inProgress"].includes(turn.status)) {
+              this.rememberResumedUsageTurn(turn.id);
+            }
+          }
+        }
         // The resume response is itself the subscription proof — its
         // thread.id echoes the requested id (checked above), which is
         // exactly what the reference clients of the same app-server

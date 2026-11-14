@@ -5,6 +5,7 @@
 import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdtempSync, renameSync } from "node:fs";
 import { runDirectoryPrefix } from "../run-directory-owner.js";
+import { repairCodexHomeRollouts } from "../session/codex-home.js";
 import { basename, join } from "node:path";
 import { assertTrustedDirectory, prepareRunDirParent } from "../hermetic-home.js";
 import {
@@ -197,7 +198,6 @@ export function createCodexSessionProviderHome(
         throw new Error(`${codexHome} is no longer the directory this session created`);
       }
       renameSync(codexHome, target);
-      return true;
     } catch (error) {
       // A target that already exists (a minted-id collision — the thread
       // ids are codex's own random ids) or a swapped component keeps both
@@ -205,6 +205,16 @@ export function createCodexSessionProviderHome(
       // delete a directory this process did not create. The state did NOT
       // reach the key, so the session is not resumable: false.
       warnLostHome("set aside", codexHome, error);
+      return false;
+    }
+    try {
+      repairCodexHomeRollouts(target);
+      return true;
+    } catch (error) {
+      // The home reached its session key, but its selected rollout paths
+      // could not be repaired. Keep it there for recovery; do not claim
+      // it is resumable until repair succeeds.
+      warnLostHome("repair rollout paths in", target, error);
       return false;
     }
   };
@@ -264,6 +274,7 @@ export function openCodexSessionProviderHome(
   }
   if (printOnly) return { codexHome, prepareConfig: () => {}, settle: () => true, abandon: () => {} };
   const prepareConfig = (): void => {
+    repairCodexHomeRollouts(codexHome);
     writeCodexProviderConfigInto(codexHome, override, model, multiAgent);
   };
   let settled = false;

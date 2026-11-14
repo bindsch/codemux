@@ -75,14 +75,58 @@ No direct app-server session or extra model call was used.
 | Resume the preceding hermetic session | Refused: `no rollout found for thread id`. The transcript exists, but the native SQLite `threads.rollout_path` still names the old `run-*` directory after private-home settlement renamed it to `session-*`. |
 | Ordinary session, final implementation, caller EOF | Child and session exited 0, about 3.1 seconds after turn completion. |
 
-The resume finding concerns the existing private-home relocation path. This
-change does not rewrite Codex's database or alter home settlement. The raw
-transcript remains present. Fixture tests cover resume request ordering and
-registry semantics; they do not establish live hermetic resume compatibility.
+## Resume after relocation (round 2)
+
+The rollout was persisted before shutdown. Codemux then renamed the private
+home from `run-*` to `session-*`, leaving `threads.rollout_path` in
+`state_5.sqlite` pointing at the old absolute path. This also occurred in
+the EOF-only control, so unsubscribe did not cause the missing history.
+
+The native [rollout resolver](https://github.com/openai/codex/blob/rust-v0.167.1/codex-rs/thread-store/src/local/thread_rollout_resolver.rs)
+treats the selected SQLite path as authoritative for paginated threads. It
+does not fall back to filesystem discovery when that path disappears.
+The resolver is identical in 0.166.0 and 0.167.1. An explicit
+`thread/resume.path` also checks the selected database path; it is not a
+relocation workaround. No `thread/list` request is required for resume.
+
+Codemux now rebases selected rollout paths inside its own relocated homes
+after the child exits and before releasing the registry record. The same
+repair runs under the resume claim for homes left by earlier versions.
+It covers hermetic and provider-override homes. Plain and caller-owned
+homes retain native ID lookup and receive no database edits. Only paths
+under a sibling `run-*` home are rebased. The selected filename, history,
+timestamps, and other metadata stay unchanged. Updates are transactional;
+missing history, unsafe files, and unsupported database schemas fail closed.
+The private home root and its parent keep their existing ownership and
+non-group/world-writable checks. Inside that root, owned child files and
+directories may be group-writable (including files created under umask 002).
+World-writable entries, foreign owners, symlinks, and hard-linked files
+remain refused.
+The repair supports the audited `state_5.sqlite` schema; absent databases
+remain a no-op for older harnesses. It does not guess a new schema.
+
+The plain live resume also exposed a separate usage replay: after the
+resume response, Codex sends `thread/tokenUsage/updated` for a completed
+historical turn. Codemux now preserves that notification as raw output
+without charging it to the new session. Historical turns with statuses
+`completed`, `interrupted`, `failed`, and `inProgress` qualify. Codemux retains
+up to 1024 IDs from the end of the validated resume response's turns list.
+After that response and before submitting the first new turn, same-thread
+usage notifications with nonempty turn IDs also qualify and teach Codemux
+their IDs. This covers paginated resumes whose turns list is empty, and
+replay for history omitted by the response or its 1024-turn bound. The most
+recent 1024 IDs are retained; learning stops permanently when the first new
+turn is submitted, before its `turn/start` request. Retained IDs remain
+raw-only even while later turns start or run. Unknown IDs after that point,
+foreign threads, and other event types retain their existing scope checks.
+
+Regression coverage is in `tests/session-codex-home.test.ts` and
+`tests/session-codex-resume-usage.test.ts`. Round-2 live receipts and the full
+check result are indexed in `scratch/report-codex-167-r2.md`.
 
 The audited ceiling stays **0.166.0**. The supplied 2026-11-14 live gate also
 has an unresolved experiment-MCP probe failure, independent of shutdown.
-Successful shutdown probes alone do not justify raising the full contract.
+Successful shutdown and resume probes alone do not justify raising the full contract.
 See [harness compatibility](harnesses.md#version-contracts).
 
 `tests/session-codex-shutdown.test.ts` covers reply-before-EOF ordering,

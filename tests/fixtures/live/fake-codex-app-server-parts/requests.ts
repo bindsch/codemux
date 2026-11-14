@@ -26,7 +26,12 @@ export const startThread = (id: unknown, announce: boolean): void => {
     !announce && process.env.FAKE_RESUME_WRONG_THREAD === "1"
       ? "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb"
       : THREAD_ID;
-  respond(id, { thread: { id: answeredId }, model: "gpt-fake" });
+  const replay = !announce && process.env.FAKE_RESUME_USAGE !== undefined;
+  respond(id, { thread: { id: answeredId,
+    ...(replay ? { turns: process.env.FAKE_RESUME_EMPTY_TURNS === "1" ? [] :
+      [{ id: "previous-turn", status: process.env.FAKE_RESUME_USAGE_STATUS ?? "completed" }] } : {}) }, model: "gpt-fake" });
+  if (replay && process.env.FAKE_RESUME_USAGE === "1") notify("thread/tokenUsage/updated", { threadId: answeredId, turnId: "previous-turn",
+    tokenUsage: { last: { inputTokens: 90000, outputTokens: 90000, cachedInputTokens: 0 } } });
   // A fresh thread/start is followed by thread/started — the shape the
   // recorded fixture pins. thread/resume is NOT: the reference clients
   // of the same app-server validate the response's thread.id and never

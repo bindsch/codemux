@@ -407,6 +407,16 @@ export class CodexStreamParser {
         return [{ kind: "unknown" }];
       }
       case "thread/tokenUsage/updated": {
+        // Cold resume replays saved usage after the response. Validate the
+        // thread, preserve the raw event, and never charge old usage again.
+        if (typeof params?.["threadId"] === "string" && typeof params["turnId"] === "string" &&
+            params["turnId"].length > 0 && context.threadId !== null &&
+            (context.resumedUsageTurnIds?.has(params["turnId"]) || context.discoverResumedUsage === true)) {
+          const error = checkThread(params["threadId"], context);
+          return [error ?? (context.discoverResumedUsage === true
+            ? { kind: "resumed_usage", historicalTurnId: params["turnId"] }
+            : { kind: "unknown" })];
+        }
         const scoped = scopedParams(params, context);
         if (scoped.error !== null) return [scoped.error];
         const tokenUsage = scoped.params?.["tokenUsage"];

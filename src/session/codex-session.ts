@@ -129,6 +129,7 @@ export type CodexParse =
   | { kind: "unparseable_approval"; id: RequestId; method: string }
   | { kind: "server_request"; id: RequestId; method: string }
   | { kind: "unknown" }
+  | { kind: "resumed_usage"; historicalTurnId: string }
   | { kind: "grammar_error"; message: string }
   | { kind: "unusable"; excerpt: string; bytes: number };
 
@@ -146,6 +147,15 @@ export interface CodexParseContext {
    * Every closed turn counts, not only the last one: a straggler can
    * outlive the next turn's whole lifetime (review live23). */
   closedTurnIds?: ReadonlySet<string>;
+  /** Up to 1024 historical IDs: completed, interrupted, failed, inProgress
+   * turns from the validated resume response, then usage IDs learned before
+   * this session submits its first new turn. Usage replay only, never charged.
+   * Learning also covers paginated resumes with an empty turns list. */
+  resumedUsageTurnIds?: ReadonlySet<string>;
+  /** Only after the validated resume response and before the first new turn
+   * is submitted. Learn same-thread, nonempty usage IDs; all other scope
+   * checks stay strict. The driver retains the most recent 1024 IDs. */
+  discoverResumedUsage?: boolean;
   /** True while a turn/start response is still in flight: a turn is open
    * codemux-side but the harness has not named it yet, so scoped
    * notifications arriving in that window cannot be identity-checked
