@@ -17,8 +17,9 @@
  * `dir` and `remove` follow the rename. A RESUME opens `session-<id>`:
  * missing is an error (the CLI answers policy, exit 78 — the transcript
  * the directory exists to carry would be gone), a swapped link is
- * refused (assertTrustedDirectory), and nothing inside is ever
- * rewritten. `remove()` is one attempt: it throws the reason when the
+ * refused (assertTrustedDirectory), and nothing inside is rewritten,
+ * except codex's state database: openCodexSessionPrivateHome
+ * (codex-home.ts) rebases its rollout paths after the rename. `remove()` is one attempt: it throws the reason when the
  * removal is refused or fails and answers true once the directory is
  * gone — idempotent after success, otherwise retryable. The `--final`
  * end path calls it twice (driver.ts); an abandoned fresh home once.

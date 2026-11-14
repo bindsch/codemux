@@ -15,7 +15,8 @@ export interface SessionPrivateHome {
   readonly dir: string;
   /** True when `--resume` reopened a directory older than this process. */
   readonly resumed: boolean;
-  /** True once the directory sits on its session-keyed name. */
+  /** True once the directory sits on its session-keyed name; for codex,
+   * also once its rollout paths were rebased (codex-home.ts). */
   readonly settled: boolean;
   /** Rename the fresh run-shaped directory onto `session-<id>`; idempotent. */
   settle(sessionId: string): void;
