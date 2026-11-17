@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { readRegistry, recordSessionStart } from "../src/session/registry.js";
 import { writePrivateFile } from "../src/private-write.js";
 import { createCodexHermeticHome, prepareRunDirParent } from "../src/hermetic-home.js";
-import { writeMirror } from "../src/credentials/backups.js";
+import { copyClaudeCredentialMirror } from "../src/claude-credential-mirror.js";
 import { appendCallRecord, CALL_LOG_ENV } from "../src/call-log.js";
 import { writeCodexProviderConfigInto } from "../src/codex-provider/config.js";
 import { codexProviderSessionsParent, createCodexSessionProviderHome } from "../src/codex-provider/home.js";
@@ -25,7 +25,7 @@ import { writeOwnedSync } from "../src/fs-durable.js";
 import { createKimiHermeticHome } from "../src/kimi-hermetic.js";
 import { MODEL, OVERRIDE, makeCodexHome } from "./helpers/codex-provider.js";
 import { makeRoot, newRecord, registryIn } from "./helpers/session-registry.js";
-import { SECRET, withTarget } from "./helpers/credentials.js";
+import { withTarget } from "./helpers/credentials.js";
 import { BASE_RECORD, tempEnv } from "./helpers/call-log.js";
 
 describe("stated modes survive an owner-stripping umask (round 401, item 1)", () => {
@@ -84,11 +84,12 @@ describe("stated modes survive an owner-stripping umask (round 401, item 1)", ()
 
   test("the credential mirror's replacement lands 0600", () => {
     withTarget((target, dir) => {
-      const scrubbed = { accessToken: "a", refreshToken: "" };
+      const copy = join(dir, "copy");
+      require("node:fs").mkdirSync(copy, { mode: 0o700 });
       const previous = process.umask(0o277);
       try {
-        expect(writeMirror(target, `${SECRET}\n`, scrubbed, join(dir, "backups"))).toBe("written");
-        expect(statSync(target).mode & 0o777).toBe(0o600);
+        copyClaudeCredentialMirror(copy, target, undefined, "linux");
+        expect(statSync(join(copy, ".credentials.json")).mode & 0o777).toBe(0o600);
       } finally {
         process.umask(previous);
       }

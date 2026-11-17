@@ -77,12 +77,12 @@ function assertRealLoginFile(path: string): void {
   let stat;
   try {
     stat = lstatSync(path);
-  } catch {
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
     throw new Error(
-      `codex hermetic runs need a file login: ${path} does not exist. ` +
-        "Log in with 'codex login' using cli_auth_credentials_store = \"file\" " +
-        "(a Keychain-stored login is keyed to the real CODEX_HOME and cannot " +
-        "be shared with the private home), or set CODEX_API_KEY."
+      `codex hermetic runs need a file login: ${path} ${code === "ENOENT" || code === "ENOTDIR" ? "does not exist" : "could not be inspected"}. ` +
+        "Use an existing file credential with cli_auth_credentials_store = \"file\", or set CODEX_API_KEY. " +
+        "Native authentication has not been checked."
     );
   }
   if (stat.isSymbolicLink() || !stat.isFile()) {
@@ -146,7 +146,7 @@ export function createCodexHermeticHome(
         console.error(
           "codex: the hermetic run replaced its login file instead of rewriting " +
             `it, so a token rotation from this run was discarded; ${sourceAuth} ` +
-            "is unchanged. If codex reports an expired session, run 'codex login'."
+            "is unchanged. Native authentication has not been checked."
         );
       }
     } catch (error) {

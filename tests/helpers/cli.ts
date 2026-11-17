@@ -27,10 +27,8 @@ export async function runCli(
   try {
     const childEnv = {
       ...process.env,
-      // Spawned CLI tests cannot inject the credential seams; disable
-      // the keychain sync so no spawned codemux reads the real Keychain
-      // and copies the live credential into this throwaway HOME.
-      CODEMUX_NO_KEYCHAIN_SYNC: "1",
+      // Spawned CLI tests run against a throwaway HOME, so no spawned
+      // codemux can reach the operator's real login stores.
       HOME: isolatedHome,
       XDG_CONFIG_HOME: join(isolatedHome, ".config"),
       ...envOverrides,
@@ -40,10 +38,7 @@ export async function runCli(
     // absent usagemux (tests/setup.ts sets the variable).
     delete childEnv.CODEMUX_TEST_NO_QUOTA_GATE;
     const proc = Bun.spawn(
-      envOverrides?.CODEMUX_TEST_AGY_SECURITY
-        ? [process.execPath, "--no-env-file", "--no-install", "--config=./bunfig.runtime.toml",
-          "--preload", join(import.meta.dir, "../fixtures/agy-host.ts"), "src/index.ts", ...args]
-        : [join(import.meta.dir, "..", "..", "bin", "codemux"), ...args],
+      [join(import.meta.dir, "..", "..", "bin", "codemux"), ...args],
       {
         cwd: options?.cwd ?? join(import.meta.dir, "..", ".."),
         stdout: "pipe",
@@ -90,95 +85,6 @@ export function minimalPath(): string {
   return [isolatedBunDir, "/usr/bin", "/bin"].join(":");
 }
 
-function fakeSecurityScript(fixtureDir: string): string {
-  return String.raw`
-import { createHash } from "node:crypto";
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-
-const home = process.env.HOME;
-const login = join(home, "Library/Keychains/login.keychain-db");
-const statePath = join(${JSON.stringify(fixtureDir)}, "security-" + createHash("sha256").update(home).digest("hex") + ".json");
-const state = existsSync(statePath)
-  ? JSON.parse(readFileSync(statePath, "utf8"))
-  : { defaultKeychain: login, keychains: [login] };
-const save = () => writeFileSync(statePath, JSON.stringify(state));
-const quoted = (paths) => process.stdout.write(paths.map((path) => '    "' + path + '"\n').join(""));
-
-function execute(args) {
-  const command = args.shift();
-  const last = args.at(-1);
-  switch (command) {
-    case "create-keychain":
-      writeFileSync(last, JSON.stringify({ password: args[args.indexOf("-p") + 1], unlocked: false, items: {} }));
-      if (!state.keychains.includes(last)) state.keychains.push(last);
-      save();
-      return true;
-    case "unlock-keychain": {
-      if (!existsSync(last)) return false;
-      const keychain = JSON.parse(readFileSync(last, "utf8"));
-      keychain.unlocked = args[args.indexOf("-p") + 1] === keychain.password;
-      writeFileSync(last, JSON.stringify(keychain));
-      return keychain.unlocked;
-    }
-    case "add-generic-password":
-    case "delete-generic-password": {
-      if (!existsSync(last)) return false;
-      const keychain = JSON.parse(readFileSync(last, "utf8"));
-      if (!keychain.unlocked) return false;
-      const item = JSON.stringify([args[args.indexOf("-s") + 1], args.includes("-a") ? args[args.indexOf("-a") + 1] : ""]);
-      if (command === "add-generic-password") {
-        if (Object.hasOwn(keychain.items, item)) return false;
-        keychain.items[item] = args[args.indexOf("-w") + 1];
-      } else {
-        if (!Object.hasOwn(keychain.items, item)) return false;
-        delete keychain.items[item];
-      }
-      writeFileSync(last, JSON.stringify(keychain));
-      return true;
-    }
-    case "set-keychain-settings":
-      return existsSync(last) && JSON.parse(readFileSync(last, "utf8")).unlocked === true;
-    case "show-keychain-info":
-      return existsSync(last);
-    case "delete-keychain":
-      if (existsSync(last)) unlinkSync(last);
-      state.keychains = state.keychains.filter((path) => path !== last);
-      if (state.defaultKeychain === last) state.defaultKeychain = login;
-      save();
-      return true;
-    case "default-keychain":
-      if (args.includes("-s")) {
-        state.defaultKeychain = last;
-        save();
-      } else quoted([state.defaultKeychain]);
-      return true;
-    case "list-keychains":
-      if (args.includes("-s")) {
-        state.keychains = args.slice(args.indexOf("-s") + 1);
-        save();
-      } else quoted(state.keychains);
-      return true;
-    case "find-generic-password":
-      if (!args.includes("-w")) return false;
-      process.stdout.write("synthetic-agy-token\n");
-      return true;
-    default:
-      return false;
-  }
-}
-
-const args = process.argv.slice(2);
-if (args[0] === "-i") {
-  for (const line of readFileSync(0, "utf8").split("\n").filter((line) => line.trim())) {
-    const tokens = Array.from(line.matchAll(/"((?:\\.|[^"\\])*)"|(\S+)/g),
-      ([, quoted, bare]) => quoted === undefined ? bare : quoted.replace(/\\(.)/g, "$1"));
-    if (!execute(tokens)) process.exit(1);
-  }
-} else if (!execute(args)) process.exit(1);
-`;
-}
-
 /**
  * A fake run harness's first line: read the prompt the way a real harness
  * does. codemux feeds a run's prompt on stdin and fails a run whose write
@@ -217,15 +123,13 @@ export function createFakeBinaryEnv(
   scodeVersion = "0.6.0"
 ): { env: Record<string, string>; cleanup: () => void } {
   const binDir = mkdtempSync(join(tmpdir(), "codemux-cli-bin-"));
-  const apiKeyLogin = binaries.agy && !binaries.security;
-  // Never consult the operator's real Keychain from a synthetic agy launch.
-  if (apiKeyLogin) binaries = { ...binaries, security: fakeSecurityScript(binDir) };
+  const apiKeyLogin = Boolean(binaries.agy);
   for (const [name, body] of Object.entries(binaries)) {
     const scriptPath = join(binDir, name);
     const versionPreamble = name === "scode"
       ? `if [ "$1" = "--version" ]; then printf 'scode ${scodeVersion}\\n'; exit 0; fi\n`
       : "";
-    const interpreter = name === "security" && apiKeyLogin ? process.execPath : "/bin/sh";
+    const interpreter = "/bin/sh";
     writeFileSync(scriptPath, `#!${interpreter}\n${versionPreamble}${body}\n`);
     chmodSync(scriptPath, 0o755);
   }
@@ -234,7 +138,6 @@ export function createFakeBinaryEnv(
     env: {
       PATH: `${binDir}:${minimalPath()}`,
       ...(apiKeyLogin ? { GEMINI_API_KEY: "synthetic-api-key" } : {}),
-      ...(binaries.security ? { CODEMUX_TEST_AGY_SECURITY: join(binDir, "security") } : {}),
     },
     cleanup: () => {
       rmSync(binDir, { recursive: true, force: true });

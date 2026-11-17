@@ -1,10 +1,7 @@
 /**
  * The credential copy of an --experiment-project-settings run (review
- * round 1, major): the mirror is read ONCE — the refresh-token check and
- * the copy decide on the same bytes — so a mirror swapped between a check
- * read and a copy read cannot hand the private directory content the check
- * never saw. A refresh-token mirror and an unparseable mirror are both
- * refused; nothing unparseable is copied. The copy is built from the
+ * round 1, major): Linux reads the login once and sanitizes only the
+ * private copy. Unparseable data is refused. The copy is built from the
  * parsed `claudeAiOauth` alone (review round 13): co-stored `mcpOAuth`
  * entries with their own refresh tokens never reach the private directory.
  */
@@ -14,13 +11,15 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { copyClaudeCredentialMirror } from "../src/claude-project-config.js";
+import { copyClaudeCredentialMirror as copyMirror } from "../src/claude-project-config.js";
+
+const copyClaudeCredentialMirror = (dir: string, source: string) => copyMirror(dir, source, undefined, "linux");
 
 const ACCESS_ONLY = JSON.stringify({
   claudeAiOauth: { accessToken: "at", refreshToken: "", expiresAt: 4102444800, scopes: [] },
 }) + "\n";
 const WITH_REFRESH = JSON.stringify({
-  claudeAiOauth: { accessToken: "at", refreshToken: "rt", expiresAt: 4102444800, scopes: [] },
+  claudeAiOauth: { accessToken: "at", refreshToken: "rt", refreshTokenExpiresAt: 4202444800, expiresAt: 4102444800, scopes: [] },
 }) + "\n";
 // Claude Code co-stores per-server MCP OAuth state in the same file, each
 // entry with its own refresh token (review round 13, edges finding 1).
@@ -113,14 +112,15 @@ describe("copyClaudeCredentialMirror", () => {
     expect(bytes).not.toContain("mcpOAuth");
   });
 
-  test("a mirror carrying a refresh token is refused and nothing is copied", () => {
+  test("a file-only login with a refresh token is copied without refresh authority", () => {
     const dir = directory();
     const mirror = mirrorIn(dir, WITH_REFRESH);
     const reads = withMirrorReads(mirror, () => {
-      expect(() => copyClaudeCredentialMirror(dir, mirror)).toThrow("holds a refresh token");
+      expect(() => copyClaudeCredentialMirror(dir, mirror)).not.toThrow();
     });
     expect(reads).toEqual([mirror]);
-    expect(existsSync(join(dir, ".credentials.json"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(dir, ".credentials.json"), "utf8"))).toEqual(JSON.parse(ACCESS_ONLY));
+    expect(readFileSync(mirror, "utf8")).toBe(WITH_REFRESH);
   });
 
   test("an unparseable mirror is refused and nothing is copied", () => {

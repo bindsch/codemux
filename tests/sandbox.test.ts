@@ -11,6 +11,7 @@ describe("sandbox utilities", () => {
   test("buildScodeCommand builds base command", () => {
     expect(buildScodeCommand(["codex", "exec", "-"])).toEqual([
       "scode",
+      "--no-credential-sync",
       "--trust",
       "standard",
       "--ro",
@@ -24,6 +25,7 @@ describe("sandbox utilities", () => {
   test("buildScodeCommand adds cwd and read-only fs mode", () => {
     expect(buildScodeCommand(["codex", "exec"], "/tmp/work", "read-only")).toEqual([
       "scode",
+      "--no-credential-sync",
       "-C",
       "/tmp/work",
       "--trust",
@@ -39,6 +41,7 @@ describe("sandbox utilities", () => {
     const cmd = buildScodeCommand(["codex", "exec"], "/tmp/work", "high");
     expect(cmd).toEqual([
       "scode",
+      "--no-credential-sync",
       "-C",
       "/tmp/work",
       "--trust",
@@ -62,6 +65,7 @@ describe("sandbox utilities", () => {
       )
     ).toEqual([
       "scode",
+      "--no-credential-sync",
       "-C",
       "/tmp/work",
       "--trust",
@@ -95,6 +99,7 @@ describe("sandbox utilities", () => {
       )
     ).toEqual([
       "scode",
+      "--no-credential-sync",
       "-C",
       "/tmp/work",
       "--trust",
@@ -138,6 +143,7 @@ describe("sandbox utilities", () => {
       )
     ).toEqual([
       "scode",
+      "--no-credential-sync",
       "-C",
       "/tmp/fixture",
       "--trust",

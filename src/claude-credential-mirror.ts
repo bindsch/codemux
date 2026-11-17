@@ -1,6 +1,6 @@
 /**
- * The Claude credential mirror copy a project-settings run or session
- * places in its private config directory: an access-token-only mirror,
+ * The non-macOS Claude credential copy a project-settings run or session
+ * places in its private config directory: an access-token-only copy,
  * read without following links and bounded, written through the safe
  * private-file path; a missing mirror removes any copy a previous run
  * left. Split from claude-project-config.ts for the 500-line ceiling;
@@ -8,7 +8,7 @@
  */
 import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { claudeOauthObject, credentialTextCarriesRefreshToken } from "./credentials.js";
+import { claudeOauthObject } from "./credentials.js";
 import { writePrivateFile } from "./private-write.js";
 
 /** The credential mirror's read bound: the mirror is a file the sandboxed
@@ -18,7 +18,7 @@ import { writePrivateFile } from "./private-write.js";
  * the read never exceeds the bound. */
 const MIRROR_READ_LIMIT_BYTES = 64 * 1024;
 
-/** No operator login means no credential in the private directory: a copy
+/** An absent source means no credential copy in the private directory: a copy
  * a previous run of this persistent session left there would hand the
  * resumed child a token the operator has since logged out of or removed
  * (round 31, edges 1). Unlinked without following: the entry itself goes,
@@ -34,37 +34,22 @@ function removeStaleCredentialCopy(configDir: string): void {
 }
 
 /**
- * Writes the credential mirror's `claudeAiOauth` into the private directory
- * so a sandboxed child can authenticate: the sandbox cannot reach the
- * Keychain, and the redirected config directory means the default mirror is
- * no longer read. The mirror is read ONCE, as bytes: the check and the copy
- * decide on that one buffer, so a mirror swapped between two reads cannot
- * hand the copy content the check never saw. A mirror that carries a
- * refresh token refuses the run — the mirror rule (credentials.ts): a
- * child holding that token could revoke the operator's login — and so does
- * a mirror that is not a parseable credential object: nothing unparseable
- * is copied, and so does a mirror whose bytes are not valid UTF-8: a lossy
- * decode would copy a different token than the one the mirror holds.
- * No mirror at all copies nothing; the harness then reports its
- * own authentication failure, exactly as a plain sandboxed run without one
- * does. A mirror that is not a regular file — a symlink first of all —
- * refuses the run instead of being read through (the sync path's rule,
- * credentials/sync.ts; review round 15, edges 1). The copy is BUILT, never the file copied (review round 13): the
- * file Claude Code keeps also holds co-stored `mcpOAuth` entries, each with
- * its own refresh token, and a project-settings child reads whatever lands
- * in its config directory. Nothing but the access-only `claudeAiOauth`
- * object is ever written into a private directory, mode 0600, never
- * through an existing entry (writePrivateFile): a resumed session's
- * directory was writable by the previous harness child, so a planted
- * symlink at `.credentials.json` must refuse the resume, not follow it.
+ * On non-macOS platforms, read once and copy only claudeAiOauth without
+ * refresh capability or co-stored MCP credentials. Bound the read and reject
+ * links, irregular files, malformed JSON, and invalid UTF-8. Private writes
+ * refuse planted destination symlinks. The operator's source is never changed.
+ * macOS returns before any file operation; Claude uses its native store.
  */
 export function copyClaudeCredentialMirror(
   configDir: string,
   mirrorPath: string,
   /** The launch a refusal names; --harness-home sessions pass their own. */
-  run = "--experiment-project-settings run"
+  run = "--experiment-project-settings run",
+  platform = process.platform
 ): void {
-  // lstat, never stat — the sync path's rule (credentials/sync.ts): a
+  // macOS uses Claude's native store directly. Do not even inspect the file.
+  if (platform === "darwin") return;
+  // lstat, never stat: a
   // symlink at the mirror path is not read through, whatever it points at
   // (review round 15, edges 1). A non-regular mirror (a link, a device
   // node) is refused the same way.
@@ -72,13 +57,13 @@ export function copyClaudeCredentialMirror(
   try {
     info = lstatSync(mirrorPath);
   } catch (error) {
-    // Only a missing mirror means "no operator login" (round 20, minor
-    // 16): any other stat failure — permissions, an unreadable parent —
+    // Only a missing source means there is no file to copy:
+    // any other stat failure — permissions, an unreadable parent —
     // refuses with its own message instead of silently running without
     // a credential the operator believes this run carries.
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       removeStaleCredentialCopy(configDir);
-      return; // no mirror: this run carries no operator login
+      return;
     }
     throw new Error(
       `claude: cannot read the credential mirror at ${mirrorPath}: ` +
@@ -148,7 +133,7 @@ export function copyClaudeCredentialMirror(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       removeStaleCredentialCopy(configDir);
-      return; // the mirror vanished: no login to copy
+      return; // the source vanished: no file to copy
     }
     if (oversize !== null && error === oversize) throw oversize;
     if (invalid !== null && error === invalid) throw invalid;
@@ -164,13 +149,6 @@ export function copyClaudeCredentialMirror(
   } finally {
     if (fd !== null) closeSync(fd);
   }
-  if (credentialTextCarriesRefreshToken(text)) {
-    throw new Error(
-      `claude: the credential mirror at ${mirrorPath} holds a refresh token; refusing the ` +
-        `${run} (a child holding that token could revoke your ` +
-        "Claude login). One plain sandboxed claude run scrubs it, then retry."
-    );
-  }
   const oauth = claudeOauthObject(text);
   if (oauth === null) {
     throw new Error(
@@ -183,5 +161,6 @@ export function copyClaudeCredentialMirror(
   // every other top-level key the mirror carries (co-stored `mcpOAuth`
   // entries with their own refresh tokens) never reaches the private
   // directory, whatever the file holds.
-  writePrivateFile(configDir, ".credentials.json", `${JSON.stringify({ claudeAiOauth: oauth })}\n`);
+  const { refreshToken: _refresh, refreshTokenExpiresAt: _expiry, ...accessOnly } = oauth;
+  writePrivateFile(configDir, ".credentials.json", `${JSON.stringify({ claudeAiOauth: { ...accessOnly, refreshToken: "" } })}\n`);
 }

@@ -53,14 +53,13 @@ import { resolveSessionRequest, type SessionCommandOptions } from "../src/sessio
 import { UsageRefusalError } from "../src/validation.js";
 import type { AgentId, RunRequest } from "../src/types.js";
 import { refusingCall } from "./helpers/session-cli-hermetic.js";
-import { assertStrictRuntimeLimitation, strictSandboxOutcome } from "./helpers/parity-strict.js";
+import { assertStrictRuntimeLimitation, strictSandboxOutcome, noLoginStoreOutcome, loginStoreOutcome } from "./helpers/parity-strict.js";
 const root = resolve(import.meta.dir, "..");
 let cleanCwd: string;
 beforeAll(() => { cleanCwd = fs.mkdtempSync(join(root, "scratch/fix/parity-refusals-")); });
 afterAll(() => { fs.rmdirSync(cleanCwd); });
 
-// These validate modes every adapter already supports, not a per-agent
-// feature in the parity vocabulary. Pinning the universal facts below means
+// These modes are universal rather than per-agent features. Pin them so
 // making one conditional cannot escape the declaration gate.
 const universalRefusals = ["does not support non-interactive execution", "does not support interactive execution", "does not support autonomy in TUI mode"];
 function capabilityGate(site: RefusalSite): boolean {
@@ -314,9 +313,10 @@ async function commandOutcome(agent: AgentId, command: "run" | "check" | "tui", 
   const message = messages.join("\n");
   return message.includes(validationPassed.message) ? { message: null, code: null } : { message, code };
 }
-
 async function exercise(agent: AgentId, feature: ParityFeature): Promise<Outcome | undefined> {
   if (feature.endsWith(".sandbox-strict")) return strictSandboxOutcome(agent);
+  if (feature.endsWith(".sandbox-no-login-store")) return noLoginStoreOutcome(agent);
+  if (feature.endsWith(".sandbox-login-store")) return loginStoreOutcome(agent);
   const names = providerOverrideEnvNames(agent);
   const adapter = getAdapter(agent, agent === "cline" || (["goose", "openhands"].includes(agent) && feature === "run.hermetic.any-cwd")
     ? { HOME: cleanCwd, [names.baseUrl]: "https://parity.invalid/v1", [names.apiKey]: "synthetic-key", [names.model]: "parity-model" } : {});

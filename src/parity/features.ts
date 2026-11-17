@@ -2,6 +2,8 @@ import type { AgentId } from "../types.js";
 
 /** Public capability cells. Conditional support has its own narrower cell. */
 export const PARITY_FEATURES = [
+  "run.sandbox-login-store", "check.sandbox-login-store", "session.sandbox-login-store", "tui.sandbox-login-store",
+  "run.sandbox-no-login-store", "check.sandbox-no-login-store", "session.sandbox-no-login-store", "tui.sandbox-no-login-store",
   "run.sandbox-strict", "check.sandbox-strict", "session.sandbox-strict", "tui.sandbox-strict",
   "run.model", "run.autonomy.all-four", "run.effort", "run.effort.none-native",
   "run.hermetic", "run.hermetic.any-cwd",
@@ -21,9 +23,11 @@ export const PARITY_FEATURES = [
 ] as const;
 
 export type ParityFeature = (typeof PARITY_FEATURES)[number];
-export type RunFeature = Extract<ParityFeature, `run.${string}` | `check.${string}`>;
-export type TuiFeature = Extract<ParityFeature, `tui.${string}`>;
-export type SessionFeature = Extract<ParityFeature, `session.${string}`>;
+/** Shared sandbox controls are declared once for every harness. */
+type HarnessFeature = Exclude<ParityFeature, `${string}.sandbox-no-login-store` | `${string}.sandbox-login-store`>;
+export type RunFeature = Extract<HarnessFeature, `run.${string}` | `check.${string}`>;
+export type TuiFeature = Extract<HarnessFeature, `tui.${string}`>;
+export type SessionFeature = Extract<HarnessFeature, `session.${string}`>;
 export type ParityTest = `tests/${string}.test.ts`;
 
 export type FeatureState =

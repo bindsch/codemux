@@ -36,13 +36,14 @@ import {
 import type { ScodeFacts } from "./doctor-environment.js";
 import { fetchUsageSnapshot, USAGEMUX_SHUTDOWN_GRACE_MS } from "./usage.js";
 import { escapeForTerminal, formatUsagePercent } from "./usage-protocol.js";
-import type { AgentId, QuotaPolicy } from "./types.js";
+import type { AgentId, CodemuxConfig, QuotaPolicy } from "./types.js";
 
 interface HarnessCheckContext {
   versionTimeoutMs: number;
   scode: ScodeFacts;
   usagePolicy: QuotaPolicy | null;
   usagemuxPresent: boolean;
+  config?: Pick<CodemuxConfig, "sandboxLoginStore" | "sandboxNoLoginStore">;
 }
 
 const loginLine = (login: LoginState): string => {
@@ -301,6 +302,10 @@ export async function checkHarness(
 ): Promise<HarnessRow> {
   if (!adapter.isAvailable()) return notInstalledRow(adapter);
   const detail: string[] = [];
+  if (process.platform === "darwin" && (adapter.id === "claude" || adapter.id === "agy")) {
+    const enabled = context.config?.sandboxLoginStore === true && context.config.sandboxNoLoginStore !== true;
+    detail.push(`sandbox login store: ${enabled ? "enabled" : "disabled"} (effective configuration)`);
+  }
   for (const issue of adapter.configurationIssues()) detail.push(issue);
   const verdict: VersionVerdict = await probeVersionVerdict(adapter.id, adapter.binaryName, {
     timeoutMs: context.versionTimeoutMs,

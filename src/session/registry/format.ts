@@ -35,10 +35,15 @@ export interface SessionRecord {
   sandbox_trust: SandboxTrust;
   /** Absent on legacy records; false unless strict was explicitly requested. */
   sandbox_strict?: boolean;
+  sandbox_no_login_store?: boolean;
+  /** The effective login-store grant. Absent on records written before
+   * 2.0.4, which the load keeps absent: on resume those take the request
+   * (typed flag or configured default), a recorded value is kept. */
+  sandbox_login_store?: boolean;
   /** Containment flags the resume guard compares one-directionally:
-   * created-with-`--sandbox-no-net`/`--sandbox-scrub-env` cannot resume
+   * --sandbox-no-login-store, --sandbox-no-net, and --sandbox-scrub-env cannot resume
    * without them (a transcript may carry injected content, so the resume
-   * may not grant reach creation never did); adding either on resume
+   * may not grant reach creation never did); adding a restriction on resume
    * raises containment and is allowed. */
   sandbox_no_net: boolean;
   sandbox_scrub_env: boolean;
@@ -159,7 +164,7 @@ function validRecord(value: unknown): value is SessionRecord {
   const expected = [
     "id", "agent", "created_at", "last_activity", "cwd", "hermetic",
     "harness_home", "caller_owned_home", "model", "model_alias", "autonomy", "sandboxed",
-    "sandbox_trust", "sandbox_no_net", "sandbox_scrub_env", "sandbox_block", "sandbox_strict",
+    "sandbox_trust", "sandbox_no_net", "sandbox_scrub_env", "sandbox_block", "sandbox_strict", "sandbox_no_login_store", "sandbox_login_store",
     "pass_env", "playwright_mcp", "provider_base_url", "project_settings",
     "final", "owner_pid", "owner_start", "ended",
   ];
@@ -183,7 +188,7 @@ function validRecord(value: unknown): value is SessionRecord {
   // is documented in the release notes (CHANGELOG) as the
   // downgrade/co-install cost; widening this validator cannot fix
   // the old binary.
-  const LEGACY_OPTIONAL_KEYS = new Set(["provider_base_url", "project_settings", "sandbox_block", "final", "model_alias", "caller_owned_home", "sandbox_strict"]);
+  const LEGACY_OPTIONAL_KEYS = new Set(["provider_base_url", "project_settings", "sandbox_block", "final", "model_alias", "caller_owned_home", "sandbox_strict", "sandbox_no_login_store", "sandbox_login_store"]);
   const missing = expected.filter((key) => !keys.includes(key) && !LEGACY_OPTIONAL_KEYS.has(key));
   if (missing.length > 0) {
     return false;
@@ -211,6 +216,8 @@ function validRecord(value: unknown): value is SessionRecord {
   if (typeof record["sandbox_no_net"] !== "boolean") return false;
   if (typeof record["sandbox_scrub_env"] !== "boolean") return false;
   if (record["sandbox_strict"] !== undefined && typeof record["sandbox_strict"] !== "boolean") return false;
+  if (record["sandbox_no_login_store"] !== undefined && typeof record["sandbox_no_login_store"] !== "boolean") return false;
+  if (record["sandbox_login_store"] !== undefined && typeof record["sandbox_login_store"] !== "boolean") return false;
   // The record's block spelling is canonical (absolute, no NUL); a
   // relative or padded entry is a record no writer of this shape makes.
   const block = record["sandbox_block"];
@@ -311,6 +318,10 @@ export function validRegistryFile(value: unknown): RegistryFile | null {
       project_settings: entry["project_settings"] ?? false,
       sandbox_block: entry["sandbox_block"] ?? [],
       sandbox_strict: entry["sandbox_strict"] ?? false,
+      sandbox_no_login_store: entry["sandbox_no_login_store"] ?? false,
+      // sandbox_login_store stays absent when the record lacks it: a record
+      // from before 2.0.4 had a Keychain-backed login, and the resume rule
+      // tells "absent" from a recorded false (judgeResumeEntry).
       final: entry["final"] ?? false,
       model_alias: entry["model_alias"] ?? null,
     })),

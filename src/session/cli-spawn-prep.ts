@@ -64,6 +64,7 @@ export async function prepareSessionChild({
   codexSessionCatalog = null,
   sessionProjectDir,
   sessionPrivateHome,
+  agyRunContext,
   turnPerProcess,
   needsKeepEnvPreflight,
   buildSessionEnvironment,
@@ -86,6 +87,7 @@ export async function prepareSessionChild({
   codexSessionCatalog?: CodexSessionCatalog | null;
   sessionProjectDir: ProjectSettingsSessionDir | null;
   sessionPrivateHome: SessionPrivateHome | null;
+  agyRunContext?: RunContext;
   turnPerProcess: boolean;
   needsKeepEnvPreflight: boolean;
   buildSessionEnvironment: SessionEnvironmentBuilder;
@@ -155,26 +157,15 @@ export async function prepareSessionChild({
               tools: runLike.tools, noToolsCatalog: codexSessionCatalog }
           )
         : agentId === "agy"
-          ? sessionPrivateHome !== null
-            ? // The builder supplies the private home's empty-environment
-              // redirect itself (agy-session.ts privateHomeDir): no operator
-              // config, instructions, or state loads from a home codemux made.
-              buildAgySessionCommand({
-                permissionPolicy: options.permissionPolicy as "default" | "deny" | undefined,
-                privateHomeDir: sessionPrivateHome.dir,
-                callerHome: isCallerHarnessHome(sessionPrivateHome) ? sessionPrivateHome : undefined,
-                resumeConversationId: resumeId,
-                model,
-                autonomy,
-                effort,
-              })
-            : buildAgySessionCommand({
-                permissionPolicy: options.permissionPolicy as "default" | "deny" | undefined,
-                resumeConversationId: resumeId,
-                model,
-                autonomy,
-                effort,
-              })
+          ? buildAgySessionCommand({
+              permissionPolicy: options.permissionPolicy as "default" | "deny" | undefined,
+              privateHomeDir: sessionPrivateHome?.dir ?? agyRunContext?.agyProbe?.home,
+              callerHome: isCallerHarnessHome(sessionPrivateHome) ? sessionPrivateHome : undefined,
+              resumeConversationId: resumeId,
+              model,
+              autonomy,
+              effort,
+            })
           : options.printSandbox && agentId === "kimi" && callerHome !== null
             ? buildKimiSessionPreview({ model: override === null ? model : undefined, resumeSessionId: resumeId,
               harnessHome: callerHome.dir, hermetic: false, callerHome, tools: runLike.tools })
@@ -236,7 +227,7 @@ export async function prepareSessionChild({
               finalize: () => {},
             },
           }
-        : undefined;
+        : agyRunContext;
   // The probe environment answers the same environment WITHOUT writing
   // into the session's private directory (the credential copy is
   // deferred): everything below that runs before the resume claim —
@@ -283,8 +274,8 @@ export async function prepareSessionChild({
   };
   // Long-lived children reuse this environment, BUILT AFTER THE RESUME
   // CLAIM by the caller (cli.ts builds it right before the spawn, the
-  // codex prepareConfig position): building it here would copy the
-  // credential mirror into a session's private directory before this
+  // codex prepareConfig position): non-macOS Claude would copy its
+  // access token into a session's private directory before this
   // process owned the session. Turn children use the same builder with
   // their own context at each launch (after the claim, per turn).
   const buildLongLivedEnvironment = turnPerProcess

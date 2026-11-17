@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } fro
 import { join } from "node:path";
 
 const home = process.env.HOME!;
-const marker = join(home, "synthetic-session-state");
+const marker = join(process.env.CLAUDE_CONFIG_DIR || home, "synthetic-session-state");
 const previous = existsSync(marker) ? readFileSync(marker, "utf8") : null;
 const state = previous ?? crypto.randomUUID();
 if (previous === null) writeFileSync(marker, state, { mode: 0o600 });

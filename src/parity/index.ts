@@ -3,9 +3,21 @@ import { RUN_DECLARATIONS } from "./declarations-run.js";
 import { SESSION_DECLARATIONS } from "./declarations-session.js";
 import { TUI_DECLARATIONS } from "./declarations-tui.js";
 import type { ParityDeclaration, ParityFeature } from "./features.js";
+import { supported } from "./features.js";
+
+const LOGIN_STORE_DECLARATIONS = {
+  "run.sandbox-login-store": supported("tests/sandbox-login-store-parity.test.ts"),
+  "check.sandbox-login-store": supported("tests/sandbox-login-store-parity.test.ts"),
+  "session.sandbox-login-store": supported("tests/sandbox-login-store-parity.test.ts"),
+  "tui.sandbox-login-store": supported("tests/sandbox-login-store-parity.test.ts"),
+  "run.sandbox-no-login-store": supported("tests/sandbox-no-login-store-parity.test.ts"),
+  "check.sandbox-no-login-store": supported("tests/sandbox-no-login-store-parity.test.ts"),
+  "session.sandbox-no-login-store": supported("tests/sandbox-no-login-store-parity.test.ts"),
+  "tui.sandbox-no-login-store": supported("tests/sandbox-no-login-store-parity.test.ts"),
+};
 
 function declaration(agent: AgentId) {
-  return { ...RUN_DECLARATIONS[agent], ...SESSION_DECLARATIONS[agent], ...TUI_DECLARATIONS[agent] };
+  return { ...RUN_DECLARATIONS[agent], ...SESSION_DECLARATIONS[agent], ...TUI_DECLARATIONS[agent], ...LOGIN_STORE_DECLARATIONS };
 }
 
 /** Every adapter and feature is explicit: additions must pass type checking. */

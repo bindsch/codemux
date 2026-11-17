@@ -70,7 +70,7 @@ export function parseOptions(args: string[], skipEnv = process.env.LIVE_GATE_SKI
     .option("--codemux <path>", "Codemux executable to test", DEFAULT_CODEMUX)
     .option("--timeout <seconds>", "Timeout per probe in seconds", positiveInteger(MAX_RUN_TIMEOUT_MS / 1000), DEFAULT_TIMEOUT_SECONDS)
     .option("--jobs <count>", "Concurrent probes (1 to 4)", positiveInteger(MAX_JOBS), MAX_JOBS)
-    .option("--skip <agents>", "Comma-separated harnesses without credentials (adds to LIVE_GATE_SKIP)")
+    .option("--skip <agents>", "Comma-separated harnesses to skip (adds to LIVE_GATE_SKIP)")
     .option("--only <agents>", "Run only these comma-separated installed harnesses")
     .option("--pass-env <names>", "Forward this comma-separated environment list to every probe")
     .option("--probe <probes>", "Run only these comma-separated probes (letters or names; default: every probe but H, which is opt-in)")

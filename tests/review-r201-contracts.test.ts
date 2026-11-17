@@ -54,7 +54,6 @@ test("session coverage claims include Cline and OpenHands", () => {
 
 test("function comments stay attached to the functions they describe", () => {
   expect(read("src/quota-gate.ts")).toMatch(/The gate every launch command calls\.[\s\S]*?proceeds\. \*\/ export const assertQuotaHeadroom/);
-  expect(read("src/credentials/oauth.ts")).toMatch(/Whether a mirror still holds a refresh token[\s\S]*?module header\)\. \*\/ export function carriesRefreshToken/);
 });
 
 test("legacy ledger cost documentation describes agent-based classification", () => {

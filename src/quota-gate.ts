@@ -363,6 +363,7 @@ export const assertQuotaHeadroom = async (
   // test helper strips the variable from spawned children, so a spawned
   // codemux runs the real gate against its own fake or absent usagemux.
   if (testNoQuotaGate(environment)) return;
+  const client = policy.spendsFrom?.[agent] ?? agent;
   const workdir = process.cwd();
   const status = getUsagemuxStatus(workdir, environment);
   if (!status.available) {
@@ -378,7 +379,6 @@ export const assertQuotaHeadroom = async (
   // client measures a different spend, or nothing (audit round 2, B4).
   // Messages still name the harness; the numbers come from the mapped
   // client.
-  const client = policy.spendsFrom?.[agent] ?? agent;
   let snapshot: UsageSnapshot;
   const cacheKey = snapshotCacheKey(client, environment);
   const cached = snapshotCache.get(cacheKey);

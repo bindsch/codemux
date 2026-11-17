@@ -58,7 +58,7 @@ When the override's MODEL variable is set, codemux pins Claude's haiku, small-fa
 
 The endpoint must accept Claude's actual request shape, including system-role messages used by the recorded 2.1.2xx client. The retained vLLM 0.12 shim rejected those messages even though it implemented Messages. API-name compatibility alone does not establish wire compatibility.
 
-The override uses its own token and removes ambient Claude API/OAuth credentials. It skips credential copying, but the [reachable refresh-token mirror guard](authentication.md) remains.
+The override uses its own token and removes ambient Claude API/OAuth credentials. It neither copies operator credentials nor adds an operator secure-storage binding or native login grants. See [authentication](authentication.md).
 
 ## Codex details
 

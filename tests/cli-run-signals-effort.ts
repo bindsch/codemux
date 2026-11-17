@@ -23,7 +23,7 @@ describe("CLI - Signals", () => {
           cwd: join(import.meta.dir, ".."),
           stdout: "pipe",
           stderr: "pipe",
-          env: { ...process.env, ...fake.env, CODEMUX_NO_KEYCHAIN_SYNC: "1", HOME: pidDir } as Record<string, string>,
+          env: { ...process.env, ...fake.env, HOME: pidDir } as Record<string, string>,
         }
       );
       const deadline = Date.now() + 15_000;
@@ -87,7 +87,7 @@ describe("CLI - Signals", () => {
           cwd: join(import.meta.dir, ".."),
           stdout: "pipe",
           stderr: "pipe",
-          env: { ...process.env, ...fake.env, CODEMUX_NO_KEYCHAIN_SYNC: "1", HOME: home } as Record<string, string>,
+          env: { ...process.env, ...fake.env, HOME: home } as Record<string, string>,
         }
       );
       const deadline = Date.now() + 15_000;
@@ -133,7 +133,6 @@ describe("CLI - Signals", () => {
           env: {
             ...process.env,
             ...fake.env,
-            CODEMUX_NO_KEYCHAIN_SYNC: "1",
             HOME: home,
             CODEX_API_KEY: "sk-test",
           } as Record<string, string>,
@@ -179,7 +178,7 @@ describe("CLI - Signals during the version probe", () => {
           cwd: join(import.meta.dir, ".."),
           stdout: "pipe",
           stderr: "pipe",
-          env: { ...process.env, ...fake.env, CODEMUX_NO_KEYCHAIN_SYNC: "1", HOME: pidDir } as Record<string, string>,
+          env: { ...process.env, ...fake.env, HOME: pidDir } as Record<string, string>,
         }
       );
       const deadline = Date.now() + 15_000;

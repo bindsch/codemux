@@ -16,6 +16,7 @@ import { PassThrough } from "node:stream";
 import { Command } from "commander";
 import { spyOn } from "bun:test";
 import { getDefaultConfig } from "../../src/config.js";
+import type { CodemuxConfig } from "../../src/types.js";
 import { UsageRefusalError } from "../../src/validation.js";
 import { registerSessionCommand } from "../../src/session/cli.js";
 import * as registryModule from "../../src/session/registry.js";
@@ -53,6 +54,8 @@ export interface SessionOutcome {
 }
 
 export interface SessionRunOptions {
+  config?: CodemuxConfig;
+  scodeVersion?: string;
   /** The registry file the command reads and writes (default: a fresh
    * temp file). The parent directory is created; seed it with
    * seedRegistry for resume tests. */
@@ -76,13 +79,13 @@ export async function runSessionCommand(
   binaries: Record<string, string> = {},
   options: SessionRunOptions = {}
 ): Promise<SessionOutcome> {
-  const fake = createFakeBinaryEnv(binaries);
+  const fake = createFakeBinaryEnv(binaries, options.scodeVersion);
   const registryFile =
     options.registryFile ?? join(mkdtempSync(join(tmpdir(), "codemux-session-reg-")), "live-sessions.json");
   mkdirSync(dirname(registryFile), { recursive: true, mode: 0o700 });
   const program = new Command();
   program.exitOverride();
-  registerSessionCommand(program, getDefaultConfig(), () => {});
+  registerSessionCommand(program, options.config ?? getDefaultConfig(), () => {});
   const stderrLines: string[] = [];
   const warnings: string[] = [];
   const stdoutChunks: string[] = [];

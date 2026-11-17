@@ -33,7 +33,7 @@ describe.each([...AGENT_IDS])("%s strict sandbox parity", (agent) => {
     const binaries = { [binary(agent)]: fixtureBinary(versions[agent]), scode: "exit 99" };
     const env = { HOME: home, XDG_CONFIG_HOME: join(home, ".config"),
       XDG_DATA_HOME: join(home, ".local/share"), XDG_STATE_HOME: join(home, ".local/state"),
-      XDG_CACHE_HOME: join(home, ".cache"), ZAI_API_KEY: "synthetic", CODEMUX_NO_KEYCHAIN_SYNC: "1" };
+      XDG_CACHE_HOME: join(home, ".cache"), ZAI_API_KEY: "synthetic" };
     const flags = ["-a", agent, "--sandbox", "--sandbox-strict", "--sandbox-trust", "trusted",
       "--sandbox-no-net", "--sandbox-block", join(home, "unrelated"), "--cwd", cwd, "--print-sandbox"];
     const fake = createFakeBinaryEnv(binaries);
@@ -41,7 +41,7 @@ describe.each([...AGENT_IDS])("%s strict sandbox parity", (agent) => {
       const result = mode === "session"
         ? await runSessionCommand(flags, binaries, { env })
         : await runCli([mode, ...flags, ...(mode === "run" ? ["-p", "unused preview"] : [])], { ...fake.env, ...env });
-      if ((agent === "agy" && (mode === "run" || mode === "check")) || (agent === "cline" && mode === "session")) {
+      if ((agent === "agy" && mode !== "tui") || (agent === "cline" && mode === "session")) {
         expect(result.exitCode, result.stderr).toBe(64);
         expect(result.stderr).toContain("strict sandbox cannot read env-wrapped executable");
         expect(result.stderr).not.toContain("harness state directory");

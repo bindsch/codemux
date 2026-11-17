@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { prepareRunDirParent } from "./hermetic-home.js";
 import { hasActiveSignalOwner } from "./process-runner.js";
 import { readBoundedKimiFile } from "./kimi-wire-log.js";
+import { linkKimiOauthDirectory, relinkKimiOauthDirectory } from "./kimi-oauth-link.js";
 import { recordTrustedParent, removeUnderTrustedParentOrThrow, reportingHook } from "./safe-remove.js";
 
 export interface KimiHermeticHome {
@@ -338,6 +339,8 @@ export function populateKimiHermeticSessionHome(
   chmodSync(skillsDir, 0o700);
   if (!printOnly && sourceBrandHome !== null) {
     symlinkSync(resolve(sourceBrandHome, "credentials"), join(brandHome, "credentials"), "dir");
+    // The refresh lock is shared wherever the token store is (kimi-oauth-link.ts).
+    linkKimiOauthDirectory(sourceBrandHome, brandHome);
     for (const name of ["region", "device_id"]) {
       const source = join(sourceBrandHome, name);
       try {
@@ -350,7 +353,13 @@ export function populateKimiHermeticSessionHome(
   return { brandHome, skillsDir };
 }
 
-/** Each private brand home shares the credential directory, including atomic token renames. */
+/** A resumed session home created before 2.0.4 gains the refresh-lock link. */
+export function relinkKimiSessionHome(dir: string, sourceBrandHome: string): void {
+  relinkKimiOauthDirectory(sourceBrandHome, kimiPrivateBrandHome(dir));
+}
+
+/** Each private brand home shares the credential directory, including atomic
+ * token renames, and Kimi's refresh-lock directory beside it. */
 export function createKimiHermeticHome(sourceBrandHome: string, toolsNone = false, printOnly = false): KimiHermeticHome {
   if (printOnly) {
     const home = join(sourceBrandHome, ".codemux-hermetic", "preview");
@@ -387,6 +396,8 @@ export function createKimiHermeticHome(sourceBrandHome: string, toolsNone = fals
     chmodSync(skillsDir, 0o700);
     writeOwnedSync(join(kimiHome, "config.toml"), config, 0o600);
     symlinkSync(resolve(sourceBrandHome, "credentials"), join(kimiHome, "credentials"), "dir");
+    // The refresh lock is shared wherever the token store is (kimi-oauth-link.ts).
+    linkKimiOauthDirectory(sourceBrandHome, kimiHome);
     // `region` and `device_id` sit in the brand home a previous kimi child
     // could write, so they are read through the bounded no-follow reader:
     // a symlink or a FIFO swapped in for either is refused (the launch

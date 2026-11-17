@@ -5,6 +5,8 @@ read_when: "Reviewing earlier fixes included in codemux 2.0.0."
 
 Preserved from the [2.0.0 changelog](https://github.com/bindsch/codemux/blob/main/CHANGELOG.md#200---2026-11-10).
 
+Keychain reads, Antigravity credential mirrors, and live-gate Keychain snapshots described below were retired in 2.0.4. See current [authentication](../authentication.md) and the [release gate](../RELEASE-GATE.md).
+
 - `check --hermetic` plants each harness's own instruction channel: project
   instruction files or scratch home files, with the same cwd and tools in both
   probes. Copilot's control removes only `--no-custom-instructions`; Qwen
@@ -370,8 +372,8 @@ Preserved from the [2.0.0 changelog](https://github.com/bindsch/codemux/blob/mai
   unusable output; the Playwright MCP option is refused for programmatic requests without the sandbox,
   on an agent that never attaches the server, or with a hermetic or no-tools run, and an unsandboxed
   launch keeps its customization-off baseline; the Antigravity settings read is bounded and refuses a FIFO or directory instead of
-  hanging; `doctor` no longer reports the Keychain readable when the default-keychain query itself
-  failed; the bounded call-log reader validates and reads the same file descriptor, refusing a final
+  hanging; the native credential diagnostic was later removed in 2.0.4;
+  the bounded call-log reader validates and reads the same file descriptor, refusing a final
   symlink like the streaming reader; and a session failure handler that throws now ends the session by
   killing the harness tree instead of ending codemux with the harness still running.
 - Review round 137, whole tree: credential-backup pruning keeps a backup another live process may still need; a

@@ -32,21 +32,7 @@ const UPDATE_COMMANDS: Readonly<Partial<Record<AgentId, string>>> = {
 };
 
 const NO_LOGIN_REMEDIES: Readonly<Partial<Record<AgentId, string>>> = {
-  claude: "claude auth login",
   zai: 'umask 077; read -rs ZAI_KEY; printf \'%s\\n\' "$ZAI_KEY" > ~/.zai; unset ZAI_KEY (docs/authentication.md)',
-  codex: 'codex login; for hermetic runs set cli_auth_credentials_store = "file" in ~/.codex/config.toml first, or export CODEX_API_KEY',
-  kimi: "kimi login (device-code flow)",
-  agy: "run agy once interactively to create the file token, or export GEMINI_API_KEY",
-  cursor: "AGENT_CLI_CREDENTIAL_STORE=file cursor-agent login; or --pass-env CURSOR_API_KEY",
-  opencode: "opencode auth login",
-  gemini: "run gemini once and sign in, or export GEMINI_API_KEY",
-  qwen: "run qwen once with --auth-type qwen-oauth, or export the OpenAI-compatible key",
-  goose: "goose configure",
-  copilot: "copilot login (--device-code over SSH); account policy may still refuse",
-  droid: "droid doctor --auth, then droid to log in",
-  pi: "export the provider key (pi auth check --provider <p> names it)",
-  aider: "export the provider key the configured model needs (OPENAI_API_KEY, ANTHROPIC_API_KEY); aider --list-models shows the provider",
-  openhands: "export the provider key the configured model needs (LLM_API_KEY)",
 };
 
 const FEATURE_FLOOR_REMEDIES: Readonly<{
@@ -122,18 +108,9 @@ export function remedyFor(
     case "SANDBOX-MISSING":
       return "brew install bindsch/tap/scode (needed for every autonomy below high)";
     case "NO-LOGIN":
-      return (
-        NO_LOGIN_REMEDIES[agent] ??
-        "log in through the harness's own login flow"
-      );
+      return NO_LOGIN_REMEDIES[agent] ?? null;
     case "LOGIN-EXPIRED":
-      if (agent === "claude") {
-        return "claude auth login; if the Keychain is readable but the mirror is stale, one unsandboxed claude run refreshes it";
-      }
-      if (agent === "kimi") {
-        return "kimi login (device-code flow); the store holds no refresh token, so kimi cannot renew the access token itself";
-      }
-      return "log in again through the harness's own login flow";
+      return null;
     case "OVERRIDE-INVALID":
       return `the row names the variable (CODEMUX_${agent.toUpperCase()}_PROVIDER_*): set all three of BASE_URL, API_KEY, MODEL, or unset all`;
     case "QUOTA-LOW":

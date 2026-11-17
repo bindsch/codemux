@@ -7,7 +7,7 @@
  */
 
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getDefaultConfig } from "../src/config.js";
@@ -211,68 +211,12 @@ describe("the scode environment row", () => {
 });
 
 describe("the Keychain read", () => {
-  const darwinOnly = process.platform === "darwin" ? test : test.skip;
-  test("the test seam and other platforms never run security", async () => {
-    const skipped = await readKeychainStatus({ CODEMUX_NO_KEYCHAIN_SYNC: "1", PATH: "" });
-    expect(skipped.state).toBe(process.platform === "darwin" ? "skipped" : "not-macos");
-  });
-  darwinOnly("readable, no entry, locked over SSH, unreadable, and no security tool", async () => {
-    fakeBin({ security: `if [ "$1" = "default-keychain" ]; then printf '"/nonexistent/keychain-db"\n'; fi; exit 0` });
-    const missing = await readKeychainStatus({ PATH: process.env.PATH, USER: "account-under-test" });
-    expect(missing.state).toBe("default-missing");
-    expect(missing.detail).toContain("/nonexistent/keychain-db");
-    // The fake needs dirname on its PATH; fakeBin put the directory first on process.env.PATH.
-    const dir = fakeBin({ security: `printf '%s\n' "$*" >> "$(dirname "$0")/security.log"; if [ "$1" = "default-keychain" ]; then printf '"%s"\n' "$0"; fi; exit 0` });
-    expect((await readKeychainStatus({ PATH: process.env.PATH, USER: "account-under-test" })).state).toBe("readable");
-    // The same item the credential reader queries: service and account (review round 46).
-    expect(readFileSync(join(dir, "security.log"), "utf8")).toContain("-s Claude Code-credentials -a account-under-test");
-    fakeBin({ security: `if [ "$1" = "default-keychain" ]; then printf '"%s"\\n' "$0"; exit 0; fi; printf 'security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.\\n' >&2; exit 44` });
-    expect((await readKeychainStatus({ PATH: process.env.PATH })).state).toBe("no-entry");
-    // No item AND a default that names a missing file: the default is the
-    // finding, whatever the item lookup says (review round 53).
-    fakeBin({ security: `if [ "$1" = "default-keychain" ]; then printf '"/nonexistent/keychain-db"\\n'; exit 0; fi; printf 'could not be found\\n' >&2; exit 44` });
-    expect((await readKeychainStatus({ PATH: process.env.PATH })).state).toBe("default-missing");
-    fakeBin({ security: `if [ "$1" = "default-keychain" ]; then printf '"%s"\\n' "$0"; exit 0; fi; printf 'User interaction is not allowed.\\n' >&2; exit 36` });
-    expect((await readKeychainStatus({ PATH: process.env.PATH, SSH_CONNECTION: "1" })).state).toBe("locked-ssh");
-    const unreadable = await readKeychainStatus({ PATH: process.env.PATH });
-    expect(unreadable.state).toBe("unreadable");
-    expect(unreadable.detail).toContain("security exited 36");
-    const empty = mkdtempSync(join(tmpdir(), "codemux-doctor-empty-"));
-    scratch.push(empty);
-    expect((await readKeychainStatus({ PATH: empty })).detail).toContain("not on PATH");
-    // A world-writable security fails the executable trust rule and never runs.
-    const writable = fakeBin({ security: `printf 'ran\\n' > "$(dirname "$0")/security-ran"; exit 0` });
-    chmodSync(join(writable, "security"), 0o777);
-    const untrusted = await readKeychainStatus({ PATH: writable });
-    expect(untrusted.state).toBe("unreadable");
-    expect(untrusted.detail).toContain("not trusted");
-    expect(existsSync(join(writable, "security-ran"))).toBe(false);
-  });
-  darwinOnly("a default-keychain query that fails, prints nothing, or times out is unreadable, whatever the item lookup says (review round 147)", async () => {
-    // Nonzero exit: the fake's item lookup succeeds, but the store a launch
-    // writes to was never determined, so the status fails closed — and the
-    // command's own output stays out of the detail.
-    fakeBin({ security: `if [ "$1" = "default-keychain" ]; then printf 'security: default-keychain exploded\\n' >&2; exit 9; fi; exit 0` });
-    const failed = await readKeychainStatus({ PATH: process.env.PATH, USER: "account-under-test" });
-    expect(failed.state).toBe("unreadable");
-    expect(failed.detail).toBe("the user default keychain could not be determined");
-    // An empty answer is not a store either: exit 0, no path printed.
-    fakeBin({ security: `if [ "$1" = "default-keychain" ]; then exit 0; fi; exit 0` });
-    const empty = await readKeychainStatus({ PATH: process.env.PATH, USER: "account-under-test" });
-    expect(empty.state).toBe("unreadable");
-    expect(empty.detail).toBe("the user default keychain could not be determined");
-    // A query that never answers resolves as a failed result, not a throw:
-    // same fail-closed row, still no command output in the detail.
-    const timedOut = { success: false, exitCode: 124, stdout: "", stderr: "timed out", timedOut: true as const };
-    const runner = spyOn(processRunner, "runCapturedCommand").mockResolvedValue(timedOut);
+  test("native credential status is always skipped without spawning", async () => {
+    const runner = spyOn(processRunner, "runCapturedCommand").mockImplementation(() => { throw new Error("forbidden"); });
     try {
-      const quiet = await readKeychainStatus({ PATH: process.env.PATH, USER: "account-under-test" });
-      expect(quiet.state).toBe("unreadable");
-      expect(quiet.detail).toBe("the user default keychain could not be determined");
-      expect(runner).toHaveBeenCalledTimes(1);
-    } finally {
-      runner.mockRestore();
-    }
+      expect((await readKeychainStatus({ PATH: process.env.PATH })).state).toBe("skipped");
+      expect(runner).not.toHaveBeenCalled();
+    } finally { runner.mockRestore(); }
   });
   test("every status maps to a row severity", () => {
     expect(keychainRowFrom({ state: "readable", detail: "d" }).severity).toBe("ok");
@@ -283,7 +227,7 @@ describe("the Keychain read", () => {
     expect(keychainRowFrom({ state: "unreadable", detail: "d" }).severity).toBe("warn");
     const missing = keychainRowFrom({ state: "default-missing", detail: "d" });
     expect(missing.severity).toBe("broken");
-    expect(missing.remedy).toContain("security default-keychain -d user -s");
+    expect(missing.remedy).toBeNull();
   });
 });
 

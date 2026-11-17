@@ -307,7 +307,7 @@ describe("a --final session leaves nothing claimable", () => {
         },
         {
           registryFile: registry,
-          env: { HOME: home, CODEMUX_NO_KEYCHAIN_SYNC: "1" },
+          env: { HOME: home },
         },
       );
       expect(outcome.exitCode).toBe(1);
@@ -354,7 +354,7 @@ describe("a --final session leaves nothing claimable", () => {
         },
         {
           registryFile: registry,
-          env: { HOME: home, CODEMUX_NO_KEYCHAIN_SYNC: "1" },
+          env: { HOME: home },
         },
       );
       expect(outcome.exitCode).toBe(1);
@@ -397,7 +397,7 @@ describe("a --final session leaves nothing claimable", () => {
         },
         {
           registryFile: registry,
-          env: { HOME: home, CODEMUX_NO_KEYCHAIN_SYNC: "1" },
+          env: { HOME: home },
         },
       );
       expect(outcome.exitCode).toBe(1);
@@ -469,7 +469,7 @@ describe("a --final session leaves nothing claimable", () => {
         {
           registryFile: registry,
           quotaGate: true,
-          env: { HOME: home, CODEMUX_NO_KEYCHAIN_SYNC: "1" },
+          env: { HOME: home },
         },
       );
       expect(outcome.exitCode).toBe(64);

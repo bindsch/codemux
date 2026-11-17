@@ -25,7 +25,7 @@ Environment rows, then one row per installed harness.
 | aliases | The model aliases: tiers that map no harness, or an alias whose tier names an unknown harness. |
 | scode | Version, the global minimum, `--keep-env` support, and one sandboxed probe command — the same probe CI's scode contract runs, because only a sandboxed probe detects a scode that answers `--version` but cannot sandbox. |
 | usagemux | `USAGEMUX-MISSING` (absent; optional), `USAGEMUX-UNREADABLE` (installed but its `--version` failed, printed no version, timed out, or failed the trust check; the detail names why), `USAGEMUX-STALE` (below the protocol minimum), or the installed version. An unreadable usagemux still counts as present: the usage rows query it and report their own unreadable verdict instead of "not installed". |
-| keychain | macOS only: whether the credential Keychain item is readable. Informational elsewhere or when disabled. |
+| keychain | Informational: codemux credential inspection is disabled. No item, default, or search-list query is made. This row does not describe the harness's sandbox login-store grant. |
 | codexbar | Whether a retired usage tool is still on PATH and should be removed in favor of usagemux. |
 
 Each harness row runs the free checks a launch would run, in the same
@@ -42,6 +42,8 @@ also carries a remedy line naming the fix.
 
 ## Harness states
 
+Installed Claude and agy rows on macOS report `sandbox login store: enabled` or `disabled` with `(effective configuration)`. This informational detail reflects user/global `sandboxLoginStore` and the winning `sandboxNoLoginStore` denial; it does not inspect Keychain credentials or establish login status. Launch flags can further restrict access. See [native login-store exposure](isolation.md#native-login-store-exposure).
+
 | State | Severity | Meaning |
 | --- | --- | --- |
 | `OK` | ok | Every free check passed. |
@@ -52,9 +54,9 @@ also carries a remedy line naming the fix.
 | `VERSION-UNREADABLE` | warn | The version probe returned nothing parseable (a timeout, a missing binary, or a spawn error names which). |
 | `KNOWN-BREAK` | warn or broken | A recorded break removes enforcement at named autonomy levels. Broken unless the sandbox mitigates it and scode is present; a mitigated row says so and warns. |
 | `FEATURE-FLOOR` | broken | A feature this codemux gates (hermetic runs, result JSON, sessions, experiment MCP) needs a newer harness than the installed one. |
-| `NO-LOGIN` | broken | No credential store where the adapter looks for one — or a store the launch path refuses: a claude mirror without an access token, empty codex token strings, or a zai key file that is a symlink or owned by another user. |
-| `LOGIN-EXPIRED` | broken | The stored credential is expired and the harness cannot renew it. Kimi's access token lives 15 minutes and kimi renews it from its refresh token on its next run, so a kimi store with a refresh token is `logged-in`; the row notes an aged-out access token. |
-| `LOGIN-UNKNOWN` | warn | The adapter cannot tell (a mirror may be absent, or a config file ambiguous). |
+| `NO-LOGIN` | broken | The inspected source carries no usable credential: a missing zai key file or one the adapter refuses. This is a file fact, not proof of provider revocation. A readable Kimi store with empty token fields is not this row: it reports `LOGIN-UNKNOWN`, because no Kimi credential file confirms a login and only a Kimi run can. The row carries no sign-in advice; the one remedy is for a missing or refused Z.AI key file, where it gives the command that writes `~/.zai`. Absent Claude plaintext on macOS and empty Codex token strings leave native authentication unknown. |
+| `LOGIN-EXPIRED` | broken | The readable file holds an expired access token without a refresh token. This does not establish the status of other native login sources or prescribe signing in. A Kimi store with a refresh token is `logged-in`; the row notes an aged-out access token and leaves refresh to Kimi. |
+| `LOGIN-UNKNOWN` | warn | The adapter cannot establish login status. Claude and agy on macOS without positive login evidence report `macOS Keychain` here; codemux does not inspect that native login or recommend signing in solely because inspection is unavailable. |
 | `QUOTA-LOW` | broken | The quota gate would refuse the launch: the usage window is below the ceiling. |
 | `QUOTA-UNREADABLE` | warn | The usage window could not be read; the gate warns and proceeds. |
 | `SANDBOX-TOO-OLD` | broken | scode is older than this harness's floor (or the global minimum). |

@@ -53,7 +53,7 @@ export function normalizeAnthropicBaseUrl(baseUrl: string): string {
  * never chose. Composed into each adapter's `getEnvOmissions`.
  */
 export function claudeGatewayOmissions(): readonly string[] {
-  return ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"];
+  return ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_SECURESTORAGE_CONFIG_DIR"];
 }
 
 /**

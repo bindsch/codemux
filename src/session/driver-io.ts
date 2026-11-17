@@ -51,6 +51,9 @@ export interface SessionDriverOptions {
   sandboxBlock?: readonly string[];
   sandboxScrubEnv: boolean;
   sandboxStrict?: boolean;
+  sandboxNoLoginStore?: boolean;
+  sandboxLoginStore?: boolean;
+  sandboxLoginStoreDenied?: boolean;
   /** The `--pass-env` names the child runs with; recorded for the
    * resume guard (review live16). */
   passEnv: readonly string[];
@@ -179,6 +182,8 @@ export abstract class ClaudeDriverIo {
   protected readonly callLedger: SessionCallContext;
   protected readonly done: Promise<number>;
   protected resolveDone!: (code: number) => void;
+
+  setSandboxLoginStoreDenied(denied: boolean): void { this.options.sandboxLoginStoreDenied = denied; }
 
   constructor(protected readonly options: SessionDriverOptions) {
     this.done = new Promise<number>((resolve) => {

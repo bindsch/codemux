@@ -5,6 +5,7 @@
  */
 
 import { appendSessionTurnCallRecord } from "../call-log.js";
+import { claudeLoginAdvice } from "../claude-login-advice.js";
 import {
   buildAgyUserMessage,
   parseAgySessionLine,
@@ -23,6 +24,7 @@ import { addTurnUsage } from "./usage.js";
 import { AgyFinalize } from "./agy-finalize.js";
 
 export abstract class AgyTurns extends AgyFinalize {
+  private loginAdvicePrinted = false;
 
   /** The CLI's resume claim succeeded: this process owns the record from
    * now on, whether or not the session start is ever reached. */
@@ -216,6 +218,10 @@ export abstract class AgyTurns extends AgyFinalize {
     parse: Extract<AgyParse, { kind: "result" }>,
     rawLine: string
   ): void {
+    if (this.options.sandboxLoginStoreDenied && !this.loginAdvicePrinted) {
+      const advice = claudeLoginAdvice(parse.isError, parse.errorText ?? "", true);
+      if (advice) { console.error(advice); this.loginAdvicePrinted = true; }
+    }
     if (this.fsm.state !== "turn_active") {
       // One line is one turn, so a result with no open turn breaks the
       // stream's grammar — tier 2, raw preserved.

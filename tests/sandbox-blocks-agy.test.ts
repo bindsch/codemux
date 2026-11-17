@@ -26,7 +26,7 @@ const tempDir = (prefix: string): string => {
 /** A throwaway HOME with a CANONICAL path: the launch blocks
  * `join(HOME, ".gemini")` under HOME's own spelling (launch.ts,
  * operatorHome) while the private home it re-allows is created under the
- * canonicalized probe root (agy-keychain.ts, agyProbeRoots), so an
+ * canonicalized probe root (adapters/agy-probe-home.ts), so an
  * aliased TMPDIR spelling (/var vs /private/var on macOS) would
  * otherwise decide these assertions — the full-suite host runs one. */
 const tempHome = (): string => realpathSync(tempDir("codemux-agy-sb-home-"));

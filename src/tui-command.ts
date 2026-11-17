@@ -10,6 +10,7 @@ import {
   assertHarnessSupported,
   launchRedirectCheck,
 } from "./cli-runtime.js";
+import { loginStoreCliOptions } from "./cli-runtime/options.js";
 import { getAdapter, AGENT_IDS } from "./adapters/index.js";
 import { resolveModel } from "./config.js";
 import type { Command } from "commander";
@@ -48,6 +49,8 @@ export function registerTuiCommand(
       "scode trust override: trusted, standard, untrusted"
     )
     .option("--sandbox-no-net", "Pass --no-net to scode when sandboxed")
+    .option("--sandbox-no-login-store", "Omit native login-store grants; Keychain login cannot be used", config.sandboxNoLoginStore)
+    .option("--sandbox-login-store", "Opt in to native login-store access for sandboxed processes", config.sandboxLoginStore)
     .option("--sandbox-strict", "Pass --strict to scode (deny-default); requires --sandbox")
     .option("--sandbox-scrub-env", "Pass --scrub-env to scode when sandboxed")
     .option(
@@ -82,7 +85,7 @@ export function registerTuiCommand(
       "Refuse the launch when a bounding usage window is below this percent remaining; overrides the config quota ceiling for this invocation"
     )
     .option("--no-quota-gate", "Skip the pre-launch usagemux quota check for this invocation")
-    .action(async (options) => {
+    .action(async (options, command) => {
       let finalizeTui: (() => void) | undefined;
       try {
         requireValidConfig();
@@ -120,6 +123,7 @@ export function registerTuiCommand(
           sandboxTrust: options.sandboxTrust,
           sandboxStrict: options.sandboxStrict,
           sandboxNoNet: Boolean(options.sandboxNoNet),
+          ...loginStoreCliOptions(options, command),
           sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
           sandboxAccount: options.sandboxAccount,
           sandboxAccountId: options.sandboxAccountId,
@@ -250,11 +254,8 @@ export function registerTuiCommand(
         // the compound guard lets the type system see that too.
         if (options.sandbox && sandboxOptions !== undefined) {
           if (!options.printSandbox) adapter.beforeLaunch();
-          // A print-only launch skips the sandbox preparation the run path
-          // skips under --print-sandbox (launch.ts): it exists for its side
-          // effects alone — the claude family's refreshes or scrubs the
-          // operator's credential mirror — and a diagnostic command that
-          // promises to run nothing must not touch that state.
+          // Match run's print-only preparation boundary: previews must
+          // not mutate harness state.
           if (!options.printSandbox) {
             adapter.prepareSandbox({ sandboxTrust: sandboxOptions?.trust, passthroughEnv });
           }

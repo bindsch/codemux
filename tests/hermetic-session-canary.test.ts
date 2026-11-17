@@ -471,7 +471,7 @@ test("the claude family plants its operator config dir with the marker and remov
   for (const agent of ["claude", "zai"] as const) {
     const plant = plantSessionCanary(agent, undefined, NO_CREDENTIAL);
     try {
-      expect(plant.passEnv).toEqual(["CLAUDE_CONFIG_DIR"]);
+      expect(plant.passEnv).toEqual(["CLAUDE_CONFIG_DIR", ...(agent === "claude" && process.platform === "darwin" ? ["CLAUDE_SECURESTORAGE_CONFIG_DIR"] : [])]);
       const dir = plant.env.CLAUDE_CONFIG_DIR!;
       expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toContain(plant.marker);
       expect(readFileSync(join(plant.cwd, "CLAUDE.md"), "utf8")).toContain(plant.marker);

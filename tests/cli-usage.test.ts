@@ -182,25 +182,22 @@ describe("CLI - Usage", () => {
     }
   });
 
-  test("the no-agent default queries every agent except agy", async () => {
-    // The snapshot omits agy, so the request set is proven by success:
-    // codemux requires exactly one result per client it asked for, and a
-    // request for agy against this snapshot fails instead.
+  test("the no-agent default queries every agent including agy", async () => {
     const fake = createFakeBinaryEnv({
-      usagemux: `printf '%s' '${snapshotFor(AGENT_IDS.filter((id) => id !== "agy"))}'`,
+      usagemux: `printf '%s' '${snapshotFor(AGENT_IDS)}'`,
     });
     try {
       const result = await runCli(["usage"], fake.env);
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain("codex:");
       expect(result.stdout).toContain("aider:");
-      expect(result.stdout).not.toContain("agy:");
+      expect(result.stdout).toContain("agy:");
     } finally {
       fake.cleanup();
     }
   });
 
-  test("--all queries every agent, agy included", async () => {
+  test("--all includes agy", async () => {
     const fake = createFakeBinaryEnv({
       usagemux: `printf '%s' '${snapshotFor(AGENT_IDS)}'`,
     });

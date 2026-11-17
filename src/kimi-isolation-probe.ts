@@ -7,13 +7,17 @@ import { mintCanaryMarker, trackScratchRemoval, untrackScratchRemoval } from "./
 import { prepareRunDirParent } from "./hermetic-home.js";
 import { readFileBytesBounded } from "./file-io.js";
 import { runDirectoryPrefix } from "./run-directory-owner.js";
+import { linkKimiOauthDirectory } from "./kimi-oauth-link.js";
+import { registerKimiPrivateHome } from "./kimi-auth-state.js";
 
 /** Plant home instructions because Kimi hermetic runs refuse project instructions. */
 export function plantKimiCanary(environment: NodeJS.ProcessEnv = process.env) {
   const source = join(environment.HOME || homedir(), ".kimi-code");
   const root = mkdtempSync(join(prepareRunDirParent(source, ".codemux-canary"), runDirectoryPrefix()));
   trackScratchRemoval(root);
+  let forget: (() => void) | undefined;
   const cleanup = () => {
+    forget?.();
     rmSync(root, { recursive: true, force: true });
     untrackScratchRemoval(root);
   };
@@ -30,6 +34,10 @@ export function plantKimiCanary(environment: NodeJS.ProcessEnv = process.env) {
     writeFileSync(join(operatorHome, ".agents", "AGENTS.md"), body, { mode: 0o600 });
     writeFileSync(join(brandHome, "config.toml"), kimiHermeticConfig(source), { mode: 0o600 });
     symlinkSync(join(source, "credentials"), join(brandHome, "credentials"), "dir");
+    // The planted home shares the token store, so it shares Kimi's refresh
+    // lock and the grant's device state too (kimi-oauth-link.ts).
+    linkKimiOauthDirectory(source, brandHome);
+    forget = registerKimiPrivateHome(brandHome, source);
     // `region` and `device_id` sit in the brand home a previous kimi
     // child could write, so they are read through the bounded no-follow
     // reader (the hermetic home's rule, review round 100): a symlink or a

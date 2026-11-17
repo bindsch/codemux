@@ -4,6 +4,12 @@ One CLI for AI coding agents. Run a prompt, start an interactive harness, or
 exchange JSONL messages with a resumable session. Codemux normalizes launch
 options, autonomy, results, and reported usage.
 
+Native login-store access is off by default. On macOS, opt in for sandboxed Claude or agy with `--sandbox-login-store` or user/global config `sandboxLoginStore: true`. With this grant, every process inside the sandbox can read Keychain items whose access list trusts `/usr/bin/security` without a dialog. This includes the harness's own login and refresh token, and tokens other tools stored through `security`, for example a GitHub CLI token. Every process can read and copy `login.keychain-db`, which is encrypted with the account login password, and attack it offline. It can also create, modify, or delete files in `Library/Keychains`. The optional `Library/Preferences/com.apple.security.plist` is read-only when it exists, so the sandbox cannot change the default keychain or search list through that preference file. This is not per-item Keychain isolation.
+
+`--sandbox-no-login-store` or `sandboxNoLoginStore: true` overrides any opt-in. Without the grant, codemux omits native login-store access and Claude's plaintext credential, staged-file, and refresh-lock grants. A Keychain login cannot then be used inside this sandbox; native file login or refresh that needs these grants also stops working. A supported API key or provider override can supply authentication instead. `--sandbox-trust untrusted`, provider overrides, and Z.AI never receive native login-store grants, even with opt-in; untrusted also disables networking and is refused for persistent sessions. With the grant, the harness can use and refresh its existing login in place: codemux does not read, copy, or change the macOS login and never runs `security`.
+
+Upgrade from 2.0.3: codemux previously read the Keychain and copied a short-lived Claude access token on every launch. Version 2.0.4 never reads it. Sandboxed macOS Claude and agy need the explicit opt-in above to use Keychain authentication. Without it, stderr reports an inaccessible login every launch, once per session, including when redirected; it does not claim logout. Native authentication advice repeats the denied-grant limitation. See [authentication](https://github.com/bindsch/codemux/blob/main/docs/authentication.md).
+
 ## What it does
 
 - Launches 16 harnesses with normalized options and autonomy; 15 adapters
@@ -23,7 +29,7 @@ options, autonomy, results, and reported usage.
 
 ## Install
 
-The current release is 2.0.3; the
+The current release is 2.0.4; the
 [changelog](https://github.com/bindsch/codemux/blob/main/CHANGELOG.md) lists
 every earlier one. Normal execution uses the scode sandbox by default. Install
 scode and an authenticated harness before running a prompt. Homebrew installs

@@ -12,6 +12,8 @@ Relative XDG_CONFIG_HOME is ignored.
 
 ```yaml
 defaultAgent: claude
+sandboxLoginStore: false
+sandboxNoLoginStore: false
 models:
   my-alias:
     claude: sonnet
@@ -25,10 +27,14 @@ quota:
 ```
 
 The UTF-8 YAML file is limited to 1 MiB. Its only top-level keys are
-`defaultAgent`, `models`, and `quota`. An empty file uses defaults. The default
+`defaultAgent`, `models`, `quota`, `sandboxLoginStore`, and `sandboxNoLoginStore`. An empty file uses defaults. The default
 agent is `claude`. Unknown keys, invalid types, invalid agents, malformed YAML,
 and oversized files fail commands that need configuration. Help, version, and
 `doctor` remain available for recovery.
+
+`sandboxLoginStore` is a boolean, false by default. Set it to true in this user/global config to opt in to native login-store grants on run, session, tui, and check. `--sandbox-login-store` opts in for one invocation. Project configuration cannot enable the grant. Removing the key restores the default denial for new launches and new sessions. It does not revoke a grant a session already recorded: a resumed session keeps its recorded grant whatever the config says, so a session created with the grant still receives it after the key is removed. Resume it with `--sandbox-no-login-store` to remove the grant from that session ([sessions](sessions.md)).
+
+`sandboxNoLoginStore` is also a boolean, false by default. Either `sandboxNoLoginStore: true` or `--sandbox-no-login-store` denies the grant, even if the opt-in flag or config is true. Untrusted trust, provider overrides, and Z.AI never receive the grant. Both options are accepted for every harness; they have no grant effect without sandboxing or on harnesses without native login grants. See [native login-store exposure](isolation.md#native-login-store-exposure) before opting in.
 
 An alias matches `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`. Its value maps supported
 agent IDs to model names. User mappings merge with built-in mappings per alias
@@ -91,8 +97,7 @@ Do not put values in this option.
 
 [Provider overrides](provider-overrides.md) use dedicated
 `CODEMUX_<AGENT>_PROVIDER_*` variables.
-[Authentication](authentication.md) defines credential inputs and
-`CODEMUX_NO_KEYCHAIN_SYNC`.
+[Authentication](authentication.md) defines credential inputs and native login selection.
 [Results and usage](results-and-usage.md) defines `CODEMUX_CALL_LOG`.
 [Harnesses](harnesses.md) documents harness-specific entry and home controls.
 

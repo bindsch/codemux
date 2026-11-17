@@ -1,8 +1,7 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { AgyAdapter } from "../src/adapters/agy.js";
-import { agyKeychainHost } from "../src/agy-keychain.js";
 import type { RunRequest } from "../src/types.js";
 
 const cleanup: (() => void)[] = [];
@@ -12,8 +11,6 @@ function setup(autonomy: RunRequest["autonomy"] = "medium", settings?: unknown) 
   mkdirSync(join(import.meta.dir, "../scratch"), { recursive: true });
   const home = mkdtempSync(join(import.meta.dir, "../scratch/agy-autonomy-test-"));
   cleanup.push(() => rmSync(home, { recursive: true, force: true }));
-  const homeMock = spyOn(agyKeychainHost, "home").mockReturnValue(home);
-  cleanup.push(() => homeMock.mockRestore());
   const state = join(home, ".gemini/antigravity-cli");
   mkdirSync(state, { recursive: true });
   const settingsPath = join(state, "settings.json");

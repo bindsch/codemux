@@ -29,6 +29,8 @@ export const SESSION_OPTION_FEATURE = {
   harnessHome: "session.harness-home",
   final: "session.final", permissionPolicy: "session.permission-policy-deny", sandbox: "every-agent",
   sandboxTrust: "every-agent", sandboxNoNet: "every-agent", sandboxScrubEnv: "every-agent",
+  sandboxNoLoginStore: "session.sandbox-no-login-store",
+  sandboxLoginStore: "session.sandbox-login-store",
   sandboxStrict: "session.sandbox-strict",
   sandboxBlock: "every-agent", printSandbox: "session.print-sandbox", quotaCeiling: "every-agent",
   quotaGate: "every-agent",

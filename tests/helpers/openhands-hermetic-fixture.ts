@@ -25,7 +25,7 @@ export function openhandsHermeticFixture(label: string) {
     XDG_CACHE_HOME: join(operator, ".cache"), OPENHANDS_PERSISTENCE_DIR: undefined,
     OPENHANDS_CONVERSATIONS_DIR: undefined, PERSISTENCE_DIR: undefined, LLM_API_KEY: undefined,
     FAKE_STATE_DIR: state, CODEMUX_TEST_SCODE_ARGV: join(state, "scode.txt"),
-    CODEMUX_NO_KEYCHAIN_SYNC: "1", CODEMUX_ALLOW_UNTESTED_HARNESS: undefined,
+    CODEMUX_ALLOW_UNTESTED_HARNESS: undefined,
   };
   for (const key of Object.values(providerOverrideEnvNames("openhands"))) env[key] = undefined;
   const armOverride = () => Object.assign(env, {

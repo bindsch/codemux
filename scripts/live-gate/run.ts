@@ -96,8 +96,8 @@ export async function runProbes(
     const row: GateRow = { agent: fact.id, results: {} };
     rows.push(row);
     // The gate itself checks the login state before the matrix (audit D8):
-    // a harness whose credential store is absent would burn its probe on a
-    // login refusal, so the row says SKIP naming the store instead. H2 is
+    // only positive evidence of an unusable required store skips a row.
+    // Unknown native authentication never skips a probe. H2 is
     // exempt — its credentials come from the loopback override, not the
     // operator's — and so are J and P, which start no harness; and
     // --probe-anyway forces the run when the operator says
@@ -114,7 +114,7 @@ export async function runProbes(
         continue;
       }
       if (options.skip.has(fact.id)) {
-        row.results[letter] = skip("no credentials; operator requested");
+        row.results[letter] = skip("operator requested");
         continue;
       }
       if (letter === "H" && env[PROVIDER_OVERRIDE_OPT_IN] !== "1") {
@@ -141,9 +141,13 @@ export async function runProbes(
         try {
           directory = mkdtempSync(join(tmpdir(), "codemux-live-gate-"));
           const prefix = join(reportDirectory, `${fact.id}-${letter}`);
+          const loginStore = (fact.id === "claude" || fact.id === "agy")
+            && letter !== "H" && letter !== "H2"
+            ? ["--sandbox-login-store"] : [];
           const base = (level: string, prompt: string, extra: string[] = [], passEnv = options.passEnv,
             timeout = options.timeout): string[] => [
             options.codemux, "run", "-a", fact.id,
+            ...loginStore,
             ...(passEnv === undefined ? [] : ["--pass-env", passEnv]),
             ...extra, "--auto", level, "--timeout", String(timeout), "-p", prompt, "--cwd", directory!,
           ];
@@ -169,6 +173,7 @@ export async function runProbes(
           } else if (letter === "D") {
             row.results.D = await runner.capture([
               options.codemux, "check", "-a", fact.id,
+              ...loginStore,
               ...(options.passEnv === undefined ? [] : ["--pass-env", options.passEnv]),
               "--hermetic", "--timeout", String(options.timeout),
             ], () => null, checkOuter, prefix);
@@ -197,6 +202,7 @@ export async function runProbes(
             }
             row.results.F = await runner.capture([
               options.codemux, "session", "-a", fact.id,
+              ...loginStore,
               ...(options.passEnv === undefined ? [] : ["--pass-env", options.passEnv]),
               "--auto", "read-only", "--cwd", directory, "--timeout", String(options.timeout),
             ], (captured) => verifySessionTurn(captured.stdout, session.nonce) ??
@@ -213,6 +219,7 @@ export async function runProbes(
             // refuses, leaks, and cleans up inside itself.
             row.results.K = await runner.capture([
               options.codemux, "check", "-a", fact.id,
+              ...loginStore,
               ...(options.passEnv === undefined ? [] : ["--pass-env", options.passEnv]),
               "--hermetic", "--session", "--timeout", String(options.timeout),
             ], (captured) => captured.stdout.includes(`HERMETIC SESSION ${fact.id}: OK`)

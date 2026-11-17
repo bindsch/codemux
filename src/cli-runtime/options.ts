@@ -103,10 +103,31 @@ export interface SandboxCliOptions {
   sandboxStrict?: boolean;
   sandboxTrust?: string;
   sandboxNoNet?: boolean;
+  sandboxNoLoginStore?: boolean;
+  sandboxLoginStore?: boolean;
+  /** False when both login-store values came from the configuration file,
+   * not the command line (loginStoreCliOptions). Absent means typed. */
+  loginStoreTyped?: boolean;
   sandboxScrubEnv?: boolean;
   sandboxAccount?: string;
   sandboxAccountId?: string;
   sandboxBlock?: readonly string[];
+}
+
+/** The two login-store options of a parsed command, with their origin.
+ * The configuration file supplies their defaults (`sandboxLoginStore`,
+ * `sandboxNoLoginStore`), so the option value alone cannot tell a typed
+ * flag from a configured default; commander's value source can. */
+export function loginStoreCliOptions(
+  options: { sandboxNoLoginStore?: unknown; sandboxLoginStore?: unknown },
+  command: { getOptionValueSource(name: string): string | undefined }
+): Pick<SandboxCliOptions, "sandboxNoLoginStore" | "sandboxLoginStore" | "loginStoreTyped"> {
+  return {
+    sandboxNoLoginStore: Boolean(options.sandboxNoLoginStore),
+    sandboxLoginStore: Boolean(options.sandboxLoginStore),
+    loginStoreTyped: ["sandboxNoLoginStore", "sandboxLoginStore"]
+      .some((name) => command.getOptionValueSource(name) === "cli"),
+  };
 }
 
 export function parseSandboxPolicyOverrides(
@@ -121,6 +142,8 @@ export function parseSandboxPolicyOverrides(
     trust,
     ...(options.sandboxStrict ? { strict: true } : {}),
     noNet: Boolean(options.sandboxNoNet),
+    ...(options.sandboxNoLoginStore ? { noLoginStore: true } : {}),
+    ...(options.sandboxLoginStore && !options.sandboxNoLoginStore ? { loginStore: true } : {}),
     scrubEnv: Boolean(options.sandboxScrubEnv),
     accountFile: options.sandboxAccount,
     accountId: options.sandboxAccountId,
@@ -170,6 +193,9 @@ export function parseSandboxPolicyOverrides(
     if (
       trust ||
       overrides.noNet ||
+      // A value the configuration file supplied is not a flag the caller
+      // passed: it must not warn on every unsandboxed launch.
+      ((overrides.noLoginStore || overrides.loginStore) && options.loginStoreTyped !== false) ||
       overrides.scrubEnv ||
       overrides.accountFile ||
       overrides.accountId ||

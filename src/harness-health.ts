@@ -14,12 +14,13 @@
  */
 
 import { createHash } from "node:crypto";
-import { lstatSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { gateOnResult } from "./quota-gate.js";
 import { ALLOWED_CREDENTIAL_ENV } from "./environment.js";
 import { readUtf8FileBounded } from "./file-io.js";
+import { claudeLoginDirectory } from "./claude-login.js";
 import type { AgentId, QuotaPolicy } from "./types.js";
 import { UsageRefusalError } from "./validation.js";
 import type { UsageSnapshot } from "./usage-protocol.js";
@@ -75,10 +76,8 @@ const readJsonIfPresent = (path: string): Record<string, unknown> | null | "unre
   }
 };
 
-// A credential store is a regular, non-empty file: a directory, a dangling
-// link, or an empty file at the path is no login (review round 44); any
-// other stat failure is "unreadable" — the caller's `unknown`, not a
-// missing login (round 307).
+// File presence is evidence about this source only. An absent, empty or
+// inaccessible source cannot establish the harness's native login state.
 const fileExistsModeOk = (path: string): boolean | "unreadable" => {
   try {
     const stat = statSync(path);
@@ -91,6 +90,7 @@ const fileExistsModeOk = (path: string): boolean | "unreadable" => {
 
 // The unreadable answer as a login state (round 307).
 const storeUnreadable = (store: string): LoginState => ({ state: "unknown", store, note: "the store exists but could not be inspected; this is not a missing login" });
+const storeUnconfirmed = (store: string): LoginState => ({ state: "unknown", store, note: "this source does not confirm the harness's login state" });
 
 const firstSetEnv = (environment: NodeJS.ProcessEnv, names: readonly string[]): string | null => {
   for (const name of names) {
@@ -104,51 +104,30 @@ const firstSetEnv = (environment: NodeJS.ProcessEnv, names: readonly string[]): 
  * is the caller's `unknown`, decided by the reader, not here. */
 const expiryFresh = (epochMs: number): boolean => epochMs > Date.now();
 
-/** claude: the on-disk mirror of the Keychain credential
- * (`~/.claude/.credentials.json`). The sandboxed child reads the mirror,
- * so its `claudeAiOauth.expiresAt` (epoch ms) is the expiry that matters.
- * The mirror never carries a refresh token by design (src/credentials.ts),
- * so an expired mirror means "stale", not "logged out". A mirror without a
- * non-empty access token is no credential however fresh its expiry: the
- * child would read the same tokenless file and fail authentication
- * (review round 331). */
-export function claudeLoginState(home: string): LoginState {
-  const store = "~/.claude/.credentials.json";
-  const parsed = readJsonIfPresent(join(home, ".claude", ".credentials.json"));
-  if (parsed === null) {
-    return {
-      state: "unknown",
-      store,
-      note: "no credential mirror; the Keychain login cannot be read without the Keychain, and one unsandboxed claude run creates the mirror",
-    };
-  }
-  if (parsed === "unreadable") {
-    return { state: "unknown", store, note: "the mirror is not a readable credential object" };
-  }
+/** File evidence cannot establish the macOS Keychain authentication state. */
+export function claudeLoginState(home: string, environment: NodeJS.ProcessEnv = {}, platform = process.platform): LoginState {
+  const envName = firstSetEnv(environment, ALLOWED_CREDENTIAL_ENV.claude);
+  if (envName !== null) return { state: "logged-in", store: envName };
+  const directory = claudeLoginDirectory({ ...environment, HOME: home });
+  const store = directory === join(home, ".claude") ? "~/.claude/.credentials.json" : "configured Claude login directory/.credentials.json";
+  const unknown = (): LoginState => platform === "darwin"
+    ? { state: "unknown", store: "macOS Keychain", note: "Claude manages its own login; native authentication has not been checked" }
+    : storeUnconfirmed(store);
+  const parsed = readJsonIfPresent(join(directory, ".credentials.json"));
+  if (parsed === null || parsed === "unreadable") return unknown();
   const oauth = parsed.claudeAiOauth;
-  if (typeof oauth !== "object" || oauth === null || Array.isArray(oauth)) {
-    return { state: "unknown", store, note: "the mirror carries no claudeAiOauth object" };
-  }
+  if (typeof oauth !== "object" || oauth === null || Array.isArray(oauth)) return unknown();
   const accessToken = (oauth as Record<string, unknown>).accessToken;
-  if (typeof accessToken !== "string" || accessToken === "") {
-    return {
-      state: "no-credential",
-      store,
-      note: "the mirror carries no access token; one unsandboxed claude run recreates it",
-    };
-  }
+  if (typeof accessToken !== "string" || !accessToken.trim()) return unknown();
   const expiresAt = (oauth as Record<string, unknown>).expiresAt;
-  if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt)) {
-    return { state: "unknown", store, note: "the mirror carries no readable expiry" };
-  }
-  return expiryFresh(expiresAt)
-    ? { state: "logged-in", store }
-    : {
-        state: "expired",
-        store,
-        note: "the mirror's access token has expired; one unsandboxed claude run refreshes it",
-        refreshPresent: false,
-      };
+  if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt)) return unknown();
+  if (expiryFresh(expiresAt)) return { state: "logged-in", store };
+  if (platform === "darwin") return unknown();
+  const refreshPresent = typeof (oauth as Record<string, unknown>).refreshToken === "string" &&
+    Boolean(((oauth as Record<string, unknown>).refreshToken as string).trim());
+  return refreshPresent
+    ? { state: "logged-in", store, refreshPresent: true, note: "the file holds an expired access token and a refresh token; Claude handles refresh" }
+    : { state: "expired", store, refreshPresent: false, note: "the readable file holds an expired access token without a refresh token" };
 }
 
 /** codex: `~/.codex/auth.json` (the file hermetic runs link), or an API
@@ -167,15 +146,12 @@ export function codexLoginState(home: string, environment: NodeJS.ProcessEnv): L
     const refreshToken = tokenRecord !== null && typeof tokenRecord.refresh_token === "string" && tokenRecord.refresh_token !== "";
     const accessToken = tokenRecord !== null && typeof tokenRecord.access_token === "string" && tokenRecord.access_token !== "";
     const apiKey = typeof parsed.OPENAI_API_KEY === "string" && parsed.OPENAI_API_KEY !== "";
-    // A parseable file is not a login: `{}`, a tokenless object, or an
-    // empty token string carries no credential, and the next codex launch
-    // fails authentication (review rounds 42 and 331). Presence of a
-    // non-empty token field is the test, never its value.
+    // An empty file store cannot rule out native authentication elsewhere.
     if (!refreshToken && !accessToken && !apiKey) {
       // An API key in the environment still logs codex in (review round 47).
       const envName = firstSetEnv(environment, ALLOWED_CREDENTIAL_ENV.codex);
       return envName === null
-        ? { state: "no-credential", store, note: "auth.json exists but carries no token" }
+        ? { ...storeUnconfirmed(store), note: "auth.json carries no token; native authentication has not been checked" }
         : { state: "logged-in", store: envName, note: "auth.json exists but carries no token; the environment key logs codex in" };
     }
     return {
@@ -190,7 +166,7 @@ export function codexLoginState(home: string, environment: NodeJS.ProcessEnv): L
   }
   const envName = firstSetEnv(environment, ALLOWED_CREDENTIAL_ENV.codex);
   return envName === null
-    ? { state: "no-credential", store }
+    ? storeUnconfirmed(store)
     : { state: "logged-in", store: envName, note: "API key in the environment" };
 }
 
@@ -203,27 +179,58 @@ const kimiExpiryMs = (value: unknown): number | null => {
   return parsed > 1e12 ? parsed : parsed * 1_000;
 };
 
-/** kimi: `~/.kimi-code/credentials/kimi-code.json`. The access token
- * lives 15 minutes and kimi renews it from the stored refresh token at the
- * start of its next run, so an aged-out access token beside a refresh
- * token is how a working login looks most of the time: `logged-in`, with a
- * note. Only an aged-out token with no refresh token is `expired`. The
- * reader checks presence only: a refresh token the server has revoked
- * looks the same, and only a kimi run can tell. */
+/** kimi: the JSON files under `~/.kimi-code/credentials/`. Kimi 2.6 keeps a
+ * login in `kimi-code-env-<id>.json` beside the older `kimi-code.json`, so
+ * every `kimi-code*.json` there is read. The access token lives 15 minutes
+ * and kimi renews it from the stored refresh token at the start of its next
+ * run, so an aged-out access token beside a refresh token is `logged-in`,
+ * with a note. A file with no usable token proves nothing about the others
+ * or about what kimi will do: when no file confirms a login the answer is
+ * `unknown`, never a missing or expired login. Only a kimi run can tell. */
 export function kimiLoginState(home: string, environment: NodeJS.ProcessEnv): LoginState {
   const envName = firstSetEnv(environment, ALLOWED_CREDENTIAL_ENV.kimi);
   if (envName !== null) {
     return { state: "logged-in", store: envName, note: "API key in the environment" };
   }
-  const store = "~/.kimi-code/credentials/kimi-code.json";
-  const parsed = readJsonIfPresent(join(home, ".kimi-code", "credentials", "kimi-code.json"));
-  if (parsed === null) return { state: "no-credential", store };
+  const configured = environment.KIMI_CODE_HOME;
+  const label = configured === undefined ? "~/.kimi-code/credentials" : "KIMI_CODE_HOME/credentials";
+  const directory = join(configured ?? join(home, ".kimi-code"), "credentials");
+  const primary = kimiFileState(join(directory, "kimi-code.json"), `${label}/kimi-code.json`);
+  if (primary.state === "logged-in") return primary;
+  for (const name of kimiScopedStores(directory)) {
+    const scoped = kimiFileState(join(directory, name), `${label}/${name}`);
+    if (scoped.state === "logged-in") return scoped;
+  }
+  if (primary.state === "unknown") return primary;
+  return { state: "unknown", store: primary.store, refreshPresent: primary.refreshPresent,
+    note: `${primary.note ?? "no usable token"}; no Kimi credential file confirms a login, and only a kimi run can confirm it` };
+}
+
+/** The other `kimi-code*.json` names in the credentials directory, sorted
+ * and bounded; an unreadable directory yields none. */
+function kimiScopedStores(directory: string): string[] {
+  try {
+    return readdirSync(directory)
+      .filter((name) => /^kimi-code[A-Za-z0-9._-]*\.json$/.test(name) && name !== "kimi-code.json")
+      .sort().slice(0, 32);
+  } catch {
+    return [];
+  }
+}
+
+function kimiFileState(path: string, store: string): LoginState {
+  const parsed = readJsonIfPresent(path);
+  if (parsed === null) return storeUnconfirmed(store);
   if (parsed === "unreadable") {
     return { state: "unknown", store, note: "the credential file is not a readable object" };
   }
   const accessToken = typeof parsed.access_token === "string" && parsed.access_token !== "";
   const refreshToken = typeof parsed.refresh_token === "string" && parsed.refresh_token !== "";
   if (!accessToken && !refreshToken) {
+    if (parsed.access_token === "" && parsed.refresh_token === "") {
+      return { state: "no-credential", store, refreshPresent: false,
+        note: "the readable Kimi credential file has empty access and refresh tokens" };
+    }
     return { state: "no-credential", store, note: "the credential file exists but carries no token" };
   }
   // The expiry decides one thing only: whether the access token alone is
@@ -295,24 +302,23 @@ export function zaiLoginState(home: string, environment: NodeJS.ProcessEnv): Log
  * directory. `label` names the store in `~/` notation. */
 export function fileStoreLoginState(path: string, label: string): LoginState {
   const parsed = readJsonIfPresent(path);
-  if (parsed === null) return { state: "no-credential", store: label };
+  if (parsed === null) return storeUnconfirmed(label);
   if (parsed === "unreadable") {
     return { state: "unknown", store: label, note: "the store exists but is not a readable object" };
   }
   const providers = Object.keys(parsed).filter((key) => key !== "version");
   return providers.length > 0
     ? { state: "logged-in", store: label, note: `${providers.length} provider login${providers.length === 1 ? "" : "s"}` }
-    : { state: "no-credential", store: label, note: "the store exists but carries no login" };
+    : { ...storeUnconfirmed(label), note: "the readable store has no provider entries; native authentication has not been checked" };
 }
 
-/** A provider-key harness (aider, openhands, qwen, droid, goose by key):
- * logged in exactly when one of its credential environment names is set.
- * The store names the variable, never its value. */
+/** Report positive environment-key evidence. Missing variables cannot rule
+ * out native login files, OS stores or provider configuration. */
 export function envKeyLoginState(agent: AgentId, environment: NodeJS.ProcessEnv): LoginState {
-  const names = ALLOWED_CREDENTIAL_ENV[agent];
+  const names = ALLOWED_CREDENTIAL_ENV[agent].filter((name) => /(?:KEY|TOKEN)$/.test(name));
   const set = firstSetEnv(environment, names);
   return set === null
-    ? { state: "no-credential", store: names.length > 0 ? names.join(", ") : "(no credential variable is defined for this harness)" }
+    ? storeUnconfirmed(names.length > 0 ? names.join(", ") : "harness-managed authentication")
     : { state: "logged-in", store: set };
 }
 
@@ -323,18 +329,20 @@ export const loginHome = (environment: NodeJS.ProcessEnv): string => {
   return home !== undefined && /^\/|^[A-Za-z]:[\\/]/.test(home) ? home : homedir();
 };
 
-/** agy: the file token under `~/.gemini` (existence only; its validity
- * needs agy itself), else an API key in the environment. The Keychain
- * login (service gemini) is not read here: the file token is what the
- * sandboxed run consumes. */
-export function agyLoginState(home: string, environment: NodeJS.ProcessEnv): LoginState {
+/** agy can authenticate from the macOS Keychain without a file token.
+ * Health checks never inspect that store; only agy can confirm the login. */
+export function agyLoginState(home: string, environment: NodeJS.ProcessEnv, platform = process.platform): LoginState {
   const store = "~/.gemini/antigravity-cli/antigravity-oauth-token";
   const file = fileExistsModeOk(join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token"));
   if (file === true) return { state: "logged-in", store };
   const envName = firstSetEnv(environment, ALLOWED_CREDENTIAL_ENV.agy);
   if (envName !== null) return { state: "logged-in", store: envName };
   if (file === "unreadable") return storeUnreadable(store);
-  return { state: "no-credential", store };
+  if (platform === "darwin") return {
+    state: "unknown", store: "macOS Keychain",
+    note: "agy manages its own login; only a native agy request can confirm it",
+  };
+  return storeUnconfirmed(store);
 }
 
 /** gemini: `~/.gemini/oauth_creds.json`, else an API key. */
@@ -345,7 +353,7 @@ export function geminiLoginState(home: string, environment: NodeJS.ProcessEnv): 
   const envName = firstSetEnv(environment, ALLOWED_CREDENTIAL_ENV.gemini);
   if (envName !== null) return { state: "logged-in", store: envName };
   if (file === "unreadable") return storeUnreadable(store);
-  return { state: "no-credential", store };
+  return storeUnconfirmed(store);
 }
 
 /** goose: a configured provider in `~/.config/goose/config.yaml` (the
@@ -357,7 +365,7 @@ export function gooseLoginState(home: string, environment: NodeJS.ProcessEnv): L
   const envName = firstSetEnv(environment, ALLOWED_CREDENTIAL_ENV.goose);
   if (envName !== null) return { state: "logged-in", store: envName };
   if (file === "unreadable") return storeUnreadable(store);
-  return { state: "no-credential", store, note: "goose doctor says: no provider configured" };
+  return storeUnconfirmed(store);
 }
 
 /** copilot: a GitHub token in the environment, else `~/.copilot/config.json`. */
@@ -368,10 +376,10 @@ export function copilotLoginState(home: string, environment: NodeJS.ProcessEnv):
   const config = fileExistsModeOk(join(home, ".copilot", "config.json"));
   if (config === "unreadable") return storeUnreadable(store);
   if (config) return { state: "unknown", store, note: "the config exists; whether it carries a login needs copilot itself" };
-  return { state: "no-credential", store };
+  return storeUnconfirmed(store);
 }
 
-/** pi: `~/.pi/agent/auth.json` (an empty object means no login), else a
+/** pi: `~/.pi/agent/auth.json`, else a
  * provider key in the environment. */
 export function piLoginState(home: string, environment: NodeJS.ProcessEnv): LoginState {
   const auth = fileStoreLoginState(join(home, ".pi", "agent", "auth.json"), "~/.pi/agent/auth.json");

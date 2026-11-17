@@ -5,7 +5,7 @@ import { claudeEffortFlags, validateClaudeEffort } from "../claude-effort.js";
 import { createProjectSettingsConfigDir, projectSettingsOrHermeticHome } from "../claude-project-config.js";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { type RunContext, type SandboxPreparation } from "./base.js";
+import { type RunContext } from "./base.js";
 import { ClaudeCredentialAdapter } from "./claude-credentials.js";
 import { ExperimentBridge } from "../experiment-bridge.js";
 import { readExperimentRunSpec } from "../experiment-mcp.js";
@@ -53,13 +53,6 @@ export const ZAI_DEFAULT_MODEL = "opus";
 export class ZaiAdapter extends ClaudeCredentialAdapter {
   readonly id: AgentId = "zai";
   readonly binaryName = "claude";
-
-  /** Guard the shared Claude credential mirror on every Z.AI launch. */
-  override prepareSandbox(context: SandboxPreparation = {}): void {
-    if (context.sandboxTrust === "untrusted") return;
-    this.reportProfileRedirects("zai", context.passthroughEnv ?? []);
-    this.guardMirrorForForeignCredential("zai", "A Z.AI run", this.credentialTarget());
-  }
 
   constructor(
     environment: NodeJS.ProcessEnv = process.env,

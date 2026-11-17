@@ -1,5 +1,5 @@
 import { copyFileSync, chmodSync, constants, existsSync, linkSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ZaiAdapter } from "./adapters/zai.js";
 import { createCanaryScratch, mintCanaryMarker, untrackScratchRemoval } from "./hermetic-canary.js";
@@ -7,6 +7,9 @@ import { carryOpencodeModelState } from "./opencode-hermetic.js";
 import { canarySessionProtocolProblem, runCanarySession, SESSION_KILL_GRACE_MS, sessionFailureDetail } from "./hermetic-session-canary-driver.js";
 import type { HermeticSessionCanaryRequest } from "./hermetic-session-canary.js";
 import { callerHarnessHomeEnvNames } from "./session/harness-home.js";
+import { linkAgyLogin } from "./agy-auth.js";
+import { kimiOperatorBrandHome } from "./kimi-auth-state.js";
+import { claudeSecureStorageEnv } from "./claude-login.js";
 import type { AgentId } from "./types.js";
 
 type HarnessHomeCanaryAgent = AgentId;
@@ -133,6 +136,12 @@ export function plantHarnessHomeCanary(
     for (const name of HARNESS_HOME_CANARY_CLEARED_ENV) {
       delete env[name];
     }
+    if (agent === "claude" && process.platform === "darwin") {
+      // Keep the native login namespace; only the planted configuration is scratch.
+      env.HOME = environment.HOME || homedir();
+      Object.assign(env, claudeSecureStorageEnv(environment));
+      env.CLAUDE_CONFIG_DIR = join(operatorHome, ".claude");
+    }
     if (agent === "zai") {
       env.ZAI_API_KEY = new ZaiAdapter(environment).getEnv().ANTHROPIC_AUTH_TOKEN;
     }
@@ -148,14 +157,19 @@ export function plantHarnessHomeCanary(
 /** Credentials arrive after the first session; all scratch setup happens
  * before it. Copies on EXDEV stay private and die with this canary. */
 export function seedHarnessHomeCanary(agent: AgentId, plant: PlantedHarnessHomeCanary, authenticatedHome?: string): void {
+  if (agent === "claude" && process.platform === "darwin") return;
   const { operatorHome, env } = plant;
   const layout = CANARY_LAYOUT[agent];
   if (agent !== "zai" && authenticatedHome !== undefined) {
-    const kimiCredentials = join(authenticatedHome, ".kimi-code", "credentials");
+    if (agent === "agy") linkAgyLogin(operatorHome, authenticatedHome);
+    const kimiBrandHome = join(authenticatedHome, ".kimi-code");
     // Kimi renames token files, so a per-file link would strand a refresh in
-    // this scratch tree. The caller home shares the real store instead: its
-    // brand home becomes the scratch operator's KIMI_CODE_HOME (harness-home.ts).
-    if (agent === "kimi" && existsSync(kimiCredentials)) env.KIMI_CODE_HOME = dirname(realpathSync(kimiCredentials));
+    // this scratch tree. The caller home shares the real store instead: the
+    // operator brand home behind the authenticated home becomes the scratch
+    // operator's KIMI_CODE_HOME (harness-home.ts). It is found through
+    // codemux's own private-home chain, never as the resolved parent of
+    // `credentials`, which may itself be a symlink to another directory.
+    if (agent === "kimi" && existsSync(join(kimiBrandHome, "credentials"))) env.KIMI_CODE_HOME = realpathSync(kimiOperatorBrandHome(kimiBrandHome));
     // A caller's own OpenCode home keeps its model preference. Without it
     // OpenCode falls to the provider's first model, which the subscription
     // may not include (live gate 2026-11-12: GLM-5.3-Highspeed refused).
@@ -190,6 +204,7 @@ export async function runHarnessHomeSessionCanary(
   const timeout = String(Math.max(1, Math.ceil(request.timeoutMs / 1000)));
   const argv = (resume?: string): string[] => [
     "session", "-a", request.agent, "--harness-home", plant.home,
+    ...(request.sandboxNoLoginStore ? ["--sandbox-no-login-store"] : request.sandboxLoginStore ? ["--sandbox-login-store"] : []),
     ...(resume === undefined ? [] : ["--resume", resume, "--final"]),
     ...(request.model === undefined ? [] : ["-m", request.model]),
     ...(request.effort === undefined ? [] : ["--effort", request.effort]),

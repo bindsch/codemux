@@ -62,8 +62,7 @@ exec ${quote(process.execPath)} --no-env-file --no-install --config=${quote(reso
       const proc = Bun.spawn([join(import.meta.dir, "..", "bin", "codemux"), "check", "-a", "claude",
         "--hermetic", "--tools", "none", "--experiment-mcp", path, "--auto", "read-only", "--timeout", "30"], {
         cwd: caller, stdout: "pipe", stderr: "pipe", stdin: "ignore",
-        env: { ...process.env, PATH: fake.env.PATH, HOME: caller, XDG_CONFIG_HOME: join(caller, ".config"),
-          CODEMUX_NO_KEYCHAIN_SYNC: "1" } as Record<string, string>,
+        env: { ...process.env, PATH: fake.env.PATH, HOME: caller, XDG_CONFIG_HOME: join(caller, ".config") } as Record<string, string>,
       });
       const drained = new Response(proc.stderr).text();
       for (const deadline = Date.now() + 15_000; !harnessStarted() && Date.now() < deadline;) await Bun.sleep(100);

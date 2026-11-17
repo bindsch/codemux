@@ -1,7 +1,6 @@
 /**
  * Probe P of the live gate: `run --print-sandbox` on every installed harness.
- * It spends nothing and must read or write no credential; the gate pairs it
- * with the Keychain hygiene snapshot (keychain.ts). Added 2026-11-03 after a
+ * It spends nothing and must read or write no credential. Added after a
  * print-only agy path prepared credentials and raised a macOS Keychain prompt.
  */
 

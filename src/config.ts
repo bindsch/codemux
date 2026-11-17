@@ -239,6 +239,8 @@ function cloneModels(models: CodemuxConfig["models"]): CodemuxConfig["models"] {
 function cloneConfig(config: CodemuxConfig): CodemuxConfig {
   return {
     defaultAgent: config.defaultAgent,
+    ...(config.sandboxLoginStore === undefined ? {} : { sandboxLoginStore: config.sandboxLoginStore }),
+    ...(config.sandboxNoLoginStore === undefined ? {} : { sandboxNoLoginStore: config.sandboxNoLoginStore }),
     models: cloneModels(config.models),
     quota: config.quota === false ? false : { ...config.quota },
   };
@@ -313,7 +315,7 @@ export function loadConfig(configPathOverride?: string): CodemuxConfig {
     }
     const userConfig = parsed ?? {};
     const unknownKeys = Object.keys(userConfig).filter(
-      (key) => key !== "defaultAgent" && key !== "models" && key !== "quota"
+      (key) => key !== "defaultAgent" && key !== "models" && key !== "quota" && key !== "sandboxNoLoginStore" && key !== "sandboxLoginStore"
     );
     if (unknownKeys.length > 0) {
       throw new ConfigError(
@@ -338,11 +340,19 @@ export function loadConfig(configPathOverride?: string): CodemuxConfig {
 
     const models = mergeModelMappings(DEFAULT_CONFIG.models, userConfig.models);
     const quota = parseQuotaConfig(userConfig.quota);
+    if (userConfig.sandboxLoginStore !== undefined && typeof userConfig.sandboxLoginStore !== "boolean") {
+      throw new ConfigError("sandboxLoginStore must be a boolean");
+    }
+    if (userConfig.sandboxNoLoginStore !== undefined && typeof userConfig.sandboxNoLoginStore !== "boolean") {
+      throw new ConfigError("sandboxNoLoginStore must be a boolean");
+    }
 
     return {
       defaultAgent,
       models,
       quota,
+      ...(userConfig.sandboxLoginStore === undefined ? {} : { sandboxLoginStore: userConfig.sandboxLoginStore as boolean }),
+      ...(userConfig.sandboxNoLoginStore === undefined ? {} : { sandboxNoLoginStore: userConfig.sandboxNoLoginStore as boolean }),
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

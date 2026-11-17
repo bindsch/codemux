@@ -49,6 +49,7 @@
  *             in flight, and the interrupt is spent: the harness has no
  *             turn left to interrupt and drops it (the stale-interrupt
  *             race, reviews live12 and live21)
+ *   diagnostic — a failed native authentication diagnostic selected by the fixture environment
  *   apierror — an API failure: a result with `is_error` true under
  *             subtype `success`, the way the real wire reports one
  *             (review live20)
@@ -209,6 +210,9 @@ const runTurn = (scenario: string, text: string): void => {
       return;
     case "apierror":
       scenarios.apierror();
+      return;
+    case "diagnostic":
+      scenarios.diagnostic();
       return;
     case "ede":
       scenarios.ede();

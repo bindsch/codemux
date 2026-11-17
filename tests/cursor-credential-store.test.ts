@@ -8,9 +8,9 @@ import type { RunRequest, RunResult } from "../src/types.js";
 import { createRunFakeBinaryEnv as createFakeBinaryEnv, runCli } from "./helpers/cli.js";
 
 const STORE_ENV = "AGENT_CLI_CREDENTIAL_STORE";
-const HINT = "codemux: cursor's default login lives in the macOS Keychain, which the sandbox blocks; " +
-  "log in once with the file store (AGENT_CLI_CREDENTIAL_STORE=file cursor-agent login), " +
-  "pass an API key or auth token, or run with --no-sandbox";
+const HINT = "codemux: cursor reported authentication required; the sandbox cannot reach the macOS Keychain login, " +
+  "so log in with the file store (AGENT_CLI_CREDENTIAL_STORE=file cursor-agent login), " +
+  "or pass an API key or auth token";
 const cleanup: (() => void)[] = [];
 
 afterEach(() => {
@@ -184,6 +184,10 @@ exit 7`,
     expect(result.exitCode).toBe(7);
     expect(result.stdout).toBe("");
     expect(result.stderr).toEndWith(`Authentication required\n${HINT}\n`);
+    // The remedy must land the login where the sandbox can read it: the
+    // bare `cursor-agent login` stores it in the Keychain the sandbox
+    // cannot reach, so the next sandboxed run would fail the same way.
+    expect(result.stderr).toContain("AGENT_CLI_CREDENTIAL_STORE=file cursor-agent login");
   });
 
   test.each([true, false])("skips credentials for a PATH-only environment, auth file: %s", (authFile) => {

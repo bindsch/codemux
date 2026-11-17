@@ -59,46 +59,52 @@ describe("caller-owned harness directory", () => {
     const f = fixture();
     writeFileSync(join(f.sourceHome, ".credentials.json"), claudeLogin("synthetic-access-a"), { mode: 0o600 });
     writeFileSync(join(f.sourceHome, "settings.json"), "operator-settings");
-    const home = openCallerHarnessHome({ ...f.input, agent: "claude" });
-    expect(home.environment).toMatchObject({ HOME: f.dir, CLAUDE_CONFIG_DIR: f.dir, CLAUDE_SECURESTORAGE_CONFIG_DIR: f.dir });
+    const home = openCallerHarnessHome({ ...f.input, agent: "claude", sourceEnv: { HOME: f.root } });
+    expect(home.environment).toMatchObject({ HOME: process.platform === "darwin" ? f.root : f.dir, CLAUDE_CONFIG_DIR: f.dir });
+    expect(home.environment.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(process.platform === "darwin" ? "" : undefined);
     const copy = join(f.dir, ".credentials.json");
+    if (process.platform === "darwin") {
+      expect(existsSync(copy)).toBe(false);
+    } else {
     expect(statSync(copy).ino).not.toBe(statSync(join(f.sourceHome, ".credentials.json")).ino);
     expect(JSON.parse(readFileSync(copy, "utf8"))).toEqual({ claudeAiOauth: { accessToken: "synthetic-access-a", refreshToken: "", scopes: ["synthetic"] } });
     expect(statSync(copy).mode & 0o777).toBe(0o600);
+    }
     expect(existsSync(join(f.dir, "settings.json"))).toBe(false);
     const zaiDir = join(f.root, "zai-job");
     openCallerHarnessHome({ ...f.input, agent: "zai", dir: zaiDir });
     expect(existsSync(join(zaiDir, ".credentials.json"))).toBe(false);
   });
 
-  // Review R420 B1: a mirror that still carries a refresh token never reaches
-  // a caller home, linked or copied; the launch refuses before writing it.
-  test("Claude refuses a mirror that carries a refresh token and writes nothing", () => {
+  test("Claude preserves a refresh-capable source and sanitizes only the non-macOS copy", () => {
     const f = fixture();
     writeFileSync(join(f.sourceHome, ".credentials.json"), claudeLogin("synthetic-access-a", "synthetic-refresh"), { mode: 0o600 });
-    expect(() => openCallerHarnessHome({ ...f.input, agent: "claude" })).toThrow("holds a refresh token; refusing the --harness-home session");
-    expect(existsSync(join(f.dir, ".credentials.json"))).toBe(false);
+    expect(() => openCallerHarnessHome({ ...f.input, agent: "claude" })).not.toThrow();
+    const copy = join(f.dir, ".credentials.json");
+    expect(existsSync(copy)).toBe(process.platform !== "darwin");
+    if (process.platform !== "darwin") expect(readFileSync(copy, "utf8")).not.toContain("synthetic-refresh");
+    expect(readFileSync(join(f.sourceHome, ".credentials.json"), "utf8")).toBe(claudeLogin("synthetic-access-a", "synthetic-refresh"));
   });
 
-  // Review R420 M1: codemux and scode refresh the mirror by rename. Each launch
-  // rebuilds the caller copy from the current mirror instead of pinning an inode.
-  test("Claude rebuilds the access-only copy after a rename refresh and replaces a stale hard link", () => {
+  test("Claude updates Linux private copies after refresh and leaves macOS plaintext untouched", () => {
     const f = fixture();
     const mirror = join(f.sourceHome, ".credentials.json");
     writeFileSync(mirror, claudeLogin("synthetic-access-a"), { mode: 0o600 });
     mkdirSync(f.dir, { mode: 0o700 });
     linkSync(mirror, join(f.dir, ".credentials.json"));
     const home = openCallerHarnessHome({ ...f.input, agent: "claude" });
-    expect(statSync(join(f.dir, ".credentials.json")).nlink).toBe(1);
+    expect(statSync(join(f.dir, ".credentials.json")).nlink).toBe(process.platform === "darwin" ? 2 : 1);
     expect(readFileSync(mirror, "utf8")).toBe(claudeLogin("synthetic-access-a"));
     writeFileSync(join(f.sourceHome, "staged"), claudeLogin("synthetic-access-b"), { mode: 0o600 });
     renameSync(join(f.sourceHome, "staged"), mirror);
     home.verify();
-    expect(JSON.parse(readFileSync(join(f.dir, ".credentials.json"), "utf8")).claudeAiOauth.accessToken).toBe("synthetic-access-b");
+    expect(JSON.parse(readFileSync(join(f.dir, ".credentials.json"), "utf8")).claudeAiOauth.accessToken)
+      .toBe(process.platform === "darwin" ? "synthetic-access-a" : "synthetic-access-b");
     const resumed = openCallerHarnessHome({ ...f.input, agent: "claude", resumed: true });
     resumed.verify();
     renameSync(mirror, join(f.sourceHome, "saved"));
-    expect(() => home.verify()).toThrow("missing login");
+    if (process.platform === "darwin") expect(() => home.verify()).not.toThrow();
+    else expect(() => home.verify()).toThrow("missing file");
   });
 
   test("API-key auth does not link the operator login", () => {
@@ -169,7 +175,7 @@ describe("caller-owned harness directory", () => {
     const f = fixture(); const home = openCallerHarnessHome(f.input);
     const source = join(f.sourceHome, "auth.json");
     renameSync(source, join(f.sourceHome, "saved-auth"));
-    expect(() => home.verify()).toThrow("missing login");
+    expect(() => home.verify()).toThrow("missing file");
     writeFileSync(source, "replacement-login");
     expect(() => home.verify()).toThrow("login link changed");
   });
@@ -190,6 +196,6 @@ describe("caller-owned harness directory", () => {
     expect(() => linkHarnessLogin(alias, join(f.root, "linked"), false)).toThrow("regular file");
     linkHarnessLogin(join(f.root, "missing"), join(f.root, "target"), false);
     expect(existsSync(join(f.root, "target"))).toBe(false);
-    expect(() => linkHarnessLogin(join(f.root, "missing"), join(f.root, "target"), true)).toThrow("file login");
+    expect(() => linkHarnessLogin(join(f.root, "missing"), join(f.root, "target"), true)).toThrow("credential file");
   });
 });

@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { loginStoreCliOptions } from "./cli-runtime/options.js";
 import { existsSync } from "node:fs";
 import { assertAgyProbeMode, runAgyCanaryChecks, runAgyIsolationProbe } from "./agy-isolation-probe.js";
 import { assertExperimentMcpUnavailable, validateExperimentRequest } from "./experiment-mcp.js";
@@ -77,6 +78,8 @@ export function registerCheckCommand(
       "scode trust override: trusted, standard, untrusted"
     )
     .option("--sandbox-no-net", "Pass --no-net to scode when sandboxed")
+    .option("--sandbox-no-login-store", "Omit native login-store grants; Keychain login cannot be used", config.sandboxNoLoginStore)
+    .option("--sandbox-login-store", "Opt in to native login-store access for sandboxed processes", config.sandboxLoginStore)
     .option("--sandbox-strict", "Pass --strict to scode (deny-default); requires --sandbox")
     .option("--sandbox-scrub-env", "Pass --scrub-env to scode when sandboxed")
     .option(
@@ -103,7 +106,7 @@ export function registerCheckCommand(
       collectLabel,
       []
     )
-    .action(async (options) => {
+    .action(async (options, command) => {
       let managedPlan: HermeticCheckPlan | undefined;
       try {
         requireValidConfig();
@@ -128,6 +131,7 @@ export function registerCheckCommand(
           sandboxTrust: options.sandboxTrust,
           sandboxStrict: options.sandboxStrict,
           sandboxNoNet: Boolean(options.sandboxNoNet),
+          ...loginStoreCliOptions(options, command),
           sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
           sandboxBlock: options.sandboxBlock,
         });
@@ -321,6 +325,7 @@ export function registerCheckCommand(
         // below are its run-shaped twins for the same flags.
         if (options.session) {
           process.exitCode = await runHermeticSessionCanary({
+            sandboxLoginStore: sandboxPolicyOverrides?.loginStore, sandboxNoLoginStore: sandboxPolicyOverrides?.noLoginStore,
             agent: agentId,
             model,
             autonomy,
@@ -331,11 +336,11 @@ export function registerCheckCommand(
           return;
         }
         if (options.agyIsolationProbe !== undefined) {
-          process.exitCode = await runAgyIsolationProbe(options.agyIsolationProbe, timeoutMs, model, harnessVersion);
+          process.exitCode = await runAgyIsolationProbe(options.agyIsolationProbe, timeoutMs, model, harnessVersion, sandboxPolicyOverrides);
           return;
         }
         if (agentId === "agy" && (hermetic || tools === "none")) {
-          process.exitCode = await runAgyCanaryChecks(hermetic, tools === "none", timeoutMs, model, harnessVersion);
+          process.exitCode = await runAgyCanaryChecks(hermetic, tools === "none", timeoutMs, model, harnessVersion, sandboxPolicyOverrides);
           return;
         }
 

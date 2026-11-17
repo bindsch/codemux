@@ -138,7 +138,6 @@ export async function driveSession(
     stdin: "pipe",
     env: {
       ...process.env,
-      CODEMUX_NO_KEYCHAIN_SYNC: "1",
       // A test that points HOME at a fixture means its config too, as
       // runCli does: an inherited XDG_CONFIG_HOME wins over HOME/.config
       // (src/config.ts), and GitHub's Ubuntu runners export one, so a

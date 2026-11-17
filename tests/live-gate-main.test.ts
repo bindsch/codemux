@@ -257,7 +257,7 @@ test("main() runs in process: report written, exit code set, handlers removed", 
     printed.push(args.join(" "));
   });
   const argv = process.argv;
-  const code = process.exitCode;
+  const code = process.exitCode ?? 0;
   const path = process.env.PATH;
   // The default launcher: discovery then reads the mocked adapter
   // registry in process, and no candidate listing is spawned. The fake
@@ -309,7 +309,7 @@ test("the report is saved before the version reread, and a failed reread prints 
   const printed: string[] = [];
   spies.push(spyOn(console, "log").mockImplementation((...args: unknown[]) => { printed.push(args.join(" ")); }));
   const argv = process.argv;
-  const code = process.exitCode;
+  const code = process.exitCode ?? 0;
   const path = process.env.PATH;
   process.argv = ["bun", "live-gate"];
   process.env.PATH = GATE_ENV.PATH;

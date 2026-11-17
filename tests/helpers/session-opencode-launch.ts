@@ -40,7 +40,7 @@ export function opencodeLaunchFixture() {
     HOME: home, XDG_CONFIG_HOME: join(home, ".config"),
     XDG_DATA_HOME: join(home, ".local", "share"), XDG_STATE_HOME: join(home, ".local", "state"),
     XDG_CACHE_HOME: join(home, ".cache"),
-    CODEMUX_NO_KEYCHAIN_SYNC: "1", CODEMUX_ALLOW_UNTESTED_HARNESS: undefined,
+    CODEMUX_ALLOW_UNTESTED_HARNESS: undefined,
     FAKE_STATE_DIR: state, CODEMUX_TEST_SCODE_ARGV: join(state, "scode.txt"),
     OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_CONTENT: undefined, OPENCODE_PERMISSION: undefined,
   };

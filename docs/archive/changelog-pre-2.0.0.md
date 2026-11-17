@@ -5,6 +5,8 @@ read_when: "Reviewing codemux releases before 2.0.0."
 
 Preserved from the [changelog](https://github.com/bindsch/codemux/blob/main/CHANGELOG.md).
 
+The original Antigravity authentication and recovery design was removed in 2.0.4. See current [authentication](../authentication.md#antigravity).
+
 ## [0.15.1] - 2026-10-28
 
 ### Changed
@@ -41,7 +43,7 @@ Preserved from the [changelog](https://github.com/bindsch/codemux/blob/main/CHAN
   directory. Unsandboxed runs, other platforms, adapters without HOME, and
   non-empty `COPILOT_PKG_CACHE_HOME` or `COPILOT_CACHE_HOME` settings passed
   through with `--pass-env` receive no cache override.
-- Give every sandboxed macOS Antigravity run a private Keychain, including API-key and file-token runs. Make it the default for its private HOME so token refresh has a default and does not show the "A keychain cannot be found to store Antigravity" dialog when selection succeeds. Preserve the real user's default and verify both defaults after selection. If the real default remains unreadable after a retry, skip private-default selection and warn; agy may still prompt to store its token.
+- The original sandboxed Antigravity authentication implementation in this release was removed in 2.0.4; see current [authentication](../authentication.md#antigravity).
 - Sandboxed headless Cursor runs on macOS automatically use the file credential store
   when `~/.cursor/auth.json` exists. A non-empty, passed-through store setting
   overrides this choice. An API key does not disable file-store selection.
@@ -180,7 +182,7 @@ Preserved from the [changelog](https://github.com/bindsch/codemux/blob/main/CHAN
 
 ### Fixed
 
-- Report canonicalization errors for owned Antigravity Keychain mirrors and templates during recovery and cleanup. Preserve inaccessible unrelated search-list entries.
+- Antigravity authentication recovery changes from this release were removed in 2.0.4.
 - Support symlinked Gemini configuration directories in ordinary and sandboxed Antigravity runs, including before any probe root exists. Continue rejecting symlinked or foreign-owned probe roots.
 
 ## [0.13.2] - 2026-10-13
@@ -189,10 +191,7 @@ Preserved from the [changelog](https://github.com/bindsch/codemux/blob/main/CHAN
 
 - Accept and record documented Claude control-protocol notifications, including compaction boundaries and tool-progress heartbeats, while rejecting unknown frame types.
 - Suppress the Codex Plan fallback after a protocol failure, including a top-level error after turn completion.
-- Share Antigravity configuration entries individually so API-key runs never link the unused OAuth token into their private homes.
-- Recover stale private homes and Keychain mirrors from both validated, user-owned login and injected HOME probe roots.
-- Reject symlinked probe roots before Keychain recovery and restrict mirror ownership to the exact private run-directory layout.
-- Preserve inaccessible unrelated Keychain search-list entries without blocking recovery.
+- Share Antigravity configuration entries individually. Authentication-specific copying and recovery from this release were removed in 2.0.4.
 - Bound asynchronous adapter cleanup on signals by the existing grace period and report incomplete cleanup before exiting.
 - Reject relative and empty injected HOME values in the shared adapter constructor, before credential preparation.
 
@@ -226,7 +225,7 @@ Preserved from the [changelog](https://github.com/bindsch/codemux/blob/main/CHAN
   inventories/results, protocol aborts, and incomplete server cleanup.
 - Enable Antigravity hermetic and tools-none paths with the recorded
   Antigravity 1.3.3/scode 0.6.0 evidence. Use private homes, policy restrictions,
-  a template Keychain mirror, and bounded cleanup.
+  and bounded cleanup. Its original authentication mechanism was removed in 2.0.4.
 - **Correction:** the retained live checks identify an internal tested tree,
   not an immutable commit. Subsequent hardening has synthetic regression
   evidence; no later live verification is implied.

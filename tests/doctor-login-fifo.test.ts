@@ -22,7 +22,7 @@ import {
   zaiLoginState,
 } from "../src/harness-health.js";
 
-test("a tokenless claude mirror is no credential even with a future expiry (round 331)", () => {
+test("a tokenless claude file leaves native authentication unknown", () => {
   const home = mkdtempSync(join(tmpdir(), "codemux-doctor-mirror-"));
   try {
     mkdirSync(join(home, ".claude"));
@@ -32,29 +32,29 @@ test("a tokenless claude mirror is no credential even with a future expiry (roun
     // credential, and a mirror missing the field outright: neither can
     // authenticate a sandboxed launch.
     writeFileSync(mirror, JSON.stringify({ claudeAiOauth: { accessToken: "", expiresAt: future } }));
-    expect(claudeLoginState(home).state).toBe("no-credential");
+    expect(claudeLoginState(home).state).toBe("unknown");
     writeFileSync(mirror, JSON.stringify({ claudeAiOauth: { expiresAt: future } }));
-    expect(claudeLoginState(home).state).toBe("no-credential");
+    expect(claudeLoginState(home).state).toBe("unknown");
     // A present token beside the future expiry is the working login, and
     // an expired one stays expired: presence never overrides the expiry.
     writeFileSync(mirror, JSON.stringify({ claudeAiOauth: { accessToken: "fixture-token", expiresAt: future } }));
     expect(claudeLoginState(home).state).toBe("logged-in");
     writeFileSync(mirror, JSON.stringify({ claudeAiOauth: { accessToken: "fixture-token", expiresAt: Date.now() - 1 } }));
-    expect(claudeLoginState(home).state).toBe("expired");
+    expect(claudeLoginState(home).state).toBe(process.platform === "darwin" ? "unknown" : "expired");
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
 });
 
-test("empty codex token strings are no credential (round 331)", () => {
+test("empty codex token strings leave native authentication unknown", () => {
   const home = mkdtempSync(join(tmpdir(), "codemux-doctor-codex-"));
   try {
     mkdirSync(join(home, ".codex"));
     const auth = join(home, ".codex", "auth.json");
     writeFileSync(auth, JSON.stringify({ tokens: { refresh_token: "" } }));
-    expect(codexLoginState(home, {}).state).toBe("no-credential");
+    expect(codexLoginState(home, {}).state).toBe("unknown");
     writeFileSync(auth, JSON.stringify({ tokens: { access_token: "", refresh_token: "" } }));
-    expect(codexLoginState(home, {}).state).toBe("no-credential");
+    expect(codexLoginState(home, {}).state).toBe("unknown");
     // A non-empty token field is still a login, empty ones beside it aside.
     writeFileSync(auth, JSON.stringify({ tokens: { access_token: "", refresh_token: "r" } }));
     expect(codexLoginState(home, {}).state).toBe("logged-in");
@@ -123,20 +123,20 @@ test("a symlink to a FIFO at the kimi store is unknown and the read returns at o
   }
 });
 
-test("a store over the size bound is unknown; a dangling link and a missing parent are no credential", () => {
+test("an oversized store, a dangling link, and a missing parent leave authentication unknown", () => {
   const home = mkdtempSync(join(tmpdir(), "codemux-doctor-fifo-"));
   try {
-    expect(kimiLoginState(home, {}).state).toBe("no-credential");
+    expect(kimiLoginState(home, {}).state).toBe("unknown");
     mkdirSync(join(home, ".kimi-code", "credentials"), { recursive: true });
     const store = join(home, ".kimi-code", "credentials", "kimi-code.json");
     symlinkSync(join(home, "absent"), store);
-    expect(kimiLoginState(home, {}).state).toBe("no-credential");
+    expect(kimiLoginState(home, {}).state).toBe("unknown");
     rmSync(store);
     writeFileSync(store, JSON.stringify({ refresh_token: "r", padding: "x".repeat(1_048_576) }));
     expect(kimiLoginState(home, {}).state).toBe("unknown");
     // A file where the store's directory should be is no credential either.
     writeFileSync(join(home, ".codex"), "");
-    expect(codexLoginState(home, {}).state).toBe("no-credential");
+    expect(codexLoginState(home, {}).state).toBe("unknown");
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

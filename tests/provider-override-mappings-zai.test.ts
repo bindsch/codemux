@@ -28,7 +28,7 @@ describe("Zai provider override uses the shared Claude transport", () => {
       "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL"]) {
       expect(env[key]).toBe("local-coder");
     }
-    expect(adapter.getEnvOmissions()).toEqual(["ZAI_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]);
+    expect(adapter.getEnvOmissions()).toEqual(["ZAI_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_SECURESTORAGE_CONFIG_DIR"]);
     expect(new ZaiAdapter(override).getEnv()).toEqual(env);
   });
 

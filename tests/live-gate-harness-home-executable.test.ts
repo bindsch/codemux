@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { applyHarnessHomeSandboxBlocks, harnessHomeBlockedPaths } from "../src/launch/harness-home-sandbox.js";
 import { buildScodeCommand, type SandboxOptions } from "../src/sandbox.js";
+import { claudeLoginPaths } from "../src/claude-login.js";
 import { strictLaunchFailureExitCode } from "../src/sandbox-command.js";
 import { AGENT_IDS } from "../src/types.js";
 import fixture from "./fixtures/live/live-gate-2.0.1-failures.json";
@@ -44,10 +45,21 @@ test.each([...AGENT_IDS])("%s harness-home grants only resolved command files un
   applyHarnessHomeSandboxBlocks(options, privateHome, [store]);
   const argv = buildScodeCommand(["/usr/bin/env", `HOME=${privateHome}`, binary], undefined, "read-only", options);
   expect(argv.slice(argv.indexOf("--allow"))).toEqual([
-    "--allow", privateHome, "--allow", binary, "--", "/usr/bin/env", `HOME=${privateHome}`, binary,
+    "--allow", privateHome,
+    "--allow", binary, "--", "/usr/bin/env", `HOME=${privateHome}`, binary,
   ]);
   const outside = buildScodeCommand(["/usr/bin/synthetic"], undefined, "read-only", options);
   expect(outside.filter((arg) => arg === "--allow")).toHaveLength(1);
+});
+
+test("a Claude harness-home grants native lock paths only with the login-store opt-in", () => {
+  const privateHome = join(process.cwd(), "scratch/fix/caller");
+  const options: SandboxOptions = { agentId: "claude", loginStore: true };
+  applyHarnessHomeSandboxBlocks(options, privateHome, [join(process.cwd(), "scratch/fix/operator/.claude")]);
+  const argv = buildScodeCommand(["/usr/bin/synthetic"], undefined, "read-only", options);
+  const nativePaths = process.platform === "darwin" ? claudeLoginPaths(process.env) : [];
+  const allows = argv.flatMap((arg, index) => arg === "--allow" ? [argv[index + 1]] : []);
+  expect(allows).toEqual([privateHome, ...nativePaths]);
 });
 
 test("a failed canary session reports its own error and end events, not quota warnings", async () => {

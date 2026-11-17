@@ -231,7 +231,7 @@ writeFileSync(${JSON.stringify(ready)},"ready");setInterval(() => {},1000);`);
   const child = Bun.spawn([process.execPath, "--no-env-file", "--no-install", "--config=./bunfig.runtime.toml",
     "src/index.ts", "run", "-a", "kimi", "--hermetic", "--tools", "none", "--experiment-mcp", spec,
     "--cwd", f.cwd, "-p", "fixture"], { stdout: "pipe", stderr: "pipe", env: { ...process.env, ...fake.env,
-    HOME: f.home, CODEMUX_NO_KEYCHAIN_SYNC: "1", CODEMUX_ALLOW_UNTESTED_HARNESS: "" } });
+    HOME: f.home, CODEMUX_ALLOW_UNTESTED_HARNESS: "" } });
   const output = Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
   try {
     const deadline = Date.now() + 5000;

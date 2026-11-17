@@ -1,7 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { AGY_MIRROR_PATH } from "../src/agy-keychain.js";
 import { CodexAdapter } from "../src/adapters/codex.js";
 import { runSessionCommand } from "./helpers/session-command.js";
 import { HERMETIC_AGENTS, hermeticFixture, refusingCall } from "./helpers/session-cli-hermetic.js";
@@ -42,7 +41,7 @@ function assertPrivateFiles(s: Fixture, home: string) {
     expect(readFileSync(join(home, ".kimi-code", "region"), "utf8")).toBe("synthetic-region");
   } else {
     expect(mode(s.harnessHome(home))).toBe(0o700);
-    expect(mode(join(home, AGY_MIRROR_PATH))).toBe(0o600);
+    expect(readFileSync(join(home, ".codemux-login"), "utf8")).toBe("api-key");
   }
 }
 
@@ -142,6 +141,28 @@ describe("hermetic sessions through the launcher", () => {
           expect(argv.indexOf("--block")).toBeLessThan(argv.indexOf("--allow"));
         }
       }
+    } finally { s.cleanup(); }
+  }, 30_000);
+
+  test("kimi: the private home shares Kimi's refresh-lock directory, and a resume adds a missing link", async () => {
+    // Review round 5: a 2.0.3 home linked `credentials` alone, so its Kimi
+    // refreshed the shared token outside Kimi's own cross-process lock.
+    const s = hermeticFixture("kimi");
+    try {
+      const first = started(await s.run(["--hermetic"]));
+      const link = join(first.home, ".kimi-code", "oauth");
+      const operator = join(s.home, ".kimi-code", "oauth");
+      expect(readlinkSync(link)).toBe(operator);
+      expect(statSync(operator).mode & 0o777).toBe(0o700);
+      // The 2.0.3 layout: no link, and the directory Kimi made for itself.
+      rmSync(link);
+      mkdirSync(join(link, "kimi-code.lock"), { recursive: true });
+      writeFileSync(join(link, "kimi-code"), "");
+      expect(started(await s.run(["--hermetic", "--resume", first.id]))).toEqual(first);
+      expect(lstatSync(link).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(link)).toBe(operator);
+      // No codemux lock file anywhere in the operator's store.
+      expect(readdirSync(join(s.home, ".kimi-code", "credentials"))).toEqual([]);
     } finally { s.cleanup(); }
   }, 30_000);
 
@@ -247,13 +268,13 @@ describe("hermetic resume refusals", () => {
     const s = hermeticFixture("agy");
     try {
       const first = started(await s.run(["--hermetic"]));
-      renameSync(join(first.home, AGY_MIRROR_PATH), join(s.root, "saved-mirror"));
+      renameSync(join(first.home, ".codemux-login"), join(s.root, "saved-login-marker"));
       s.env.GEMINI_API_KEY = undefined;
       const outcome = await s.run(["--hermetic", "--resume", first.id]);
       expect(outcome.exitCode).toBe(64);
       // The verify names the login arm the home was populated with (the
       // API-key arm here) and refuses; the shared tail is the contract.
-      expect(outcome.stderr).toContain("cannot resume unauthenticated");
+      expect(outcome.stderr).toContain("session state cannot be verified");
       expect(s.observations()).toHaveLength(1);
       expect(existsSync(first.home)).toBe(true);
       expect(s.record().ended).toBeTruthy();
@@ -292,7 +313,8 @@ describe("hermetic resume refusals", () => {
       expect(cli.exitCalls[0]).toBe(78);
       expect(cli.stdout).toBe("");
       expect(s.observations()).toHaveLength(1);
-      expect(existsSync(s.parent)).toBe(false);
+      if (agent === "agy") expect(readdirSync(s.parent)).toEqual([]);
+      else expect(existsSync(s.parent)).toBe(false);
     } finally { s.cleanup(); }
   }, 30_000);
 

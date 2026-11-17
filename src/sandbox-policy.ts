@@ -11,6 +11,8 @@ export interface SandboxPolicyOverrides {
   strict?: boolean;
   trust?: ScodeTrustLevel;
   noNet?: boolean;
+  loginStore?: boolean;
+  noLoginStore?: boolean;
   scrubEnv?: boolean;
   /** Request scode's per-run scratch accounting (see SandboxOptions). */
   accountFile?: string;
@@ -41,6 +43,8 @@ export function resolveSandboxOptionsForAgent(
   const fsMode = autonomy ? ENFORCED_FS_MODE[agentId]?.[autonomy] : undefined;
   if (fsMode) options.fsMode = fsMode;
   if (overrides.noNet) options.noNet = true;
+  if (overrides.loginStore && !overrides.noLoginStore && options.trust !== "untrusted") options.loginStore = true;
+  if (overrides.noLoginStore) options.noLoginStore = true;
   if (overrides.strict) options.strict = true;
   if (overrides.scrubEnv) options.scrubEnv = true;
   if (overrides.accountFile) options.accountFile = overrides.accountFile;

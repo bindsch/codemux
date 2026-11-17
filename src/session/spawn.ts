@@ -26,11 +26,14 @@ import {
   type ExecutableCheck,
 } from "../executable-security.js";
 import { buildSandboxEnv, buildScodeCommand, type SandboxOptions } from "../sandbox.js";
-import { scodeSupportsAllowRo } from "../cli-runtime/scode.js";
+import { scodeSupportsAllowRo, scodeSupportsAllowStaged, scodeSupportsNoCredentialSync, scodeSupportsNoLoginStore } from "../cli-runtime/scode.js";
+import { reportSandboxLoginStore } from "../sandbox-login-notice.js";
+import { sandboxLoginUnavailable } from "../sandbox-login-policy.js";
 import { validateWorkingDirectory } from "../validation.js";
 import type { AutonomyLevel } from "../types.js";
 import type { SessionFatal } from "./process.js";
-import { SessionProcess } from "./process.js";
+import { SessionProcess, type SessionProcessOptions } from "./process.js";
+import { beginKimiPrivateState } from "../kimi-auth-state.js";
 
 /** The final launch and its pinned native program, including any scode/env prefix. */
 export interface ResolvedSessionLaunch {
@@ -148,9 +151,12 @@ export async function resolveSessionSandboxSpawn(
     effectiveSandboxOptions,
     scode,
     env,
-    scodeSupportsAllowRo(scodeVersion)
+    scodeSupportsAllowRo(scodeVersion),
+    scodeSupportsAllowStaged(scodeVersion), scodeSupportsNoLoginStore(scodeVersion),
+    undefined, scodeSupportsNoCredentialSync(scodeVersion)
   );
   const sandboxEnv = buildSandboxEnv(env, effectiveSandboxOptions);
+  reportSandboxLoginStore(scodeCmd, effectiveSandboxOptions, true, undefined, undefined, env);
   for (const name of options.envOmissions ?? []) delete sandboxEnv[name];
   return { scodeCmd, sandboxEnv, executablePin,
     programIndex: scodeCmd.length - resolved.length + commandProgramIndex(resolved) };
@@ -196,16 +202,19 @@ export async function spawnSessionChild(
       workdir
     );
     refuseAbandonedSpawn(options);
+    if (!sandboxLoginUnavailable(options.sandboxOptions, env)) {
+      reportSandboxLoginStore(scodeCmd, options.sandboxOptions, false, undefined, undefined, env);
+    }
     options.validateBeforeSpawn?.();
     options.onResolvedLaunch?.({ command: scodeCmd, env: sandboxEnv, executablePin, programIndex });
-    return new SessionProcess({
+    return spawnWithKimiState({
       command: scodeCmd,
       cwd: workdir,
       env: sandboxEnv,
       graceMs: options.graceMs,
       executableChecks: executablePin,
       ...hooks,
-    });
+    }, command);
   }
   // The direct half mirrors runDirect in launch.ts: the same trusted
   // resolution, the caller-provided execution environment, no scode. The
@@ -223,12 +232,25 @@ export async function spawnSessionChild(
     checks: [...trustCheckedCommandChecks(resolved), ...(options.extraExecutableChecks ?? [])],
   };
   options.onResolvedLaunch?.({ command: resolved, env, executablePin, programIndex: commandProgramIndex(resolved) });
-  return new SessionProcess({
+  return spawnWithKimiState({
     command: resolved,
     cwd: workdir,
     env,
     graceMs: options.graceMs,
     executableChecks: executablePin,
     ...hooks,
-  });
+  }, command);
+}
+
+/** A Kimi child in a private brand home gets the operator's device state
+ * before it starts and publishes native-created state once the session
+ * tree has settled (src/kimi-auth-state.ts). No lock is held meanwhile:
+ * any other child, and a plain Kimi run, starts with no wait. */
+function spawnWithKimiState(processOptions: SessionProcessOptions, originalCommand: readonly string[]): SessionProcess {
+  const state = beginKimiPrivateState(originalCommand, processOptions.env, processOptions.cwd);
+  try {
+    const child = new SessionProcess(processOptions);
+    child.settled = child.settled.finally(state.end);
+    return child;
+  } catch (error) { state.end(); throw error; }
 }

@@ -7,9 +7,7 @@ test("a parent Claude Code's control variables never decide the child's", () => 
   // 2026-11-10 live gate, run from inside a Claude Code session: the
   // parent exports CLAUDE_CODE_ENTRYPOINT, the messaging socket and token,
   // its session id, and may export CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0.
-  // codemux's own scrub value wins and the rest are not allowlisted
-  // (src/environment.ts), so the child's permission mapping and credential
-  // scrub are codemux's, whatever harness launched codemux.
+  // Codemux's scrub value wins; other parent controls are not allowlisted.
   const parent = new ClaudeAdapter({
     PATH: "/usr/bin",
     CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "0",

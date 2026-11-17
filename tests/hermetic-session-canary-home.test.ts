@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   HARNESS_HOME_CANARY_PROMPT, harnessHomeCanaryOwnedEnv, plantHarnessHomeCanary, runHarnessHomeSessionCanary,
@@ -80,8 +80,9 @@ for (const agent of ["claude", "codex", "zai"] as const) {
       XDG_DATA_HOME: "/fixture/ambient-data", XDG_STATE_HOME: "/fixture/ambient-state",
     }, root);
     try {
-      expect(plant.env.HOME).toBe(plant.operatorHome);
-      expect(plant.env.CLAUDE_CONFIG_DIR).toBeUndefined();
+      const nativeClaude = agent === "claude" && process.platform === "darwin";
+      expect(plant.env.HOME).toBe(nativeClaude ? homedir() : plant.operatorHome);
+      expect(plant.env.CLAUDE_CONFIG_DIR).toBe(nativeClaude ? join(plant.operatorHome, ".claude") : undefined);
       expect(plant.env.CODEX_HOME).toBeUndefined();
       expect(plant.env.XDG_CONFIG_HOME).toBeUndefined();
       expect(plant.env.XDG_DATA_HOME).toBeUndefined();
@@ -96,8 +97,8 @@ for (const agent of ["claude", "codex", "zai"] as const) {
       expect(readdirSync(plant.cwd)).toEqual([".git"]);
       expect(existsSync(join(plant.home, credential))).toBe(false);
       expect(existsSync(join(plant.home, "settings.json"))).toBe(false);
-      if (agent === "zai") {
-        expect(plant.env.ZAI_API_KEY).toBe("synthetic-zai-key");
+      if (agent === "zai" || nativeClaude) {
+        if (agent === "zai") expect(plant.env.ZAI_API_KEY).toBe("synthetic-zai-key");
         expect(existsSync(join(plant.operatorHome, brand, credential))).toBe(false);
       } else {
         expect(statSync(join(plant.operatorHome, brand, credential)).ino).toBe(statSync(login).ino);

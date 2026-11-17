@@ -56,8 +56,8 @@ export function isToolSelection(value: string): value is ToolSelection {
 /** What the launcher tells an adapter about this launch beyond the request:
  * `printOnly` is `--print-sandbox` (the argv is printed and nothing runs), so
  * preparation builds only the paths the argv needs, never mutates files,
- * and never reads a credential (agy: no private Keychain, no login mirror, no search-list
- * repair). Review rounds 36, 39, 41, 42. */
+ * and never reads a credential or prepares native-login links.
+ * Review rounds 36, 39, 41, 42. */
 export interface LaunchIntent {
   printOnly?: boolean;
 }
@@ -301,6 +301,8 @@ export type QuotaTimeoutMap = Record<string, number>;
 
 export interface CodemuxConfig {
   defaultAgent: AgentId;
+  sandboxLoginStore?: boolean;
+  sandboxNoLoginStore?: boolean;
   models: {
     [alias: string]: ModelMapping;
   };
