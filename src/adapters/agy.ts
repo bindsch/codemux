@@ -1,21 +1,25 @@
 import { BaseAdapter, type RunContext } from "./base.js";
+import { claudeLoginAdvice } from "../claude-login-advice.js";
 import { canonicalSandboxBlockPath } from "../session/registry/format.js";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AgyProbeMode } from "../agy-isolation-probe.js";
 import { summarizeAgyStream } from "../agy-stream.js";
 import { agyPrivateHomeEnvPrefix, sweepStaleHomes } from "./agy-homes.js";
-import { createAgyProbeHome, ownedProbeHomes, PROBE_TOKEN, removeAgyProbeHome } from "./agy-probe-home.js";
-import { agyKeychainHost, agyProbeRoots, insertAgyKeychainItem, prepareAgyPrivateKeychain, recoverAgyKeychainSearchList, verifyAgyKeychainSearchList } from "../agy-keychain.js";
+import { agySharedStateEntries } from "./agy-shared-state.js";
+import { createAgyProbeHome, ownedProbeHomes, removeAgyProbeHome } from "./agy-probe-home.js";
+import { linkAgyLogin, removeRetiredAgyMirror } from "../agy-auth.js";
+import { callLogPath } from "../call-log.js";
 import { assertNoAgyProjectExecutionConfig } from "../project-safety.js";
-import { AGY_DENIED_ACTIONS, headlessMediumSettings, readAgyTokenForCopy } from "./agy-settings.js";
+import { AGY_DENIED_ACTIONS, headlessMediumSettings } from "./agy-settings.js";
 import { plantAgyPlaywrightMcpConfig } from "../agy-playwright-mcp.js";
 import { refuseAgyExperiment } from "../agy-experiment-run.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 import { agyResult } from "../result-envelope.js";
 import { agyPlainResult } from "../plain-unwrap.js";
 import { withKeepEnvExemption, type SandboxOptions, type ScodeTrustLevel } from "../sandbox.js";
+import { usesOperatorLogin } from "../sandbox-login-policy.js";
 import type {
   AgentId,
   AutonomyLevel,
@@ -25,6 +29,11 @@ import type {
   AdapterCapabilities,
  LaunchIntent } from "../types.js";
 import { agyLoginState, loginHome, type LoginState } from "../harness-health.js";
+
+/** The refusal reason `--tools none` reports; the live-gate runner matches
+ * the same text, so both sides build it here. */
+export const agyToolsNoneRefusal = (actions: readonly string[]): string =>
+  `--tools none forbids attempted actions: ${actions.join(", ")}`;
 
 const isolationProbes = new WeakMap<RunRequest, { mode: AgyProbeMode; operatorHome?: string }>();
 
@@ -128,12 +137,7 @@ export class AgyAdapter extends BaseAdapter {
     const probe = isolationProbes.get(request);
     const mode = probe?.mode ?? (request.tools === "none" ? "tools" : request.hermetic ? "hermetic" : undefined);
     const operatorHome = probe?.operatorHome ?? this.environment.HOME ?? homedir();
-    const recoveryEnvironment = { ...this.environment, HOME: operatorHome };
     const printOnly = launch.printOnly === true;
-    if (!printOnly) { // a print-only launch repairs and sweeps nothing
-      const roots = agyProbeRoots(recoveryEnvironment);
-      recoverAgyKeychainSearchList(recoveryEnvironment, request.cwd);
-      for (const root of roots) sweepStaleHomes(root); }
     if (!request.sandboxed) return {};
     const context: RunContext = { agyProbe: { mode: mode ?? "plain", diagnostic: Boolean(probe),
       operatorHome, printOnly } };
@@ -154,55 +158,33 @@ export class AgyAdapter extends BaseAdapter {
     return prepared;
   }
 
-  /** Prepare a private Keychain, then select API key, file token, or Keychain login. */
+  /** Private homes expose the same login agy uses under the real HOME. */
   private preparePrivateHome(context: RunContext, realHome: string, shareState: boolean,
     request: RunRequest, sandboxOptions: SandboxOptions): RunContext {
     if (context.agyProbe!.printOnly) {
       context.agyProbe!.home = canonicalSandboxBlockPath(join(realHome, ".gemini", ".codemux-isolation-probes", "preview"));
       return context;
     }
-    // Creation registers the home as this context's own before anything
-    // can fail afterward, so the catch below always owns its full cleanup
-    // (agy-probe-home.ts keeps the descriptor-verified lifecycle).
+    sweepStaleHomes(join(canonicalSandboxBlockPath(join(realHome, ".gemini")), ".codemux-isolation-probes"));
+    const callLog = callLogPath({ HOME: realHome });
+    if (callLog) removeRetiredAgyMirror(dirname(callLog));
     const home = createAgyProbeHome(context, realHome).home;
     try {
-      const keychainPassword = prepareAgyPrivateKeychain(home, this.environment, request.cwd);
-      const token = join(agyKeychainHost.home(), PROBE_TOKEN);
-      const injectedEnv = { ...this.getEnv(), ...this.getRunEnv(request, context) };
-      const environment = this.buildExecutionEnv(injectedEnv, request.passthroughEnv);
-      const policy = withKeepEnvExemption(sandboxOptions, injectedEnv, this.providerOverrideActive());
-      const scrubbing = policy.scrubEnv === true || policy.trust === "untrusted";
-      const hasApiKey = ["GEMINI_API_KEY", "GOOGLE_API_KEY"].some((name) =>
-        environment[name] && (!scrubbing || policy.keepEnv?.includes(name)));
-      // The token is read once, up front: one non-following open, typed and
-      // sized on the descriptor (readAgyTokenForCopy; review round 169). Null
-      // is "no file token" (the Keychain path); an empty file is a token.
-      // Bytes are copied as read, never decoded (review round 170).
-      const fileToken = hasApiKey ? null : readAgyTokenForCopy(token);
-      if (!hasApiKey && fileToken === null) {
-        insertAgyKeychainItem(home, this.environment, keychainPassword, request.cwd);
-      }
       const state = join(home, ".gemini", "antigravity-cli");
       mkdirSync(state, { recursive: true, mode: 0o700 });
-      // Copy only the file fallback: refreshes stay in this private home,
-      // nothing is written back to the real store, and cleanup removes the
-      // 0600 copy or reports its path. The macOS login is mirrored
-      // separately, never linked to the real Keychain.
-      if (fileToken !== null) {
-        writeFileSync(join(state, "antigravity-oauth-token"), fileToken, { flag: "wx", mode: 0o600 });
+      // The login is linked only when it is in use, as in a session home: on
+      // the API-key route the private HOME holds no path to the operator's
+      // OAuth token, so the key alone selects authentication (review round 5).
+      const injectedEnv = { ...this.getEnv(), ...this.getRunEnv(request, context) };
+      const policy = withKeepEnvExemption({ ...sandboxOptions, agentId: "agy" }, injectedEnv, this.providerOverrideActive());
+      if (usesOperatorLogin(policy, this.buildExecutionEnv(injectedEnv, request.passthroughEnv))) {
+        linkAgyLogin(home, this.environment.HOME || homedir());
       }
       if (shareState) {
         const grantCommands = request.autonomy === "medium";
         // Share entries individually; an unused token must never become a link.
-        for (const [relative, excluded] of [[".gemini", "antigravity-cli"],
-          [".gemini/antigravity-cli", "antigravity-oauth-token"]] as const) {
-          const source = join(realHome, relative);
-          if (!existsSync(source)) continue;
-          for (const name of readdirSync(source)) {
-            if (name === excluded || name === ".codemux-isolation-probes") continue;
-            if (grantCommands && relative === ".gemini/antigravity-cli" && name === "settings.json") continue;
-            symlinkSync(join(source, name), join(home, relative, name));
-          }
+        for (const entry of agySharedStateEntries(realHome, grantCommands)) {
+          symlinkSync(entry.source, join(home, entry.relative));
         }
         if (grantCommands) writeFileSync(join(state, "settings.json"),
           headlessMediumSettings(join(realHome, ".gemini/antigravity-cli/settings.json")), { flag: "wx", mode: 0o600 });
@@ -242,7 +224,7 @@ export class AgyAdapter extends BaseAdapter {
   /** `atExit` marks the process-exit backstop's call: the last attempt
    * there can be, so the validation descriptors are closed even when the
    * removal failed and the cleanup stays retryable for no one. The
-   * probe home is removed after the search list is restored. */
+   * probe home is removed only after its identity is verified. */
   override cleanupRunSync(context?: RunContext, atExit = false): void {
     if (context?.printOnly) return;
     const probe = context?.agyProbe;
@@ -256,19 +238,7 @@ export class AgyAdapter extends BaseAdapter {
       if (owned.cleanupError) throw owned.cleanupError;
       return;
     }
-    let searchError: unknown;
-    if (!probe.printOnly) { // print-only created no Keychain state: nothing to repair
-      try {
-        const recoveryEnvironment = { ...this.environment, HOME: probe.operatorHome ?? this.environment.HOME };
-        recoverAgyKeychainSearchList(recoveryEnvironment);
-        verifyAgyKeychainSearchList(recoveryEnvironment);
-      }
-      catch (error) { searchError = error; }
-    }
-    // The removal keeps its descriptors on every failure a retry could
-    // still act on (review round 137: a transient rmSync failure used to
-    // close them and cache the error forever).
-    removeAgyProbeHome(owned, searchError, atExit);
+    removeAgyProbeHome(owned, atExit);
   }
 
   buildRunCommand(request: RunRequest, context?: RunContext): string[] {
@@ -343,9 +313,13 @@ export class AgyAdapter extends BaseAdapter {
     let normalized = request.resultJson
       ? agyResult({ ...result, stdout: envelope }, request)
       : agyPlainResult({ ...result, stdout: envelope });
+    if (context?.sandboxLoginStoreDenied) {
+      const advice = claudeLoginAdvice(!normalized.success, `${result.stderr}\n${envelope}`, true);
+      if (advice) normalized = { ...normalized, stderr: `${normalized.stderr}\n${advice}\n` };
+    }
     if (summary.malformed || (request.tools === "none" && summary.possibleToolActivity)) {
       const reason = summary.malformed ? "malformed native event stream" :
-        `--tools none forbids attempted actions: ${summary.attemptedActions.join(", ")}`;
+        agyToolsNoneRefusal(summary.attemptedActions);
       normalized = { ...normalized, success: false, exitCode: result.exitCode || 1,
         stderr: `${normalized.stderr}\ncodemux: agy ${reason}\n` };
     }

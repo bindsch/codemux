@@ -36,7 +36,6 @@ describe("CLI quota gate - session bypass", () => {
       // and the contrast spawn below must be refused by the real gate.
       const startedEnv = {
         ...process.env,
-        CODEMUX_NO_KEYCHAIN_SYNC: "1",
         HOME: isolatedHome,
         XDG_CONFIG_HOME: join(isolatedHome, ".config"),
         ...fake.env,
@@ -107,7 +106,6 @@ describe("CLI quota gate - session bypass", () => {
       // what --no-quota-gate skipped, not a broken session.
       const refusedEnv = {
         ...process.env,
-        CODEMUX_NO_KEYCHAIN_SYNC: "1",
         HOME: mkdtempSync(join(tmpdir(), "codemux-gate-home2-")),
         XDG_CONFIG_HOME: join(mkdtempSync(join(tmpdir(), "codemux-gate-cfg2-")), ".config"),
         ...fake.env,

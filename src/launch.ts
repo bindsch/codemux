@@ -1,5 +1,6 @@
 import type { BaseAdapter, RunContext } from "./adapters/base.js";
 import type { CopilotAdapter } from "./adapters/copilot.js";
+import { sandboxLoginUnavailable } from "./sandbox-login-policy.js";
 import { join } from "node:path";
 import { applyAgyIsolationSandboxBlocks } from "./launch/agy-isolation-sandbox.js";
 import { assertCompatibleScode, launchRedirectCheck, resolveScodeExecutableForEnv, runSandboxedWithStdin } from "./cli-runtime.js";
@@ -322,17 +323,12 @@ export async function launchRunRequest(
     // One source for the whole launch (round15): request.passthroughEnv is
     // the list validation checked, so it -- not a second copy on the
     // options -- is what the sandbox environment is built from. A
-    // print-only launch skips prepareSandbox: it contributes nothing to
-    // the argv or the sandbox options, and the claude family's
-    // implementation refreshes or scrubs the operator's credential mirror
-    // — state a diagnostic command that promises to run nothing must not
-    // touch (review round 18, edges 2).
+    // print-only launch skips preparation that could mutate harness state.
     if (options.printSandbox) {
       console.error("codemux: credential sandbox preparation skipped: --print-sandbox is print only");
       // The credential copy is deferred too (round 19, edges 3): getRunEnv
       // below still runs — the printed argv needs CLAUDE_CONFIG_DIR — and
-      // claude's copy reads the operator's mirror (refusing a
-      // refresh-token mirror) and writes into the private directory, the
+      // non-macOS Claude copies an access token into the private directory, the
       // same deferral the session's pre-claim probe uses (cli-spawn-prep.ts).
       if (context.claudeProjectConfigDir !== undefined) {
         context.claudeProjectConfigDir.deferCredentialCopy = true;
@@ -381,6 +377,10 @@ export async function launchRunRequest(
       injectedEnv,
       adapter.providerOverrideActive()
     );
+    // The login-store decision needs the exemption attached: an injected,
+    // exempted key is the run's authentication, while an ambient key the
+    // scrub removes is not (sandbox-login-policy.ts).
+    context.sandboxLoginStoreDenied = sandboxLoginUnavailable(sandboxOptions, envArg);
     // The executable an active redirect (OPENCODE_BIN_PATH) selected in
     // the launch environment (review round 331, item 5): the harness's
     // own launcher execs it inside the sandbox, invisible to the command

@@ -1,5 +1,4 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { AGY_MIRROR_PATH } from "../src/agy-keychain.js";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -137,8 +136,33 @@ test("agy session environment lookup still accepts an absent run context", () =>
   expect(adapter.getRunEnv(request)).toEqual({});
 });
 
+test.each(["GEMINI_API_KEY", "GOOGLE_API_KEY"])("a run on the %s route links no native login into its private HOME", (name) => {
+  // Review round 5: the run path linked the operator's OAuth token and, on
+  // macOS, Library/Keychains even when an API key was the route.
+  const { request, home } = setup(false);
+  const adapter = new AgyAdapter({ HOME: home, [name]: "synthetic-api-key" });
+  const realState = join(home, ".gemini/antigravity-cli");
+  mkdirSync(realState, { recursive: true });
+  mkdirSync(join(home, "Library/Keychains"), { recursive: true });
+  writeFileSync(join(realState, "antigravity-oauth-token"), "fake-login");
+  for (const variant of [{ hermetic: true }, { tools: "none" as const }, {}]) {
+    const context = adapter.prepareRun({ ...request, ...variant });
+    try {
+      const privateHome = context.agyProbe!.home!;
+      expect(lstatSync(join(privateHome, ".gemini/antigravity-cli/antigravity-oauth-token"), { throwIfNoEntry: false })).toBeUndefined();
+      expect(lstatSync(join(privateHome, "Library"), { throwIfNoEntry: false })).toBeUndefined();
+    } finally { adapter.cleanupRun(context); }
+  }
+  // A whitespace-only key is no key: the operator login is the route and is linked.
+  const blank = new AgyAdapter({ HOME: home, [name]: "  " });
+  const context = blank.prepareRun({ ...request, hermetic: true });
+  try {
+    expect(lstatSync(join(context.agyProbe!.home!, ".gemini/antigravity-cli/antigravity-oauth-token")).isSymbolicLink()).toBe(true);
+  } finally { blank.cleanupRun(context); }
+});
+
 test("private HOME carries only login material and codemux deny settings", () => {
-  const { adapter, request, home, keychainCalls } = setup(false);
+  const { adapter, request, home } = setup(false);
   const realState = join(home, ".gemini/antigravity-cli");
   mkdirSync(realState, { recursive: true });
   writeFileSync(join(realState, "antigravity-oauth-token"), "fake-login");
@@ -148,13 +172,9 @@ test("private HOME carries only login material and codemux deny settings", () =>
   adapter.validateRunRequest(request);
   const context = adapter.prepareRun(request);
   const privateHome = context.agyProbe!.home!;
-  expect(readFileSync(join(privateHome, AGY_MIRROR_PATH), "utf8")).toBe("empty template");
-  expect(keychainCalls).toContainEqual({ home: privateHome, input: "",
-    args: ["default-keychain", "-d", "user", "-s", join(privateHome, AGY_MIRROR_PATH)] });
-  expect(keychainCalls.some((call) => call.args[0] === "find-generic-password" || call.input.startsWith('"add-generic-password" "-s" "gemini"'))).toBe(false);
   const privateState = join(privateHome, ".gemini/antigravity-cli");
   expect(readdirSync(privateState).sort()).toEqual(["antigravity-oauth-token", "settings.json"]);
-  expect(readFileSync(join(privateState, "antigravity-oauth-token"), "utf8")).toBe("fake-login");
+  expect(lstatSync(join(privateState, "antigravity-oauth-token")).isSymbolicLink()).toBe(true);
   expect(readFileSync(join(privateState, "settings.json"), "utf8")).not.toContain("CANARY");
   expect(JSON.parse(readFileSync(join(privateState, "settings.json"), "utf8")).permissions.deny).toContain("read_file(*)");
   expect(existsSync(join(privateHome, ".gemini/GEMINI.md"))).toBe(false);
@@ -162,7 +182,7 @@ test("private HOME carries only login material and codemux deny settings", () =>
   expect(cmd[0]).toBe("env");
   expect(cmd).toContain(`HOME=${privateHome}`);
   expect(cmd.filter((arg) => arg.startsWith("--"))).toEqual([
-    "--disable-slash-commands", "--mode=plan", "--output-format=stream-json", "--input-format=stream-json",
+    '--disable-slash-commands', "--mode=plan", "--output-format=stream-json", "--input-format=stream-json",
   ]);
   // The prompt rides stdin as one stream-json user frame, never argv.
   expect(cmd).not.toContain("probe");
@@ -209,14 +229,16 @@ test("project executable configuration remains refused, including on a probe", (
   expect(() => adapter.validateRunRequest(request)).toThrow(join(request.cwd!, ".agents"));
 });
 
-test("symlinked token files are refused without leaving a private home", () => {
+test("a symlinked file login is shared without reading or copying its contents", () => {
   const { adapter, request, home } = setup(false);
   const state = join(home, ".gemini/antigravity-cli");
   mkdirSync(state, { recursive: true });
   writeFileSync(join(home, "target"), "fake-login");
   symlinkSync(join(home, "target"), join(state, "antigravity-oauth-token"));
   markAgyIsolationProbe(request, "hermetic");
-  expect(() => adapter.prepareRun(request)).toThrow("must not be a symbolic link");
+  const context = adapter.prepareRun(request);
+  expect(readFileSync(join(context.agyProbe!.home!, ".gemini/antigravity-cli/antigravity-oauth-token"), "utf8")).toBe("fake-login");
+  adapter.cleanupRun(context);
   expect(readdirSync(join(home, ".gemini/.codemux-isolation-probes"))).toEqual([]);
 });
 
@@ -284,7 +306,7 @@ test.each(["home", "parent"])("cleanup finds a renamed probe %s by inode when th
   expect(() => adapter.cleanupRun(context)).not.toThrow();
 });
 
-test("a credential copy lasts for the probe and any cleanup refusal names it", () => {
+test("a login link lasts for the probe and cleanup refusal names the private home", () => {
   const { adapter, request, home } = setup(false);
   const state = join(home, ".gemini/antigravity-cli");
   mkdirSync(state, { recursive: true });
@@ -294,11 +316,11 @@ test("a credential copy lasts for the probe and any cleanup refusal names it", (
   const context = adapter.prepareRun(request);
   const privateHome = context.agyProbe!.home!;
   const copy = join(privateHome, ".gemini/antigravity-cli/antigravity-oauth-token");
-  expect(lstatSync(copy).mode & 0o777).toBe(0o600);
+  expect(lstatSync(copy).isSymbolicLink()).toBe(true);
   expect(lstatSync(copy).ino).not.toBe(lstatSync(token).ino);
   rmSync(join(privateHome, ".codemux-probe-owner"));
-  expect(() => adapter.cleanupRun(context)).toThrow(`token copy may remain at ${copy}`);
-  expect(() => adapter.cleanupRun(context)).toThrow(`token copy may remain at ${copy}`);
+  expect(() => adapter.cleanupRun(context)).toThrow(`private state may remain at ${privateHome}`);
+  expect(() => adapter.cleanupRun(context)).toThrow(`private state may remain at ${privateHome}`);
   expect(readFileSync(token, "utf8")).toBe("synthetic-token");
 });
 
@@ -317,14 +339,13 @@ printf '%s\\n' '{"event":"result","result":{"status":"OK","response":"OK"}}'`,
     const result = await runCli(["check", "-a", "agy", "--agy-isolation-probe", "hermetic"], { ...fake.env, HOME: home });
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toContain("cannot be found");
-    expect(result.stderr).toContain("token copy may remain at");
-    expect(result.stderr).toContain("antigravity-oauth-token");
+    expect(result.stderr).toContain("private state may remain at");
     expect(readFileSync(join(state, "antigravity-oauth-token"), "utf8"))
       .toBe("synthetic-token");
   } finally { fake.cleanup(); }
 });
 
-test("file token copies isolate in-place and replacement rotations from the real login", () => {
+test("file login links share in-place rotations and observe atomic source replacements", () => {
   const { adapter, request, home } = setup(false);
   const state = join(home, ".gemini/antigravity-cli");
   mkdirSync(state, { recursive: true });
@@ -333,17 +354,16 @@ test("file token copies isolate in-place and replacement rotations from the real
   markAgyIsolationProbe(request, "hermetic");
   const context = adapter.prepareRun(request);
   const privateToken = join(context.agyProbe!.home!, ".gemini/antigravity-cli/antigravity-oauth-token");
-  expect(lstatSync(privateToken).isFile()).toBe(true);
-  expect(lstatSync(privateToken).mode & 0o777).toBe(0o600);
+  expect(lstatSync(privateToken).isSymbolicLink()).toBe(true);
   writeFileSync(privateToken, "fake-in-place-refresh");
-  expect(readFileSync(token, "utf8")).toBe("fake-original");
+  expect(readFileSync(token, "utf8")).toBe("fake-in-place-refresh");
   const replacement = join(context.agyProbe!.home!, "replacement");
   writeFileSync(replacement, "fake-refreshed", { mode: 0o600 });
-  renameSync(replacement, privateToken);
+  renameSync(replacement, token);
   expect(readFileSync(privateToken, "utf8")).toBe("fake-refreshed");
   adapter.cleanupRun(context);
   expect(existsSync(context.agyProbe!.home!)).toBe(false);
-  expect(readFileSync(token, "utf8")).toBe("fake-original");
+  expect(readFileSync(token, "utf8")).toBe("fake-refreshed");
 });
 
 test("agy diagnostic resolves configured model aliases before launch", async () => {

@@ -123,7 +123,6 @@ describe("CLI - stdin prompt", () => {
           stderr: "pipe",
           env: {
             ...process.env,
-            CODEMUX_NO_KEYCHAIN_SYNC: "1",
             HOME: home,
             ...fake.env,
           } as Record<string, string>,
@@ -234,7 +233,6 @@ describe("CLI - stdin prompt", () => {
           stdin: "pipe",
           env: {
             ...process.env,
-            CODEMUX_NO_KEYCHAIN_SYNC: "1",
             HOME: home,
             ...fake.env,
           } as Record<string, string>,
@@ -289,7 +287,6 @@ describe("CLI - stdin prompt", () => {
           stdin: "pipe",
           env: {
             ...process.env,
-            CODEMUX_NO_KEYCHAIN_SYNC: "1",
             HOME: home,
             ...fake.env,
           } as Record<string, string>,

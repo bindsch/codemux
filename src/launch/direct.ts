@@ -3,6 +3,7 @@
 // that runs outside any sandbox.
 
 import { collectCodexNativeCost } from "../codex-native-cost.js";
+import { withKimiPrivateState } from "../kimi-auth-state.js";
 import type { BaseAdapter, RunContext } from "../adapters/base.js";
 import { runCapturedCommand } from "../process-runner.js";
 import {
@@ -30,10 +31,8 @@ export async function runDirect(
   onSignaled: () => void | Promise<void>
 ): Promise<RunResult> {
   const cwd = validateWorkingDirectory(request.cwd) ?? process.cwd();
-  const command = adapter.resolveExecutionCommand(
-    adapter.buildRunCommand(request, context),
-    cwd
-  );
+  const originalCommand = adapter.buildRunCommand(request, context);
+  const command = adapter.resolveExecutionCommand(originalCommand, cwd);
   // This launch's own resolutions (resolveExecutionCommand's trust
   // checks), captured in the resolution's synchronous block and carried to
   // the runner's pre-spawn re-stat: without them the re-stat falls back to
@@ -63,7 +62,7 @@ export async function runDirect(
     cwd
   );
   const stdinInput = adapter.getStdinInput(request);
-  const raw = await runCapturedCommand(command, {
+  const raw = await withKimiPrivateState(originalCommand, env, cwd, (publishState) => runCapturedCommand(command, {
     cwd,
     env,
     stdinInput,
@@ -76,14 +75,14 @@ export async function runDirect(
     // the runner streams stdout through it, and processRunResult reads the
     // folded reply and usage back off the same object (review ul4).
     stdoutSink: context.stdoutSink,
-    onSignaled,
+    onSignaled: async () => { try { publishState(); } finally { await onSignaled(); } },
     requiredPaths,
     checks: [
       ...checks,
       ...(playwrightCheck === null ? [] : [playwrightCheck]),
       ...(redirectCheck === null ? [] : [redirectCheck]),
     ],
-  });
+  }));
   await collectCodexNativeCost(raw, request, context, {
     command, checks, env, onSignaled,
     options: { cwd, sandboxed: false, autonomy: request.autonomy ?? "read-only",

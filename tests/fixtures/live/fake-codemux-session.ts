@@ -78,6 +78,7 @@ const passedConfigDir = (value("--pass-env") ?? "").split(",").includes("CLAUDE_
 const plantedPaths = [
   ...(claudeFamily ? [] : [join(cwd, "AGENTS.md"), join(cwd, "CLAUDE.md")]),
   ...(claudeFamily && passedConfigDir !== undefined && harnessHome === undefined ? [join(passedConfigDir, "CLAUDE.md")] : []),
+  ...(claudeFamily && harnessHome !== undefined && process.env.CLAUDE_CONFIG_DIR ? [join(process.env.CLAUDE_CONFIG_DIR, "CLAUDE.md")] : []),
   join(process.env.KIMI_CODE_HOME ?? "", "AGENTS.md"),
   join(process.env.HOME ?? "", ".gemini", "GEMINI.md"),
   join(process.env.HOME ?? "", ".claude", "CLAUDE.md"),

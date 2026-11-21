@@ -4,6 +4,7 @@
 // before anything spawns. src/session/cli.ts owns the command and the
 // lifetime of what this phase returns.
 import { claudeModelNeedsPickerSettings, claudeProviderPickerSettings } from "../claude-family.js";
+import { claudeLoginDirectory } from "../claude-login.js";
 import {
   openProjectSettingsSessionConfigDir,
   projectSettingsConfigRoot,
@@ -21,7 +22,7 @@ import { assertCodexNoToolsCatalogVersion } from "../codex-no-tools.js";
 import { writeCodexProjectSettingsConfig } from "../codex-project-settings.js";
 import { pinCodexSessionCatalogBinary } from "./codex-catalog.js";
 import { populateCodexHermeticSessionHome } from "../hermetic-home.js";
-import { populateKimiHermeticSessionHome } from "../kimi-hermetic.js";
+import { populateKimiHermeticSessionHome, relinkKimiSessionHome } from "../kimi-hermetic.js";
 import { populateKimiPolicySessionHome } from "../kimi-run-policy.js";
 import { applyAgyIsolationSandboxBlocks } from "../launch/agy-isolation-sandbox.js";
 import { assertQuotaHeadroomForLaunch, resolveQuotaGate } from "../quota-gate.js";
@@ -42,10 +43,8 @@ import type { SessionAgentSupport } from "./cli-agents.js";
 import { agyHarnessHome, kimiHarnessHome } from "./cli-homes.js";
 import type { SessionCommandOptions } from "./cli-request.js";
 import { AGY_CONVERSATION_ID_PATTERN } from "./agy-session.js";
-import {
-  populateAgySessionPrivateHome,
-  verifyAgySessionPrivateHome,
-} from "./agy-private-home.js";
+import { migrateIdleLegacyAgyHomes } from "./agy-legacy-home.js";
+import { populateAgySessionPrivateHome, verifyAgySessionPrivateHome } from "./agy-private-home.js";
 import { CODEX_THREAD_ID_PATTERN } from "./codex-parse-facts.js";
 import { KIMI_SESSION_ID_PATTERN } from "./kimi-session.js";
 import { openSessionPrivateHome } from "./private-home.js";
@@ -203,14 +202,8 @@ export async function prepareSessionLaunch({
 
   adapter.beforeLaunch();
   if (options.sandbox && !options.printSandbox) {
-    // prepareSandbox is skipped on a print-only invocation for the same
-    // reason the run path skips it (launch.ts, review round 18, edges 2):
-    // the claude family's implementation refreshes or scrubs the
-    // operator's default credential mirror, and a print must not mutate
-    // authentication state. --harness-home runs it too (review R420 B1):
-    // it guards the mirror the caller home's access-only copy comes from.
-    // A caller home refuses --pass-env of the Claude profile redirects it
-    // sets (assertHarnessHomePassEnv), so none reaches this guard.
+    // Match run's print-only preparation boundary: previews must not
+    // mutate harness state. Claude's native login needs no preparation.
     adapter.prepareSandbox({ sandboxTrust, passthroughEnv });
   }
   // A codex override session's CODEX_HOME (review D1): created only
@@ -334,12 +327,12 @@ export async function prepareSessionLaunch({
   // (hermetic-home.ts; an override rides inside it instead, the
   // provider key being the credential), kimi's `.kimi-code` brand home
   // with the shared credential symlink and the copied short state, and
-  // agy's private Keychain login (agy-private-home.ts). A resumed agy
-  // home is verified to still carry its login — a resume would else
-  // launch unauthenticated and could store a fresh login into the
-  // private home. Nothing is linked from the operator's home except
-  // codex's auth.json and kimi's credentials, the two the run path
-  // links too. Opened after every refusing step and after the quota
+  // agy's native-login links (agy-private-home.ts). A resumed agy
+  // home must retain links to the authenticated source so refreshes
+  // reach the same native store. Linked state includes codex's
+  // auth.json, kimi's credentials, and agy's native login directory,
+  // optional security preferences, and existing file-fallback token.
+  // Opened after every refusing step and after the quota
   // gate, like the claude family's directory above; a throw past a
   // fresh populate removes the directory itself
   // (private-home.ts populateOrRemove).
@@ -348,7 +341,7 @@ export async function prepareSessionLaunch({
   if (options.harnessHome !== undefined) {
     const blockedPaths = harnessHomeBlockedPaths(process.env, undefined, workdir);
     const sourceHome = agentId === "codex" ? codexHome()
-      : agentId === "claude" || agentId === "zai" ? process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR || process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || homedir(), ".claude")
+      : agentId === "claude" || agentId === "zai" ? claudeLoginDirectory(process.env)
       : process.env.HOME || homedir();
     const apiKeyAuth = override !== null || callerHarnessHomeApiKeyAuth(agentId, process.env);
     if (sandboxOptions !== undefined) applyHarnessHomeSandboxBlocks(sandboxOptions, options.harnessHome, blockedPaths,
@@ -413,6 +406,7 @@ export async function prepareSessionLaunch({
           else populateKimiPolicySessionHome(dir, kimiSourceBrandHome);
         },
       });
+      if (resumeId !== undefined && !printOnly) relinkKimiSessionHome(sessionPrivateHome.dir, kimiSourceBrandHome);
     } else {
       // The agy policy question the run path answers with
       // withKeepEnvExemption (adapters/agy.ts): agy's getRunEnv carries
@@ -443,6 +437,8 @@ export async function prepareSessionLaunch({
           populateAgySessionPrivateHome(dir, agyHomeOptions);
         },
       });
+      // After the open: it validated the parent these homes sit under.
+      if (!printOnly) migrateIdleLegacyAgyHomes(dirname(sessionPrivateHome.dir), process.env.HOME || homedir(), resumeId);
       if (sandboxOptions !== undefined) {
         // A fresh home's name is minted at creation, so the caller-block
         // conflict check runs after the open against the exact path: a

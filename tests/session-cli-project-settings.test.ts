@@ -52,7 +52,7 @@ async function driveSession(
     stdout: "pipe",
     stderr: "pipe",
     stdin: "pipe",
-    env: { ...process.env, CODEMUX_NO_KEYCHAIN_SYNC: "1", ...env } as Record<string, string>,
+    env: { ...process.env, ...env } as Record<string, string>,
   });
   const events: Record<string, any>[] = [];
   const stdoutDone = (async () => {

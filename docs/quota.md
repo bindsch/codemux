@@ -29,10 +29,10 @@ stores and contact billing/usage APIs, but sends no model prompt. Usagemux must
 support the requested agents; an older version lacking newer agents can make
 an all-agent query fail. Use `-a` for a supported client or upgrade.
 
-With no `-a`, `codemux usage` queries every agent except agy, mirroring
-usagemux's own default client set: agy's probe can take up to 90 seconds, and
-a bare `codemux usage` stays fast. `-a agy` and `--all` include it. The full
-invocation codemux makes is one usagemux call per command:
+With no `-a`, `codemux usage` queries every agent, including agy. `--all`
+also includes every agent; `-a agy` selects only agy. Codemux does not inspect
+Keychain credentials to decide which clients to include. The full invocation
+is one usagemux call per command:
 
 ```
 usagemux snapshot --client <agent> [--client <agent> ...] --format json --timeout <seconds>

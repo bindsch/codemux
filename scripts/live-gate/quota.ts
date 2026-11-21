@@ -8,6 +8,7 @@
 import type { AgentId, QuotaPolicy } from "../../src/types.js";
 import type { UsageSnapshot } from "../../src/usage-protocol.js";
 import { gateOutcomeOnResult, snapshotFreshnessIssue } from "../../src/quota-gate.js";
+import { agyToolsNoneRefusal } from "../../src/adapters/agy.js";
 import type { ProbeResult } from "./runner.js";
 
 /** A provider or gate quota refusal seen in a probe's captured stderr.
@@ -16,8 +17,9 @@ import type { ProbeResult } from "./runner.js";
  *   `Error: quota gate: <agent>: ... below the ...% ceiling`;
  * - agy's `Individual quota reached` and `RESOURCE_EXHAUSTED (code 429)`;
  * - kimi's `provider.api_error: You've reached your weekly (7-day) usage
- *   limit. ...`. The runner retains the refusal independently of its
- *   bounded first-line preview. Older callers can still pass that preview.
+ *   limit. ...`. The runner decides on the run's final failure diagnostic
+ *   (the `quotaRefusal` field), independently of its bounded first-line
+ *   preview. Older callers can still pass that preview.
  * Anything else is a behavior failure and stays a FAIL. */
 export function quotaRefusalIn(result: ProbeResult): string | null {
   if (result.status !== "FAIL") return null;
@@ -39,6 +41,30 @@ export function providerQuotaRefusal(stderr: string): string | null {
   return null;
 }
 
+/**
+ * The only lines that may follow a quota refusal without ending it,
+ * matched exactly (review round 5). Each is printed by codemux about the
+ * refused run itself and adds no independent failure:
+ * - agy's `--tools none` refusal when the one attempted action is the
+ *   refusal's own `error_message` step. A trailer that lists any other
+ *   action reports real tool activity and is a behavior failure.
+ * - the agy isolation check's summary of a failed probe whose only
+ *   non-text steps were `error_message`, and its verdict line when both
+ *   the probe and the control failed.
+ * Any other line after a refusal makes the run a behavior failure.
+ */
+export function isQuotaRefusalTrailer(line: string): boolean {
+  if (line === `codemux: agy ${agyToolsNoneRefusal(["error_message"])}`) return true;
+  if (/^(?:HERMETIC|TOOLS) agy: FAIL \(probe failed, control failed\)$/.test(line)) return true;
+  const summary = /^probe summary: (\{.*\})$/.exec(line);
+  if (summary === null) return false;
+  try {
+    const parsed = JSON.parse(summary[1]!) as { passed?: unknown; attemptedActions?: unknown };
+    return parsed.passed === false && Array.isArray(parsed.attemptedActions) &&
+      parsed.attemptedActions.every((action) => action === "error_message");
+  } catch { return false; }
+}
+
 export interface GateQuotaDecision {
   /** The launch-path gate would refuse this harness (gateOutcomeOnResult
    * found a window below the ceiling): its probe cells skip instead of
@@ -53,8 +79,7 @@ export interface GateQuotaDecision {
  * over the client the agent spends from. A snapshot that is stale by the
  * gate's own freshness rule decides nothing — the gate, like the launch
  * path, fails open on an unreadable reading. An agent with no result row
- * (agy is excluded from the gate's own `usage --json` query because its
- * probe can take 90 seconds) decides nothing either: its probes spawn, and
+ * decides nothing either: its probes spawn, and
  * a provider refusal after the spawn is classified by quotaRefusalIn. */
 export function gateQuotaDecisions(
   snapshot: UsageSnapshot,

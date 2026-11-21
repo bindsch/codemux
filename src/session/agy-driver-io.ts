@@ -69,6 +69,9 @@ export interface AgyDriverOptions {
   sandboxBlock?: readonly string[];
   sandboxScrubEnv: boolean;
   sandboxStrict?: boolean;
+  sandboxNoLoginStore?: boolean;
+  sandboxLoginStore?: boolean;
+  sandboxLoginStoreDenied?: boolean;
   /** The `--pass-env` names the child runs with; recorded for the
    * resume guard (review live16). */
   passEnv: readonly string[];
@@ -171,6 +174,8 @@ export abstract class AgyDriverIo {
   protected readonly callLedger: SessionCallContext;
   private readonly done: Promise<number>;
   protected resolveDone!: (code: number) => void;
+
+  setSandboxLoginStoreDenied(denied: boolean): void { this.options.sandboxLoginStoreDenied = denied; }
 
   constructor(protected readonly options: AgyDriverOptions) {
     // Before anything with a cleanup of its own is created: a hermetic

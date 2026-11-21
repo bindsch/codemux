@@ -13,14 +13,14 @@ afterAll(async () => {
 test.each(HERMETIC_AGENTS)("%s records strict through the CLI driver and refuses a downgraded resume", async (agent) => {
   const fixture = hermeticFixture(agent);
   try {
-    const fresh = await fixture.run(["--sandbox-strict"]);
+    const fresh = await fixture.run(["--sandbox-strict"], { scodeVersion: "0.6.7" });
     expect(fresh.exitCode, fresh.stderr).toBe(0);
     const record = fixture.record();
     expect(record.sandbox_strict).toBe(true);
-    const refused = await fixture.run(["--resume", record.id]);
+    const refused = await fixture.run(["--resume", record.id], { scodeVersion: "0.6.7" });
     expect(refused.exitCalls, refused.stderr).toContain(78);
     expect(refused.stderr).toContain("--sandbox-strict");
-    const resumed = await fixture.run(["--sandbox-strict", "--resume", record.id]);
+    const resumed = await fixture.run(["--sandbox-strict", "--resume", record.id], { scodeVersion: "0.6.7" });
     expect(resumed.exitCode, resumed.stderr).toBe(0);
     expect(fixture.record().sandbox_strict).toBe(true);
   } finally { fixture.cleanup(); }

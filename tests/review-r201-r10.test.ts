@@ -78,14 +78,14 @@ test("Agy registry comment scopes the Playwright refusal to Agy", () => {
   expect(source).not.toContain("outside the claude family");
 });
 
-test("the merged changelog contains one unreleased section with all three lines of work", () => {
+test("the changelog retains one unreleased section and the merged 2.0.1 work", () => {
   const notes = read("CHANGELOG.md");
   expect(notes.match(/^## \[Unreleased\]$/gm)).toHaveLength(1);
   expect(notes).not.toMatch(/^(?:<{7}|={7}|>{7})/m);
-  const unreleased = notes.split("## [Unreleased]")[1]!.split("## [2.0.0]")[0]!;
-  expect(unreleased).toContain("`--sandbox-strict`");
-  expect(unreleased).toContain("`codemux complete serve|once`");
-  expect(unreleased).toContain("Session IDs reject path separators");
-  const bullets = unreleased.split("\n").filter((line) => line.startsWith("- "));
+  const release = notes.split("## [2.0.1]")[1]!.split("## [2.0.0]")[0]!;
+  expect(release).toContain("`--sandbox-strict`");
+  expect(release).toContain("`codemux complete serve|once`");
+  expect(release).toContain("Session IDs reject path separators");
+  const bullets = release.split("\n").filter((line) => line.startsWith("- "));
   expect(new Set(bullets).size).toBe(bullets.length);
 });

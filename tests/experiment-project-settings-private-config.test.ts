@@ -26,8 +26,7 @@ import type { RunRequest } from "../src/types.js";
 import * as experimentMcpModule from "../src/experiment-mcp.js";
 import * as projectSettingsModule from "../src/claude-project-settings.js";
 
-// An access-token-only mirror, the shape a scrubbed `~/.claude/
-// .credentials.json` holds: no refreshToken field at all.
+// Synthetic file-only login, without refresh authority.
 const CLEAN_MIRROR = JSON.stringify({
   claudeAiOauth: { accessToken: "at", expiresAt: 4102444800000, scopes: [] },
   mcpOAuth: { example: { access_token: "mcp-at" } },
@@ -101,9 +100,9 @@ describe("--experiment-project-settings: private config directory", () => {
     // Before the launch seam: state only, no credentials.
     expect(readdirSync(dir).sort()).toEqual([".claude.json"]);
     adapter.getRunEnv(req, context);
-    expect(readdirSync(dir).sort()).toEqual([".claude.json", ".credentials.json"]);
+    expect(readdirSync(dir).sort()).toEqual(process.platform === "darwin" ? [".claude.json"] : [".claude.json", ".credentials.json"]);
     expect((statSync(join(dir, ".claude.json")).mode & 0o777)).toBe(0o600);
-    expect((statSync(join(dir, ".credentials.json")).mode & 0o777)).toBe(0o600);
+    if (process.platform !== "darwin") expect((statSync(join(dir, ".credentials.json")).mode & 0o777)).toBe(0o600);
   });
 
   test("the generated .claude.json marks onboarding complete and trusts the working directory", () => {
@@ -120,24 +119,29 @@ describe("--experiment-project-settings: private config directory", () => {
     });
   });
 
-  test("claude copies only the mirror's claudeAiOauth; zai copies nothing", async () => {
+  test("Claude uses native macOS storage or a sanitized file copy; Z.AI copies nothing", async () => {
     const home = fakeHome(CLEAN_MIRROR);
     const cwd = fakeCwd();
     const claude = new ClaudeAdapter({ HOME: home });
     const claudeContext = prepare(claude, request("claude", cwd));
     const claudeEnv = claude.getRunEnv(request("claude", cwd), claudeContext);
-    expect(claudeEnv).toEqual({ CLAUDE_CONFIG_DIR: claudeContext.claudeProjectConfigDir!.dir });
+    expect(claudeEnv).toEqual({ CLAUDE_CONFIG_DIR: claudeContext.claudeProjectConfigDir!.dir,
+      ...(process.platform === "darwin" ? { CLAUDE_SECURESTORAGE_CONFIG_DIR: "" } : {}) });
     // The copy is built from the parsed claudeAiOauth alone (review round
     // 13): the co-stored mcpOAuth entry never reaches the private directory.
-    const copy = readFileSync(
+    if (process.platform === "darwin") {
+      expect(existsSync(join(claudeContext.claudeProjectConfigDir!.dir, ".credentials.json"))).toBe(false);
+    } else {
+      const copy = readFileSync(
       join(claudeContext.claudeProjectConfigDir!.dir, ".credentials.json"),
       "utf8"
     );
     expect(JSON.parse(copy)).toEqual({
-      claudeAiOauth: JSON.parse(CLEAN_MIRROR).claudeAiOauth,
+      claudeAiOauth: { ...JSON.parse(CLEAN_MIRROR).claudeAiOauth, refreshToken: "" },
     });
     expect(copy).not.toContain("mcpOAuth");
     expect(copy).not.toContain("mcp-at");
+    }
 
     const zai = new ZaiAdapter({ ZAI_API_KEY: "zai-key", HOME: home }, home);
     const zaiContext = prepare(zai, request("zai", cwd));
@@ -155,13 +159,16 @@ describe("--experiment-project-settings: private config directory", () => {
     expect(readdirSync(context.claudeProjectConfigDir!.dir)).toEqual([".claude.json"]);
   });
 
-  test("a mirror that still holds a refresh token refuses the run", () => {
+  test("a file-only login with a refresh token never refuses or changes the source", () => {
     const home = fakeHome(DIRTY_MIRROR);
     const cwd = fakeCwd();
     const adapter = new ClaudeAdapter({ HOME: home });
     const context = prepare(adapter, request("claude", cwd));
-    expect(() => adapter.getRunEnv(request("claude", cwd), context)).toThrow(/refresh token/);
-    expect(existsSync(join(context.claudeProjectConfigDir!.dir, ".credentials.json"))).toBe(false);
+    expect(() => adapter.getRunEnv(request("claude", cwd), context)).not.toThrow();
+    const copy = join(context.claudeProjectConfigDir!.dir, ".credentials.json");
+    expect(existsSync(copy)).toBe(process.platform !== "darwin");
+    if (process.platform !== "darwin") expect(readFileSync(copy, "utf8")).not.toContain("must-not-travel");
+    expect(readFileSync(join(home, ".claude", ".credentials.json"), "utf8")).toBe(DIRTY_MIRROR);
   });
 
   test("cleanup removes the directory; finalize alone is idempotent", async () => {

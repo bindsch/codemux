@@ -45,6 +45,7 @@ import type {
   AdapterCapabilities,
 } from "../types.js";
 import { claudeLoginState, loginHome, type LoginState } from "../harness-health.js";
+import { alignClaudeSecureStorage, claudeSecureStorageEnv } from "../claude-login.js";
 
 /**
  * What the CHILD Claude sees that shapes an oversize-result spill, for the
@@ -87,7 +88,17 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
   override resultModel(request: RunRequest): string | undefined { return this.modelFor(request.model); }
 
   override getEnv(): Record<string, string> {
-    return claudeProviderEnv(this.validatedProvider());
+    const provider = this.validatedProvider();
+    return { ...claudeProviderEnv(provider), ...(provider === null ? claudeSecureStorageEnv(this.environment) : {}) };
+  }
+
+  /** The login selection follows the environment the child receives
+   * (alignClaudeSecureStorage): the sandbox grants read the same map. */
+  override buildExecutionEnv(extraEnv: Record<string, string> = {}, passthroughEnv: readonly string[] = [],
+    launch: LaunchIntent = {}): Record<string, string> {
+    const env = super.buildExecutionEnv(extraEnv, passthroughEnv, launch);
+    alignClaudeSecureStorage(env, this.environment);
+    return env;
   }
 
   override getEnvOmissions(): readonly string[] {
@@ -201,12 +212,9 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
    * CLAUDE_CONFIG_DIR pointed at the private directory (a run's own, or
    * the session-keyed one the CLI opened — plain --hermetic and the
    * project-settings mode share the divider in claude-project-config.ts),
-   * plus the credential copy made here — after prepareSandbox refreshed
-   * the default mirror, before the child reads <private>/.credentials.json
-   * — unless the context defers the copy (deferCredentialCopy: a pre-claim
-   * probe or print answers the environment without writing). A provider
-   * override authenticates with its own token, so nothing of the
-   * operator's login is copied; Z.AI rides its gateway token (zai.ts).
+   * plus the existing native login namespace on macOS. Other platforms
+   * copy an access token unless a pre-claim probe defers that copy.
+   * Provider overrides and Z.AI use their gateway token exclusively.
    */
   override getRunEnv(request: RunRequest, context?: RunContext): Record<string, string> {
     const env = projectSettingsOrHermeticHome(request, context?.claudeProjectConfigDir);
@@ -217,14 +225,15 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
     ) {
       copyClaudeCredentialMirror(env.CLAUDE_CONFIG_DIR, this.credentialTarget());
     }
-    return env;
+    return { ...env, ...(readProviderOverride("claude", this.environment) === null
+      ? claudeSecureStorageEnv(this.environment) : {}) };
   }
 
   override async cleanupRun(context?: RunContext): Promise<void> {
     try {
       await context?.experimentBridge?.close();
     } finally {
-      // The token copy dies with the directory.
+      // The non-macOS access-token copy dies with the directory.
       context?.claudeProjectConfigDir?.finalize();
     }
   }
@@ -429,8 +438,8 @@ export class ClaudeAdapter extends ClaudeCredentialAdapter {
     return cmd;
   }
 
-  /** The claude login read: the mirror's expiry (see harness-health). */
+  /** File evidence or unknown native login state; never a Keychain query. */
   override loginState(): LoginState {
-    return claudeLoginState(loginHome(this.environment));
+    return claudeLoginState(loginHome(this.environment), this.environment);
   }
 }

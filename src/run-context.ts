@@ -44,13 +44,13 @@ import type { PiProviderAgentDir } from "./pi-provider.js";
  * state.
  */
 export interface RunContext {
+  sandboxLoginStoreDenied?: boolean;
   /** Paths only: builders and cleanup must perform no artifact I/O. */
   printOnly?: boolean;
   /** Installed version from the compatibility probe; absent or null when unknown. */
   harnessVersion?: string | null;
   /** Agy private HOME for every sandboxed run; mode also selects native stream handling. */
-  // printOnly: a --print-sandbox preparation that created no Keychain state,
-  // so cleanup invokes no `security` command either.
+  // printOnly names a home without creating any state.
   agyProbe?: { mode: string; home?: string; operatorHome?: string; diagnostic?: boolean; printOnly?: boolean };
   experimentBridge?: ExperimentBridge;
   experimentCodex?: ExperimentCodexRun;
@@ -70,8 +70,8 @@ export interface RunContext {
    * Claude/Z.AI: this run's private CLAUDE_CONFIG_DIR, when
    * --experiment-project-settings is set. Holds the generated
    * `.claude.json` (onboarding complete, the working directory trusted)
-   * and, on a run that authenticates through the operator's Claude login,
-   * an access-token-only credential copy. cleanupRun removes it.
+   * and, outside macOS, an access-token-only credential copy for a run
+   * using the operator's Claude login. cleanupRun removes private state.
    */
   claudeProjectConfigDir?: ClaudeProjectConfigDir;
   /**

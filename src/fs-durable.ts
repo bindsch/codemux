@@ -3,7 +3,7 @@
  * readers: create exclusively, state the mode on the descriptor, write
  * the whole payload, fsync it, and publish by rename. Two rules live here
  * because two modules share them (the session registry's atomic replace
- * and the credential mirror's rewrite, review round 401, items 1 and 6):
+ * and private file writes, review round 401, items 1 and 6):
  * the open mode is masked by the process umask, so the mode is fchmod'd
  * on the descriptor after the open — the mode is stated whatever the
  * umask is — and a rename without a preceding fsync can publish a torn

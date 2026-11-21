@@ -73,11 +73,11 @@ describe("hermetic runs: codex", () => {
     expect(profiled.home.startsWith(join(profile, ".codex", ".codemux-hermetic"))).toBe(true);
   });
 
-  test("refuses a missing file login and explains the Keychain case", () => {
+  test("refuses a missing required file without inferring native login state", () => {
     const home = mkdtempSync(join(tmpdir(), "codemux-codex-nologin-"));
     scratch.push(home);
     expect(() => codexAdapter({}, home).prepareRun({ agent: "codex", prompt: "p", hermetic: true }))
-      .toThrow(/need a file login.*Keychain.*CODEX_API_KEY/s);
+      .toThrow(/need a file login.*CODEX_API_KEY.*Native authentication has not been checked/s);
   });
 
   test("CODEX_API_KEY makes the run API-key-only: no login is linked, with or without a login file", () => {

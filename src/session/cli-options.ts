@@ -11,7 +11,7 @@ import { AGENT_IDS } from "../types.js";
 /** Help lists come from the declarations, so the text cannot drift from them. */
 const agents = (feature: SessionFeature): string => agentsSupporting(feature).join(", ");
 
-export function registerSessionOptions(command: Command, defaultAgent: string): void {
+export function registerSessionOptions(command: Command, defaultAgent: string, sandboxNoLoginStore?: boolean, sandboxLoginStore?: boolean): void {
   command
     .option("-a, --agent <agent>", `Session agent: ${AGENT_IDS.filter((id) => SESSION_AGENTS[id] !== undefined).join(", ")}`, defaultAgent)
     .option("-m, --model <model>", "Model to use (supports aliases)")
@@ -48,6 +48,8 @@ export function registerSessionOptions(command: Command, defaultAgent: string): 
     .option("--no-sandbox", "Run without the scode boundary (autonomy below high is unavailable)")
     .option("--sandbox-trust <level>", "scode trust override: trusted or standard (untrusted refused for sandboxed sessions)")
     .option("--sandbox-no-net", "Pass --no-net to scode when sandboxed")
+    .option("--sandbox-no-login-store", "Omit native login-store grants; Keychain login cannot be used", sandboxNoLoginStore)
+    .option("--sandbox-login-store", "Opt in to native login-store access for sandboxed processes", sandboxLoginStore)
     .option("--sandbox-strict", "Pass --strict to scode (deny-default); requires --sandbox and must match on resume")
     .option("--sandbox-scrub-env", "Pass --scrub-env to scode when sandboxed")
     .option(

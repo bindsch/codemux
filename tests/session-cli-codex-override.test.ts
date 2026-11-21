@@ -335,7 +335,6 @@ describe("CLI - codex sessions under a provider override", () => {
             stdin: "ignore",
             env: {
               ...process.env,
-              CODEMUX_NO_KEYCHAIN_SYNC: "1",
               ...overrideEnv(fake, isolatedHome, workdir),
             } as Record<string, string>,
           }

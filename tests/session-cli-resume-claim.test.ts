@@ -79,7 +79,6 @@ describe("CLI - concurrent resume (review live19)", () => {
         stdin: "pipe",
         env: {
           ...process.env,
-          CODEMUX_NO_KEYCHAIN_SYNC: "1",
           HOME: home,
           XDG_CONFIG_HOME: join(home, ".config"),
           ...fake.env,

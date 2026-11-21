@@ -10,6 +10,7 @@ import { normalizeClaudeUsage } from "../../result-envelope.js";
 import type { ResultUsageBlock } from "../../types.js";
 import { isAnswerableRequestId } from "../protocol.js";
 import { unusableFacts } from "../process.js";
+import { claudeErrorText, claudeLoginAdvice } from "../../claude-login-advice.js";
 
 /** What one harness line resolves to. The driver owns the FSM and the
  * pending set; these are the parser's facts. */
@@ -32,6 +33,8 @@ export type ClaudeParse =
   | {
       kind: "turn_completed";
       isError: boolean;
+      loginAdvice?: string;
+      loginStoreAdvice?: string;
       reason: string | null;
       usage: ResultUsageBlock;
       /** The `modelUsage` keys the result named, empty when the field is
@@ -254,10 +257,14 @@ export class ClaudeStreamParser {
         // driver pairs the bit with that state (review live12); the parser
         // reports what the wire said.
         const isError = event["is_error"] === true || errorSubtype !== null;
+        const loginAdvice = claudeLoginAdvice(isError, claudeErrorText(event));
+        const loginStoreAdvice = claudeLoginAdvice(isError, claudeErrorText(event), true);
         return [
           {
             kind: "turn_completed",
             isError,
+            ...(loginAdvice === null ? {} : { loginAdvice }),
+            ...(loginStoreAdvice === null ? {} : { loginStoreAdvice }),
             reason: typeof event.subtype === "string" ? event.subtype : null,
             usage: normalizeClaudeUsage(event["usage"], event["total_cost_usd"]),
             // The round-211 record check (result-envelope/claude.ts): an

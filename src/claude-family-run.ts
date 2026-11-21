@@ -9,6 +9,7 @@ import { claudeFamilyPlainResult } from "./plain-unwrap.js";
 import { appendDiagnostic, claudeFamilyResult } from "./result-envelope.js";
 import { withStreamScanSurface } from "./stream-marker-scan.js";
 import type { AgentId, RunRequest, RunResult } from "./types.js";
+import { claudeErrorText, claudeLoginAdvice } from "./claude-login-advice.js";
 
 /** The stdout fold of an ordinary (non-experiment) run: every run reads
  * the stream-json wire, because the `json` format's `result` is the final
@@ -47,6 +48,12 @@ export function claudeFamilyRunResult(
   // holds the stream the messages ride.
   const stream = claudeStreamAnswer(bridge ? bridge.scanSurface() : result.stdout);
   const frame = stream.resultFrame;
+  if (agent === "claude") {
+    const failed = result.exitCode !== 0 || frame?.is_error === true ||
+      (typeof frame?.subtype === "string" && frame.subtype.startsWith("error"));
+    const advice = claudeLoginAdvice(failed, `${result.stderr}\n${frame ? claudeErrorText(frame) : ""}`, context?.sandboxLoginStoreDenied);
+    if (advice !== null) result = { ...result, stderr: appendDiagnostic(result.stderr, advice) };
+  }
   let fields = null;
   if (frame !== null) {
     const harnessAnswer = typeof frame.result === "string" ? frame.result : null;

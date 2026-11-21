@@ -47,7 +47,7 @@ export function registerInfoCommands(
     .command("usage")
     .description("Show subscription usage through optional usagemux integration")
     .option("-a, --agent <agent>", "Query a single agent")
-    .option("--all", "Query all agents, agy included (the no-agent default excludes agy, whose probe is slow)")
+    .option("--all", "Query all agents (also the default)")
     .option("--json", "Emit the validated usagemux JSON response")
     .option("--timeout <seconds>", "Maximum usage query time in seconds", "30")
     .action(async (options) => {
@@ -74,14 +74,9 @@ export function registerInfoCommands(
         if (status.issue !== null) {
           throw new UsageIntegrationUnavailableError(status.issue);
         }
-        // agy is excluded from the default set, mirroring usagemux's own
-        // DEFAULT_CLIENTS: its probe can take up to 90 seconds, so a bare
-        // `codemux usage` stays fast. `-a agy` and `--all` include it.
         const clients: readonly AgentId[] = agent
           ? [agent as AgentId]
-          : options.all
-            ? AGENT_IDS
-            : AGENT_IDS.filter((id) => id !== "agy");
+          : AGENT_IDS;
         const snapshot = await fetchUsageSnapshot(clients, timeoutMs);
         // A nonzero usagemux exit never reaches here (fetchUsageSnapshot
         // treats it as an unreadable query); 69 stays reserved for the

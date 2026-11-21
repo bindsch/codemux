@@ -129,6 +129,7 @@ export async function runMachineCheck(
         scode,
         usagePolicy,
         usagemuxPresent: usagemux.state !== "USAGEMUX-MISSING",
+        config,
       })
     )
   );

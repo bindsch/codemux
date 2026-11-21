@@ -8,7 +8,7 @@ import { join, resolve } from "node:path";
 import type { ReadableStreamDefaultReader } from "node:stream/web";
 import { FORCE_KILL_DELAY_MS, PIPE_GIVE_UP_MS, signalProcess } from "../../src/process-runner.js";
 import { createTerminationTarget, waitForDescendantsGrace, type TerminationTarget } from "../../src/process-tree.js";
-import { providerQuotaRefusal } from "./quota.js";
+import { isQuotaRefusalTrailer, providerQuotaRefusal } from "./quota.js";
 
 const STDERR_LIMIT = 160;
 const DIAGNOSTIC_LINE_LIMIT = 4096;
@@ -30,8 +30,11 @@ export interface ProbeResult {
   seconds: number;
   stderr: string;
   note?: string;
-  /** The last non-Warning stderr line's quota classification; null when
-   * it was no refusal. Runner-built PASS results omit this field. */
+  /** The quota classification of the run's final failure diagnostic: the
+   * last non-Warning stderr line of a run that exited nonzero, or that
+   * line followed only by codemux's own exact trailers about the refusal
+   * (isQuotaRefusalTrailer). Null when the run failed for any other
+   * reason. PASS results omit it. */
   quotaRefusal?: string | null;
 }
 
@@ -305,9 +308,15 @@ export class ProbeRunner {
       pendingLine = "";
       const trimmed = line.trim();
       if (trimmed === "" || /^Running with/.test(trimmed)) return;
-      // Only the last non-Warning stderr line decides: a refusal followed
-      // by unrelated output is a behavior failure, not an account state.
-      if (!/^Warning:/i.test(trimmed)) quotaRefusal = providerQuotaRefusal(trimmed);
+      // Only the final failure diagnostic decides (review round 5): a
+      // refusal followed by any line other than codemux's own exact
+      // trailers about it is a behavior failure, not an account state. A
+      // refusal seen earlier in a run that went on is never kept.
+      if (!/^Warning:/i.test(trimmed)) {
+        const refusal = providerQuotaRefusal(trimmed);
+        if (refusal !== null) quotaRefusal = refusal;
+        else if (quotaRefusal !== null && !isQuotaRefusalTrailer(trimmed)) quotaRefusal = null;
+      }
       if (/^Warning:/.test(trimmed)) {
         if (warnings.length < STDERR_WARNING_CAP) warnings.push(escapeControls(trimmed).slice(0, STDERR_LIMIT));
       } else if (!stderr) {
@@ -328,6 +337,10 @@ export class ProbeRunner {
         Promise.race([proc.exited, abandonedExit]), stdout, errors,
       ]);
       finishLine();
+      // A run that exited zero, or that the runner itself stopped, has no
+      // refusal as its failure: a transient rate limit the harness retried
+      // through must not turn a wrong answer into a quota SKIP.
+      if (exit === 0 || reason) quotaRefusal = null;
       const note = [
         ...warnings,
         ...(truncated ? [`stdout truncated at ${CAPTURE_LIMIT} characters`] : []),
@@ -359,6 +372,7 @@ export class ProbeRunner {
       void stderrReader.cancel().catch(ignoreRejection);
       await Promise.race([proc.exited, abandonedExit]).catch(ignoreRejection);
       finishLine();
+      quotaRefusal = null;
       return failed(reason || stderr, warnings[0]);
     } finally {
       // A script whose last frame never fired (the child exited before any

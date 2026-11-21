@@ -30,9 +30,11 @@ import { fileStoreLoginState, loginHome, type LoginState } from "../harness-heal
  */
 export const CURSOR_ENTRY_ENV = "CODEMUX_CURSOR_ENTRY";
 const CREDENTIAL_STORE_ENV = "AGENT_CLI_CREDENTIAL_STORE";
-const AUTHENTICATION_HINT = "codemux: cursor's default login lives in the macOS Keychain, which the sandbox blocks; " +
-  "log in once with the file store (AGENT_CLI_CREDENTIAL_STORE=file cursor-agent login), " +
-  "pass an API key or auth token, or run with --no-sandbox";
+// The sandbox cannot reach the macOS Keychain, so the login must land in
+// the file store the sandbox reads: the hint names that spelling.
+const AUTHENTICATION_HINT = "codemux: cursor reported authentication required; the sandbox cannot reach the macOS Keychain login, " +
+  "so log in with the file store (AGENT_CLI_CREDENTIAL_STORE=file cursor-agent login), " +
+  "or pass an API key or auth token";
 
 /**
  * One of the entries a launch may run. By default the standalone

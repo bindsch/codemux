@@ -103,7 +103,7 @@ for (const version of ["0.6.6", "0.6.7"] as const) {
     process.env.PATH = f.env.PATH;
     try {
       const features = await verifiedScodeFeatures(cwd);
-      expect(features).toEqual({ allowRo: version === "0.6.7" });
+      expect(features).toEqual({ allowRo: version === "0.6.7", allowStaged: false, noLoginStore: false, noCredentialSync: true });
       for (const policy of [{ strict: true }, { trust: "untrusted" as const }]) {
         const command = ["/usr/bin/env", "A=b", "/usr/bin/env", "C=d", binaries[2]!];
         const row = verifiedScodeCommand(command, cwd, "low", policy, features);

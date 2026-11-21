@@ -50,6 +50,8 @@ export interface OpenCodeDriverOptions {
   sandboxBlock?: readonly string[];
   sandboxScrubEnv: boolean;
   sandboxStrict?: boolean;
+  sandboxNoLoginStore?: boolean;
+  sandboxLoginStore?: boolean;
   /** The `--pass-env` names the child runs with; recorded for the
    * resume guard. */
   passEnv: readonly string[];

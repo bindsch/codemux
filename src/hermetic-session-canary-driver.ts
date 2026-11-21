@@ -32,7 +32,7 @@ export const sessionCanaryCommand = (): string[] => [
   join(ROOT, "src", "index.ts"),
 ];
 /** The seams the tests point elsewhere: the codemux command the canary
- * drives, and the Claude credential mirror the claude control copies
+ * drives, and the non-macOS Claude credential file the control copies
  * (src/hermetic-session-canary.ts). The test preload points the mirror at
  * a scratch path, so no in-process test reads the operator's real login. */
 export const sessionCanaryCredentialSource = (): string => claudeCredentialTarget(process.env.HOME || homedir());

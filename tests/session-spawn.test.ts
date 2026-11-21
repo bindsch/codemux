@@ -46,6 +46,7 @@ describe("spawnSessionChild scode parity", () => {
       `#!/bin/sh\nif [ "$1" = "--version" ]; then printf 'scode 0.2.1\\n'; exit 0; fi\n` +
         `for a in "$@"; do printf '%s\\n' "$a" >> '${argvPath}'; done\n` +
         `env | LC_ALL=C sort > '${envPath}'\n` +
+        `while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done\nshift\n` +
         `exec "$@"\n`
     );
     chmodSync(scodeScript, 0o755);
@@ -115,8 +116,13 @@ describe("spawnSessionChild scode parity", () => {
           realWorkDir,
           "medium",
           sandboxOptions,
-          scode
+          scode,
+          childEnv,
+          // The fake scode reports 0.2.1: no capability flag, and no
+          // --no-credential-sync, which scode added in 0.4.0.
+          false, false, false, undefined, false
         );
+        expect(expected).not.toContain("--no-credential-sync");
         expect([scode, ...recorded]).toEqual(expected);
 
         // Environment parity: the child saw exactly what the shared

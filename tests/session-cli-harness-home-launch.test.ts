@@ -12,9 +12,7 @@ import { ZaiAdapter } from "../src/adapters/zai.js";
 import { outcomeEvents, polledEvents, removeDir, runSessionCommand, tempWorkdir, waitForEvent } from "./helpers/session-command.js";
 import { type HomeObservation } from "./helpers/session-cli-hermetic.js";
 import { registerNoLeakedSignals } from "./helpers/signal-listeners.js";
-
 registerNoLeakedSignals();
-
 type Agent = "claude" | "zai" | "codex";
 const AGENTS: Agent[] = ["claude", "zai", "codex"];
 const PASS_ENV = ["FAKE_STATE_DIR", "CODEMUX_TEST_SCODE_ARGV"];
@@ -47,7 +45,7 @@ function fixture(agent: Agent) {
     HOME: home, USERPROFILE: undefined,
     XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local", "share"),
     XDG_CACHE_HOME: join(home, ".cache"), XDG_STATE_HOME: join(home, ".local", "state"),
-    CODEMUX_NO_KEYCHAIN_SYNC: "1", FAKE_STATE_DIR: state,
+    FAKE_STATE_DIR: state,
     CODEMUX_TEST_SCODE_ARGV: join(state, "scode.txt"),
     CODEX_HOME: undefined, CLAUDE_CONFIG_DIR: undefined, KIMI_CODE_HOME: undefined,
     CODEX_API_KEY: undefined, OPENAI_API_KEY: undefined, ANTHROPIC_API_KEY: undefined,
@@ -65,11 +63,9 @@ function fixture(agent: Agent) {
   const observer = join(import.meta.dir, "helpers", "session-cli-hermetic-observe.ts");
   const binaries = {
     [agent === "codex" ? "codex" : "claude"]:
-      "export CODEMUX_NO_KEYCHAIN_SYNC=1\n" +
       `if [ "$1" = "--version" ]; then printf '${agent === "codex" ? "codex-cli 0.159.3" : "2.1.280"}\\n'; exit 0; fi\n` +
       `exec bun --preload ${quote(observer)} ${quote(script)} "$@"`,
-    scode: "export CODEMUX_NO_KEYCHAIN_SYNC=1\n" +
-      'printf "%s\\n" "$HOME" "$XDG_CONFIG_HOME" >> "$CODEMUX_TEST_SCODE_ARGV.home"\n' +
+    scode: 'printf "%s\\n" "$HOME" "$XDG_CONFIG_HOME" >> "$CODEMUX_TEST_SCODE_ARGV.home"\n' +
       "printf 'BEGIN\\n' >> \"$CODEMUX_TEST_SCODE_ARGV\"\nprintf '%s\\n' \"$@\" >> \"$CODEMUX_TEST_SCODE_ARGV\"\n" +
       'while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done\n' +
       '[ "$#" -gt 0 ] || exit 99\nshift\nexec "$@"',
@@ -139,7 +135,10 @@ function started(turn: Turn, turns = 1): string {
 
 function sandboxPolicy(argv: string[], s: Fixture) {
   const values = (flag: string) => argv.filter((_, index) => argv[index - 1] === flag);
-  expect(values("--allow")).toEqual([s.caller]);
+  const allowed = values("--allow");
+  expect(allowed).toContain(s.caller);
+  for (const path of allowed) expect(path === s.caller || path.startsWith(`${s.home}/.claude`)
+    || /\/codemux-cli-bin-[^/]+\/(claude|codex)$/.test(path)).toBe(true);
   const blocks = values("--block");
   for (const path of [".claude", ".claude.json", ".codex", ".kimi-code", ".gemini", ".zai"]) {
     expect(blocks).toContain(join(s.home, path));
@@ -169,22 +168,19 @@ test("claude rebuilds the access-only login after async sandbox preflight", asyn
   });
   try {
     started(await s.run(s.flags));
-    expect(JSON.parse(readFileSync(s.targetLogin, "utf8"))).toEqual(accessOnly("synthetic-access-b"));
-    expect(statSync(s.targetLogin).ino).not.toBe(statSync(s.sourceLogin).ino);
+    expect(existsSync(s.targetLogin)).toBe(process.platform !== "darwin");
+    if (process.platform !== "darwin") expect(JSON.parse(readFileSync(s.targetLogin, "utf8"))).toEqual(accessOnly("synthetic-access-b"));
+    expect(readFileSync(s.sourceLogin, "utf8")).toBe(claudeLogin("synthetic-access-b"));
   } finally { preflight.mockRestore(); s.cleanup(); }
 });
 
-// Review R420 B1: a refresh-token mirror refuses the caller-home launch, and
-// the sandboxed guard runs for --harness-home sessions too.
-test("claude refuses a caller-home launch whose mirror carries a refresh token", async () => {
+test("claude allows a file-only source with a refresh token without changing it", async () => {
   const s = fixture("claude");
   try {
     writeFileSync(s.sourceLogin, claudeLogin("synthetic-access-a", "synthetic-refresh"), { mode: 0o600 });
-    const outcome = await s.invoke(s.flags);
-    expect(outcome.exitCode).not.toBe(0);
-    expect(outcome.stderr).toContain("holds a refresh token");
-    expect(existsSync(s.targetLogin)).toBe(false);
-    expect(s.observations()).toHaveLength(0);
+    started(await s.run(s.flags));
+    expect(existsSync(s.targetLogin)).toBe(process.platform !== "darwin");
+    expect(readFileSync(s.sourceLogin, "utf8")).toBe(claudeLogin("synthetic-access-a", "synthetic-refresh"));
   } finally { s.cleanup(); }
 });
 
@@ -243,7 +239,7 @@ test.each(["claude", "zai"] as Agent[])("%s cannot drop caller isolation through
   } finally { s.cleanup(); }
 });
 
-test("Claude secure storage stays inside the caller home", async () => {
+test("Claude secure storage preserves the operator namespace on macOS", async () => {
   const s = fixture("claude");
   try {
     const secure = join(s.root, "alternate-secure-storage");
@@ -251,7 +247,7 @@ test("Claude secure storage stays inside the caller home", async () => {
     const outcome = await s.invoke([...s.flags, "--print-sandbox"]);
     expect(outcome.exitCode, outcome.stderr).toBe(0);
     const argv = outcome.stdout.trim().split("\n");
-    expect(argv).toContain(`CLAUDE_SECURESTORAGE_CONFIG_DIR=${s.caller}`);
+    if (process.platform === "darwin") expect(argv).toContain(`CLAUDE_SECURESTORAGE_CONFIG_DIR=${secure}`);
     expect(argv.filter((_, index) => argv[index - 1] === "--block")).toContain(secure);
   } finally { s.cleanup(); }
 });
@@ -265,8 +261,9 @@ test("Claude copies only the independently redirected secure-storage login", asy
   s.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = secure;
   try {
     started(await s.run(s.flags));
-    expect(JSON.parse(readFileSync(s.targetLogin, "utf8"))).toEqual(accessOnly("synthetic-alternate-access"));
-    expect(statSync(s.targetLogin).ino).not.toBe(statSync(login).ino);
+    expect(existsSync(s.targetLogin)).toBe(process.platform !== "darwin");
+    if (process.platform !== "darwin") expect(JSON.parse(readFileSync(s.targetLogin, "utf8"))).toEqual(accessOnly("synthetic-alternate-access"));
+    expect(readFileSync(login, "utf8")).toBe(claudeLogin("synthetic-alternate-access"));
   } finally { s.cleanup(); }
 });
 
@@ -295,23 +292,21 @@ describe("caller harness homes through the session CLI", () => {
       const id = started(initial, 2);
       expect(initial.events.find((event) => event.type === "session_started")?.private_home).toBe(s.caller);
       const first = s.observations()[0]!;
-      expect(first.home).toBe(s.caller);
+      expect(first.home).toBe(agent === "claude" && process.platform === "darwin" ? s.home : s.caller);
       expect(first.previous).toBeNull();
       expect(first.mode).toBe(0o700);
-      expect(s.record().hermetic).toBe(false);
-      expect(s.record().caller_owned_home).toBe(true);
-      expect(s.record().harness_home).toBe(s.caller);
-      expect(s.record().ended).toBeTruthy();
+      expect(s.record()).toMatchObject({ hermetic: false, caller_owned_home: true });
+      expect(s.record()).toMatchObject({ harness_home: s.caller, ended: expect.any(String) });
       const configRoot = agent === "codex" ? join(s.caller, ".codex") : s.caller;
       const policy = join(configRoot, agent === "codex" ? "config.toml" : "settings.json");
       expect(existsSync(policy)).toBe(false);
       expect(readdirSync(configRoot).filter((name) => ![".cache", ".config", ".local"].includes(name)).sort()).toEqual(agent === "codex" ? ["auth.json"]
-        : agent === "claude" ? [".credentials.json", "synthetic-session-state"] : ["synthetic-session-state"]);
+        : agent === "claude" && process.platform !== "darwin" ? [".credentials.json", "synthetic-session-state"] : ["synthetic-session-state"]);
       const contents = agent === "codex" ? 'model = "caller-model"\n' : '{"caller_policy":true}\n';
       writeFileSync(policy, contents, { mode: 0o600 });
       const instructions = join(configRoot, agent === "codex" ? "AGENTS.md" : "CLAUDE.md");
       writeFileSync(instructions, "Caller instructions persist.\n");
-      if (agent === "zai") {
+      if (agent === "zai" || (agent === "claude" && process.platform === "darwin")) {
         expect(existsSync(s.targetLogin)).toBe(false);
       } else if (agent === "claude") {
         expect(JSON.parse(readFileSync(s.targetLogin, "utf8"))).toEqual(accessOnly("synthetic-access-a"));
@@ -327,14 +322,13 @@ describe("caller harness homes through the session CLI", () => {
       expect(readFileSync(policy, "utf8")).toBe(contents);
       expect(readFileSync(instructions, "utf8")).toBe("Caller instructions persist.\n");
       expect(readFileSync(join(s.caller, "synthetic-session-state"), "utf8")).toBe(first.state);
-      expect(s.record().harness_home).toBe(s.caller);
-      expect(s.record().hermetic).toBe(false);
+      expect(s.record()).toMatchObject({ harness_home: s.caller, hermetic: false });
       const observations = s.observations();
       expect(observations).toHaveLength(3);
       expect(readFileSync(join(s.state, "scode.txt.home"), "utf8").trim().split("\n"))
         .toEqual(Array.from({ length: 3 }, () => [s.home, join(s.home, ".config")]).flat());
       for (const [index, observation] of observations.entries()) {
-        expect(observation.home).toBe(s.caller);
+        expect(observation.home).toBe(agent === "claude" && process.platform === "darwin" ? s.home : s.caller);
         expect(observation.state).toBe(first.state);
         expect(observation.previous).toBe(index === 0 ? null : first.state);
         if (agent === "codex") expect(observation.codexHome).toBe(join(s.caller, ".codex"));
@@ -460,19 +454,23 @@ describe("caller harness homes through the session CLI", () => {
     } finally { s.cleanup(); }
   }, 30_000);
 
-  test("claude: a replaced private login is rebuilt and a symlinked one refuses before restart", async () => {
+  test("claude: Linux rebuilds private logins; macOS never inspects planted plaintext", async () => {
     const s = fixture("claude");
     try {
       const id = started(await s.run(s.flags));
       writeFileSync(s.targetLogin, claudeLogin("planted-access", "planted-refresh"), { mode: 0o600 });
       expect(started(await s.run([...s.flags, "--resume", id]))).toBe(id);
-      expect(JSON.parse(readFileSync(s.targetLogin, "utf8"))).toEqual(accessOnly("synthetic-access-a"));
+      expect(JSON.parse(readFileSync(s.targetLogin, "utf8"))).toEqual(process.platform === "darwin"
+        ? JSON.parse(claudeLogin("planted-access", "planted-refresh")) : accessOnly("synthetic-access-a"));
       renameSync(s.targetLogin, join(s.root, "replacement-login"));
       symlinkSync(s.sourceLogin, s.targetLogin);
-      const symlinked = await s.invoke([...s.flags, "--resume", id]);
-      expect(symlinked.exitCode).not.toBe(0);
-      expect(symlinked.stderr).toContain("not a regular file");
-      expect(s.observations()).toHaveLength(2);
+      if (process.platform === "darwin") started(await s.run([...s.flags, "--resume", id]));
+      else {
+        const symlinked = await s.invoke([...s.flags, "--resume", id]);
+        expect(symlinked.exitCode).not.toBe(0);
+        expect(symlinked.stderr).toContain("not a regular file");
+      }
+      expect(s.observations()).toHaveLength(process.platform === "darwin" ? 3 : 2);
       expect(readFileSync(s.sourceLogin, "utf8")).toBe(claudeLogin("synthetic-access-a"));
     } finally { s.cleanup(); }
   }, 30_000);

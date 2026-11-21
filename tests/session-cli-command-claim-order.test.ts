@@ -108,7 +108,7 @@ describe("a project-settings resume writes nothing before the claim", () => {
         { claude: FAKE_CLAUDE, scode: "exit 9" },
         {
           registryFile: staged.registry,
-          env: { HOME: staged.home, CODEMUX_NO_KEYCHAIN_SYNC: "1" },
+          env: { HOME: staged.home },
         }
       );
       expect(outcome.exitCalls[0]).toBe(78);
@@ -153,7 +153,7 @@ describe("a project-settings resume writes nothing before the claim", () => {
         { claude: FAKE_CLAUDE, scode: "exit 9" },
         {
           registryFile: staged.registry,
-          env: { HOME: staged.home, CODEMUX_NO_KEYCHAIN_SYNC: "1" },
+          env: { HOME: staged.home },
         }
       );
       expect(outcome.exitCode).toBe(0);
@@ -197,7 +197,7 @@ describe("a project-settings resume writes nothing before the claim", () => {
       { claude: FAKE_CLAUDE, scode: "exit 9" },
       {
         registryFile: staged.registry,
-        env: { HOME: staged.home, CODEMUX_NO_KEYCHAIN_SYNC: "1" },
+        env: { HOME: staged.home },
       }
     );
     expect(outcome.exitCode).toBe(0);
@@ -272,7 +272,7 @@ describe("a project-settings resume writes nothing before the claim", () => {
         { claude: FAKE_CLAUDE, scode: "exit 9" },
         {
           registryFile: staged.registry,
-          env: { HOME: staged.home, CODEMUX_NO_KEYCHAIN_SYNC: "1" },
+          env: { HOME: staged.home },
         }
       );
       expect(outcome.stderr).not.toContain("has no private config directory");
@@ -333,7 +333,7 @@ describe("a project-settings resume writes nothing before the claim", () => {
         { claude: FAKE_CLAUDE, scode: "exit 9" },
         {
           registryFile: staged.registry,
-          env: { HOME: staged.home, CODEMUX_NO_KEYCHAIN_SYNC: "1" },
+          env: { HOME: staged.home },
         }
       );
       expect(outcome.stderr).not.toContain("session_busy");

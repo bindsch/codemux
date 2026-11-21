@@ -69,7 +69,6 @@ describe("CLI - Help", () => {
             HOME: home,
             PATH: fake.env.PATH!,
             // Never read the operator's real Keychain from a spawned run.
-            CODEMUX_NO_KEYCHAIN_SYNC: "1",
             BUN_OPTIONS: "--preload=./owned.ts",
           },
         });
@@ -232,8 +231,8 @@ describe("CLI - Verify", () => {
     expect(stdout).toContain("Effective scode command preview");
     expect(stdout).toContain("| Agent | Autonomy | Mode | Command |");
     expect(stdout).toContain("| codex | read-only | run |");
-    // Every preview carries the launch's -C pin first (review round 372, item 15).
-    expect(stdout).toMatch(/`scode -C \S+ --trust/);
+    // Every preview disables native synchronization and pins the working directory.
+    expect(stdout).toMatch(/`scode --no-credential-sync -C \S+ --trust/);
   });
 
   test("verify --show-scode applies sandbox policy overrides", async () => {
@@ -248,19 +247,19 @@ describe("CLI - Verify", () => {
       "--sandbox-scrub-env",
     ]);
     expect(exitCode).toBe(0);
-    expect(stdout).toMatch(/scode -C \S+ --trust trusted --ro --no-net --scrub-env --/);
+    expect(stdout).toMatch(/scode --no-credential-sync -C \S+ --trust trusted --ro --no-net --scrub-env --/);
   });
 
   test("verify --show-scode keeps hosted agents network-capable", async () => {
     const { stdout, exitCode } = await runVerifyCli(["verify", "-a", "codex", "--show-scode"]);
     expect(exitCode).toBe(0);
-    expect(stdout).toMatch(/\| codex \| low \| run \| `scode -C \S+ --trust standard --rw --/);
+    expect(stdout).toMatch(/\| codex \| low \| run \| `scode --no-credential-sync -C \S+ --trust standard --rw --/);
   });
 
   test("verify --show-scode uses explicit standard trust for coarse harnesses", async () => {
     const { stdout, exitCode } = await runVerifyCli(["verify", "-a", "opencode", "--show-scode"]);
     expect(exitCode).toBe(0);
-    expect(stdout).toMatch(/\| opencode \| medium \| run \| `scode -C \S+ --trust standard --rw --/);
+    expect(stdout).toMatch(/\| opencode \| medium \| run \| `scode --no-credential-sync -C \S+ --trust standard --rw --/);
   });
 
   test("verify sandbox preview flags without --show-scode warns", async () => {

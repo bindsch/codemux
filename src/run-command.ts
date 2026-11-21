@@ -1,4 +1,5 @@
 import { validateProjectSettingsRequest } from "./claude-project-settings.js";
+import { loginStoreCliOptions } from "./cli-runtime/options.js";
 import {
   handleUnexpectedError,
   isScodeAvailable,
@@ -26,10 +27,8 @@ import { collectLabel, LABELS_ENV, parseLabels } from "./labels.js";
 import { assertQuotaHeadroomForLaunch, resolveQuotaGate } from "./quota-gate.js";
 import { UsageRefusalError, requireNonEmptyOption } from "./validation.js";
 import { agentsSupporting } from "./parity/index.js";
-/** A prompt-source refusal is usage (exit 64): the prompt is part of
- * the request, so an empty, oversized, malformed, or ambiguous source
- * is a mistake only the caller can fix. The one exception is a plain
- * error (exit 1): a stdin producer that stalls past --timeout. */
+/** An empty, oversized, malformed, or ambiguous prompt is usage (exit 64).
+ * A stdin producer that stalls past --timeout is a runtime error (exit 1). */
 const promptRefusal = (message: string): UsageRefusalError =>
   new UsageRefusalError(message);
 
@@ -162,6 +161,8 @@ export function registerRunCommand(
       "scode trust override: trusted, standard, untrusted"
     )
     .option("--sandbox-no-net", "Pass --no-net to scode when sandboxed")
+    .option("--sandbox-no-login-store", "Omit native login-store grants; Keychain login cannot be used", config.sandboxNoLoginStore)
+    .option("--sandbox-login-store", "Opt in to native login-store access for sandboxed processes", config.sandboxLoginStore)
     .option("--sandbox-strict", "Pass --strict to scode (deny-default); requires --sandbox")
     .option("--sandbox-scrub-env", "Pass --scrub-env to scode when sandboxed")
     .option(
@@ -197,7 +198,7 @@ export function registerRunCommand(
       "Refuse the launch when a bounding usage window is below this percent remaining; overrides the config quota ceiling for this invocation"
     )
     .option("--no-quota-gate", "Skip the pre-launch usagemux quota check for this invocation")
-    .action(async (options) => {
+    .action(async (options, command) => {
       let failureRequest: RunRequest | undefined;
       try {
         requireValidConfig();
@@ -205,8 +206,7 @@ export function registerRunCommand(
         const agentId = options.agent as AgentId;
 
         if (!AGENT_IDS.includes(agentId)) {
-          // One message, two lines: handleUnexpectedError prints it with the
-          // "Error:" prefix, so the output matches the old console.error pair.
+          // Preserve the two-line error under handleUnexpectedError's prefix.
           throw new UsageRefusalError(
             `Unknown agent '${agentId}'\nAvailable agents: ${AGENT_IDS.join(", ")}`
           );
@@ -223,12 +223,12 @@ export function registerRunCommand(
         if (enablePlaywrightMcp && !supportsPlaywrightMcpAgent(agentId)) {
           throw new UsageRefusalError(`--enable-playwright-mcp is supported only by ${PLAYWRIGHT_MCP_AGENT_LIST}`);
         }
-        const hermetic = Boolean(options.hermetic);
-        const tools = parseToolsOption(options.tools);
+        const hermetic = Boolean(options.hermetic), tools = parseToolsOption(options.tools);
         const sandboxPolicyOverrides = parseSandboxPolicyOverrides({
           sandbox: Boolean(options.sandbox),
           sandboxTrust: options.sandboxTrust, sandboxStrict: options.sandboxStrict,
           sandboxNoNet: Boolean(options.sandboxNoNet),
+          ...loginStoreCliOptions(options, command),
           sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
           sandboxAccount: options.sandboxAccount,
           sandboxAccountId: options.sandboxAccountId,

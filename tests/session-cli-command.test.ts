@@ -481,7 +481,7 @@ describe("the session command's resume guards in process", () => {
       const outcome = await runSessionCommand(
         ["-a", "agy", "--cwd", workdir],
         { agy: fakeWithVersion("1.2.14"), scode: "exit 9" },
-        { registryFile: join(root, "ro", "live-sessions.json") }
+        { registryFile: join(root, "ro", "live-sessions.json"), env: { GEMINI_API_KEY: "synthetic" } }
       );
       expect(outcome.exitCalls[0]).toBe(1);
       expect(outcome.stderr).toContain("cannot record the session in the registry");

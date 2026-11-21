@@ -44,6 +44,7 @@ export {
 export {
   claimForResume,
   lookupForResume,
+  resumedLoginStoreGrant,
   registryInside,
   sessionHoldState,
   type ResumeLookup,

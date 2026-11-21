@@ -5,6 +5,7 @@
 // adapter gate re-checks. src/session/cli.ts owns the command and
 // calls this phase first.
 import { AGENT_IDS, getAdapter } from "../adapters/index.js";
+import { loginStoreCliOptions } from "../cli-runtime/options.js";
 import { assertAbsoluteClaudeConfigDir } from "../claude-family.js";
 import { PROJECT_SETTINGS_AGENTS, validateProjectSettingsRequest } from "../claude-project-settings.js";
 import {
@@ -55,6 +56,8 @@ export interface SessionCommandOptions {
   sandboxTrust?: string;
   sandboxStrict?: boolean;
   sandboxNoNet?: boolean;
+  sandboxNoLoginStore?: boolean;
+  sandboxLoginStore?: boolean;
   sandboxScrubEnv?: boolean;
   sandboxBlock?: string[];
   printSandbox?: boolean;
@@ -64,7 +67,8 @@ export interface SessionCommandOptions {
 
 export function resolveSessionRequest(
   options: SessionCommandOptions,
-  config: CodemuxConfig
+  config: CodemuxConfig,
+  command: Parameters<typeof loginStoreCliOptions>[1] = { getOptionValueSource: () => "cli" }
 ) {
   const agentId = options.agent as AgentId;
   if (!AGENT_IDS.includes(agentId)) {
@@ -219,6 +223,7 @@ export function resolveSessionRequest(
       sandboxTrust: options.sandboxTrust,
       sandboxStrict: options.sandboxStrict,
       sandboxNoNet: Boolean(options.sandboxNoNet),
+      ...loginStoreCliOptions(options, command),
       sandboxScrubEnv: Boolean(options.sandboxScrubEnv),
       sandboxBlock: options.sandboxBlock,
     })

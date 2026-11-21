@@ -1,19 +1,17 @@
 /**
  * A print-only agy launch (`--print-sandbox`) prepares the private HOME path
  * its argv names and nothing else: no `security` invocation of any kind, no
- * login mirror, no token copy, no search-list repair. On 2026-11-03 a
+ * login preparation or native state changes. On 2026-11-03 a
  * print-only path that prepared credentials put the macOS prompt "a keychain
  * cannot be found to store antigravity" on the operator's screen; this test
- * pins the rule at the adapter and through the CLI. The fake `security`
- * records every call it receives.
+ * pins the rule at the adapter and through the CLI.
  */
 
 import { afterEach, expect, test } from "bun:test";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { AGY_MIRROR_PATH } from "../src/agy-keychain.js";
 import { runCli } from "./helpers/cli.js";
-import { cleanup, setup } from "./helpers/agy-keychain.js";
+import { cleanup, setup } from "./helpers/agy-login.js";
 
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
 
@@ -24,9 +22,7 @@ test("prepareRun with printOnly names an uncreated private HOME and never calls 
   const privateHome = context.agyProbe!.home!;
   expect(privateHome.startsWith(join(realpathSync(home), ".gemini"))).toBe(true);
   expect(existsSync(privateHome)).toBe(false);
-  // No mirror, no token copy, no security call: the file the fake writes
-  // on its first invocation never appears.
-  expect(existsSync(join(privateHome, AGY_MIRROR_PATH))).toBe(false);
+  // Preparation does not create a login or a child process.
   expect(existsSync(join(privateHome, ".gemini/antigravity-cli/antigravity-oauth-token"))).toBe(false);
   expect(existsSync(calls)).toBe(false);
   adapter.cleanupRun(context);
@@ -34,11 +30,11 @@ test("prepareRun with printOnly names an uncreated private HOME and never calls 
   expect(existsSync(calls)).toBe(false);
 });
 
-test("a plain prepareRun still builds the mirror (the print-only rule is not the default)", () => {
-  const { adapter, request, records } = setup();
+test("plain private preparation uses the API key without a credential subprocess", () => {
+  const { adapter, request, calls } = setup();
   const context = adapter.prepareRun(request);
   cleanup.push(() => adapter.cleanupRun(context));
-  expect(records().some((record) => record.input[0] === "create-keychain" || record.input[0] === "unlock-keychain")).toBe(true);
+  expect(existsSync(calls)).toBe(false);
 });
 
 test("run -a agy -s --print-sandbox prints the argv, exits 0, and calls security never", async () => {
@@ -50,4 +46,12 @@ test("run -a agy -s --print-sandbox prints the argv, exits 0, and calls security
   expect(exitCode).toBe(0);
   expect(stdout.split("\n").some((line) => line.endsWith("/agy"))).toBe(true);
   expect(existsSync(calls) ? readFileSync(calls, "utf8") : "").toBe("");
+});
+
+test("the recording security fake on PATH makes the never-call assertions able to fail", () => {
+  const { env, calls } = setup();
+  expect(existsSync(calls)).toBe(false);
+  const probe = Bun.spawnSync(["security", "find-generic-password", "-s", "synthetic"], { env });
+  expect(probe.exitCode).toBe(0);
+  expect(readFileSync(calls, "utf8")).toBe("find-generic-password -s synthetic\n");
 });

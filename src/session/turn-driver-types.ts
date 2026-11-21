@@ -182,6 +182,8 @@ export interface TurnAgentDriverOptions {
   sandboxBlock?: readonly string[];
   sandboxScrubEnv: boolean;
   sandboxStrict?: boolean;
+  sandboxNoLoginStore?: boolean;
+  sandboxLoginStore?: boolean;
   passEnv: readonly string[];
   authorPrefix: boolean;
   sessionTimeoutMs: number | null;

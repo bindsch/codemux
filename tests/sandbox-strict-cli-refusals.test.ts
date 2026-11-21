@@ -11,7 +11,7 @@ mkdirSync(home); mkdirSync(cwd); mkdirSync(join(cwd, ".git")); mkdirSync(redirec
 symlinkSync(cwd, join(redirected, "opencode"));
 const alias = join(root, "root-alias"); symlinkSync("/", alias);
 const env = { HOME: home, XDG_STATE_HOME: join(home, "state"), XDG_CACHE_HOME: join(home, "cache"),
-  XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, "data"), CODEMUX_NO_KEYCHAIN_SYNC: "1" };
+  XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, "data") };
 const cases: { name: string; message: string; env?: Record<string, string>; flags?: string[] }[] = [
   { name: "relative state", message: "absolute path", env: { XDG_STATE_HOME: "relative" } },
   { name: "state below a file", message: "ENOTDIR", env: { XDG_STATE_HOME: "/dev/null" } },

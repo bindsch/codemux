@@ -22,6 +22,11 @@ export interface ResumeProbe {
   sandboxed: boolean;
   sandboxTrust: SandboxTrust;
   sandboxStrict?: boolean;
+  sandboxNoLoginStore?: boolean;
+  /** The effective login-store request (effectiveLoginStoreGrant), and
+   * whether `--sandbox-login-store` was typed, not a configured default. */
+  sandboxLoginStore?: boolean;
+  sandboxLoginStoreTyped?: boolean;
   /** The flags the resuming command actually runs with — a resume may
    * not clear one the entry was created under. */
   sandboxNoNet: boolean;
@@ -52,6 +57,23 @@ export type ResumeLookup =
    * nothing was judged, so this is no refusal, and a retry may pass
    * (review live22). */
   | { outcome: "unavailable"; reason: string };
+
+/** The agents whose sandbox gains native paths under the login-store
+ * grant. For every other agent the option changes no grant. */
+const NATIVE_LOGIN_STORE_AGENTS: ReadonlySet<string> = new Set(["claude", "agy"]);
+
+/** The login-store grant a resumed session launches with. A record that
+ * carries the field keeps its recorded grant; the resume can only tighten
+ * it (`--sandbox-no-login-store`, untrusted trust, no sandbox). A record
+ * from before 2.0.4 lacks the field, so the request (typed flag or
+ * configured default) applies: those sessions had a Keychain-backed login. */
+export function resumedLoginStoreGrant(
+  entry: Pick<SessionRecord, "sandbox_login_store">,
+  probe: Pick<ResumeProbe, "sandboxed" | "sandboxTrust" | "sandboxNoLoginStore" | "sandboxLoginStore">
+): boolean {
+  if (!probe.sandboxed || probe.sandboxNoLoginStore === true || probe.sandboxTrust === "untrusted") return false;
+  return entry.sandbox_login_store ?? probe.sandboxLoginStore === true;
+}
 
 function stripTrailingSlash(dir: string): string {
   if (dir.length > 1 && dir.endsWith("/")) return dir.slice(0, -1);
@@ -255,6 +277,19 @@ function judgeResumeEntry(
       outcome: "refused",
       reason: `session ${id} was created with --sandbox-no-net and cannot resume without it`,
     };
+  }
+  // The restriction withholds grants only Claude and agy have. For every
+  // other agent the scode command is the same with or without it, so
+  // dropping it on resume changes nothing and never refuses (review round 5).
+  if (entry.sandbox_no_login_store && !probe.sandboxNoLoginStore && NATIVE_LOGIN_STORE_AGENTS.has(entry.agent)) {
+    return { outcome: "refused", reason: `session ${id} was created with --sandbox-no-login-store and cannot resume without it` };
+  }
+  // Only a typed --sandbox-login-store widens, and only for an agent with
+  // a native login store. A configured default never refuses: the launch
+  // uses the recorded grant instead (resumedLoginStoreGrant).
+  if (probe.sandboxLoginStore && probe.sandboxLoginStoreTyped === true && !probe.sandboxNoLoginStore &&
+    NATIVE_LOGIN_STORE_AGENTS.has(entry.agent) && entry.sandbox_login_store === false) {
+    return { outcome: "refused", reason: `session ${id} was created without --sandbox-login-store and cannot resume with it; omit the flag to resume it without the grant` };
   }
   if (entry.sandbox_scrub_env && !probe.sandboxScrubEnv) {
     return {

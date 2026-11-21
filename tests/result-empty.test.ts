@@ -71,7 +71,7 @@ async function launchSynthetic(
     ? "dd bs=1 count=1 >/dev/null 2>&1\n"
     : READS_PROMPT;
   writeFileSync(executable, `#!/bin/sh\n${reads}printf '%s' ${quote(stdout)}\nexit ${childExit}\n`, { mode: 0o700 });
-  const env = { HOME: home, PATH: "/usr/bin:/bin", CODEMUX_NO_KEYCHAIN_SYNC: "1" };
+  const env = { HOME: home, PATH: "/usr/bin:/bin" };
   const adapter = getAdapter(agent, env);
   const previousLedger = process.env.CODEMUX_CALL_LOG;
   const previousTestLedger = process.env.CODEMUX_TEST_LEDGER;

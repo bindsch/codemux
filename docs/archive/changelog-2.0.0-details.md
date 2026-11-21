@@ -7,6 +7,8 @@ The complete text of every `[Unreleased]` bullet that the curated
 [2.0.0 changelog](https://github.com/bindsch/codemux/blob/main/CHANGELOG.md) summarizes, preserved without change.
 The bullets stay grouped under their original headings.
 
+The Keychain client described below was retired in 2.0.4. See current [authentication](../authentication.md).
+
 ### Breaking
 
 - Pre-launch refusals exit 64 on every command (was 1 on run, tui, check); scripts that tested for 1 must test for 64

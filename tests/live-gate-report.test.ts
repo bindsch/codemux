@@ -100,7 +100,7 @@ test("live gate reports per-probe rows, warnings, contracts, usage, and the vers
     {
       agent: "gemini",
       results: {
-        A: { status: "SKIP", seconds: 0, stderr: "", note: "no credentials; operator requested" },
+        A: { status: "SKIP", seconds: 0, stderr: "", note: "operator requested" },
         B: { status: "UNSUPPORTED", seconds: 0, stderr: "", note: "documented reason" },
       },
     },
@@ -119,11 +119,12 @@ test("live gate reports per-probe rows, warnings, contracts, usage, and the vers
   const lines = report.split("\n");
   expect(lines[0]).toBe(`Codemux: ${join(ROOT, "bin/codemux")}`);
   expect(lines[1]).toBe("Codemux version: 2.0.0");
-  expect(lines[3]).toBe("Probes: A,B");
-  expect(lines[5]).toBe("| Agent | Probe | Result | Seconds | Note |");
+  expect(lines[3]).toContain("Sandbox login store:");
+  expect(lines[4]).toBe("Probes: A,B");
+  expect(lines[6]).toBe("| Agent | Probe | Result | Seconds | Note |");
   expect(report).toContain("| claude | A read-only reply | FAIL | 2.0 | first &#124; failure; Warning: claude 2.1.300 is newer than the 2.1.280 this Codemux audited |");
   expect(report).toContain("| claude | B medium shell | PASS | 1.0 | Warning: unaudited build |");
-  expect(report).toContain("| gemini | A read-only reply | SKIP (no credentials; operator requested) | 0.0 |  |");
+  expect(report).toContain("| gemini | A read-only reply | SKIP (operator requested) | 0.0 |  |");
   expect(report).toContain("| gemini | B medium shell | UNSUPPORTED (documented): documented reason | 0.0 |  |");
   expect(report).toContain("| claude | 2.1.300 | 2.0.0 | 2.1.280 | CONTRACT-STALE (claude 2.1.300 is newer than the 2.1.280 this Codemux audited) |");
   expect(report).toContain("usage --json: PASS (usagemux answered a parseable snapshot)");
@@ -197,14 +198,11 @@ test("a gate whose only passing cells are print-sandbox probes did not probe (re
   expect(gateFailed(reportInput({ rows: [passRow("gemini", ["P"])], probes: ["A", "P"] }))).toBe(true);
 });
 
-test("a Keychain drift fails the gate and prints as its own line; none passes (review round 52)", () => {
+test("the report requires owner observation for OS prompts without native probes", () => {
   const { formatReport } = require("../scripts/live-gate/report.js") as typeof import("../scripts/live-gate/report.js");
   const clean = reportInput({ rows: [passRow("claude", ["A"])], probes: ["A"] });
   expect(gateFailed(clean)).toBe(false);
-  expect(formatReport(clean)).toContain("Keychain hygiene: PASS");
-  const drifted = reportInput({ rows: [passRow("claude", ["A"])], probes: ["A"], keychainDrift: "the user Keychain search list or default keychain changed during this probe\nbefore:\na\nafter:\nb" });
-  expect(gateFailed(drifted)).toBe(true);
-  expect(formatReport(drifted)).toContain("Keychain hygiene: FAIL");
+  expect(formatReport(clean)).toContain("OS prompts: requires owner observation");
 });
 
 test("the report prints one summary line per harness and calls out a base-only row (parity pass)", () => {

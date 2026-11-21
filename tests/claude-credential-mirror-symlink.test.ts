@@ -12,7 +12,9 @@ import * as fs from "node:fs";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { copyClaudeCredentialMirror } from "../src/claude-project-config.js";
+import { copyClaudeCredentialMirror as copyMirror } from "../src/claude-project-config.js";
+
+const copyClaudeCredentialMirror = (dir: string, source: string) => copyMirror(dir, source, undefined, "linux");
 
 const ACCESS_ONLY = JSON.stringify({
   claudeAiOauth: { accessToken: "at", refreshToken: "", expiresAt: 4102444800, scopes: [] },
@@ -80,7 +82,7 @@ describe("copyClaudeCredentialMirror against a planted entry", () => {
     const stale = join(dir, ".credentials.json");
     writeFileSync(stale, "stale token\n", { mode: 0o600 });
     copyClaudeCredentialMirror(dir, mirror);
-    expect(readFileSync(stale)).toEqual(readFileSync(mirror));
+    expect(JSON.parse(readFileSync(stale, "utf8"))).toEqual(JSON.parse(readFileSync(mirror, "utf8")));
     expect(statSync(stale).mode & 0o777).toBe(0o600);
     // The temp file the safe write used never lingers.
     expect(statSync(dir).isDirectory()).toBe(true);

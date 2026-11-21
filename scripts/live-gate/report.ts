@@ -102,12 +102,6 @@ export interface ReportInput {
    * table no longer describes the binary, a known break says a specific
    * enforcement gap exists — allowing one is not allowing the other. */
   allowKnownBreaks: boolean;
-  /** Keychain hygiene (2026-11-03): the user search list and default
-   * keychain, snapshotted before and after the whole probe pool (probes
-   * run concurrently, so per-probe snapshots would see each other's
-   * transient state; review round 52). Null when they match or when there
-   * is nothing to observe; the drift text fails the gate otherwise. */
-  keychainDrift?: string | null;
   /** Present when the probe matrix came from the candidate's own
    * `list --json` rather than this checkout's adapters (candidate.ts):
    * the report names the source so a saved report says which build's
@@ -167,6 +161,7 @@ export function formatReport(input: ReportInput): string {
       ? ["live-gate: the candidate's --version failed; the report cannot name the build it tested and the gate fails"]
       : []),
     scope,
+    "Sandbox login store: sandboxed probes for claude and agy explicitly pass --sandbox-login-store, including hermetic check canaries and print-sandbox. Provider-override probes do not opt in.",
     // The NOTE line embeds the operator's --codemux path; it escapes like
     // every other interpolation (round 20, contracts finding 1: this was
     // the one line that did not).
@@ -196,7 +191,7 @@ export function formatReport(input: ReportInput): string {
     }
   }
   lines.push("", `usage --json: ${input.usage.status} (${cell(input.usage.detail)})`);
-  lines.push(`Keychain hygiene: ${input.keychainDrift == null ? "PASS (user search list and default keychain unchanged, or nothing to observe)" : `FAIL (${cell(input.keychainDrift.split("\n")[0] ?? "")})`}`);
+  lines.push("OS prompts: requires owner observation; no native credential inspection is performed");
   lines.push("", `live-gate (${escapeControls(input.codemux)}): ${totals.pass} pass, ${totals.fail} fail, ${totals.skip} skip, ${totals.unsupported} unsupported`);
   lines.push(...staleContractLines(input));
   const missing = missingContractRows(input);
@@ -240,6 +235,5 @@ export function gateFailed(input: ReportInput): boolean {
       (row) => row.verdict === "KNOWN-BREAK" && !row.mitigated))
     || missingContractRows(input).length > 0
     || input.usage.status === "FAIL"
-    || (input.keychainDrift != null)
     || !hasProbes(input.rows);
 }

@@ -3,6 +3,10 @@ read_when: "Checking a command, option, exit code, or output schema."
 ---
 # CLI reference
 
+Native login-store access is off by default. On macOS, opt in for sandboxed Claude or agy with `--sandbox-login-store` or user/global config `sandboxLoginStore: true`. With this grant, every process inside the sandbox can read Keychain items whose access list trusts `/usr/bin/security` without a dialog. This includes the harness's own login and refresh token, and tokens other tools stored through `security`, for example a GitHub CLI token. Every process can read and copy `login.keychain-db`, which is encrypted with the account login password, and attack it offline. It can also create, modify, or delete files in `Library/Keychains`. The optional `Library/Preferences/com.apple.security.plist` is read-only when it exists, so the sandbox cannot change the default keychain or search list through that preference file. This is not per-item Keychain isolation.
+
+`--sandbox-no-login-store` or `sandboxNoLoginStore: true` overrides any opt-in. Without the grant, codemux omits native login-store access and Claude's plaintext credential, staged-file, and refresh-lock grants. A Keychain login cannot then be used inside this sandbox; native file login or refresh that needs these grants also stops working. A supported API key or provider override can supply authentication instead. `--sandbox-trust untrusted`, provider overrides, and Z.AI never receive native login-store grants, even with opt-in; untrusted also disables networking and is refused for persistent sessions. With the grant, the harness can use and refresh its existing login in place: codemux does not read, copy, or change the macOS login and never runs `security`.
+
 Every command accepts `-h, --help`. Root `-V, --version` reads the package
 version. Options below are parsed by codemux; unknown options and missing
 option arguments are parser errors (exit 1, or 64 for a missing `--label` or `--by`
@@ -36,6 +40,8 @@ see [harnesses](harnesses.md) and [session capabilities](sessions.md).
 | `--sandbox-trust <level>` | Policy default; `trusted`, `standard`, `untrusted`; sandboxed sessions refuse `untrusted` |
 | `--sandbox-strict` | Off; pass scode `--strict` on run, session, tui, and plain check. Requires sandboxing (exit 64 otherwise). Explicit strict overrides trusted's strict-off preset; untrusted still disables automatic harness grants and implies read-only, no network, and environment scrubbing. Sessions record strict and refuse a mismatch on resume; repeat the flag to resume a strict session. |
 | `--sandbox-no-net` | Off; deny networking through scode |
+| `--sandbox-login-store` | Off by default; user/global config `sandboxLoginStore: true` opts in. Accepted on run, session, tui, and check for every harness, including check canaries; no grant changes where the harness has no native login grant. Grants native login access only for eligible Claude/agy launches. The deny flag/config, untrusted trust, provider overrides, and Z.AI take precedence. Scode 0.6.8+ receives `--login-store` only when the grant is effective; otherwise `--no-login-store`. Older scode receives neither flag. An existing security preference file requires scode 0.6.7+ for read-only access; older versions refuse the opted-in launch. On session resume the recorded grant applies: a configured default never refuses, and resume cannot enable a grant absent from the original session (a typed flag on such a Claude or agy session is refused). Records written before 2.0.4 take the configured default or the typed flag. |
+| `--sandbox-no-login-store` | Off as a flag; native login access is already denied by default. Accepted on run, session, tui, and check for every harness, including check canaries; no grant changes where the harness has no native login grant. This flag or `sandboxNoLoginStore: true` overrides any opt-in and omits native login-store and Claude staged/lock grants. Passes `--no-login-store` to scode 0.6.8+; older scode receives no such flag. A Claude or agy session recorded with it cannot drop the restriction on resume; for every other agent it changes no grant and a resume without it is accepted. |
 | `--sandbox-scrub-env` | Off; request scode environment scrubbing |
 | `--pass-env <names>` | Empty; comma-separated environment variable names, at most 64 |
 | `--cwd <path>` | Current directory; must resolve to an accessible directory; check canaries manage their own directory |
@@ -83,13 +89,11 @@ multi-line `-p` prompt, prints as `\n`), so one argument can never read as
 several. Fresh private homes and generated files use representative paths
 that need not exist. Preview preparation creates no directories or files,
 changes no existing state, runs no stale-directory sweep, and registers no
-cleanup hook. No credential is read or written (agy creates no private Keychain,
-reads no login, and repairs no search list). It
+cleanup hook. No credential is read or written, and no native login links are created. It
 requires `--sandbox` and is refused (exit 64) together with
 `--experiment-mcp`: the MCP relay is minted at start, so its argv cannot be
 shown without starting it. The credential sandbox preparation
-(`prepareSandbox`, which refreshes the claude credential mirror) is
-skipped, as is the per-run credential copy. Preview finalizers are no-ops;
+(`prepareSandbox`) is skipped, as is the per-run credential copy. Preview finalizers are no-ops;
 resumed previews validate existing private homes and their parents, including Codex provider homes, without modifying them.
 Preview and credential-preflight grants never enter a later real launch's policy. Generated
 paths stand in for launch-time names; the remaining argv follows the real
@@ -274,6 +278,7 @@ non-read-only autonomy, `--cwd`, nonempty `--pass-env`, `--sandbox-trust`,
 `--sandbox-no-net`, `--sandbox-scrub-env`, and `--effort`.
 Agy hermetic/tools canaries have the same default policy restrictions,
 without the diagnostic-mode option. Model and timeout selection remain available.
+`--sandbox-login-store` and `--sandbox-no-login-store` remain available on all check canaries, including session and Agy isolation checks. Their effective user/global config defaults and denial precedence carry into each child launch. Other sandbox policy overrides remain restricted as described above.
 
 ## session
 
@@ -372,7 +377,7 @@ an upstream error or refusal exits 1.
 | Option | Default and meaning |
 |---|---|
 | `-a, --agent <agent>` | Query one agent |
-| `--all` | Query all agents, agy included; incompatible with `--agent`. Without `-a` or `--all` the query covers every agent except agy, whose probe can take up to 90 seconds |
+| `--all` | Query all agents, agy included; also the default. Incompatible with `--agent` |
 | `--json` | Validated usagemux JSON; DEL and C1 characters are escaped, as in `calls --json` |
 | `--timeout <seconds>` | 30; finite, greater than zero, at most 300, rounded up to milliseconds; fractional values forward as decimal seconds |
 

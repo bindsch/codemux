@@ -62,7 +62,7 @@ function fixture(agent: SupportedAgent = "droid") {
   const cwd = join(root, "work");
   const dir = join(root, "caller");
   for (const path of [sourceHome, cwd]) mkdirSync(path, { mode: 0o700 });
-  const sourceEnv: Record<string, string> = {};
+  const sourceEnv: Record<string, string> = { HOME: sourceHome };
   const blockedPaths = [sourceHome];
   const input = { agent, dir, cwd, sourceHome, blockedPaths, sourceEnv,
     apiKeyAuth: agent === "agy", providerOverride: agent === "copilot" || agent === "openhands" || agent === "goose" || agent === "cline" };
@@ -78,17 +78,24 @@ describe("every supported caller-owned harness home", () => {
     write(settings, "caller-customization");
     write(join(input.sourceHome, "operator-settings"), "must-not-copy");
     const home = openCallerHarnessHome(input);
-    expect(home.environment.HOME).toBe(input.dir);
-    expect(home.environment.USERPROFILE).toBe(input.dir);
+    const nativeClaude = agent === "claude" && process.platform === "darwin";
+    const expectedHome = nativeClaude ? input.sourceHome : input.dir;
+    expect(home.environment.HOME).toBe(expectedHome);
+    expect(home.environment.USERPROFILE).toBe(expectedHome);
     if (row.rootEnv) expect(home.environment[row.rootEnv]).toBe(join(input.dir, row.rootPath ?? ""));
     for (const [name, value] of Object.entries(home.environment)) {
       if (name === "GOOSE_DISABLE_KEYRING") { expect(value).toBe("true"); continue; }
+      if (nativeClaude && (name === "HOME" || name === "USERPROFILE")) continue;
+      if (name === "CLAUDE_SECURESTORAGE_CONFIG_DIR") { expect(value).toBe(process.platform === "darwin" ? "" : home.dir); continue; }
       expect(value === input.dir || value.startsWith(`${input.dir}/`)).toBe(true);
       expect(statSync(value).mode & 0o777).toBe(0o700);
     }
     expect(readFileSync(settings, "utf8")).toBe("caller-customization");
     expect(existsSync(join(input.dir, "operator-settings"))).toBe(false);
-    if (row.source && row.target && MIRRORED.has(agent)) {
+    if (nativeClaude) {
+      expect(existsSync(join(input.dir, ".credentials.json"))).toBe(false);
+      expect(readFileSync(join(input.sourceHome, ".credentials.json"), "utf8")).toBe(claudeLogin());
+    } else if (row.source && row.target && MIRRORED.has(agent)) {
       const source = join(input.sourceHome, row.source);
       const target = join(input.dir, row.target);
       expect(statSync(target).ino).not.toBe(statSync(source).ino);
@@ -110,7 +117,7 @@ describe("every supported caller-owned harness home", () => {
       expect(readFileSync(source, "utf8")).toBe("refreshed-login");
     }
     const assignments = callerHarnessHomeEnvAssignments(home);
-    expect(assignments).toContain(`HOME=${input.dir}`);
+    expect(assignments).toContain(`HOME=${expectedHome}`);
     for (const name of home.environmentOmissions ?? []) {
       expect(assignments[assignments.indexOf(name) - 1]).toBe("-u");
     }
@@ -151,11 +158,31 @@ describe("every supported caller-owned harness home", () => {
     expect(existsSync(join(input.dir, row.settings))).toBe(false);
   });
 
-  test("Agy requires explicit auth and never links an unverified token filename", () => {
+  test("Agy caller homes share the native login without requiring an API key", () => {
     const { input } = fixture("agy");
-    expect(() => openCallerHarnessHome({ ...input, apiKeyAuth: false })).toThrow("no dedicated portable login file");
-    expect(existsSync(input.dir)).toBe(false);
-    expect(openCallerHarnessHome({ ...input, apiKeyAuth: false, providerOverride: true }).environment.HOME).toBe(input.dir);
+    const path = ".gemini/antigravity-cli/antigravity-oauth-token";
+    write(join(input.sourceHome, path), "synthetic token");
+    const home = openCallerHarnessHome({ ...input, apiKeyAuth: false });
+    expect(home.environment.HOME).toBe(input.dir);
+    expect(readFileSync(join(input.dir, path), "utf8")).toBe("synthetic token");
+    home.verify();
+  });
+
+  test("an Agy caller home with its own token file: an API-key session leaves it, a login session refuses by name", () => {
+    // Review round 4, edges 1: every launch linked the login and died on a raw EINVAL.
+    const { input } = fixture("agy");
+    const path = ".gemini/antigravity-cli/antigravity-oauth-token";
+    write(join(input.sourceHome, path), "operator token");
+    write(join(input.dir, path), "caller token");
+    const home = openCallerHarnessHome({ ...input, apiKeyAuth: true });
+    home.verify();
+    expect(lstatSync(join(input.dir, path)).isSymbolicLink()).toBe(false);
+    expect(readFileSync(join(input.dir, path), "utf8")).toBe("caller token");
+    let thrown: unknown;
+    try { openCallerHarnessHome({ ...input, apiKeyAuth: false }); } catch (error) { thrown = error; }
+    expect((thrown as Error).message).toContain(`holds its own file or directory at ${join(input.dir, path)}`);
+    expect((thrown as Error).message).not.toContain("EINVAL");
+    expect(readFileSync(join(input.dir, path), "utf8")).toBe("caller token");
   });
 });
 
@@ -179,7 +206,7 @@ describe("native credential source roots captured before redirect", () => {
     expect(statSync(target).ino).toBe(statSync(source).ino);
     expect(readFileSync(target, "utf8")).toBe("alternate-login");
     renameSync(source, join(root, "saved-login"));
-    expect(() => home.verify()).toThrow("missing login");
+    expect(() => home.verify()).toThrow("missing file");
     write(source, "replacement-login");
     expect(() => home.verify()).toThrow("login link changed");
   });
@@ -201,7 +228,7 @@ describe("native credential source roots captured before redirect", () => {
     expect(JSON.parse(readFileSync(target, "utf8")).access_token).toBe("rotated-access");
     expect(readFileSync(target, "utf8")).not.toContain("synthetic-refresh-value");
     renameSync(source, join(root, "saved-login"));
-    expect(() => home.verify()).toThrow("missing login");
+    expect(() => home.verify()).toThrow("missing file");
   });
 
   test("Qwen resolves a relative source root from the launch cwd", () => {
@@ -237,7 +264,7 @@ describe("native credential source roots captured before redirect", () => {
     const home = openCallerHarnessHome(input);
     expect(statSync(join(input.dir, relative)).ino).toBe(statSync(source).ino);
     renameSync(source, `${source}.saved`);
-    expect(() => home.verify()).toThrow("missing login");
+    expect(() => home.verify()).toThrow("missing file");
   });
 
   test("goose requires a provider override and never links secrets.yaml", () => {
@@ -374,6 +401,9 @@ describe("credential and directory integrity", () => {
       expect(callerHarnessHomeApiKeyAuth(agent as AgentId, { [name]: "synthetic-key" })).toBe(true);
       expect(callerHarnessHomeApiKeyAuth(agent as AgentId, { [name]: "  " })).toBe(false);
     }
+    // agy reads both key names (the adapter allowlist, src/environment.ts).
+    expect(callerHarnessHomeApiKeyAuth("agy", { GOOGLE_API_KEY: "synthetic-key" })).toBe(true);
+    expect(callerHarnessHomeApiKeyAuth("agy", { GOOGLE_API_KEY: "  " })).toBe(false);
     expect(callerHarnessHomeApiKeyAuth("cursor", { CURSOR_API_ENDPOINT: "synthetic-endpoint" })).toBe(false);
     expect(callerHarnessHomeApiKeyAuth("openhands", { LLM_MODEL: "synthetic-model" })).toBe(false);
   });
@@ -382,8 +412,10 @@ describe("credential and directory integrity", () => {
     const env = { GEMINI_API_KEY: " synthetic-key ", GOOGLE_API_KEY: "   ", CURSOR_API_ENDPOINT: "synthetic-endpoint",
       CURSOR_API_KEY: "synthetic-cursor-key", LLM_MODEL: "synthetic-model", GITHUB_TOKEN: undefined };
     expect(callerHarnessHomeAuthEnvironment("gemini", env)).toEqual({ GEMINI_API_KEY: " synthetic-key " });
+    // agy reads both key names, so a set GOOGLE_API_KEY is retained like
+    // GEMINI_API_KEY (the allowlist, src/environment.ts).
     expect(callerHarnessHomeAuthEnvironment("agy", { ...env, GOOGLE_API_KEY: "unverified-agy-key" }))
-      .toEqual({ GEMINI_API_KEY: " synthetic-key " });
+      .toEqual({ GEMINI_API_KEY: " synthetic-key ", GOOGLE_API_KEY: "unverified-agy-key" });
     expect(callerHarnessHomeAuthEnvironment("cursor", env)).toEqual({ CURSOR_API_KEY: "synthetic-cursor-key" });
     expect(callerHarnessHomeAuthEnvironment("copilot", env)).toEqual({});
     expect(callerHarnessHomeAuthEnvironment("openhands", env)).toEqual({});

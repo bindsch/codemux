@@ -32,17 +32,19 @@
  */
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   HERMETIC_CANARY_PROMPT, createCanaryScratch, evaluateCanary, mintCanaryMarker, plantCanary, untrackScratchRemoval,
 } from "./hermetic-canary.js";
 import { plantKimiCanary } from "./kimi-isolation-probe.js";
 import { plantAgyCanary } from "./agy-isolation-probe.js";
+import { linkAgyLogin } from "./agy-auth.js";
 import { CLINE_INSTRUCTION_CHANNEL } from "./cline-isolation-probe.js";
 import type { SandboxPolicyOverrides } from "./sandbox-policy.js";
 import { UsageRefusalError } from "./validation.js";
 import { copyClaudeCredentialMirror } from "./claude-credential-mirror.js";
+import { claudeSecureStorageEnv } from "./claude-login.js";
 import { canarySessionProtocolProblem, SESSION_KILL_GRACE_MS, runCanarySession, sessionCanary, sessionFailureDetail, type SessionRun } from "./hermetic-session-canary-driver.js";
 import {
   harnessHomeCanaryOwnedEnv, plantHarnessHomeCanary, seedHarnessHomeCanary, runHarnessHomeSessionCanary, supportsHarnessHomeCanary,
@@ -83,7 +85,7 @@ export interface SessionCanaryGuards {
  * recipe's own variables (src/session/harness-home.ts), which
  * `session --harness-home` refuses in --pass-env too. */
 export const SESSION_CANARY_PLANTED_ENV: Partial<Record<AgentId, readonly string[]>> = {
-  claude: ["CLAUDE_CONFIG_DIR"],
+  claude: ["CLAUDE_CONFIG_DIR", ...(process.platform === "darwin" ? ["CLAUDE_SECURESTORAGE_CONFIG_DIR"] : [])],
   zai: ["CLAUDE_CONFIG_DIR"],
   kimi: ["HOME", "KIMI_CODE_HOME"],
   agy: ["HOME"],
@@ -198,6 +200,8 @@ export function plantSessionCanary(
   }
   if (agent === "agy") {
     const planted = plantAgyCanary();
+    try { linkAgyLogin(planted.operatorHome, process.env.HOME || homedir()); }
+    catch (error) { planted.cleanup(); throw error; }
     return {
       cwd: planted.cwd,
       marker: planted.marker,
@@ -227,11 +231,9 @@ export function plantSessionCanary(
  * The plain control reads it as its user memory; a hermetic session swaps
  * in its private directory and must not. The cwd files stay planted too.
  *
- * A passed-through profile owns its credential story (claude-credentials.ts),
- * so the control's login is the operator's access-token-only mirror copied in
- * through copyClaudeCredentialMirror before the control starts, after the
- * hermetic session ran. zai authenticates with its gateway key and copies
- * nothing. */
+ * macOS controls retain the operator's secure-storage namespace; other
+ * platforms copy an access token before the control starts. Z.AI uses
+ * its gateway key and copies nothing. */
 export function plantClaudeSessionCanary(
   agent: "claude" | "zai",
   parent = tmpdir(),
@@ -255,7 +257,8 @@ export function plantClaudeSessionCanary(
     const dir = configDir;
     return {
       cwd: planted.cwd, marker: planted.marker, secrets: [],
-      env: { CLAUDE_CONFIG_DIR: dir }, passEnv: ["CLAUDE_CONFIG_DIR"],
+      env: { CLAUDE_CONFIG_DIR: dir, ...(agent === "claude" ? claudeSecureStorageEnv(process.env) : {}) },
+      passEnv: ["CLAUDE_CONFIG_DIR", ...(agent === "claude" && process.platform === "darwin" ? ["CLAUDE_SECURESTORAGE_CONFIG_DIR"] : [])],
       beforeControl: agent === "zai" ? () => {} : () => {
         copyClaudeCredentialMirror(dir, credentialSource, "hermetic session canary control");
       },
@@ -330,6 +333,8 @@ function reportSessionFailure(run: SessionRun): void {
 }
 
 export interface HermeticSessionCanaryRequest {
+  sandboxLoginStore?: boolean;
+  sandboxNoLoginStore?: boolean;
   agent: AgentId;
   model?: string;
   autonomy: string;
@@ -356,6 +361,7 @@ export async function runHermeticSessionCanary(
   const sessionArgv = (hermetic: boolean, resume: string | undefined, final: boolean): string[] => [
     "session",
     "-a", request.agent,
+    ...(request.sandboxNoLoginStore ? ["--sandbox-no-login-store"] : request.sandboxLoginStore ? ["--sandbox-login-store"] : []),
     ...(resume === undefined ? [] : ["--resume", resume]),
     ...(request.model === undefined ? [] : ["-m", request.model]),
     ...(request.effort === undefined ? [] : ["--effort", request.effort]),
