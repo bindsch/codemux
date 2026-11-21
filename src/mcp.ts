@@ -1,8 +1,42 @@
 import { executableCheck, resolveTrustedExecutable, type ExecutableCheck } from "./executable-security.js";
 import type { AgentId } from "./types.js";
+import { playwrightRegistryDir } from "./playwright-sandbox.js";
+
+/** The server name codemux registers, and the permission rule that allows
+ * every tool of that server in Claude Code (`mcp__<server>`). */
+export const PLAYWRIGHT_MCP_SERVER = "playwright";
+export const PLAYWRIGHT_MCP_GRANT = `mcp__${PLAYWRIGHT_MCP_SERVER}`;
+/** The server's tools that run caller-supplied code in the server's own
+ * Node process (not in the page). They are a shell by another name, so a
+ * level that does not grant Bash denies them (`browser_run_code` is the
+ * name before @playwright/mcp renamed it). */
+export const PLAYWRIGHT_MCP_CODE_TOOLS = ["browser_run_code_unsafe", "browser_run_code"]
+  .map((tool) => `mcp__${PLAYWRIGHT_MCP_SERVER}__${tool}`);
+
+/** How one launch runs the server under the sandbox. A caller that passes
+ * this gets the sandbox arguments (playwrightServerArgs); a caller that
+ * does not keeps the bare server entry. */
+export interface PlaywrightServerLaunch {
+  /** No browser window: true for headless launches (run, session),
+   * false for the TUI, where a person is watching. */
+  headless: boolean;
+  /** This launch's private socket directory (src/playwright-sandbox.ts),
+   * handed to the server as `PWTEST_SOCKETS_DIR`. */
+  socketDir?: string | undefined;
+}
+
+/** The server arguments under the sandbox. `--isolated` keeps the browser
+ * profile in memory: the default profile directory is outside what the
+ * sandbox allows. `--no-sandbox` turns off Chromium's own sandbox, which
+ * cannot nest inside scode's. */
+export function playwrightServerArgs(launch: PlaywrightServerLaunch): string[] {
+  return ["--isolated", ...(launch.headless ? ["--headless"] : []), "--no-sandbox"];
+}
 
 export interface PlaywrightMcpOptions {
   enabled?: boolean;
+  /** Sandbox launch settings; absent leaves `args` empty and sets no `env`. */
+  launch?: PlaywrightServerLaunch | undefined;
   binaryPath?: string | null;
   forbiddenRoot?: string;
   /** The PATH the binary resolves through when no explicit binaryPath is
@@ -71,9 +105,10 @@ export function buildPlaywrightSandboxMcp(
 
   const config = JSON.stringify({
     mcpServers: {
-      playwright: {
+      [PLAYWRIGHT_MCP_SERVER]: {
         command: resolvedBinary,
-        args: [],
+        args: options.launch === undefined ? [] : playwrightServerArgs(options.launch),
+        ...(options.launch?.socketDir === undefined ? {} : { env: { PWTEST_SOCKETS_DIR: options.launch.socketDir, PWTEST_SERVER_REGISTRY: playwrightRegistryDir(options.launch.socketDir) } }),
       },
     },
   });

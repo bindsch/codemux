@@ -7,6 +7,7 @@ import {
   type AdapterCapabilities,
  type LaunchIntent } from "../types.js";
 import { sanitizeEnvironment } from "../environment.js";
+import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import { readProviderOverride, type ProviderOverride } from "../provider-override.js";
 import { launchRunRequest } from "../launch.js";
@@ -54,6 +55,12 @@ export abstract class BaseAdapter {
     if (environment.HOME !== undefined && !isAbsolute(environment.HOME)) {
       throw new Error("HOME must be an absolute path");
     }
+  }
+
+  /** The operator HOME this adapter reads state from: its own environment
+   * view, never the process's when the two differ. */
+  operatorHome(): string {
+    return this.environment.HOME || homedir();
   }
 
   /**
@@ -104,7 +111,9 @@ export abstract class BaseAdapter {
     enablePlaywrightMcp?: boolean,
     cwd?: string,
     nestedChecks?: ExecutableCheck[],
-    printOnly?: boolean
+    printOnly?: boolean,
+    /** The launch's Playwright socket directory (src/playwright-sandbox.ts). */
+    playwrightSocketDir?: string
   ): string[];
 
   isAvailable(): boolean {

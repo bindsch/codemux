@@ -15,6 +15,7 @@ import type { ProjectSettingsSessionDir } from "../claude-project-config.js";
 import type { CodexSessionProviderHome } from "../codex-provider.js";
 import { prepareCodexSessionCatalog, type CodexSessionCatalog } from "./codex-catalog.js";
 import type { CodemuxConfig } from "../types.js";
+import { finalizePlaywrightSocketDir } from "../playwright-sandbox.js";
 import { sandboxLoginUnavailable } from "../sandbox-login-policy.js";
 import { exitOnResumeRefusal } from "./cli-usage.js";
 import { registerSessionOptions } from "./cli-options.js";
@@ -63,6 +64,7 @@ export function registerSessionCommand(
       // The catch owns pre-spawn homes; the catalog lasts until the child settles.
       let codexSessionCatalog: CodexSessionCatalog | null = null;
       let cleanupAgyRun = async (): Promise<void> => {};
+      let playwrightSockets: { finalize(): void } | null = null; // the browser's socket directory
       let codexSessionHome: CodexSessionProviderHome | null = null;
       let sessionProjectDir: ProjectSettingsSessionDir | null = null;
       let sessionProjectDirResumed = false;
@@ -205,6 +207,7 @@ export function registerSessionCommand(
         sessionProjectDirResumed = launch.sessionProjectDirResumed;
         sessionPrivateHome = launch.sessionPrivateHome;
         sessionPrivateHomeResumed = resumeId !== undefined;
+        playwrightSockets = launch.playwrightSockets;
         const agyRun = prepareAgySessionRunHome(adapter, runLike, launch.sandboxOptions, printOnly, sessionPrivateHome !== null);
         cleanupAgyRun = agyRun.cleanup;
         codexSessionCatalog = agentId === "codex" ? prepareCodexSessionCatalog({
@@ -374,7 +377,7 @@ export function registerSessionCommand(
               sandboxed: Boolean(options.sandbox),
               autonomy: requestedAutonomy,
               sandboxOptions: longLivedSandboxOptions,
-              validateBeforeSpawn: () => { validateBeforeSpawn?.(); codexSessionCatalog?.assertPrepared(); },
+              validateBeforeSpawn: () => { validateBeforeSpawn?.(); codexSessionCatalog?.assertPrepared(); launch.playwrightSockets?.create(); },
               graceMs: shutdownGraceMs,
               envOmissions: adapter.getEnvOmissions(),
               // The Playwright binary the claude-family argv embeds in its
@@ -489,6 +492,7 @@ export function registerSessionCommand(
         });
       } finally {
         await cleanupAgyRun();
+        finalizePlaywrightSocketDir(playwrightSockets);
         if (!removeFinalProjectDir(codexSessionCatalog)) process.exitCode = Math.max(Number(process.exitCode ?? 0), 1);
       }
     });

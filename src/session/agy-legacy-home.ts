@@ -10,7 +10,7 @@
 
 import { randomBytes } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readlinkSync, readSync, renameSync, rmdirSync, unlinkSync, writeSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { tryExclusiveFlock } from "../flock.js";
 import { AGY_SESSION_HOME_PREFIX } from "../adapters/agy-homes.js";
 import { AGY_FILE_TOKEN, AGY_NATIVE_PATHS, ensureAgyLinkParent, linkAgyLogin } from "../agy-auth.js";
@@ -27,6 +27,21 @@ const MIRROR_FILE = /^(?:login\.keychain-db(?:\.sb-[A-Za-z0-9-]+)?|\.fl[0-9A-Fa-
 
 function regularFile(path: string): boolean {
   return lstatSync(path, { throwIfNoEntry: false })?.isFile() ?? false;
+}
+
+/** Refuse when a component between `home` and `relative`'s last name
+ * exists and is not a real directory. Creates nothing. */
+function assertOwnDirectories(home: string, relative: string): void {
+  let current = home;
+  for (const part of dirname(relative).split(sep).filter((name) => name !== "" && name !== ".")) {
+    current = join(current, part);
+    const stat = lstatSync(current, { throwIfNoEntry: false });
+    if (stat === undefined) return;
+    if (!stat.isDirectory()) {
+      throw new UsageRefusalError(`the resumed agy private home holds a symbolic link or a file at ${current} ` +
+        "where it needs its own directory; codemux never follows or replaces it; start a new session");
+    }
+  }
 }
 
 /** The mirror files of a private Keychains directory, or a refusal when it
@@ -73,7 +88,16 @@ export interface LegacyAgyMigrationOptions {
  */
 export function migrateLegacyAgyHome(dir: string, source: string, platform: NodeJS.Platform = process.platform,
   options: LegacyAgyMigrationOptions = {}): boolean {
-  const fd = openSync(join(dir, AGY_MIGRATION_LOCK), constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
+  const lock = join(dir, AGY_MIGRATION_LOCK);
+  let fd: number;
+  try {
+    fd = openSync(lock, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
+  } catch (error) {
+    // A link planted at the lock's name is never followed (O_NOFOLLOW).
+    if ((error as NodeJS.ErrnoException).code !== "ELOOP") throw error;
+    throw new UsageRefusalError(`the agy private home's migration lock ${lock} is a symbolic link; ` +
+      "codemux never follows or replaces it; remove it or start a new session");
+  }
   try {
     const deadline = Date.now() + (options.waitMs ?? 0);
     while (!tryExclusiveFlock(fd)) {
@@ -95,6 +119,10 @@ function nativeLink(dir: string, source: string, relative: string): boolean {
 
 function migrateLockedLegacyAgyHome(dir: string, source: string, platform: NodeJS.Platform): void {
   const keychains = join(dir, AGY_NATIVE_PATHS[0]);
+  // The directories above the private Keychains directory must be the
+  // home's own before it is listed: through a planted `Library` link the
+  // listing, and a refusal quoting it, would name the operator's files.
+  assertOwnDirectories(dir, AGY_NATIVE_PATHS[0]);
   const mirror = mirrorFiles(keychains);
   const token = join(dir, AGY_FILE_TOKEN);
   // The marker sits in a home its sandboxed child can write, so it alone

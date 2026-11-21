@@ -1,6 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import { AGY_CONVERSATIONS, agySharedStateEntries } from "../adapters/agy-shared-state.js";
 import type { BaseAdapter, RunContext } from "../adapters/base.js";
 import { applyAgyIsolationSandboxBlocks } from "../launch/agy-isolation-sandbox.js";
@@ -21,11 +20,12 @@ export function prepareAgySessionRunHome(adapter: BaseAdapter, request: RunReque
     return { cleanup: async () => {} };
   }
   if (!printOnly) {
-    if (!isAbsolute(process.env.HOME || homedir())) throw new Error("agy probe HOME must be absolute");
+    // The adapter's HOME, the one prepareRun links and grants from. It is
+    // absolute: the adapter refuses a relative HOME when it is constructed.
+    const operatorHome = adapter.operatorHome();
     // prepareRun shares existing entries. Create the conversation directory
     // before that pass so a first session's transcript survives cleanup too.
-    mkdirSync(join(process.env.HOME || homedir(), AGY_CONVERSATIONS),
-      { recursive: true, mode: 0o700 });
+    mkdirSync(join(operatorHome, AGY_CONVERSATIONS), { recursive: true, mode: 0o700 });
   }
   const context = adapter.prepareRun(request, sandboxOptions?.trust, sandboxOptions, { printOnly });
   const release = registerRunExitCleanup(adapter, context);

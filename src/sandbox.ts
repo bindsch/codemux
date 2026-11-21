@@ -11,6 +11,7 @@ import type { AgentId, AutonomyLevel } from "./types.js";
 import { UsageRefusalError } from "./validation.js";
 import { assertStrictExecutables, containsPath, needsWrappedExecutableGrant, strictCommandPaths, StrictSandboxRefusalError } from "./sandbox-command.js";
 import { strictRuntimeGrants } from "./sandbox-runtime-grants.js";
+import { playwrightSandboxGrants } from "./playwright-sandbox.js";
 // From the format module, which owns the rule, rather than the registry
 // barrel: sandbox.ts sits below the session layer and imports only this
 // one helper from it.
@@ -68,6 +69,10 @@ export interface SandboxOptions {
    * that: see assertNoCallerBlockOverStateDirs.
    */
   blockPaths?: readonly string[];
+  /** This launch's Playwright socket directory, set when the launch attaches
+   * the Playwright MCP server (src/playwright-sandbox.ts). The scode argv
+   * then allows it and the browser install directory. */
+  playwrightSocketDir?: string;
   /** Caller blocks captured before appending launcher isolation blocks. */
   callerBlockPaths?: readonly string[];
   /** Operator stores blocked by --harness-home, distinct from caller policy. */
@@ -209,6 +214,14 @@ export function buildScodeCommand(
 
   const grants = [...(options?.harnessStateDirs ?? []), ...nativePaths.filter((path) => !readOnlyLoginPaths.includes(path))];
   const readOnlyGrants: string[] = [...readOnlyLoginPaths];
+  // The attached Playwright server's socket and browser directories; a
+  // caller block over either is refused there.
+  for (const grant of options?.playwrightSocketDir === undefined ? [] : playwrightSandboxGrants(
+    options.playwrightSocketDir, environment, options.callerBlockPaths ?? blockedPaths, allowReadOnlyExecutables, platform,
+    [...blockedPaths, ...(options.harnessHomeBlockedPaths ?? []), ...scodeAccountHomeBlock(environment)])) {
+    (grant.flag === "--allow-ro" ? readOnlyGrants : grants).push(grant.path);
+    scodeCmd.push(grant.flag, grant.path);
+  }
   // A harness can be installed inside its own operator store. Reopen only
   // the resolved executable files, never their containing config directory.
   // Older scode needs a writable exception, which strict mode refuses.

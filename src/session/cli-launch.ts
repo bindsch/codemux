@@ -25,6 +25,7 @@ import { populateCodexHermeticSessionHome } from "../hermetic-home.js";
 import { populateKimiHermeticSessionHome, relinkKimiSessionHome } from "../kimi-hermetic.js";
 import { populateKimiPolicySessionHome } from "../kimi-run-policy.js";
 import { applyAgyIsolationSandboxBlocks } from "../launch/agy-isolation-sandbox.js";
+import { attachPlaywrightSocketDir, usesPlaywrightSandboxDirs } from "../playwright-sandbox.js";
 import { assertQuotaHeadroomForLaunch, resolveQuotaGate } from "../quota-gate.js";
 import {
   assertNoCallerBlockOverStateDirs,
@@ -122,6 +123,9 @@ export async function prepareSessionLaunch({
   // session_started agent the driver records.
   const claudeFamilyAgent: "claude" | "zai" =
     agentId === "zai" ? "zai" : "claude";
+  // Named here, created just before the spawn (cli.ts), removed at session end.
+  const playwrightSockets = enablePlaywrightMcp && options.sandbox && usesPlaywrightSandboxDirs(agentId)
+    ? attachPlaywrightSocketDir(sandboxOptions) : null;
   const claudeBuilt = agentId === "claude" || agentId === "zai"
     ? buildClaudeSessionCommand({
         agent: claudeFamilyAgent,
@@ -140,7 +144,7 @@ export async function prepareSessionLaunch({
         // resolves through the session child's environment PATH, the same
         // source the spawn's command resolution uses (round 391, item 13).
         sandboxed: Boolean(options.sandbox),
-        enablePlaywrightMcp,
+        enablePlaywrightMcp, playwrightSocketDir: playwrightSockets?.path,
         pathEnv: adapter.executionPathEnv(),
         // The picker mapping the run paths' one rule adds whenever the
         // resolved model is not a binary catalog id (claude-family.ts):
@@ -489,6 +493,6 @@ export async function prepareSessionLaunch({
     sessionProjectDirResumed,
     sessionPrivateHome,
     kimiSourceBrandHome,
-    codexCatalogBinary, harnessVersion,
+    codexCatalogBinary, harnessVersion, playwrightSockets,
   };
 }

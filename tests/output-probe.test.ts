@@ -214,7 +214,8 @@ describe("one-shot output probes", () => {
     ["exit 0", 0, ""],
   ] as const)("keeps %s (code %s, output %j) with pipes open past the deadline", async (ending, code, output) => {
     const f = fake(`/bin/sleep 30 &\nprintf '%s' "$!" > child\n${print(output)}\n/bin/sleep 0.15\n${ending}`);
-    const result = await runOutputProbe([f.binary], f.options, versionAnswer(/(1\.2\.3)/));
+    // A deadline well past the script's 0.15 s: under load 500 ms timed out.
+    const result = await runOutputProbe([f.binary], { ...f.options, timeoutMs: 2_000 }, versionAnswer(/(1\.2\.3)/));
     expect(result).toEqual({ stdout: output, stderr: "", exitCode: code, success: code === 0 });
     expect(readProcessTable().has(Number(readFileSync(join(f.root, "child"), "utf8")))).toBe(false);
   });

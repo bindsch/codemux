@@ -27,6 +27,9 @@ export interface ClaudeSessionCommand {
   sandboxed?: boolean;
   /** Enable the local Playwright MCP inside the sandbox (run parity). */
   enablePlaywrightMcp?: boolean;
+  /** This session launch's Playwright socket directory
+   * (src/playwright-sandbox.ts); the server gets it as PWTEST_SOCKETS_DIR. */
+  playwrightSocketDir?: string | undefined;
   /** The PATH the Playwright binary resolves through: the session child's
    * environment PATH, the same source the spawn's own command resolution
    * uses (review round 391, item 13) — never the ambient one. */
@@ -182,6 +185,8 @@ export function buildClaudeSessionCommand(
     enabled: command.enablePlaywrightMcp,
     forbiddenRoot: launchDir,
     pathEnv: command.pathEnv,
+    // A session is headless: no person sees a browser window.
+    launch: { headless: true, socketDir: command.playwrightSocketDir },
   });
   argv.push(...playwright.args);
   if (command.model !== undefined) {

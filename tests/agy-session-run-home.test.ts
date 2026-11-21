@@ -1,6 +1,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { existsSync, readdirSync, readlinkSync } from "node:fs";
 import { join, relative } from "node:path";
+import { AgyAdapter } from "../src/adapters/agy.js";
 import { prepareAgySessionRunHome } from "../src/session/agy-run-home.js";
 import { prepareSessionChild } from "../src/session/cli-spawn-prep.js";
 import type { SandboxOptions } from "../src/sandbox.js";
@@ -52,15 +53,22 @@ test("agy session run-home preparation skips existing session homes and unsandbo
   await preview.cleanup();
 });
 
-test("agy session validates HOME before creating shared conversation state", () => {
+test("agy session creates shared conversation state under the adapter's HOME, not the process's", async () => {
+  // Review of 2.0.4, security 4: the directory came from process.env.HOME
+  // while links and grants came from the adapter's environment.
   const f = setup();
+  const other = setup();
   const previousHome = process.env.HOME;
-  process.env.HOME = relative(process.cwd(), f.home);
+  process.env.HOME = other.home;
+  const prepared = prepareAgySessionRunHome(f.adapter, f.request, {}, false, false);
   try {
-    expect(() => prepareAgySessionRunHome(f.adapter, f.request, {}, false, false))
-      .toThrow("agy probe HOME must be absolute");
-    expect(existsSync(join(f.home, ".gemini/antigravity-cli/conversations"))).toBe(false);
-  } finally { process.env.HOME = previousHome; }
+    expect(existsSync(join(f.home, ".gemini/antigravity-cli/conversations"))).toBe(true);
+    expect(existsSync(join(other.home, ".gemini/antigravity-cli/conversations"))).toBe(false);
+    expect(() => new AgyAdapter({ ...f.env, HOME: relative(process.cwd(), f.home) })).toThrow("HOME must be an absolute path");
+  } finally {
+    await prepared.cleanup();
+    process.env.HOME = previousHome;
+  }
 });
 
 test("a plain sandboxed agy session blocks the operator's real .gemini and re-allows its private home", async () => {

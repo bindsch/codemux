@@ -52,7 +52,7 @@ export function kimiOperatorOauthDirectory(operatorBrandHome: string): string {
 /** A directory Kimi made for itself in a private home (homes created before
  * 2.0.4 had no link): only empty sentinel files and empty `.lock`
  * directories. Anything else is not removed. */
-function removeOwnLockDirectory(directory: string): void {
+export function removeOwnLockDirectory(directory: string, seen: { dev: number; ino: number }): void {
   // Kimi names its sentinel after the provider (`kimi-code`,
   // `kimi-code-env-<id>`) and its lock directory `<sentinel>.lock`.
   const sentinel = /^kimi-code[A-Za-z0-9._-]*$/;
@@ -63,6 +63,12 @@ function removeOwnLockDirectory(directory: string): void {
       ((stat.isFile() && stat.size === 0 && !name.endsWith(".lock")) ||
         (stat.isDirectory() && name.endsWith(".lock") && readdirSync(path).length === 0));
     if (!own) throw new Error(`${path} is not one of Kimi's lock files`);
+  }
+  // The entries were listed by path: the directory must still be the one
+  // the caller examined, not a link swapped in since, before any removal.
+  const now = lstatSync(directory, { throwIfNoEntry: false });
+  if (!now?.isDirectory() || now.dev !== seen.dev || now.ino !== seen.ino) {
+    throw new Error(`${directory} changed while it was being checked`);
   }
   for (const { path, stat } of entries) {
     if (stat.isDirectory()) rmdirSync(path); else unlinkSync(path);
@@ -86,7 +92,7 @@ export function linkKimiOauthDirectory(operatorBrandHome: string, privateBrandHo
   if (existing !== undefined) {
     try {
       if (!existing.isDirectory()) throw new Error(`${link} is not a directory`);
-      removeOwnLockDirectory(link);
+      removeOwnLockDirectory(link, existing);
     } catch (error) {
       throw new UsageRefusalError(`the private Kimi home holds its own refresh-lock entry at ${link}, ` +
         `which codemux does not delete (${error instanceof Error ? error.message : String(error)}); ` +

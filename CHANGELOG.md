@@ -13,6 +13,16 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
+## [2.0.5] - 2026-11-21
+
+### Fixed
+
+- A symbolic link planted at an agy session home's migration lock is refused by path instead of failing with a raw `ELOOP`.
+- The 2.0.x agy home migration checks that `Library` is the home's own directory before it lists the private Keychains directory, so a planted link cannot make a refusal name the operator's Keychain files.
+- The Kimi refresh-lock cleanup rechecks that the directory is the one it examined before removing anything, so a link swapped in between the check and the removal is not emptied. A swap during the removal itself is not excluded; only empty files and directories with Kimi's lock names are ever removed.
+- A plain sandboxed agy session creates its conversations directory under the adapter's HOME, the one its links and grants use.
+- Headless `claude` and `zai` runs with `--enable-playwright-mcp` can use the browser tools. Every call was refused before ("The user doesn't grant the permission to use mcp__playwright__browser_navigate"), and with the tools granted the browser still could not start inside the sandbox. A run now allows the server's tools at every `--auto` level, except that `read-only` and `low` deny the tools that run code in the server's own process (`browser_run_code_unsafe`, `browser_run_code`), and starts the server with `--isolated --headless --no-sandbox`. The sandbox allows a private per-launch socket directory (`/tmp/cmx-pw-<random>`, passed as `PWTEST_SOCKETS_DIR`, removed when the launch ends) and the Playwright browser install directory, read-only; the server's registry, which Playwright otherwise writes in its default cache directory, moves into the socket directory (`PWTEST_SERVER_REGISTRY`). The read-only grant needs scode 0.6.7 or newer. On these two agents `--no-web` cannot be combined with the option on `run`. A relative `PLAYWRIGHT_BROWSERS_PATH` is refused, and so is a relative `XDG_CACHE_HOME` on Linux when it would name the directory. The browser directory is judged by its resolved path, whatever names it: one that contains the home directory, overlaps a default-blocked path of scode other than the standard cache location, or overlaps a store the launch blocks is refused. `tui` and `session` launches get the same server settings and grants; `tui` keeps the browser window. A `--sandbox-block` that overlaps either directory is refused with exit 64. The other agents are unchanged.
+
 ## [2.0.4] - 2026-11-21
 
 ### Security
@@ -489,9 +499,7 @@ Earlier 2.0.0 fixes are preserved in [part 1](https://github.com/bindsch/codemux
   child argv; stdout is unchanged.
 - Operators who do not want the quota gate: set `quota: false` in the config
   file or pass `--no-quota-gate`.
-- Links to `docs/HARNESS-COMPATIBILITY.md`, `docs/HERMETIC.md`, or the dated
-  reports must be retargeted to docs/harnesses.md, docs/isolation.md, and
-  docs/archive/.
+- Links to `docs/HARNESS-COMPATIBILITY.md`, `docs/HERMETIC.md`, or the dated reports must be retargeted to docs/harnesses.md, docs/isolation.md, and docs/archive/.
 
 ## Earlier releases
 

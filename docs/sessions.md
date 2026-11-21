@@ -198,6 +198,9 @@ for Claude/ZAI/Cline/Codex/Kimi/OpenCode/Copilot/Gemini/Goose/Pi/Qwen, never com
 isolation flag, and requires `--sandbox`; Claude, ZAI, Codex, Kimi, Gemini, Goose, Pi, and Qwen
 require `--auto low`, Copilot and Cline require `--auto medium` or `high`
 (low has no caller approval bridge), and OpenCode accepts any level.
+A Claude or ZAI session runs the browser headless with an in-memory profile and
+gets the same socket and browser directory grants as a run ([cli](cli.md));
+the caller still answers every browser tool request.
 
 ## Caller-owned session homes
 `--harness-home <dir>` selects one persistent directory across turns and session restarts. Pass the same path with `--resume <id>`; a changed path or missing transcript directory refuses resume. Codemux creates absent directories with mode 0700 and requires ownership by the invoking user. The directory must be separate from the working directory and all real harness stores. It must also neither contain nor lie inside one of scode's default-blocked paths, such as `~/Library`, `~/.ssh`, or `~/.config/gh`: a sandbox grant beneath one would reopen it. Symlinks and symlink ancestors are refused. Neither `--final` nor failed-launch cleanup removes it; the caller owns retention and cleanup.

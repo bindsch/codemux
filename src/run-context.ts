@@ -28,6 +28,7 @@ import type { OpenhandsHermeticHome } from "./openhands-hermetic.js";
 import type { OpenhandsTaskFile } from "./openhands-task-file.js";
 import type { TrustedParentRecord } from "./safe-remove.js";
 import type { PiProviderAgentDir } from "./pi-provider.js";
+import type { PlaywrightSocketDir } from "./playwright-sandbox.js";
 
 /**
  * One launch's per-run state: the scratch a run needs on disk between
@@ -185,4 +186,11 @@ export interface RunContext {
    * absent when the run built no Playwright arguments.
    */
   playwrightMcpCheck?: ExecutableCheck | null;
+  /**
+   * Claude/Z.AI: this run's Playwright socket directory, when a sandboxed
+   * run attaches the Playwright MCP server (src/playwright-sandbox.ts).
+   * prepareRun reserves it (and creates it unless the launch only prints),
+   * buildRunCommand hands its path to the server, and cleanupRun removes it.
+   */
+  playwrightSocketDir?: PlaywrightSocketDir | null;
 }

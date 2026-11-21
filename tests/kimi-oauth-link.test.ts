@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { KimiAdapter } from "../src/adapters/kimi.js";
 import { createKimiHermeticHome, KIMI_HERMETIC_ENV_ASSIGNMENTS, KIMI_HERMETIC_ENV_OMISSIONS, populateKimiHermeticSessionHome, relinkKimiSessionHome } from "../src/kimi-hermetic.js";
 import { plantKimiCanary } from "../src/kimi-isolation-probe.js";
-import { kimiOperatorOauthDirectory, linkKimiOauthDirectory } from "../src/kimi-oauth-link.js";
+import { kimiOperatorOauthDirectory, linkKimiOauthDirectory, removeOwnLockDirectory } from "../src/kimi-oauth-link.js";
 import { createKimiPolicyHome, populateKimiPolicySessionHome } from "../src/kimi-run-policy.js";
 import { applyHarnessHomeSandboxBlocks } from "../src/launch/harness-home-sandbox.js";
 import { buildScodeCommand, type SandboxOptions } from "../src/sandbox.js";
@@ -285,3 +285,20 @@ describe("KIMI_DISABLE_OAUTH_LOCK", () => {
     expect(hits).toEqual([]);
   });
 });
+
+// Review of 2.0.4, security 2: the entries are listed by path, so the
+// directory must still be the one examined when the removal starts.
+test("a lock directory swapped since it was examined is not emptied", () => {
+  const root = mkdtempSync(join(import.meta.dir, "../scratch/kimi-oauth-swap-"));
+  try {
+    const examined = join(root, "examined"), swapped = join(root, "swapped");
+    mkdirSync(examined); mkdirSync(swapped);
+    writeFileSync(join(swapped, "kimi-code"), "");
+    mkdirSync(join(swapped, "kimi-code.lock"));
+    expect(() => removeOwnLockDirectory(swapped, lstatSync(examined))).toThrow("changed while it was being checked");
+    expect(readdirSync(swapped).sort()).toEqual(["kimi-code", "kimi-code.lock"]);
+    removeOwnLockDirectory(swapped, lstatSync(swapped));
+    expect(existsSync(swapped)).toBe(false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+

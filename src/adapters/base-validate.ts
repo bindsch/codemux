@@ -118,6 +118,13 @@ export function validateRunRequestFor(
     if (request.hermetic === true || request.tools === "none") {
       throw new UsageRefusalError("--hermetic and --tools none cannot be combined with --enable-playwright-mcp");
     }
+    // On the Claude family a headless run grants the browser's tools, and
+    // the browser fetches the pages --no-web is there to deny (review of
+    // 2.0.5). The other agents keep their own rule for the pair: Kimi's
+    // policy, for one, turns off its web tools and keeps the browser.
+    if (request.web === false && (adapter.id === "claude" || adapter.id === "zai")) {
+      throw new UsageRefusalError("--no-web cannot be combined with --enable-playwright-mcp: the browser fetches the pages --no-web is there to deny");
+    }
   }
   if (request.hermetic !== undefined && typeof request.hermetic !== "boolean") {
     throw new Error("hermetic must be a boolean");

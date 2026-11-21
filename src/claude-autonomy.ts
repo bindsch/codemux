@@ -131,16 +131,23 @@ export type WebToolRule = "grant" | "deny" | "callback";
 export function claudeAutonomyFlags(
   level: AutonomyLevel,
   launchDir: string,
-  { web = "grant" }: { web?: WebToolRule } = {}
+  { web = "grant", extraGrants = [], shellOnlyDenies = [] }:
+    { web?: WebToolRule; extraGrants?: readonly string[]; shellOnlyDenies?: readonly string[] } = {}
 ): string[] {
   const flags = claudeNativeAutonomyFlags(level);
-  const webGrants = web === "grant" ? WEB_TOOL_GRANTS : [];
-  const webDenies = web === "deny" ? ["--disallowedTools", ...WEB_TOOL_GRANTS] : [];
+  // Extra grants (an attached MCP server's tools) ride at every level: under
+  // the hardening an ungranted MCP tool is refused even at high.
+  const webGrants = [...(web === "grant" ? WEB_TOOL_GRANTS : []), ...extraGrants];
+  // Tools that amount to a shell are denied where the level grants no Bash
+  // (read-only, low): a blanket server grant must not add code execution.
+  const shell = level === "medium" || level === "high";
+  const denied = [...(web === "deny" ? WEB_TOOL_GRANTS : []), ...(shell ? [] : shellOnlyDenies)];
+  const webDenies = denied.length > 0 ? ["--disallowedTools", ...denied] : [];
   if (level === "medium") {
     return [...flags, "--allowedTools", grantRule(launchDir), "Bash", ...webGrants, ...webDenies];
   }
   if (level === "high") {
     return [...flags, "--allowedTools", "Edit", "Write", "NotebookEdit", "Bash", ...webGrants, ...webDenies];
   }
-  return web === "grant" ? [...flags, "--allowedTools", ...webGrants] : [...flags, ...webDenies];
+  return webGrants.length > 0 ? [...flags, "--allowedTools", ...webGrants, ...webDenies] : [...flags, ...webDenies];
 }

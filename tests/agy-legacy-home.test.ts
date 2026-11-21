@@ -240,3 +240,29 @@ test("a planted link on the way to a login link refuses before any 2.0.3 copy is
   expect(verifyAgySessionPrivateHome(dir, options)).toBe("native");
   expectNativeHome(dir, source, "linux", true);
 });
+
+// Review of 2.0.4, security: both reach files of a home its sandboxed child can write.
+test("a link planted at the migration lock is refused by path, not with a raw ELOOP", () => {
+  const { source, parent } = operator("linux", true);
+  const dir = legacyHome(parent, "session-lock-link", "token", "linux");
+  const elsewhere = join(parent, "elsewhere");
+  writeFileSync(elsewhere, "caller data");
+  symlinkSync(elsewhere, join(dir, AGY_MIGRATION_LOCK));
+  expect(() => migrateLegacyAgyHome(dir, source, "linux")).toThrow(`migration lock ${join(dir, AGY_MIGRATION_LOCK)} is a symbolic link`);
+  expect(readFileSync(elsewhere, "utf8")).toBe("caller data");
+  expect(readFileSync(join(dir, AGY_FILE_TOKEN), "utf8")).toBe("a stale copied token");
+});
+
+test("a Library link planted over the operator's is refused before its Keychains are listed", () => {
+  const { source, parent } = operator("darwin", true);
+  const dir = legacyHome(parent, "session-library-link", "token", "darwin");
+  writeFileSync(join(source, AGY_NATIVE_PATHS[0], "operator-only-item"), "not codemux's");
+  renameSync(join(dir, "Library"), join(dir, "Library.moved"));
+  symlinkSync(join(source, "Library"), join(dir, "Library"));
+  let message = "";
+  try { migrateLegacyAgyHome(dir, source, "darwin"); } catch (error) { message = (error as Error).message; }
+  expect(message).toContain(`${join(dir, "Library")} where it needs its own directory`);
+  expect(message).not.toContain("operator-only-item");
+  expect(readFileSync(join(dir, AGY_FILE_TOKEN), "utf8")).toBe("a stale copied token");
+  expectOperatorUntouched(source, "darwin", true);
+});

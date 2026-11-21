@@ -18,6 +18,7 @@ import type { AgentId, CodemuxConfig } from "./types.js";
 import { resolveSandboxOptionsForAgent } from "./sandbox-policy.js";
 import { PLAYWRIGHT_MCP_AGENT_LIST, supportsPlaywrightMcpAgent } from "./mcp.js";
 import { withKeepEnvExemption } from "./sandbox.js";
+import { attachPlaywrightSocketDir, finalizePlaywrightSocketDir, usesPlaywrightSandboxDirs } from "./playwright-sandbox.js";
 import type { ExecutableCheck } from "./executable-security.js";
 import { runSandboxed } from "./cli-runtime.js";
 import { assertQuotaHeadroomForLaunch, resolveQuotaGate } from "./quota-gate.js";
@@ -289,7 +290,13 @@ export function registerTuiCommand(
             : geminiLaunch
               ? { env: geminiLaunch.env, finalize: geminiLaunch.cleanup }
               : adapter.prepareTuiEnvironment(model, autonomy, effort, true, passthroughEnv, Boolean(options.printSandbox));
-          finalizeTui = preparedTui.finalize;
+          // The Claude family's browser socket directory: named for the
+          // command and the scode argv, created only for a real launch,
+          // removed with the rest of the launch's state.
+          const playwrightSockets = enablePlaywrightMcp && usesPlaywrightSandboxDirs(agentId)
+            ? attachPlaywrightSocketDir(sandboxOptions) : null;
+          finalizeTui = () => { try { preparedTui.finalize(); } finally { finalizePlaywrightSocketDir(playwrightSockets); } };
+          if (!options.printSandbox) playwrightSockets?.create();
           const injectedEnv = {
             ...adapter.getEnv({ printOnly: Boolean(options.printSandbox) }),
             ...preparedTui.env,
@@ -317,7 +324,8 @@ export function registerTuiCommand(
             enablePlaywrightMcp,
             workdir,
             nestedChecks,
-            Boolean(options.printSandbox)
+            Boolean(options.printSandbox),
+            playwrightSockets?.path
           );
           const exitCode = await runSandboxed(
             command,

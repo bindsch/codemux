@@ -9,7 +9,8 @@ import { type RunContext } from "./base.js";
 import { ClaudeCredentialAdapter } from "./claude-credentials.js";
 import { ExperimentBridge } from "../experiment-bridge.js";
 import { readExperimentRunSpec } from "../experiment-mcp.js";
-import { buildPlaywrightSandboxMcp } from "../mcp.js";
+import { buildPlaywrightSandboxMcp, PLAYWRIGHT_MCP_CODE_TOOLS, PLAYWRIGHT_MCP_GRANT } from "../mcp.js";
+import { preparePlaywrightSocketDir } from "../playwright-sandbox.js";
 import type { ExecutableCheck } from "../executable-security.js";
 import {
   claudeAutonomyFlags,
@@ -238,7 +239,7 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
   // The experiment bridge as claude's: same binary, same SDK control
   // protocol, same recordings and result envelope. The private config
   // directory of a project-settings run is the same mechanism too.
-  override prepareRun(request: RunRequest, _trust?: ScodeTrustLevel, _sandbox?: SandboxOptions, launch: LaunchIntent = {}): RunContext {
+  override prepareRun(request: RunRequest, _trust?: ScodeTrustLevel, sandbox?: SandboxOptions, launch: LaunchIntent = {}): RunContext {
     if (launch.printOnly && request.experimentMcp) throw new UsageRefusalError("Z.AI experiment MCP cannot be prepared for a print-only preview");
     const context: RunContext = {};
     if (request.experimentProjectSettings) {
@@ -252,6 +253,11 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
         this.environment, launch.printOnly
       );
     }
+    // The browser's socket directory comes after every step that can refuse
+    // the run without a context to clean up, and its own refusal removes
+    // what those steps created.
+    try { context.playwrightSocketDir = preparePlaywrightSocketDir(request, sandbox, launch.printOnly); }
+    catch (error) { this.cleanupRunSync(context); throw error; }
     if (!request.experimentMcp) {
       context.stdoutSink = claudeFamilyStdoutSink();
       return context;
@@ -284,7 +290,8 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
     try {
       await context?.experimentBridge?.close();
     } finally {
-      context?.claudeProjectConfigDir?.finalize();
+      try { context?.claudeProjectConfigDir?.finalize(); }
+      finally { context?.playwrightSocketDir?.finalize(); }
     }
   }
 
@@ -292,7 +299,8 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
     try {
       context?.experimentBridge?.closeSync();
     } finally {
-      context?.claudeProjectConfigDir?.finalize();
+      try { context?.claudeProjectConfigDir?.finalize(); }
+      finally { context?.playwrightSocketDir?.finalize(); }
     }
   }
 
@@ -320,6 +328,7 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
     const playwright = buildPlaywrightSandboxMcp(request.sandboxed, {
       enabled: request.enablePlaywrightMcp, forbiddenRoot: request.cwd ?? process.cwd(),
       pathEnv: this.executionPathEnv(),
+      launch: { headless: true, socketDir: context?.playwrightSocketDir?.path },
     });
     // True when the request asked for the Playwright server and none can
     // be attached (an unsandboxed launch: the build returns no
@@ -405,7 +414,13 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
       // experiment tools, whose separate process owns its writes, so plan
       // mode must not suppress those before they reach the control callback.
       cmd.push(...(request.experimentMcp ? ["--permission-mode", "default"] :
-        claudeAutonomyFlags(request.autonomy, request.cwd ?? process.cwd(), { web: request.web === false ? "deny" : "grant" })));
+        claudeAutonomyFlags(request.autonomy, request.cwd ?? process.cwd(), { web: request.web === false ? "deny" : "grant",
+          // The caller asked for the browser: its tools must be callable headless.
+          extraGrants: playwright.args.length > 0 && request.web !== false ? [PLAYWRIGHT_MCP_GRANT] : [],
+          shellOnlyDenies: playwright.args.length > 0 ? PLAYWRIGHT_MCP_CODE_TOOLS : [] })));
+    } else if (playwright.args.length > 0 && request.web !== false) {
+      // A request without a level still asked for the browser, without a shell.
+      cmd.push("--allowedTools", PLAYWRIGHT_MCP_GRANT, "--disallowedTools", ...PLAYWRIGHT_MCP_CODE_TOOLS);
     }
     if (request.web === false && !cmd.includes("--disallowedTools")) {
       cmd.push("--disallowedTools", ...WEB_TOOL_GRANTS);
@@ -437,13 +452,17 @@ export class ZaiAdapter extends ClaudeCredentialAdapter {
     sandboxed?: boolean,
     enablePlaywrightMcp?: boolean,
     cwd?: string,
-    nestedChecks?: ExecutableCheck[]
+    nestedChecks?: ExecutableCheck[],
+    _printOnly?: boolean,
+    playwrightSocketDir?: string
   ): string[] {
     this.validateEffort(effort, model);
     // Playwright needs the user source; other TUI launches use --safe-mode.
     const playwright = buildPlaywrightSandboxMcp(sandboxed, {
       enabled: enablePlaywrightMcp, forbiddenRoot: cwd ?? process.cwd(),
       pathEnv: this.executionPathEnv(),
+      // A person is watching: the browser window stays visible.
+      launch: { headless: false, socketDir: playwrightSocketDir },
     });
     const cmd = playwright.args.length > 0
       ? ["claude", "--setting-sources", "user", "--strict-mcp-config"]
