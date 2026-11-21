@@ -3,6 +3,7 @@
 // guards (design §4.8). src/session/cli.ts owns the command; this runs
 // after session/cli-request.ts has validated the flags.
 import { randomUUID } from "node:crypto";
+import { effectiveLoginStoreGrant } from "../sandbox-login-policy.js";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { projectSettingsConfigRoot, projectSettingsSessionDirPath } from "../claude-project-config.js";
@@ -16,7 +17,7 @@ import {
   requireProviderOverride,
   type ProviderOverride,
 } from "../provider-override.js";
-import type { ScodeTrustLevel } from "../sandbox.js";
+import type { SandboxOptions, ScodeTrustLevel } from "../sandbox.js";
 import type { AgentId, AutonomyLevel } from "../types.js";
 import type { SessionAgentSupport } from "./cli-agents.js";
 import {
@@ -35,6 +36,7 @@ import { assertResumeIdShape, exitOnResumeRefusal, exitWithCode, usageError } fr
 import {
   lookupForResume,
   registryInside,
+  resumedLoginStoreGrant,
   sessionRegistryPath,
   type ResumeProbe,
 } from "./registry.js";
@@ -49,6 +51,8 @@ export function resolveSessionContext({
   enablePlaywrightMcp,
   hermetic,
   experimentProjectSettings,
+  sandboxOptions,
+  sandboxLoginStoreTyped,
   sandboxTrust,
   sandboxNoNet,
   sandboxScrubEnv,
@@ -64,6 +68,11 @@ export function resolveSessionContext({
   enablePlaywrightMcp: boolean;
   hermetic: boolean;
   experimentProjectSettings: boolean;
+  /** The session's resolved sandbox options: a resume rewrites their
+   * login-store grant to the one the record allows. */
+  sandboxOptions?: SandboxOptions | undefined;
+  /** Whether `--sandbox-login-store` was typed, not a configured default. */
+  sandboxLoginStoreTyped?: boolean;
   sandboxTrust: ScodeTrustLevel;
   sandboxNoNet: boolean;
   sandboxScrubEnv: boolean;
@@ -217,6 +226,9 @@ export function resolveSessionContext({
     autonomy,
     sandboxed: Boolean(options.sandbox),
     sandboxStrict: Boolean(options.sandboxStrict),
+    sandboxNoLoginStore: Boolean(options.sandbox && options.sandboxNoLoginStore),
+    sandboxLoginStore: effectiveLoginStoreGrant({ sandboxed: Boolean(options.sandbox), loginStore: options.sandboxLoginStore, noLoginStore: options.sandboxNoLoginStore, trust: sandboxTrust }),
+    sandboxLoginStoreTyped: sandboxLoginStoreTyped === true,
     sandboxTrust,
     sandboxNoNet,
     sandboxScrubEnv,
@@ -229,11 +241,20 @@ export function resolveSessionContext({
     projectSettings: experimentProjectSettings,
   };
   if (resumeId !== undefined) {
-    exitOnResumeRefusal(
-      resumeId,
-      registryPath,
-      lookupForResume(registryPath, resumeId, resumeProbe)
-    );
+    const lookup = lookupForResume(registryPath, resumeId, resumeProbe);
+    exitOnResumeRefusal(resumeId, registryPath, lookup);
+    // The launch runs with the grant the record allows, not the request:
+    // a configured default never widens a recorded session and never
+    // refuses it (resumedLoginStoreGrant). The drivers and the sandbox
+    // both read these two objects after this point.
+    if (lookup.outcome === "ok") {
+      const grant = resumedLoginStoreGrant(lookup.entry, resumeProbe);
+      options.sandboxLoginStore = grant;
+      if (sandboxOptions !== undefined) {
+        if (grant) sandboxOptions.loginStore = true;
+        else delete sandboxOptions.loginStore;
+      }
+    }
     // The one resume check the registry cannot make: a hermetic
     // session's transcript lives in its private home (the recorded
     // harness_home — the claude family's config directory, the

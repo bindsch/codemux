@@ -1,5 +1,12 @@
 import { realpathSync } from "node:fs";
 import { accountHome } from "./account-home.js";
+import { agyLoginPaths, AGY_FILE_TOKEN } from "./agy-auth.js";
+import { nativeLoginPaths } from "./native-login-paths.js";
+import { grantsAgyFileToken, grantsLoginStore } from "./sandbox-login-policy.js";
+import { claudeLoginPaths } from "./claude-login.js";
+import { existsSync } from "node:fs";
+import { basename, join } from "node:path";
+import { homedir } from "node:os";
 import type { AgentId, AutonomyLevel } from "./types.js";
 import { UsageRefusalError } from "./validation.js";
 import { assertStrictExecutables, containsPath, needsWrappedExecutableGrant, strictCommandPaths, StrictSandboxRefusalError } from "./sandbox-command.js";
@@ -21,6 +28,8 @@ export interface SandboxOptions {
   trust?: ScodeTrustLevel;
   fsMode?: ScodeFsMode;
   noNet?: boolean;
+  loginStore?: boolean;
+  noLoginStore?: boolean;
   scrubEnv?: boolean;
   /**
    * Environment names codemux itself injected into the child (the
@@ -104,7 +113,11 @@ export function buildScodeCommand(
   options?: SandboxOptions,
   executable = "scode",
   environment: NodeJS.ProcessEnv = process.env,
-  allowReadOnlyExecutables = false
+  allowReadOnlyExecutables = false,
+  allowStagedLogin = false,
+  supportsNoLoginStore = false,
+  platform: NodeJS.Platform = process.platform,
+  supportsNoCredentialSync = true
 ): string[] {
   if (
     command.length === 0 ||
@@ -114,7 +127,10 @@ export function buildScodeCommand(
   ) {
     throw new Error("sandbox command must contain non-NUL string arguments");
   }
-  const scodeCmd = [executable];
+  // scode added credential synchronization, and this switch, in 0.4.0.
+  // An older scode has neither and refuses the unknown option, so the
+  // callers that know the version leave it out there (review round 4).
+  const scodeCmd = supportsNoCredentialSync ? [executable, "--no-credential-sync"] : [executable];
 
   if (cwd) {
     scodeCmd.push("-C", cwd);
@@ -137,21 +153,62 @@ export function buildScodeCommand(
     scodeCmd.push("--keep-env", options.keepEnv.join(","));
   }
   const blockedPaths = options?.blockPaths ?? [];
-  for (const blocked of blockedPaths) {
+  const loginStore = grantsLoginStore({ ...options, trust }, environment);
+  if (supportsNoLoginStore) scodeCmd.push(loginStore ? "--login-store" : "--no-login-store");
+  const home = environment.HOME || homedir();
+  const nativePaths = !loginStore ? []
+    : options?.agentId === "agy" ? agyLoginPaths(home, platform)
+      : options?.agentId === "claude" ? nativeLoginPaths(home, platform) : [];
+  const stagedPaths: string[] = [];
+  // agy's file token is agy's own state file, not the Keychain login store:
+  // every agy sandbox on the operator login gets that one existing file,
+  // read-write, by exact path. A caller's own block over it wins unless
+  // the login store was requested, where the conflict is refused below.
+  const token = join(home, AGY_FILE_TOKEN);
+  const tokenGranted = grantsAgyFileToken({ ...options, trust }, environment);
+  if (tokenGranted && existsSync(token) &&
+      (loginStore || !callerBlockCovers(options?.callerBlockPaths ?? blockedPaths, token))) nativePaths.push(token);
+  // A withheld token is blocked by exact path: a plain run leaves the real
+  // ~/.gemini reachable as harness state, so omitting the grant alone would
+  // not withhold it (review round 12).
+  const withheldToken = options?.agentId === "agy" && !tokenGranted && existsSync(token) &&
+    !callerBlockCovers(blockedPaths, token) ? [token] : [];
+  if (platform === "darwin" && loginStore && options?.agentId === "claude") {
+    const loginPaths = claudeLoginPaths(environment, cwd);
+    nativePaths.push(...loginPaths);
+    if (allowStagedLogin) stagedPaths.push(...loginPaths.filter((path) =>
+      [".credentials.json", ".oauth_refresh.lock.owner"].includes(basename(path))));
+  }
+  if (nativePaths.length) assertNoCallerBlockOverStateDirs(options?.callerBlockPaths ?? blockedPaths, nativePaths);
+  const readOnlyLoginPaths = nativePaths.filter((path) => path.endsWith("/Library/Preferences/com.apple.security.plist"));
+  if (readOnlyLoginPaths.length && !allowReadOnlyExecutables) {
+    throw new UsageRefusalError("--sandbox-login-store requires scode 0.6.7 or newer for read-only security preferences");
+  }
+  // A caller may block one bounded staging name without blocking its base.
+  for (const path of stagedPaths) {
+    const prefix = `${canonicalSandboxBlockPath(path)}.tmp.`;
+    for (const blocked of options?.callerBlockPaths ?? blockedPaths) {
+      const canonical = canonicalSandboxBlockPath(blocked);
+      if (canonical.toLowerCase().startsWith(prefix.toLowerCase()) && /^[0-9a-fA-F]{8}(?:\/|$)/.test(canonical.slice(prefix.length))) {
+        throw new UsageRefusalError(`--sandbox-block ${blocked} conflicts with the staged login grant for ${path}`);
+      }
+    }
+  }
+  for (const blocked of [...blockedPaths, ...withheldToken]) {
     if (!blocked.startsWith("/") || blocked.includes("\0")) {
       throw new Error("sandbox block path must be an absolute non-NUL path");
     }
     scodeCmd.push("--block", blocked);
   }
-  for (const directory of options?.harnessStateDirs ?? []) {
+  for (const directory of [...(options?.harnessStateDirs ?? []), ...nativePaths]) {
     if (!directory.startsWith("/") || directory.includes("\0")) {
       throw new Error("sandbox harness state directory must be an absolute non-NUL path");
     }
-    scodeCmd.push("--allow", directory);
+    scodeCmd.push(readOnlyLoginPaths.includes(directory) ? "--allow-ro" : stagedPaths.includes(directory) ? "--allow-staged" : "--allow", directory);
   }
 
-  const grants = [...(options?.harnessStateDirs ?? [])];
-  const readOnlyGrants: string[] = [];
+  const grants = [...(options?.harnessStateDirs ?? []), ...nativePaths.filter((path) => !readOnlyLoginPaths.includes(path))];
+  const readOnlyGrants: string[] = [...readOnlyLoginPaths];
   // A harness can be installed inside its own operator store. Reopen only
   // the resolved executable files, never their containing config directory.
   // Older scode needs a writable exception, which strict mode refuses.
@@ -210,10 +267,18 @@ export function buildScodeCommand(
  * scode's untrusted trust preset implying it) such a name cannot ride
  * the ambient environment (the scrub strips that too), so the
  * exemption is the only way the child keeps its credential — the
- * run cannot proceed without it (round al11's re-review, edges 1). */
+ * run cannot proceed without it (round al11's re-review, edges 1).
+ * `CLAUDE_SECURESTORAGE_CONFIG_DIR` is not one: it selects which Keychain
+ * item Claude reads and carries no secret, so it never makes the
+ * exemption required (review round 5). */
 export function isCredentialEnvName(name: string): boolean {
   return name === "ANTHROPIC_AUTH_TOKEN" || name.endsWith("_API_KEY");
 }
+
+/** Claude's login selector on macOS. Under untrusted trust the login store
+ * is never granted, so the selector has nothing to select: it is neither
+ * exempted from the scrub nor left in the child's environment. */
+export const CLAUDE_LOGIN_SELECTOR_ENV = "CLAUDE_SECURESTORAGE_CONFIG_DIR";
 
 /** The sandbox options with scode's --keep-env exemption attached for the
  * environment codemux itself injected (the adapter's standing and
@@ -245,15 +310,17 @@ export function withKeepEnvExemption(
 ): SandboxOptions {
   const scrubbing =
     sandboxOptions.scrubEnv === true || sandboxOptions.trust === "untrusted";
-  if (!scrubbing || Object.keys(injectedEnv).length === 0) {
+  const names = Object.keys(injectedEnv).filter((name) =>
+    sandboxOptions.trust !== "untrusted" || name !== CLAUDE_LOGIN_SELECTOR_ENV);
+  if (!scrubbing || names.length === 0) {
     return sandboxOptions;
   }
   return {
     ...sandboxOptions,
-    keepEnv: Object.keys(injectedEnv),
+    keepEnv: names,
     keepEnvRequired:
       keepEnvRequired ||
-      Object.keys(injectedEnv).some((name) => isCredentialEnvName(name)),
+      names.some((name) => isCredentialEnvName(name)),
   };
 }
 
@@ -318,6 +385,12 @@ export function assertNoCallerBlockOverStateDirs(
   }
 }
 
+/** Whether a caller's block equals or contains `path` (canonical forms). */
+function callerBlockCovers(callerBlockPaths: readonly string[], path: string): boolean {
+  const canonical = canonicalSandboxBlockPath(path);
+  return callerBlockPaths.some((blocked) => containsPath(canonicalSandboxBlockPath(blocked), canonical));
+}
+
 /** The ambient SCODE_* scrub every codemux-side scode spawn applies
  * (review round 162, finding 4): scode consumes SCODE_* names itself —
  * scratch accounting's output sink among them — so an ambient variable
@@ -343,6 +416,7 @@ export function buildSandboxEnv(
   sandboxOptions?: SandboxOptions
 ): Record<string, string> {
   const sanitized = withoutAmbientScodeEnv(extraEnv);
+  if (sandboxOptions?.trust === "untrusted") delete sanitized[CLAUDE_LOGIN_SELECTOR_ENV];
   // The only SCODE_* names codemux sets itself: scratch-accounting opt-ins
   // requested through --sandbox-account / --sandbox-account-id. scode
   // consumes both into private state and never passes them to the sandboxed

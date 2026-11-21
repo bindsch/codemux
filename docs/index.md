@@ -14,7 +14,7 @@ Run `codemux --version` to identify an installed release.
 - [Harnesses](harnesses.md): capabilities, version requirements, verification evidence.
 - [Autonomy and sandboxing](autonomy-and-sandboxing.md): access policy and scode.
 - [Isolation](isolation.md): hermetic guarantees, tools, exceptions, persistence.
-- [Authentication](authentication.md): credentials, mirrors, Keychain recovery.
+- [Authentication](authentication.md): native logins, credential files, and private-home links.
 - [Provider overrides](provider-overrides.md): routing and token caps.
 - [Results and usage](results-and-usage.md): envelopes, limits, the call ledger.
 - [Quota and subscription usage](quota.md): `codemux usage` and the launch-time quota gate.

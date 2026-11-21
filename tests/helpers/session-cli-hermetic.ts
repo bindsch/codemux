@@ -1,10 +1,7 @@
 import { spyOn } from "bun:test";
-import { linkSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import {
-  AGY_TEMPLATE_NAME, agyKeychainHost, agyKeychainStateDir,
-} from "../../src/agy-keychain.js";
 import { SESSION_AGENTS } from "../../src/session/cli-agents.js";
 import { resolveSessionContext } from "../../src/session/cli-resume.js";
 import * as cliHomes from "../../src/session/cli-homes.js";
@@ -24,52 +21,6 @@ const fixtures = {
   codex: "fake-codex-app-server.ts", kimi: "fake-kimi-run.ts", agy: "fake-agy-session.ts",
 };
 const quote = (text: string): string => `'${text.replaceAll("'", "'\\''")}'`;
-
-/** No command reaches a Keychain executable. Unknown operations fail closed. */
-function stubAgyHost(home: string) {
-  const homeMock = spyOn(agyKeychainHost, "home").mockReturnValue(home);
-  const pathMock = spyOn(agyKeychainHost, "securityPath").mockReturnValue(process.execPath);
-  const linkMock = spyOn(agyKeychainHost, "linkSync").mockImplementation(linkSync);
-  const state = agyKeychainStateDir();
-  mkdirSync(state, { recursive: true, mode: 0o700 });
-  writeFileSync(join(state, AGY_TEMPLATE_NAME), "synthetic template", { mode: 0o600 });
-  writeFileSync(join(state, `${AGY_TEMPLATE_NAME}.password`), "a".repeat(32), { mode: 0o600 });
-  const original = join(home, "Library", "Keychains", "login.keychain-db");
-  const defaults = new Map<string, string>();
-  const spawnMock = spyOn(agyKeychainHost, "spawnSync").mockImplementation(((
-    command: string[], options: { env: NodeJS.ProcessEnv; stdin: Buffer | "ignore" },
-  ) => {
-    const args = command.slice(1);
-    const input = args[0] === "-i" && Buffer.isBuffer(options.stdin)
-      ? [...options.stdin.toString().matchAll(/"((?:\\.|[^"\\])*)"/g)]
-          .map((match) => match[1]!.replace(/\\(.)/g, "$1"))
-      : args;
-    let stdout = "";
-    switch (input[0]) {
-      case "list-keychains":
-        if (!input.includes("-s")) stdout = `    "${original}"\n`;
-        break;
-      case "default-keychain":
-        if (input.includes("-s")) defaults.set(options.env.HOME!, input.at(-1)!);
-        else stdout = `    "${defaults.get(options.env.HOME!) ?? original}"\n`;
-        break;
-      case "unlock-keychain":
-      case "set-keychain-settings":
-      case "add-generic-password":
-      case "delete-generic-password":
-        break;
-      default:
-        throw new Error(`unexpected synthetic keychain operation: ${input[0]}`);
-    }
-    return { stdout: Buffer.from(stdout), stderr: Buffer.alloc(0), exitCode: 0, signalCode: null };
-  }) as unknown as typeof agyKeychainHost.spawnSync);
-  return () => {
-    spawnMock.mockRestore();
-    linkMock.mockRestore();
-    pathMock.mockRestore();
-    homeMock.mockRestore();
-  };
-}
 
 export interface HomeObservation {
   home: string;
@@ -96,7 +47,7 @@ export function hermeticFixture(agent: HermeticAgent) {
   writeFileSync(join(home, ".kimi-code", "device_id"), "synthetic-device", { mode: 0o600 });
   const env: Record<string, string | undefined> = {
     HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local", "share"),
-    CODEMUX_NO_KEYCHAIN_SYNC: "1", FAKE_STATE_DIR: state,
+    FAKE_STATE_DIR: state,
     CODEMUX_TEST_SCODE_ARGV: join(state, "scode.txt"),
     CODEX_HOME: undefined, CODEX_API_KEY: undefined, OPENAI_API_KEY: undefined,
     KIMI_CODE_HOME: undefined, GOOGLE_API_KEY: undefined, GEMINI_API_KEY: "synthetic-api-key",
@@ -133,9 +84,8 @@ export function hermeticFixture(agent: HermeticAgent) {
   };
   const setup = () => {
     const restoreHomes = mockHomes();
-    const restoreAgy = agent === "agy" ? stubAgyHost(home) : () => {};
     const table = spyOn(processTable, "readProcessTable").mockReturnValue(new Map());
-    return () => { table.mockRestore(); restoreAgy(); restoreHomes(); };
+    return () => { table.mockRestore(); restoreHomes(); };
   };
   const args = (flags: string[]) => [
     "-a", agent, "-s", "--auto", "read-only", "--cwd", workdir,

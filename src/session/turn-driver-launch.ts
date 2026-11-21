@@ -9,6 +9,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { effectiveLoginStoreGrant } from "../sandbox-login-policy.js";
 import { dirname, join } from "node:path";
 import { applyCopilotProjectSandbox } from "../copilot-project-settings.js";
 import type { CopilotRunContext } from "../copilot-usage.js";
@@ -337,7 +338,8 @@ export function createTurnAgentDriver(
     sandboxTrust,
     sandboxNoNet,
     sandboxScrubEnv,
-    sandboxBlock, sandboxStrict: options.sandboxStrict === true,
+    sandboxBlock, sandboxStrict: options.sandboxStrict === true, sandboxNoLoginStore: Boolean(options.sandbox && options.sandboxNoLoginStore),
+    sandboxLoginStore: effectiveLoginStoreGrant({ sandboxed: Boolean(options.sandbox), loginStore: options.sandboxLoginStore, noLoginStore: options.sandboxNoLoginStore, trust: sandboxTrust }),
     passEnv: passthroughEnv,
     authorPrefix: Boolean(options.authorPrefix),
     sessionTimeoutMs,

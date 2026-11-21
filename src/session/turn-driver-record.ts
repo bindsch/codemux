@@ -101,6 +101,8 @@ export abstract class TurnDriverRecord extends TurnDriverCore {
         sandbox_scrub_env: this.options.sandboxScrubEnv,
         sandbox_block: [...(this.options.sandboxBlock ?? [])],
         sandbox_strict: this.options.sandboxStrict === true,
+        sandbox_no_login_store: this.options.sandboxNoLoginStore === true,
+        sandbox_login_store: this.options.sandboxLoginStore === true && !this.options.sandboxNoLoginStore,
         pass_env: [...(this.options.passEnv)],
         playwright_mcp: this.options.playwrightMcp === true,
         provider_base_url: this.options.providerBaseUrl,

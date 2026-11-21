@@ -282,7 +282,8 @@ exit 0`,
         ["run", "-a", "claude", "-f", promptFile, "--no-sandbox", "--auto", "high"],
         fake.env
       );
-      expect(run.exitCode).toBe(0);
+      // Carry the diagnostic into the failure: an exit code alone hides the cause.
+      expect({ exitCode: run.exitCode, stderr: run.exitCode === 0 ? "" : run.stderr }).toEqual({ exitCode: 0, stderr: "" });
       expect(existsSync(record)).toBe(true);
       expect(readFileSync(record, "utf8")).toContain("--output-format");
 

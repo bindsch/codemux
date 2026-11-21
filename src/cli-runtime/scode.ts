@@ -13,11 +13,35 @@ import { buildSandboxEnv, type SandboxOptions } from "../sandbox.js";
 import { compareVersions } from "../harness-compatibility.js";
 
 export const SCODE_MINIMUM_VERSION = "0.2.0";
+export const SCODE_NO_CREDENTIAL_SYNC_MINIMUM_VERSION = "0.4.0";
 export const SCODE_ALLOW_RO_MINIMUM_VERSION = "0.6.7";
+export const SCODE_ALLOW_STAGED_MINIMUM_VERSION = "0.6.8";
+export const SCODE_NO_LOGIN_STORE_MINIMUM_VERSION = "0.6.8";
 const SCODE_VERSION_TIMEOUT_MS = 5_000;
 
+/** The one comparison every scode capability gate uses. Build metadata
+ * (`+build.1`) does not order versions (semver §10), so it is dropped
+ * before the comparison: each gate reads the same string the same way,
+ * and no build of one release can pass one gate and fail another. */
+function scodeAtLeast(version: string, minimum: string): boolean {
+  return compareVersions(version.split("+")[0]!, minimum) >= 0;
+}
+
+/** scode before 0.4.0 synchronizes no credential and refuses `--no-credential-sync`. */
+export function scodeSupportsNoCredentialSync(version: string): boolean {
+  return scodeAtLeast(version, SCODE_NO_CREDENTIAL_SYNC_MINIMUM_VERSION);
+}
+
 export function scodeSupportsAllowRo(version: string): boolean {
-  return compareVersions(version, SCODE_ALLOW_RO_MINIMUM_VERSION) >= 0;
+  return scodeAtLeast(version, SCODE_ALLOW_RO_MINIMUM_VERSION);
+}
+
+export function scodeSupportsAllowStaged(version: string): boolean {
+  return scodeAtLeast(version, SCODE_ALLOW_STAGED_MINIMUM_VERSION);
+}
+
+export function scodeSupportsNoLoginStore(version: string): boolean {
+  return scodeAtLeast(version, SCODE_NO_LOGIN_STORE_MINIMUM_VERSION);
 }
 
 export interface ScodeCompatibilityStatus {

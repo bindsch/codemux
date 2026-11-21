@@ -1,4 +1,3 @@
-import type { SecretReader } from "../src/credentials.js";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,7 +28,8 @@ describe("claude provider override", () => {
 
   test("without an override nothing changes", () => {
     const adapter = adapterOf();
-    expect(adapter.getEnv()).toEqual({ CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1" });
+    expect(adapter.getEnv()).toEqual({ CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1",
+      ...(process.platform === "darwin" ? { CLAUDE_SECURESTORAGE_CONFIG_DIR: "" } : {}) });
     expect(adapter.getEnvOmissions()).toEqual([]);
     const cmd = adapter.buildRunCommand({ agent: "claude", prompt: "p" } as RunRequest);
     expect(cmd).not.toContain("--model");
@@ -55,7 +55,7 @@ describe("claude provider override", () => {
     });
     // The token is the credential; a stray operator API key or OAuth token
     // would be a second, operator-funded authentication path.
-    expect(adapter.getEnvOmissions()).toEqual(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]);
+    expect(adapter.getEnvOmissions()).toEqual(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_SECURESTORAGE_CONFIG_DIR"]);
   });
 
   test("the model is always explicit: the override's, else --model's", () => {
@@ -220,69 +220,18 @@ describe("claude provider override", () => {
     }
   });
 
-  test("the sandbox sync is skipped under an override; a refresh token refuses only when a Keychain entry owns the login", () => {
-    // Nothing of the operator's login may be copied for a run that does not
-    // use it: prepareSandbox must not read the Keychain at all. The mirror
-    // is still guarded, because the child reads ~/.claude whatever
-    // credential it uses.
+  test("provider preparation leaves the operator login unchanged", () => {
     const home = mkdtempSync(join(tmpdir(), "codemux-claude-home-"));
     scratch.push(home);
     const mirror = join(home, ".credentials.json");
-    writeFileSync(
-      mirror,
-      JSON.stringify({ claudeAiOauth: { accessToken: "t", refreshToken: "" } })
-    );
-    let keychainReads = 0;
+    const contents = JSON.stringify({ claudeAiOauth: { accessToken: "t", refreshToken: "rt" } });
+    writeFileSync(mirror, contents);
     class TestableClaudeAdapter extends ClaudeAdapter {
-      protected override credentialReader: SecretReader = () => {
-        keychainReads++;
-        return { kind: "missing" };
-      };
       protected override credentialTarget = (): string => mirror;
-      protected override credentialBackupDir = (): string => home;
     }
-    // A plain run syncs an existing mirror, so the Keychain is consulted.
-    const noKeychainSync = process.env.CODEMUX_NO_KEYCHAIN_SYNC;
-    delete process.env.CODEMUX_NO_KEYCHAIN_SYNC;
-    try {
-      const plain = new TestableClaudeAdapter({});
-      expect(() => plain.prepareSandbox()).not.toThrow();
-      expect(keychainReads).toBeGreaterThan(0);
-
-      const override = new TestableClaudeAdapter(VLLM_CLAUDE);
-      keychainReads = 0;
-      expect(() => override.prepareSandbox()).not.toThrow();
-      expect(keychainReads).toBe(0);
-
-      writeFileSync(
-        mirror,
-        JSON.stringify({ claudeAiOauth: { accessToken: "t", refreshToken: "rt" } })
-      );
-      // No Keychain entry (Linux, a file-only login): the file is Claude
-      // Code's only store, the token is normal, the launch proceeds and the
-      // file is left alone. Presence was checked, nothing copied.
-      expect(() => override.prepareSandbox()).not.toThrow();
-      expect(keychainReads).toBe(1);
-      expect(readFileSync(mirror, "utf8")).toContain('"rt"');
-      // The Keychain opt-out means "do not consult the Keychain" here too:
-      // reported, never refused, and no read happens.
-      process.env.CODEMUX_NO_KEYCHAIN_SYNC = "1";
-      keychainReads = 0;
-      expect(() => override.prepareSandbox()).not.toThrow();
-      expect(keychainReads).toBe(0);
-      delete process.env.CODEMUX_NO_KEYCHAIN_SYNC;
-      // A Keychain entry owns the login: the file is a mirror and the
-      // token in it is the second copy — refused.
-      class MirroredClaudeAdapter extends TestableClaudeAdapter {
-        protected override credentialReader: SecretReader = () => ({
-          kind: "secret",
-          value: JSON.stringify({ claudeAiOauth: { accessToken: "k", refreshToken: "k" } }),
-        });
-      }
-      expect(() => new MirroredClaudeAdapter(VLLM_CLAUDE).prepareSandbox()).toThrow(/holds a refresh token/);
-      expect(readFileSync(mirror, "utf8")).toContain('"rt"'); // untouched either way
-    } finally {
-      if (noKeychainSync !== undefined) process.env.CODEMUX_NO_KEYCHAIN_SYNC = noKeychainSync;
+    for (const env of [{}, VLLM_CLAUDE]) {
+      expect(() => new TestableClaudeAdapter(env).prepareSandbox()).not.toThrow();
+      expect(readFileSync(mirror, "utf8")).toBe(contents);
     }
   });
 });

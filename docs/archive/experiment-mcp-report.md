@@ -5,6 +5,7 @@
 > Disposition: shipped with the corrections below.
 > Current instructions: [experiment MCP](../experiment-mcp.md) and
 > [isolation](../isolation.md).
+> The original Antigravity authentication design was removed in 2.0.4; current native-login behavior is documented in [authentication](../authentication.md#antigravity).
 
 ## Outcome
 
@@ -33,11 +34,9 @@ server ran outside that sandbox; the experiment owner was responsible for
 its containment. Arbitrary server capabilities were not made safe by changing
 its working directory.
 
-Antigravity used a private home, isolated configuration, native tool policy,
-and a per-run Keychain mirror. The operator login keychain was not copied
-wholesale. Authentication precedence, template handling, recovery ownership,
-and cleanup changed over the review; only the final released rules belong in
-operator instructions.
+Antigravity used a private home, isolated configuration, and native tool policy.
+Its original authentication design was removed in 2.0.4; see the current
+[authentication mechanism](../authentication.md#antigravity).
 
 The old `scratch/experiment-mcp.json` example and raw recordings are
 **unavailable**: they were ignored local files. The displayed old home-path

@@ -51,7 +51,7 @@ test("a throwing --final removal still releases the record (round 23, edges 2)",
         ["-a", "claude", "--cwd", workdir, "--sandbox", "--auto", "high",
           "--hermetic", "--experiment-project-settings", "--final"],
         { claude: FAKE_CLAUDE, scode: SCODE_PASSTHROUGH },
-        { registryFile, env: { HOME: home, CODEMUX_NO_KEYCHAIN_SYNC: "1" } }
+        { registryFile, env: { HOME: home } }
       );
       expect(outcome.exitCode).toBe(1);
       // The spawn failure itself is still reported, on stderr.

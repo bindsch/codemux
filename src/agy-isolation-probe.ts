@@ -7,6 +7,7 @@ import { summarizeAgyStream } from "./agy-stream.js";
 import { HERMETIC_CANARY_PROMPT, evaluateCanary, trackScratchRemoval, untrackScratchRemoval } from "./hermetic-canary.js";
 import { UsageRefusalError } from "./validation.js";
 import type { RunRequest, RunResult } from "./types.js";
+import type { SandboxPolicyOverrides } from "./sandbox-policy.js";
 
 export const AGY_PROBE_MODES = ["login", "hermetic", "control", "tools", "tools-control"] as const;
 export type AgyProbeMode = typeof AGY_PROBE_MODES[number];
@@ -67,7 +68,7 @@ export function evaluateAgyProbe(mode: AgyProbeMode, result: RunResult,
 }
 
 async function runProbe(mode: AgyProbeMode, timeoutMs: number, model: string | undefined,
-  canary: ReturnType<typeof plantAgyCanary>, harnessVersion?: string | null): Promise<boolean> {
+  canary: ReturnType<typeof plantAgyCanary>, harnessVersion?: string | null, sandboxPolicyOverrides?: SandboxPolicyOverrides): Promise<boolean> {
   const { cwd } = canary;
   const operatorHome = mode === "hermetic" || mode === "control" ? canary.operatorHome : canary.cleanOperatorHome;
   const prompt = mode === "login" ? "Reply with exactly OK. Do not call any tools." :
@@ -78,7 +79,7 @@ async function runProbe(mode: AgyProbeMode, timeoutMs: number, model: string | u
   if (mode === "tools") request.tools = "none";
   console.error(`Candidate agy ${mode} probe; scratch removed when this check ends`);
   const result = await launchRunRequest(new AgyAdapter(), request,
-    { sandbox: true, requestedAutonomy: "read-only", timeoutMs, cwd, kind: "check", harnessVersion });
+    { sandbox: true, requestedAutonomy: "read-only", timeoutMs, cwd, kind: "check", harnessVersion, sandboxPolicyOverrides });
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
   const passed = evaluateAgyProbe(mode, result, canary);
@@ -97,16 +98,16 @@ export function assertAgyProbeMode(mode: string): asserts mode is AgyProbeMode {
 }
 
 export async function runAgyIsolationProbe(mode: string, timeoutMs: number, model?: string,
-  harnessVersion?: string | null): Promise<number> {
+  harnessVersion?: string | null, sandboxPolicyOverrides?: SandboxPolicyOverrides): Promise<number> {
   assertAgyProbeMode(mode);
   const canary = plantAgyCanary();
-  try { return await runProbe(mode as AgyProbeMode, timeoutMs, model, canary, harnessVersion) ? 0 : 1; }
+  try { return await runProbe(mode as AgyProbeMode, timeoutMs, model, canary, harnessVersion, sandboxPolicyOverrides) ? 0 : 1; }
   finally { canary.cleanup(); }
 }
 
 /** Public checks use the same mechanism and require a working positive control. */
 export async function runAgyCanaryChecks(hermetic: boolean, toolsNone: boolean, timeoutMs: number, model?: string,
-  harnessVersion?: string | null): Promise<number> {
+  harnessVersion?: string | null, sandboxPolicyOverrides?: SandboxPolicyOverrides): Promise<number> {
   const canary = plantAgyCanary();
   try {
     for (const [enabled, probe, control, label] of [
@@ -114,8 +115,8 @@ export async function runAgyCanaryChecks(hermetic: boolean, toolsNone: boolean, 
       [toolsNone, "tools", "tools-control", "TOOLS"],
     ] as const) {
       if (!enabled) continue;
-      const passed = await runProbe(probe, timeoutMs, model, canary, harnessVersion);
-      const controlPassed = await runProbe(control, timeoutMs, model, canary, harnessVersion);
+      const passed = await runProbe(probe, timeoutMs, model, canary, harnessVersion, sandboxPolicyOverrides);
+      const controlPassed = await runProbe(control, timeoutMs, model, canary, harnessVersion, sandboxPolicyOverrides);
       if (!passed || !controlPassed) {
         // The same wording the generic check uses: a probe that answered OK
         // with a control that revealed nothing certifies nothing.

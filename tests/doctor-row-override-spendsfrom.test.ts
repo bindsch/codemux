@@ -49,7 +49,7 @@ const rowFor = async (
   const fake = createFakeBinaryEnv({ scode: fakeScodeHelp(), usagemux: fakeUsagemux(), ...binaries });
   try {
     for (const key of Object.keys(process.env)) delete process.env[key];
-    Object.assign(process.env, { PATH: fake.env.PATH, HOME: home, CODEMUX_NO_KEYCHAIN_SYNC: "1", ...extraEnv });
+    Object.assign(process.env, { PATH: fake.env.PATH, HOME: home, ...extraEnv });
     const adapter = getAdapter(agent, process.env);
     const row = await checkHarness(adapter, {
       versionTimeoutMs: 5_000,
@@ -129,7 +129,7 @@ describe("a complete provider override replaces the native login", () => {
     try {
       for (const key of Object.keys(process.env)) delete process.env[key];
       Object.assign(process.env, {
-        PATH: fake.env.PATH, HOME: home, CODEMUX_NO_KEYCHAIN_SYNC: "1",
+        PATH: fake.env.PATH, HOME: home,
         CODEMUX_OPENCODE_PROVIDER_BASE_URL: "https://provider.example/v1",
         CODEMUX_OPENCODE_PROVIDER_API_KEY: "test-key-do-not-print",
         CODEMUX_OPENCODE_PROVIDER_MODEL: "glm-5.3",
@@ -205,7 +205,7 @@ describe("the usage verdict follows the gate's configured budget (review round 4
     const fake = createFakeBinaryEnv({ scode: fakeScodeHelp(), usagemux: slow, codex: codexGreen });
     try {
       for (const key of Object.keys(process.env)) delete process.env[key];
-      Object.assign(process.env, { PATH: fake.env.PATH, HOME: home, CODEMUX_NO_KEYCHAIN_SYNC: "1" });
+      Object.assign(process.env, { PATH: fake.env.PATH, HOME: home });
       const policy = { ...(getDefaultConfig().quota as Exclude<ReturnType<typeof getDefaultConfig>["quota"], false>), timeoutSeconds: 1 };
       const row = await checkHarness(getAdapter("codex", process.env), {
         versionTimeoutMs: 5_000, scode, usagePolicy: policy, usagemuxPresent: true,
@@ -251,7 +251,7 @@ describe("the gate budget is the launching agent's entry (review round 45)", () 
     const fake = createFakeBinaryEnv({ scode: fakeScodeHelp(), usagemux: slow, codex: codexGreen });
     try {
       for (const key of Object.keys(process.env)) delete process.env[key];
-      Object.assign(process.env, { PATH: fake.env.PATH, HOME: home, CODEMUX_NO_KEYCHAIN_SYNC: "1" });
+      Object.assign(process.env, { PATH: fake.env.PATH, HOME: home });
       const base = getDefaultConfig().quota as Exclude<ReturnType<typeof getDefaultConfig>["quota"], false>;
       // codex's own budget is 1 s; the mapped client's (claude) is 60 s. A
       // launch of codex applies codex's, so the doctor must too.
@@ -275,7 +275,7 @@ describe("snapshot freshness follows the launch gate (review round 54)", () => {
     const fake = createFakeBinaryEnv({ scode: fakeScodeHelp(), usagemux: fakeUsagemux({ remainingPercent: 0, usedPercent: 100, generatedAt: "2026-01-01T00:00:00.000Z" }), codex: codexGreen });
     try {
       for (const key of Object.keys(process.env)) delete process.env[key];
-      Object.assign(process.env, { PATH: fake.env.PATH, HOME: home, CODEMUX_NO_KEYCHAIN_SYNC: "1" });
+      Object.assign(process.env, { PATH: fake.env.PATH, HOME: home });
       const row = await checkHarness(getAdapter("codex", process.env), {
         versionTimeoutMs: 5_000, scode, usagePolicy: getDefaultConfig().quota as never, usagemuxPresent: true,
       });

@@ -7,7 +7,11 @@ import { settledPrivateHomePath } from "./private-home-key.js";
 import { scodeDefaultBlockedPaths } from "../launch/scode-default-blocks.js";
 import { canonicalSandboxBlockPath } from "./registry/format.js";
 import { copyClaudeCredentialMirror } from "../claude-credential-mirror.js";
+import { claudeSecureStorageEnv } from "../claude-login.js";
 import { qwenLoginPath, writeQwenAccessOnlyLogin } from "../qwen-access-login.js";
+import { linkAgyLogin } from "../agy-auth.js";
+import { copyKimiAuthState, registerKimiPrivateHome } from "../kimi-auth-state.js";
+import { linkKimiOauthDirectory, KIMI_OAUTH_DIRECTORY } from "../kimi-oauth-link.js";
 
 function refuse(reason: string): never {
   throw new UsageRefusalError(`--harness-home ${reason}`);
@@ -89,7 +93,7 @@ export function linkHarnessLogin(source: string, destination: string, required: 
   const original = info(source);
   const linked = info(destination);
   if (original === null) {
-    if (required || linked !== null) refuse("needs the real file login; a missing login cannot be reused");
+    if (required || linked !== null) refuse("needs the real credential file; the missing file cannot be reused");
     return;
   }
   checkedPath(dirname(source));
@@ -155,7 +159,7 @@ const MIXED_STORE = "its native login store also contains settings";
 /** Only credential names count: an endpoint or model alone is not authentication. */
 export function callerHarnessHomeAuthEnvironment(agent: AgentId, env: HomeEnvironment): Record<string, string> {
   const names: Record<AgentId, readonly string[]> = {
-    agy: ["GEMINI_API_KEY"],
+    agy: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
     aider: ["ANTHROPIC_API_KEY", "AZURE_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
       "GROQ_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"],
     claude: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"], cline: [],
@@ -190,22 +194,19 @@ function homeRecipe(agent: HomeAgent, dir: string, source: string, env: HomeEnvi
   const same = (base: string, target: string, names: readonly string[]): Login[] =>
     names.map((name, index) => login(join(base, name), join(target, name), index === 0));
   switch (agent) {
-    // Claude 2.1.317 bin/claude.exe: "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR",
-    // ".credentials.json", "~/.agents/skills". The existing Claude layout is the caller root itself.
-    // The login is never linked: a link hands the child the mirror's inode, refresh token
-    // included, and breaks on every rename refresh (review R420 B1, M1). The caller home gets
-    // the hermetic path's access-token-only copy (claude-credential-mirror.ts), rebuilt per launch.
+    // Configuration stays private; macOS Claude keeps its native login namespace.
     case "claude":
     case "zai":
-      return { environment: { CLAUDE_CONFIG_DIR: dir, CLAUDE_SECURESTORAGE_CONFIG_DIR: dir }, logins: [],
-        mirrors: agent === "zai" ? [] : [{ source: join(source, ".credentials.json"), directory: dir,
+      return { environment: { CLAUDE_CONFIG_DIR: dir,
+        ...(agent === "claude" && process.platform !== "darwin" ? { CLAUDE_SECURESTORAGE_CONFIG_DIR: dir } : {}) }, logins: [],
+        mirrors: agent === "zai" || process.platform === "darwin" ? [] : [{ source: join(source, ".credentials.json"), directory: dir,
           write: (from, to) => copyClaudeCredentialMirror(to, from, "--harness-home session") }] };
     // Codex 0.166.0 bin/codex: "CODEX_HOME", "auth.json", 'cli_auth_credentials_store = "file"'.
     case "codex":
       return { environment: { CODEX_HOME: join(dir, ".codex") }, logins: same(source, join(dir, ".codex"), ["auth.json"]) };
     // Agy 1.5.3 .local/bin/agy: "os.UserHomeDir", "~/.gemini/antigravity-cli/settings.json",
     // "Added support for GEMINI_API_KEY". No portable OAuth filename is established.
-    case "agy": return { environment: {}, logins: [], needsKey: true };
+    case "agy": return { environment: {}, logins: [] };
     // Aider 0.86.2 aider/main.py:370,476: 'Path.home() / ".aider" / "oauth-keys.env"', 'Path.home() / conf_fname'.
     case "aider": return { environment: {}, logins: same(join(source, ".aider"), join(dir, ".aider"), ["oauth-keys.env"]) };
     // Copilot 1.0.85 app.js:189,3379,3439: "COPILOT_HOME", "config.json", "COPILOT_GITHUB_TOKEN".
@@ -306,7 +307,11 @@ export function assertHarnessHomePassEnv(agent: AgentId, passthroughEnv: readonl
 /** Directories a caller home shares by symlink, which the sandbox must grant by name. */
 export function callerHarnessHomeSharedLogins(agent: AgentId, sourceHome: string, env: HomeEnvironment,
   cwd: string, apiKeyAuth: boolean): string[] {
-  return agent === "kimi" && !apiKeyAuth ? [kimiCredentialStore(sourceHome, env, cwd)] : [];
+  if (agent !== "kimi" || apiKeyAuth) return [];
+  const store = kimiCredentialStore(sourceHome, env, cwd);
+  // Kimi's refresh-lock directory rides beside the token store: a home that
+  // can rotate the token must be able to take the lock (kimi-oauth-link.ts).
+  return [store, join(dirname(store), KIMI_OAUTH_DIRECTORY)];
 }
 
 /** The dedicated kimi store a caller home shares; the sandbox grants exactly this path. */
@@ -327,7 +332,7 @@ function verifySharedStore(store: NonNullable<Recipe["sharedStore"]>): void {
 }
 
 function writeMirror(mirror: Mirror): void {
-  if (info(mirror.source) === null) refuse("needs the real file login; a missing login cannot be reused");
+  if (info(mirror.source) === null) refuse("needs the real credential file; the missing file cannot be reused");
   privateDirectory(mirror.directory);
   mirror.write(mirror.source, mirror.directory);
 }
@@ -356,6 +361,12 @@ export function openCallerHarnessHome(input: {
     ...recipe.environment,
   };
   const directories = Object.values(environment);
+  if (process.platform === "darwin" && input.agent === "claude") {
+    // Claude resolves native storage and the empty override against the real HOME.
+    environment.HOME = sourceEnv.HOME || process.env.HOME || dir;
+    environment.USERPROFILE = sourceEnv.USERPROFILE || environment.HOME;
+    if (!input.providerOverride) Object.assign(environment, claudeSecureStorageEnv(sourceEnv));
+  }
   Object.assign(environment, recipe.flags);
   let prepared = false;
   const verify = (): void => {
@@ -365,7 +376,20 @@ export function openCallerHarnessHome(input: {
     privateDirectory(dir);
     for (const path of directories) privateDirectory(path);
     if (!apiKeyAuth) {
-      if (recipe.sharedStore) verifySharedStore(recipe.sharedStore);
+      // An API-key session never links the native login: the caller's own
+      // files at those paths stay untouched and cannot refuse the launch.
+      if (input.agent === "agy") linkAgyLogin(dir, input.sourceHome);
+      if (recipe.sharedStore) {
+        verifySharedStore(recipe.sharedStore);
+        // The brand home as configured, never the store's resolved parent:
+        // `credentials` may itself be a symlink to another directory.
+        const operator = dirname(recipe.sharedStore.source), brand = dirname(recipe.sharedStore.destination);
+        linkKimiOauthDirectory(operator, brand);
+        // Held for the process lifetime: the exit write-back resolves the
+        // operator home through this registration.
+        registerKimiPrivateHome(brand, operator);
+        copyKimiAuthState(operator, brand);
+      }
       for (const mirror of recipe.mirrors ?? []) writeMirror(mirror);
       for (const login of recipe.logins) linkHarnessLogin(login.source, login.destination, login.required);
     }

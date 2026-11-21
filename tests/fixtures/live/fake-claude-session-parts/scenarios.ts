@@ -302,6 +302,20 @@ export const makeScenarioHandlers = (deps: ScenarioDeps) => ({
     });
   },
 
+  diagnostic: (): void => {
+    const text = process.env.FAKE_DIAGNOSTIC_TEXT ?? "fixture result";
+    const failed = process.env.FAKE_DIAGNOSTIC_FAILED === "1";
+    if (!failed) write({ type: "assistant", message: {
+      id: "msg-diagnostic", content: [{ type: "text", text }],
+    } });
+    write({ type: "result", subtype: failed ? "error_during_execution" : "success",
+      is_error: failed, session_id: sessionId,
+      ...(process.env.FAKE_DIAGNOSTIC_FIELD === "errors" ? { errors: [text] } : { result: text }),
+      usage: { input_tokens: 1, output_tokens: 1 },
+    });
+    deps.finishTurn();
+  },
+
   apierror: (): void => {
     write({
       type: "result",

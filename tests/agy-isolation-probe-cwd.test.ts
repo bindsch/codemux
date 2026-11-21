@@ -7,11 +7,10 @@
  * security, spawnSync recorder) — no real Keychain read ever runs.
  */
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgyAdapter, markAgyIsolationProbe } from "../src/adapters/agy.js";
-import { AGY_MIRROR_PATH, AGY_TEMPLATE_NAME, agyKeychainHost, agyKeychainStateDir } from "../src/agy-keychain.js";
 import { UsageRefusalError } from "../src/validation.js";
 import type { RunRequest, RunResult } from "../src/types.js";
 
@@ -25,16 +24,6 @@ afterEach(() => {
 function setup() {
   const home = mkdtempSync(join(tmpdir(), "codemux-agy-probe-cwd-"));
   dirs.push(home);
-  mocks.push(spyOn(agyKeychainHost, "home").mockReturnValue(home));
-  mocks.push(spyOn(agyKeychainHost, "securityPath").mockReturnValue(process.execPath));
-  mkdirSync(agyKeychainStateDir(), { recursive: true });
-  writeFileSync(join(agyKeychainStateDir(), AGY_TEMPLATE_NAME), "empty template");
-  writeFileSync(join(agyKeychainStateDir(), `${AGY_TEMPLATE_NAME}.password`), "a".repeat(32));
-  mocks.push(spyOn(agyKeychainHost, "spawnSync").mockImplementation(((command: string[], options: { env: NodeJS.ProcessEnv }) => {
-    const args = command.slice(1);
-    const output = args[0] === "default-keychain" ? `"${join(options.env.HOME ?? home, AGY_MIRROR_PATH)}"\n` : "";
-    return { stdout: Buffer.from(output), stderr: Buffer.alloc(0), exitCode: 0, signalCode: null };
-  }) as unknown as typeof Bun.spawnSync));
   const cwd = join(home, "workspace");
   mkdirSync(join(cwd, ".git"), { recursive: true });
   const request: RunRequest = { agent: "agy", prompt: "probe", cwd, autonomy: "read-only", sandboxed: true };

@@ -6,6 +6,26 @@ import { buildScodeCommand } from "../../src/sandbox.js";
 import { STRICT_LIVE_FAILURES, strictOkProbePassed } from "./strict-live-evidence.js";
 import type { FeatureState, ParityFeature } from "../../src/parity/features.js";
 
+/** Login-store policy is universal, including harnesses with no native grant. */
+export function loginStoreOutcome(agent: AgentId) {
+  const overrides = parseSandboxPolicyOverrides({ sandbox: true, sandboxLoginStore: true });
+  const options = resolveSandboxOptionsForAgent(agent, "read-only", overrides);
+  expect(options.loginStore).toBe(true);
+  expect(options.noLoginStore).not.toBe(true);
+  return { message: null, code: null };
+}
+
+export function noLoginStoreOutcome(agent: AgentId) {
+  const overrides = parseSandboxPolicyOverrides({ sandbox: true, sandboxNoLoginStore: true });
+  const options = resolveSandboxOptionsForAgent(agent, "read-only", overrides);
+  expect(options.noLoginStore).toBe(true);
+  const argv = buildScodeCommand([agent], undefined, "read-only", options, "scode", {}, false, true, true);
+  expect(argv).toContain("--no-login-store");
+  expect(argv).not.toContain("--allow");
+  expect(argv).not.toContain("--allow-staged");
+  return { message: null, code: null };
+}
+
 /** All four launch modes cross this parser and policy builder. */
 export function strictSandboxOutcome(agent: AgentId) {
   const overrides = parseSandboxPolicyOverrides({ sandbox: true, sandboxStrict: true });

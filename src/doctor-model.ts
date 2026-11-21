@@ -103,8 +103,8 @@ export interface MachineCheckReport {
 
 /** Per-client usage timeouts (audit D6): claude's CodexBar answers in
  * about 31 s here, agy's probe is the slowest usagemux has, the rest
- * answer well inside 30 s. The machine check includes agy (audit D12);
- * `codemux usage` keeps excluding it by default. */
+ * answer well inside 30 s. The machine check includes agy (audit D12),
+ * and so does `codemux usage` by default since 2.0.4. */
 export const USAGE_CLIENT_TIMEOUT_SECONDS: Readonly<Partial<Record<AgentId, number>>> = {
   claude: 60,
   agy: 90,

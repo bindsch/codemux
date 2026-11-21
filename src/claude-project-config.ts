@@ -21,7 +21,7 @@
  *     no filename suffix in prod), which holds `hasCompletedOnboarding`
  *     and the `projects[<canonical cwd>].hasTrustDialogAccepted` trust
  *     record the 10:59 run was missing;
- *   - credentials from `<dir>/.credentials.json`;
+ *   - credentials from the separate secure-storage root on macOS;
  *   - user memory from `<dir>/CLAUDE.md`, user settings from
  *     `<dir>/settings.json`, skills from `<dir>/skills`, plugins from
  *     `<dir>/plugins`, per-project state under `<dir>/projects`.
@@ -33,12 +33,9 @@
  * The directory is created per run under the real config root's
  * `.codemux-hermetic/` (hermetic-home.ts: scode keeps `~/.claude` writable
  * as harness state, and the parent sweep reclaims dead runs'
- * directories). It holds nothing but the generated `.claude.json` and, on
- * a run that authenticates through the operator's Claude login, an
- * access-token-only copy of the credential mirror (credentials.ts).
- * finalize removes the directory, the token copy with it. The operator's
- * own ~/.claude.json and ~/.claude/settings.json are never read for
- * content beyond the credential mirror and never written.
+ * directories). macOS private directories contain no copied login.
+ * Other platforms keep an access-token-only copy until finalization.
+ * Operator configuration files are never read for content or written.
  *
  * A persistent session gets the same isolation with a different lifetime
  * (openProjectSettingsSessionConfigDir): the directory is keyed by the
@@ -90,8 +87,8 @@ export interface ClaudeProjectConfigDir {
 
 /**
  * The config root these runs build under: the operator's default
- * `~/.claude`, where the credential mirror lives and which scode keeps
- * writable as harness state. A passed-through `CLAUDE_CONFIG_DIR` is
+ * `~/.claude`, which scode keeps writable as harness state before the
+ * launcher applies its isolation blocks. A passed-through `CLAUDE_CONFIG_DIR` is
  * refused for these runs (claude-project-settings.ts) and the sanitizer
  * strips an ambient one from the child, so the default root is the one
  * tree every part of the run already agrees on.
@@ -121,7 +118,11 @@ export function projectSettingsConfigRoot(environment: NodeJS.ProcessEnv): strin
  */
 export function projectSettingsBlockedStatePaths(environment: NodeJS.ProcessEnv): readonly string[] {
   const root = projectSettingsConfigRoot(environment);
-  return [root, join(dirname(root), ".claude.json")];
+  // Captured before the private redirect: nondefault settings and secure
+  // storage roots must not expose the operator's other configuration.
+  const profiles = [environment.CLAUDE_CONFIG_DIR, environment.CLAUDE_SECURESTORAGE_CONFIG_DIR]
+    .filter((path): path is string => Boolean(path) && isAbsolute(path!));
+  return [...new Set([root, join(dirname(root), ".claude.json"), ...profiles])];
 }
 
 /**

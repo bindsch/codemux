@@ -1,5 +1,6 @@
 import { isAbsolute } from "node:path";
 import { guardedWait, runCapturedCommand, type StdoutSink } from "./process-runner.js";
+import { withKimiPrivateState } from "./kimi-auth-state.js";
 import { assertExecutablesUnchanged, executableCheck, resolveTrustedCommand, resolveTrustedExecutable, trustCheckedCommandChecks, trustCheckedCommandPaths, type ExecutableCheck } from "./executable-security.js";
 import { activeRedirects, probeEnvironment } from "./environment.js";
 import { ALLOW_UNTESTED_ENV, assertSupportedHarnessVersion } from "./harness-compatibility.js";
@@ -8,7 +9,8 @@ import type { AgentId, AutonomyLevel, RunResult } from "./types.js";
 import { UsageRefusalError, validateWorkingDirectory } from "./validation.js";
 import { escapeArgvForPrint } from "./usage-protocol.js";
 import { assertCompatibleScode, assertNoProjectScodePolicy, assertScodeSupportsAccounting, resolveKeepEnvSandboxOptions, resolveScodeExecutable, resolveScodeExecutableForEnv, warnIfSinkInsideWorkdir } from "./cli-runtime/scode.js";
-import { scodeSupportsAllowRo } from "./cli-runtime/scode.js";
+import { scodeSupportsAllowRo, scodeSupportsAllowStaged, scodeSupportsNoCredentialSync, scodeSupportsNoLoginStore } from "./cli-runtime/scode.js";
+import { reportSandboxLoginStore } from "./sandbox-login-notice.js";
 
 export {
   SCODE_MINIMUM_VERSION,
@@ -269,9 +271,12 @@ export async function runSandboxed(
     effectiveSandboxOptions,
     scode,
     extraEnv ?? process.env,
-    scodeSupportsAllowRo(scodeVersion)
+    scodeSupportsAllowRo(scodeVersion),
+    scodeSupportsAllowStaged(scodeVersion), scodeSupportsNoLoginStore(scodeVersion),
+    undefined, scodeSupportsNoCredentialSync(scodeVersion)
   );
   const env = buildSandboxEnv(extraEnv, effectiveSandboxOptions);
+  reportSandboxLoginStore(scodeCmd, effectiveSandboxOptions, printSandbox, undefined, undefined, extraEnv ?? process.env);
   for (const name of envOmissions) delete env[name];
   if (printSandbox) {
     process.stdout.write(`${scodeCmd.map(escapeArgvForPrint).join("\n")}\n`);
@@ -289,6 +294,7 @@ export async function runSandboxed(
   // the process-wide identity list, where another launch's probe of a
   // replaced scode would let this one exec bytes it never probed. The
   // nested executable joins the same pin (review round 110).
+  return withKimiPrivateState(command, env, workdir, async () => {
   assertExecutablesUnchanged(scodeCmd, "sandbox command", [
     ...trustCheckedCommandPaths(resolvedCommand),
     scode,
@@ -309,6 +315,7 @@ export async function runSandboxed(
       env,
     });
   return interactive ? await guardedWait(spawnSandboxChild) : await spawnSandboxChild().exited;
+  });
 }
 
 export async function runSandboxedWithStdin(
@@ -388,9 +395,12 @@ export async function runSandboxedWithStdin(
     effectiveSandboxOptions,
     scode,
     extraEnv ?? process.env,
-    scodeSupportsAllowRo(scodeVersion)
+    scodeSupportsAllowRo(scodeVersion),
+    scodeSupportsAllowStaged(scodeVersion), scodeSupportsNoLoginStore(scodeVersion),
+    undefined, scodeSupportsNoCredentialSync(scodeVersion)
   );
   const env = buildSandboxEnv(extraEnv, effectiveSandboxOptions);
+  reportSandboxLoginStore(scodeCmd, effectiveSandboxOptions, printSandbox, undefined, undefined, extraEnv ?? process.env);
   for (const name of envOmissions) delete env[name];
   if (printSandbox) {
     // One argument per line, control characters escaped per argument
@@ -418,14 +428,14 @@ export async function runSandboxedWithStdin(
   ], [...trustCheckedCommandChecks(resolvedCommand), ...(carriedScodeCheck === null ? [] : [carriedScodeCheck]),
     ...(nestedExecutable == null ? [] : [nestedExecutable]),
     ...(redirectCheck == null ? [] : [redirectCheck])]);
-  return runCapturedCommand(scodeCmd, {
+  return withKimiPrivateState(command, env, workdir, (publishState) => runCapturedCommand(scodeCmd, {
     cwd: workdir,
     env,
     stdinInput: stdinData,
     stdinRepeats,
     timeoutMs,
     stdoutSink,
-    onSignaled,
+    onSignaled: async () => { try { publishState(); } finally { await onSignaled?.(); } },
     // The same pin the assert above applied: the runner's own pre-spawn
     // re-stat compares this launch's resolutions, never the process-wide
     // identity list another launch's probe may have widened (round 23,
@@ -434,5 +444,5 @@ export async function runSandboxedWithStdin(
     checks: [...trustCheckedCommandChecks(resolvedCommand), ...(carriedScodeCheck === null ? [] : [carriedScodeCheck]),
       ...(nestedExecutable == null ? [] : [nestedExecutable]),
       ...(redirectCheck == null ? [] : [redirectCheck])],
-  });
+  }));
 }

@@ -3,6 +3,10 @@ read_when: "Choosing autonomy, sandbox trust, or environment scrubbing."
 ---
 # Autonomy and sandboxing
 
+Native login-store access is off by default. On macOS, opt in for sandboxed Claude or agy with `--sandbox-login-store` or user/global config `sandboxLoginStore: true`. With this grant, every process inside the sandbox can read Keychain items whose access list trusts `/usr/bin/security` without a dialog. This includes the harness's own login and refresh token, and tokens other tools stored through `security`, for example a GitHub CLI token. Every process can read and copy `login.keychain-db`, which is encrypted with the account login password, and attack it offline. It can also create, modify, or delete files in `Library/Keychains`. The optional `Library/Preferences/com.apple.security.plist` is read-only when it exists, so the sandbox cannot change the default keychain or search list through that preference file. This is not per-item Keychain isolation.
+
+`--sandbox-no-login-store` or `sandboxNoLoginStore: true` overrides any opt-in. Without the grant, codemux omits native login-store access and Claude's plaintext credential, staged-file, and refresh-lock grants. A Keychain login cannot then be used inside this sandbox; native file login or refresh that needs these grants also stops working. A supported API key or provider override can supply authentication instead. `--sandbox-trust untrusted`, provider overrides, and Z.AI never receive native login-store grants, even with opt-in; untrusted also disables networking and is refused for persistent sessions. With the grant, the harness can use and refresh its existing login in place: codemux does not read, copy, or change the macOS login and never runs `security`.
+
 Autonomy chooses the harness's native approval/tool policy. Scode supplies the outer filesystem and network boundary. They are separate controls.
 
 Headless `run` and interactive `tui` default to read-only autonomy and scode. Every level below high requires scode. `--no-sandbox` requires `--auto high`.
@@ -64,6 +68,8 @@ Codemux maps read-only to scode `--ro` and other levels to `--rw`. Standard trus
 | `--sandbox-trust trusted` | Broader trust under scode's policy; independent of autonomy. |
 | `--sandbox-trust untrusted` | Scode's strict, no-network, scrubbed, read-only preset. Harness state is denied; persistent sessions refuse it. |
 | `--sandbox-no-net` | Add network denial. Remote providers will generally be unreachable. |
+| `--sandbox-login-store` | Opt in to eligible Claude/agy native login grants; off by default. User/global `sandboxLoginStore: true` also opts in. Every harness accepts it; others receive no native grant. |
+| `--sandbox-no-login-store` | Deny native login grants regardless of opt-in; `sandboxNoLoginStore: true` has the same precedence. Untrusted, provider overrides, and Z.AI never receive the grant. |
 | `--sandbox-scrub-env` | Scrub ambient environment. Codemux's deliberately injected variables use the conditional exemption below. |
 | `--sandbox-account`, `--sandbox-account-id` | Request scode scratch accounting. Keep its output sink outside the child's writable area; hiding the variables is not protection against file tampering. |
 
@@ -76,10 +82,12 @@ With scode 0.6.7+, executable exceptions use exact-file `--allow-ro` grants. Str
 | Launch or feature | Requirement |
 | --- | --- |
 | Ordinary sandboxed launch | General scode minimum 0.2.0. |
+| Native login-store policy | Scode 0.6.8+ receives `--login-store` when the grant is effective, otherwise `--no-login-store`. Older scode receives neither flag. The grant is off by default. |
+| Opted-in macOS launch with an existing `Library/Preferences/com.apple.security.plist` | Requires scode 0.6.7+ for `--allow-ro`. Older versions refuse the launch; codemux never falls back to a writable preference grant. |
 | `--sandbox-strict` | The flag exists in scode 0.2.0. Live runtime grants were checked against scode 0.6.5 on macOS; accepting the flag does not certify a harness or customization. |
 | Any sandboxed Antigravity headless run, including API-key/file-token login | Scode 0.6.0 or newer. |
 | Scrubbed launch whose injected environment carries its only credential, including provider overrides and Z.AI | A scode that documents `--keep-env` in help, introduced in 0.6.0. Missing support refuses before spawn. |
-| Scrubbed launch without a required injected credential | Use `--keep-env` if supported; otherwise omit the unsupported flag and preserve the older scrub behavior. |
+| Scrubbed launch without a required injected credential | Use `--keep-env` if supported; otherwise omit the unsupported flag and preserve the older scrub behavior. A plain macOS Claude launch is in this row: the `CLAUDE_SECURESTORAGE_CONFIG_DIR` it injects selects a Keychain item and is not a credential, so scode older than 0.6.0 still runs it. Under `--sandbox-trust untrusted` the selector is neither exempted nor passed to the child, since that trust level never receives the login store. |
 | Launch without explicit scrub or untrusted trust | No `--keep-env` argument; it has no effect without scrubbing. |
 | Scrub enabled only inside a scode config file | Codemux cannot observe it. Use `--sandbox-scrub-env` for automatic exemption handling or configure credential exemptions yourself. |
 

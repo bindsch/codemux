@@ -6,29 +6,18 @@
  * whatever the outcome. The fixtures create owned homes directly, with
  * no Keychain state, so cleanup tests directory removal alone.
  */
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import * as fs from "node:fs";
 import { AgyAdapter } from "../src/adapters/agy.js";
 import { createAgyProbeHome } from "../src/adapters/agy-probe-home.js";
-import { agyKeychainHost } from "../src/agy-keychain.js";
 import type { RunContext } from "../src/adapters/base.js";
 import type { RunRequest } from "../src/types.js";
 
-/** The Keychain host's own home, pointed at each test's temp home: the
- * suite's shared one is removed when another file emits the exit event,
- * so a test that reads it depends on file order (review round 140). */
-let hostHome: ReturnType<typeof spyOn> | undefined;
-afterEach(() => {
-  hostHome?.mockRestore();
-  hostHome = undefined;
-});
-
 function preparedProbe(): { adapter: AgyAdapter; context: RunContext; probeHome: string } {
   const home = mkdtempSync(join(tmpdir(), "codemux-agy-cleanup-"));
-  hostHome = spyOn(agyKeychainHost, "home").mockReturnValue(home);
   const adapter = new AgyAdapter({ HOME: home });
   const context: RunContext = {
     agyProbe: { mode: "plain", diagnostic: false, operatorHome: home, printOnly: true },
@@ -105,7 +94,7 @@ test("a preparation that fails and cannot remove its home still closes its descr
   // preparation's own cleanup is the last attempt. Every host seam is
   // stubbed: no `security` binary, no Keychain, no real home.
   const home = mkdtempSync(join(tmpdir(), "codemux-agy-prepare-fail-"));
-  const adapter = new AgyAdapter({ HOME: home, PATH: "/usr/bin:/bin" });
+  const adapter = new AgyAdapter({ HOME: home, PATH: "/usr/bin:/bin", GEMINI_API_KEY: "synthetic" });
   const request: RunRequest = {
     agent: "agy", prompt: "p", cwd: join(home, "w"), autonomy: "read-only", sandboxed: true,
   };
@@ -113,11 +102,7 @@ test("a preparation that fails and cannot remove its home still closes its descr
   const originalClose = fs.closeSync;
   const closes: number[] = [];
   const spies = [
-    spyOn(agyKeychainHost, "home").mockReturnValue(home),
-    spyOn(agyKeychainHost, "securityPath").mockReturnValue(undefined),
-    spyOn(agyKeychainHost, "spawnSync").mockImplementation((() => {
-      throw new Error("no process may be spawned in this test");
-    }) as typeof agyKeychainHost.spawnSync),
+    spyOn(fs, "readdirSync").mockImplementation(() => { throw new Error("synthetic state read failure"); }),
     spyOn(fs, "closeSync").mockImplementation(((fd: number) => {
       closes.push(fd);
       return originalClose(fd);
@@ -131,7 +116,7 @@ test("a preparation that fails and cannot remove its home still closes its descr
   ];
   try {
     // With no login reachable the preparation fails after the home exists.
-    expect(() => adapter.prepareRun(request)).toThrow(/agy is not logged in.*cleanup failed: .*agy probe cleanup failed/s);
+    expect(() => adapter.prepareRun(request)).toThrow(/synthetic state read failure.*cleanup failed: .*agy probe cleanup failed/s);
     // Both validation descriptors were closed although the removal failed.
     expect(closes.length).toBeGreaterThanOrEqual(2);
     for (const fd of closes.slice(-2)) expect(() => fs.fstatSync(fd)).toThrow();

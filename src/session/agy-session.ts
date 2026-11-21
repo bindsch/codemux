@@ -72,10 +72,9 @@ export interface AgySessionCommand {
   effort?: ReasoningEffort;
   /** Native deny rules; print mode has no permission request channel. */
   permissionPolicy?: "default" | "deny";
-  /** The hermetic session's private home: the spawn carries the same
-   * `env HOME=… XDG_*=…` prefix the run path carries (adapters/agy.ts),
-   * so the child's home is the private directory for every turn of the
-   * session's life and across `--resume`. */
+  /** The prepared login home: the same HOME/XDG prefix as the run path.
+   * Hermetic homes persist across resume; plain sessions prepare a fresh
+   * login home per invocation and share the native conversation store. */
   privateHomeDir?: string;
   callerHome?: CallerHarnessHome;
 }
@@ -125,7 +124,8 @@ export function buildAgySessionCommand(command: AgySessionCommand): string[] {
   // uses explicit action rules through --settings and omits the high
   // skip-permissions flag, so it never relies on that bypass's ordering.
   if (command.permissionPolicy === "deny") {
-    argv.push(`--settings=${agySessionDenySettings(command.callerHome?.dir ?? command.privateHomeDir)}`);
+    const settings = agySessionDenySettings(command.callerHome?.dir ?? command.privateHomeDir);
+    argv.push(`--settings=${settings}`);
     if (command.autonomy !== "high") argv.push(...agySessionAutonomyFlags(command.autonomy));
   } else {
     argv.push(...agySessionAutonomyFlags(command.autonomy));

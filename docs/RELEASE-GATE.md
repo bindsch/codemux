@@ -36,9 +36,17 @@ Record those gaps. No model prompt is part of the gate.
 - [ ] CI passes on both macOS and Linux for the exact candidate commit.
 - [ ] No selected test run is presented as the full suite.
 
+## Login-store security requirement
+
+| Security requirement | Required evidence |
+| --- | --- |
+| Native login-store exposure and opt-in | The docs and 2.0.4 Security and Changed entries state default-off access, Keychain items trusting `/usr/bin/security` without a dialog including refresh tokens and other tools' tokens, copying the account-login-password-encrypted `login.keychain-db` for offline attack, and creating/modifying/deleting Keychains-directory files. The existing optional security preference file is read-only; default-keychain and search-list changes through it remain denied. Tests cover `--sandbox-login-store`, user/global config, and the winning `--sandbox-no-login-store`/config denial on every harness and launch surface; no grants under untrusted, provider overrides, or Z.AI; scode 0.6.8 `--login-store`/`--no-login-store` version gating; TTY-only grant notices; inaccessible-login notices every launch and once per session even with redirected stderr; denied-grant authentication advice; session resume that cannot enable an originally absent grant and can tighten access; and uppercase staging conflicts. Offline tests verify policy and documentation; they do not prove native authentication. |
+
 ## Live harness gate
 
 The owner must run this gate on the release machine before tagging:
+
+Native-authentication probes explicitly pass `--sandbox-login-store`, including check canaries and the print-only policy preview. Provider-override probes H/H2 do not request it. Both login-store options are accepted by check canaries; other canary sandbox policy overrides remain restricted. Configuration that denies the login store still wins over the gate's opt-in.
 
 ```sh
 make live-gate
@@ -94,19 +102,33 @@ harness for every probe that harness supports:
 | K | `read-only` | Run `check --hermetic --session`: a hermetic turn, a plain positive control, and a resumed hermetic turn (for claude and zai the code word also sits in a scratch operator `CLAUDE_CONFIG_DIR` that all three sessions pass through with `--pass-env`, because Claude Code sessions load the user setting source only and never read the cwd's instruction files; the control reads it as user memory, and the hermetic turns must swap it for their private home) with `--final`. The first and resumed turns must exclude the planted code word, the control must reveal it, and the resumed turn must remove the private home reported by `session_started`. The parity gate pins applicability to `session.hermetic` and `SESSION_AGENTS.hermetic`, separately from run isolation; `OPEN` cells block release. Every session agent then starts and resumes a caller-owned `--harness-home` session, which must load a planted private skill and exclude the operator's instructions. The outer deadline is `5 × --timeout + 30` seconds (`sessionCanaryLaunchCount`). |
 | P | `read-only` | `run --print-sandbox`: the launch prints the scode argv, one argument per line, and exits 0 without a child. The printed argv must start with scode, and the command after the `--` separator — past an `env` wrapper's options and assignments — must be the harness binary: its entry name, a path ending in it, or the file that name resolves to on this machine (the Claude Code package installs `claude` as a link to `bin/claude.exe`). A harness path that appears only as an argument does not count. Zero quota and no credential: a print-only launch prepares paths, never a login, a token copy, or a Keychain (agy). Runs on every installed harness, credentials or not. |
 
-The whole probe pool is wrapped in a Keychain hygiene check on macOS: the
-gate snapshots `security list-keychains -d user` and `security
-default-keychain -d user` before the first probe and after the last, and a
-gate whose snapshots differ fails with both printed, whatever the harnesses
-answered (probes run concurrently, so the check is one per gate, not one
-per probe). A
-sandboxed agy run gives its private HOME a private Keychain and must leave
-the operator's search list and default exactly as it found them; a mirror
-left behind is what produces the macOS prompt "a keychain cannot be found to
-store antigravity" the next time any process stores a credential
-(2026-11-03). The machine check reports a user default keychain that names a
-missing file as broken, with the `security default-keychain -d user -s`
-remedy.
+The gate does not query Keychain defaults or search lists. Claude and agy use
+their own native login with explicit sandbox login-store opt-in. Record the offline checks separately from owner-observed
+live checks; offline coverage cannot establish what appeared on the screen.
+
+| Check | Required evidence |
+| --- | --- |
+| zero security calls | Offline tests and source checks show zero native credential-command calls by codemux-owned code, including launch preparation, doctor/usage/quota paths, previews, and the live gate. This does not certify external scode or native harness operations. |
+| zero macOS login writes | Offline fixtures verify that launch preparation leaves existing plaintext login bytes unchanged, creates no missing credential file, and copies no token into private config directories. Default, alternate, and explicitly selected secure-storage profiles are covered. |
+| no unsupported login advice | Absent files and unavailable macOS credential inspection remain unknown unless positive evidence exists. The live gate does not skip that login or recommend signing in without a native harness authentication error. |
+| no OS prompt | The owner observes an authorized live run on macOS and records whether any Keychain or credential-storage prompt appears. Mark pending until that observation exists; passing offline tests does not pass this row. |
+| native refresh persists | With scode 0.6.8 or newer and explicit `--sandbox-login-store` opt-in, the owner observes a private-config Claude run when its native token naturally needs refresh. Verify native authentication, continued access after private-home cleanup, and operator settings remaining blocked. Check native Keychain and existing plaintext fallback separately. Do not force token expiry or edit login files. |
+
+Scode 0.6.8 is the minimum for zero scode-owned credential commands. It removed
+credential synchronization and retains `--no-credential-sync` as a no-op.
+Its name-based `--keep-env` handling preserves an exported empty
+`CLAUDE_SECURESTORAGE_CONFIG_DIR`. CI pins scode v0.6.8; the changelog records the pinned commit.
+
+An opted-in macOS launch with an existing security preference file requires scode 0.6.7+ for `--allow-ro`; older versions refuse instead of granting writable preference access. Offline tests must cover this refusal and omission of the preference grant when the file is absent.
+
+Scode 0.6.8 also added bounded sibling-staging grants for
+`.credentials.json.tmp.<8 lowercase hex digits>` and
+`.oauth_refresh.lock.owner.tmp.<8 lowercase hex digits>`. Codemux selects
+`--allow-staged` for their base files on opted-in macOS launches with scode 0.6.8 or newer.
+Other lock paths retain individual grants; the operator config directory stays
+blocked. Older versions retain exact `--allow` grants, which cannot authorize
+these staging siblings. Kernel tests cover synthetic atomic replacement;
+native plaintext refresh and lock-owner persistence still need the owner check.
 
 Every model-backed probe is one agent turn, except D (a hermetic check is the
 isolated probe plus its plain control: two requests) and K (a session
@@ -240,7 +262,7 @@ LIVE_GATE_SKIP=gemini,qwen,goose make live-gate
 bun run scripts/live-gate.ts --skip gemini,qwen,goose --only claude,codex
 ```
 
-Explicit skips report `SKIP (no credentials; operator requested)` for the probes the harness supports; a probe the adapter declares no capability for prints UNSUPPORTED even when the harness is skipped (capability is judged before the skip list). The gate
+Explicit skips report `SKIP (operator requested)` for the probes the harness supports; a probe the adapter declares no capability for prints UNSUPPORTED even when the harness is skipped (capability is judged before the skip list). The gate
 exits 1 when no probes run, including when no harnesses are installed or
 `--only` selects none of the installed harnesses. Probes J and P start no
 harness, so a gate whose only judged cells are theirs probed nothing. It prints

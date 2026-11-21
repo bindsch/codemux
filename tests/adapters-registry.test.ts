@@ -104,6 +104,7 @@ describe("Adapter Registry", () => {
       // The empty view (verify's) hides all three overrides.
       expect(getAdapter("claude", {}).getEnv()).toEqual({
         CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1",
+        ...(process.platform === "darwin" ? { CLAUDE_SECURESTORAGE_CONFIG_DIR: "" } : {}),
       });
       const codexPlain = getAdapter("codex", {}).buildRunCommand({ agent: "codex", prompt: "p" });
       // Every run asks for the event stream and names a fallback file

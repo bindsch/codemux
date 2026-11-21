@@ -48,15 +48,15 @@ describe("doctor login rows over fixture stores", () => {
       "claude",
       { ".claude/.credentials.json": claudeMirror(Date.now() - 30 * MINUTE) },
       {},
-      "expired (~/.claude/.credentials.json)",
-      "| LOGIN-EXPIRED |",
-      1,
+      process.platform === "darwin" ? "unknown (macOS Keychain)" : "expired (~/.claude/.credentials.json)",
+      process.platform === "darwin" ? "| LOGIN-UNKNOWN |" : "| LOGIN-EXPIRED |",
+      process.platform === "darwin" ? 0 : 1,
     ],
     [
       "claude",
       {},
       {},
-      "unknown (~/.claude/.credentials.json)",
+      process.platform === "darwin" ? "unknown (macOS Keychain)" : "unknown (~/.claude/.credentials.json)",
       "| LOGIN-UNKNOWN |",
       0,
     ],
@@ -70,17 +70,18 @@ describe("doctor login rows over fixture stores", () => {
       0,
     ],
     ["codex", {}, { CODEX_API_KEY: "synthetic-key" }, "logged-in (CODEX_API_KEY)", "| OK |", 0],
-    ["codex", {}, {}, "no-credential (~/.codex/auth.json)", "| NO-LOGIN |", 1],
+    ["codex", {}, {}, "unknown (~/.codex/auth.json)", "| LOGIN-UNKNOWN |", 0],
     // A parseable but tokenless auth.json is no login (review round 42).
-    ["codex", { ".codex/auth.json": "{}" }, {}, "no-credential (~/.codex/auth.json)", "| NO-LOGIN |", 1],
+    ["codex", { ".codex/auth.json": "{}" }, {}, "unknown (~/.codex/auth.json)", "| LOGIN-UNKNOWN |", 0],
     // A store that is not a bounded regular file is unknown, never read (review round 50).
     ["codex", { ".codex/auth.json/placeholder": "x" }, {}, "unknown (~/.codex/auth.json)", "| LOGIN-UNKNOWN |", 0],
     // A tokenless file with an environment key still logs codex in (review round 47).
     ["codex", { ".codex/auth.json": "{}" }, { CODEX_API_KEY: "synthetic-key" }, "logged-in (CODEX_API_KEY)", "| OK |", 0],
     ["codex", { ".codex/auth.json": '{"auth_mode":"apikey","OPENAI_API_KEY":"synthetic"}' }, {}, "logged-in (~/.codex/auth.json)", "| OK |", 0],
     // agy: the file token must be a regular, non-empty file (review round 44).
-    ["agy", { ".gemini/antigravity-cli/antigravity-oauth-token": "" }, {}, "no-credential (~/.gemini/antigravity-cli/antigravity-oauth-token)", "| NO-LOGIN |", 1],
-    ["agy", { ".gemini/antigravity-cli/antigravity-oauth-token/placeholder": "x" }, {}, "no-credential (~/.gemini/antigravity-cli/antigravity-oauth-token)", "| NO-LOGIN |", 1],
+    ...["", "/placeholder"].map((suffix) => ["agy", { [`.gemini/antigravity-cli/antigravity-oauth-token${suffix}`]: suffix ? "x" : "" }, {},
+      process.platform === "darwin" ? "unknown (macOS Keychain)" : "unknown (~/.gemini/antigravity-cli/antigravity-oauth-token)",
+      "| LOGIN-UNKNOWN |", 0] as const),
     // kimi: the 15-minute token, epoch seconds.
     ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: seconds(10 * MINUTE), access_token: "a", refresh_token: "r" }) }, {}, `logged-in (${KIMI_LABEL})`, "| OK |", 0],
     // An aged-out access token beside a refresh token is a working login:
@@ -89,11 +90,12 @@ describe("doctor login rows over fixture stores", () => {
     ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: seconds(-10 * MINUTE), access_token: "a", refresh_token: "r" }) }, {}, `logged-in (${KIMI_LABEL}) refresh token present`, "| OK |", 0],
     // A refresh token alone is enough for kimi to obtain an access token.
     ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: seconds(10 * MINUTE), refresh_token: "r" }) }, {}, `logged-in (${KIMI_LABEL}) refresh token present`, "| OK |", 0],
-    // Without a refresh token an aged-out access token is a real expiry.
-    ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: seconds(-10 * MINUTE), access_token: "a", refresh_token: "" }) }, {}, `expired (${KIMI_LABEL})`, "| LOGIN-EXPIRED |", 1],
+    // Without a refresh token an aged-out access token is still not proof of
+    // a lost login: no file store may report one, so the state is unknown.
+    ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: seconds(-10 * MINUTE), access_token: "a", refresh_token: "" }) }, {}, `unknown (${KIMI_LABEL})`, "| LOGIN-UNKNOWN |", 0],
     // A decimal string and a millisecond expiry read like kimi's epoch seconds.
     ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: String(seconds(10 * MINUTE)), access_token: "a" }) }, {}, `logged-in (${KIMI_LABEL})`, "| OK |", 0],
-    ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: Date.now() - 10 * MINUTE, access_token: "a" }) }, {}, `expired (${KIMI_LABEL})`, "| LOGIN-EXPIRED |", 1],
+    ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: Date.now() - 10 * MINUTE, access_token: "a" }) }, {}, `unknown (${KIMI_LABEL})`, "| LOGIN-UNKNOWN |", 0],
     // A refresh token logs kimi in whether or not the expiry is readable (review round 106).
     ["kimi", { [KIMI_STORE]: kimiStore({ refresh_token: "r" }) }, {}, `logged-in (${KIMI_LABEL}) refresh token present`, "| OK |", 0],
     ["kimi", { [KIMI_STORE]: kimiStore({ access_token: "a", refresh_token: "r" }) }, {}, `logged-in (${KIMI_LABEL}) refresh token present`, "no readable expiry; kimi renews it", 0],
@@ -102,8 +104,13 @@ describe("doctor login rows over fixture stores", () => {
     ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: "0x7fffffffff", access_token: "a" }) }, {}, `unknown (${KIMI_LABEL})`, "| LOGIN-UNKNOWN |", 0],
     ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: "9e12", access_token: "a" }) }, {}, `unknown (${KIMI_LABEL})`, "| LOGIN-UNKNOWN |", 0],
     // A store with an expiry and no token is no login.
-    ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: seconds(10 * MINUTE) }) }, {}, `no-credential (${KIMI_LABEL})`, "| NO-LOGIN |", 1],
-    ["kimi", {}, {}, `no-credential (${KIMI_LABEL})`, "| NO-LOGIN |", 1],
+    ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: seconds(10 * MINUTE) }) }, {}, `unknown (${KIMI_LABEL})`, "| LOGIN-UNKNOWN |", 0],
+    // Kimi 2.6 keeps the login in an env-scoped file beside an emptied kimi-code.json (2026-11-16:
+    // doctor reported a working kimi as NO-LOGIN).
+    ["kimi", { [KIMI_STORE]: kimiStore({ expires_at: 0, access_token: "", refresh_token: "" }),
+      ".kimi-code/credentials/kimi-code-env-0a1b2c3d.json": kimiStore({ expires_at: seconds(-10 * MINUTE), access_token: "a", refresh_token: "r" }) },
+      {}, "logged-in (~/.kimi-code/credentials/kimi-code-env-0a1b2c3d.json) refresh token present", "| OK |", 0],
+    ["kimi", {}, {}, `unknown (${KIMI_LABEL})`, "| LOGIN-UNKNOWN |", 0],
     // zai: the key file, mode checked.
     ["zai", { ".zai": { body: "synthetic-key", mode: 0o600 } }, {}, "logged-in (~/.zai)", "| OK |", 0],
     [
@@ -127,9 +134,9 @@ describe("doctor login rows over fixture stores", () => {
       "cursor",
       { ".cursor/auth.json": '{"version":1}' },
       {},
-      "no-credential (~/.cursor/auth.json)",
-      "| NO-LOGIN |",
-      1,
+      "unknown (~/.cursor/auth.json)",
+      "| LOGIN-UNKNOWN |",
+      0,
     ],
     // opencode: the data directory's auth.json.
     [
@@ -199,12 +206,22 @@ describe("doctor login rows over fixture stores", () => {
     expect(result.exitCode).toBe(0);
   });
 
-  test("an expired kimi token with no refresh token names kimi login", async () => {
+  test("an expired kimi token is unknown, never an expired login", async () => {
     const result = await kimiDoctor(kimiStore({ expires_at: seconds(-MINUTE), access_token: "a" }));
-    expect(result.output).toContain("| LOGIN-EXPIRED |");
+    expect(result.output).toContain("| LOGIN-UNKNOWN |");
     expect(result.output).toContain("the store holds no refresh token");
-    expect(result.output).toContain("kimi login");
-    expect(result.exitCode).toBe(1);
+    expect(result.output).toContain("only a kimi run can confirm it");
+    expect(result.output).not.toContain("kimi login");
+    expect(result.exitCode).toBe(0);
+  });
+
+  test("an emptied Kimi credential file is unknown, never a missing login", async () => {
+    const result = await kimiDoctor(kimiStore({ expires_at: 0, access_token: "", refresh_token: "" }));
+    expect(result.output).toContain("| LOGIN-UNKNOWN |");
+    expect(result.output).toContain("Kimi credential file has empty access and refresh tokens");
+    expect(result.output).not.toContain("NO-LOGIN");
+    expect(result.output).not.toContain("kimi login");
+    expect(result.exitCode).toBe(0);
   });
 
   test("a zai key file readable by others says chmod, not just no-login", async () => {
@@ -345,9 +362,7 @@ describe("doctor usage rows over a fake usagemux", () => {
     }
   });
 
-  test("per-client timeouts reach usagemux, and agy is included (D6, D12)", async () => {
-    // claude 60 s, agy 90 s, codex 30 s; `codemux usage` keeps excluding
-    // agy, the machine check never does.
+  test("per-client timeouts reach usagemux, including agy", async () => {
     const fake = createFakeBinaryEnv(
       greenBase({
         claude: claudeGreen,
@@ -389,13 +404,7 @@ describe("doctor usage rows over a fake usagemux", () => {
         path: fake.env.PATH!,
         home: fixtureHome(claudeHome(), homes),
       });
-      // The seam applies only where a Keychain exists: off macOS the row
-      // reports the platform before the seam is consulted
-      // (src/doctor-environment.ts readKeychainStatus), so Linux asserts
-      // that row instead (CI run 42681779732, ubuntu-latest).
-      expect(result.output).toContain(process.platform === "darwin"
-        ? "keychain: skipped: keychain read disabled for this run"
-        : "keychain: not-macos: the Keychain check is macOS-only");
+      expect(result.output).toContain("keychain: skipped: Keychain access is disabled by codemux policy");
     } finally {
       fake.cleanup();
     }

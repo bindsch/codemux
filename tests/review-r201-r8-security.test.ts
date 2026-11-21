@@ -6,8 +6,6 @@ import { sessionRegistryPath } from "../src/session/registry.js";
 import { acquireLock, listHeldLocks } from "../src/session/registry-io.js";
 import { updateRegistry } from "../src/session/registry/mutations.js";
 import { writePrivateFile } from "../src/private-write.js";
-import { syncKeychainCredential } from "../src/credentials.js";
-import { BACKUPS, SECRET, withTarget } from "./helpers/credentials.js";
 import { createCodexHermeticHome } from "../src/hermetic-home.js";
 import { sweepStaleHomes } from "../src/adapters/agy-homes.js";
 import { ClaudeAdapter } from "../src/adapters/claude.js";
@@ -61,19 +59,6 @@ for (const entry of ["session-safe", "session-home-0123456789ab-safe"]) {
   });
 }
 
-test("credential symlink swap during the Keychain read refuses launch", () => {
-  withTarget((target, dir) => {
-    const real = join(dir, "swapped.json");
-    const readSecret = () => {
-      fs.renameSync(target, real); fs.symlinkSync(real, target);
-      return { kind: "secret" as const, value: SECRET };
-    };
-    expect(syncKeychainCredential("fixture", target, readSecret, BACKUPS(target))).toBe("unsafe");
-    expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
-    expect(fs.readFileSync(real, "utf8")).toContain("refreshToken");
-  });
-});
-
 test("private writes reject every path-shaped name before creating anything", () => {
   const base = root(), dir = join(base, "private"); fs.mkdirSync(dir, { mode: 0o700 });
   for (const name of ["../outside", "/outside", "sub/file", "sub\\file", ".", "..", "", "nul\0name"]) {
@@ -110,9 +95,6 @@ test("Agy sweep accepts a canonical root on platforms without getuid", () => {
 });
 
 test("undefined Claude profile redirects do not reach path APIs", () => {
-  class InspectClaude extends ClaudeAdapter {
-    report() { this.reportProfileRedirects("fixture", ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"]); }
-  }
-  const adapter = new InspectClaude({ CLAUDE_CONFIG_DIR: undefined, CLAUDE_SECURESTORAGE_CONFIG_DIR: undefined });
-  expect(() => adapter.report()).not.toThrow();
+  const adapter = new ClaudeAdapter({ CLAUDE_CONFIG_DIR: undefined, CLAUDE_SECURESTORAGE_CONFIG_DIR: undefined });
+  expect(() => adapter.prepareSandbox({ passthroughEnv: ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"] })).not.toThrow();
 });

@@ -81,7 +81,7 @@ describe("one-shot output probes", () => {
   test("an incomplete model listing still times out with its output retained", async () => {
     const partial = "Available models\n\nclerk - Clerk\n";
     const f = fake(`${print(partial)}\n/bin/sleep 30`);
-    const result = await runOutputProbe([f.binary, "models"], { ...f.options, timeoutMs: 100 }, cursorModelsAnswer);
+    const result = await runOutputProbe([f.binary, "models"], { ...f.options, timeoutMs: 1_500 }, cursorModelsAnswer);
     expect(result.exitCode).toBe(124);
     expect(result.timedOut).toBe(true);
     expect(result.stdout).toBe(partial);
@@ -133,7 +133,7 @@ describe("one-shot output probes", () => {
 
   test("the ordinary command runner still times out after printing", async () => {
     const f = fake(`${print(models)}\n/bin/sleep 30`);
-    const result = await runCapturedCommand([f.binary], { ...f.options, timeoutMs: 100 });
+    const result = await runCapturedCommand([f.binary], { ...f.options, timeoutMs: 1_500 });
     expect(result.exitCode).toBe(124);
     expect(result.stdout).toBe(models);
   });

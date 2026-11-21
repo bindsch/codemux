@@ -117,7 +117,7 @@ export function createDroidHermeticHome(
         console.error(
           "droid: the hermetic run replaced its login file instead of rewriting " +
             `it, so a token rotation from this run was discarded; ${sourceAuth} ` +
-            "is unchanged. If droid reports an expired session, log in again."
+            "is unchanged. Native authentication has not been checked."
         );
       }
     } catch (error) {

@@ -322,7 +322,6 @@ describe("CLI - zai sessions", () => {
           stdin: "pipe",
           env: {
             ...process.env,
-            CODEMUX_NO_KEYCHAIN_SYNC: "1",
             HOME: isolatedHome,
             XDG_CONFIG_HOME: join(isolatedHome, ".config"),
             ZAI_API_KEY: "zai-test-key",

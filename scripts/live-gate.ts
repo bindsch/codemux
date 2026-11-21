@@ -69,7 +69,6 @@ export {
   LOOPBACK_TIMEOUT_SECONDS,
   runProbes,
 } from "./live-gate/run.js";
-import { keychainBaselineRefusal, keychainDrift, keychainSnapshot } from "./live-gate/keychain.js";
 export type { CapturedOutput, ProbeResult, StdinScript, Verifier } from "./live-gate/runner.js";
 export type { GateOptions } from "./live-gate/options.js";
 export type { ContractRow, UsageCheck } from "./live-gate/contracts.js";
@@ -159,25 +158,9 @@ export async function main(): Promise<void> {
       ? gateQuotaDecisions(usage.snapshot, quotaPolicy, facts.map((fact) => fact.id))
       : undefined;
     probing = true;
-    // Keychain hygiene around the whole pool (review round 52): concurrent
-    // probes would otherwise snapshot each other's transient state. On a
-    // platform the check covers, a baseline that is missing or failed
-    // stops the gate before any probe runs (review rounds 87 and 88): a
-    // pool whose hygiene cannot be observed must not be certified.
-    const keychainBefore = await keychainSnapshot();
-    const baselineRefusal = keychainBaselineRefusal(keychainBefore);
-    if (baselineRefusal !== null) {
-      console.error(
-        `live-gate: the Keychain hygiene check could not run: ${baselineRefusal}; stopping before the probes`
-      );
-      process.exitCode = 1;
-      return;
-    }
     const rows = await runProbes(facts, options, runner, directory, process.env, undefined, quota);
-    const keychainDriftText = keychainDrift(keychainBefore, await keychainSnapshot());
     const first: ReportInput = {
       rows, contracts: contractsBefore, usage, version,
-      keychainDrift: keychainDriftText,
       codemux: options.codemux,
       only: options.only,
       probes: options.probes,

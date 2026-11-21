@@ -287,7 +287,7 @@ describe("the session command driven in process", () => {
       const outcome = await runSessionCommand(
         ["-a", "agy", "--cwd", workdir, "--shutdown-grace", "1"],
         { agy: withVersion("exit 7", "1.2.14"), scode: SCODE_DIES },
-        { registryFile: registry, stdin }
+        { registryFile: registry, stdin, env: { GEMINI_API_KEY: "synthetic" } }
       );
       expect(outcome.exitCode).not.toBe(0);
       // probeRegistryForStart proved the registry writable: the file exists though the session died.

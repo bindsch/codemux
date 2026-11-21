@@ -53,7 +53,7 @@ export async function withOpenCodeLaunch<T>(
     }
     Object.assign(process.env, fake.env, { HOME: home, XDG_CONFIG_HOME: join(home, ".config"),
       XDG_DATA_HOME: join(home, ".local/share"), XDG_STATE_HOME: join(home, ".local/state"),
-      CODEMUX_NO_KEYCHAIN_SYNC: "1", CODEMUX_ALLOW_UNTESTED_HARNESS: "" });
+      CODEMUX_ALLOW_UNTESTED_HARNESS: "" });
     if (options.provider) Object.assign(process.env, {
       CODEMUX_OPENCODE_PROVIDER_BASE_URL: "https://provider.invalid/v1",
       CODEMUX_OPENCODE_PROVIDER_API_KEY: "synthetic-key", CODEMUX_OPENCODE_PROVIDER_MODEL: "model",

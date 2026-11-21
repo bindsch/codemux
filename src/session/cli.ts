@@ -15,6 +15,7 @@ import type { ProjectSettingsSessionDir } from "../claude-project-config.js";
 import type { CodexSessionProviderHome } from "../codex-provider.js";
 import { prepareCodexSessionCatalog, type CodexSessionCatalog } from "./codex-catalog.js";
 import type { CodemuxConfig } from "../types.js";
+import { sandboxLoginUnavailable } from "../sandbox-login-policy.js";
 import { exitOnResumeRefusal } from "./cli-usage.js";
 import { registerSessionOptions } from "./cli-options.js";
 import { cleanupAfterSpawnThrow, exitPrintedSandbox, handleSessionAbort, removeFinalProjectDir } from "./cli-exit.js";
@@ -37,6 +38,7 @@ import { spawnSessionChild } from "./spawn.js";
 import { launchRedirectCheck } from "../cli-runtime.js";
 import { assertSessionOptionsSupported } from "./cli-policy.js";
 import { abandonFreshSessionDirectories } from "./cli-abandon.js";
+import { prepareAgySessionRunHome } from "./agy-run-home.js";
 
 // The modules the action is split into, re-exported so this path keeps
 // every public symbol importable (readRegistry and friends live in
@@ -56,10 +58,11 @@ export function registerSessionCommand(
     .description("Start or resume a live agent session (JSONL events on stdout, JSONL input on stdin)");
   // Every option row lives in cli-options.ts, one registration shared by
   // nothing else; the action below stays with the state it manages.
-  registerSessionOptions(session, config.defaultAgent);
-  session.action(async (options) => {
+  registerSessionOptions(session, config.defaultAgent, config.sandboxNoLoginStore, config.sandboxLoginStore);
+  session.action(async (options, command) => {
       // The catch owns pre-spawn homes; the catalog lasts until the child settles.
       let codexSessionCatalog: CodexSessionCatalog | null = null;
+      let cleanupAgyRun = async (): Promise<void> => {};
       let codexSessionHome: CodexSessionProviderHome | null = null;
       let sessionProjectDir: ProjectSettingsSessionDir | null = null;
       let sessionProjectDirResumed = false;
@@ -117,7 +120,7 @@ export function registerSessionCommand(
           effort,
           workdir,
           runLike,
-        } = resolveSessionRequest(options, config);
+        } = resolveSessionRequest(options, config, command);
         const {
           registryPath,
           codexHome,
@@ -137,6 +140,8 @@ export function registerSessionCommand(
           enablePlaywrightMcp,
           hermetic,
           experimentProjectSettings,
+          sandboxOptions,
+          sandboxLoginStoreTyped: command.getOptionValueSource("sandboxLoginStore") === "cli",
           sandboxTrust,
           sandboxNoNet,
           sandboxScrubEnv,
@@ -200,6 +205,8 @@ export function registerSessionCommand(
         sessionProjectDirResumed = launch.sessionProjectDirResumed;
         sessionPrivateHome = launch.sessionPrivateHome;
         sessionPrivateHomeResumed = resumeId !== undefined;
+        const agyRun = prepareAgySessionRunHome(adapter, runLike, launch.sandboxOptions, printOnly, sessionPrivateHome !== null);
+        cleanupAgyRun = agyRun.cleanup;
         codexSessionCatalog = agentId === "codex" ? prepareCodexSessionCatalog({
           request: { ...runLike, model }, realCodexHome: codexHome(), binary: launch.codexCatalogBinary,
           harnessVersion: launch.harnessVersion, sandboxOptions: launch.sandboxOptions, callerBlockPaths: sandboxBlock, printOnly,
@@ -231,6 +238,7 @@ export function registerSessionCommand(
             codexSessionCatalog,
             sessionProjectDir,
             sessionPrivateHome,
+            agyRunContext: agyRun.context,
             turnPerProcess,
             needsKeepEnvPreflight,
             buildSessionEnvironment,
@@ -250,6 +258,7 @@ export function registerSessionCommand(
         const {
           driver,
           claudeDriver,
+          agyDriver,
           aiderDriver,
           aiderSessionId,
           aiderPrivateHome,
@@ -350,13 +359,16 @@ export function registerSessionCommand(
             // failure.
             codexSessionHome?.prepareConfig();
             // The long-lived child's environment, built at the same
-            // post-claim position: its getRunEnv copies the credential
-            // mirror into the session's private config directory, and a
+            // post-claim position: non-macOS Claude copies its access
+            // token into the session's private config directory, and a
             // resume that lost the claim — or printed only — must write
             // nothing there (review round 3, edges finding on the claim
             // order).
             const { env, longLivedSandboxOptions, validateBeforeSpawn } = buildLongLivedEnvironment();
             if (env === null) throw new Error("the long-lived session child has no environment");
+            const loginStoreDenied = Boolean(options.sandbox) && sandboxLoginUnavailable(longLivedSandboxOptions, env);
+            claudeDriver?.setSandboxLoginStoreDenied(loginStoreDenied);
+            agyDriver?.setSandboxLoginStoreDenied(loginStoreDenied);
             proc = await spawnSessionChild(argv, env, {
               cwd: workdir,
               sandboxed: Boolean(options.sandbox),
@@ -466,6 +478,7 @@ export function registerSessionCommand(
         process.exitCode = finalRemovalFailed ? Math.max(code, 1) : code;
       } catch (error) {
         // handleSessionAbort exits synchronously, so cleanup must precede it.
+        await cleanupAgyRun();
         removeFinalProjectDir(codexSessionCatalog);
         handleSessionAbort(error, {
           spawnBegan: spawnBegan.value,
@@ -475,6 +488,7 @@ export function registerSessionCommand(
           builtDriver,
         });
       } finally {
+        await cleanupAgyRun();
         if (!removeFinalProjectDir(codexSessionCatalog)) process.exitCode = Math.max(Number(process.exitCode ?? 0), 1);
       }
     });

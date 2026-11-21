@@ -112,6 +112,7 @@ describe("Z.AI credential handling", () => {
       "ZAI_API_KEY",
       "ANTHROPIC_API_KEY",
       "CLAUDE_CODE_OAUTH_TOKEN",
+      "CLAUDE_SECURESTORAGE_CONFIG_DIR",
     ]);
   });
 

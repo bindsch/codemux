@@ -51,14 +51,14 @@ export interface CodexDriverOptions extends CodexSessionSettings {
   sandboxed: boolean;
   /** Recorded sandbox trust, compared exactly on resume. */
   sandboxTrust: SandboxTrust;
-  /** The containment flags this session actually runs with; recorded
-   * as-is, and the resume guard refuses a resume that clears either. */
+  /** Recorded containment flags cannot be cleared on resume. */
   sandboxNoNet: boolean;
-  /** The caller's --sandbox-block paths, canonicalized; recorded and
-   * compared on resume (registry/format.ts). */
+  /** Canonical --sandbox-block paths, recorded and compared on resume. */
   sandboxBlock?: readonly string[];
   sandboxScrubEnv: boolean;
   sandboxStrict?: boolean;
+  sandboxNoLoginStore?: boolean;
+  sandboxLoginStore?: boolean;
   /** Passed environment names, recorded for the resume guard. */
   passEnv: readonly string[];
   /** Prefix harness-bound text with `[<author>] ` (§4.4, default on). */

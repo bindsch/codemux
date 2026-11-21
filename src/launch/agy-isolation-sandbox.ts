@@ -2,7 +2,10 @@
 // tools-none run, a hermetic session): scode's standard profile leaves
 // the operator's real ~/.gemini inside default-allowed harness state
 // (scratch/fix/report-h3.md, item 2), so the launch itself blocks that
-// tree and re-allows only its private home.
+// tree and re-allows only its private home. Two exact-path grants are
+// added elsewhere: agy's own file token, for a launch on the operator
+// login (sandbox.ts), and a plain session's shared entries
+// (session/agy-run-home.ts).
 
 import { assertNoCallerBlockOverStateDirs, type SandboxOptions } from "../sandbox.js";
 

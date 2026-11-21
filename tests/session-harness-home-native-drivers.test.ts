@@ -41,7 +41,7 @@ function fixture(agent: Agent) {
     XDG_DATA_HOME: join(operator, ".local", "share"), XDG_STATE_HOME: join(operator, ".local", "state"),
     XDG_CACHE_HOME: join(operator, ".cache"), KIMI_CODE_HOME: undefined, OPENCODE_CONFIG_DIR: undefined,
     OPENCODE_CONFIG: undefined, OPENCODE_CONFIG_CONTENT: undefined, OPENCODE_PERMISSION: undefined,
-    CODEMUX_NO_KEYCHAIN_SYNC: "1", CODEMUX_ALLOW_UNTESTED_HARNESS: undefined,
+    CODEMUX_ALLOW_UNTESTED_HARNESS: undefined,
     FAKE_STATE_DIR: state, FAKE_NATIVE_AGENT: agent, CODEMUX_TEST_SCODE_ARGV: join(state, "scode.txt"),
     KIMI_API_KEY: "synthetic-kimi-key", GEMINI_API_KEY: "synthetic-gemini-key", OPENAI_API_KEY: "synthetic-openai-key",
   };
@@ -220,6 +220,9 @@ test("kimi file login shares the real credential store and the sandbox grants on
     expect(readlinkSync(shared)).toBe(store);
     const block = readFileSync(join(s.state, "scode.txt"), "utf8").split("BEGIN\n").filter(Boolean)[0]!;
     expect(block).toContain(`--block\n${join(s.operator, ".kimi-code")}\n`);
-    expect(block).toContain(`--allow\n${s.caller}\n--allow\n${store}\n`);
+    // Kimi's refresh-lock directory is shared and granted beside the store (review round 5).
+    const oauth = join(s.operator, ".kimi-code", "oauth");
+    expect(readlinkSync(join(s.caller, ".kimi-code", "oauth"))).toBe(oauth);
+    expect(block).toContain(`--allow\n${s.caller}\n--allow\n${store}\n--allow\n${oauth}\n`);
   } finally { s.cleanup(); }
 });

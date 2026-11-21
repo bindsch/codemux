@@ -189,7 +189,7 @@ test("a signal-begun end path after a spawn throw removes a fresh project-settin
     const outcome = await runSessionCommand(
       ["-a", "claude", "--cwd", workdir, "--sandbox", "--auto", "low", "--hermetic", "--experiment-project-settings"],
       { claude: FAKE_CLAUDE, scode: SCODE_PASSTHROUGH },
-      { registryFile, setup: signalThenThrow, env: { HOME: home, CODEMUX_NO_KEYCHAIN_SYNC: "1" } }
+      { registryFile, setup: signalThenThrow, env: { HOME: home } }
     );
     expect(outcome.stderr).toContain("spawn blew up");
     const parent = join(projectSettingsConfigRoot({ HOME: home }), ".codemux-hermetic");

@@ -163,7 +163,6 @@ function fake(scodeVersion = "0.6.0"): Record<string, string> {
   cleanup.push(() => rmSync(state, { recursive: true, force: true }));
   const env = createFakeBinaryEnv({
     agy: `exec ${quote(process.execPath)} ${quote(join(import.meta.dir, "fixtures/agy-canary.ts"))} "$@"`,
-    security: `exec ${quote(process.execPath)} ${quote(join(import.meta.dir, "fixtures/agy-security.ts"))} "$@"`,
     scode: 'while [ "$1" != "--" ]; do shift; done; shift; exec "$@"',
   }, scodeVersion);
   cleanup.push(env.cleanup);
@@ -276,7 +275,7 @@ test.each(["API key", "file token", "Keychain"])("sandboxed agy with %s refuses 
   expect(response.stderr).toContain("every sandboxed agy run requires scode 0.6.0 or newer");
   expect(response.stdout).toBe("");
   const authentication = readFileSync(join(import.meta.dir, "../docs/authentication.md"), "utf8");
-  expect(authentication).toMatch(/Every sandboxed Antigravity headless run.*requires scode 0\.6\.0 or newer/);
+  expect(authentication).toMatch(/Sandboxed runs.*scode 0\.6\.8 or newer.*zero scode-owned credential commands/);
 });
 
 test("agy isolation cannot attest a different cwd, a mismatched autonomy, or no sandbox", async () => {
@@ -299,7 +298,7 @@ test("Antigravity documentation separates supported policy from dated live evide
   expect(doc).toContain("| Antigravity |");
   // Isolation needs scode at every autonomy: the block over the real
   // ~/.gemini plus the private-home allow is the boundary.
-  expect(doc).toContain("blocks the operator's real `~/.gemini`");
+  expect(doc).toContain("scode blocks operator configuration");
   expect(doc).toContain("Tool schemas can remain visible");
   const report = readFileSync(join(import.meta.dir, "../docs/archive/experiment-mcp-report.md"), "utf8");
   const outcome = report.split("## Outcome")[1]!.split("\n## ")[0]!;
@@ -360,8 +359,10 @@ test("agy's scode version probe carries the parent HOME", async () => {
   expect(response.stdout).toContain("HERMETIC agy: OK");
 });
 
-test("scratch operator homes contain no Keychain links or credentials", () => {
-  const { home, adapter, request } = setup();
+test("private run homes link the native store while unseeded canaries remain empty", () => {
+  // The operator-login route: an API-key run links no native login (review round 5).
+  const { home, request } = setup();
+  const adapter = new AgyAdapter({ HOME: home });
   const keychains = join(home, "Library/Keychains");
   mkdirSync(keychains, { recursive: true });
   writeFileSync(join(keychains, "synthetic-keychain"), "metadata fixture");
@@ -369,7 +370,8 @@ test("scratch operator homes contain no Keychain links or credentials", () => {
   cleanup.push(canary.cleanup);
   const context = adapter.prepareRun({ ...request, hermetic: true });
   cleanup.push(() => adapter.cleanupRun(context));
-  for (const relocated of [context.agyProbe!.home!, canary.operatorHome, canary.cleanOperatorHome]) {
+  expect(existsSync(join(context.agyProbe!.home!, "Library/Keychains"))).toBe(process.platform === "darwin");
+  for (const relocated of [canary.operatorHome, canary.cleanOperatorHome]) {
     expect(existsSync(join(relocated, "Library/Keychains"))).toBe(false);
     expect(existsSync(join(relocated, ".gemini/antigravity-cli/antigravity-oauth-token"))).toBe(false);
   }
@@ -380,7 +382,7 @@ test("scratch operator homes contain no Keychain links or credentials", () => {
 test("temporary agy HOME access preserves the read-only scode working directory", () => {
   const { cwd, home } = setup();
   const cmd = buildScodeCommand(["agy"], cwd, "read-only", { harnessStateDirs: [home] });
-  expect(cmd).toEqual(["scode", "-C", cwd, "--trust", "standard", "--ro", "--allow", home, "--", "agy"]);
+  expect(cmd).toEqual(["scode", "--no-credential-sync", "-C", cwd, "--trust", "standard", "--ro", "--allow", home, "--", "agy"]);
   expect(() => buildScodeCommand(["agy"], cwd, "read-only", { harnessStateDirs: ["relative"] })).toThrow("absolute");
 });
 

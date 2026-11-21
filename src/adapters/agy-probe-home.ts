@@ -2,13 +2,12 @@
 // home is created only together with its descriptor-verified identity, and
 // removed only after that identity is reconfirmed on disk. Extracted from
 // adapters/agy.ts (file-size round) without behavior change; the adapter
-// keeps the Keychain, token-copy, and share-state passes that surround it.
+// keeps the authentication and shared-state policy.
 
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { readFileBytesBounded } from "../file-io.js";
 import { PROBE_FILE_MAX_BYTES, PROBE_MARKER, findDirectory, markAgyPrivateHome, sameDirectory } from "./agy-homes.js";
-import { AGY_MIRROR_PATH } from "../agy-keychain.js";
 import type { RunContext } from "./base.js";
 
 export interface OwnedAgyProbeHome {
@@ -19,7 +18,6 @@ export interface OwnedAgyProbeHome {
 /** One context owns at most one home; the map is the only ownership record. */
 export const ownedProbeHomes = new WeakMap<RunContext, OwnedAgyProbeHome>();
 
-export const PROBE_TOKEN = ".gemini/antigravity-cli/antigravity-oauth-token";
 
 /** Creates the probe root's next home and registers it as `context`'s own.
  * Throws with every descriptor it opened already closed and the home
@@ -58,12 +56,8 @@ export function createAgyProbeHome(context: RunContext, realHome: string): Owned
   }
 }
 
-/** Validates and removes an owned home. `searchError` carries a Keychain
- * search-list repair failure: reported with the removal's own error, or
- * thrown alone when the removal itself succeeded. False only once nothing
- * a retry could remove is left; every other failure keeps the descriptors
- * so the next call revalidates and removes again (review round 137). */
-export function removeAgyProbeHome(owned: OwnedAgyProbeHome, searchError: unknown, atExit: boolean): void {
+/** Remove an owned home after validating its directory identity. */
+export function removeAgyProbeHome(owned: OwnedAgyProbeHome, atExit: boolean): void {
   let homePath = owned.home;
   let retryable = true;
   let succeeded = false;
@@ -84,7 +78,7 @@ export function removeAgyProbeHome(owned: OwnedAgyProbeHome, searchError: unknow
     if (!lstatSync(owned.home, { throwIfNoEntry: false })) {
       homePath = findDirectory(parentPath, home) ?? "";
       // Not found under its parent: a retry has nothing to remove. Still
-      // reported below, because a moved-away home may hold the token copy
+      // reported below, because a moved-away home may hold private state
       // (review round 144).
       if (!homePath) retryable = false;
     }
@@ -117,13 +111,11 @@ export function removeAgyProbeHome(owned: OwnedAgyProbeHome, searchError: unknow
     owned.removalStarted = true;
     rmSync(homePath, { recursive: true });
     retryable = false;
-    if (searchError) throw searchError;
     succeeded = true;
   } catch (error) {
     const remaining = homePath || owned.home;
     owned.cleanupError = new Error(`agy probe cleanup failed: ${error instanceof Error ? error.message : String(error)}; ` +
-      (searchError && error !== searchError ? `${String(searchError)}; ` : "") +
-      `token copy may remain at ${join(remaining, PROBE_TOKEN)} or keychain mirror at ${join(remaining, AGY_MIRROR_PATH)} ` +
+      `private state may remain at ${remaining} ` +
       `(home device ${owned.homeDev}, inode ${owned.homeIno})`);
     throw owned.cleanupError;
   } finally {

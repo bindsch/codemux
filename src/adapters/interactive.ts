@@ -1,4 +1,5 @@
 import type { BaseAdapter } from "./base.js";
+import { withKimiPrivateState } from "../kimi-auth-state.js";
 import type { AutonomyLevel, ReasoningEffort } from "../types.js";
 import { guardedWait } from "../process-runner.js";
 import { assertExecutablesUnchanged } from "../executable-security.js";
@@ -45,14 +46,15 @@ export async function runInteractive(
   }
   this.beforeLaunch();
   const workdir = validateWorkingDirectory(cwd) ?? process.cwd();
-  const command = this.resolveExecutionCommand(this.buildTuiCommand(
+  const originalCommand = this.buildTuiCommand(
     model,
     effectiveAutonomy,
     effort,
     false,
     enablePlaywrightMcp,
     workdir
-  ), workdir);
+  );
+  const command = this.resolveExecutionCommand(originalCommand, workdir);
   const prepared = this.prepareTuiEnvironment(model, effectiveAutonomy, effort, false, passthroughEnv);
   try {
   const env = this.buildExecutionEnv(
@@ -69,16 +71,18 @@ export async function runInteractive(
   // redirect visible to the child but absent here escaped both the pin
   // and the gate; review round 338, item 13).
   const redirectCheck = launchRedirectCheck(this.id, env, workdir);
-  assertExecutablesUnchanged(command, this.id, undefined, redirectCheck === null ? [] : [redirectCheck]);
   // The spawn rides the wait itself (review round 223): guardedWait
   // installs its signal handlers before running it, so a SIGTERM or SIGHUP
   // cannot land between the spawn and the handlers and orphan the child.
-  return await guardedWait(() => Bun.spawn(command, {
+  return await withKimiPrivateState(originalCommand, env, workdir, () => {
+    assertExecutablesUnchanged(command, this.id, undefined, redirectCheck === null ? [] : [redirectCheck]);
+    return guardedWait(() => Bun.spawn(command, {
     cwd: workdir,
     stdout: "inherit",
     stderr: "inherit",
     stdin: "inherit",
     env,
-  }));
+    }));
+  });
   } finally { prepared.finalize(); }
 }

@@ -363,10 +363,9 @@ describe("ClaudeAdapter", () => {
     expect(cmd).toEqual(["claude", "--safe-mode"]);
   });
 
-  test("scrubs project hook subprocess environments", () => {
-    expect(adapter.getEnv()).toEqual({
-      CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1",
-    });
+  test("preserves the native login namespace for the default profile", () => {
+    expect(adapter.getEnv()).toEqual({ CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1",
+      ...(process.platform === "darwin" ? { CLAUDE_SECURESTORAGE_CONFIG_DIR: "" } : {}) });
   });
 
   test("getStdinInput returns prompt", () => {

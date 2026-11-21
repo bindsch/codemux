@@ -98,7 +98,7 @@ name = "operator"
       expect(config.mcp).toEqual({ startup_timeout_ms: 123, tool_timeout_ms: 456 });
       expect(config.telemetry).toBe(false);
       expect(config.builtin_product_skills).toBeUndefined();
-      expect(readdirSync(home.kimiHome).sort()).toEqual(["config.toml", "credentials", "device_id", "region"]);
+      expect(readdirSync(home.kimiHome).sort()).toEqual(["config.toml", "credentials", "device_id", "oauth", "region"]);
       expect(readdirSync(home.skillsDir)).toEqual([]);
       expect(readFileSync(home.agentFile, "utf8")).toContain("${base_prompt}");
       expect(readFileSync(home.agentFile, "utf8")).not.toContain("tools:");

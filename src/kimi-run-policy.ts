@@ -8,7 +8,7 @@ import type { RunContext } from "./adapters/base.js";
 import type { RunRequest } from "./types.js";
 
 const MAX_CONFIG_BYTES = 1024 * 1024;
-const OWNED_ENTRIES = new Set(["config.toml", "mcp.json", "credentials", "region", "device_id", ".codemux", ".codemux-hermetic"]);
+const OWNED_ENTRIES = new Set(["config.toml", "mcp.json", "credentials", "oauth", "region", "device_id", ".codemux", ".codemux-hermetic"]);
 // Kimi 2.5.2 bin/kimi: webSearchTool.ts and fetchUrlTool.ts name the
 // builtin tools WebSearch and FetchURL. moonshot_web_search is a provider.
 export const KIMI_WEB_TOOLS = ["WebSearch", "FetchURL"] as const;

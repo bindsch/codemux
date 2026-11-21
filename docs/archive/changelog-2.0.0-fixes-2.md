@@ -5,6 +5,8 @@ read_when: "Reviewing earlier fixes included in codemux 2.0.0."
 
 Preserved from the [2.0.0 changelog](https://github.com/bindsch/codemux/blob/main/CHANGELOG.md#200---2026-11-10).
 
+The original native credential snapshots were removed in 2.0.4. See the current [release gate](../RELEASE-GATE.md).
+
 - Review round 80, whole tree: `calls --since` no longer treats an empty session id as a session key, so a recent
   empty-id turn cannot pull old empty-id closing records past the cutoff; session usage (codex, opencode, and the
   cumulative fold) applies the envelope's safe-integer rule, so a count past the safe range or a sum that would
@@ -69,13 +71,9 @@ Preserved from the [2.0.0 changelog](https://github.com/bindsch/codemux/blob/mai
   request bodies, and closes its connections on shutdown; probe H2 scrubs the operator's environment; the J listener
   closes on every exit path; ledger lines with negative or fractional counts are malformed; OpenCode's XDG paths are
   read exactly as OpenCode reads them; a Kimi tool call without a string arguments field is a protocol failure.
-- A print-only launch (`--print-sandbox`) prepares only the paths its argv names: agy creates no private
-  Keychain, reads no login, copies no token, and repairs no search list; its cleanup invokes `security` never. An
-  agy run whose private HOME cannot be given a default keychain is refused instead of warned, because agy's token
-  refresh would otherwise raise the macOS prompt "a keychain cannot be found to store antigravity" on the operator's
-  screen (it did, on 2026-11-03, from a print-only path). The live gate wraps every probe in a Keychain hygiene
-  check (user search list and default keychain unchanged) and gains probe P (`--print-sandbox` on every harness,
-  zero quota); `codemux doctor` reports a user default keychain that names a missing file as broken.
+- A print-only launch (`--print-sandbox`) prepares only the paths its argv names.
+  The live gate gained probe P on every harness at zero quota. Native credential
+  preparation and diagnostic checks from this release were removed in 2.0.4.
 - `codemux list` labels carry the condition an adapter enforces (`tools(read-only)` for codex and agy,
   `tools(hermetic)` for OpenCode, `hermetic(read-only)` for agy), and `list --json` adds `toolsNoneRequiresReadOnly`,
   `isolationRequiresReadOnly`, `model`, `effort`, and `effortLevels`, so a workflow that reads the listing does not
@@ -207,8 +205,8 @@ Preserved from the [2.0.0 changelog](https://github.com/bindsch/codemux/blob/mai
 - Three tests that depended on where or how the gate ran: the live-fixture
   privacy scan no longer treats every directory name on the checkout's path
   as a forbidden word (a clone under a `scratch` or `codemux` directory
-  failed), the agy keychain test reads only complete ledger lines while a
-  builder is appending, and the session-timeout test waits for the started
+  failed), a now-removed agy authentication test handled concurrent ledger writes,
+  and the session-timeout test waits for the started
   session and its open turn before the timer ends it.
 - A Kimi experiment run no longer fails its final integrity check on a tool
   call Kimi itself rejected for unparseable arguments (`args: {}` on the

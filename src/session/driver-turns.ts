@@ -63,6 +63,7 @@ export abstract class ClaudeDriverTurns extends ClaudeDriverPermissions {
    * two mean no single attribution is honest, and the result's own
    * `modelUsage` report decides. */
   protected readonly turnModels = new Set<string>();
+  private loginAdvicePrinted = false;
 
   /** Empties the derived file-change candidates the finishing turn leaves
    * behind (§4.3): a tool_use whose result never arrived belongs to the
@@ -75,6 +76,11 @@ export abstract class ClaudeDriverTurns extends ClaudeDriverPermissions {
     parse: Extract<ClaudeParse, { kind: "turn_completed" }>,
     rawLine: string
   ): void {
+    const advice = this.options.sandboxLoginStoreDenied ? parse.loginStoreAdvice : parse.loginAdvice;
+    if (this.options.agent === "claude" && advice && !this.loginAdvicePrinted) {
+      console.error(advice);
+      this.loginAdvicePrinted = true;
+    }
     if (this.finished && this.fsm.state !== "turn_active" && this.forwardedAtEnd) {
       // The harness ran the forwarded pre-init input inside the drain
       // (see finish): its result answers no turn the caller saw open, so

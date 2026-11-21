@@ -19,6 +19,7 @@ import { dirname, join } from "node:path";
 import { Command } from "commander";
 import { getDefaultConfig } from "../../src/config.js";
 import { registerInfoCommands } from "../../src/info-commands.js";
+import type { CodemuxConfig } from "../../src/types.js";
 
 /** A throwaway HOME with the named files (relative paths, 0600 unless a
  * mode is given). The tests never read a real home: every login reader
@@ -55,12 +56,13 @@ export async function runDoctor(
     home: string;
     env?: Record<string, string>;
     configError?: Error;
+    config?: CodemuxConfig;
   }
 ): Promise<{ output: string; errors: string; exitCode: number | undefined }> {
   const command = new Command();
   command.exitOverride();
   let exitCode: number | undefined;
-  registerInfoCommands(command, getDefaultConfig(), options.configError, (code) => {
+  registerInfoCommands(command, options.config ?? getDefaultConfig(), options.configError, (code) => {
     exitCode = code;
   });
   const lines: string[] = [];
@@ -76,7 +78,6 @@ export async function runDoctor(
     HOME: options.home,
     TMPDIR: savedEnv.TMPDIR ?? "/tmp",
     // Never touch the operator's real Keychain from a test.
-    CODEMUX_NO_KEYCHAIN_SYNC: "1",
     ...options.env,
   });
   try {

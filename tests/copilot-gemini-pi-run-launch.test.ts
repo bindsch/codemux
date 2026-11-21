@@ -37,7 +37,7 @@ async function launch(agent: Agent, flags: string[], prompt: string, override = 
       if (/^(CODEMUX_(COPILOT|GEMINI|PI)_PROVIDER_|COPILOT_|GEMINI_|GOOGLE_|PI_)/.test(key)) delete process.env[key];
     }
     Object.assign(process.env, fake.env, { HOME: home, XDG_CONFIG_HOME: join(home, ".config"),
-      W3_OBSERVATION: observation, CODEMUX_NO_KEYCHAIN_SYNC: "1" });
+      W3_OBSERVATION: observation });
     if (override) {
       const prefix = `CODEMUX_${agent.toUpperCase()}_PROVIDER_`;
       process.env[`${prefix}BASE_URL`] = "http://127.0.0.1:9/v1";
