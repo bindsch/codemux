@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getAdapter } from "../src/adapters/index.js";
@@ -133,7 +133,9 @@ describe("the Playwright socket directory", () => {
 
       const dir = reservePlaywrightSocketDir(root);
       dir.create();
-      rmSync(dir.path, { recursive: true });
+      // Renamed, not removed: Linux gives a new directory the inode of one
+      // just deleted, and the original must stay distinct from its stand-in.
+      renameSync(dir.path, `${dir.path}-moved`);
       mkdirSync(dir.path);
       writeFileSync(join(dir.path, "keep"), "");
       expect(() => dir.finalize()).toThrow("was replaced; it was not removed");
@@ -270,7 +272,9 @@ describe("the sandbox grants of a launch that attaches the server", () => {
       // A launcher block is not the caller's, so the socket directory keeps
       // its grant; the browser directory is never reopened beneath one.
       expect(() => build([home], [])).toThrow("which this launch blocks");
-      expect(() => build(["/tmp"], [])).not.toThrow();
+      // The socket directory itself, not /tmp: on Linux the fixture's browser
+      // directory is under /tmp too.
+      expect(() => build(["/tmp/cmx-pw-test"], [])).not.toThrow();
       expect(() => build([join(home, "other")])).not.toThrow();
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
