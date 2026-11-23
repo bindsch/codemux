@@ -80,7 +80,7 @@ test("the grant is the whole-server rule and rides beside the level's own grants
   expect(claudeAutonomyFlags("read-only", "/work", { web: "deny" })).not.toContain("--allowedTools");
   expect(claudeAutonomyFlags("high", "/work", { extraGrants: [PLAYWRIGHT_MCP_GRANT] })).toContain("mcp__playwright");
   // Shell-only denies join the web denies in one list, and only below medium.
-  expect(PLAYWRIGHT_MCP_CODE_TOOLS).toEqual(["mcp__playwright__browser_run_code_unsafe", "mcp__playwright__browser_run_code"]);
+  expect(PLAYWRIGHT_MCP_CODE_TOOLS).toEqual(["mcp__playwright__browser_run_code*", "mcp__playwright__browser_run_code_unsafe", "mcp__playwright__browser_run_code"]);
   expect(denied(claudeAutonomyFlags("low", "/work", { web: "deny", shellOnlyDenies: PLAYWRIGHT_MCP_CODE_TOOLS })))
     .toEqual(["WebSearch", "WebFetch", ...PLAYWRIGHT_MCP_CODE_TOOLS]);
   expect(denied(claudeAutonomyFlags("medium", "/work", { shellOnlyDenies: PLAYWRIGHT_MCP_CODE_TOOLS }))).toEqual([]);

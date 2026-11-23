@@ -58,9 +58,18 @@ function socketRoot(platform: NodeJS.Platform): string {
   return platform === "darwin" || platform === "linux" ? "/tmp" : tmpdir();
 }
 
-/** Names a private socket directory without creating it. */
+/** What a new socket directory gets after its mkdir: the exact mode
+ * (mkdir's is subject to the umask) and the registry directory. */
+function setupSocketDir(path: string): void {
+  chmodSync(path, 0o700);
+  mkdirSync(playwrightRegistryDir(path), { mode: 0o700 });
+}
+
+/** Names a private socket directory without creating it. `setup` is the
+ * step after the mkdir; tests replace it to make it fail. */
 export function reservePlaywrightSocketDir(
-  root: string = socketRoot(process.platform)
+  root: string = socketRoot(process.platform),
+  setup: (path: string) => void = setupSocketDir
 ): PlaywrightSocketDir {
   const path = join(root, `${SOCKET_DIR_PREFIX}${randomBytes(4).toString("hex")}`);
   const bytes = Buffer.byteLength(path);
@@ -109,8 +118,15 @@ export function reservePlaywrightSocketDir(
       const stat = lstatSync(path);
       identity = { dev: stat.dev, ino: stat.ino };
       process.once("exit", onExit);
-      chmodSync(path, 0o700);
-      mkdirSync(playwrightRegistryDir(path), { mode: 0o700 });
+      try {
+        setup(path);
+      } catch (error) {
+        // A half-made directory is removed now, not at exit; the setup
+        // failure is the error the caller sees.
+        process.off("exit", onExit);
+        try { remove(); } catch { /* the setup failure is reported */ }
+        throw error;
+      }
     },
     finalize(): void {
       process.off("exit", onExit);

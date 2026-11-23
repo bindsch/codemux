@@ -10,7 +10,7 @@ export const PLAYWRIGHT_MCP_GRANT = `mcp__${PLAYWRIGHT_MCP_SERVER}`;
  * Node process (not in the page). They are a shell by another name, so a
  * level that does not grant Bash denies them (`browser_run_code` is the
  * name before @playwright/mcp renamed it). */
-export const PLAYWRIGHT_MCP_CODE_TOOLS = ["browser_run_code_unsafe", "browser_run_code"]
+export const PLAYWRIGHT_MCP_CODE_TOOLS = ["browser_run_code*", "browser_run_code_unsafe", "browser_run_code"]
   .map((tool) => `mcp__${PLAYWRIGHT_MCP_SERVER}__${tool}`);
 
 /** How one launch runs the server under the sandbox. A caller that passes

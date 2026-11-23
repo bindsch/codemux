@@ -13,6 +13,13 @@ immutable notes and engineering evidence.
 
 ## [Unreleased]
 
+## [2.0.6] - 2026-11-23
+
+### Fixed
+
+- With `--enable-playwright-mcp` on `claude` and `zai`, `read-only` and `low` deny every server tool named `browser_run_code*`, not only the two names known today, so a renamed variant of the code-execution tool is denied too. The rule is still by name.
+- A Playwright socket directory whose setup fails after it is created is removed at once instead of when codemux exits.
+
 ## [2.0.5] - 2026-11-21
 
 ### Fixed

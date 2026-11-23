@@ -143,6 +143,18 @@ describe("the Playwright socket directory", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  // Review of 2.0.5: a setup step that fails after the mkdir left the
+  // directory in /tmp until codemux exited.
+  test("a setup failure after the mkdir removes the directory at once and reports the failure", () => {
+    const root = mkdtempSync("/tmp/cmx-pwt-");
+    try {
+      const dir = reservePlaywrightSocketDir(root, () => { throw new Error("setup failed"); });
+      expect(() => dir.create()).toThrow("setup failed");
+      expect(existsSync(dir.path)).toBe(false);
+      expect(() => dir.finalize()).not.toThrow();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   for (const agent of ["claude", "zai"] as const) {
     test(`${agent}: prepareRun creates it, cleanup removes it, and a print-only launch creates nothing`, async () => {
       const f = fixture();

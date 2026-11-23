@@ -29,7 +29,7 @@ Upgrade from 2.0.3: codemux previously read the Keychain and copied a short-live
 
 ## Install
 
-The current release is 2.0.5; the
+The current release is 2.0.6; the
 [changelog](https://github.com/bindsch/codemux/blob/main/CHANGELOG.md) lists
 every earlier one. Normal execution uses the scode sandbox by default. Install
 scode and an authenticated harness before running a prompt. Homebrew installs
