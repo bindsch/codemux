@@ -26,6 +26,9 @@ export type CodexCostBinding = {
   command: string[];
   checks: readonly ExecutableCheck[];
   env: Record<string, string>;
+  /** The launch's probed client version, gating the version-conditional
+   * session config keys the cost read reuses. */
+  harnessVersion?: string | null;
   options: SessionSpawnOptions;
   onSignaled?: () => void | Promise<void>;
 };
@@ -75,15 +78,17 @@ export function codexNativeCostUsd(result: unknown, threadId: string): number | 
 }
 
 /** Reuse the exact exec binary and HOME prefix. Suppression overrides
- * disable startup extensions without changing its credential store. */
-export function codexCostCommand(command: readonly string[]): string[] {
+ * disable startup extensions without changing its credential store.
+ * `harnessVersion` gates the two config keys Codex 0.169.0 removed, the
+ * same rule the session spawn applies. */
+export function codexCostCommand(command: readonly string[], harnessVersion?: string | null): string[] {
   let binary = 0;
   if (command[0]?.endsWith("/env") || command[0] === "env") {
     binary = 1;
     while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(command[binary] ?? "")) binary++;
   }
   if (!command[binary] || !command.includes("exec", binary + 1)) throw new Error("Codex cost read requires its resolved exec command");
-  const flags = codexSessionConfigArgs({ hermetic: true, tools: "none" });
+  const flags = codexSessionConfigArgs({ hermetic: true, tools: "none", harnessVersion });
   const suppression: string[] = [];
   for (let i = 0; i < flags.length; i += 2) {
     if (!flags[i + 1]!.startsWith("cli_auth_credentials_store=")) suppression.push(flags[i]!, flags[i + 1]!);
@@ -123,7 +128,7 @@ export async function readCodexNativeCost(
     if (!child?.writeLine(JSON.stringify(value)).ok) finish(null);
   };
   try {
-    const pending = spawn(codexCostCommand(binding.command), binding.env, {
+    const pending = spawn(codexCostCommand(binding.command, binding.harnessVersion), binding.env, {
       ...binding.options, graceMs: COST_STOP_GRACE_MS,
       extraExecutableChecks: [...(binding.options.extraExecutableChecks ?? []), ...binding.checks],
       abandoned: () => finished || binding.options.abandoned?.() === true,

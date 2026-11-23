@@ -265,7 +265,8 @@ test("experiment flags disable every configurable native utility without changin
   const request: RunRequest = { agent: "codex", prompt: "fixture", cwd, model: "gpt-5.5",
     hermetic: true, tools: "none", autonomy: "read-only", experimentMcp: "synthetic-spec.json" };
   const adapter = new CodexAdapter({ HOME: home, CODEX_API_KEY: "synthetic" }, home);
-  const command = adapter.buildRunCommand(request);
+  // At 0.169.0 the two config keys Codex removed stay out of the argv.
+  const command = adapter.buildRunCommand(request, { harnessVersion: "0.169.0" });
   const start = command.indexOf("features.non_prefixed_mcp_tool_names=false") - 1;
   const flags = [
     "-c", "features.non_prefixed_mcp_tool_names=false",
@@ -273,7 +274,6 @@ test("experiment flags disable every configurable native utility without changin
     "--disable", "sleep_tool", "--disable", "send_message_to_user_async",
     "--disable", "request_permissions_tool", "--disable", "token_budget",
     "--disable", "deferred_executor", "--disable", "current_time_reminder",
-    "-c", "multi_agent_v2.disable_native_tools=true",
     "-c", "tools.update_plan.enabled=false",
     "-c", "tools.experimental_request_user_input.enabled=false",
   ];
@@ -281,10 +281,26 @@ test("experiment flags disable every configurable native utility without changin
   const disabled = command.flatMap((value, index) => value === "--disable" ? [command[index + 1]] : []);
   expect(disabled).toContain("multi_agent");
   expect(disabled).toContain("multi_agent_v2");
-  const ordinary = adapter.buildRunCommand({ ...request, experimentMcp: undefined });
+  const ordinary = adapter.buildRunCommand({ ...request, experimentMcp: undefined }, { harnessVersion: "0.169.0" });
   for (const value of flags.filter((value) => value !== "-c" && value !== "--disable")) {
     expect(ordinary).not.toContain(value);
   }
+  // Below the ceiling, and with no readable version, the two keys ride
+  // exactly as every audited release received them (codexDeadConfigFlags).
+  // This request takes both the no-tools and the experiment branches; each
+  // legacy key appears once, never one copy per branch (round 2).
+  for (const version of [undefined, "0.166.0"]) {
+    const legacy = adapter.buildRunCommand(request, version === undefined ? undefined : { harnessVersion: version });
+    const assignments = legacy.filter((_, index) => legacy[index - 1] === "-c");
+    expect(assignments).toContain("tools.view_image=false");
+    expect(assignments).toContain("multi_agent_v2.disable_native_tools=true");
+    expect(assignments.filter((value) => value === "tools.view_image=false")).toHaveLength(1);
+    expect(assignments.filter((value) => value === "multi_agent_v2.disable_native_tools=true")).toHaveLength(1);
+  }
+  expect(adapter.buildRunCommand(request, { harnessVersion: "0.169.0" }))
+    .not.toContain("tools.view_image=false");
+  expect(adapter.buildRunCommand(request, { harnessVersion: "0.169.0" }))
+    .not.toContain("multi_agent_v2.disable_native_tools=true");
 });
 
 test.each(["custom_tool_call", "function_call"])("rejects outside exec as unknown_tool for %s", (type) => {

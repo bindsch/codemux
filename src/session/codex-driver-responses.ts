@@ -165,7 +165,8 @@ export abstract class CodexDriverResponses extends CodexDriverSteer {
                 this.threadWireModel(),
                 this.threadHermetic(),
                 this.options.tools,
-                this.options.noToolsCatalog
+                this.options.noToolsCatalog,
+                this.options.harnessVersion
               )
             : buildThreadResumeRequest(
                 nextId,
@@ -175,7 +176,8 @@ export abstract class CodexDriverResponses extends CodexDriverSteer {
                 this.threadWireModel(),
                 this.threadHermetic(),
                 this.options.tools,
-                this.options.noToolsCatalog
+                this.options.noToolsCatalog,
+                this.options.harnessVersion
               )
       );
       return;

@@ -12,6 +12,7 @@ import {
   CODEX_PROJECT_SETTINGS_HERMETIC_FLAGS,
   LAST_MESSAGE_BASENAME,
   SCRATCH_PARENT_DIR_NAME,
+  codexDeadConfigFlags,
 } from "./codex-flags.js";
 import { writeCodexProjectSettingsConfig } from "../codex-project-settings.js";
 import { validateProjectSettingsRunRequest } from "../claude-project-settings.js";
@@ -87,6 +88,11 @@ export class CodexAdapter extends CodexPolicy {
         // linked auth.json through the file store like the probe does.
         cmd.push("-c", 'cli_auth_credentials_store="file"');
       }
+    }
+    // The two dead-at-0.169.0 config keys ride the no-tools and experiment
+    // branches; a request that takes both gets each key once, version-gated.
+    if (request.tools === "none" || request.experimentMcp) {
+      cmd.push(...codexDeadConfigFlags(context?.harnessVersion));
     }
     // The Playwright server rides the -c config-override channel, the one
     // MCP carrier codex has (codex-playwright-mcp.ts); the shared build

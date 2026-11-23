@@ -1,4 +1,4 @@
-import { CODEX_EXPERIMENT_FLAGS, CODEX_HERMETIC_FLAGS, CODEX_NO_TOOLS_FLAGS, CODEX_PROJECT_SETTINGS_HERMETIC_FLAGS } from "../adapters/codex-flags.js";
+import { CODEX_EXPERIMENT_FLAGS, CODEX_HERMETIC_FLAGS, CODEX_NO_TOOLS_FLAGS, CODEX_PROJECT_SETTINGS_HERMETIC_FLAGS, codexDeadConfigFlags } from "../adapters/codex-flags.js";
 import { UsageRefusalError } from "../validation.js";
 import type { AutonomyLevel } from "../types.js";
 import type { CodexSessionCatalog } from "./codex-catalog.js";
@@ -8,6 +8,11 @@ export interface CodexSessionSettings {
   projectSettings?: boolean;
   tools?: "none" | "default";
   noToolsCatalog?: CodexSessionCatalog | null;
+  /** The installed client version from the launch probe, gating the two
+   * config keys Codex 0.169.0 removed (codexDeadConfigFlags). Absent or
+   * null counts as below the ceiling: those keys are what every audited
+   * version accepted, and a dead key only warns. */
+  harnessVersion?: string | null;
 }
 
 export function validateCodexSessionTools(
@@ -44,18 +49,20 @@ export function codexSessionConfigArgs(settings: CodexSessionSettings): string[]
   const flags = settings.hermetic
     ? settings.projectSettings ? CODEX_PROJECT_SETTINGS_HERMETIC_FLAGS : CODEX_HERMETIC_FLAGS
     : [];
-  return [...configAssignments(flags), ...Object.entries(codexSessionToolConfig(settings.tools, settings.noToolsCatalog))
-    .map(([name, value]) => `${name}=${JSON.stringify(value)}`)].flatMap((assignment) => ["-c", assignment]);
+  return [...configAssignments(flags),
+    ...Object.entries(codexSessionToolConfig(settings.tools, settings.noToolsCatalog, settings.harnessVersion))
+      .map(([name, value]) => `${name}=${JSON.stringify(value)}`)].flatMap((assignment) => ["-c", assignment]);
 }
 
 /** Reapply tool selection on fresh and resumed threads. Writable sessions
  * use the same native catalog and flags as run; provider selection stays
  * in its existing config. MCP/tool combinations use the run gate. */
 export function codexSessionToolConfig(
-  tools: CodexSessionSettings["tools"], catalog?: Pick<CodexSessionCatalog, "path"> | null
+  tools: CodexSessionSettings["tools"], catalog?: Pick<CodexSessionCatalog, "path"> | null,
+  harnessVersion?: string | null
 ): Record<string, unknown> {
   if (tools !== "none") return {};
-  const flags = [...CODEX_NO_TOOLS_FLAGS, ...(catalog ? CODEX_EXPERIMENT_FLAGS : [])];
+  const flags = [...CODEX_NO_TOOLS_FLAGS, ...(catalog ? CODEX_EXPERIMENT_FLAGS : []), ...codexDeadConfigFlags(harnessVersion)];
   return { ...(catalog ? { model_catalog_json: catalog.path } : {}), ...Object.fromEntries(configAssignments(flags).map((assignment) => {
     const separator = assignment.indexOf("=");
     return [assignment.slice(0, separator), JSON.parse(assignment.slice(separator + 1)) as unknown];

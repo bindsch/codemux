@@ -206,3 +206,60 @@ for await (const line of createInterface({ input: process.stdin })) {
     for (const args of skip) await collectCodexNativeCost(...args, async () => { throw new Error("must not spawn"); });
   });
 });
+
+describe("the direct launch's cost binding", () => {
+  // The direct half of a launch builds its own cost binding; if it drops
+  // the probed version, a 0.169+ cost read sends the two config keys the
+  // client removed and warns about them again (review round 2, edges 5).
+  // A fake codex binary records every argv it is given, so the test reads
+  // the version gate off the cost read the launch actually spawned.
+  const fakeCodex = (): string => `#!/bin/sh
+printf '%s\\n' "$@" >> "$CODEMUX_COST_ARGV"
+if [ "$1" = "app-server" ]; then exit 0; fi
+printf '{"type":"thread.started","thread_id":"${THREAD}"}\\n'
+exit 0
+`;
+
+  test("the cost read is version-gated on the version the launch probed", async () => {
+    const { chmodSync, readFileSync, realpathSync: real } = await import("node:fs");
+    const { runDirect } = await import("../src/launch/direct.js");
+    const { CodexAdapter } = await import("../src/adapters/codex.js");
+    for (const version of ["0.166.0", "0.169.0"]) {
+      const root = real(mkdtempSync(join(import.meta.dir, "../scratch/fix/codex-cost-binding-")));
+      // The fake binary lives outside the execution working directory: a
+      // resolved binary inside it is refused outright.
+      const bin = join(root, "bin");
+      const work = join(root, "work");
+      mkdirSync(bin, { recursive: true });
+      mkdirSync(work, { recursive: true });
+      const binary = join(bin, "codex");
+      writeFileSync(binary, fakeCodex());
+      chmodSync(binary, 0o700);
+      const record = join(root, "argv.txt");
+      writeFileSync(record, "");
+      const adapter = new CodexAdapter({
+        HOME: root, PATH: `${bin}:/usr/bin:/bin`,
+        CODEMUX_COST_ARGV: record,
+      }, root);
+      const context: RunContext = { harnessVersion: version, stdoutSink: new CodexCostFold() };
+      const raw = await runDirect(adapter,
+        { agent: "codex", prompt: "fixture", cwd: work, passthroughEnv: ["CODEMUX_COST_ARGV"] },
+        context, async () => {});
+      expect(raw.success, JSON.stringify(raw)).toBe(true);
+      // The fake records one argument per line; the cost read's arguments
+      // follow its app-server marker.
+      const lines = readFileSync(record, "utf8").split("\n").filter((line) => line.trim() !== "");
+      const serverAt = lines.indexOf("app-server");
+      expect(serverAt).toBeGreaterThanOrEqual(0);
+      const costArgs = lines.slice(serverAt + 1);
+      if (version === "0.166.0") {
+        expect(costArgs).toContain("tools.view_image=false");
+        expect(costArgs).toContain("multi_agent_v2.disable_native_tools=true");
+      } else {
+        expect(costArgs).not.toContain("tools.view_image=false");
+        expect(costArgs).not.toContain("multi_agent_v2.disable_native_tools=true");
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

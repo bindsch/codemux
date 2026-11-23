@@ -72,6 +72,7 @@ test("a failed canary session reports its own error and end events, not quota wa
       JSON.stringify({ type: "session_ended", reason: "crash", exit_code: 1, harness_exit: { code: 1, signal: null } }),
       "not json",
     ].join("\n"),
+    assistantText: "",
   });
   // An oversized event leaves a marker instead of vanishing.
   const { keepFailureEventForTest } = await import("../src/hermetic-session-canary-driver.js");
@@ -83,13 +84,40 @@ test("a failed canary session reports its own error and end events, not quota wa
   keepFailureEventForTest(run, envelope("tool_call", { input: { type: "error" }, pad: "x".repeat(70 * 1024) }));
   expect(run.failureEvents).toHaveLength(1);
   // Events kept past the stdout cap win over the held stdout prefix.
-  expect(sessionFailureDetail({ stderr: "", stdout: "", failureEvents: [JSON.stringify({ type: "session_ended", reason: "crash", exit_code: 1 })] }))
+  expect(sessionFailureDetail({ stderr: "", stdout: "", failureEvents: [JSON.stringify({ type: "session_ended", reason: "crash", exit_code: 1 })], assistantText: "" }))
     .toEqual(['session ended: {"reason":"crash","exit_code":1}']);
   expect(detail).toEqual([
     "real stderr line",
     'session error: {"type":"error","message":"auth failed","code":"harness"}',
     'session ended: {"reason":"crash","exit_code":1,"harness_exit":{"code":1,"signal":null}}',
   ]);
+});
+
+test("a failed canary session's failure detail carries a trimmed copy of the answer", async () => {
+  const { sessionFailureDetail } = await import("../src/hermetic-session-canary-driver.js");
+  const answer = ["I'll call the bash tool with `gate`.", "", `CODEMUX-MCP-RESULT-marker ${"x".repeat(260)}`].join("\n\n");
+  const detail = sessionFailureDetail({ stderr: "", stdout: "", failureEvents: [], assistantText: answer });
+  const answerLine = detail.find((line) => line.startsWith("assistant answer: "))!;
+  // One line, whitespace collapsed, at most 200 characters of answer.
+  expect(answerLine).not.toContain("\n");
+  expect(answerLine.startsWith("assistant answer: I'll call the bash tool with `gate`. CODEMUX-MCP-RESULT-marker")).toBe(true);
+  expect(answerLine.length).toBeLessThanOrEqual("assistant answer: ".length + 200 + 3);
+  // An empty answer adds nothing.
+  expect(sessionFailureDetail({ stderr: "", stdout: "", failureEvents: [], assistantText: "  \n " })).toEqual([]);
+  // The answer is an eleventh line: it and the ten diagnostics all survive.
+  const event = (index: number) => JSON.stringify({ type: "error", message: `e${index}` });
+  const crowded = sessionFailureDetail({
+    stderr: "one\ntwo\nthree\nfour\n\n", stdout: "", failureEvents: Array.from({ length: 6 }, (_, i) => event(i + 1)),
+    assistantText: "the model's answer",
+  });
+  expect(crowded).toHaveLength(11);
+  expect(crowded[9]).toStartWith("session");
+  expect(crowded[crowded.length - 1]).toBe("assistant answer: the model's answer");
+  // Model-chosen control characters never reach the terminal raw.
+  const escaped = sessionFailureDetail({
+    stderr: "", stdout: "", failureEvents: [], assistantText: "before\u001b]0;painted\u0007after",
+  });
+  expect(escaped).toEqual(["assistant answer: before\\x1b]0;painted\\x07after"]);
 });
 
 test("the OpenCode caller-home canary carries the authenticated model preference once", async () => {

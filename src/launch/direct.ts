@@ -85,6 +85,10 @@ export async function runDirect(
   }));
   await collectCodexNativeCost(raw, request, context, {
     command, checks, env, onSignaled,
+    // The cost read reuses the session config keys, so it needs the same
+    // version gate the run itself used: without it a direct 0.169+ cost
+    // read sends the two removed keys and the client warns again.
+    harnessVersion: context.harnessVersion,
     options: { cwd, sandboxed: false, autonomy: request.autonomy ?? "read-only",
       envOmissions: adapter.getEnvOmissions() },
   }, adapter.providerOverrideActive());

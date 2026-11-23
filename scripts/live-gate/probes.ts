@@ -242,7 +242,19 @@ export function prepareExperimentProbe(
   }, null, 2)}\n`);
   return {
     path,
-    prompt: `Call the bash tool with command "gate", then reply with exactly the tool result text, nothing else.`,
+    prompt: [
+      'Call the bash tool with command "gate".',
+      // A chattier default model (codex 0.169.0's gpt-6-astra, 2026-11-23
+      // live gate) announced the call in a sentence before echoing the
+      // marker, which failed the strict reply check below. The check is
+      // the probe's point — the reply must be the delivered result text
+      // alone — so the prompt, not the verifier, carries the fix: the
+      // instruction names the failure mode and states the whole-reply
+      // boundary twice.
+      "Your entire reply must be exactly the tool result text and nothing else:",
+      "no sentence announcing the call, no explanation, no formatting.",
+      "The complete reply is the tool result text alone.",
+    ].join(" "),
   };
 }
 

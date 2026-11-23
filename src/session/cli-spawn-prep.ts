@@ -62,6 +62,7 @@ export async function prepareSessionChild({
   claudeBuilt,
   codexSessionHome,
   codexSessionCatalog = null,
+  harnessVersion,
   sessionProjectDir,
   sessionPrivateHome,
   agyRunContext,
@@ -85,6 +86,9 @@ export async function prepareSessionChild({
   claudeBuilt: ClaudeSessionBuilt | null;
   codexSessionHome: CodexSessionProviderHome | null;
   codexSessionCatalog?: CodexSessionCatalog | null;
+  /** The installed client version from the launch probe; codex sessions
+   * gate their version-conditional config keys on it. */
+  harnessVersion?: string | null;
   sessionProjectDir: ProjectSettingsSessionDir | null;
   sessionPrivateHome: SessionPrivateHome | null;
   agyRunContext?: RunContext;
@@ -154,7 +158,11 @@ export async function prepareSessionChild({
             // required --sandbox when the flag is on.
             [...(options.harnessHome === undefined ? [] : codexCallerHomeConfigArgs(override, model)), ...codexPlaywright.overrides],
             { hermetic: runLike.hermetic, projectSettings: runLike.experimentProjectSettings,
-              tools: runLike.tools, noToolsCatalog: codexSessionCatalog }
+              tools: runLike.tools, noToolsCatalog: codexSessionCatalog,
+              // The launch's own version probe gates the two config keys
+              // Codex 0.169.0 removed (codexDeadConfigFlags), on the spawn
+              // argv and on every thread/start the driver rebuilds.
+              harnessVersion }
           )
         : agentId === "agy"
           ? buildAgySessionCommand({

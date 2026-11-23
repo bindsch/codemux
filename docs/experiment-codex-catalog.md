@@ -87,13 +87,16 @@ restricted-name list follows. `--disable` names are feature keys.
 | `list_available_plugins_to_install`, `request_plugin_install` | `--disable tool_suggest`; hermetic flags also disable apps and plugins | 1409-1422 |
 | `apply_patch` | Set catalog `apply_patch_tool_type` to null | 1425-1427 |
 | `test_sync_tool` | No feature switch; its catalog entry fails the startup check | 1430-1436 |
-| `view_image` | `--disable view_image` and `-c tools.view_image=false` | 1439-1450 |
-| V1 `spawn_agent`, `send_input`, `resume_agent`, `wait_agent`, `close_agent`; V2 `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, `list_agents` | `--disable multi_agent --disable multi_agent_v2`, `-c multi_agent_v2.disable_native_tools=true`, and remove catalog `multi_agent_version` | 1455-1582; activation at 733-745 |
+| `view_image` | `--disable view_image`, plus `-c tools.view_image=false` on clients below 0.169.0 (Codex 0.169.0 removed the key and points at `features.view_image`, which the `--disable` flag already targets) | 1439-1450 |
+| V1 `spawn_agent`, `send_input`, `resume_agent`, `wait_agent`, `close_agent`; V2 `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, `list_agents` | `--disable multi_agent --disable multi_agent_v2`, `-c multi_agent_v2.disable_native_tools=true` on clients below 0.169.0 (the key does not exist there or above; `features.multi_agent_v2.*` has no such member), and remove catalog `multi_agent_version` | 1455-1582; activation at 733-745 |
 
 Model `multi_agent_version` can override feature selection. Removing it and
-setting `multi_agent_v2.disable_native_tools=true` closes both activation paths.
-Other existing switches disable `code_mode`, `code_mode_host`, `browser_use`,
-`computer_use`, and `image_generation`, and set `web_search="disabled"`.
+setting `multi_agent_v2.disable_native_tools=true` (clients below 0.169.0,
+where the key exists) closes both activation paths; above that ceiling the
+feature disables, the catalog sanitizer, and the startup inventory check
+carry the guarantee. Other existing switches disable `code_mode`,
+`code_mode_host`, `browser_use`, `computer_use`, and `image_generation`,
+and set `web_search="disabled"`.
 Hermetic flags also disable native app, plugin, memory, and goal sources.
 
 Before dispatching any `tools/call`, Codemux reads the first rollout

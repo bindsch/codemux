@@ -3,6 +3,8 @@
 // the working directory and the account would still contribute. A feature key
 // Codex no longer knows only logs a warning, so a removed key cannot break a
 // launch.
+import { compareVersions, parseVersionParts } from "../harness-compatibility.js";
+
 export const CODEX_HERMETIC_FLAGS = [
   // The login is the linked auth.json; the Keychain entry is keyed by the
   // real CODEX_HOME path and would not be found from the private one.
@@ -57,7 +59,8 @@ export const CODEX_PROJECT_SETTINGS_HERMETIC_FLAGS = [
 // pairs these flags with a sanitized model_catalog_json at writable
 // autonomy. At read-only autonomy the sandbox denies project writes.
 // The plan tool remains on that read-only path; it has no effect outside
-// the conversation.
+// the conversation. The two dead config keys below ride separately, gated
+// on the client version (codexDeadConfigFlags).
 export const CODEX_NO_TOOLS_FLAGS = [
   "--disable", "shell_tool",
   "--disable", "unified_exec",
@@ -70,7 +73,6 @@ export const CODEX_NO_TOOLS_FLAGS = [
   "--disable", "tool_suggest",
   // The top-level mode; a boolean `tools.web_search` is silently dropped.
   "-c", 'web_search="disabled"',
-  "-c", "tools.view_image=false",
 ] as const;
 
 // Disable configurable native tools. Catalog overrides also remove native-tool
@@ -85,10 +87,37 @@ export const CODEX_EXPERIMENT_FLAGS = [
   "--disable", "token_budget",
   "--disable", "deferred_executor",
   "--disable", "current_time_reminder",
-  "-c", "multi_agent_v2.disable_native_tools=true",
   "-c", "tools.update_plan.enabled=false",
   "-c", "tools.experimental_request_user_input.enabled=false",
 ] as const;
+
+// Codex 0.169.0 removed the two config-table keys the no-tools and
+// experiment flag sets used to carry, verified against the installed
+// 0.169.0 binary (2026-11-23 live
+// gate): it warns that both `-c` keys are ignored. `tools.view_image` is
+// gone ("Use [features].view_image" — the feature `--disable view_image`
+// already targets on every supported version), and `multi_agent_v2.*` moved
+// under `features.multi_agent_v2.*`, whose members include no
+// `disable_native_tools`, so no replacement spelling exists. Every audited
+// version (the 0.146.0 floor through the 0.166.0 ceiling) accepts both keys,
+// and the second one is load-bearing there: it closes the model-metadata
+// activation path the feature disables do not cover
+// (docs/experiment-codex-catalog.md). From 0.169.0 a no-tools launch rests
+// on the surviving `--disable` flags (and the catalog sanitizer at writable
+// autonomy); an experiment launch also has its fail-closed startup
+// inventory check.
+// An unknown or unreadable version counts as below the ceiling: those keys
+// are what every version codemux audited accepted, and a dead key only
+// warns.
+export const CODEX_DEAD_CONFIG_KEYS_CEILING = "0.169.0";
+
+export function codexDeadConfigFlags(version: string | null | undefined): string[] {
+  if (version !== null && version !== undefined && parseVersionParts(version) !== null &&
+      compareVersions(version, CODEX_DEAD_CONFIG_KEYS_CEILING) >= 0) {
+    return [];
+  }
+  return ["-c", "tools.view_image=false", "-c", "multi_agent_v2.disable_native_tools=true"];
+}
 
 // The file's name inside its per-run directory (or the private hermetic
 // home): the directory gives the run its uniqueness, so the file itself

@@ -239,6 +239,7 @@ export function registerSessionCommand(
             claudeBuilt,
             codexSessionHome,
             codexSessionCatalog,
+            harnessVersion: launch.harnessVersion,
             sessionProjectDir,
             sessionPrivateHome,
             agyRunContext: agyRun.context,

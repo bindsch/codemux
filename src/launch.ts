@@ -431,6 +431,7 @@ export async function launchRunRequest(
       redirectCheck,
       (command, checks, resolvedPolicy) => {
         if (adapter.id === "codex") codexCostBinding = { command, checks, env: envArg,
+          harnessVersion: runContext.harnessVersion,
           onSignaled: async () => {
             recordInterruption();
             try { await cleanup(); }

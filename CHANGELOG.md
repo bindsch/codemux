@@ -19,6 +19,8 @@ immutable notes and engineering evidence.
 
 - With `--enable-playwright-mcp` on `claude` and `zai`, `read-only` and `low` deny every server tool named `browser_run_code*`, not only the two names known today, so a renamed variant of the code-execution tool is denied too. The rule is still by name.
 - A Playwright socket directory whose setup fails after it is created is removed at once instead of when codemux exits.
+- Codex 0.169.0 no longer warns about two ignored `-c` keys. `tools.view_image` moved to `features.view_image` (which `--disable view_image` already targets) and `multi_agent_v2.disable_native_tools` no longer exists. Launches that sent them before (no-tools and experiment runs, no-tools sessions, and the native cost read) still send them to a client below 0.169.0, where they are accepted, and neither is sent to a client 0.169.0 or newer; an unreadable version counts as below the ceiling. Each key is carried once per launch: a run that takes both the no-tools and the experiment branches no longer sends it twice, and the direct launch's native cost read is gated on the version the launch probed, so it no longer sends the removed keys on 0.169+.
+- When a hermetic-session canary step fails on the answer text, its failure detail now carries a trimmed single-line copy (at most 200 characters) of the assistant's answer, so the next gate run records what the model actually returned. The answer keeps the detail's last entry — other lines cannot push it out of the ten-entry cap — and its control characters are escaped before printing.
 
 ## [2.0.5] - 2026-11-21
 
@@ -120,34 +122,15 @@ Staging conflicts now match uppercase and mixed-case hexadecimal names.
 
 - `--print-sandbox` preparation uses representative artifact paths without creating or sweeping harness state. This includes provider preflights, effort settings, private session homes, and TUI configuration. Strict runtime path canonicalization failures retain exit 64 in sessions.
 
-- `codemux complete serve|once`: brokered raw chat completions for
-  measurement harnesses that run their own agent loop. A loopback-only
-  OpenAI chat-completions server with a per-run bearer token forwards to
-  Anthropic (translated field for field, or refused), OpenAI, OpenRouter, or
-  an OpenAI-compatible endpoint. The API key comes only from a named
-  environment variable, and OAuth subscription tokens are refused; a
-  `--base-url` off the provider's own host needs `--key-env`. Every
-  `serve` request passes request and dollar caps priced from a dated table
-  (`src/complete/prices.ts`, checked against the provider pages on
-  2026-11-10) and writes a ledger row of kind `complete`; an answer whose
-  cost cannot be known stops the server. `once` sends one non-streaming
-  request without a dollar cap. Ambient proxy variables are ignored;
-  `--proxy` explicitly selects an HTTP(S) proxy for HTTPS upstreams.
-  A stop signal exits 143, a cap 0 after accepted responses drain.
-  See [complete](https://github.com/bindsch/codemux/blob/main/docs/complete.md).
-- `codemux calls --kind <kind>` filters by record kind;
-  `codemux calls --kind complete --sum` totals brokered completions, with
-  the price-table estimate on its own line.
+- `codemux complete serve|once`: brokered raw chat completions for measurement harnesses that run their own agent loop. A loopback-only OpenAI chat-completions server with a per-run bearer token forwards to Anthropic (translated field for field, or refused), OpenAI, OpenRouter, or an OpenAI-compatible endpoint. The API key comes only from a named environment variable, and OAuth subscription tokens are refused; a `--base-url` off the provider's own host needs `--key-env`. Every `serve` request passes request and dollar caps priced from a dated table (`src/complete/prices.ts`, checked against the provider pages on 2026-11-10) and writes a ledger row of kind `complete`; an answer whose cost cannot be known stops the server. `once` sends one non-streaming request without a dollar cap. Ambient proxy variables are ignored; `--proxy` explicitly selects an HTTP(S) proxy for HTTPS upstreams. A stop signal exits 143, a cap 0 after accepted responses drain. See [complete](https://github.com/bindsch/codemux/blob/main/docs/complete.md).
+- `codemux calls --kind <kind>` filters by record kind; `codemux calls --kind complete --sum` totals brokered completions, with the price-table estimate on its own line.
 
 ### Changed
 
 - `codemux session --shutdown-grace` defaults to 30 s, up from 10 s. Claude Code 2.1.317 sometimes needs over 10 s to exit after a completed turn, and a SIGTERM in that window left it hung until SIGKILL, so the session ended as a harness failure.
 - Version and capability probes preserve natural exit status until their configured deadline. Only a leader still running at that deadline can succeed from complete stdout, marked `stoppedAfterOutput: true`, before its whole process group is terminated. Cursor's version probe defaults to five seconds to bound its exit hang; other harnesses retain the 30-second default. Cursor model listings require their table footer. Incomplete output and capture errors remain failures. A leader's own signal or nonzero exit remains a failure when descendants retain its pipes.
 
-- `codemux session --harness-home` refuses with exit 64 a `--pass-env` name
-  the caller home sets or clears: `HOME`, `USERPROFILE`, the XDG roots, and
-  the agent's own redirects and flags, such as `CLAUDE_CONFIG_DIR`,
-  `CODEX_HOME`, and Goose's `GOOSE_DISABLE_KEYRING`. It used to replace the
+- `codemux session --harness-home` refuses with exit 64 a `--pass-env` name the caller home sets or clears: `HOME`, `USERPROFILE`, the XDG roots, and the agent's own redirects and flags, such as `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and Goose's `GOOSE_DISABLE_KEYRING`. It used to replace the
   caller's value without notice. `codemux check --hermetic --session`
   refuses the same names before its first session.
 

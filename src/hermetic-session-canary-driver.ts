@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { FORCE_KILL_DELAY_MS, signalProcess } from "./process-runner.js";
 import { createTerminationTarget } from "./process-tree.js";
 import { StreamMarkerScan } from "./stream-marker-scan.js";
+import { escapeForTerminal } from "./usage-protocol.js";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -287,8 +288,14 @@ function keepFailureEvent(run: Pick<SessionRun, "failureEvents">, line: string):
 
 /** What a failed canary session says about itself: its stderr without the
  * quota-gate warnings, then the session's own error and session_ended
- * events from stdout, which carry the cause when stderr has none. */
-export function sessionFailureDetail(run: Pick<SessionRun, "stderr" | "stdout" | "failureEvents">): string[] {
+ * events from stdout, which carry the cause when stderr has none, then a
+ * trimmed single-line copy of the assistant's answer — what the model
+ * actually came back with, which a failed answer-text verdict otherwise
+ * leaves unrecorded (the 2026-11-23 codex K failure). The answer is
+ * an extra line after the ten diagnostics, so neither displaces the other. The
+ * answer is model-chosen text, so its control characters are escaped
+ * before it reaches a terminal. */
+export function sessionFailureDetail(run: Pick<SessionRun, "stderr" | "stdout" | "failureEvents" | "assistantText">): string[] {
   const lines = run.stderr.split("\n").map((line) => line.trim())
     .filter((line) => line !== "" && !line.startsWith("Warning: quota gate:")).slice(0, 4);
   for (const line of run.failureEvents ?? run.stdout.split("\n")) {
@@ -303,7 +310,13 @@ export function sessionFailureDetail(run: Pick<SessionRun, "stderr" | "stdout" |
       lines.push(`session ended: ${JSON.stringify({ reason: event.reason, exit_code: event.exit_code, harness_exit: event.harness_exit })}`);
     }
   }
-  return lines.map((line) => line.length > 600 ? `${line.slice(0, 600)}...` : line).slice(0, 10);
+  // Escaped first, then cut: an escape expands a control character.
+  const answer = escapeForTerminal(run.assistantText.replace(/\s+/g, " ").trim()).slice(0, 200);
+  // The answer is an eleventh line, so it never displaces a diagnostic.
+  const kept = lines.slice(0, 10)
+    .map((line) => line.length > 600 ? `${line.slice(0, 600)}...` : line);
+  if (answer !== "") kept.push(`assistant answer: ${answer}`);
+  return kept;
 }
 
 /** Test seam for the bounded failure-event capture. */

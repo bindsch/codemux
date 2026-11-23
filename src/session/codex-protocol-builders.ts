@@ -190,9 +190,10 @@ function threadParams(
   model: string | undefined,
   hermetic: boolean,
   tools?: CodexSessionSettings["tools"],
-  catalog?: CodexSessionSettings["noToolsCatalog"]
+  catalog?: CodexSessionSettings["noToolsCatalog"],
+  harnessVersion?: string | null
 ): Record<string, unknown> {
-  const config = { ...(hermetic ? HERMETIC_PROJECT_DOC_CONFIG : {}), ...codexSessionToolConfig(tools, catalog) };
+  const config = { ...(hermetic ? HERMETIC_PROJECT_DOC_CONFIG : {}), ...codexSessionToolConfig(tools, catalog, harnessVersion) };
   return {
     cwd,
     sandbox: policy.sandbox,
@@ -209,9 +210,10 @@ export function buildThreadStartRequest(
   model?: string,
   hermetic?: boolean,
   tools?: CodexSessionSettings["tools"],
-  catalog?: CodexSessionSettings["noToolsCatalog"]
+  catalog?: CodexSessionSettings["noToolsCatalog"],
+  harnessVersion?: string | null
 ): string {
-  return request(id, "thread/start", threadParams(policy, cwd, model, hermetic === true, tools, catalog));
+  return request(id, "thread/start", threadParams(policy, cwd, model, hermetic === true, tools, catalog, harnessVersion));
 }
 
 export function buildThreadResumeRequest(
@@ -222,12 +224,13 @@ export function buildThreadResumeRequest(
   model?: string,
   hermetic?: boolean,
   tools?: CodexSessionSettings["tools"],
-  catalog?: CodexSessionSettings["noToolsCatalog"]
+  catalog?: CodexSessionSettings["noToolsCatalog"],
+  harnessVersion?: string | null
 ): string {
   return request(
     id,
     "thread/resume",
-    { threadId, ...threadParams(policy, cwd, model, hermetic === true, tools, catalog) }
+    { threadId, ...threadParams(policy, cwd, model, hermetic === true, tools, catalog, harnessVersion) }
   );
 }
 

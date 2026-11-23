@@ -53,6 +53,28 @@ describe("Codex session parity carriers", () => {
     });
   });
 
+  test("the two config keys Codex 0.169.0 removed ride only below that ceiling", () => {
+    // No version, or an unparsable one, counts as below the ceiling: those
+    // keys are what every audited release accepted, and a dead key only
+    // warns (codexDeadConfigFlags).
+    for (const version of [undefined, null, "not-a-version", "0.166.0"]) {
+      const config = codexSessionToolConfig("none", null, version);
+      expect(config["tools.view_image"]).toBe(false);
+      expect(config["multi_agent_v2.disable_native_tools"]).toBe(true);
+    }
+    for (const version of ["0.169.0", "0.170.1"]) {
+      const config = codexSessionToolConfig("none", null, version);
+      expect(config).not.toHaveProperty("tools.view_image");
+      expect(config).not.toHaveProperty("multi_agent_v2.disable_native_tools");
+      // The spawn argv of a tools-none session carries no dead key either;
+      // a plain session never carried one.
+      const argv = buildCodexSessionCommand([], [], { tools: "none", hermetic: true, harnessVersion: version });
+      expect(argv).not.toContain("tools.view_image=false");
+      expect(argv).not.toContain("multi_agent_v2.disable_native_tools=true");
+      expect(buildCodexSessionCommand([], [], { harnessVersion: "0.169.0" }).join(" ")).not.toContain("view_image");
+    }
+  });
+
   for (const resume of [false, true]) {
     test(`tools none is reapplied on ${resume ? "resumed" : "fresh"} threads with hermetic config`, async () => {
       const session = await startAndWait({
