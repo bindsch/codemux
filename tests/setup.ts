@@ -3,6 +3,7 @@
  * Neither an operator's CALL_LOG nor an inherited TEST_LEDGER may redirect
  * test receipts outside this process's fresh temporary directory.
  */
+import { linkAccountKeychain } from "../src/darwin-keychain-home.js";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +22,10 @@ delete process.env.CODEMUX_CALL_LOG;
 process.env.CODEMUX_TEST_LEDGER = join(dir, "calls.jsonl");
 process.env.HOME = dir;
 process.env.USERPROFILE = dir;
+// A harness binary a test starts with this HOME (the installed contracts run
+// the real ones) must find a default keychain there on macOS: without it, a
+// keychain store would show a dialog on the screen (src/darwin-keychain-home.ts).
+linkAccountKeychain(dir);
 for (const [name, suffix] of Object.entries({ XDG_CONFIG_HOME: ".config", XDG_DATA_HOME: ".local/share",
   XDG_STATE_HOME: ".local/state", XDG_CACHE_HOME: ".cache" })) process.env[name] = join(dir, suffix);
 // In-process launch-command tests must not consult the operator's real

@@ -48,6 +48,7 @@ bun link
 
 Install [scode](https://github.com/bindsch/scode) separately and put it on PATH.
 Normal `run`, `tui`, `check`, and `session` execution is sandboxed.
+On macOS a sandboxed launch requires scode 0.6.11 or newer.
 See [conditional scode requirements](autonomy-and-sandboxing.md#conditional-scode-requirements).
 Install and authenticate the selected harness separately; codemux does not
 install it or provision provider accounts.

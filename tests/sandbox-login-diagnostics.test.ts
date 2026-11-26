@@ -13,7 +13,7 @@ test.each(["claude", "agy"] as const)("%s run reports the unavailable grant befo
   mkdirSync(cwd, { recursive: true });
   const frame = agent === "claude" ? { type: "result", is_error: true, result: "Not logged in" }
     : { event: "result", result: { status: "ERROR", error: "authentication failed or timed out", response: "" } };
-  const fake = createFakeBinaryEnv({ scode, [agent]: `cat >/dev/null\nprintf '%s\\n' '${JSON.stringify(frame)}'\nexit 1` }, "0.6.8");
+  const fake = createFakeBinaryEnv({ scode, [agent]: `cat >/dev/null\nprintf '%s\\n' '${JSON.stringify(frame)}'\nexit 1` }, "0.6.11");
   try {
     for (const flags of [[], ["--sandbox-no-login-store"], ["--sandbox-login-store"]]) {
       const result = await runCli(["run", "-a", agent, "--sandbox", "--cwd", cwd, "--no-quota-gate", "-p", "synthetic", ...flags],
@@ -30,7 +30,7 @@ test.each(["claude", "agy"] as const)("%s session emits one initial notice and o
   const home = join(root, `${agent}-session`), cwd = join(home, "work");
   mkdirSync(cwd, { recursive: true });
   const fixture = join(import.meta.dir, "fixtures/live", `fake-${agent}-session.ts`);
-  const fake = createFakeBinaryEnv({ scode, [agent]: `exec bun '${fixture}' "$@"` }, "0.6.8");
+  const fake = createFakeBinaryEnv({ scode, [agent]: `exec bun '${fixture}' "$@"` }, "0.6.11");
   try {
     const result = await runCli(["session", "-a", agent, "--sandbox", "--cwd", cwd, "--no-quota-gate", "--shutdown-grace", "1",
       "--pass-env", "FAKE_STATE_DIR,FAKE_DIAGNOSTIC_TEXT,FAKE_DIAGNOSTIC_FAILED"], {

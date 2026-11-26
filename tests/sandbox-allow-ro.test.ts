@@ -10,6 +10,10 @@ import { resolveSessionSandboxSpawn } from "../src/session/spawn.js";
 import { verifiedScodeCommand, verifiedScodeFeatures } from "../src/verify-scode.js";
 import { strictLaunchFailureExitCode } from "../src/sandbox-command.js";
 import { minimalPath, runCli } from "./helpers/cli.js";
+import { useLinuxScodeFloors } from "./helpers/scode-platform.js";
+
+// This file exercises scode versions below 0.6.11, which a macOS launch refuses.
+useLinuxScodeFloors();
 
 const root = realpathSync(mkdtempSync(join(import.meta.dir, "../scratch/allow-ro-")));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -125,7 +129,12 @@ for (const version of ["0.6.6", "0.6.7"] as const) {
       ...f.env, PATH: `${bin}:${f.env.PATH}:${minimalPath()}`,
     }, { cwd });
     expect(result.exitCode, result.stderr).toBe(0);
-    if (version === "0.6.6") {
+    if (process.platform === "darwin") {
+      // The child codemux applies the host's floor: on macOS both versions
+      // are below 0.6.11, and the preview rows carry the launch refusal.
+      expect(result.stdout).toContain(`Unavailable: scode ${version} is too old; 0.6.11 or newer is required on macOS`);
+      expect(result.stdout).not.toContain("--allow-ro");
+    } else if (version === "0.6.6") {
       expect(result.stdout).toContain("Unavailable: strict sandbox cannot read env-wrapped executable");
       expect(result.stdout).not.toContain("--allow-ro");
     } else {

@@ -46,7 +46,7 @@ Record those gaps. No model prompt is part of the gate.
 
 The owner must run this gate on the release machine before tagging:
 
-Native-authentication probes explicitly pass `--sandbox-login-store`, including check canaries and the print-only policy preview. Provider-override probes H/H2 do not request it. Both login-store options are accepted by check canaries; other canary sandbox policy overrides remain restricted. Configuration that denies the login store still wins over the gate's opt-in.
+Native-authentication probes explicitly pass `--sandbox-login-store`, including check canaries and the print-only policy preview. Provider-override probes H/H2 do not request it. Both login-store options are accepted by check canaries; other canary sandbox policy overrides remain restricted. In the Antigravity session canaries the child codemux and its scode run with a scratch HOME whose `Library/Keychains` is a link, and scode 0.6.11 declines the grant there: the keychain services are denied, so those sessions show no dialog and use the file token or an API key, never a Keychain login. Configuration that denies the login store still wins over the gate's opt-in.
 
 ```sh
 make live-gate
@@ -117,7 +117,8 @@ live checks; offline coverage cannot establish what appeared on the screen.
 Scode 0.6.8 is the minimum for zero scode-owned credential commands. It removed
 credential synchronization and retains `--no-credential-sync` as a no-op.
 Its name-based `--keep-env` handling preserves an exported empty
-`CLAUDE_SECURESTORAGE_CONFIG_DIR`. CI pins scode v0.6.8; the changelog records the pinned commit.
+`CLAUDE_SECURESTORAGE_CONFIG_DIR`. CI pins scode v0.6.11; the changelog records the pinned commit.
+That pin is the Linux runner's source build. On macOS every sandboxed launch requires scode 0.6.11 or newer (it denies the keychain services to a sandbox without the login-store grant), so the macOS runner's Homebrew scode and the release machine's scode must be 0.6.11 or newer before the gate runs.
 
 An opted-in macOS launch with an existing security preference file requires scode 0.6.7+ for `--allow-ro`; older versions refuse instead of granting writable preference access. Offline tests must cover this refusal and omission of the preference grant when the file is absent.
 

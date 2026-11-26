@@ -7,6 +7,7 @@
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import { spawnSyncGuarded } from "../src/guarded-spawn.js";
 
 const CHECKOUT = resolve(import.meta.dir, "..");
 
@@ -117,7 +118,7 @@ export function verifyInstalledCommands(layout: InstalledLayout, version: string
   for (const command of commands) {
     let result: Bun.SyncSubprocess<"pipe", "pipe">;
     try {
-      result = Bun.spawnSync([binary, ...command.args], {
+      result = spawnSyncGuarded([binary, ...command.args], {
         cwd: layout.prefix,
         env: { ...process.env, PATH: "/usr/bin:/bin" },
         stdout: "pipe", stderr: "pipe",

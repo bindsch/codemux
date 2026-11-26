@@ -27,7 +27,7 @@ describe("CLI - --enable-playwright-mcp on the Claude family", () => {
     test(`${agent} run refuses --no-web beside the browser, and a relative PLAYWRIGHT_BROWSERS_PATH, with exit 64`, async () => {
       // Review of 2.0.5: the browser fetched what --no-web denies, and a
       // relative browsers path was granted as the default directory.
-      const fake = createFakeBinaryEnv({ claude: CLAUDE, scode: "exit 9", "playwright-mcp": PLAYWRIGHT }, "0.6.8");
+      const fake = createFakeBinaryEnv({ claude: CLAUDE, scode: "exit 9", "playwright-mcp": PLAYWRIGHT }, "0.6.11");
       try {
         const run = ["run", "-a", agent, "--enable-playwright-mcp", "--print-sandbox", "-p", "test"];
         const env = { ...fake.env, ZAI_API_KEY: "synthetic" };
@@ -42,7 +42,7 @@ describe("CLI - --enable-playwright-mcp on the Claude family", () => {
     });
 
     test(`${agent} run --print-sandbox names the socket directory everywhere and creates nothing`, async () => {
-      const fake = createFakeBinaryEnv({ claude: CLAUDE, scode: "exit 9", "playwright-mcp": PLAYWRIGHT }, "0.6.8");
+      const fake = createFakeBinaryEnv({ claude: CLAUDE, scode: "exit 9", "playwright-mcp": PLAYWRIGHT }, "0.6.11");
       try {
         const { stdout, stderr, exitCode } = await runCli(
           ["run", "-a", agent, "--enable-playwright-mcp", "--print-sandbox", "-p", "test"],
@@ -76,7 +76,7 @@ d=$(grep -m1 '^/tmp/cmx-pw-' '${record}/argv')
 ls -ld "$d" > '${record}/stat' 2>&1
 cat >/dev/null
 exit 0`,
-    }, "0.6.8");
+    }, "0.6.11");
     try {
       await runCli(["run", "-a", "claude", "--enable-playwright-mcp", "-p", "test"], fake.env);
       const argv = readFileSync(join(record, "argv"), "utf8");
@@ -94,7 +94,7 @@ exit 0`,
   test("the browser install directory is granted, and a --sandbox-block over a grant is refused with exit 64", async () => {
     const browsers = mkdtempSync(join(tmpdir(), "codemux-pw-browsers-"));
     mkdirSync(join(browsers, "chromium"));
-    const fake = createFakeBinaryEnv({ claude: CLAUDE, scode: "exit 9", "playwright-mcp": PLAYWRIGHT }, "0.6.8");
+    const fake = createFakeBinaryEnv({ claude: CLAUDE, scode: "exit 9", "playwright-mcp": PLAYWRIGHT }, "0.6.11");
     const env = { ...fake.env, PLAYWRIGHT_BROWSERS_PATH: browsers };
     // The variable reaches the child, and so the grant, only when passed through.
     const run = ["run", "-a", "claude", "--enable-playwright-mcp", "--print-sandbox", "--pass-env", "PLAYWRIGHT_BROWSERS_PATH", "-p", "test"];
@@ -126,7 +126,7 @@ exit 0`,
   });
 
   test("tui --print-sandbox keeps the browser visible, grants the socket directory, and creates nothing", async () => {
-    const fake = createFakeBinaryEnv({ claude: CLAUDE, scode: "exit 9", "playwright-mcp": PLAYWRIGHT }, "0.6.8");
+    const fake = createFakeBinaryEnv({ claude: CLAUDE, scode: "exit 9", "playwright-mcp": PLAYWRIGHT }, "0.6.11");
     try {
       const { stdout, exitCode } = await runCli(["tui", "-a", "claude", "--enable-playwright-mcp", "--print-sandbox"], fake.env);
       expect(exitCode).toBe(0);
@@ -139,7 +139,7 @@ exit 0`,
   });
 
   test("session --print-sandbox is headless, grants the socket directory, and creates nothing", async () => {
-    const fake = createFakeBinaryEnv({ claude: CLAUDE, scode: "exit 9", "playwright-mcp": PLAYWRIGHT }, "0.6.8");
+    const fake = createFakeBinaryEnv({ claude: CLAUDE, scode: "exit 9", "playwright-mcp": PLAYWRIGHT }, "0.6.11");
     try {
       const { stdout, exitCode } = await runCli(
         ["session", "-a", "claude", "--auto", "low", "--enable-playwright-mcp", "--print-sandbox"], fake.env);
@@ -164,7 +164,7 @@ for a in "$@"; do printf '%s\\n' "$a"; done > '${record}/argv'
 d=$(grep -m1 '^/tmp/cmx-pw-' '${record}/argv')
 ls -ld "$d" > '${record}/stat' 2>&1
 exit 0`,
-    }, "0.6.8");
+    }, "0.6.11");
     try {
       await runCli(["session", "-a", "claude", "--auto", "low", "--enable-playwright-mcp"], fake.env, { stdin: "" });
       const argv = readFileSync(join(record, "argv"), "utf8");

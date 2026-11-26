@@ -6,6 +6,7 @@ import { createCodexSessionProviderHome, openCodexSessionProviderHome, codexSess
 import { openProjectSettingsSessionConfigDir } from "../src/claude-project-config.js";
 import { openOpenCodeSessionHome } from "../src/session/opencode-home.js";
 import { treeSnapshot } from "./helpers/tree-snapshot.js";
+import { linkAccountKeychain } from "../src/darwin-keychain-home.js";
 import { runSessionCommand } from "./helpers/session-command.js";
 
 const root = mkdtempSync(join(import.meta.dir, "../scratch/session-home-preview-"));
@@ -105,6 +106,11 @@ for (const agent of ["codex", "claude", "opencode", "pi", "droid", "cline", "gem
   test(`${agent} session provider preflight and preview leave the tree unchanged`, async () => {
     const home = join(root, `cli-${agent}`), cwd = join(home, "project");
     mkdirSync(cwd, { recursive: true }); mkdirSync(join(cwd, ".git"));
+    // The preflight runs the harness binary with `--version` under this
+    // stand-in operator HOME. It is not the account home, so on macOS that
+    // spawn links the keychain directory into it (an operator's real home
+    // needs no link). It is linked here, before the snapshot.
+    linkAccountKeychain(home);
     const before = treeSnapshot(home), prefix = `CODEMUX_${agent.toUpperCase()}_PROVIDER_`;
     const result = await runSessionCommand(["-a", agent, "--sandbox", "--sandbox-scrub-env", "--print-sandbox", "--cwd", cwd], {
       [agent]: `if [ "$1" = "--version" ]; then echo '${agent === "codex" ? "codex-cli 0.166.0" : "99.0.0"}'; exit 0; fi\nexit 99`,

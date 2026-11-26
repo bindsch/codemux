@@ -38,6 +38,18 @@ generates a random nonce, sets `CODEMUX_TEST_NO_QUOTA_GATE` to it, and
 mirrors it on `globalThis.__codemuxTestNoQuotaGate`; the gate honors the
 variable only when the two match, so the variable alone — exported by an
 operator or leaked into a child — disables nothing.
+On macOS the preload also links the account's keychain directory into the
+temporary HOME (`linkAccountKeychain`, the function every private home gets),
+so a harness binary a test starts there finds a default keychain and cannot
+make macOS show a keychain dialog. No test stores to or reads from a keychain:
+`tests/darwin-keychain-resolution.test.ts`,
+`tests/darwin-keychain-preferences.test.ts` and
+`tests/keychain-home-builders.test.ts` only ask Security.framework which
+keychain is the default one, and the fake harness fixtures default to scode
+0.6.11, the macOS launch floor. `tests/guarded-spawn-scan.test.ts` fails when a
+file under `src/` or `scripts/` starts a process outside
+`src/guarded-spawn.ts`; a fixed system tool is added to that test's list with
+its reason.
 `bunfig.toml` sets `[test] root = "tests"`, so a bare `bun test` never
 discovers test files outside `tests/` (a probe once left under
 `scratch/` was counted by a plain `bun test` run before this). Discovery

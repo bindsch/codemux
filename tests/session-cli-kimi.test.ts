@@ -249,7 +249,13 @@ describe("CLI - kimi sessions", () => {
     );
     writeFileSync(
       join(binDir, "scode"),
-      "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then sleep 0.3; exit 1; fi\nexit 1\n"
+      // On macOS the launch gate reads the version once before the session
+      // starts (the floor is checked before any harness probe); that first
+      // probe is answered. Every later one, the turn's, stalls and fails.
+      // Elsewhere there is no early probe, and every probe stalls and fails.
+      process.platform === "darwin"
+        ? `#!/bin/sh\nif [ "$1" = "--version" ]; then\n  if [ ! -e '${binDir}/probed' ]; then : > '${binDir}/probed'; echo 'scode 0.6.11'; exit 0; fi\n  sleep 0.3; exit 1\nfi\nexit 1\n`
+        : "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then sleep 0.3; exit 1; fi\nexit 1\n"
     );
     chmodSync(join(binDir, "kimi"), 0o755);
     chmodSync(join(binDir, "scode"), 0o755);

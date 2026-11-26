@@ -84,6 +84,7 @@ With scode 0.6.7+, executable exceptions use exact-file `--allow-ro` grants. Str
 | Launch or feature | Requirement |
 | --- | --- |
 | Ordinary sandboxed launch | General scode minimum 0.2.0. |
+| Any sandboxed launch on macOS | Scode 0.6.11 or newer. It denies the Mach services a keychain or authorization dialog is requested through (`com.apple.authd`, the security agent names, and `com.apple.securityd.xpc`) whenever the login-store grant is not applied, so a sandboxed harness cannot make macOS show a keychain dialog. Older versions refuse before any harness process starts; see [private homes and the macOS default keychain](isolation.md#private-homes-and-the-macos-default-keychain). |
 | Native login-store policy | Scode 0.6.8+ receives `--login-store` when the grant is effective, otherwise `--no-login-store`. Older scode receives neither flag. The grant is off by default. |
 | Opted-in macOS launch with an existing `Library/Preferences/com.apple.security.plist` | Requires scode 0.6.7+ for `--allow-ro`. Older versions refuse the launch; codemux never falls back to a writable preference grant. |
 | `--sandbox-strict` | The flag exists in scode 0.2.0. Live runtime grants were checked against scode 0.6.5 on macOS; accepting the flag does not certify a harness or customization. |

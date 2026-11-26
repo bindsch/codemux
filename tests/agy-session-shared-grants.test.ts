@@ -33,7 +33,7 @@ function fixture() {
   const fake = createFakeBinaryEnv({
     scode: 'while [ "$1" != "--" ]; do shift; done; shift; exec "$@"',
     agy: `if [ "$1" = "--version" ]; then printf '1.5.9\n'; exit 0; fi\nexit 90`,
-  }, "0.6.8");
+  }, "0.6.11");
   cleanup.push(fake.cleanup);
   return { home, cwd, state: join(home, ".gemini"), env: { ...fake.env, HOME: home, GEMINI_API_KEY: "", GOOGLE_API_KEY: "" } };
 }

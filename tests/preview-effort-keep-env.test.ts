@@ -5,6 +5,7 @@ import { AGENT_IDS, getAdapter } from "../src/adapters/index.js";
 import { REASONING_EFFORT_LEVELS, type ReasoningEffort } from "../src/types.js";
 import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
 import { treeSnapshot } from "./helpers/tree-snapshot.js";
+import { linkAccountKeychain } from "../src/darwin-keychain-home.js";
 
 const root = realpathSync(mkdtempSync(join(import.meta.dir, "../scratch/preview-effort-env-")));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -43,6 +44,12 @@ for (const agent of AGENT_IDS) {
           ...(agent === "opencode" ? ["--model", "provider/model"] : []),
           ...(effort === undefined ? [] : ["--effort", effort]), ...(mode === "run" ? ["-p", "unused"] : [])];
         try {
+          // The preview runs the harness binary with `--version` under this
+          // stand-in operator HOME, which is not the account home, so on macOS
+          // that spawn links the keychain directory into it. Linked up front, so the
+          // snapshot shows that the preview adds nothing beyond that documented
+          // link (asserted by itself in darwin-keychain-home.test.ts).
+          linkAccountKeychain(home);
           const before = treeSnapshot(home);
           const preview = await runCli([...args, "--print-sandbox"], env);
           expect(treeSnapshot(home)).toEqual(before);

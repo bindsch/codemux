@@ -1,3 +1,4 @@
+import { nativeLoginPaths } from "../src/native-login-paths.js";
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { applyHarnessHomeSandboxBlocks, harnessHomeBlockedPaths } from "../src/launch/harness-home-sandbox.js";
@@ -57,7 +58,10 @@ test("a Claude harness-home grants native lock paths only with the login-store o
   const options: SandboxOptions = { agentId: "claude", loginStore: true };
   applyHarnessHomeSandboxBlocks(options, privateHome, [join(process.cwd(), "scratch/fix/operator/.claude")]);
   const argv = buildScodeCommand(["/usr/bin/synthetic"], undefined, "read-only", options);
-  const nativePaths = process.platform === "darwin" ? claudeLoginPaths(process.env) : [];
+  // On macOS the suite's HOME holds the keychain directory link (tests/setup.ts),
+  // so the opt-in also grants it, as it does for an operator's real home.
+  const nativePaths = process.platform === "darwin"
+    ? [...nativeLoginPaths(process.env.HOME!).filter((path) => path.endsWith("/Library/Keychains")), ...claudeLoginPaths(process.env)] : [];
   const allows = argv.flatMap((arg, index) => arg === "--allow" ? [argv[index + 1]] : []);
   expect(allows).toEqual([privateHome, ...nativePaths]);
 });

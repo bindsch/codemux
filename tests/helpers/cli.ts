@@ -120,7 +120,9 @@ export function createRunFakeBinaryEnv(
 
 export function createFakeBinaryEnv(
   binaries: Record<string, string>,
-  scodeVersion = "0.6.0"
+  // The macOS launch floor (scode 0.6.11 denies the keychain services), so the
+  // default fake passes the version gate on every platform.
+  scodeVersion = "0.6.11"
 ): { env: Record<string, string>; cleanup: () => void } {
   const binDir = mkdtempSync(join(tmpdir(), "codemux-cli-bin-"));
   const apiKeyLogin = Boolean(binaries.agy);

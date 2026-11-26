@@ -22,7 +22,11 @@ async function withScode<T>(version: string, keepEnv: boolean,
   const bin = join(dir, "bin"), workdir = join(dir, "work"), argvFile = join(dir, "argv.txt"), envFile = join(dir, "env.txt");
   mkdirSync(bin); mkdirSync(workdir);
   const help = keepEnv ? "echo '  --keep-env NAME[,NAME...]  keep named variables under --scrub-env'" : "true";
-  writeFileSync(join(bin, "scode"), `#!/bin/sh\nif [ "$1" = --version ]; then echo 'scode ${version}'; exit 0; fi\n` +
+  // macOS launches refuse scode older than 0.6.11 (the keychain-services floor),
+  // so the fake reports that version there. What these tests vary is the
+  // --keep-env line of --help, which is probed and not read from the version.
+  const reported = process.platform === "darwin" ? "0.6.11" : version;
+  writeFileSync(join(bin, "scode"), `#!/bin/sh\nif [ "$1" = --version ]; then echo 'scode ${reported}'; exit 0; fi\n` +
     `if [ "$1" = --help ]; then echo 'Usage: scode [options] command'; ${help}; exit 0; fi\n` +
     `printf '%s\\n' "$@" > '${argvFile}'\nprintf '%s' "\${${SELECTOR}-unset}" > '${envFile}'\n` +
     `while [ "$1" != -- ]; do shift; done\nshift\nexec "$@"\n`);

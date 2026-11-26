@@ -1,3 +1,4 @@
+import { linkAccountKeychain } from "../darwin-keychain-home.js";
 import { BaseAdapter, type RunContext } from "./base.js";
 import { claudeLoginAdvice } from "../claude-login-advice.js";
 import { canonicalSandboxBlockPath } from "../session/registry/format.js";
@@ -180,6 +181,12 @@ export class AgyAdapter extends BaseAdapter {
       if (usesOperatorLogin(policy, this.buildExecutionEnv(injectedEnv, request.passthroughEnv))) {
         linkAgyLogin(home, this.environment.HOME || homedir());
       }
+      // Both login routes: the API-key route gets no file token link, but its
+      // HOME must still resolve a default keychain (darwin-keychain-home.ts).
+      // A run's private home exists only under the sandbox, which passes
+      // --no-login-store on that route: scode 0.6.11 then denies the keychain
+      // services, so the key alone still selects authentication.
+      linkAccountKeychain(home);
       if (shareState) {
         const grantCommands = request.autonomy === "medium";
         // Share entries individually; an unused token must never become a link.

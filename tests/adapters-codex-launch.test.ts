@@ -16,6 +16,13 @@ import { BaseAdapter } from "../src/adapters/base.js";
 import type { RunContext } from "../src/adapters/base.js";
 import type { AdapterCapabilities, RunRequest } from "../src/types.js";
 
+import { useLinuxScodeFloors } from "./helpers/scode-platform.js";
+
+// These launches run in process against a mocked or absent sandbox runner,
+// with no scode on PATH; the macOS floor would refuse them before the code
+// under test runs.
+useLinuxScodeFloors();
+
 describe("CodexAdapter", () => {
   test("a rejected launch cleans up only its own context, never a live run's", async () => {
     // Round15's major finding, both halves. A launch that rejects BEFORE

@@ -210,7 +210,7 @@ if [ "$1" = "--version" ]; then printf '2026.08.11\\n'; exit 0; fi
 printf '{"type":"result","subtype":"success","result":"%s"}\\n' "$AGENT_CLI_CREDENTIAL_STORE"
 `, { mode: 0o700 });
     writeFileSync(join(bin, "scode"), `#!/bin/sh
-if [ "$1" = "--version" ]; then printf 'scode 0.6.0\\n'; exit 0; fi
+if [ "$1" = "--version" ]; then printf 'scode 0.6.11\\n'; exit 0; fi
 while [ "$1" != "--" ]; do shift; done
 shift
 exec "$@"

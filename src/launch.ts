@@ -3,7 +3,8 @@ import type { CopilotAdapter } from "./adapters/copilot.js";
 import { sandboxLoginUnavailable } from "./sandbox-login-policy.js";
 import { join } from "node:path";
 import { applyAgyIsolationSandboxBlocks } from "./launch/agy-isolation-sandbox.js";
-import { assertCompatibleScode, launchRedirectCheck, resolveScodeExecutableForEnv, runSandboxedWithStdin } from "./cli-runtime.js";
+import { launchRedirectCheck, runSandboxedWithStdin } from "./cli-runtime.js";
+import { assertEarlyScodeFloor } from "./launch/scode-floor.js";
 import { foldedSinkUsage } from "./plain-unwrap.js";
 import { ExperimentFailure, experimentFailure } from "./experiment-records.js";
 import { experimentFailedResult } from "./result-envelope/experiment.js";
@@ -356,16 +357,9 @@ export async function launchRunRequest(
     // Probe the same binaries and environment that the sandbox runner resolves.
     // The floor comes from SCODE_FLOORS, the table doctor reads, so a launch
     // refusal and the SANDBOX-TOO-OLD row cannot disagree on the number.
-    const scodeFloorForAgent = SCODE_FLOORS[request.agent];
-    if (scodeFloorForAgent !== undefined) {
-      const cwd = effectiveWorkingDirectory(options.cwd);
-      const scode = resolveScodeExecutableForEnv(envArg, cwd);
-      if (!scode) throw new Error(`every sandboxed ${request.agent} run requires scode ${scodeFloorForAgent} or newer`);
-      try { await assertCompatibleScode(scode, cwd, envArg, scodeFloorForAgent); }
-      catch (error) {
-        throw new Error(`every sandboxed ${request.agent} run requires scode ${scodeFloorForAgent} or newer: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
+    // On macOS every agent has a floor (0.6.11), checked here, before the
+    // experiment server or any harness probe starts (scode-floor.ts).
+    await assertEarlyScodeFloor(request.agent, SCODE_FLOORS[request.agent], envArg, effectiveWorkingDirectory(options.cwd));
     await prepareExperimentRuns(adapter, request, options, context, envArg);
     // The override question reads the ADAPTER's environment view, not
     // process.env: a custom-environment launch must decide on the same

@@ -25,6 +25,12 @@ const binary = (agent: string) => agent === "zai" ? "claude" : agent === "cursor
 const fixtureBinary = (version: string) =>
   `case "$1" in --version|--binary-version) printf '%s\\n' '${version}'; exit 0;; esac\nexit 99`;
 
+// The strict refusal of env-wrapped executables belongs to scode before
+// 0.6.7. A macOS launch requires 0.6.11, so that refusal is reachable only
+// off macOS; on macOS the same previews print with exact-file grants.
+const OLD_SCODE = process.platform !== "darwin";
+const SCODE_VERSION = OLD_SCODE ? "0.6.0" : "0.6.11";
+
 describe.each([...AGENT_IDS])("%s strict sandbox parity", (agent) => {
   test.each(["run", "session", "tui", "check"] as const)("%s prints --strict with existing policy intact", async (mode) => {
     const dir = join(root, `${agent}-${mode}`), home = join(dir, "home"), cwd = join(dir, "project");
@@ -36,12 +42,12 @@ describe.each([...AGENT_IDS])("%s strict sandbox parity", (agent) => {
       XDG_CACHE_HOME: join(home, ".cache"), ZAI_API_KEY: "synthetic" };
     const flags = ["-a", agent, "--sandbox", "--sandbox-strict", "--sandbox-trust", "trusted",
       "--sandbox-no-net", "--sandbox-block", join(home, "unrelated"), "--cwd", cwd, "--print-sandbox"];
-    const fake = createFakeBinaryEnv(binaries);
+    const fake = createFakeBinaryEnv(binaries, SCODE_VERSION);
     try {
       const result = mode === "session"
-        ? await runSessionCommand(flags, binaries, { env })
+        ? await runSessionCommand(flags, binaries, { env, scodeVersion: SCODE_VERSION })
         : await runCli([mode, ...flags, ...(mode === "run" ? ["-p", "unused preview"] : [])], { ...fake.env, ...env });
-      if ((agent === "agy" && mode !== "tui") || (agent === "cline" && mode === "session")) {
+      if (OLD_SCODE && ((agent === "agy" && mode !== "tui") || (agent === "cline" && mode === "session"))) {
         expect(result.exitCode, result.stderr).toBe(64);
         expect(result.stderr).toContain("strict sandbox cannot read env-wrapped executable");
         expect(result.stderr).not.toContain("harness state directory");
@@ -71,7 +77,14 @@ test("hermetic OpenCode session reaches the nested-executable refusal, not its o
   mkdirSync(home); mkdirSync(cwd);
   const result = await runSessionCommand(["-a", "opencode", "--hermetic", "--sandbox", "--sandbox-strict",
     "--cwd", cwd, "--print-sandbox"], { opencode: fixtureBinary(versions.opencode), scode: "exit 99" },
-    { env: { HOME: home, XDG_DATA_HOME: join(home, "data"), XDG_STATE_HOME: join(home, "state") } });
+    { env: { HOME: home, XDG_DATA_HOME: join(home, "data"), XDG_STATE_HOME: join(home, "state") }, scodeVersion: SCODE_VERSION });
+  if (!OLD_SCODE) {
+    // scode 0.6.11 grants the executable read-only by exact path; neither refusal applies.
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toContain("--allow-ro");
+    expect(result.stderr).not.toContain("--sandbox-block");
+    return;
+  }
   expect(result.exitCode, result.stderr).toBe(64);
   expect(result.stderr).toContain("env-wrapped executable");
   expect(result.stderr).toContain("opencode");

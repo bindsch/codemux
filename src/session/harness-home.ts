@@ -1,3 +1,4 @@
+import { linkAccountKeychain } from "../darwin-keychain-home.js";
 import { chmodSync, linkSync, lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, symlinkSync, type Stats } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { UsageRefusalError } from "../validation.js";
@@ -393,6 +394,8 @@ export function openCallerHarnessHome(input: {
       for (const mirror of recipe.mirrors ?? []) writeMirror(mirror);
       for (const login of recipe.logins) linkHarnessLogin(login.source, login.destination, login.required);
     }
+    // After agy's own link: the child's HOME must resolve a default keychain.
+    linkAccountKeychain(environment.HOME!);
     prepared = true;
   };
   verify();

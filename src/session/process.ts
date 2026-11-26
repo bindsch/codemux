@@ -1,12 +1,9 @@
-import {
-  createTerminationTarget,
-  rememberDescendants,
-  waitForDescendantsGrace,
-  type TerminationTarget,
-} from "../process-tree.js";
+import { createTerminationTarget, rememberDescendants, waitForDescendantsGrace, type TerminationTarget } from "../process-tree.js";
 import { readProcessTable } from "../process-table.js";
 import { signalProcess } from "../process-runner.js";
 import { assertExecutablesUnchanged } from "../executable-security.js";
+import { spawnGuarded } from "../guarded-spawn.js";
+import { precheckChildKeychainHomes } from "../darwin-keychain-home.js";
 import type { SessionChildOutcome } from "./process-outcome.js";
 import { SessionWriter, type WriteLineResult } from "./process-outbound.js";
 import { excerptOf, type SessionFatal } from "./process-fatal.js";
@@ -150,13 +147,16 @@ export class SessionProcess {
     this.onStdoutEnd = options.onStdoutEnd;
     this.onFatal = options.onFatal;
     const useProcessGroup = process.platform !== "win32";
+    // The keychain-home check runs before the executable re-check, so no file
+    // work sits between that re-check and the spawn (the spawn repeats it at no cost).
+    precheckChildKeychainHomes(options.command, options.env, options.cwd);
     assertExecutablesUnchanged(
       options.command,
       "session command",
       options.executableChecks?.requiredPaths,
       options.executableChecks?.checks
     );
-    this.proc = Bun.spawn(options.command, {
+    this.proc = spawnGuarded(options.command, {
       cwd: options.cwd,
       stdout: "pipe",
       // Passed through, as `run` passes it: the harness's own diagnostics

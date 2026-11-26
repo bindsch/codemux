@@ -10,6 +10,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runSandboxed } from "../src/cli-runtime.js";
+import { useLinuxScodeFloors } from "./helpers/scode-platform.js";
+
+// This file exercises scode versions below 0.6.11, which a macOS launch refuses.
+useLinuxScodeFloors();
 
 describe("CLI runtime sandbox accounting sinks", () => {
   test("refuses accounting when the capability probe itself fails", async () => {

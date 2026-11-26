@@ -7,6 +7,7 @@
  * --openai-logging-dir captures provider requests before native display
  * truncation. qwen-experiment-content.ts verifies those requests.
  */
+import { linkAccountKeychain } from "./darwin-keychain-home.js";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { runDirectoryPrefix } from "./run-directory-owner.js";
 import { join } from "node:path";
@@ -98,6 +99,7 @@ export class QwenExperimentRun implements StdoutSink {
       ? "openai" : "qwen-oauth";
     try {
       chmodSync(this.home, 0o700);
+      linkAccountKeychain(this.home); // darwin-keychain-home.ts: the child's HOME is this home
       mkdirSync(this.logs, { mode: 0o700 });
       writeFileSync(settings, JSON.stringify({ model, tools: { toolSearch: { enabled: false } } }), { mode: 0o600, flag: "wx" });
       writeFileSync(defaults, "{}", { mode: 0o600, flag: "wx" });

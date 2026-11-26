@@ -292,6 +292,7 @@ test("cline plants its caller skill under .cline and operator rules under .agent
     for (const name of ["CLINE_DIR", "CLINE_DATA_DIR", "CLINE_PROVIDER_SETTINGS_PATH"]) expect(plant.env[name]).toBeUndefined();
     // The provider override is cline's credential; it rides the environment.
     expect(plant.env.CODEMUX_CLINE_PROVIDER_MODEL).toBe("fixture-model");
-    expect(readdirSync(plant.operatorHome)).toEqual([".agents"]);
+    // "Library" is the keychain directory link a scratch HOME gets on macOS.
+    expect(readdirSync(plant.operatorHome).filter((name) => name !== "Library")).toEqual([".agents"]);
   } finally { plant.cleanup(); rmSync(root, { recursive: true, force: true }); }
 });

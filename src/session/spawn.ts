@@ -11,6 +11,7 @@
  * environment this builds match `run`'s for the same request.
  */
 
+import { guardChildKeychainHomes } from "../darwin-keychain-home.js";
 import {
   assertCompatibleScode,
   assertNoProjectScodePolicy,
@@ -194,6 +195,15 @@ export async function spawnSessionChild(
   ) {
     throw new Error("session command produced an invalid command");
   }
+  // Every HOME the session child runs under (a fresh or resumed private
+  // home, a caller's --harness-home) resolves a default keychain before any
+  // probe runs; SessionProcess repeats the check at the spawn itself.
+  // The check can add a link to that home, so the two refusals that must
+  // come before any change run first: a spawn that was abandoned, and a
+  // caller-owned home that fails its integrity check.
+  refuseAbandonedSpawn(options);
+  options.validateBeforeSpawn?.();
+  guardChildKeychainHomes(command, env, workdir);
   if (options.sandboxed) {
     const { scodeCmd, sandboxEnv, executablePin, programIndex } = await resolveSessionSandboxSpawn(
       command,

@@ -3,9 +3,11 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSy
 import { dirname, join } from "node:path";
 import { UsageRefusalError } from "../src/validation.js";
 import { setup, cleanupAgyIsolation } from "./helpers/agy-isolation-setup.js";
-import { populateAgySessionPrivateHome, verifyAgySessionPrivateHome, settledAgyHarnessHome } from "../src/session/agy-private-home.js";
+import { AGY_KEYCHAIN_REACHABLE, noticeAgyKeychainReachable, populateAgySessionPrivateHome, verifyAgySessionPrivateHome, settledAgyHarnessHome } from "../src/session/agy-private-home.js";
 import { AGY_FILE_TOKEN, AGY_NATIVE_PATHS, agyLoginPaths, linkAgyLogin } from "../src/agy-auth.js";
 import { buildScodeCommand } from "../src/sandbox.js";
+import { accountHome } from "../src/account-home.js";
+import { accountHasLoginKeychain } from "./helpers/keychain-home.js";
 afterEach(cleanupAgyIsolation);
 
 function fixture() {
@@ -14,6 +16,9 @@ function fixture() {
   const privateHome = join(home, "private");
   mkdirSync(privateHome);
   mkdirSync(join(source, "Library/Keychains"), { recursive: true });
+  // An empty file with the login keychain's name: a private home must resolve
+  // a default keychain through its link (src/darwin-keychain-home.ts).
+  writeFileSync(join(source, "Library/Keychains/login.keychain-db"), "");
   mkdirSync(join(source, "Library/Preferences"), { recursive: true });
   mkdirSync(join(source, ".gemini/antigravity-cli"), { recursive: true });
   writeFileSync(join(source, AGY_NATIVE_PATHS[1]), "synthetic preferences");
@@ -61,7 +66,11 @@ test("a real file or directory at a link's place refuses by name and is never de
     if (relative === AGY_FILE_TOKEN) {
       mkdirSync(dirname(own), { recursive: true });
       writeFileSync(own, "the home's own login");
-    } else mkdirSync(own, { recursive: true });
+    } else {
+      // A directory with its own content; an empty one is replaced (next test).
+      mkdirSync(own, { recursive: true });
+      writeFileSync(join(own, "own.keychain-db"), "the home's own keychain");
+    }
     let thrown: unknown;
     try { linkAgyLogin(privateHome, source, "darwin"); } catch (error) { thrown = error; }
     expect(thrown).toBeInstanceOf(UsageRefusalError);
@@ -72,13 +81,121 @@ test("a real file or directory at a link's place refuses by name and is never de
   }
 });
 
+test("an empty Keychains directory in the home is replaced by the link, as for every private home", () => {
+  // docs/isolation.md promises it; agy's own link step ran first and refused the directory.
+  const { source, privateHome } = fixture();
+  mkdirSync(join(privateHome, AGY_NATIVE_PATHS[0]), { recursive: true });
+  linkAgyLogin(privateHome, source, "darwin");
+  expect(readlinkSync(join(privateHome, AGY_NATIVE_PATHS[0]))).toBe(join(source, AGY_NATIVE_PATHS[0]));
+  // The file token's place gets no such treatment: a directory there still refuses.
+  const other = fixture();
+  mkdirSync(join(other.privateHome, AGY_FILE_TOKEN), { recursive: true });
+  expect(() => linkAgyLogin(other.privateHome, other.source, "darwin")).toThrow(UsageRefusalError);
+});
+
+test("a token link must name the source path itself; only the Keychains directory may match by target (review round 5)", () => {
+  // The source token is a link. A destination link straight to its current
+  // target would stay on the old credential when the source is retargeted.
+  const { source, privateHome } = fixture();
+  const real = join(source, "real-token");
+  writeFileSync(real, "synthetic token");
+  rmSync(join(source, AGY_FILE_TOKEN));
+  symlinkSync(real, join(source, AGY_FILE_TOKEN));
+  mkdirSync(dirname(join(privateHome, AGY_FILE_TOKEN)), { recursive: true });
+  symlinkSync(real, join(privateHome, AGY_FILE_TOKEN));
+  expect(() => linkAgyLogin(privateHome, source, "darwin")).toThrow(/already links somewhere other than/);
+  // The Keychains directory under another spelling of the same directory passes.
+  const other = fixture();
+  const alias = join(dirname(other.source), "operator-alias");
+  symlinkSync(other.source, alias);
+  mkdirSync(join(other.privateHome, "Library"));
+  symlinkSync(join(alias, AGY_NATIVE_PATHS[0]), join(other.privateHome, AGY_NATIVE_PATHS[0]));
+  linkAgyLogin(other.privateHome, other.source, "darwin");
+  // The preference file gets the same allowance (review round 11): codemux
+  // links the account's file, which is the same file under another name.
+  const third = fixture();
+  const aliased = join(dirname(third.source), "operator-alias-2");
+  symlinkSync(third.source, aliased);
+  mkdirSync(join(third.privateHome, "Library", "Preferences"), { recursive: true });
+  symlinkSync(join(aliased, AGY_NATIVE_PATHS[1]), join(third.privateHome, AGY_NATIVE_PATHS[1]));
+  linkAgyLogin(third.privateHome, third.source, "darwin");
+});
+
+test("a resume replaces an empty Keychains directory left where the link was; one with content still refuses (review round 7)", () => {
+  const { source, privateHome, options } = fixture();
+  populateAgySessionPrivateHome(privateHome, { ...options, platform: "darwin" });
+  const link = join(privateHome, AGY_NATIVE_PATHS[0]);
+  rmSync(link);
+  mkdirSync(link);
+  expect(verifyAgySessionPrivateHome(privateHome, { ...options, platform: "darwin" })).toBe("native");
+  expect(readlinkSync(link)).toBe(join(source, AGY_NATIVE_PATHS[0]));
+  rmSync(link);
+  mkdirSync(link);
+  writeFileSync(join(link, "own.keychain-db"), "");
+  expect(() => verifyAgySessionPrivateHome(privateHome, { ...options, platform: "darwin" })).toThrow("login link was replaced");
+});
+
+test("a resume never removes a directory outside the home when Library became a link (review round 11)", () => {
+  const { privateHome, options } = fixture();
+  populateAgySessionPrivateHome(privateHome, { ...options, platform: "darwin" });
+  const outside = join(dirname(privateHome), "outside-library");
+  mkdirSync(join(outside, "Keychains"), { recursive: true });
+  rmSync(join(privateHome, "Library"), { recursive: true });
+  symlinkSync(outside, join(privateHome, "Library"));
+  expect(() => verifyAgySessionPrivateHome(privateHome, { ...options, platform: "darwin" })).toThrow(UsageRefusalError);
+  expect(existsSync(join(outside, "Keychains"))).toBe(true);
+});
+
+test("a native session resumed unsandboxed with an API key now set prints the Keychain notice (review round 22)", () => {
+  const { privateHome, options } = fixture();
+  populateAgySessionPrivateHome(privateHome, { ...options, platform: "darwin" });
+  const written: string[] = [];
+  const original = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array): boolean => { written.push(String(chunk)); return true; }) as typeof process.stderr.write;
+  try {
+    const withKey = { ...options, platform: "darwin" as const, sandboxed: false, environment: { ...options.environment, GEMINI_API_KEY: "k" } };
+    expect(verifyAgySessionPrivateHome(privateHome, withKey)).toBe("native");
+    expect(written.join("")).toContain(AGY_KEYCHAIN_REACHABLE);
+    written.length = 0;
+    expect(verifyAgySessionPrivateHome(privateHome, { ...options, platform: "darwin", sandboxed: false })).toBe("native");
+    expect(written.join("")).not.toContain(AGY_KEYCHAIN_REACHABLE);
+  } finally { process.stderr.write = original; }
+});
+
+test("an unsandboxed API-key session says that the Keychain is reachable; a sandboxed one and the native arm do not", () => {
+  const lines: string[] = [];
+  const write = (line: string): void => { lines.push(line); };
+  const { source, privateHome } = fixture();
+  // The stand-in operator home resolves a login keychain, like a linked private home.
+  noticeAgyKeychainReachable(source, false, "darwin", write);
+  expect(lines).toEqual([`Info: ${AGY_KEYCHAIN_REACHABLE}`]);
+  expect(AGY_KEYCHAIN_REACHABLE).toContain("Keychain is reachable");
+  noticeAgyKeychainReachable(source, true, "darwin", write);
+  noticeAgyKeychainReachable(source, undefined, "darwin", write);
+  noticeAgyKeychainReachable(source, false, "linux", write);
+  noticeAgyKeychainReachable(privateHome, false, "darwin", write); // nothing resolves there: nothing to say
+  expect(lines).toHaveLength(1);
+});
+
 test("an API-key session home links no native login", () => {
   const { privateHome, options } = fixture();
-  const withKey = { ...options, platform: "darwin" as const, environment: { ...options.environment, GEMINI_API_KEY: "synthetic" } };
+  // The host's platform: on macOS the builder links the real account's
+  // keychain directory, which only exists there.
+  const withKey = { ...options, platform: process.platform, environment: { ...options.environment, GEMINI_API_KEY: "synthetic" } };
   expect(populateAgySessionPrivateHome(privateHome, withKey)).toBe("api-key");
-  for (const relative of [...AGY_NATIVE_PATHS, AGY_FILE_TOKEN]) {
-    expect(lstatSync(join(privateHome, relative), { throwIfNoEntry: false })).toBeUndefined();
+  // No path to the operator's login: no file token, and nothing that names
+  // the operator HOME this session was started from.
+  expect(lstatSync(join(privateHome, AGY_FILE_TOKEN), { throwIfNoEntry: false })).toBeUndefined();
+  for (const relative of AGY_NATIVE_PATHS) {
+    const entry = lstatSync(join(privateHome, relative), { throwIfNoEntry: false });
+    // On macOS the home holds the keychain directory link every private
+    // home gets, to the account's directory (src/darwin-keychain-home.ts).
+    // It selects no login, and the API-key sandbox gets --no-login-store.
+    if (entry === undefined) continue;
+    expect(accountHasLoginKeychain()).toBe(true);
+    expect(readlinkSync(join(privateHome, relative))).toBe(join(accountHome()!, relative));
   }
+  expect(existsSync(join(privateHome, AGY_NATIVE_PATHS[0]))).toBe(accountHasLoginKeychain());
 });
 
 test("sessions populate and resume their live login without requiring an API key", () => {

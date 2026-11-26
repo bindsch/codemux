@@ -33,6 +33,7 @@
  * must not decide whether the shared binary replaces itself.
  */
 
+import { linkAccountKeychain } from "./darwin-keychain-home.js";
 import {
   chmodSync,
   linkSync,
@@ -145,6 +146,7 @@ export function createDroidHermeticHome(
   trackPrivateDir(hook);
 
   try {
+    linkAccountKeychain(home); // darwin-keychain-home.ts: the child's HOME is this home
     mkdirSync(brandHome, { mode: 0o700 });
     chmodSync(brandHome, 0o700); // the mode is stated whatever the umask is
     let stat;

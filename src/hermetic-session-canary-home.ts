@@ -1,3 +1,4 @@
+import { linkAccountKeychain } from "./darwin-keychain-home.js";
 import { copyFileSync, chmodSync, constants, existsSync, linkSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -145,6 +146,9 @@ export function plantHarnessHomeCanary(
     if (agent === "zai") {
       env.ZAI_API_KEY = new ZaiAdapter(environment).getEnv().ANTHROPIC_AUTH_TOKEN;
     }
+    // The child codemux runs with the scratch operator HOME (Claude on macOS
+    // keeps the real one); it links the caller home itself.
+    if (env.HOME === operatorHome) linkAccountKeychain(operatorHome);
     const plant = { cwd, home, operatorHome, operatorMarker, skillMarker, skillPath, env, cleanup };
     seedHarnessHomeCanary(agent, plant, authenticatedHome);
     return plant;

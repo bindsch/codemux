@@ -6,13 +6,16 @@ import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
 
-function fixture(scodeVersion = "0.6.0") {
+function fixture(scodeVersion = "0.6.11") {
   const home = mkdtempSync(resolve("scratch/fix/agy-session-login-"));
   cleanup.push(() => rmSync(home, { recursive: true, force: true }));
   const cwd = join(home, "work");
   mkdirSync(cwd);
   mkdirSync(join(home, "Library/Keychains"), { recursive: true });
   writeFileSync(join(home, "Library/Keychains/synthetic-login"), "not a keychain");
+  // An empty file with the login keychain's name: the launch check requires
+  // a HOME through which a default keychain resolves (src/darwin-keychain-home.ts).
+  writeFileSync(join(home, "Library/Keychains/login.keychain-db"), "");
   const fake = createFakeBinaryEnv({
     scode: 'while [ "$1" != "--" ]; do shift; done; shift; exec "$@"',
     agy: `if [ "$1" = "--version" ]; then printf '1.5.9\n'; exit 0; fi
@@ -49,7 +52,7 @@ test("plain sandboxed agy sessions prepare the run login, preserve transcripts, 
 });
 
 test.each([false, true])("plain agy session preview creates no login or conversation directory; strict=%s", async (strict) => {
-  const f = fixture(strict ? "0.6.7" : "0.6.0");
+  const f = fixture();
   const result = await runCli(["session", "-a", "agy", "--cwd", f.cwd, "--print-sandbox",
     ...(strict ? ["--sandbox-strict"] : [])], f.env);
   expect(result.exitCode, result.stderr).toBe(0);

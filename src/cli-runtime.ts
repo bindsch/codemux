@@ -11,6 +11,10 @@ import { escapeArgvForPrint } from "./usage-protocol.js";
 import { assertCompatibleScode, assertNoProjectScodePolicy, assertScodeSupportsAccounting, resolveKeepEnvSandboxOptions, resolveScodeExecutable, resolveScodeExecutableForEnv, warnIfSinkInsideWorkdir } from "./cli-runtime/scode.js";
 import { scodeSupportsAllowRo, scodeSupportsAllowStaged, scodeSupportsNoCredentialSync, scodeSupportsNoLoginStore } from "./cli-runtime/scode.js";
 import { reportSandboxLoginStore } from "./sandbox-login-notice.js";
+import { spawnGuarded } from "./guarded-spawn.js";
+import { guardChildKeychainHomes, precheckChildKeychainHomes } from "./darwin-keychain-home.js";
+import { assertEarlyScodeFloor } from "./launch/scode-floor.js";
+import { SCODE_FLOORS } from "./harness-contracts.js";
 
 export {
   SCODE_MINIMUM_VERSION,
@@ -22,6 +26,7 @@ export {
   resolveScodeExecutable,
   resolveScodeExecutableForEnv,
   assertCompatibleScode,
+  scodeLaunchFloor,
   assertScodeKeepEnvSupport,
   assertNoProjectScodePolicy,
 } from "./cli-runtime/scode.js";
@@ -148,6 +153,10 @@ export async function assertHarnessSupported(
 ): Promise<string | null> {
   const workdir = validateWorkingDirectory(cwd) ?? process.cwd();
   const environment = extraEnv ?? process.env as Record<string, string>;
+  // A sandboxed launch checks scode's floor before the harness is probed,
+  // on every path that reaches this gate (run, tui, session): an scode
+  // that would be refused must be refused before any harness process starts.
+  if (sandboxed) await assertEarlyScodeFloor(agent, SCODE_FLOORS[agent], environment, workdir);
   const binary = Bun.which(binaryName, { PATH: environment.PATH ?? "" });
   if (!binary) return null;
   // The one place that decides what the version probe runs with, chosen because it is the only
@@ -282,6 +291,8 @@ export async function runSandboxed(
     process.stdout.write(`${scodeCmd.map(escapeArgvForPrint).join("\n")}\n`);
     return 0;
   }
+  // The harness command by its own argv, whatever the scode executable is named.
+  guardChildKeychainHomes(resolvedCommand, extraEnv ?? process.env, workdir);
 
   // The resolved command's own trust-checked positions are required, so
   // a recording gap refuses the spawn instead of skipping the re-check
@@ -295,6 +306,9 @@ export async function runSandboxed(
   // replaced scode would let this one exec bytes it never probed. The
   // nested executable joins the same pin (review round 110).
   return withKimiPrivateState(command, env, workdir, async () => {
+  // The keychain-home check runs before the executable re-check, so no file
+  // work sits between that re-check and the spawn (the spawn repeats it at no cost).
+  precheckChildKeychainHomes(scodeCmd, env, workdir);
   assertExecutablesUnchanged(scodeCmd, "sandbox command", [
     ...trustCheckedCommandPaths(resolvedCommand),
     scode,
@@ -307,7 +321,7 @@ export async function runSandboxed(
   // orphan the sandbox child. The non-interactive branch keeps its plain
   // wait and never installs handlers, as before.
   const spawnSandboxChild = (): ReturnType<typeof Bun.spawn> =>
-    Bun.spawn(scodeCmd, {
+    spawnGuarded(scodeCmd, {
       cwd: workdir,
       stdout: "inherit",
       stderr: "inherit",
@@ -409,6 +423,8 @@ export async function runSandboxedWithStdin(
     process.stdout.write(`${scodeCmd.map(escapeArgvForPrint).join("\n")}\n`);
     return { stdout: "", stderr: "", exitCode: 0, success: true };
   }
+  // The harness command by its own argv, whatever the scode executable is named.
+  guardChildKeychainHomes(resolvedCommand, extraEnv ?? process.env, workdir);
   onResolvedCommand?.(resolvedCommand,
     [...trustCheckedCommandChecks(resolvedCommand), ...(carriedScodeCheck === null ? [] : [carriedScodeCheck])],
     effectiveSandboxOptions);

@@ -29,6 +29,7 @@
  * the harness's own state covers it.
  */
 
+import { linkAccountKeychain } from "./darwin-keychain-home.js";
 import { chmodSync, mkdtempSync } from "node:fs";
 import { runDirectoryPrefix } from "./run-directory-owner.js";
 import { prepareRunDirParent } from "./hermetic-home.js";
@@ -59,5 +60,7 @@ export function createAiderHermeticHome(sourceAiderDir: string, printOnly = fals
   const hook = reportingHook(finalize);
   process.once("exit", hook);
   trackPrivateDir(hook);
+  // The child's HOME is this home (darwin-keychain-home.ts).
+  try { linkAccountKeychain(home); } catch (error) { finalize(); throw error; }
   return { home, finalize };
 }

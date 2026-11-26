@@ -12,6 +12,10 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSessionChild } from "../src/session/spawn.js";
+import { useLinuxScodeFloors } from "./helpers/scode-platform.js";
+
+// This file exercises scode versions below 0.6.11, which a macOS launch refuses.
+useLinuxScodeFloors();
 
 const REFUSAL = "the session spawn was abandoned before its process started";
 const HOOKS = { onLine: () => {}, onFatal: () => {} };
@@ -33,6 +37,15 @@ describe("spawnSessionChild's abandonment gate", () => {
         spawnSessionChild(command, env, { cwd: workDir, sandboxed: false, autonomy: "high", abandoned: () => true }, HOOKS)
       ).rejects.toThrow(REFUSAL);
       await Bun.sleep(150);
+      expect(existsSync(marker)).toBe(false);
+      // Nothing was added to the home either: the refusal comes before the
+      // keychain link, and so does a failed integrity check (review round 12).
+      expect(existsSync(join(dir, "Library"))).toBe(false);
+      await expect(
+        spawnSessionChild(command, env, { cwd: workDir, sandboxed: false, autonomy: "high",
+          validateBeforeSpawn: () => { throw new Error("home failed its integrity check"); } }, HOOKS)
+      ).rejects.toThrow("home failed its integrity check");
+      expect(existsSync(join(dir, "Library"))).toBe(false);
       expect(existsSync(marker)).toBe(false);
       // The same spawn, not abandoned, runs: the marker proves the probe.
       const proc = await spawnSessionChild(

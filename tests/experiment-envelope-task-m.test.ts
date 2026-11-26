@@ -15,6 +15,13 @@ import type { RunContext } from "../src/run-context.js";
 import type { RunRequest, RunResult } from "../src/types.js";
 import { kimiResumeHint } from "./fixtures/kimi-stream.js";
 
+import { useLinuxScodeFloors } from "./helpers/scode-platform.js";
+
+// These launches run in process against a mocked or absent sandbox runner,
+// with no scode on PATH; the macOS floor would refuse them before the code
+// under test runs.
+useLinuxScodeFloors();
+
 const complete = (stdout: string): RunResult => ({ stdout, stderr: "native diagnostic", exitCode: 0, success: true });
 const parent = resolve("scratch/session-14c66a93/exp/envelope-task-m");
 

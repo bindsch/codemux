@@ -2,12 +2,30 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 
 // The account home from the password database, never from HOME. Bun's
-// os.userInfo().homedir returns HOME, so this mirrors scode 0.6.6's own
-// lookup: dscl on macOS, /etc/passwd by uid on Linux.
+// os.userInfo().homedir returns HOME, so this reads what scode 0.6.6 reads:
+// dscl on macOS, /etc/passwd by uid on Linux.
 
 let cached: string | null | undefined;
+let cachedForScode: string | null | undefined;
 
-function lookup(): string | null {
+/**
+ * The value in `dscl . -read /Users/<name> NFSHomeDirectory` output. dscl
+ * prints a value without spaces on the key's line (`NFSHomeDirectory: /Users/a`)
+ * and a value with spaces on the next line, indented by one space
+ * (`NFSHomeDirectory:\n /Users/a b`). Null when the output has no such key.
+ */
+export function parseDsclHome(output: string): string | null {
+  const match = /^NFSHomeDirectory:(?: ([^\n]*)|\n ([^\n]*))\n?$/.exec(output);
+  return match === null ? null : (match[1] ?? match[2] ?? null);
+}
+
+/** scode's own parse of the same output (${line#NFSHomeDirectory: }): it
+ * reads the one-line form only, and falls back to HOME for the other. */
+function parseDsclHomeAsScode(output: string): string {
+  return output.replace(/^NFSHomeDirectory: /, "").replace(/\n$/, "");
+}
+
+function lookup(scodeParse = false): string | null {
   const uid = process.getuid?.();
   if (uid === undefined) return null;
   let home: string | undefined;
@@ -15,10 +33,7 @@ function lookup(): string | null {
     const user = spawnSync("/usr/bin/id", ["-un"], { encoding: "utf8" }).stdout?.trim();
     if (!user) return null;
     const line = spawnSync("/usr/bin/dscl", [".", "-read", `/Users/${user}`, "NFSHomeDirectory"], { encoding: "utf8" }).stdout ?? "";
-    // Same parse as scode (${line#NFSHomeDirectory: }). A home with spaces
-    // prints on the next line; scode then falls back to HOME and adds no
-    // account-home block, and this returns null, so neither side blocks.
-    home = line.replace(/^NFSHomeDirectory: /, "").replace(/\n$/, "");
+    home = scodeParse ? parseDsclHomeAsScode(line) : parseDsclHome(line) ?? undefined;
   } else if (process.platform === "linux") {
     for (const entry of readFileSync("/etc/passwd", "utf8").split("\n")) {
       const fields = entry.split(":");
@@ -38,4 +53,15 @@ export function accountHome(): string | null {
     try { cached = lookup(); } catch { cached = null; }
   }
   return cached;
+}
+
+/** The account home as scode itself reads it, for the account-home block
+ * (sandbox.ts). A home with spaces prints on the next line; scode then
+ * falls back to HOME and adds no account-home block, and this returns
+ * null, so neither side blocks. */
+export function scodeAccountHome(): string | null {
+  if (cachedForScode === undefined) {
+    try { cachedForScode = lookup(true); } catch { cachedForScode = null; }
+  }
+  return cachedForScode;
 }

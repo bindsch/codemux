@@ -6,6 +6,13 @@ import { KimiAdapter } from "../src/adapters/kimi.js";
 import { launchRunRequest } from "../src/launch.js";
 import { UsageRefusalError } from "../src/validation.js";
 
+import { useLinuxScodeFloors } from "./helpers/scode-platform.js";
+
+// These launches run in process against a mocked or absent sandbox runner,
+// with no scode on PATH; the macOS floor would refuse them before the code
+// under test runs.
+useLinuxScodeFloors();
+
 const adapter = new KimiAdapter();
 
 describe("KimiAdapter", () => {

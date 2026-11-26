@@ -1,3 +1,4 @@
+import { accountHasLoginKeychain } from "./helpers/keychain-home.js";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import type { RunContext } from "../src/run-context.js";
 import {
@@ -18,6 +19,10 @@ import { join } from "node:path";
 import { createCodexHermeticHome } from "../src/hermetic-home.js";
 import type { RunRequest } from "../src/types.js";
 import { codexAdapter, fakeHome, newSignalListeners, prepare, prepared, scratch, signalListeners } from "./helpers/hermetic-codex.js";
+
+// On macOS the private home also holds Library/Keychains, a link to the
+// account's keychain directory (src/darwin-keychain-home.ts).
+const PRIVATE_HOME_ENTRIES = accountHasLoginKeychain() ? [".codex", "Library"] : [".codex"];
 
 describe("hermetic runs: codex", () => {
   let baseline = signalListeners();
@@ -45,7 +50,7 @@ describe("hermetic runs: codex", () => {
     const cmd = adapter.buildRunCommand(request, context);
     const priv = privateHome(cmd);
     expect(priv.home.startsWith(join(home, ".codex", ".codemux-hermetic", `run-${process.pid}-`))).toBe(true);
-    expect(readdirSync(priv.home)).toEqual([".codex"]);
+    expect(readdirSync(priv.home).sort()).toEqual(PRIVATE_HOME_ENTRIES);
     expect(readdirSync(priv.codexHome)).toEqual(["auth.json"]);
     expect(priv.codexHome).toBe(join(priv.home, ".codex"));
     const link = join(priv.codexHome, "auth.json");
@@ -121,7 +126,7 @@ describe("hermetic runs: codex", () => {
     // Still there: the first run's context has not been cleaned up, and a
     // run started earlier may still be using its home.
     expect(statSync(join(first.home, "leftover")).isFile()).toBe(true);
-    expect(readdirSync(second.home)).toEqual([".codex"]);
+    expect(readdirSync(second.home).sort()).toEqual(PRIVATE_HOME_ENTRIES);
   });
 
   test("two concurrent hermetic runs each launch in their own home", () => {

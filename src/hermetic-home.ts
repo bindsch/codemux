@@ -25,6 +25,7 @@
  * concurrent login, logout, or another run's refresh.
  */
 
+import { linkAccountKeychain } from "./darwin-keychain-home.js";
 import {
   chmodSync,
   linkSync,
@@ -174,6 +175,7 @@ export function createCodexHermeticHome(
   trackPrivateDir(hook);
 
   try {
+    linkAccountKeychain(home); // darwin-keychain-home.ts: the child's HOME is this home
     mkdirSync(codexHome, { mode: 0o700 });
     chmodSync(codexHome, 0o700); // the mode is stated whatever the umask is
     if (linkLogin) {
@@ -231,6 +233,7 @@ export function populateCodexHermeticSessionHome(
   const sourceAuth = join(sourceCodexHome, "auth.json");
   if (!apiKeyAuth) assertRealLoginFile(sourceAuth);
   const codexHome = join(dir, ".codex");
+  linkAccountKeychain(dir); // the session child's HOME is this home
   mkdirSync(codexHome, { mode: 0o700 });
   chmodSync(codexHome, 0o700); // the mode is stated whatever the umask is
   writeOwnedSync(join(codexHome, "config.toml"), CODEX_SESSION_HERMETIC_CONFIG, 0o600);

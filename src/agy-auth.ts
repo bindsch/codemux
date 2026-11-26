@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readlinkSync, symlinkSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readlinkSync, realpathSync, rmdirSync, symlinkSync, unlinkSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { NATIVE_LOGIN_PATHS, nativeLoginPaths } from "./native-login-paths.js";
 import { UsageRefusalError } from "./validation.js";
@@ -38,6 +38,21 @@ export function ensureAgyLinkParent(home: string, relative: string): void {
   }
 }
 
+function replaceEmptyDirectory(to: string, from: string): boolean {
+  if (!lstatSync(to).isDirectory()) return false;
+  try { rmdirSync(to); } catch { return false; }
+  try { symlinkSync(from, to); return true; }
+  catch {
+    // Put the empty directory back: the home is left as it was found.
+    try { mkdirSync(to, { mode: 0o700 }); } catch { /* the caller reports the missing entry */ }
+    return false;
+  }
+}
+
+function sameTarget(left: string, right: string): boolean {
+  try { return realpathSync(left) === realpathSync(right); } catch { return false; }
+}
+
 /** Share paths, never read credentials or alter the user's native store.
  * Security.framework expands preference and login paths relative to HOME.
  * agy remains the sole reader and writer of its own native login item.
@@ -52,12 +67,24 @@ export function linkAgyLogin(home: string, source: string, platform = process.pl
     try { symlinkSync(from, to); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      if (!lstatSync(to).isSymbolicLink()) {
+      // An empty Keychains directory is replaced by the link, as for every
+      // other private home (darwin-keychain-home.ts). rmdir removes nothing
+      // but an empty directory, so the home's own content is never deleted.
+      if (relative === AGY_NATIVE_PATHS[0] && replaceEmptyDirectory(to, from)) continue;
+      if (lstatSync(to, { throwIfNoEntry: false })?.isSymbolicLink() !== true) {
         throw new UsageRefusalError(
           `cannot link the agy login: the home holds its own file or directory at ${to}, where the link to ${from} belongs; ` +
           "codemux never deletes it; move it away, use another home, or authenticate with GEMINI_API_KEY or GOOGLE_API_KEY");
       }
-      if (resolve(dirname(to), readlinkSync(to)) !== resolve(from)) {
+      // The same directory under another spelling of the home passes: the
+      // keychain link codemux makes for every private home names the
+      // account home from the password database (darwin-keychain-home.ts).
+      // The two keychain paths get that allowance (codemux links both the
+      // directory and the preference file from the account home). A token
+      // link must name the source path itself, so it follows the source
+      // when that is retargeted.
+      if (resolve(dirname(to), readlinkSync(to)) !== resolve(from) &&
+          !((AGY_NATIVE_PATHS as readonly string[]).includes(relative) && sameTarget(to, from))) {
         throw new UsageRefusalError(
           `cannot link the agy login: ${to} already links somewhere other than ${from}; codemux never replaces it; remove that link or use another home`);
       }

@@ -1,3 +1,4 @@
+import { linkAccountKeychain } from "./darwin-keychain-home.js";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { runDirectoryPrefix } from "./run-directory-owner.js";
 import { join } from "node:path";
@@ -130,6 +131,7 @@ export function populateClineConfig(home: string, environment: NodeJS.ProcessEnv
       env.CLINE_PROVIDER_SETTINGS_PATH = path;
     }
     if (options.hermetic) {
+      if (!options.printOnly) linkAccountKeychain(home); // darwin-keychain-home.ts
       env.HOME = home;
       env.CLINE_DIR = configDir;
       env.CLINE_SESSION_BACKEND_MODE = "local";

@@ -1,3 +1,4 @@
+import { linkAccountKeychain } from "./darwin-keychain-home.js";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { BaseAdapter } from "./adapters/base.js";
@@ -149,6 +150,8 @@ export function createHermeticCheckPlan(
     if ("home" in canary && canary.home) {
       const environment = adapter.buildExecutionEnv({}, baseRequest.passthroughEnv);
       copyControlLogin(baseRequest.agent, canary.home, environment);
+      // The control's HOME is this scratch home (darwin-keychain-home.ts).
+      if (channel.homeEnv === "HOME") linkAccountKeychain(canary.home);
       probeAdapter = homeCheckAdapter(adapter, channel, canary.home, false);
       controlAdapter = homeCheckAdapter(adapter, channel, canary.home, true);
     }

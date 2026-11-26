@@ -31,7 +31,7 @@ afterEach(() => {
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
 
-const scode: ScodeFacts = { present: true, path: null, version: [0, 6, 0], label: "0.6.0", issue: null };
+const scode: ScodeFacts = { present: true, path: null, version: [0, 6, 11], label: "0.6.11", issue: null };
 // Fixture versions sit at the feature floors (src/harness-contracts.ts
 // FEATURE_FLOORS): a version below any floor is a FEATURE-FLOOR row, which
 // would mask the state each test asserts.

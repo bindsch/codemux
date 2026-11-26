@@ -15,6 +15,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { FORCE_KILL_DELAY_MS, signalProcess } from "./process-runner.js";
 import { createTerminationTarget } from "./process-tree.js";
+import { spawnGuarded } from "./guarded-spawn.js";
 import { StreamMarkerScan } from "./stream-marker-scan.js";
 import { escapeForTerminal } from "./usage-protocol.js";
 
@@ -108,7 +109,7 @@ export async function runCanarySession(
   };
   let proc;
   try {
-    proc = Bun.spawn([...sessionCanary.command(), ...argv], {
+    proc = spawnGuarded([...sessionCanary.command(), ...argv], {
       cwd: process.cwd(),
       env: env as Record<string, string | undefined>,
       stdin: "pipe",

@@ -9,6 +9,13 @@ import type { RunContext } from "../src/run-context.js";
 import type { RunRequest } from "../src/types.js";
 import { codexCatalog, codexDefinitions, codexWorldState } from "./fixtures/experiment-codex.js";
 
+import { useLinuxScodeFloors } from "./helpers/scode-platform.js";
+
+// These launches run in process against a mocked or absent sandbox runner,
+// with no scode on PATH; the macOS floor would refuse them before the code
+// under test runs.
+useLinuxScodeFloors();
+
 const contexts: { adapter: CodexAdapter; context: RunContext }[] = [];
 afterEach(async () => {
   for (const { adapter, context } of contexts.splice(0)) {

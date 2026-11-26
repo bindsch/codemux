@@ -4,6 +4,10 @@ import { turnLaunchFixture, TURN_LAUNCH_AGENTS } from "./helpers/session-turn-la
 import * as claude from "./helpers/session-e2e.js";
 import * as opencode from "./helpers/session-opencode-e2e.js";
 import { readRegistry } from "../src/session/registry.js";
+import { useLinuxScodeFloors } from "./helpers/scode-platform.js";
+
+// This file exercises scode versions below 0.6.11, which a macOS launch refuses.
+useLinuxScodeFloors();
 
 afterAll(async () => {
   for (const cleanup of [...claude.cleanups, ...opencode.cleanups].reverse()) await cleanup();
@@ -29,7 +33,8 @@ test.each(HERMETIC_AGENTS)("%s records strict through the CLI driver and refuses
 test.each(HERMETIC_AGENTS)("%s refuses a private wrapped fixture with exit 64 before spawning it", async (agent) => {
   const fixture = hermeticFixture(agent);
   try {
-    const result = await fixture.run(["--hermetic", "--sandbox-strict"]);
+    // The refusal belongs to scode before 0.6.7, which has no read-only grant.
+    const result = await fixture.run(["--hermetic", "--sandbox-strict"], { scodeVersion: "0.6.0" });
     expect(result.exitCode, result.stderr + result.stdout).toBe(64);
     expect(result.stderr + result.stdout).toContain("strict sandbox cannot read env-wrapped executable");
   } finally { fixture.cleanup(); }

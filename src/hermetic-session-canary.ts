@@ -31,6 +31,7 @@
  * exchange, deadline kill) lives in src/hermetic-session-canary-driver.ts.
  */
 
+import { linkAccountKeychain } from "./darwin-keychain-home.js";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -189,6 +190,9 @@ export function plantSessionCanary(
   }
   if (agent === "kimi") {
     const planted = plantKimiCanary();
+    // The child codemux and its sessions run with this scratch HOME.
+    try { linkAccountKeychain(planted.operatorHome); }
+    catch (error) { planted.cleanup(); throw error; }
     return {
       cwd: planted.cwd,
       marker: planted.marker,
@@ -200,7 +204,9 @@ export function plantSessionCanary(
   }
   if (agent === "agy") {
     const planted = plantAgyCanary();
-    try { linkAgyLogin(planted.operatorHome, process.env.HOME || homedir()); }
+    // scode runs with this scratch HOME, whose Library/Keychains is a link: scode 0.6.11
+    // declines the login-store grant there, so these sessions use the file token or a key.
+    try { linkAgyLogin(planted.operatorHome, process.env.HOME || homedir()); linkAccountKeychain(planted.operatorHome); }
     catch (error) { planted.cleanup(); throw error; }
     return {
       cwd: planted.cwd,
@@ -292,6 +298,7 @@ export function plantClineSessionCanary(parent = tmpdir()): Omit<PlantedSessionC
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
       writeFileSync(path, template.replaceAll("{{MARKER}}", marker), { mode: 0o600 });
     }
+    linkAccountKeychain(home); // the child codemux and its sessions run with this scratch HOME
     return { cwd, marker, env: { HOME: home }, cleanup };
   } catch (error) {
     cleanup();

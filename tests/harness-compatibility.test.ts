@@ -23,6 +23,13 @@ import "./harness-compatibility-verdicts.js";
 import "./harness-compatibility-policy.js";
 
 
+import { useLinuxScodeFloors } from "./helpers/scode-platform.js";
+
+// These launches run in process against a mocked or absent sandbox runner,
+// with no scode on PATH; the macOS floor would refuse them before the code
+// under test runs.
+useLinuxScodeFloors();
+
 describe("the gate itself", () => {
   const fakeHarness = (
     versionOutput: string,

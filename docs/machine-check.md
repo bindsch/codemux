@@ -23,7 +23,7 @@ Environment rows, then one row per installed harness.
 | codemux | The running version and runtime, and whether the runtime matches the pinned one the installed keg was built for. |
 | config | Whether the configuration loads; the effective quota policy (ceiling, weekly warn, timeout) or the parser's message. |
 | aliases | The model aliases: tiers that map no harness, or an alias whose tier names an unknown harness. |
-| scode | Version, the global minimum, `--keep-env` support, and one sandboxed probe command — the same probe CI's scode contract runs, because only a sandboxed probe detects a scode that answers `--version` but cannot sandbox. |
+| scode | Version, the launch floor (the global minimum; on macOS 0.6.11), `--keep-env` support, and one sandboxed probe command — the same probe CI's scode contract runs, because only a sandboxed probe detects a scode that answers `--version` but cannot sandbox. |
 | usagemux | `USAGEMUX-MISSING` (absent; optional), `USAGEMUX-UNREADABLE` (installed but its `--version` failed, printed no version, timed out, or failed the trust check; the detail names why), `USAGEMUX-STALE` (below the protocol minimum), or the installed version. An unreadable usagemux still counts as present: the usage rows query it and report their own unreadable verdict instead of "not installed". |
 | keychain | Informational: codemux credential inspection is disabled. No item, default, or search-list query is made. This row does not describe the harness's sandbox login-store grant. |
 | codexbar | Whether a retired usage tool is still on PATH and should be removed in favor of usagemux. |
@@ -59,7 +59,7 @@ Installed Claude and agy rows on macOS report `sandbox login store: enabled` or 
 | `LOGIN-UNKNOWN` | warn | The adapter cannot establish login status. Claude and agy on macOS without positive login evidence report `macOS Keychain` here; codemux does not inspect that native login or recommend signing in solely because inspection is unavailable. |
 | `QUOTA-LOW` | broken | The quota gate would refuse the launch: the usage window is below the ceiling. |
 | `QUOTA-UNREADABLE` | warn | The usage window could not be read; the gate warns and proceeds. |
-| `SANDBOX-TOO-OLD` | broken | scode is older than this harness's floor (or the global minimum). |
+| `SANDBOX-TOO-OLD` | broken | scode is older than this harness's floor (its own, the global minimum, or on macOS 0.6.11, whichever is highest). |
 | `SANDBOX-MISSING` | broken | scode is not installed, or the binary is untrusted. |
 | `OVERRIDE-INVALID` | broken | A provider override names the harness but is malformed (a variable missing or empty). |
 | `PROBE-FAILED` | broken | A free probe itself failed (the scode sandboxed command, on the environment row). |

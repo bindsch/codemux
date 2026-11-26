@@ -157,7 +157,7 @@ test("tools probe needs a denied command and its control needs native activity p
   expect(cmd).not.toContain("--mode=plan");
 });
 
-function fake(scodeVersion = "0.6.0"): Record<string, string> {
+function fake(scodeVersion = "0.6.11"): Record<string, string> {
   const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
   const state = mkdtempSync(join(tmpdir(), "agy-canary-security-"));
   cleanup.push(() => rmSync(state, { recursive: true, force: true }));
@@ -272,7 +272,8 @@ test.each(["API key", "file token", "Keychain"])("sandboxed agy with %s refuses 
     ...fake("0.5.0"), HOME: home, GOOGLE_API_KEY: "", GEMINI_API_KEY: login === "API key" ? "synthetic-api-key" : "",
   });
   expect(response.exitCode).not.toBe(0);
-  expect(response.stderr).toContain("every sandboxed agy run requires scode 0.6.0 or newer");
+  // agy's own floor is 0.6.0; macOS raises every floor to 0.6.11.
+  expect(response.stderr).toContain(`every sandboxed agy run requires scode ${process.platform === "darwin" ? "0.6.11" : "0.6.0"} or newer`);
   expect(response.stdout).toBe("");
   const authentication = readFileSync(join(import.meta.dir, "../docs/authentication.md"), "utf8");
   expect(authentication).toMatch(/Sandboxed runs.*scode 0\.6\.8 or newer.*zero scode-owned credential commands/);
@@ -366,6 +367,9 @@ test("private run homes link the native store while unseeded canaries remain emp
   const keychains = join(home, "Library/Keychains");
   mkdirSync(keychains, { recursive: true });
   writeFileSync(join(keychains, "synthetic-keychain"), "metadata fixture");
+  // An empty file with the login keychain's name: a private home must
+  // resolve a default keychain (src/darwin-keychain-home.ts).
+  writeFileSync(join(keychains, "login.keychain-db"), "");
   const canary = plantAgyCanary();
   cleanup.push(canary.cleanup);
   const context = adapter.prepareRun({ ...request, hermetic: true });

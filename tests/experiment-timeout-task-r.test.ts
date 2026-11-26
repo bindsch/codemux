@@ -11,6 +11,13 @@ import * as processTable from "../src/process-table.js";
 import type { RunContext } from "../src/run-context.js";
 import type { RunRequest } from "../src/types.js";
 
+import { useLinuxScodeFloors } from "./helpers/scode-platform.js";
+
+// These launches run in process against a mocked or absent sandbox runner,
+// with no scode on PATH; the macOS floor would refuse them before the code
+// under test runs.
+useLinuxScodeFloors();
+
 test.each([
   { resultJson: false, earlyEof: false }, { resultJson: true, earlyEof: false },
   { resultJson: false, earlyEof: true }, { resultJson: true, earlyEof: true },

@@ -1,5 +1,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { accountHome } from "../src/account-home.js";
+import { accountHasLoginKeychain } from "./helpers/keychain-home.js";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { AgyAdapter, markAgyIsolationProbe } from "../src/adapters/agy.js";
@@ -144,13 +146,22 @@ test.each(["GEMINI_API_KEY", "GOOGLE_API_KEY"])("a run on the %s route links no 
   const realState = join(home, ".gemini/antigravity-cli");
   mkdirSync(realState, { recursive: true });
   mkdirSync(join(home, "Library/Keychains"), { recursive: true });
+  // An empty file with the login keychain's name, so the linked directory resolves one.
+  writeFileSync(join(home, "Library/Keychains/login.keychain-db"), "");
   writeFileSync(join(realState, "antigravity-oauth-token"), "fake-login");
   for (const variant of [{ hermetic: true }, { tools: "none" as const }, {}]) {
     const context = adapter.prepareRun({ ...request, ...variant });
     try {
       const privateHome = context.agyProbe!.home!;
       expect(lstatSync(join(privateHome, ".gemini/antigravity-cli/antigravity-oauth-token"), { throwIfNoEntry: false })).toBeUndefined();
-      expect(lstatSync(join(privateHome, "Library"), { throwIfNoEntry: false })).toBeUndefined();
+      // No path to the operator's login. On macOS the home holds the keychain
+      // directory link every private home gets, to the account's directory and
+      // never to the operator HOME the run started from; it selects no login,
+      // and the API-key sandbox gets --no-login-store.
+      const keychains = join(privateHome, "Library/Keychains");
+      expect(existsSync(keychains)).toBe(accountHasLoginKeychain());
+      if (accountHasLoginKeychain()) expect(readlinkSync(keychains)).toBe(join(accountHome()!, "Library/Keychains"));
+      expect(lstatSync(keychains, { throwIfNoEntry: false })?.isDirectory() ?? false).toBe(false);
     } finally { adapter.cleanupRun(context); }
   }
   // A whitespace-only key is no key: the operator login is the route and is linked.

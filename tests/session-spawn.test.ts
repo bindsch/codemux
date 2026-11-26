@@ -26,6 +26,10 @@ import { validateWorkingDirectory } from "../src/validation.js";
 
 const FAKE = fileURLToPath(new URL("./fixtures/live/fake-claude-session.ts", import.meta.url));
 
+// The oldest scode a sandboxed launch accepts on this platform.
+const MODERN = process.platform === "darwin";
+const OLD_SCODE = MODERN ? "0.6.11" : "0.2.1";
+
 describe("spawnSessionChild scode parity", () => {
   test("the sandboxed session's scode argv matches run's buildScodeCommand", async () => {
     const dir = mkdtempSync(join(tmpdir(), "spawn-parity-"));
@@ -43,7 +47,7 @@ describe("spawnSessionChild scode parity", () => {
     chmodSync(claudeScript, 0o755);
     writeFileSync(
       scodeScript,
-      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf 'scode 0.2.1\\n'; exit 0; fi\n` +
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf 'scode ${OLD_SCODE}\\n'; exit 0; fi\n` +
         `for a in "$@"; do printf '%s\\n' "$a" >> '${argvPath}'; done\n` +
         `env | LC_ALL=C sort > '${envPath}'\n` +
         `while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done\nshift\n` +
@@ -118,11 +122,12 @@ describe("spawnSessionChild scode parity", () => {
           sandboxOptions,
           scode,
           childEnv,
-          // The fake scode reports 0.2.1: no capability flag, and no
-          // --no-credential-sync, which scode added in 0.4.0.
-          false, false, false, undefined, false
+          // Off macOS the fake scode reports 0.2.1: no capability flag,
+          // and no --no-credential-sync, which scode added in 0.4.0. On
+          // macOS the launch floor is 0.6.11, which has every one of them.
+          MODERN, MODERN, MODERN, undefined, MODERN
         );
-        expect(expected).not.toContain("--no-credential-sync");
+        expect(expected.includes("--no-credential-sync")).toBe(MODERN);
         expect([scode, ...recorded]).toEqual(expected);
 
         // Environment parity: the child saw exactly what the shared
@@ -172,7 +177,7 @@ describe("spawnSessionChild scode parity", () => {
     const scodeScript = join(binDir, "scode");
     writeFileSync(
       scodeScript,
-      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf 'scode 0.2.1\\n'; exit 0; fi\n` +
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf 'scode ${OLD_SCODE}\\n'; exit 0; fi\n` +
         `printf '%s\\n' "$@" > '${argvPath}'\n` +
         `printf 'ran\\n' > '${markerPath}'\n` +
         `exit 0\n`

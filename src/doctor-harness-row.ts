@@ -11,6 +11,7 @@ import { isWeekly, quotaTimeoutSecondsFor, snapshotFreshnessIssue } from "./quot
 import type { BaseAdapter } from "./adapters/base.js";
 import { scodeBelowFloor } from "./doctor-environment.js";
 import { compareVersions } from "./harness-compatibility.js";
+import { SCODE_MINIMUM_VERSION, scodeLaunchFloor } from "./cli-runtime/scode.js";
 import {
   FEATURE_FLOORS,
   HARNESS_CONTRACTS,
@@ -83,8 +84,12 @@ const floorLines = (
   return { line: parts.join("; "), unmet };
 };
 
-const sandboxLine = (agent: AgentId, scode: ScodeFacts): { line: string; state: MachineCheckState | null; floor: string | null } => {
-  const floor = SCODE_FLOORS[agent];
+export const sandboxLine = (agent: AgentId, scode: ScodeFacts): { line: string; state: MachineCheckState | null; floor: string | null } => {
+  // The launch gate's floor for this harness: its own, raised on macOS to
+  // the release that denies the keychain services (cli-runtime/scode.ts).
+  const own = SCODE_FLOORS[agent];
+  const launch = scodeLaunchFloor(own);
+  const floor = own === undefined && launch === SCODE_MINIMUM_VERSION ? undefined : launch;
   if (!scode.present) {
     return { line: `scode missing${floor !== undefined ? ` (this harness needs >= ${floor})` : ""}`, state: "SANDBOX-MISSING", floor: null };
   }
@@ -94,7 +99,7 @@ const sandboxLine = (agent: AgentId, scode: ScodeFacts): { line: string; state: 
   if (floor !== undefined && scodeBelowFloor(scode, floor)) {
     return { line: `scode ${scode.label} below the ${agent} floor ${floor}`, state: "SANDBOX-TOO-OLD", floor: floor ?? null };
   }
-  return { line: `scode ${scode.label}`, state: null, floor: null };
+  return { line: `scode ${scode.label}${floor !== undefined ? ` (needs >= ${floor})` : ""}`, state: null, floor: null };
 };
 
 const overrideLine = (adapter: BaseAdapter): { line: string | null; invalid: string | null } => {

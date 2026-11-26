@@ -1,3 +1,4 @@
+import { linkAccountKeychain } from "./darwin-keychain-home.js";
 import { chmodSync, mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
 import { runDirectoryPrefix } from "./run-directory-owner.js";
 import { writeOwnedSync } from "./fs-durable.js";
@@ -333,6 +334,7 @@ export function populateKimiHermeticSessionHome(
 ): { brandHome: string; skillsDir: string } {
   const brandHome = kimiPrivateBrandHome(dir);
   const skillsDir = join(dir, "skills-dir");
+  if (!printOnly) linkAccountKeychain(dir); // the session child's HOME is this home
   mkdirSync(brandHome, { mode: 0o700 });
   chmodSync(brandHome, 0o700);
   mkdirSync(skillsDir, { mode: 0o700 });
@@ -390,6 +392,7 @@ export function createKimiHermeticHome(sourceBrandHome: string, toolsNone = fals
   const hook = reportingHook(finalize);
   track(hook);
   try {
+    linkAccountKeychain(home); // darwin-keychain-home.ts: the child's HOME is this home
     mkdirSync(kimiHome, { mode: 0o700 });
     chmodSync(kimiHome, 0o700);
     mkdirSync(skillsDir, { mode: 0o700 });

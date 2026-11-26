@@ -300,7 +300,7 @@ describe("caller harness homes through the session CLI", () => {
       const configRoot = agent === "codex" ? join(s.caller, ".codex") : s.caller;
       const policy = join(configRoot, agent === "codex" ? "config.toml" : "settings.json");
       expect(existsSync(policy)).toBe(false);
-      expect(readdirSync(configRoot).filter((name) => ![".cache", ".config", ".local"].includes(name)).sort()).toEqual(agent === "codex" ? ["auth.json"]
+      expect(readdirSync(configRoot).filter((name) => ![".cache", ".config", ".local", "Library"].includes(name)).sort()).toEqual(agent === "codex" ? ["auth.json"]
         : agent === "claude" && process.platform !== "darwin" ? [".credentials.json", "synthetic-session-state"] : ["synthetic-session-state"]);
       const contents = agent === "codex" ? 'model = "caller-model"\n' : '{"caller_policy":true}\n';
       writeFileSync(policy, contents, { mode: 0o600 });

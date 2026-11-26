@@ -12,7 +12,7 @@ test.each([false, true])("Cline history reuses the pinned launch, sandboxed=%s",
   mkdirSync(work); mkdirSync(bin);
   const cline = join(bin, "cline"), scode = join(bin, "scode");
   writeFileSync(cline, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
-  writeFileSync(scode, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "scode 0.6.6"; exit 0; fi\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n', { mode: 0o700 });
+  writeFileSync(scode, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "scode 0.6.11"; exit 0; fi\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n', { mode: 0o700 });
   let launch: ResolvedSessionLaunch | undefined;
   try {
     const child = await spawnSessionChild(["env", "HOME=" + root, "env", "CLINE_SESSION_BACKEND_MODE=local", "cline", "--acp"],

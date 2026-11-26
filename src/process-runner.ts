@@ -4,21 +4,13 @@ import { assertExecutablesUnchanged, type ExecutableCheck } from "./executable-s
 import { captureLimitFailure, OutputLimitError, readBounded } from "./process-capture.js";
 import { trackStdinDelivery } from "./process-stdin.js";
 import { writeRunStdin } from "./process-stdin-repeat.js";
-import {
-  beginCapturedCommand,
-  endCapturedCommand,
-  neverSettles,
-  noteSignaledRun,
-  signalShutdownPending,
-} from "./process-runner-signals.js";
+import { beginCapturedCommand, endCapturedCommand, neverSettles, noteSignaledRun, signalShutdownPending } from "./process-runner-signals.js";
 export { hasActiveCapturedCommand, hasActiveSignalOwner } from "./process-runner-signals.js";
 export { guardedWait } from "./process-guarded-wait.js";
 export { MAX_CAPTURE_BYTES, OUTPUT_LIMIT_EXIT_CODE } from "./process-capture.js";
-import {
-  createTerminationTarget,
-  waitForDescendantsGrace,
-  type TerminationTarget,
-} from "./process-tree.js";
+import { createTerminationTarget, waitForDescendantsGrace, type TerminationTarget } from "./process-tree.js";
+import { spawnGuarded, spawnScodeProbe } from "./guarded-spawn.js";
+import { precheckChildKeychainHomes } from "./darwin-keychain-home.js";
 import type { RunResult } from "./types.js";
 
 export const DEFAULT_RUN_TIMEOUT_MS = 30 * 60 * 1000;
@@ -126,6 +118,9 @@ export interface CapturedCommandOptions {
    * re-stat falls back to the process-wide identity list. */
   requiredPaths?: readonly string[];
   checks?: readonly ExecutableCheck[];
+  /** `scode --version`/`--help` only (guarded-spawn.ts refuses any other argv): no
+   * keychain-home check, so a print-only preview never writes the private home. */
+  scodeProbe?: boolean;
 }
 
 export async function runCapturedCommand(
@@ -150,6 +145,9 @@ export async function runCapturedCommand(
   // process group, so nothing starts (review round 169).
   if (signalShutdownPending()) await neverSettles;
   const useProcessGroup = process.platform !== "win32";
+  // The keychain-home check runs before the executable re-check, so no file
+  // work sits between that re-check and the spawn (the spawn repeats it at no cost).
+  if (!options.scodeProbe) precheckChildKeychainHomes(command, options.env, options.cwd);
   assertExecutablesUnchanged(command, "command", options.requiredPaths, options.checks);
   let timedOut = false;
   let outputCompleted = false;
@@ -278,7 +276,7 @@ export async function runCapturedCommand(
   const needsStdin = options.stdinInput != null || Boolean(options.stdoutSink?.start);
   let spawned: Bun.Subprocess<"pipe" | "ignore", "pipe", "pipe"> | undefined;
   try {
-    spawned = Bun.spawn(command, {
+    spawned = (options.scodeProbe ? spawnScodeProbe : spawnGuarded)(command, {
       cwd: options.cwd,
       stdout: "pipe",
       stderr: "pipe",

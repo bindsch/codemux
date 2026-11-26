@@ -40,7 +40,12 @@ call, and releases per-run state. [run-exit-cleanup.ts](../src/run-exit-cleanup.
 provides an exit cleanup backstop for prepared contexts.
 
 [process-runner.ts](../src/process-runner.ts) captures bounded stdout and
-stderr, enforces deadlines, and settles the process tree. The result path
+stderr, enforces deadlines, and settles the process tree. Every child that
+can run a harness is started through [guarded-spawn.ts](../src/guarded-spawn.ts),
+which first runs the macOS keychain-home check in
+[darwin-keychain-home.ts](../src/darwin-keychain-home.ts) on the child's argv
+and environment; `tests/guarded-spawn-scan.test.ts` fails when a file starts a
+process any other way. The result path
 uses [result-envelope.ts](../src/result-envelope.ts), adapter-specific
 reducers, and [plain-unwrap.ts](../src/plain-unwrap.ts). `--result-json`
 normalizes the harness result with codemux metadata; plain output extracts

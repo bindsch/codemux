@@ -12,6 +12,9 @@ import type { RunRequest } from "../src/types.js";
 import { MARKER, respond } from "./fixtures/experiment-mcp.js";
 import { assertNoRelaySecretsInRecordings } from "./experiment-secret-scan.js";
 import { minimalPath, runCli } from "./helpers/cli.js";
+import { useLinuxScodeFloors } from "./helpers/scode-platform.js";
+// In-process launches with a mocked runner and no scode on PATH.
+useLinuxScodeFloors();
 const contexts: { adapter: CodexAdapter; context: RunContext }[] = [];
 afterEach(async () => {
   for (const { adapter, context } of contexts.splice(0)) {
@@ -52,12 +55,10 @@ async function callFixture(experiment: RunContext["experimentCodex"], context: R
     expect(response.status).toBe(200);
     return response.json();
   }
+  const started = (): void => { rollout(context); experiment!.push(JSON.stringify({ type: "thread.started", thread_id: "thread-test" }) + "\n"); };
   await post({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
   await post({ jsonrpc: "2.0", id: 2, method: "tools/list" });
-  if (!requestMeta) {
-    rollout(context);
-    experiment!.push(JSON.stringify({ type: "thread.started", thread_id: "thread-test" }) + "\n");
-  }
+  if (!requestMeta) started();
   const result = post({ jsonrpc: "2.0", id: 3, method: "tools/call",
     params: { name: "bash", arguments: { command: "marker" }, ...(requestMeta ? { _meta: { callId: "call_1" } } : {}) } });
   if (requestMeta) {
@@ -78,8 +79,7 @@ async function callFixture(experiment: RunContext["experimentCodex"], context: R
     }
     expect(relay.calls[0]?.call_id).toBeUndefined();
     expect(readFileSync(experiment!.recordingPath, "utf8")).not.toContain('"kind":"tool_call"');
-    rollout(context);
-    experiment!.push(JSON.stringify({ type: "thread.started", thread_id: "thread-test" }) + "\n");
+    started();
   }
   await result;
 }

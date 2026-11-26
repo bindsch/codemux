@@ -56,10 +56,10 @@ test("--harness-home states the macOS Claude HOME exception and its reason", () 
 test("no document describes the scode CI pin as unchanged or 0.6.7", () => {
   const gate = read("docs/RELEASE-GATE.md");
   // Current pages name no commit hash (tests/documentation.test.ts); the changelog does.
-  expect(gate).toContain("CI pins scode v0.6.8; the changelog records the pinned commit.");
+  expect(gate).toContain("CI pins scode v0.6.11; the changelog records the pinned commit.");
   expect(gate).not.toMatch(/CI pin[^.]*0\.6\.7/);
   expect(gate).not.toContain("pin remains unchanged");
-  expect(read(".github/workflows/ci.yml")).toContain("cc76ea3");
+  expect(read(".github/workflows/ci.yml")).toContain("932401a");
   expect(release()).toContain("CI builds scode v0.6.8 (commit `cc76ea3`)");
 });
 

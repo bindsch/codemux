@@ -12,6 +12,13 @@ import type { RunRequest } from "../src/types.js";
 import { KIMI_STREAM_SESSION, kimiResumeHint } from "./fixtures/kimi-stream.js";
 import { assertNoRelaySecretsInRecordings } from "./experiment-secret-scan.js";
 
+import { useLinuxScodeFloors } from "./helpers/scode-platform.js";
+
+// These launches run in process against a mocked or absent sandbox runner,
+// with no scode on PATH; the macOS floor would refuse them before the code
+// under test runs.
+useLinuxScodeFloors();
+
 const contexts: { adapter: KimiAdapter; context: RunContext }[] = [];
 afterEach(async () => {
   for (const { adapter, context } of contexts.splice(0)) {

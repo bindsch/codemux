@@ -11,6 +11,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runSandboxedWithStdin } from "../src/cli-runtime.js";
+import { useLinuxScodeFloors } from "./helpers/scode-platform.js";
+
+// This file exercises scode versions below 0.6.11, which a macOS launch refuses.
+useLinuxScodeFloors();
 
 describe("CLI runtime keep-env exemptions", () => {
   // Shared stub for the --keep-env capability tests: --version passes the

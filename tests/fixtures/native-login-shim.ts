@@ -9,7 +9,7 @@ if (name === "security" || name === "codexbar") {
   process.exit(97);
 }
 if (args.includes("--version")) {
-  console.log(({ claude: "2.1.325", agy: "1.5.9", kimi: "2.5.2", scode: "scode 0.6.7",
+  console.log(({ claude: "2.1.325", agy: "1.5.9", kimi: "2.5.2", scode: "scode 0.6.11",
     usagemux: "usagemux 1.0.1" } as Record<string, string>)[name]);
   process.exit(0);
 }

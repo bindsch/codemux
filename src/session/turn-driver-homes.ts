@@ -10,6 +10,7 @@
  * cannot drift.
  */
 
+import { linkAccountKeychain } from "../darwin-keychain-home.js";
 import { linkSync, lstatSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { chmodSync } from "node:fs";
 import { join } from "node:path";
@@ -125,6 +126,7 @@ function linkLoginFile(source: string, destination: string): void {
  * path's rule ("droid hermetic runs need a file login"). */
 function populateDroidSessionHome(dir: string, brandHome: string): void {
   const privateBrand = join(dir, ".factory");
+  linkAccountKeychain(dir); // the session child's HOME is this home
   mkdirSync(privateBrand, { mode: 0o700 });
   chmodSync(privateBrand, 0o700); // stated whatever the umask is
   const source = join(brandHome, "auth.json");

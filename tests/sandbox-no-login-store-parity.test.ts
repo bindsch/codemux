@@ -24,14 +24,14 @@ describe.each([...AGENT_IDS])("%s login-store option parity", (agent) => {
     const home = join(root, `${agent}-${mode}`), cwd = join(home, "project");
     mkdirSync(cwd, { recursive: true }); mkdirSync(join(cwd, ".git"));
     const binaries = { [binary(agent)]: fixture(versions[agent]), scode: "exit 99" };
-    const fake = createFakeBinaryEnv(binaries, "0.6.8");
+    const fake = createFakeBinaryEnv(binaries, "0.6.11");
     const env = { ...fake.env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"),
       XDG_DATA_HOME: join(home, ".local/share"), XDG_STATE_HOME: join(home, ".local/state"),
       XDG_CACHE_HOME: join(home, ".cache"), ZAI_API_KEY: "synthetic" };
     const flags = ["-a", agent, "--sandbox-no-login-store", "--cwd", cwd, "--print-sandbox", "--no-quota-gate"];
     try {
       const result = mode === "session"
-        ? await runSessionCommand(flags, binaries, { env, scodeVersion: "0.6.8" })
+        ? await runSessionCommand(flags, binaries, { env, scodeVersion: "0.6.11" })
         : await runCli([mode, ...flags, ...(mode === "run" ? ["-p", "unused"] : [])], env);
       expect(result.exitCode, result.stderr).toBe(0);
       const argv = result.stdout.trimEnd().split("\n");
@@ -48,7 +48,7 @@ test.each(["run", "session", "tui", "check"])("%s defaults the off switch from c
   const home = join(root, `config-${mode}`), config = join(home, ".config/codemux"), cwd = join(home, "project");
   mkdirSync(config, { recursive: true }); mkdirSync(cwd);
   writeFileSync(join(config, "config.yaml"), "sandboxNoLoginStore: true\nquota: false\n");
-  const fake = createFakeBinaryEnv({ claude: fixture(versions.claude), scode: "exit 99" }, "0.6.8");
+  const fake = createFakeBinaryEnv({ claude: fixture(versions.claude), scode: "exit 99" }, "0.6.11");
   try {
     const result = await runCli([mode, "-a", "claude", "--cwd", cwd, "--print-sandbox",
       ...(mode === "run" ? ["-p", "unused"] : [])],

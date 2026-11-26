@@ -32,6 +32,7 @@
  * idempotent finalize through the context, so the two agree).
  */
 
+import { linkAccountKeychain } from "./darwin-keychain-home.js";
 import {
   closeSync,
   constants,
@@ -233,6 +234,8 @@ export function createOpencodeHermeticHome(
   };
   const atExit = reportingHook(finalize);
   process.once("exit", atExit);
+  // The child's HOME is this home (darwin-keychain-home.ts).
+  try { linkAccountKeychain(home); } catch (error) { finalize(); throw error; }
   if (realStateDir !== undefined) {
     let skipped: string | null | undefined;
     try {

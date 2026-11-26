@@ -4,6 +4,8 @@ import type { AutonomyLevel, ReasoningEffort } from "../types.js";
 import { guardedWait } from "../process-runner.js";
 import { assertExecutablesUnchanged } from "../executable-security.js";
 import { launchRedirectCheck } from "../cli-runtime.js";
+import { spawnGuarded } from "../guarded-spawn.js";
+import { precheckChildKeychainHomes } from "../darwin-keychain-home.js";
 import { UsageRefusalError, validateWorkingDirectory } from "../validation.js";
 
 export async function runInteractive(
@@ -75,8 +77,11 @@ export async function runInteractive(
   // installs its signal handlers before running it, so a SIGTERM or SIGHUP
   // cannot land between the spawn and the handlers and orphan the child.
   return await withKimiPrivateState(originalCommand, env, workdir, () => {
+    // The keychain-home check runs before the executable re-check, so no file
+    // work sits between that re-check and the spawn (the spawn repeats it at no cost).
+    precheckChildKeychainHomes(command, env, workdir);
     assertExecutablesUnchanged(command, this.id, undefined, redirectCheck === null ? [] : [redirectCheck]);
-    return guardedWait(() => Bun.spawn(command, {
+    return guardedWait(() => spawnGuarded(command, {
     cwd: workdir,
     stdout: "inherit",
     stderr: "inherit",

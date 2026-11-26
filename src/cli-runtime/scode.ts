@@ -17,6 +17,13 @@ export const SCODE_NO_CREDENTIAL_SYNC_MINIMUM_VERSION = "0.4.0";
 export const SCODE_ALLOW_RO_MINIMUM_VERSION = "0.6.7";
 export const SCODE_ALLOW_STAGED_MINIMUM_VERSION = "0.6.8";
 export const SCODE_NO_LOGIN_STORE_MINIMUM_VERSION = "0.6.8";
+/** macOS only. Without the login-store grant, scode 0.6.11 denies the
+ * services a keychain dialog is requested through (com.apple.authd, the
+ * security agents, com.apple.securityd.xpc); through 0.6.8 a keychain store
+ * from the sandbox showed 'A keychain cannot be found to store ...'. 0.6.9
+ * is refused too: it also denied com.apple.SecurityServer, and Codex could
+ * not load the root certificates (every HTTPS request failed). */
+export const SCODE_DARWIN_KEYCHAIN_SERVICES_MINIMUM_VERSION = "0.6.11";
 const SCODE_VERSION_TIMEOUT_MS = 5_000;
 
 /** The one comparison every scode capability gate uses. Build metadata
@@ -44,6 +51,23 @@ export function scodeSupportsNoLoginStore(version: string): boolean {
   return scodeAtLeast(version, SCODE_NO_LOGIN_STORE_MINIMUM_VERSION);
 }
 
+export function scodeDeniesKeychainServices(version: string): boolean {
+  return scodeAtLeast(version, SCODE_DARWIN_KEYCHAIN_SERVICES_MINIMUM_VERSION);
+}
+
+/** The platform whose floor the gate enforces: this host's. A test in this
+ * process may set it to exercise another platform's floors; no option,
+ * environment variable, or file reaches it. */
+export const scodeGatePlatform: { value: NodeJS.Platform } = { value: process.platform };
+
+/** The floor a sandboxed launch enforces: the caller's floor, raised on
+ * macOS to the release that denies the keychain services. Never lower
+ * than the floor it was given. */
+export function scodeLaunchFloor(minimum = SCODE_MINIMUM_VERSION, platform: NodeJS.Platform = scodeGatePlatform.value): string {
+  const darwin = SCODE_DARWIN_KEYCHAIN_SERVICES_MINIMUM_VERSION;
+  return platform === "darwin" && compareVersions(minimum, darwin) < 0 ? darwin : minimum;
+}
+
 export interface ScodeCompatibilityStatus {
   available: boolean;
   issue: string | null;
@@ -56,17 +80,10 @@ export async function getScodeCompatibilityStatus(
   if (!binary) return { available: false, issue: null };
   try {
     const scode = resolveTrustedExecutable(binary, "scode", workdir);
-    await assertCompatibleScode(
-      scode,
-      workdir,
-      process.env as Record<string, string>
-    );
+    await assertCompatibleScode(scode, workdir, process.env as Record<string, string>);
     return { available: true, issue: null };
   } catch (error) {
-    return {
-      available: true,
-      issue: error instanceof Error ? error.message : String(error),
-    };
+    return { available: true, issue: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -134,23 +151,27 @@ export function isVersionAtLeast(
   return true;
 }
 
+/** Appended to a refusal when the macOS floor, not the caller's, decided it. */
+export const SCODE_DARWIN_FLOOR_REASON = " on macOS: versions through 0.6.8 leave the authorization services reachable from the sandbox, " +
+  "where a harness that stores a keychain item shows a keychain dialog on the screen, 0.6.9 blocks the root certificates some harnesses load, and 0.6.10 declines the Keychain login of a private home";
+
 /** Validate the version floor and return the version from this same probe. */
 export async function assertCompatibleScode(
   scode: string,
   workdir: string,
   extraEnv?: Record<string, string>,
-  minimumVersion = SCODE_MINIMUM_VERSION
+  callerMinimum = SCODE_MINIMUM_VERSION,
+  platform: NodeJS.Platform = scodeGatePlatform.value
 ): Promise<string> {
+  const minimumVersion = scodeLaunchFloor(callerMinimum, platform);
   const result = await runOutputProbe([scode, "--version"], {
     cwd: workdir,
     env: buildSandboxEnv(extraEnv),
-    timeoutMs: SCODE_VERSION_TIMEOUT_MS,
+    timeoutMs: SCODE_VERSION_TIMEOUT_MS, scodeProbe: true,
   }, versionAnswer(SCODE_VERSION_TOKEN));
   const output = `${result.stdout}\n${result.stderr}`.trim();
   if (!result.success) {
-    throw new Error(
-      `could not verify scode version (requires ${minimumVersion} or newer)${output ? `: ${output}` : ""}`
-    );
+    throw new Error(`could not verify scode version (requires ${minimumVersion} or newer)${output ? `: ${output}` : ""}`);
   }
   // The floor comparison runs on the version string, never the numeric
   // triple alone: a prerelease of the minimum is below the minimum (the
@@ -168,14 +189,11 @@ export async function assertCompatibleScode(
     }
   }
   if (actual === null || order === null) {
-    throw new Error(
-      `could not parse scode version '${output}' (requires ${minimumVersion} or newer)`
-    );
+    throw new Error(`could not parse scode version '${output}' (requires ${minimumVersion} or newer)`);
   }
   if (order < 0) {
-    throw new Error(
-      `scode ${actual} is too old; ${minimumVersion} or newer is required`
-    );
+    throw new Error(`scode ${actual} is too old; ${minimumVersion} or newer is required` +
+      (minimumVersion !== callerMinimum ? SCODE_DARWIN_FLOOR_REASON : ""));
   }
   return actual;
 }
@@ -192,7 +210,7 @@ export async function assertScodeSupportsAccounting(
   const result = await runOutputProbe([scode, "--help"], {
     cwd: workdir,
     env: buildSandboxEnv(extraEnv),
-    timeoutMs: SCODE_VERSION_TIMEOUT_MS,
+    timeoutMs: SCODE_VERSION_TIMEOUT_MS, scodeProbe: true,
   }, helpAnswer(["SCODE_ACCOUNT_FILE"]));
   if (!result.success) {
     // A probe that cannot run proves nothing either way; launching would
@@ -203,9 +221,7 @@ export async function assertScodeSupportsAccounting(
   }
   const output = `${result.stdout}\n${result.stderr}`;
   if (!output.includes("SCODE_ACCOUNT_FILE")) {
-    throw new Error(
-      "the installed scode has no scratch accounting; --sandbox-account and --sandbox-account-id need a scode whose --help documents SCODE_ACCOUNT_FILE"
-    );
+    throw new Error("the installed scode has no scratch accounting; --sandbox-account and --sandbox-account-id need a scode whose --help documents SCODE_ACCOUNT_FILE");
   }
 }
 
@@ -216,17 +232,13 @@ export async function assertScodeSupportsAccounting(
 // guessed from a version, and only when something asked to be kept.
 export type ScodeKeepEnvSupport = "supported" | "unsupported" | "unprobeable";
 
-async function probeScodeKeepEnvSupportOnce(
-  scode: string,
-  workdir: string,
-  extraEnv?: Record<string, string>
-): Promise<ScodeKeepEnvSupport> {
+async function probeScodeKeepEnvSupportOnce(scode: string, workdir: string, extraEnv?: Record<string, string>): Promise<ScodeKeepEnvSupport> {
   let result;
   try {
     result = await runOutputProbe([scode, "--help"], {
       cwd: workdir,
       env: buildSandboxEnv(extraEnv),
-      timeoutMs: SCODE_VERSION_TIMEOUT_MS,
+      timeoutMs: SCODE_VERSION_TIMEOUT_MS, scodeProbe: true,
     }, helpAnswer(["--keep-env"]));
   } catch {
     // A probe that cannot run at all proves nothing either way; whether
@@ -234,9 +246,7 @@ async function probeScodeKeepEnvSupportOnce(
     // doubt, a plain one proceeds as it always did).
     return "unprobeable";
   }
-  if (!result.success) {
-    return "unprobeable";
-  }
+  if (!result.success) return "unprobeable";
   const output = `${result.stdout}\n${result.stderr}`;
   return output.includes("--keep-env") ? "supported" : "unsupported";
 }
@@ -287,11 +297,7 @@ function scodeExecutableIdentity(scode: string): string | null {
  * around it — a sha256 digest of the whole probe environment (sorted, so
  * the key is stable across calls) and the working directory. Null when
  * the executable cannot be stat'd: nothing is cached under it. */
-function scodeKeepEnvProbeKey(
-  scode: string,
-  workdir: string,
-  extraEnv?: Record<string, string>
-): string | null {
+function scodeKeepEnvProbeKey(scode: string, workdir: string, extraEnv?: Record<string, string>): string | null {
   const identity = scodeExecutableIdentity(scode);
   if (identity === null) return null;
   const env = buildSandboxEnv(extraEnv);
@@ -305,11 +311,7 @@ function scodeKeepEnvProbeKey(
   return [scode, identity, digest.digest("hex"), workdir].join("\0");
 }
 
-async function probeScodeKeepEnvSupport(
-  scode: string,
-  workdir: string,
-  extraEnv?: Record<string, string>
-): Promise<ScodeKeepEnvSupport> {
+async function probeScodeKeepEnvSupport(scode: string, workdir: string, extraEnv?: Record<string, string>): Promise<ScodeKeepEnvSupport> {
   const key = scodeKeepEnvProbeKey(scode, workdir, extraEnv);
   // An executable that cannot even be stat'd is mid-replacement: probe
   // once, cache nothing (the "unprobeable" rule).

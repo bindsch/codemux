@@ -11,6 +11,13 @@ import { AGENT_IDS, type AgentId, type RunRequest, type RunResult } from "../src
 import { KIMI_STREAM_SESSION, kimiResumeHint } from "./fixtures/kimi-stream.js";
 import { READS_PROMPT } from "./helpers/cli.js";
 
+import { useLinuxScodeFloors } from "./helpers/scode-platform.js";
+
+// These launches run in process against a mocked or absent sandbox runner,
+// with no scode on PATH; the macOS floor would refuse them before the code
+// under test runs.
+useLinuxScodeFloors();
+
 type Wire = (answer: string) => string;
 const lines = (...events: unknown[]) => events.map((event) => JSON.stringify(event)).join("\n") + "\n";
 const resultLine: Wire = (answer) => lines({ type: "result", subtype: "success", is_error: false, result: answer });

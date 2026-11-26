@@ -33,6 +33,7 @@
  * `--experiment-project-settings`, whose whole point is that file.
  */
 
+import { linkAccountKeychain } from "../darwin-keychain-home.js";
 import { chmodSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PARENT_DIR_NAME } from "../hermetic-home.js";
@@ -141,6 +142,7 @@ export function openOpenhandsSessionHome(input: OpenhandsSessionHomeInput): Sess
     idPattern: OPENHANDS_CONVERSATION_ID_PATTERN,
     blockedPaths: [],
     populate: (dir) => {
+      linkAccountKeychain(dir); // the session child's HOME is this home
       ensureBrandDir(dir);
       applyOpenhandsSessionPolicy(dir, input.permissionPolicy);
     },

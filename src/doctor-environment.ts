@@ -12,7 +12,7 @@ import {
   parseVersion,
   SCODE_MINIMUM_VERSION,
 } from "./cli-runtime.js";
-import { extractScodeVersion } from "./cli-runtime/scode.js";
+import { extractScodeVersion, SCODE_DARWIN_FLOOR_REASON, scodeLaunchFloor } from "./cli-runtime/scode.js";
 import { compareVersions } from "./harness-compatibility.js";
 import { remedyFor } from "./doctor-remedies.js";
 import type { EnvironmentRow, HarnessRow, RowSeverity } from "./doctor-model.js";
@@ -84,7 +84,7 @@ export const readScodeFacts = async (
     const result = await runOutputProbe([trusted, "--version"], {
       cwd: workdir,
       env: process.env as unknown as Record<string, string>,
-      timeoutMs: 10_000,
+      timeoutMs: 10_000, scodeProbe: true, // a version probe prepares no HOME
     }, (output) => extractScodeVersion(output) !== null);
     const output = `${result.stdout}\n${result.stderr}`.trim();
     if (!result.success) {
@@ -192,7 +192,7 @@ export const probeScodeNamespace = async (
   }
 };
 
-export const scodeEnvironmentRow = async (facts: ScodeFacts): Promise<EnvironmentRow> => {
+export const scodeEnvironmentRow = async (facts: ScodeFacts, platform: NodeJS.Platform = process.platform): Promise<EnvironmentRow> => {
   if (!facts.present) {
     return {
       state: facts.issue !== null && facts.issue.includes("trusted") ? "UNTRUSTED" : "SANDBOX-MISSING",
@@ -209,15 +209,20 @@ export const scodeEnvironmentRow = async (facts: ScodeFacts): Promise<Environmen
       remedy: "reinstall scode (brew reinstall bindsch/tap/scode)",
     };
   }
-  if (scodeBelowFloor(facts, SCODE_MINIMUM_VERSION)) {
+  // The launch gate's floor: the global minimum, raised on macOS to the
+  // release that denies the keychain services (cli-runtime/scode.ts).
+  const minimum = scodeLaunchFloor(SCODE_MINIMUM_VERSION, platform);
+  if (scodeBelowFloor(facts, minimum)) {
     return {
       state: "SANDBOX-TOO-OLD",
       severity: "broken",
-      detail: `scode ${facts.label} is below the global minimum ${SCODE_MINIMUM_VERSION}`,
-      remedy: `brew upgrade bindsch/tap/scode to >= ${SCODE_MINIMUM_VERSION}`,
+      detail: `scode ${facts.label} is below the ${minimum === SCODE_MINIMUM_VERSION ? "global" : "macOS"} minimum ${minimum}` +
+        (minimum === SCODE_MINIMUM_VERSION ? "" : SCODE_DARWIN_FLOOR_REASON.replace(" on macOS", "")),
+      remedy: `brew upgrade bindsch/tap/scode to >= ${minimum}`,
     };
   }
-  const lines = [`scode ${facts.label} (>= ${SCODE_MINIMUM_VERSION})`];
+  const lines = [`scode ${facts.label} (>= ${minimum})`];
+  if (platform === "darwin") lines.push("keychain services denied without the login-store grant");
   let severity: RowSeverity = "ok";
   if (facts.path !== null) {
     try {

@@ -11,6 +11,13 @@ import type { RunContext } from "../src/run-context.js";
 import type { RunRequest } from "../src/types.js";
 import { validatePrompt } from "../src/validation.js";
 
+import { useLinuxScodeFloors } from "./helpers/scode-platform.js";
+
+// These launches run in process against a mocked or absent sandbox runner,
+// with no scode on PATH; the macOS floor would refuse them before the code
+// under test runs.
+useLinuxScodeFloors();
+
 function fixture(agent: RunRequest["agent"] = "codex") {
   const parent = resolve("scratch/session-14c66a93/exp/task-o");
   mkdirSync(parent, { recursive: true });

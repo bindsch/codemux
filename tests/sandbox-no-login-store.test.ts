@@ -13,6 +13,10 @@ import { loadConfig } from "../src/config.js";
 import { AGENT_IDS } from "../src/types.js";
 import { lookupForResume, readRegistry, recordSessionStart } from "../src/session/registry.js";
 import { craftEntry, newRecord, probe, seedRegistry } from "./helpers/session-registry.js";
+import { useLinuxScodeFloors } from "./helpers/scode-platform.js";
+
+// This file exercises scode versions below 0.6.11, which a macOS launch refuses.
+useLinuxScodeFloors();
 
 const root = realpathSync(mkdtempSync(join(import.meta.dir, "../scratch/no-login-store-")));
 afterAll(() => rmSync(root, { recursive: true, force: true }));

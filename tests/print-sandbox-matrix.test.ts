@@ -1,9 +1,10 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { AGENT_IDS, getAdapter } from "../src/adapters/index.js";
 import { createFakeBinaryEnv, runCli } from "./helpers/cli.js";
 import { treeSnapshot } from "./helpers/tree-snapshot.js";
+import { linkAccountKeychain } from "../src/darwin-keychain-home.js";
 
 const root = realpathSync(mkdtempSync(join(import.meta.dir, "../scratch/print-sandbox-matrix-")));
 const versions: Record<string, string> = { codex: "codex-cli 0.166.0", "cursor-agent": "2026.11.05",
@@ -44,6 +45,12 @@ for (const agent of AGENT_IDS) {
             CODEMUX_CALL_LOG: join(home, "calls.jsonl"), BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
             ...(state !== "native" && caps.supportsProviderOverride ? { [`${prefix}BASE_URL`]: "https://provider.invalid/v1",
               [`${prefix}API_KEY`]: "synthetic", [`${prefix}MODEL`]: "synthetic-model" } : {}) };
+          // The preview runs the harness binary with `--version` under this
+          // stand-in operator HOME, which is not the account home, so on macOS
+          // that spawn links the keychain directory into it. Linked up front, so the
+          // snapshot shows that the preview adds nothing beyond that documented
+          // link (asserted by itself in darwin-keychain-home.test.ts).
+          linkAccountKeychain(home);
           const before = treeSnapshot(home);
           const result = await runCli([mode, "-a", agent, "--sandbox", "--sandbox-scrub-env", "--print-sandbox", "--cwd", cwd,
             ...(mode === "run" ? ["-p", "unused"] : []), ...(resultJson ? ["--result-json"] : []),
@@ -69,3 +76,33 @@ for (const agent of AGENT_IDS) {
     }
   }
 }
+
+// The one thing a preview may add to a HOME that is not the account home:
+// the macOS keychain link, made before the harness `--version` probe. This
+// HOME is not linked up front, so the test sees exactly what the preview
+// writes.
+test("a preview adds only the macOS keychain link to a fresh HOME", async () => {
+  const home = join(root, "preview-keychain-link"), cwd = join(home, "project");
+  mkdirSync(join(cwd, ".git"), { recursive: true });
+  const temp = join(home, "tmp"); mkdirSync(temp);
+  // What the guard does for a fresh home on this machine, read from a twin.
+  const twin = join(root, "preview-keychain-twin"); mkdirSync(twin);
+  const links = process.platform === "darwin" && linkAccountKeychain(twin) === "linked";
+  const env = { ...fake.env, HOME: home, TMPDIR: temp, TMP: temp, TEMP: temp,
+    XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local/share"),
+    XDG_STATE_HOME: join(home, ".local/state"), XDG_CACHE_HOME: join(home, ".cache"),
+    CODEMUX_CALL_LOG: join(home, "calls.jsonl"), BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" };
+  const result = await runCli(["run", "-a", "codex", "--sandbox", "--sandbox-scrub-env", "--print-sandbox", "--cwd", cwd, "-p", "unused"], env);
+  expect(result.exitCode, result.stderr).toBe(0);
+  expect(readdirSync(home).sort()).toEqual(links ? ["Library", "project", "tmp"] : ["project", "tmp"]);
+  if (links) {
+    const library = readdirSync(join(home, "Library")).sort();
+    expect(library.filter((entry) => entry !== "Preferences")).toEqual(["Keychains"]);
+    expect(lstatSync(join(home, "Library", "Keychains")).isSymbolicLink()).toBe(true);
+    if (library.includes("Preferences")) {
+      expect(readdirSync(join(home, "Library", "Preferences"))).toEqual(["com.apple.security.plist"]);
+    }
+  }
+  expect(readdirSync(cwd)).toEqual([".git"]);
+  expect(readdirSync(temp)).toEqual([]);
+});

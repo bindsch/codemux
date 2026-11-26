@@ -19,6 +19,13 @@ import { claudeFamilyResult } from "../src/result-envelope.js";
 import type { RunRequest } from "../src/types.js";
 import { CLAUDE_ENVELOPE, finished } from "./helpers/result-envelope.js";
 
+import { useLinuxScodeFloors } from "./helpers/scode-platform.js";
+
+// These launches run in process against a mocked or absent sandbox runner,
+// with no scode on PATH; the macOS floor would refuse them before the code
+// under test runs.
+useLinuxScodeFloors();
+
 type ExitHandler = () => void;
 
 /** One synthetic launch whose adapter cleanup fails or succeeds. Returns

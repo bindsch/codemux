@@ -9,6 +9,7 @@ import type { ReadableStreamDefaultReader } from "node:stream/web";
 import { FORCE_KILL_DELAY_MS, PIPE_GIVE_UP_MS, signalProcess } from "../../src/process-runner.js";
 import { createTerminationTarget, waitForDescendantsGrace, type TerminationTarget } from "../../src/process-tree.js";
 import { isQuotaRefusalTrailer, providerQuotaRefusal } from "./quota.js";
+import { spawnGuarded } from "../../src/guarded-spawn.js";
 
 const STDERR_LIMIT = 160;
 const DIAGNOSTIC_LINE_LIMIT = 4096;
@@ -171,7 +172,7 @@ export class ProbeRunner {
     if (this.interrupted) return failed("interrupted before probe started");
     let proc: Bun.Subprocess<"pipe", "pipe", "pipe">;
     try {
-      proc = Bun.spawn(command, {
+      proc = spawnGuarded(command, {
         cwd: ROOT, stdin: stdin === undefined ? "ignore" : "pipe", stdout: "pipe", stderr: "pipe", detached: true,
         // No `env` key inherits this process's environment; a probe with
         // its own variables gets them merged over that, never a stripped

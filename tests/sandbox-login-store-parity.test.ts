@@ -37,12 +37,12 @@ describe.each([...AGENT_IDS])("%s login opt-in parity", (agent) => {
   test.each(["run", "session", "tui", "check"] as const)("%s defaults off and honors explicit opt-in and denial", async (mode) => {
     const { cwd, env } = environment(`${agent}-${mode}`);
     const binaries = { [binary(agent)]: fixture(versions[agent]), scode: "exit 99" };
-    const fake = createFakeBinaryEnv(binaries, "0.6.8");
+    const fake = createFakeBinaryEnv(binaries, "0.6.11");
     try {
       for (const policy of [[], ["--sandbox-login-store"], ["--sandbox-login-store", "--sandbox-no-login-store"]]) {
         const flags = ["-a", agent, ...policy, "--cwd", cwd, "--print-sandbox", "--no-quota-gate"];
         const result = mode === "session"
-          ? await runSessionCommand(flags, binaries, { env, scodeVersion: "0.6.8" })
+          ? await runSessionCommand(flags, binaries, { env, scodeVersion: "0.6.11" })
           : await runCli([mode, ...flags, ...(mode === "run" ? ["-p", "unused"] : [])], { ...fake.env, ...env });
         expect(result.exitCode, result.stderr).toBe(0);
         const native = process.platform === "darwin" && (agent === "claude" || agent === "agy");
@@ -56,7 +56,7 @@ describe.each([...AGENT_IDS])("%s login opt-in parity", (agent) => {
 
 test.each(["run", "session", "tui", "check"])("%s reads only the user opt-in and lets denial win", async (mode) => {
   const { home, cwd, env } = environment(`config-${mode}`);
-  const fake = createFakeBinaryEnv({ claude: fixture(versions.claude), scode: "exit 99" }, "0.6.8");
+  const fake = createFakeBinaryEnv({ claude: fixture(versions.claude), scode: "exit 99" }, "0.6.11");
   const config = join(home, ".config/codemux/config.yaml");
   const flags = [mode, "-a", "claude", "--cwd", cwd, "--print-sandbox", "--no-quota-gate",
     ...(mode === "run" ? ["-p", "unused"] : [])];

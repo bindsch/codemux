@@ -14,6 +14,13 @@ import * as runtime from "../src/cli-runtime.js";
 import * as cost from "../src/codex-native-cost.js";
 import * as receipts from "../src/launch/receipts.js";
 
+import { useLinuxScodeFloors } from "./helpers/scode-platform.js";
+
+// These launches run in process against a mocked or absent sandbox runner,
+// with no scode on PATH; the macOS floor would refuse them before the code
+// under test runs.
+useLinuxScodeFloors();
+
 function transport(broken = false) {
   const signals: string[] = [], sent: Record<string, unknown>[] = [];
   const stdin = new Writable({ write(chunk, _encoding, callback) {

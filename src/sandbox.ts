@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { accountHome } from "./account-home.js";
+import { scodeAccountHome } from "./account-home.js";
 import { agyLoginPaths, AGY_FILE_TOKEN } from "./agy-auth.js";
 import { nativeLoginPaths } from "./native-login-paths.js";
 import { grantsAgyFileToken, grantsLoginStore } from "./sandbox-login-policy.js";
@@ -100,7 +100,7 @@ export function sandboxRestrictsNetwork(
  * directory (scode 0.6.6, "A caller may intentionally use a synthetic HOME").
  * A harness installed in the real home then needs the same exact-file grant
  * as one installed in a blocked operator store. */
-export function scodeAccountHomeBlock(environment: NodeJS.ProcessEnv, account = accountHome()): string[] {
+export function scodeAccountHomeBlock(environment: NodeJS.ProcessEnv, account = scodeAccountHome()): string[] {
   if (account === null) return [];
   let home: string;
   try {

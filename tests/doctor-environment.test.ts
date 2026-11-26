@@ -7,7 +7,7 @@
  */
 
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getDefaultConfig } from "../src/config.js";
@@ -48,8 +48,8 @@ const fakeBin = (binaries: Record<string, string>): string => {
 const facts = (overrides: Partial<ScodeFacts>): ScodeFacts => ({
   present: true,
   path: null,
-  version: [0, 6, 0],
-  label: "0.6.0",
+  version: [0, 6, 11],
+  label: "0.6.11",
   issue: null,
   ...overrides,
 });
@@ -155,7 +155,7 @@ describe("the scode environment row", () => {
     const unreadable = await scodeEnvironmentRow(facts({ version: null, label: "unreadable", issue: "could not parse" }));
     expect(unreadable.state).toBe("unreadable");
     expect(unreadable.remedy).toContain("reinstall scode");
-    const old = await scodeEnvironmentRow(facts({ version: [0, 1, 0], label: "0.1.0" }));
+    const old = await scodeEnvironmentRow(facts({ version: [0, 1, 0], label: "0.1.0" }), "linux");
     expect(old.state).toBe("SANDBOX-TOO-OLD");
     expect(old.detail).toContain("below the global minimum");
   });
@@ -171,7 +171,7 @@ describe("the scode environment row", () => {
     expect(scodeBelowFloor(facts({ version: [0, 6, 0], label: "0.6.0" }), "0.6.0")).toBe(false);
     expect(scodeBelowFloor(facts({ version: [0, 5, 9], label: "0.5.9" }), "0.6.0")).toBe(true);
     // The global minimum row follows the same rule.
-    const minimumRc = await scodeEnvironmentRow(facts({ version: [0, 2, 0], label: "0.2.0-rc1", semver: "0.2.0-rc1" }));
+    const minimumRc = await scodeEnvironmentRow(facts({ version: [0, 2, 0], label: "0.2.0-rc1", semver: "0.2.0-rc1" }), "linux");
     expect(minimumRc.state).toBe("SANDBOX-TOO-OLD");
   });
 
@@ -197,6 +197,20 @@ describe("the scode environment row", () => {
     const failed = await scodeEnvironmentRow(facts({}));
     expect(failed.state).toBe("PROBE-FAILED");
     expect(failed.severity).toBe("broken");
+  });
+
+  test("the doctor's scode version probe prepares no HOME (review round 23)", async () => {
+    const dir = fakeBin({ scode: `printf 'scode 0.6.11\\n'` });
+    const home = join(dir, "no-such-home");
+    const saved = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const workdir = mkdtempSync(join(tmpdir(), "codemux-doctor-cwd-"));
+      scratch.push(workdir);
+      const read = await readScodeFacts(workdir);
+      expect(read.label).toBe("0.6.11");
+    } finally { process.env.HOME = saved; }
+    expect(existsSync(home)).toBe(false);
   });
 
   test("--keep-env support is probed on the trusted path and its absence is a warning", async () => {

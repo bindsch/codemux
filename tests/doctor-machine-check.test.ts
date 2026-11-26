@@ -85,7 +85,10 @@ describe("doctor harness rows", () => {
       expect(result.output).toContain("logged-in (~/.claude/.credentials.json)");
       expect(result.output).toContain("Environment:");
       // The green scode row: current, and its --help documents --keep-env.
-      expect(result.output).toMatch(/scode: ok: scode 0\.6\.0 \(>= 0\.2\.0\); --keep-env supported/);
+      // On macOS the floor is the release that denies the keychain services.
+      expect(result.output).toMatch(process.platform === "darwin"
+        ? /scode: ok: scode 0\.6\.11 \(>= 0\.6\.11\); keychain services denied without the login-store grant; --keep-env supported/
+        : /scode: ok: scode 0\.6\.11 \(>= 0\.2\.0\); --keep-env supported/);
       expect(result.output).toContain("Summary: 1 ok, 0 warn, 0 broken, 0 not installed");
     } finally {
       fake.cleanup();
@@ -197,10 +200,14 @@ describe("doctor harness rows", () => {
         }),
       });
       expect(result.exitCode).toBe(1);
-      expect(result.output).toContain("scode 0.3.4 below the agy floor 0.6.0");
+      // macOS raises every floor to 0.6.11, so there the environment row
+      // refuses 0.3.4 too; elsewhere only the agy row does.
+      const floor = process.platform === "darwin" ? "0.6.11" : "0.6.0";
+      expect(result.output).toContain(`scode 0.3.4 below the agy floor ${floor}`);
       expect(result.output).toContain("| SANDBOX-TOO-OLD |");
-      expect(result.output).toContain("brew upgrade bindsch/tap/scode to >= 0.6.0");
-      expect(result.output).toMatch(/scode: ok: scode 0\.3\.4/);
+      expect(result.output).toContain(`brew upgrade bindsch/tap/scode to >= ${floor}`);
+      expect(result.output).toMatch(process.platform === "darwin"
+        ? /scode: SANDBOX-TOO-OLD: scode 0\.3\.4 is below the macOS minimum 0\.6\.11/ : /scode: ok: scode 0\.3\.4/);
     } finally {
       fake.cleanup();
     }

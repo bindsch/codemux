@@ -45,7 +45,7 @@ import { agyHarnessHome, kimiHarnessHome } from "./cli-homes.js";
 import type { SessionCommandOptions } from "./cli-request.js";
 import { AGY_CONVERSATION_ID_PATTERN } from "./agy-session.js";
 import { migrateIdleLegacyAgyHomes } from "./agy-legacy-home.js";
-import { populateAgySessionPrivateHome, verifyAgySessionPrivateHome } from "./agy-private-home.js";
+import { noticeAgyKeychainReachable, populateAgySessionPrivateHome, verifyAgySessionPrivateHome } from "./agy-private-home.js";
 import { CODEX_THREAD_ID_PATTERN } from "./codex-parse-facts.js";
 import { KIMI_SESSION_ID_PATTERN } from "./kimi-session.js";
 import { openSessionPrivateHome } from "./private-home.js";
@@ -354,6 +354,7 @@ export async function prepareSessionLaunch({
       agent: agentId, dir: options.harnessHome, cwd: workdir, blockedPaths, sourceHome, apiKeyAuth, providerOverride: override !== null,
       resumed: resumeId !== undefined, printOnly: options.printSandbox === true,
     });
+    if (agentId === "agy" && apiKeyAuth) noticeAgyKeychainReachable(callerHome.dir, sandboxOptions !== undefined);
     if (agentId === "claude" || agentId === "zai") {
       sessionProjectDir = callerHome;
       claudeBuilt!.argv.unshift("env", ...callerHarnessHomeEnvAssignments(callerHome));
@@ -423,7 +424,7 @@ export async function prepareSessionLaunch({
         cwd: workdir,
         scrubbing: policy !== null &&
           (policy.scrubEnv === true || policy.trust === "untrusted"),
-        keepEnv: policy?.keepEnv,
+        keepEnv: policy?.keepEnv, sandboxed: sandboxOptions !== undefined,
       };
       // The real state tree the child must not reach: the ~/.gemini with
       // the operator's antigravity-cli state, GEMINI.md, and every other

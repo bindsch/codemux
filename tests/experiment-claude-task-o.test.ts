@@ -7,6 +7,13 @@ import { launchRunRequest } from "../src/launch.js";
 import type { RunRequest } from "../src/types.js";
 import { cleanupPeers, peer } from "./helpers/experiment-peer.js";
 
+import { useLinuxScodeFloors } from "./helpers/scode-platform.js";
+
+// These launches run in process against a mocked or absent sandbox runner,
+// with no scode on PATH; the macOS floor would refuse them before the code
+// under test runs.
+useLinuxScodeFloors();
+
 afterEach(cleanupPeers);
 const placeholder = { input_tokens: 0, output_tokens: 0 };
 function assistant(p: ReturnType<typeof peer>, id: string, usage: object = placeholder) {

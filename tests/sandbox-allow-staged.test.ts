@@ -6,11 +6,20 @@ import { runSandboxed, runSandboxedWithStdin } from "../src/cli-runtime.js";
 import { buildScodeCommand, type SandboxOptions } from "../src/sandbox.js";
 import { resolveSessionSandboxSpawn } from "../src/session/spawn.js";
 import { verifiedScodeCommand, verifiedScodeFeatures } from "../src/verify-scode.js";
+import { useLinuxScodeFloors } from "./helpers/scode-platform.js";
+import { linkAccountKeychain } from "../src/darwin-keychain-home.js";
+
+// This file exercises scode versions below 0.6.11, which a macOS launch refuses.
+useLinuxScodeFloors();
 
 const root = realpathSync(mkdtempSync(join(import.meta.dir, "../scratch/allow-staged-")));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 const cwd = join(root, "project"), home = join(root, "operator"), profile = join(home, "profile");
 for (const dir of [cwd, home, profile]) mkdirSync(dir);
+// The stand-in operator HOME is not the account home, so on macOS the first
+// spawn would link the keychain directory into it and the next command
+// would then name that path. It is linked up front, so every build agrees.
+linkAccountKeychain(home);
 const credentials = join(profile, ".credentials.json"), owner = join(profile, ".oauth_refresh.lock.owner");
 writeFileSync(credentials, "synthetic login");
 const staged = [owner, credentials];

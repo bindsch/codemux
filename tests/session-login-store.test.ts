@@ -94,11 +94,11 @@ test.each(HERMETIC_AGENTS)("%s resume keeps the recorded grant under a configure
     const configFile = join(root, `${agent}-config.yaml`);
     writeFileSync(configFile, "sandboxLoginStore: true\n");
     const config = loadConfig(configFile);
-    const granted = await fixture.run(["--sandbox-login-store"], { scodeVersion: "0.6.8" });
+    const granted = await fixture.run(["--sandbox-login-store"], { scodeVersion: "0.6.11" });
     expect(granted.exitCode, granted.stderr).toBe(0);
     expect(fixture.record().sandbox_login_store).toBe(true);
     // No flag and no configured default: the recorded grant is kept.
-    const kept = await fixture.run(["--resume", fixture.record().id], { scodeVersion: "0.6.8" });
+    const kept = await fixture.run(["--resume", fixture.record().id], { scodeVersion: "0.6.11" });
     expect(kept.exitCode, kept.stderr).toBe(0);
     expect(fixture.record().sandbox_login_store).toBe(true);
     // Rewrite the record as one created without the grant.
@@ -110,12 +110,12 @@ test.each(HERMETIC_AGENTS)("%s resume keeps the recorded grant under a configure
     rewrite((record) => { record.sandbox_login_store = false; });
     const scodeArgs = join(fixture.state, "scode.txt");
     rmSync(scodeArgs, { force: true });
-    const configured = await fixture.run(["--resume", fixture.record().id], { scodeVersion: "0.6.8", config });
+    const configured = await fixture.run(["--resume", fixture.record().id], { scodeVersion: "0.6.11", config });
     expect(configured.exitCalls, configured.stderr).not.toContain(78);
     expect(configured.exitCode, configured.stderr).toBe(0);
     expect(fixture.record().sandbox_login_store).toBe(false);
     expect(readFileSync(scodeArgs, "utf8").split("\n")).not.toContain("--login-store");
-    const typed = await fixture.run(["--sandbox-login-store", "--resume", fixture.record().id], { scodeVersion: "0.6.8" });
+    const typed = await fixture.run(["--sandbox-login-store", "--resume", fixture.record().id], { scodeVersion: "0.6.11" });
     if (agent === "agy") {
       expect(typed.exitCalls, typed.stderr).toContain(78);
       expect(typed.stderr).toContain("created without --sandbox-login-store");
@@ -127,10 +127,10 @@ test.each(HERMETIC_AGENTS)("%s resume keeps the recorded grant under a configure
     expect(fixture.record().sandbox_login_store).toBe(false);
     // A record written before 2.0.4 has no field: the configured default applies.
     rewrite((record) => { delete record.sandbox_login_store; });
-    const legacy = await fixture.run(["--resume", fixture.record().id], { scodeVersion: "0.6.8", config });
+    const legacy = await fixture.run(["--resume", fixture.record().id], { scodeVersion: "0.6.11", config });
     expect(legacy.exitCode, legacy.stderr).toBe(0);
     expect(fixture.record().sandbox_login_store).toBe(true);
-    const tightened = await fixture.run(["--sandbox-no-login-store", "--resume", fixture.record().id], { scodeVersion: "0.6.8", config });
+    const tightened = await fixture.run(["--sandbox-no-login-store", "--resume", fixture.record().id], { scodeVersion: "0.6.11", config });
     expect(tightened.exitCode, tightened.stderr).toBe(0);
     expect(fixture.record().sandbox_login_store).toBe(false);
   } finally { fixture.cleanup(); }
@@ -139,7 +139,7 @@ test.each(HERMETIC_AGENTS)("%s resume keeps the recorded grant under a configure
 test.each(TURN_LAUNCH_AGENTS)("%s records opt-in for per-turn children", async (agent) => {
   const fixture = turnLaunchFixture(agent);
   try {
-    const result = await fixture.run(["--sandbox-login-store"], { scodeVersion: "0.6.8" });
+    const result = await fixture.run(["--sandbox-login-store"], { scodeVersion: "0.6.11" });
     expect(result.exitCode, result.stderr).toBe(0);
     expect(fixture.record().sandbox_login_store).toBe(true);
   } finally { fixture.cleanup(); }

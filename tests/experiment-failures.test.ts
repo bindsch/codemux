@@ -14,6 +14,13 @@ import { AGY_SUCCESS_ENVELOPE, CLAUDE_ENVELOPE, CODEX_EVENTS, finished } from ".
 import { cleanupPeers, peer } from "./helpers/experiment-peer.js";
 import { codexCatalog, codexDefinitions } from "./fixtures/experiment-codex.js";
 
+import { useLinuxScodeFloors } from "./helpers/scode-platform.js";
+
+// These launches run in process against a mocked or absent sandbox runner,
+// with no scode on PATH; the macOS floor would refuse them before the code
+// under test runs.
+useLinuxScodeFloors();
+
 afterEach(cleanupPeers);
 test.each([false, true])("Claude synchronous exit records one failure before run_end; priorFailure=%s", async (priorFailure) => {
   const p = peer();

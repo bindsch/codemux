@@ -20,6 +20,7 @@ import {
   runSandboxedWithStdin,
   SCODE_MINIMUM_VERSION,
 } from "../src/cli-runtime.js";
+import { SCODE_DARWIN_FLOOR_REASON } from "../src/cli-runtime/scode.js";
 
 describe("CLI runtime scode resolution and gating", () => {
   test("executes sandboxed captured and inherited-stdio commands", async () => {
@@ -29,7 +30,7 @@ describe("CLI runtime scode resolution and gating", () => {
     mkdirSync(binaryDir);
     mkdirSync(workdir);
     const scode = join(binaryDir, "scode");
-    writeFileSync(scode, "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'scode 0.2.0'; exit 0; fi\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n");
+    writeFileSync(scode, "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'scode 0.6.11'; exit 0; fi\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n");
     chmodSync(scode, 0o755);
     const path = `${binaryDir}:${process.env.PATH ?? ""}`;
     const originalPath = process.env.PATH;
@@ -80,7 +81,7 @@ describe("CLI runtime scode resolution and gating", () => {
     const scode = join(binaryDir, "scode");
     writeFileSync(
       scode,
-      `#!/bin/sh\nif [ "$1" = --version ]; then echo 'scode 0.2.0'; exit 0; fi\nprintf '%s\\n' "$@" > '${argvFile}'\nwhile [ "$1" != -- ]; do shift; done\nshift\nexec "$@"\n`
+      `#!/bin/sh\nif [ "$1" = --version ]; then echo 'scode 0.6.11'; exit 0; fi\nprintf '%s\\n' "$@" > '${argvFile}'\nwhile [ "$1" != -- ]; do shift; done\nshift\nexec "$@"\n`
     );
     chmodSync(scode, 0o755);
     const originalPath = process.env.PATH;
@@ -137,7 +138,10 @@ describe("CLI runtime scode resolution and gating", () => {
       expect(SCODE_MINIMUM_VERSION).toBe("0.2.0");
       expect(await getScodeCompatibilityStatus(workdir)).toEqual({
         available: true,
-        issue: "scode 0.1.0 is too old; 0.2.0 or newer is required",
+        // macOS raises the floor to 0.6.11 and says why.
+        issue: process.platform === "darwin"
+          ? `scode 0.1.0 is too old; 0.6.11 or newer is required${SCODE_DARWIN_FLOOR_REASON}`
+          : "scode 0.1.0 is too old; 0.2.0 or newer is required",
       });
       await expect(runSandboxed(
         [process.execPath, "-e", "process.exit(0)"],
@@ -154,6 +158,8 @@ describe("CLI runtime scode resolution and gating", () => {
   });
 
   test("a scode prerelease of the floor is below the floor (review 341, item 3)", async () => {
+    // The platform is stated as Linux: this test is about a caller's own
+    // floor, and macOS raises every floor to 0.6.11 (tests/scode-darwin-floor.test.ts).
     // parseVersion stripped prerelease suffixes, so "0.6.0-rc1" parsed as
     // [0,6,0] and passed a floor set at exactly its numeric core (agy's
     // SCODE_FLOORS entry "0.6.0"). The floor comparison runs on the
@@ -176,21 +182,21 @@ describe("CLI runtime scode resolution and gating", () => {
     const env = { PATH: `${binaryDir}:${process.env.PATH ?? ""}` };
     try {
       await expect(
-        assertCompatibleScode(writeScode("0.6.0-rc1"), workdir, env, "0.6.0")
+        assertCompatibleScode(writeScode("0.6.0-rc1"), workdir, env, "0.6.0", "linux")
       ).rejects.toThrow("scode 0.6.0-rc1 is too old; 0.6.0 or newer is required");
       // Controls: the release itself passes its own floor, and a
       // prerelease above the floor passes — only a prerelease of the
       // minimum is below the minimum.
       await expect(
-        assertCompatibleScode(writeScode("0.6.0"), workdir, env, "0.6.0")
+        assertCompatibleScode(writeScode("0.6.0"), workdir, env, "0.6.0", "linux")
       ).resolves.toBe("0.6.0");
       await expect(
-        assertCompatibleScode(writeScode("0.7.0-beta"), workdir, env, "0.6.0")
+        assertCompatibleScode(writeScode("0.7.0-beta"), workdir, env, "0.6.0", "linux")
       ).resolves.toBe("0.7.0-beta");
       // A glued suffix is no version at all: the token's closing boundary
       // refuses it instead of reading its numeric core (review round 344).
       await expect(
-        assertCompatibleScode(writeScode("1.2.3dev"), workdir, env, "0.6.0")
+        assertCompatibleScode(writeScode("1.2.3dev"), workdir, env, "0.6.0", "linux")
       ).rejects.toThrow("could not parse scode version");
     } finally {
       rmSync(dir, { recursive: true, force: true });
